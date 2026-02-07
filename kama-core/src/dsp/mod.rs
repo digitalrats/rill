@@ -1,11 +1,10 @@
-//! dsp модуль kama-core
-//! 
-//! TODO: Реализовать
+//! DSP модули для обработки аудио
 
-pub struct DspModule;
+mod sine_oscillator;
+mod biquad_filter;
+mod delay_line;
 
-impl DspModule {
-    pub fn new() -> Self {
-        Self
-    }
-}
+// Re-exports
+pub use sine_oscillator::SineOscillator;
+pub use biquad_filter::{BiquadFilter, BiquadType};
+pub use delay_line::DelayLine;

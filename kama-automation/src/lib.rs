@@ -573,6 +573,24 @@ impl TestSignalSender {
             sent_signals: RwLock::new(Vec::new()),
         }
     }
+
+    pub fn clear_signals(&self) {
+        let mut signals = self.sent_signals.write();
+        signals.clear();
+    }
+    
+    pub fn get_signals_count(&self) -> usize {
+        let signals = self.sent_signals.read();
+        signals.len()
+    }
+    
+    pub fn get_signals_for_param(&self, node_id: &str, param_id: &str) -> Vec<f32> {
+        let signals = self.sent_signals.read();
+        signals.iter()
+            .filter(|(n, p, _)| n == node_id && p == param_id)
+            .map(|(_, _, v)| *v)
+            .collect()
+    }
 }
 
 impl SignalSender for TestSignalSender {
