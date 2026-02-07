@@ -93,10 +93,18 @@ impl AudioGraph {
         }
     }
     
+    // В graph/mod.rs
     fn update_processing_order(&mut self) {
         let mut dependencies: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         let mut dependents: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         
+        // Инициализируем все узлы
+        for &node_id in self.nodes.keys() {
+            dependencies.entry(node_id).or_default();
+            dependents.entry(node_id).or_default();
+        }
+        
+        // Добавляем зависимости от соединений
         for conn in &self.connections {
             dependencies.entry(conn.to.node)
                 .or_default()
@@ -107,6 +115,7 @@ impl AudioGraph {
                 .push(conn.to.node);
         }
         
+        // Начинаем с узлов без зависимостей (источников)
         let mut queue: VecDeque<NodeId> = self.nodes.keys()
             .filter(|&id| dependencies.get(id).map_or(true, |d| d.is_empty()))
             .copied()
@@ -115,9 +124,15 @@ impl AudioGraph {
         let mut order = Vec::new();
         let mut visited = HashMap::new();
         
+        
         while let Some(node) = queue.pop_front() {
+            if visited.contains_key(&node) {
+                continue;
+            }
+            
             order.push(node);
             visited.insert(node, true);
+            
             
             if let Some(children) = dependents.get(&node) {
                 for &child in children {
@@ -143,51 +158,6 @@ impl AudioGraph {
         self.processing_order = order;
     }
     
-    /// Простой метод обработки - без сложной маршрутизации пока
-    pub fn process_simple(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        if outputs.is_empty() {
-            return Ok(());
-        }
-        
-        let buffer_size = outputs[0].len();
-        
-        // Просто обрабатываем каждый узел в правильном порядке
-        for &node_id in &self.processing_order {
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                let num_inputs = node.num_inputs();
-                let num_outputs = node.num_outputs();
-                
-                // Создаём временные буферы
-                let mut input_buffers: Vec<Vec<f32>> = (0..num_inputs)
-                    .map(|_| vec![0.0; buffer_size])
-                    .collect();
-                
-                let mut output_buffers: Vec<Vec<f32>> = (0..num_outputs)
-                    .map(|_| vec![0.0; buffer_size])
-                    .collect();
-                
-                // Преобразуем в срезы
-                let input_slices: Vec<&[f32]> = input_buffers.iter()
-                    .map(|buf| buf.as_slice())
-                    .collect();
-                
-                let mut output_slices: Vec<&mut [f32]> = output_buffers.iter_mut()
-                    .map(|buf| buf.as_mut_slice())
-                    .collect();
-                
-                // Обрабатываем узел
-                node.process(&input_slices, &mut output_slices)?;
-            }
-        }
-        
-        // Очистить выходы (заглушка)
-        for output in outputs {
-            output.fill(0.0);
-        }
-        
-        Ok(())
-    }
-    
     pub fn get_node(&self, id: NodeId) -> Option<&dyn AudioNode> {
         self.nodes.get(&id).map(|n| n.as_ref())
     }
@@ -199,4 +169,79 @@ impl AudioGraph {
     pub fn get_processing_order(&self) -> &[NodeId] {
         &self.processing_order
     }
+    pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+    
+    if outputs.is_empty() {
+        return Ok(());
+    }
+    
+    let buffer_size = outputs[0].len();
+    let mut node_outputs: HashMap<NodeId, Vec<Vec<f32>>> = HashMap::new();
+    
+    for &node_id in &self.processing_order {
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            let num_inputs = node.num_inputs();
+            let num_outputs = node.num_outputs();
+            
+            // Собираем входные данные
+            let mut input_buffers = vec![vec![0.0; buffer_size]; num_inputs];
+            
+            for input_idx in 0..num_inputs {
+                let port_id = PortId {
+                    node: node_id,
+                    index: input_idx as u8,
+                    is_input: true,
+                };
+                
+                if let Some(connections) = self.input_connections.get(&port_id) {
+                    for conn in connections {                        
+                        if let Some(src_outputs) = node_outputs.get(&conn.from.node) {
+                            let src_idx = conn.from.index as usize;
+                            if src_idx < src_outputs.len() {                                
+                                // Копируем данные
+                                for i in 0..buffer_size {
+                                    input_buffers[input_idx][i] += 
+                                        src_outputs[src_idx][i] * conn.gain;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Обрабатываем узел
+            let mut output_buffers = vec![vec![0.0; buffer_size]; num_outputs];
+            
+            let input_slices: Vec<&[f32]> = input_buffers.iter()
+                .map(|buf| buf.as_slice())
+                .collect();
+            
+            let mut output_slices: Vec<&mut [f32]> = output_buffers.iter_mut()
+                .map(|buf| buf.as_mut_slice())
+                .collect();
+            
+            node.process(&input_slices, &mut output_slices);
+            
+            // Сохраняем выходы
+            node_outputs.insert(node_id, output_buffers);
+        }
+    }
+    
+    // Копируем результат
+    if let Some(last_node_id) = self.processing_order.last() {        
+        if let Some(last_outputs) = node_outputs.get(last_node_id) {    
+            for (i, output_channel) in outputs.iter_mut().enumerate() {
+                if i < last_outputs.len() {
+                    for (j, &sample) in last_outputs[i].iter().enumerate() {
+                        if j < output_channel.len() {
+                            output_channel[j] = sample;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+    
 }
