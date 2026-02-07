@@ -27,7 +27,8 @@ impl SineOscillator {
 }
 
 impl AudioNode for SineOscillator {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+    fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+        // ✅ Добавили _ перед inputs для подавления warning
         if outputs.is_empty() {
             return Ok(());
         }

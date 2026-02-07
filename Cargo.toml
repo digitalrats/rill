@@ -1,5 +1,5 @@
 [workspace]
-members = ["kama-core", "kama-automation"]
+members = ["kama-core", "kama-automation", "kama-buffers"]
 resolver = "2"
 
 # Только обязательные, не-опциональные зависимости

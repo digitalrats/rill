@@ -19,7 +19,7 @@ pub mod control;
 // Re-exports для удобства
 // Убираем несуществующие типы
 pub use automation::Automaton;
-pub use graph::{AudioGraph, NodeId, PortId};
+pub use graph::{AudioGraph, NodeId, PortId, Connection};
 pub use node::{NodeFactory, NodeMetadata};
 pub use param::{ParamValue, ParamType, ParamRange};
 

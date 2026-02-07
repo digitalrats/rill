@@ -11,9 +11,8 @@ parking_lot = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
-
-# serde как обязательная зависимость (нужна для сериализации параметров и сигналов)
 serde = { version = "1.0", features = ["derive"] }
+rand = "0.8"
 
 # Опциональные зависимости
 crossbeam = { version = "0.8", optional = true }
@@ -47,7 +46,10 @@ signals-json = ["serde_json"]
 signals-bincode = ["bincode"]
 pipewire-backend = ["io", "pipewire"]
 alsa-backend = ["io", "alsa"]
+full_demo = []
 
 # Рекомендуемые фичи для большинства пользователей
 [package.metadata]
 recommended-features = ["io", "midi", "dsp"]
+
+

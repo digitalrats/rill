@@ -1,0 +1,20 @@
+[package]
+name = "kama-mixer"
+version = "0.1.0"
+edition = "2021"
+description = "Advanced mixing and routing extensions for Kama Audio"
+authors = ["Mike K <mike@example.com>"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+kama-core = { path = "../kama-core" }
+kama-hp = { path = "../kama-hp", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+parking_lot = "0.12"
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+either = "1.9"
+
+[features]
+default = []
+high_precision = ["kama-hp"]  # Поддержка high-precision обработки

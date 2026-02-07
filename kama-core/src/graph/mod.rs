@@ -1,10 +1,12 @@
 // FILE: /home/mikek/Projects/kama/kama-audio/kama-core/src/graph/mod.rs
+use crate::AudioError;  // ✅ Добавляем импорт
+
 use std::collections::{HashMap, VecDeque};
 use crate::node::AudioNode;
-use crate::AudioError;
 
+// Объявляем типы ДО их использования
 mod processor;
-use processor::{BufferManager, NodeProcessor};
+pub use processor::{BufferManager, NodeProcessor};
 
 /// Идентификатор узла
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -166,82 +168,141 @@ impl AudioGraph {
         self.nodes.get_mut(&id).map(|n| n.as_mut())
     }
     
+    pub fn get_connections(&self) -> &[Connection] {
+        &self.connections
+    }
+    
     pub fn get_processing_order(&self) -> &[NodeId] {
         &self.processing_order
     }
+    
     pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-    
-    if outputs.is_empty() {
-        return Ok(());
-    }
-    
-    let buffer_size = outputs[0].len();
-    let mut node_outputs: HashMap<NodeId, Vec<Vec<f32>>> = HashMap::new();
-    
-    for &node_id in &self.processing_order {
-        if let Some(node) = self.nodes.get_mut(&node_id) {
-            let num_inputs = node.num_inputs();
-            let num_outputs = node.num_outputs();
-            
-            // Собираем входные данные
-            let mut input_buffers = vec![vec![0.0; buffer_size]; num_inputs];
-            
-            for input_idx in 0..num_inputs {
-                let port_id = PortId {
-                    node: node_id,
-                    index: input_idx as u8,
-                    is_input: true,
-                };
+        if outputs.is_empty() {
+            return Ok(());
+        }
+        
+        let buffer_size = outputs[0].len();
+        
+        // Временное хранилище для выходов узлов
+        let max_nodes = self.next_id as usize;
+        let mut node_output_buffers: Vec<Option<Vec<Vec<f32>>>> = vec![None; max_nodes];
+        
+        // Проходим по узлам в порядке обработки
+        for &node_id in &self.processing_order {
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                let num_inputs = node.num_inputs();
+                let num_outputs = node.num_outputs();
                 
-                if let Some(connections) = self.input_connections.get(&port_id) {
-                    for conn in connections {                        
-                        if let Some(src_outputs) = node_outputs.get(&conn.from.node) {
-                            let src_idx = conn.from.index as usize;
-                            if src_idx < src_outputs.len() {                                
-                                // Копируем данные
-                                for i in 0..buffer_size {
-                                    input_buffers[input_idx][i] += 
-                                        src_outputs[src_idx][i] * conn.gain;
+                // Создаём входные буферы для этого узла
+                let mut input_buffers = vec![vec![0.0; buffer_size]; num_inputs];
+                
+                // Собираем входные данные для этого узла
+                for input_idx in 0..num_inputs {
+                    let port_id = PortId {
+                        node: node_id,
+                        index: input_idx as u8,
+                        is_input: true,
+                    };
+                    
+                    // Получаем соединения для этого входа
+                    if let Some(connections) = self.input_connections.get(&port_id) {
+                        for conn in connections {
+                            // Получаем выходы предыдущего узла
+                            let src_node_id = conn.from.node;
+                            let src_node_idx = src_node_id.0 as usize;
+                            
+                            if src_node_idx < node_output_buffers.len() {
+                                if let Some(Some(src_outputs)) = node_output_buffers.get(src_node_idx) {
+                                    let src_idx = conn.from.index as usize;
+                                    if src_idx < src_outputs.len() {
+                                        let src_buffer = &src_outputs[src_idx];
+                                        
+                                        // Суммируем с коэффициентом
+                                        for i in 0..buffer_size {
+                                            input_buffers[input_idx][i] += src_buffer[i] * conn.gain;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                
+                // Обрабатываем узел
+                let mut output_buffers = vec![vec![0.0; buffer_size]; num_outputs];
+                
+                // Создаём срезы для метода process
+                let input_slices: Vec<&[f32]> = input_buffers.iter()
+                    .map(|buf| buf.as_slice())
+                    .collect();
+                
+                let mut output_slices: Vec<&mut [f32]> = output_buffers.iter_mut()
+                    .map(|buf| buf.as_mut_slice())
+                    .collect();
+                
+                node.process(&input_slices, &mut output_slices)?;
+                
+                // Сохраняем выходы узла
+                let node_idx = node_id.0 as usize;
+                if node_idx < node_output_buffers.len() {
+                    node_output_buffers[node_idx] = Some(output_buffers);
+                }
             }
-            
-            // Обрабатываем узел
-            let mut output_buffers = vec![vec![0.0; buffer_size]; num_outputs];
-            
-            let input_slices: Vec<&[f32]> = input_buffers.iter()
-                .map(|buf| buf.as_slice())
-                .collect();
-            
-            let mut output_slices: Vec<&mut [f32]> = output_buffers.iter_mut()
-                .map(|buf| buf.as_mut_slice())
-                .collect();
-            
-            node.process(&input_slices, &mut output_slices);
-            
-            // Сохраняем выходы
-            node_outputs.insert(node_id, output_buffers);
         }
-    }
-    
-    // Копируем результат
-    if let Some(last_node_id) = self.processing_order.last() {        
-        if let Some(last_outputs) = node_outputs.get(last_node_id) {    
-            for (i, output_channel) in outputs.iter_mut().enumerate() {
-                if i < last_outputs.len() {
-                    for (j, &sample) in last_outputs[i].iter().enumerate() {
-                        if j < output_channel.len() {
-                            output_channel[j] = sample;
+        
+        // Находим выходные узлы (узлы, чьи выходы не подключены к другим узлам)
+        let output_node_ids: Vec<NodeId> = self.processing_order.iter()
+            .filter(|&&node_id| {
+                let num_outputs = self.nodes.get(&node_id)
+                    .map(|n| n.num_outputs())
+                    .unwrap_or(0);
+                
+                (0..num_outputs).all(|output_idx| {
+                    let port_id = PortId {
+                        node: node_id,
+                        index: output_idx as u8,
+                        is_input: false,
+                    };
+                    
+                    // Если нет соединений от этого выхода
+                    self.output_connections.get(&port_id)
+                        .map(|conns| conns.is_empty())
+                        .unwrap_or(true)
+                })
+            })
+            .copied()
+            .collect();
+        
+        // Если указаны выходные узлы, используем первый
+        if let Some(&output_node_id) = output_node_ids.first() {
+            let node_idx = output_node_id.0 as usize;
+            if node_idx < node_output_buffers.len() {
+                if let Some(Some(outputs_to_copy)) = node_output_buffers.get(node_idx) {
+                    for (i, output_channel) in outputs.iter_mut().enumerate() {
+                        if i < outputs_to_copy.len() {
+                            let copy_len = buffer_size.min(output_channel.len());
+                            output_channel[..copy_len].copy_from_slice(&outputs_to_copy[i][..copy_len]);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Если не нашли явных выходных узлов, используем последний в порядке обработки
+            if let Some(&last_node_id) = self.processing_order.last() {
+                let node_idx = last_node_id.0 as usize;
+                if node_idx < node_output_buffers.len() {
+                    if let Some(Some(outputs_to_copy)) = node_output_buffers.get(node_idx) {
+                        for (i, output_channel) in outputs.iter_mut().enumerate() {
+                            if i < outputs_to_copy.len() {
+                                let copy_len = buffer_size.min(output_channel.len());
+                                output_channel[..copy_len].copy_from_slice(&outputs_to_copy[i][..copy_len]);
+                            }
                         }
                     }
                 }
             }
         }
+        
+        Ok(())
     }
-    Ok(())
-}
-    
 }
