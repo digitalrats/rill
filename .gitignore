@@ -1,0 +1,31 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# OS файлы
+.DS_Store
+Thumbs.db
+
+# Editor файлы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build файлы
+*.o
+*.so
+*.dylib
+*.dll
+
+# Documentation
+/doc/
+/book/
+
+# Environment
+.env
+*.env
+
+# IDE
+.history/

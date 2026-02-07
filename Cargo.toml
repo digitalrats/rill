@@ -1,0 +1,10 @@
+[workspace]
+members = ["kama-core", "kama-automation"]
+resolver = "2"
+
+# Только обязательные, не-опциональные зависимости
+[workspace.dependencies]
+parking_lot = "0.12"
+num-traits = "0.2"
+thiserror = "1.0"
+async-trait = "0.1"
