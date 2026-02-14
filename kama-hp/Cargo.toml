@@ -6,15 +6,14 @@ description = "High-precision (f64) audio processing for demanding applications"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-kama-core = { path = "../kama-core" }
-serde = { version = "1.0", features = ["derive"] }
-parking_lot = "0.12"
+kama-core = { path = "../kama-core", version = "0.1.0" }
+parking_lot = { workspace = true }
 rand = "0.8"
 thiserror = "1.0"
 
 [features]
 default = []
-simd = []  # Для SIMD оптимизаций f64
+simd = []  # включает SIMD-оптимизации
 
 [dev-dependencies]
 criterion = "0.5"

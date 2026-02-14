@@ -15,6 +15,7 @@ pub mod synth;
 pub mod dsp;
 pub mod util;
 pub mod control;
+pub mod mixer;
 
 // Re-exports для удобства
 // Убираем несуществующие типы

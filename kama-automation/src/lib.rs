@@ -212,7 +212,7 @@ impl Automaton for LfoAutomaton {
         state: &LfoState,
     ) -> (LfoState, Option<LfoAction>) {
         let mut new_state = state.clone();
-        let mut next_action = None;
+        let next_action = None;
         
         // Обработка действий
         match action {

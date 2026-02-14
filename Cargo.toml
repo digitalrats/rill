@@ -1,8 +1,13 @@
 [workspace]
-members = ["kama-core", "kama-automation", "kama-buffers"]
+members = [
+    "kama-core",
+    "kama-automation",
+    "kama-buffers",
+    "kama-mixer",
+    "kama-hp",
+]
 resolver = "2"
 
-# Только обязательные, не-опциональные зависимости
 [workspace.dependencies]
 parking_lot = "0.12"
 num-traits = "0.2"

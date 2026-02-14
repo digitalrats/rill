@@ -5,7 +5,6 @@ edition = "2021"
 description = "Core audio processing library for effects, synthesizers and sequencers"
 license = "MIT OR Apache-2.0"
 
-# Обязательные зависимости из workspace
 [dependencies]
 parking_lot = { workspace = true }
 num-traits = { workspace = true }
@@ -48,8 +47,4 @@ pipewire-backend = ["io", "pipewire"]
 alsa-backend = ["io", "alsa"]
 full_demo = []
 
-# Рекомендуемые фичи для большинства пользователей
-[package.metadata]
-recommended-features = ["io", "midi", "dsp"]
-
-
+# Убираем "full_mixer" - теперь это отдельный крейт
