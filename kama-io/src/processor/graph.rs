@@ -1,10 +1,12 @@
-//! AudioProcessor реализация на базе AudioGraph
+//! Интеграция с AudioGraph
 
-use kama_core::{AudioGraph, AudioNode};
-use parking_lot::RwLock;
 use std::sync::Arc;
+use parking_lot::RwLock;
 
-use crate::AudioProcessor;
+use kama_core::{AudioGraph, AudioNode, param::ParamValue};
+
+use crate::engine::AudioProcessor;
+use crate::error::{IoResult, IoError};
 
 /// Процессор, который обрабатывает аудио через AudioGraph
 pub struct GraphProcessor {
@@ -21,8 +23,8 @@ impl GraphProcessor {
     /// 
     /// # Arguments
     /// * `graph` - аудиограф для обработки
-    /// * `input_node_id` - ID узла, который будет получать входной сигнал (если None, входной сигнал игнорируется)
-    /// * `output_node_id` - ID узла, выход которого будет использоваться как выход процессора (если None, используется последний узел в порядке обработки)
+    /// * `input_node_id` - ID узла, который будет получать входной сигнал
+    /// * `output_node_id` - ID узла, выход которого будет использоваться как выход процессора
     pub fn new(
         graph: AudioGraph,
         input_node_id: Option<kama_core::graph::NodeId>,
@@ -73,7 +75,7 @@ impl GraphProcessor {
         self.sample_rate
     }
     
-    /// Найти узел по типу (вспомогательный метод)
+    /// Найти узел по типу
     pub fn find_node_by_type<T: AudioNode + 'static>(&self) -> Option<kama_core::graph::NodeId> {
         self.with_graph_read(|graph| {
             for &node_id in graph.get_processing_order() {
@@ -91,7 +93,7 @@ impl GraphProcessor {
     pub fn set_node_param<T: AudioNode + 'static>(
         &self,
         param_name: &str,
-        value: kama_core::param::ParamValue,
+        value: ParamValue,
     ) -> Result<(), kama_core::AudioError> {
         self.with_graph(|graph| {
             if let Some(node_id) = Self::find_node_by_type_static(graph, std::any::TypeId::of::<T>()) {
@@ -113,6 +115,11 @@ impl GraphProcessor {
             }
         }
         None
+    }
+    
+    /// Сбросить граф
+    pub fn reset_graph(&self) {
+        self.with_graph(|graph| graph.reset());
     }
 }
 
@@ -148,16 +155,14 @@ impl AudioProcessor for GraphProcessor {
     }
     
     fn reset(&mut self) {
-        let mut graph = self.graph.write();
-        graph.reset();
+        self.with_graph(|graph| graph.reset());
         self.temp_input.clear();
         self.temp_output.clear();
     }
     
     fn set_sample_rate(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
-        let mut graph = self.graph.write();
-        graph.init_all(sample_rate);
+        self.with_graph(|graph| graph.init_all(sample_rate));
     }
 }
 

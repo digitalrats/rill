@@ -12,7 +12,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
 log = "0.4"
-crossbeam-channel = "0.5"  # Для коммуникации между потоками
+crossbeam-channel = "0.5"
 
 # Бэкенды
 cpal = { version = "0.15", optional = true }
@@ -24,15 +24,19 @@ jack = { version = "0.10", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
-default = ["cpal"]
+default = ["cpal","examples"]
 
 # Бэкенды
 cpal = ["dep:cpal"]
 alsa = ["dep:alsa"]
 pipewire = ["dep:pipewire"]
 jack = ["dep:jack"]
-
 all-backends = ["cpal", "alsa", "pipewire", "jack"]
+
+# Процессоры (feature флаги)
+examples = []  # <-- Добавлено определение features
+granular = []  # Для гранулярного синтеза
+debug = []     # Для отладочных процессоров
 
 # Сериализация конфигурации
 serde-config = ["dep:serde"]

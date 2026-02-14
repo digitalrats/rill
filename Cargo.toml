@@ -7,7 +7,8 @@ members = [
     "kama-hp",
     "kama-lofi",
     "kama-wdf",
-    "kama-io"
+    "kama-io",
+    "kama-control"
 ]
 resolver = "2"
 
