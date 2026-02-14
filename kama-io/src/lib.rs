@@ -10,6 +10,7 @@ mod config;
 mod error;
 mod engine;
 mod null;
+mod graph_processor;  // <-- НОВЫЙ МОДУЛЬ
 
 #[cfg(feature = "cpal")]
 mod cpal;
@@ -21,11 +22,12 @@ mod pipewire;
 mod jack;
 
 // Реэкспорты
-pub use backend::{AudioBackend, BackendType};  // <-- Убрали DeviceInfo
+pub use backend::{AudioBackend, BackendType};
 pub use config::{AudioConfig, BackendOptions, 
                  CpalOptions, AlsaOptions, PipewireOptions, JackOptions};
 pub use error::{IoError, IoResult};
 pub use engine::{AudioEngine, AudioProcessor, EngineState};
+pub use graph_processor::GraphProcessor;  // <-- НОВЫЙ РЕЭКСПОРТ
 
 #[cfg(feature = "cpal")]
 pub use cpal::CpalBackend;

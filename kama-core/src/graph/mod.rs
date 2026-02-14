@@ -93,6 +93,65 @@ impl AudioGraph {
             Err(AudioError::Graph("Invalid connection direction".to_string()))
         }
     }
+
+    /// Инициализировать все узлы с новой частотой дискретизации
+    pub fn init_all(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+        for node in self.nodes.values_mut() {
+            node.init(sample_rate);
+        }
+    }
+
+    /// Сбросить состояние всех узлов в графе
+    /// 
+    /// Полезно для:
+    /// - Перезапуска обработки
+    /// - Очистки состояний фильтров и задержек
+    /// - Подготовки к новому семплу
+    pub fn reset(&mut self) {
+        for node in self.nodes.values_mut() {
+            node.reset();
+        }
+    }
+
+    /// Сбросить состояние конкретного узла
+    /// 
+    /// # Arguments
+    /// * `id` - ID узла для сброса
+    /// 
+    /// # Returns
+    /// * `true` если узел найден и сброшен, `false` в противном случае
+    pub fn reset_node(&mut self, id: NodeId) -> bool {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.reset();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Сбросить все узлы определенного типа
+    /// 
+    /// # Type parameters
+    /// * `T` - тип узла для сброса (должен реализовывать `AudioNode`)
+    pub fn reset_nodes_by_type<T: AudioNode + 'static>(&mut self) {
+        for node in self.nodes.values_mut() {
+            // Проверяем тип через Any
+            if node.as_ref().type_id() == std::any::TypeId::of::<T>() {
+                node.reset();
+            }
+        }
+    }
+
+    /// Получить частоту дискретизации графа
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+    
+    /// Получить мутабельную ссылку на частоту дискретизации (если нужно изменить)
+    pub fn sample_rate_mut(&mut self) -> &mut f32 {
+        &mut self.sample_rate
+    }
     
     // В graph/mod.rs
     fn update_processing_order(&mut self) {

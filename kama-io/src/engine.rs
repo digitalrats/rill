@@ -29,20 +29,21 @@ pub enum EngineState {
 }
 
 /// Команды для потока обработки
-enum EngineCommand {
-    Start,
-    Stop,
-    Pause,
-    Resume,
+enum ProcessorCommand<P: AudioProcessor> {
+    Update(Box<dyn FnOnce(&mut P) + Send>),
 }
 
 /// Основной аудио движок (синхронная версия)
-pub struct AudioEngine<B: AudioBackend, P: AudioProcessor> {
-    backend: Option<B>,  // <-- ИСПРАВЛЕНО: используем Option
-    processor: Option<P>, // <-- ИСПРАВЛЕНО: используем Option
+pub struct AudioEngine<B, P>
+where
+    B: AudioBackend + 'static,  // <-- Добавлено 'static в определение
+    P: AudioProcessor + 'static, // <-- Добавлено 'static в определение
+{
+    backend: Option<B>,
+    processor: Arc<RwLock<Option<P>>>,
     state: Arc<RwLock<EngineState>>,
-    command_tx: Sender<EngineCommand>,
-    command_rx: Receiver<EngineCommand>,
+    command_tx: Sender<ProcessorCommand<P>>,
+    command_rx: Receiver<ProcessorCommand<P>>,
     thread_handle: Option<thread::JoinHandle<()>>,
     sample_rate: f32,
     buffer_size: usize,
@@ -52,8 +53,8 @@ pub struct AudioEngine<B: AudioBackend, P: AudioProcessor> {
 
 impl<B, P> AudioEngine<B, P>
 where
-    B: AudioBackend + 'static,
-    P: AudioProcessor + 'static,
+    B: AudioBackend + Send + Sync + 'static,
+    P: AudioProcessor + Send + Sync + 'static,
 {
     pub fn new(backend: B, processor: P) -> Self {
         let sample_rate = backend.config().sample_rate as f32;
@@ -64,7 +65,7 @@ where
         
         Self {
             backend: Some(backend),
-            processor: Some(processor),
+            processor: Arc::new(RwLock::new(Some(processor))),
             state: Arc::new(RwLock::new(EngineState::Stopped)),
             command_tx,
             command_rx,
@@ -82,50 +83,47 @@ where
             return Ok(());
         }
         
-        // Забираем backend и processor из Option
+        // Забираем backend из Option
         let mut backend = self.backend.take().ok_or_else(|| IoError::Backend("Backend already taken".to_string()))?;
-        let mut processor = self.processor.take().ok_or_else(|| IoError::Backend("Processor already taken".to_string()))?;
         
         backend.init()?;
         backend.start()?;
         
         *self.state.write() = EngineState::Running;
         
-        // Запускаем поток обработки
+        // Клонируем для потока
         let state = self.state.clone();
         let xrun_count = self.xrun_count.clone();
+        let processor = self.processor.clone();
         let buffer_size = self.buffer_size;
         let channels = self.channels;
         let command_rx = self.command_rx.clone();
         
+        // Запускаем поток обработки
         let handle = thread::spawn(move || {
             let total_samples = buffer_size * channels;
             let mut input_buffer = vec![0.0f32; total_samples];
             let mut output_buffer = vec![0.0f32; total_samples];
             
             while *state.read() == EngineState::Running {
-                // Проверяем команды
+                // Обрабатываем команды
                 while let Ok(cmd) = command_rx.try_recv() {
                     match cmd {
-                        EngineCommand::Stop => {
-                            *state.write() = EngineState::Stopped;
-                            return;
+                        ProcessorCommand::Update(f) => {
+                            if let Some(proc) = processor.write().as_mut() {
+                                f(proc);
+                            }
                         }
-                        EngineCommand::Pause => {
-                            *state.write() = EngineState::Paused;
-                        }
-                        EngineCommand::Resume => {
-                            *state.write() = EngineState::Running;
-                        }
-                        _ => {}
                     }
                 }
                 
                 // Читаем входные данные
                 match backend.read(&mut input_buffer) {
                     Ok(read) if read > 0 => {
-                        // Обрабатываем
-                        processor.process(&input_buffer[..read], &mut output_buffer[..read]);
+                        // Получаем процессор и обрабатываем
+                        if let Some(proc) = processor.write().as_mut() {
+                            proc.process(&input_buffer[..read], &mut output_buffer[..read]);
+                        }
                         
                         // Записываем выходные данные
                         if let Err(e) = backend.write(&output_buffer[..read]) {
@@ -151,8 +149,7 @@ where
     
     /// Остановить движок
     pub fn stop(&mut self) -> IoResult<()> {
-        self.command_tx.send(EngineCommand::Stop)
-            .map_err(|e| IoError::Backend(e.to_string()))?;
+        *self.state.write() = EngineState::Stopped;
         
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
@@ -162,16 +159,12 @@ where
             backend.stop()?;
         }
         
-        *self.state.write() = EngineState::Stopped;
-        
         Ok(())
     }
     
     /// Приостановить обработку
     pub fn pause(&mut self) -> IoResult<()> {
         if *self.state.read() == EngineState::Running {
-            self.command_tx.send(EngineCommand::Pause)
-                .map_err(|e| IoError::Backend(e.to_string()))?;
             *self.state.write() = EngineState::Paused;
         }
         Ok(())
@@ -180,8 +173,6 @@ where
     /// Возобновить обработку
     pub fn resume(&mut self) -> IoResult<()> {
         if *self.state.read() == EngineState::Paused {
-            self.command_tx.send(EngineCommand::Resume)
-                .map_err(|e| IoError::Backend(e.to_string()))?;
             *self.state.write() = EngineState::Running;
         }
         Ok(())
@@ -215,19 +206,52 @@ where
     pub fn buffer_size(&self) -> usize {
         self.buffer_size
     }
-
-    /// Получить мутабельную ссылку на процессор (если движок не запущен)
-    pub fn processor_mut(&mut self) -> Option<&mut P> {
-        self.processor.as_mut()
+    
+    /// Выполнить операцию с процессором (если движок не запущен)
+    pub fn with_processor<F, R>(&mut self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut P) -> R,
+    {
+        if *self.state.read() == EngineState::Running {
+            None
+        } else {
+            if let Some(proc) = self.processor.write().as_mut() {
+                Some(f(proc))
+            } else {
+                None
+            }
+        }
     }
     
-    /// Отправить команду изменения параметра в поток обработки
+    /// Обновить процессор через замыкание (безопасно для многопоточности)
+    /// 
+    /// Это единственный способ изменить состояние процессора, когда движок запущен.
+    /// Замыкание выполняется в контексте потока обработки.
+    pub fn update_processor<F>(&self, f: F) -> IoResult<()>
+    where
+        F: FnOnce(&mut P) + Send + 'static,
+    {
+        self.command_tx.send(ProcessorCommand::Update(Box::new(f)))
+            .map_err(|e| IoError::Backend(e.to_string()))?;
+        Ok(())
+    }
+    
+    /// Отправить команду изменения параметра в поток обработки (устаревший метод)
+    #[deprecated(since = "0.2.0", note = "use update_processor instead")]
     pub fn update_parameter<F>(&self, f: F) -> IoResult<()>
     where
         F: FnOnce(&mut P) + Send + 'static,
     {
-        // Здесь должна быть реализация через каналы
-        // Для простоты пока заглушка
-        Ok(())
+        self.update_processor(f)
     }
-}  
+}
+
+impl<B, P> Drop for AudioEngine<B, P>
+where
+    B: AudioBackend + 'static,
+    P: AudioProcessor + 'static,
+{
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
