@@ -1,56 +1,56 @@
-use kama_core::dsp::SineOscillator;
-use kama_core::AudioNode;
 use kama_io::{
-    AudioConfig, AudioEngine, AudioProcessor,
-    BackendFactory, BackendType,
-    AudioBackend,  // <-- ВАЖНО: импортируем трейт AudioBackend
-    CpalBackend, NullBackend
+    AudioConfig, AudioEngine, AudioBackend,  // <-- ДОБАВЛЯЕМ AudioBackend
+    processor::SineProcessor,
 };
-use std::sync::Arc;
-use parking_lot::RwLock;
 
-struct SineProcessor {
-    oscillator: SineOscillator,
-    sample_rate: Arc<RwLock<f32>>,
-    position: usize,
-}
+#[cfg(feature = "cpal")]
+use kama_io::CpalBackend;
 
-impl SineProcessor {
-    fn new(sample_rate: f32) -> Self {
-        Self {
-            oscillator: SineOscillator::new(440.0),
-            sample_rate: Arc::new(RwLock::new(sample_rate)),
-            position: 0,
-        }
-    }
-}
+#[cfg(feature = "alsa")]
+use kama_io::AlsaBackend;
 
-impl AudioProcessor for SineProcessor {
-    fn process(&mut self, _input: &[f32], output: &mut [f32]) {
-        let sample_rate = *self.sample_rate.read();
-        let mut temp = vec![0.0f32; output.len() / 2];
-        
-        // Генерируем синус через AudioNode трейт
-        let mut temp_slice = [temp.as_mut_slice()];
-        self.oscillator.process(&[], &mut temp_slice).unwrap();
-        
-        // Копируем на левый и правый каналы
-        for i in 0..temp.len() {
-            output[i * 2] = temp[i] * 0.5;
-            output[i * 2 + 1] = temp[i] * 0.5;
-        }
-        
-        self.position += temp.len();
+// Определяем тип бэкенда по умолчанию для текущей платформы
+#[cfg(all(target_os = "linux", feature = "alsa"))]
+type DefaultBackend = AlsaBackend;
+
+#[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+type DefaultBackend = CpalBackend;
+
+#[cfg(all(not(target_os = "linux"), feature = "cpal"))]
+type DefaultBackend = CpalBackend;
+
+// Если ничего не подходит, используем заглушку
+#[cfg(not(any(
+    all(target_os = "linux", feature = "alsa"),
+    all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
+    all(not(target_os = "linux"), feature = "cpal")
+)))]
+type DefaultBackend = kama_io::NullBackend;
+
+// Функция для создания бэкенда с конкретным типом
+fn create_default_backend(config: AudioConfig) -> Result<DefaultBackend, Box<dyn std::error::Error>> {
+    #[cfg(all(target_os = "linux", feature = "alsa"))]
+    {
+        Ok(DefaultBackend::new(config)?)
     }
     
-    fn reset(&mut self) {
-        self.position = 0;
-        self.oscillator.reset();
+    #[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+    {
+        Ok(DefaultBackend::new(config)?)
     }
     
-    fn set_sample_rate(&mut self, sample_rate: f32) {
-        *self.sample_rate.write() = sample_rate;
-        self.oscillator.init(sample_rate);
+    #[cfg(all(not(target_os = "linux"), feature = "cpal"))]
+    {
+        Ok(DefaultBackend::new(config)?)
+    }
+    
+    #[cfg(not(any(
+        all(target_os = "linux", feature = "alsa"),
+        all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
+        all(not(target_os = "linux"), feature = "cpal")
+    )))]
+    {
+        Ok(DefaultBackend::new(config))
     }
 }
 
@@ -63,21 +63,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_buffer_size(256)
         .with_channels(2);
     
-    println!("Available backends:");
-    for backend in BackendFactory::available_backends() {
-        println!("  - {}", backend.name());
-    }
+    println!("Audio config: {} Hz, {} samples, {} channels",
+             config.sample_rate, config.buffer_size, config.channels);
     
-    // Создаем конкретный тип бэкенда
-    #[cfg(feature = "cpal")]
-    let backend = CpalBackend::new(config.clone())?;
-    
-    #[cfg(not(feature = "cpal"))]
-    let backend = NullBackend::new(config.clone());
-    
+    // Создаем бэкенд с конкретным типом
+    let backend = create_default_backend(config.clone())?;
     println!("\nUsing backend: {}", backend.name());  // <-- теперь метод name доступен
     
-    let processor = SineProcessor::new(config.sample_rate as f32);
+    let processor = SineProcessor::new(440.0, config.sample_rate as f32);
     let mut engine = AudioEngine::new(backend, processor);
     
     println!("\nStarting audio engine...");

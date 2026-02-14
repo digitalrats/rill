@@ -24,7 +24,11 @@ jack = { version = "0.10", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
-default = ["cpal","examples"]
+# На Linux ALSA по умолчанию, на других платформах CPAL
+default = ["examples", "default-backend"]
+
+default-backend = []
+examples = []
 
 # Бэкенды
 cpal = ["dep:cpal"]
@@ -33,8 +37,7 @@ pipewire = ["dep:pipewire"]
 jack = ["dep:jack"]
 all-backends = ["cpal", "alsa", "pipewire", "jack"]
 
-# Процессоры (feature флаги)
-examples = []  # <-- Добавлено определение features
+# Процессоры
 granular = []  # Для гранулярного синтеза
 debug = []     # Для отладочных процессоров
 

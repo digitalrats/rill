@@ -1,16 +1,66 @@
-//! Пример полной интеграции kama-io с AudioGraph через GraphProcessor
 
 use kama_core::{
-    AudioGraph, AudioNode,
+    AudioGraph,
     dsp::{BiquadFilter, BiquadType, DelayLine},
     node::GainNode,
     graph::PortId,
     param::ParamValue,
 };
 use kama_io::{
-    AudioConfig, AudioEngine, AudioBackend,
-    CpalBackend, NullBackend, GraphProcessor,
+    AudioConfig, AudioEngine, AudioBackend,  // <-- ДОБАВЛЯЕМ AudioBackend
+    GraphProcessor,
 };
+
+#[cfg(feature = "cpal")]
+use kama_io::CpalBackend;
+
+#[cfg(feature = "alsa")]
+use kama_io::AlsaBackend;
+
+// Определяем тип бэкенда по умолчанию для текущей платформы
+#[cfg(all(target_os = "linux", feature = "alsa"))]
+type DefaultBackend = AlsaBackend;
+
+#[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+type DefaultBackend = CpalBackend;
+
+#[cfg(all(not(target_os = "linux"), feature = "cpal"))]
+type DefaultBackend = CpalBackend;
+
+// Если ничего не подходит, используем заглушку
+#[cfg(not(any(
+    all(target_os = "linux", feature = "alsa"),
+    all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
+    all(not(target_os = "linux"), feature = "cpal")
+)))]
+type DefaultBackend = kama_io::NullBackend;
+
+// Функция для создания бэкенда с конкретным типом
+fn create_default_backend(config: AudioConfig) -> Result<DefaultBackend, Box<dyn std::error::Error>> {
+    #[cfg(all(target_os = "linux", feature = "alsa"))]
+    {
+        Ok(DefaultBackend::new(config)?)
+    }
+    
+    #[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+    {
+        Ok(DefaultBackend::new(config)?)
+    }
+    
+    #[cfg(all(not(target_os = "linux"), feature = "cpal"))]
+    {
+        Ok(DefaultBackend::new(config)?)
+    }
+    
+    #[cfg(not(any(
+        all(target_os = "linux", feature = "alsa"),
+        all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
+        all(not(target_os = "linux"), feature = "cpal")
+    )))]
+    {
+        Ok(DefaultBackend::new(config))
+    }
+}
 
 fn create_audio_graph(sample_rate: f32) -> (AudioGraph, kama_core::graph::NodeId, kama_core::graph::NodeId) {
     let mut graph = AudioGraph::new(sample_rate);
@@ -75,7 +125,8 @@ fn create_audio_graph(sample_rate: f32) -> (AudioGraph, kama_core::graph::NodeId
     (graph, input_id, output_id)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Kama IO + AudioGraph Integration via GraphProcessor ===\n");
     
     let config = AudioConfig::default()
@@ -96,12 +147,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Создаем процессор на основе графа
     let processor = GraphProcessor::new(graph, Some(input_id), Some(output_id));
     
-    // Создаем бэкенд
-    #[cfg(feature = "cpal")]
-    let backend = CpalBackend::new(config.clone())?;
-    
-    #[cfg(not(feature = "cpal"))]
-    let backend = NullBackend::new(config.clone());
+    // Создаем бэкенд с конкретным типом
+    let backend = create_default_backend(config.clone())?;
     
     println!("Using backend: {}", backend.name());
     
@@ -117,7 +164,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..6 {
         println!("\n--- Шаг {} ---", i + 1);
         
-        // Используем update_processor для безопасного изменения
         match i {
             0 => {
                 println!("Изменение частоты среза фильтра на 500 Hz");
@@ -135,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Изменение обратной связи на 0.5");
                 engine.update_processor(|proc: &mut GraphProcessor| {
                     proc.with_graph(|graph: &mut AudioGraph| {
-                        // ИСПРАВЛЕНО: собираем ID узлов в вектор
+                        // Собираем ID узлов в вектор для избежания проблем с заимствованием
                         let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {
@@ -156,7 +202,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Изменение выходного усиления на 1.2");
                 engine.update_processor(|proc: &mut GraphProcessor| {
                     proc.with_graph(|graph: &mut AudioGraph| {
-                        // ИСПРАВЛЕНО: собираем ID узлов в вектор
                         let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {
@@ -190,7 +235,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         // Сбрасываем gain узлы
-                        // ИСПРАВЛЕНО: собираем ID узлов в вектор
                         let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {
@@ -221,7 +265,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = proc.set_node_param::<DelayLine>("delay", ParamValue::Float(0.8));
                     
                     proc.with_graph(|graph: &mut AudioGraph| {
-                        // ИСПРАВЛЕНО: собираем ID узлов в вектор
                         let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {

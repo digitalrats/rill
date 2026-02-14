@@ -16,11 +16,62 @@ use kama_core::{
 use kama_buffers::{MultiHeadBuffer, ReadMode, BufferHead};
 use kama_io::{
     AudioConfig, AudioEngine, AudioBackend,
-    CpalBackend, NullBackend, GraphProcessor,
+    GraphProcessor, NullBackend,
 };
 use std::f32::consts::PI;
 use std::sync::Arc;
 use parking_lot::RwLock;
+
+#[cfg(feature = "cpal")]
+use kama_io::CpalBackend;
+
+#[cfg(feature = "alsa")]
+use kama_io::AlsaBackend;
+
+// Определяем тип бэкенда по умолчанию для текущей платформы
+#[cfg(all(target_os = "linux", feature = "alsa"))]
+type DefaultBackend = AlsaBackend;
+
+#[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+type DefaultBackend = CpalBackend;
+
+#[cfg(all(not(target_os = "linux"), feature = "cpal"))]
+type DefaultBackend = CpalBackend;
+
+// Если ничего не подходит, используем заглушку
+#[cfg(not(any(
+    all(target_os = "linux", feature = "alsa"),
+    all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
+    all(not(target_os = "linux"), feature = "cpal")
+)))]
+type DefaultBackend = NullBackend;
+
+// Функция для создания бэкенда с конкретным типом
+fn create_default_backend(config: AudioConfig) -> Result<DefaultBackend, Box<dyn std::error::Error>> {
+    #[cfg(all(target_os = "linux", feature = "alsa"))]
+    {
+        Ok(DefaultBackend::new(config)?)
+    }
+    
+    #[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+    {
+        Ok(DefaultBackend::new(config)?)
+    }
+    
+    #[cfg(all(not(target_os = "linux"), feature = "cpal"))]
+    {
+        Ok(DefaultBackend::new(config)?)
+    }
+    
+    #[cfg(not(any(
+        all(target_os = "linux", feature = "alsa"),
+        all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
+        all(not(target_os = "linux"), feature = "cpal")
+    )))]
+    {
+        Ok(DefaultBackend::new(config))
+    }
+}
 
 /// Генерация тестового сэмпла (колокольчик)
 fn generate_bell_sample(duration_seconds: f32, sample_rate: f32) -> Vec<f32> {
@@ -240,7 +291,7 @@ impl GranularState {
                     }
                     "grain_size" => {
                         if let ParamValue::Int(v) = value {
-                            if let ReadMode::Granular { grain_size, grain_spacing, randomization } = &mut head.read_mode {
+                            if let ReadMode::Granular { grain_size, grain_spacing: _, randomization: _ } = &mut head.read_mode {
                                 *grain_size = v as usize;
                             }
                         }
@@ -253,7 +304,80 @@ impl GranularState {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Процессор для гранулярного синтеза
+struct GranularProcessor {
+    graph: AudioGraph,
+    input_id: kama_core::graph::NodeId,
+    output_id: kama_core::graph::NodeId,
+    state: Arc<RwLock<GranularState>>,
+    temp_input: Vec<f32>,
+    temp_output: Vec<f32>,
+}
+
+impl GranularProcessor {
+    fn new(
+        graph: AudioGraph,
+        input_id: kama_core::graph::NodeId,
+        output_id: kama_core::graph::NodeId,
+        state: Arc<RwLock<GranularState>>,
+    ) -> Self {
+        Self {
+            graph,
+            input_id,
+            output_id,
+            state,
+            temp_input: Vec::new(),
+            temp_output: Vec::new(),
+        }
+    }
+}
+
+impl kama_io::AudioProcessor for GranularProcessor {
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        let num_samples = input.len();
+        
+        // Подготавливаем временные буферы
+        if self.temp_input.len() != num_samples {
+            self.temp_input.resize(num_samples, 0.0);
+            self.temp_output.resize(num_samples, 0.0);
+        }
+        
+        // Получаем доступ к гранулярному буферу
+        let mut state = self.state.write();
+        
+        // Обрабатываем через гранулярный буфер
+        let buffer_inputs: &[&[f32]] = &[];
+        let mut buffer_outputs = [&mut self.temp_input[..]];
+        
+        // Генерируем звук из буфера
+        let _ = state.buffer.process(buffer_inputs, &mut buffer_outputs);
+        
+        // Подаем сгенерированный звук на вход графа
+        if let Some(node) = self.graph.get_node_mut(self.input_id) {
+            let input_slices = [self.temp_input.as_slice()];
+            let mut output_slices = [self.temp_output.as_mut_slice()];
+            let _ = node.process(&input_slices, &mut output_slices);
+        }
+        
+        // Обрабатываем через весь граф
+        let graph_input = [self.temp_output.as_slice()];
+        let mut graph_output = [output];
+        let _ = self.graph.process(&graph_input, &mut graph_output);
+    }
+    
+    fn reset(&mut self) {
+        self.graph.reset();
+        let mut state = self.state.write();
+        state.buffer.reset();
+    }
+    
+    fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.graph.init_all(sample_rate);
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Kama IO + Granular Buffer Demo ===\n");
     
     let sample_rate = 44100.0;
@@ -279,87 +403,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Создаем граф обработки
     let (graph, input_id, output_id) = create_processing_graph(sample_rate);
     
-    // Создаем процессор, который будет использовать гранулярный буфер
-    struct GranularProcessor {
-        graph: AudioGraph,
-        input_id: kama_core::graph::NodeId,
-        output_id: kama_core::graph::NodeId,
-        state: Arc<RwLock<GranularState>>,
-        temp_input: Vec<f32>,
-        temp_output: Vec<f32>,
-    }
-    
-    impl GranularProcessor {
-        fn new(
-            graph: AudioGraph,
-            input_id: kama_core::graph::NodeId,
-            output_id: kama_core::graph::NodeId,
-            state: Arc<RwLock<GranularState>>,
-        ) -> Self {
-            Self {
-                graph,
-                input_id,
-                output_id,
-                state,
-                temp_input: Vec::new(),
-                temp_output: Vec::new(),
-            }
-        }
-    }
-    
-    impl kama_io::AudioProcessor for GranularProcessor {
-        fn process(&mut self, input: &[f32], output: &mut [f32]) {
-            let num_samples = input.len();
-            
-            // Подготавливаем временные буферы
-            if self.temp_input.len() != num_samples {
-                self.temp_input.resize(num_samples, 0.0);
-                self.temp_output.resize(num_samples, 0.0);
-            }
-            
-            // Получаем доступ к гранулярному буферу
-            let mut state = self.state.write();
-            
-            // Обрабатываем через гранулярный буфер
-            // Создаем входные срезы (пустые, так как буфер сам генерирует звук)
-            let buffer_inputs: &[&[f32]] = &[];
-            let mut buffer_outputs = [&mut self.temp_input[..]];
-            
-            // Генерируем звук из буфера
-            let _ = state.buffer.process(buffer_inputs, &mut buffer_outputs);
-            
-            // Подаем сгенерированный звук на вход графа
-            if let Some(node) = self.graph.get_node_mut(self.input_id) {
-                let input_slices = [self.temp_input.as_slice()];
-                let mut output_slices = [self.temp_output.as_mut_slice()];
-                let _ = node.process(&input_slices, &mut output_slices);
-            }
-            
-            // Обрабатываем через весь граф
-            let graph_input = [self.temp_output.as_slice()];
-            let mut graph_output = [output];
-            let _ = self.graph.process(&graph_input, &mut graph_output);
-        }
-        
-        fn reset(&mut self) {
-            self.graph.reset();
-            let mut state = self.state.write();
-            state.buffer.reset();
-        }
-        
-        fn set_sample_rate(&mut self, sample_rate: f32) {
-            self.graph.init_all(sample_rate);
-        }
-    }
-    
+    // Создаем процессор
     let processor = GranularProcessor::new(graph, input_id, output_id, granular_state.clone());
     
     // Создаем бэкенд
-    #[cfg(feature = "cpal")]
-    let backend = CpalBackend::new(config.clone())?;
-    
-    #[cfg(not(feature = "cpal"))]
-    let backend = NullBackend::new(config.clone());
+    let backend = create_default_backend(config.clone())?;
     
     println!("\nUsing backend: {}", backend.name());
     
