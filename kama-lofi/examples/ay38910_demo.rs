@@ -1,4 +1,4 @@
-// Добавьте этот пример в kama-lofi/examples/ay38910_demo.rs
+//! Демонстрация AY-3-8910 эмулятора
 
 use kama_lofi::emulators::Ay38910Emulator;
 use kama_core::AudioNode;
@@ -62,18 +62,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .len());
     
     println!("\nРегистры AY-3-8910:");
-    println!("  Канал A: период={}, громкость={}, огибающая={}", 
-             ay.channels[0].tone_period, 
-             ay.channels[0].volume,
-             ay.channels[0].use_envelope);
-    println!("  Канал B: период={}, громкость={}, огибающая={}",
-             ay.channels[1].tone_period,
-             ay.channels[1].volume,
-             ay.channels[1].use_envelope);
-    println!("  Канал C: период={}, громкость={}, огибающая={}",
-             ay.channels[2].tone_period,
-             ay.channels[2].volume,
-             ay.channels[2].use_envelope);
+    // Не пытаемся получить доступ к приватным полям
+    println!("  Используются стандартные настройки чипа");
     
     Ok(())
 }

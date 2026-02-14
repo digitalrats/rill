@@ -10,10 +10,15 @@ use serde::{Serialize, Deserialize};
 use parking_lot::RwLock;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
-use kama_core::{AudioNode, ParamValue, NodeMetadata, NodeCategory, AudioError, AudioResult};
+use kama_core::{
+    AudioNode, 
+    AudioError,
+    param::{ParamValue, ParamType},
+    node::{NodeMetadata, NodeCategory},
+};
 
-// Re-export типов
-pub use kama_core::param::{ParamValue as CoreParamValue, ParamType};
+// Re-export типов (убрали дублирующийся ParamType)
+pub use kama_core::param::ParamValue as CoreParamValue;
 
 // --- Основные типы WDF ---
 
@@ -93,6 +98,10 @@ impl Resistor {
             current: 0.0,
         }
     }
+    
+    pub fn resistance(&self) -> f64 {
+        self.resistance
+    }
 }
 
 impl WdfElement for Resistor {
@@ -100,7 +109,7 @@ impl WdfElement for Resistor {
         self.port_resistance
     }
     
-    fn process_incident(&mut self, a: f64) -> f64 {
+    fn process_incident(&mut self, _a: f64) -> f64 {
         // Для резистора: b = 0 (полное поглощение)
         0.0
     }
@@ -149,6 +158,10 @@ impl Capacitor {
             current: 0.0,
             state: 0.0,
         }
+    }
+    
+    pub fn capacitance(&self) -> f64 {
+        self.capacitance
     }
     
     pub fn set_capacitance(&mut self, capacitance: f64) {
@@ -225,7 +238,7 @@ impl WdfElement for Inductor {
         self.port_resistance
     }
     
-    fn process_incident(&mut self, a: f64) -> f64 {
+    fn process_incident(&mut self, _a: f64) -> f64 {
         // Для индуктивности: b = -state
         -self.state
     }
@@ -285,6 +298,14 @@ impl Diode {
             current: 0.0,
             last_b: 0.0,
         }
+    }
+    
+    pub fn saturation_current(&self) -> f64 {
+        self.saturation_current
+    }
+    
+    pub fn thermal_voltage(&self) -> f64 {
+        self.thermal_voltage
     }
     
     /// Уравнение диода Шокли
@@ -371,10 +392,19 @@ impl WdfElement for Diode {
 // --- Адаптеры соединений ---
 
 /// Серийный адаптер (последовательное соединение)
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SeriesAdapter {
     elements: Vec<Arc<RwLock<dyn WdfElement>>>,
     port_resistance: f64,
+}
+
+impl std::fmt::Debug for SeriesAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeriesAdapter")
+            .field("num_elements", &self.elements.len())
+            .field("port_resistance", &self.port_resistance)
+            .finish()
+    }
 }
 
 impl SeriesAdapter {
@@ -442,10 +472,19 @@ impl WdfElement for SeriesAdapter {
 }
 
 /// Параллельный адаптер
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ParallelAdapter {
     elements: Vec<Arc<RwLock<dyn WdfElement>>>,
     port_resistance: f64,
+}
+
+impl std::fmt::Debug for ParallelAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelAdapter")
+            .field("num_elements", &self.elements.len())
+            .field("port_resistance", &self.port_resistance)
+            .finish()
+    }
 }
 
 impl ParallelAdapter {
@@ -528,12 +567,12 @@ impl WdfElement for ParallelAdapter {
 // --- Модели классических аналоговых устройств ---
 
 /// Moog ladder filter (на основе модели Huovilainen)
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MoogLadderFilter {
-    sample_rate: f64,
-    cutoff: f64,
-    resonance: f64,
-    drive: f64,
+    pub sample_rate: f64,
+    pub cutoff: f64,
+    pub resonance: f64,
+    pub drive: f64,
     
     // 4 ступени ladder
     stages: [Capacitor; 4],
@@ -544,7 +583,6 @@ pub struct MoogLadderFilter {
     output_voltage: f64,
     stage_outputs: [f64; 4],
     
-    // WDF элементы
     resistors: Vec<Resistor>,
     adapters: Vec<SeriesAdapter>,
 }
@@ -689,7 +727,7 @@ impl OperationalAmplifier {
 /// Модель кассетного магнитофона (Sony TC-260 style)
 #[derive(Debug, Clone)]
 pub struct CassetteDeckModel {
-    sample_rate: f64,
+    pub sample_rate: f64,
     
     // Аналоговые компоненты
     input_amp: OperationalAmplifier,
@@ -700,16 +738,16 @@ pub struct CassetteDeckModel {
     output_amp: OperationalAmplifier,
     
     // Параметры ленты
-    tape_speed: f64,            // см/сек
+    pub tape_speed: f64,            // см/сек
     tape_width: f64,            // мм
-    bias_level: f64,            // Уровень подмагничивания
-    noise_floor: f64,           // Уровень шума ленты
+    pub bias_level: f64,            // Уровень подмагничивания
+    pub noise_floor: f64,           // Уровень шума ленты
     
     // Нелинейности
     hysteresis: f64,            // Гистерезис
     saturation: f64,            // Насыщение
     print_through: f64,         // Просачивание
-    wow_flutter: f64,           // Wow & flutter
+    pub wow_flutter: f64,           // Wow & flutter
     
     // Состояния
     tape_position: f64,
@@ -812,8 +850,8 @@ impl CassetteDeckModel {
         // Нелинейность ленты
         let recorded = self.tape_nonlinearity(record_signal);
         
-        // Модель головки записи
-        let head_current = recorded / self.record_head.port_resistance();
+        // Модель головки записи (упрощённо)
+        let _head_current = recorded / self.record_head.port_resistance();
         
         // Обновляем позицию ленты
         self.tape_position += self.tape_speed * dt;
@@ -946,11 +984,9 @@ impl AudioNode for WdfMoogFilterNode {
     
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
-        // Можно пересоздать фильтр с новым sample rate
     }
     
     fn reset(&mut self) {
-        // Сброс состояний фильтра
         self.temp_buffer.clear();
     }
     
@@ -1073,12 +1109,10 @@ impl AudioNode for CassetteDeckNode {
     
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
-        // Можно пересоздать модель
     }
     
     fn reset(&mut self) {
         self.temp_buffer.clear();
-        // Сброс состояний деки
     }
     
     fn num_inputs(&self) -> usize { 1 }
@@ -1137,7 +1171,6 @@ impl AudioNode for CassetteDeckNode {
 
 pub mod analysis {
     use super::*;
-    use ndarray::{Array1, Array2};
     
     /// Анализ частотной характеристики
     pub fn frequency_response(
@@ -1150,7 +1183,7 @@ pub mod analysis {
         for &freq in frequencies {
             // Создаем тестовый сигнал на этой частоте
             let omega = 2.0 * std::f64::consts::PI * freq;
-            let test_signal = Complex64::new(0.0, omega / sample_rate).exp();
+            let _test_signal = Complex64::new(0.0, omega / sample_rate).exp();
             
             // Пропускаем через систему (упрощённо)
             // В реальности нужна полная симуляция
@@ -1199,9 +1232,10 @@ pub mod analysis {
         // Анализ FFT для вычисления THD
         // (упрощённая реализация)
         let fundamental_amplitude = amplitude;
+        
         let harmonic_amplitude = output.iter()
             .map(|&x| x.abs())
-            .fold(0.0, |a, b| a.max(b)) - fundamental_amplitude;
+            .fold(0.0_f64, |a, b| a.max(b)) - fundamental_amplitude;
         
         (harmonic_amplitude / fundamental_amplitude).abs()
     }
@@ -1268,7 +1302,7 @@ pub mod lofi_integration {
     }
 }
 
-// --- Примеры использования ---
+// --- Тесты ---
 
 #[cfg(test)]
 mod tests {
@@ -1291,7 +1325,7 @@ mod tests {
     fn test_capacitor_wdf() {
         let sample_rate = 44100.0;
         let capacitance = 1e-6; // 1 μF
-        let mut capacitor = Capacitor::new(capacitance, sample_rate);
+        let capacitor = Capacitor::new(capacitance, sample_rate);
         
         let expected_r = 1.0 / (sample_rate * 2.0 * capacitance);
         assert!((capacitor.port_resistance() - expected_r).abs() < 1e-10);
@@ -1364,12 +1398,12 @@ mod tests {
     fn test_series_adapter() {
         let sample_rate = 44100.0;
         
-        // Создаем RC цепь
-        let resistor = Arc::new(RwLock::new(Resistor::new(1000.0) as dyn WdfElement));
-        let capacitor = Arc::new(RwLock::new(Capacitor::new(1e-6, sample_rate) as dyn WdfElement));
+        // ИСПРАВЛЕНО: явно приводим к типу Arc<RwLock<dyn WdfElement>>
+        let resistor: Arc<RwLock<dyn WdfElement>> = Arc::new(RwLock::new(Resistor::new(1000.0)));
+        let capacitor: Arc<RwLock<dyn WdfElement>> = Arc::new(RwLock::new(Capacitor::new(1e-6, sample_rate)));
         
         let elements = vec![resistor.clone(), capacitor.clone()];
-        let mut adapter = SeriesAdapter::new(elements);
+        let adapter = SeriesAdapter::new(elements);
         
         let total_r = adapter.port_resistance();
         let r1 = resistor.read().port_resistance();

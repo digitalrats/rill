@@ -4,10 +4,17 @@
 
 mod error;
 mod config;
-mod dsp;
 mod lofi_processor;
+mod node_params;
+
+// В kama-lofi/src/lib.rs, после остальных реэкспортов:
+pub use dsp::*;
+pub use utils::*;
+
+pub mod dsp;
 pub mod emulators;
 pub mod utils;
+pub use node_params::*;
 
 // Реэкспорт основных типов
 pub use error::{LofiError, LofiResult};

@@ -9,11 +9,13 @@ license = "MIT OR Apache-2.0"
 kama-core = { path = "../kama-core" }
 kama-lofi = { path = "../kama-lofi", optional = true }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"  # <-- ДОБАВИТЬ для примеров
 parking_lot = "0.12"
 nalgebra = { version = "0.32", features = ["sparse"] }
 num-complex = "0.4"
 ndarray = { version = "0.15", features = ["rayon"] }
-rayon = { version = "1.7", optional = true }  # ← КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: добавили optional = true
+rand = "0.8"  # <-- ДОБАВИТЬ (уже используется в коде)
+rayon = { version = "1.7", optional = true }
 
 [dev-dependencies]
 eframe = { version = "0.24" }
@@ -22,5 +24,5 @@ plotly = { version = "0.8" }
 
 [features]
 default = []
-lofi = ["kama-lofi"]  # Комбинация WDF + lo-fi
-parallel = ["rayon"]  # Теперь rayon - опциональная зависимость
+lofi = ["kama-lofi"]
+parallel = ["rayon"]

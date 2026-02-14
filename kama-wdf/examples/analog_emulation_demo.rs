@@ -3,6 +3,9 @@
 use kama_wdf::*;
 use kama_core::{AudioGraph, node::GainNode};
 use std::f32::consts::PI;
+use std::sync::Arc;
+use parking_lot::RwLock;
+use num_complex::Complex64;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Analog Circuit Emulation with WDF ===\n");
@@ -100,28 +103,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Резистор
     let resistor = Resistor::new(1000.0);
     println!("  - Resistor: R = {:.1}Ω, port R = {:.1}Ω", 
-             resistor.resistance, resistor.port_resistance());
+             resistor.resistance(), resistor.port_resistance());
     
     // Конденсатор
     let capacitor = Capacitor::new(1e-6, sample_rate);
     println!("  - Capacitor: C = {:.2}μF, port R = {:.1}Ω", 
-             capacitor.capacitance * 1e6, capacitor.port_resistance());
+             capacitor.capacitance() * 1e6, capacitor.port_resistance());
     
     // Диод (1N4148 style)
     let diode = Diode::new(1e-9, 1.0, 300.0);
     println!("  - Diode: Is = {:.1}nA, Vt = {:.2}mV", 
-             diode.saturation_current * 1e9, diode.thermal_voltage * 1000.0);
+             diode.saturation_current() * 1e9, diode.thermal_voltage() * 1000.0);
     
     // 7. Анализ схемы
     println!("\nCircuit Analysis:");
     
-    // Простая RC цепь
-    let rc_resistor = Arc::new(parking_lot::RwLock::new(
-        Resistor::new(1000.0) as dyn WdfElement
-    ));
-    let rc_capacitor = Arc::new(parking_lot::RwLock::new(
-        Capacitor::new(1e-6, sample_rate) as dyn WdfElement
-    ));
+    // Простая RC цепь - ИСПРАВЛЕНО: явное указание типов
+    let rc_resistor: Arc<RwLock<dyn WdfElement>> = Arc::new(RwLock::new(Resistor::new(1000.0)));
+    let rc_capacitor: Arc<RwLock<dyn WdfElement>> = Arc::new(RwLock::new(Capacitor::new(1e-6, sample_rate)));
     
     let rc_elements = vec![rc_resistor.clone(), rc_capacitor.clone()];
     

@@ -57,7 +57,7 @@ pub struct LfoState {
     pub envelope_state: Option<EnvelopeState>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum LfoAction {
     #[default]
     None,

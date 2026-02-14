@@ -1,6 +1,9 @@
 //! Демонстрация chiptune и lo-fi эмуляции
 
-use kama_lofi::*;
+use kama_lofi::{
+    emulators::NesEmulator,
+    LofiConfig, LofiProcessor, ClassicSystem, HardwareEmulation
+};
 use kama_core::{AudioGraph, node::GainNode};
 use std::f32::consts::PI;
 
@@ -14,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating classic system emulators:");
     
     // NES эмулятор
-    let nes = emulators::NesEmulator::new(44100.0);
+    let nes = NesEmulator::new(44100.0);
     let nes_id = graph.add_node(Box::new(nes));
     println!("  - NES Emulator: ID {:?}", nes_id);
     
@@ -62,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test_sample = 0.75f32;
     
     for &bits in &[16, 12, 8, 4] {
-        let quantized = dsp::quantize(test_sample, bits, false);
+        let quantized = kama_lofi::dsp::quantize(test_sample, bits, false);
         let error = (test_sample - quantized).abs();
         let snr_db = 20.0 * (test_sample / error.max(1e-6)).log10();
         
@@ -81,20 +84,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     
-    // 8-bit обработка
-    let bitcrushed = lofi_utils::create_8bit_sound(&test_signal, 8);
+    let bitcrushed = kama_lofi::utils::create_8bit_sound(&test_signal, 8);
     println!("  - 8-bit bitcrushing applied");
     
-    // Добавляем винтажный шум
-    let with_noise = lofi_utils::add_vintage_noise(&bitcrushed, 0.02);
+    let with_noise = kama_lofi::utils::add_vintage_noise(&bitcrushed, 0.02);
     println!("  - Vintage noise added");
     
-    // Эмуляция деградации ленты
-    let tape_degraded = lofi_utils::add_tape_degradation(&with_noise, 0.3);
+    let tape_degraded = kama_lofi::utils::add_tape_degradation(&with_noise, 0.3);
     println!("  - Tape degradation simulated");
     
-    // Радио эффект
-    let radio_effect = lofi_utils::create_radio_effect(&tape_degraded, 44100.0);
+    let radio_effect = kama_lofi::utils::create_radio_effect(&tape_degraded, 44100.0);
     println!("  - Old radio effect applied");
     
     // 6. Анализ результатов
@@ -102,14 +101,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let analyze_signal = |name: &str, signal: &[f32]| {
         let max = signal.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
-        let min = signal.iter().fold(0.0f32, |a, &b| a.min(b.abs()));
         let unique_values = signal.iter()
             .map(|&x| (x * 256.0).round() as i32)
             .collect::<std::collections::HashSet<_>>()
             .len();
         
-        println!("  {}: max={:.3}, min={:.3}, unique≈{}", 
-                 name, max, min, unique_values);
+        println!("  {}: max={:.3}, unique≈{}", name, max, unique_values);
     };
     
     analyze_signal("Original", &test_signal);
@@ -134,9 +131,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     println!("\n=== Demo Complete ===");
-    println!("Try loading presets with:");
-    println!("  let config: LofiConfig = serde_json::from_str(&json)?;");
-    println!("  let processor = LofiProcessor::new(config);");
     
     Ok(())
 }
