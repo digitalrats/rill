@@ -23,6 +23,6 @@ tape = []  # Для комбинирования с tape saturation
 name = "chiptune_demo"
 required-features = []
 
-[[example]]
-name = "sampler_demo"
-required-features = ["buffers"]
+#[[example]]
+#name = "sampler_demo"
+#required-features = ["buffers"]

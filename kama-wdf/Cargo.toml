@@ -10,19 +10,17 @@ kama-core = { path = "../kama-core" }
 kama-lofi = { path = "../kama-lofi", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 parking_lot = "0.12"
-nalgebra = { version = "0.32", features = ["sparse"] }  # Для матричных операций
-num-complex = "0.4"  # Для комплексных чисел в анализе
-ndarray = { version = "0.15", features = ["rayon"] }  # Для численных расчетов
-rayon = "1.7"  # Параллельные вычисления
+nalgebra = { version = "0.32", features = ["sparse"] }
+num-complex = "0.4"
+ndarray = { version = "0.15", features = ["rayon"] }
+rayon = { version = "1.7", optional = true }  # ← КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: добавили optional = true
 
 [dev-dependencies]
-eframe = { version = "0.24", optional = true }
-egui = { version = "0.24", optional = true }
-plotly = { version = "0.8", optional = true }  # Для графиков Bode plot
+eframe = { version = "0.24" }
+egui = { version = "0.24" }
+plotly = { version = "0.8" }
 
 [features]
 default = []
-gui = ["eframe", "egui", "plotly"]
 lofi = ["kama-lofi"]  # Комбинация WDF + lo-fi
-parallel = ["rayon"]  # Параллельные вычисления
-
+parallel = ["rayon"]  # Теперь rayon - опциональная зависимость

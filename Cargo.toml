@@ -5,6 +5,8 @@ members = [
     "kama-buffers",
     "kama-mixer",
     "kama-hp",
+    "kama-lofi",
+    "kama-wdf"
 ]
 resolver = "2"
 

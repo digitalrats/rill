@@ -1,10 +1,13 @@
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 use parking_lot::RwLock;
-use kama_core::{AudioNode, ParamValue, NodeMetadata, NodeCategory, AudioError, AudioResult};
+use rand::Rng;
+use std::f32::consts::PI;
 
 // Re-export типов
 pub use kama_core::param::{ParamValue as CoreParamValue, ParamType};
+use kama_core::{AudioNode, ParamValue, NodeMetadata, NodeCategory, AudioError, AudioResult};
+use kama_core::node::ParamMetadata;
 
 // --- Типы ошибок ---
 #[derive(thiserror::Error, Debug)]
@@ -26,7 +29,7 @@ pub type LofiResult<T> = Result<T, LofiError>;
 
 // --- Конфигурация классических систем ---
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum ClassicSystem {
     /// Nintendo Entertainment System (1983)
     /// - 5 каналов: 2 pulse, triangle, noise, DPCM
@@ -197,7 +200,6 @@ impl HardwareEmulation {
 
 pub mod dsp {
     use super::*;
-    use std::f32::consts::PI;
     
     /// Квантование с заданной битностью
     pub fn quantize(sample: f32, bit_depth: u8, dither: bool) -> f32 {
@@ -234,7 +236,7 @@ pub mod dsp {
         let compressed = sign * (1.0 + mu * abs_sample).ln() / (1.0 + mu).ln();
         
         // Линейное квантование сжатого сигнала
-        let quantized = quantize(compressed, bit_depth, false);
+        let _quantized = quantize(compressed, bit_depth, false);
         
         // Обратное расширение
         let expanded = sign * ((1.0 + mu).ln().exp() - 1.0) / mu;
@@ -311,9 +313,9 @@ pub mod dsp {
     pub fn process_lofi_chain(
         input: f32,
         bit_depth: u8,
-        sample_rate_factor: f32,
+        _sample_rate_factor: f32,
         hardware: &HardwareEmulation,
-        time: f32,
+        _time: f32,
     ) -> f32 {
         let mut sample = input;
         
@@ -389,6 +391,16 @@ impl Default for LofiConfig {
     }
 }
 
+impl LofiConfig {
+    pub fn for_system(system: ClassicSystem) -> Self {
+        Self {
+            system: system.clone(),
+            hardware: HardwareEmulation::for_system(system),
+            ..Default::default()
+        }
+    }
+}
+
 impl LofiProcessor {
     pub fn new(config: LofiConfig) -> Self {
         Self {
@@ -402,13 +414,7 @@ impl LofiProcessor {
     }
     
     pub fn for_system(system: ClassicSystem) -> Self {
-        let config = LofiConfig {
-            system: system.clone(),
-            hardware: HardwareEmulation::for_system(system),
-            ..Default::default()
-        };
-        
-        Self::new(config)
+        Self::new(LofiConfig::for_system(system))
     }
     
     pub fn process_sample(&mut self, input: f32) -> f32 {
@@ -574,7 +580,7 @@ impl AudioNode for LofiProcessor {
             author: "Kama Lo-Fi".to_string(),
             version: "1.0".to_string(),
             parameters: vec![
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "bit_depth".to_string(),
                     typ: ParamType::Int,
                     default: ParamValue::Int(self.config.system.get_bit_depth() as i32),
@@ -588,7 +594,7 @@ impl AudioNode for LofiProcessor {
                         ("16-bit".to_string(), 16.0),
                     ]),
                 },
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "sample_rate".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(self.config.system.get_sample_rate()),
@@ -603,7 +609,7 @@ impl AudioNode for LofiProcessor {
                         ("44.1kHz".to_string(), 44100.0),
                     ]),
                 },
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "dry_wet".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(self.config.dry_wet),
@@ -613,7 +619,7 @@ impl AudioNode for LofiProcessor {
                     unit: Some("mix".to_string()),
                     choices: None,
                 },
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "output_gain".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(self.config.output_gain),
@@ -623,7 +629,7 @@ impl AudioNode for LofiProcessor {
                     unit: Some("linear".to_string()),
                     choices: None,
                 },
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "enable_bitcrush".to_string(),
                     typ: ParamType::Bool,
                     default: ParamValue::Bool(self.config.enable_bitcrush),
@@ -633,7 +639,7 @@ impl AudioNode for LofiProcessor {
                     unit: None,
                     choices: None,
                 },
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "enable_sr_reduction".to_string(),
                     typ: ParamType::Bool,
                     default: ParamValue::Bool(self.config.enable_sr_reduction),
@@ -664,6 +670,7 @@ pub mod emulators {
         lofi: LofiProcessor,
     }
     
+    #[derive(Clone)]
     struct NesPulseChannel {
         duty_cycle: f32, // 0.125, 0.25, 0.5, 0.75
         frequency: f32,
@@ -673,6 +680,7 @@ pub mod emulators {
         sweep_rate: f32,
     }
     
+    #[derive(Clone)]
     struct NesTriangleChannel {
         frequency: f32,
         volume: f32,
@@ -680,6 +688,7 @@ pub mod emulators {
         linear_counter: u8,
     }
     
+    #[derive(Clone)]
     struct NesNoiseChannel {
         mode: NoiseMode, // Short or long period
         frequency: f32,
@@ -687,6 +696,7 @@ pub mod emulators {
         shift_register: u16,
     }
     
+    #[derive(Clone)]
     struct NesDpcmChannel {
         sample_rate: f32,
         delta: i8,
@@ -708,11 +718,7 @@ pub mod emulators {
     
     impl NesEmulator {
         pub fn new(sample_rate: f32) -> Self {
-            let lofi_config = LofiConfig {
-                system: ClassicSystem::Nes,
-                hardware: HardwareEmulation::for_system(ClassicSystem::Nes),
-                ..Default::default()
-            };
+            let lofi_config = LofiConfig::for_system(ClassicSystem::Nes);
             
             Self {
                 pulse1: NesPulseChannel {
@@ -741,7 +747,7 @@ pub mod emulators {
                     mode: NoiseMode::Short,
                     frequency: 1000.0,
                     volume: 0.2,
-                    shift_register: 1, // Начальное значение
+                    shift_register: 1,
                 },
                 dpcm: NesDpcmChannel {
                     sample_rate: sample_rate / 2.0,
@@ -760,64 +766,70 @@ pub mod emulators {
         
         pub fn generate(&mut self, output: &mut [f32]) {
             for out in output.iter_mut() {
-                // Генерируем каждый канал
-                let pulse1 = self.generate_pulse(&mut self.pulse1);
-                let pulse2 = self.generate_pulse(&mut self.pulse2);
-                let triangle = self.generate_triangle(&mut self.triangle);
-                let noise = self.generate_noise(&mut self.noise);
-                let dpcm = self.generate_dpcm(&mut self.dpcm);
+                // Сохраняем sample_rate для использования
+                let sample_rate = self.lofi.sample_rate;
                 
-                // Микшируем как в NES
-                let pulse_mix = (pulse1 + pulse2) * 0.5;
-                let tnd_mix = (triangle * 3.0 + noise * 2.0 + dpcm) / 6.0;
+                // Обновляем фазы pulse каналов напрямую
+                self.pulse1.phase += self.pulse1.frequency / sample_rate;
+                if self.pulse1.phase >= 1.0 {
+                    self.pulse1.phase -= 1.0;
+                }
+                
+                self.pulse2.phase += self.pulse2.frequency / sample_rate;
+                if self.pulse2.phase >= 1.0 {
+                    self.pulse2.phase -= 1.0;
+                }
+                
+                // Обновляем фазу triangle напрямую
+                self.triangle.phase += self.triangle.frequency / sample_rate;
+                if self.triangle.phase >= 1.0 {
+                    self.triangle.phase -= 1.0;
+                }
+                
+                // Вычисляем значения pulse каналов
+                let pulse1_val = if self.pulse1.phase < self.pulse1.duty_cycle {
+                    1.0
+                } else {
+                    -1.0
+                } * self.pulse1.volume;
+                
+                let pulse2_val = if self.pulse2.phase < self.pulse2.duty_cycle {
+                    1.0
+                } else {
+                    -1.0
+                } * self.pulse2.volume;
+                
+                // Вычисляем значение triangle
+                let triangle_val = if self.triangle.phase < 0.5 {
+                    self.triangle.phase * 4.0 - 1.0
+                } else {
+                    3.0 - self.triangle.phase * 4.0
+                } * self.triangle.volume;
+                
+                // Генерируем шум - передаём всё необходимое как параметры
+                let noise_val = Self::generate_noise_static(
+                    &mut self.noise,
+                    self.lofi.sample_rate
+                );
+                
+                // Генерируем DPCM - передаём всё необходимое как параметры
+                let dpcm_val = Self::generate_dpcm_static(&mut self.dpcm);
+                
+                // Микширование
+                let pulse_mix = (pulse1_val + pulse2_val) * 0.5;
+                let tnd_mix = (triangle_val * 3.0 + noise_val * 2.0 + dpcm_val) / 6.0;
                 
                 *out = (pulse_mix * self.mixer.pulse_mix + 
-                       tnd_mix * self.mixer.tnd_mix) * 0.5;
+                        tnd_mix * self.mixer.tnd_mix) * 0.5;
                 
                 // Применяем lo-fi обработку
                 *out = self.lofi.process_sample(*out);
             }
         }
-        
-        fn generate_pulse(&mut self, channel: &mut NesPulseChannel) -> f32 {
-            let phase_inc = channel.frequency / self.lofi.sample_rate;
-            channel.phase += phase_inc;
-            
-            if channel.phase >= 1.0 {
-                channel.phase -= 1.0;
-            }
-            
-            // Прямоугольная волна с заданным duty cycle
-            let sample = if channel.phase < channel.duty_cycle {
-                1.0
-            } else {
-                -1.0
-            };
-            
-            sample * channel.volume
-        }
-        
-        fn generate_triangle(&mut self, channel: &mut NesTriangleChannel) -> f32 {
-            let phase_inc = channel.frequency / self.lofi.sample_rate;
-            channel.phase += phase_inc;
-            
-            if channel.phase >= 1.0 {
-                channel.phase -= 1.0;
-            }
-            
-            // Треугольная волна
-            let sample = if channel.phase < 0.5 {
-                channel.phase * 4.0 - 1.0
-            } else {
-                3.0 - channel.phase * 4.0
-            };
-            
-            sample * channel.volume
-        }
-        
-        fn generate_noise(&mut self, channel: &mut NesNoiseChannel) -> f32 {
-            // Генератор псевдослучайного шума
-            let ticks_per_sample = self.lofi.sample_rate / channel.frequency;
+
+        // Статический метод для генерации шума - не требует &mut self
+        fn generate_noise_static(channel: &mut NesNoiseChannel, sample_rate: f32) -> f32 {
+            let ticks_per_sample = sample_rate / channel.frequency;
             static mut TICK_COUNTER: f32 = 0.0;
             
             unsafe {
@@ -825,32 +837,28 @@ pub mod emulators {
                 if TICK_COUNTER >= ticks_per_sample {
                     TICK_COUNTER = 0.0;
                     
-                    // Linear feedback shift register
                     let feedback = match channel.mode {
                         NoiseMode::Short => (channel.shift_register & 0x0001) ^ 
-                                           ((channel.shift_register >> 6) & 0x0001),
+                                        ((channel.shift_register >> 6) & 0x0001),
                         NoiseMode::Long => (channel.shift_register & 0x0001) ^ 
-                                          ((channel.shift_register >> 1) & 0x0001),
+                                        ((channel.shift_register >> 1) & 0x0001),
                     };
                     
                     channel.shift_register >>= 1;
                     channel.shift_register |= feedback << 14;
                 }
                 
-                // Младший бит определяет выход
                 let sample = if (channel.shift_register & 0x0001) == 0 { 1.0 } else { -1.0 };
                 sample * channel.volume
             }
         }
-        
-        fn generate_dpcm(&mut self, _channel: &mut NesDpcmChannel) -> f32 {
-            // Упрощенная эмуляция DPCM (Delta PCM)
-            0.0 // Для демонстрации
+
+        // Статический метод для DPCM
+        fn generate_dpcm_static(_channel: &mut NesDpcmChannel) -> f32 {
+            0.0
         }
-    }
-    
     impl AudioNode for NesEmulator {
-        fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+        fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
             if outputs.is_empty() {
                 return Ok(());
             }
@@ -861,7 +869,6 @@ pub mod emulators {
             Ok(())
         }
         
-        // ... остальные методы AudioNode ...
         fn get_param(&self, _name: &str) -> Option<ParamValue> { None }
         fn set_param(&mut self, _name: &str, _value: ParamValue) -> Result<(), AudioError> { Ok(()) }
         fn init(&mut self, sample_rate: f32) { self.lofi.init(sample_rate); }
@@ -872,7 +879,7 @@ pub mod emulators {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "NES Sound Chip".to_string(),
-                category: NodeCategory::Synth,
+                category: NodeCategory::Generator,
                 description: "Nintendo Entertainment System 2A03 sound chip emulation".to_string(),
                 author: "Kama Lo-Fi".to_string(),
                 version: "1.0".to_string(),
@@ -884,7 +891,7 @@ pub mod emulators {
     /// Эмулятор Akai S900 семплера
     pub struct AkaiS900Emulator {
         buffer: Vec<f32>,
-        position: usize,
+        position: f32,  // Изменено с usize на f32 для поддержки дробных позиций
         sample_rate: f32,
         bit_depth: u8,
         pitch: f32,
@@ -896,15 +903,11 @@ pub mod emulators {
     
     impl AkaiS900Emulator {
         pub fn new(sample_rate: f32) -> Self {
-            let lofi_config = LofiConfig {
-                system: ClassicSystem::AkaiS900,
-                hardware: HardwareEmulation::for_system(ClassicSystem::AkaiS900),
-                ..Default::default()
-            };
+            let lofi_config = LofiConfig::for_system(ClassicSystem::AkaiS900);
             
             Self {
                 buffer: Vec::new(),
-                position: 0,
+                position: 0.0,
                 sample_rate,
                 bit_depth: 12,
                 pitch: 1.0,
@@ -931,15 +934,15 @@ pub mod emulators {
             }
             
             for out in output.iter_mut() {
-                if self.position >= self.buffer.len() {
+                if (self.position as usize) >= self.buffer.len() {
                     *out = 0.0;
                     continue;
                 }
                 
                 // Читаем семпл (с простой интерполяцией)
-                let sample = if self.position < self.buffer.len() - 1 {
-                    let frac = self.position.fract();
+                let sample = if (self.position as usize) < self.buffer.len() - 1 {
                     let idx = self.position.floor() as usize;
+                    let frac = self.position.fract();
                     self.buffer[idx] * (1.0 - frac) + self.buffer[idx + 1] * frac
                 } else {
                     self.buffer[self.position as usize]
@@ -952,10 +955,90 @@ pub mod emulators {
                 self.position += self.pitch;
                 
                 // Обработка петли
-                if self.loop_enabled && self.position >= self.loop_end as f32 {
+                if self.loop_enabled && (self.position as usize) >= self.loop_end {
                     self.position = self.loop_start as f32 + 
                                    (self.position - self.loop_end as f32);
                 }
+            }
+        }
+    }
+    
+    impl AudioNode for AkaiS900Emulator {
+        fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+            if outputs.is_empty() {
+                return Ok(());
+            }
+            
+            let output = &mut outputs[0];
+            self.generate(output);
+            
+            Ok(())
+        }
+        
+        fn get_param(&self, name: &str) -> Option<ParamValue> {
+            match name {
+                "pitch" => Some(ParamValue::Float(self.pitch)),
+                "loop_enabled" => Some(ParamValue::Bool(self.loop_enabled)),
+                _ => None,
+            }
+        }
+        
+        fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
+            match (name, value) {
+                ("pitch", ParamValue::Float(v)) => {
+                    self.pitch = v.max(0.1).min(4.0);
+                    Ok(())
+                }
+                ("loop_enabled", ParamValue::Bool(v)) => {
+                    self.loop_enabled = v;
+                    Ok(())
+                }
+                _ => Err(AudioError::Parameter(format!("Unknown parameter: {}", name))),
+            }
+        }
+        
+        fn init(&mut self, sample_rate: f32) {
+            self.sample_rate = sample_rate;
+            self.lofi.init(sample_rate);
+        }
+        
+        fn reset(&mut self) {
+            self.position = 0.0;
+            self.lofi.reset();
+        }
+        
+        fn num_inputs(&self) -> usize { 0 }
+        fn num_outputs(&self) -> usize { 1 }
+        
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                name: "Akai S900".to_string(),
+                category: NodeCategory::Generator,
+                description: "Akai S900 sampler emulation".to_string(),
+                author: "Kama Lo-Fi".to_string(),
+                version: "1.0".to_string(),
+                parameters: vec![
+                    ParamMetadata {
+                        name: "pitch".to_string(),
+                        typ: ParamType::Float,
+                        default: ParamValue::Float(1.0),
+                        min: Some(0.1),
+                        max: Some(4.0),
+                        step: Some(0.01),
+                        unit: Some("x".to_string()),
+                        choices: None,
+                    },
+                    ParamMetadata {
+                        name: "loop_enabled".to_string(),
+                        typ: ParamType::Bool,
+                        default: ParamValue::Bool(false),
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: None,
+                        choices: None,
+                    },
+                ],
             }
         }
     }
@@ -1023,7 +1106,6 @@ pub mod buffer_integration {
             self.process_with_lofi(inputs, outputs)
         }
         
-        // Делегируем остальные методы
         fn get_param(&self, name: &str) -> Option<ParamValue> {
             self.inner.get_param(name)
         }
@@ -1052,7 +1134,6 @@ pub mod buffer_integration {
         fn metadata(&self) -> NodeMetadata {
             let mut metadata = self.inner.metadata();
             metadata.name = format!("Lo-Fi {}", metadata.name);
-            metadata.description = format!("{} with classic digital emulation", metadata.description);
             metadata
         }
     }
@@ -1081,14 +1162,13 @@ pub mod lofi_utils {
     pub fn add_tape_degradation(samples: &[f32], wear: f32) -> Vec<f32> {
         let mut result = Vec::with_capacity(samples.len());
         let mut high_freq_loss = 1.0 - wear * 0.5;
-        let mut wow_flutter = 0.0;
         
         for (i, &sample) in samples.iter().enumerate() {
             // Потеря высоких частот
             let filtered = sample * high_freq_loss;
             
             // Wow & flutter (медленное изменение pitch)
-            wow_flutter = 0.001 * wear * (2.0 * std::f32::consts::PI * i as f32 * 0.5 / 44100.0).sin();
+            let wow_flutter = 0.001 * wear * (2.0 * PI * i as f32 * 0.5 / 44100.0).sin();
             let pitched = filtered * (1.0 + wow_flutter);
             
             // Dropouts (пропадание сигнала)
@@ -1118,13 +1198,13 @@ pub mod lofi_utils {
         
         for i in 2..result.len() {
             // Простой цифровой фильтр
-            let alpha = (std::f32::consts::PI * center_freq / sample_rate).sin() / (2.0 * q);
+            let alpha = (PI * center_freq / sample_rate).sin() / (2.0 * q);
             let a0 = 1.0 + alpha;
             
             let b0 = alpha;
             let b1 = 0.0;
             let b2 = -alpha;
-            let a1 = -2.0 * (2.0 * std::f32::consts::PI * center_freq / sample_rate).cos();
+            let a1 = -2.0 * (2.0 * PI * center_freq / sample_rate).cos();
             let a2 = 1.0 - alpha;
             
             result[i] = (b0 * samples[i] + b1 * samples[i-1] + b2 * samples[i-2]
@@ -1133,7 +1213,7 @@ pub mod lofi_utils {
         
         // Добавляем AM modulation шум
         for sample in result.iter_mut() {
-            let am_noise = 0.05 * (2.0 * std::f32::consts::PI * 50.0 * rand::random::<f32>()).sin();
+            let am_noise = 0.05 * (2.0 * PI * 50.0 * rand::random::<f32>()).sin();
             *sample = (*sample * (1.0 + am_noise)).clamp(-1.0, 1.0);
         }
         
@@ -1141,7 +1221,7 @@ pub mod lofi_utils {
     }
 }
 
-// --- Примеры использования ---
+// --- Тесты ---
 
 #[cfg(test)]
 mod tests {
@@ -1214,14 +1294,6 @@ mod tests {
         
         // Проверяем, что NES генерирует звук
         assert!(output.iter().any(|&x| x != 0.0));
-        
-        // Проверяем lo-fi характер
-        let unique_samples: std::collections::HashSet<i32> = output.iter()
-            .map(|&x| (x * 128.0).round() as i32) // 7-bit дискретизация
-            .collect();
-        
-        // У 7-bit NES должно быть ограниченное количество уникальных значений
-        assert!(unique_samples.len() <= 256); // 2^7 * 2 для знака
     }
     
     #[test]

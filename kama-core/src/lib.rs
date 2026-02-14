@@ -21,7 +21,7 @@ pub mod mixer;
 // Убираем несуществующие типы
 pub use automation::Automaton;
 pub use graph::{AudioGraph, NodeId, PortId, Connection};
-pub use node::{NodeFactory, NodeMetadata};
+pub use node::{NodeFactory, NodeMetadata, NodeCategory};
 pub use param::{ParamValue, ParamType, ParamRange};
 
 // Правильно экспортируем AudioNode
