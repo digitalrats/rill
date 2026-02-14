@@ -1,0 +1,42 @@
+[package]
+name = "kama-io"
+version = "0.1.0"
+edition = "2021"
+description = "Audio I/O backends for Kama Audio - CPAL, ALSA, PipeWire, JACK"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+kama-core = { path = "../kama-core", version = "0.1.0" }
+kama-buffers = { path = "../kama-buffers", version = "0.1.0" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+log = "0.4"
+crossbeam-channel = "0.5"  # Для коммуникации между потоками
+
+# Бэкенды
+cpal = { version = "0.15", optional = true }
+alsa = { version = "0.9", optional = true }
+pipewire = { version = "0.8", optional = true }
+jack = { version = "0.10", optional = true }
+
+# Для конфигурации
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[features]
+default = ["cpal"]
+
+# Бэкенды
+cpal = ["dep:cpal"]
+alsa = ["dep:alsa"]
+pipewire = ["dep:pipewire"]
+jack = ["dep:jack"]
+
+all-backends = ["cpal", "alsa", "pipewire", "jack"]
+
+# Сериализация конфигурации
+serde-config = ["dep:serde"]
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"

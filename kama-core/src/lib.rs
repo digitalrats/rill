@@ -8,8 +8,6 @@ pub mod graph;
 pub mod automation;
 pub mod param;
 pub mod signal;
-pub mod io;
-pub mod midi;
 pub mod sequencer;
 pub mod synth;
 pub mod dsp;
