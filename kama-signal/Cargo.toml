@@ -12,8 +12,24 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"], optional = true }
 
 [dev-dependencies]
-# Для тестов нам не нужны дополнительные зависимости
+# Для примеров не нужны дополнительные зависимости
 
 [features]
 default = []
 serde = ["dep:serde"]
+
+[[example]]
+name = "basic_signal_bus"
+path = "examples/basic_signal_bus.rs"
+
+[[example]]
+name = "multiple_signal_types"
+path = "examples/multiple_signal_types.rs"
+
+[[example]]
+name = "signal_dispatcher"
+path = "examples/signal_dispatcher.rs"
+
+[[example]]
+name = "bus_with_policies"
+path = "examples/bus_with_policies.rs"
