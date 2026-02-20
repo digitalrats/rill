@@ -1,4 +1,4 @@
-use crate::node::{AudioNode, NodeMetadata, NodeCategory};
+use crate::node::{AudioNode, NodeMetadata, NodeCategory, NodeTypeId};
 use crate::param::{ParamValue, ParamType};
 use crate::AudioError;
 
@@ -122,6 +122,10 @@ impl AudioNode for DelayLine {
     
     fn num_inputs(&self) -> usize { 1 }
     fn num_outputs(&self) -> usize { 1 }
+    
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<DelayLine>()
+    }
     
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {

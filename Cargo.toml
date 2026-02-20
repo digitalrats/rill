@@ -1,9 +1,12 @@
 [workspace]
 members = [
-    "kama-core",
+    "kama-core-traits",
+    "kama-buffers",
+    "kama-graph",
     "kama-automation",
     "kama-control",
-    "kama-signal"
+    "kama-signal",
+    "kama-registry",
 ]
 resolver = "2"
 

@@ -1,4 +1,5 @@
-use kama_core::{AudioGraph, AudioNode};
+use kama_graph::AudioGraph;
+use kama_core_traits::{AudioNode, ParamValue, NodeTypeId};
 use kama_buffers::MultiHeadBuffer;
 
 fn main() {
@@ -28,5 +29,18 @@ fn main() {
     let buffer_id = graph.add_node(Box::new(buffer));
     
     println!("MultiHeadBuffer добавлен в граф с ID: {:?}", buffer_id);
+    
+    // Получаем информацию через параметры
+    if let Some(node) = graph.get_node(buffer_id) {
+        if node.node_type_id() == NodeTypeId::of::<MultiHeadBuffer>() {
+            if let Some(ParamValue::Int(num_heads)) = node.get_param("num_heads") {
+                println!("Количество головок: {}", num_heads);
+            }
+            if let Some(ParamValue::Int(buffer_size)) = node.get_param("buffer_size") {
+                println!("Размер буфера: {} сэмплов", buffer_size);
+            }
+        }
+    }
+    
     println!("Готово!");
 }

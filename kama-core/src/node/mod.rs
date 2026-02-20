@@ -1,65 +1,29 @@
-use std::any::Any;
-use crate::param::{ParamValue, ParamType};
+use std::collections::HashMap;
+use parking_lot::RwLock;
+
+// Re-export базовых типов из kama-core-traits
+pub use kama_core_traits::node::{
+    AudioNode,
+    NodeCategory,
+    NodeMetadata,
+    NodeCreator,
+    NodeTypeId,
+};
+
+pub use kama_core_traits::param::ParamMetadata;
+
+use crate::param::ParamValue;
 use crate::AudioError;
-
-/// Базовый трейт для всех аудиоузлов
-pub trait AudioNode: Send + Sync + Any {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError>;
-    fn get_param(&self, name: &str) -> Option<ParamValue>;
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError>;
-    fn init(&mut self, sample_rate: f32);
-    fn reset(&mut self);
-    fn num_inputs(&self) -> usize;
-    fn num_outputs(&self) -> usize;
-    fn metadata(&self) -> NodeMetadata;
-}
-
-/// Метаданные узла
-#[derive(Clone)]
-pub struct NodeMetadata {
-    pub name: String,
-    pub category: NodeCategory,
-    pub description: String,
-    pub author: String,
-    pub version: String,
-    pub parameters: Vec<ParamMetadata>,
-}
-
-/// Категории узлов
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum NodeCategory {
-    Generator,
-    Effect,
-    Filter,
-    Mixer,
-    Utility,
-    Analyzer,
-    Midi,
-    Sequencer,
-}
-
-/// Метаданные параметра
-#[derive(Clone)]
-pub struct ParamMetadata {
-    pub name: String,
-    pub typ: ParamType,
-    pub default: ParamValue,
-    pub min: Option<f32>,
-    pub max: Option<f32>,
-    pub step: Option<f32>,
-    pub unit: Option<String>,
-    pub choices: Option<Vec<(String, f32)>>,
-}
 
 /// Фабрика узлов
 pub struct NodeFactory {
-    registry: std::collections::HashMap<String, Box<dyn NodeCreator>>,
+    registry: HashMap<String, Box<dyn NodeCreator>>,
 }
 
 impl NodeFactory {
     pub fn new() -> Self {
         Self {
-            registry: std::collections::HashMap::new(),
+            registry: HashMap::new(),
         }
     }
     
@@ -72,8 +36,25 @@ impl NodeFactory {
     }
 }
 
-pub trait NodeCreator: Send + Sync {
-    fn create(&self) -> Option<Box<dyn AudioNode>>;
+/// Реестр узлов
+pub struct NodeRegistry {
+    factory: NodeFactory,
+}
+
+impl NodeRegistry {
+    pub fn new() -> Self {
+        Self {
+            factory: NodeFactory::new(),
+        }
+    }
+    
+    pub fn register(&mut self, name: &str, creator: Box<dyn NodeCreator>) {
+        self.factory.register(name, creator);
+    }
+    
+    pub fn create(&self, name: &str) -> Option<Box<dyn AudioNode>> {
+        self.factory.create(name)
+    }
 }
 
 /// Пример узла - Gain
@@ -97,6 +78,10 @@ impl GainNode {
 }
 
 impl AudioNode for GainNode {
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<GainNode>()
+    }
+
     fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
@@ -117,8 +102,8 @@ impl AudioNode for GainNode {
     
     fn get_param(&self, name: &str) -> Option<ParamValue> {
         match name {
-            "gain" => Some(crate::param::ParamValue::Float(self.gain)),
-            "smoothing" => Some(crate::param::ParamValue::Float(self.smoothing)),
+            "gain" => Some(ParamValue::Float(self.gain)),
+            "smoothing" => Some(ParamValue::Float(self.smoothing)),
             _ => None,
         }
     }
@@ -158,7 +143,7 @@ impl AudioNode for GainNode {
             parameters: vec![
                 ParamMetadata {
                     name: "gain".to_string(),
-                    typ: ParamType::Float,
+                    typ: crate::param::ParamType::Float,
                     default: ParamValue::Float(1.0),
                     min: Some(0.0),
                     max: Some(4.0),
@@ -168,7 +153,7 @@ impl AudioNode for GainNode {
                 },
                 ParamMetadata {
                     name: "smoothing".to_string(),
-                    typ: ParamType::Float,
+                    typ: crate::param::ParamType::Float,
                     default: ParamValue::Float(0.01),
                     min: Some(0.0),
                     max: Some(1.0),
@@ -185,25 +170,13 @@ impl NodeCreator for GainNode {
     fn create(&self) -> Option<Box<dyn AudioNode>> {
         Some(Box::new(Self::default()))
     }
-}
-
-
-pub struct NodeRegistry {
-    factory: NodeFactory,
-}
-
-impl NodeRegistry {
-    pub fn new() -> Self {
-        Self {
-            factory: NodeFactory::new(),
-        }
+    
+    fn metadata(&self) -> NodeMetadata {
+        // Явно вызываем метод из AudioNode
+        AudioNode::metadata(self)
     }
     
-    pub fn register(&mut self, name: &str, creator: Box<dyn NodeCreator>) {
-        self.factory.register(name, creator);
-    }
-    
-    pub fn create(&self, name: &str) -> Option<Box<dyn AudioNode>> {
-        self.factory.create(name)
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<GainNode>()
     }
 }

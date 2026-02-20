@@ -1,33 +1,10 @@
-use crate::AudioError;
 use std::collections::{HashMap, VecDeque};
-use crate::node::AudioNode;
-use kama_core_traits::NodeTypeId;  // Добавляем импорт NodeTypeId
+use kama_core_traits::{AudioNode, AudioError, NodeId, PortId};
+use crate::error::{GraphError, GraphResult};
+use crate::connection::Connection;
+use crate::processor::{BufferManager, NodeProcessor};
 
-// Объявляем типы ДО их использования
-mod processor;
-pub use processor::{BufferManager, NodeProcessor};
-
-/// Идентификатор узла
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(pub u32);  // Определяем NodeId здесь
-
-/// Идентификатор порта
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PortId {
-    pub node: NodeId,
-    pub index: u8,
-    pub is_input: bool,
-}
-
-/// Соединение
-#[derive(Debug, Clone)]
-pub struct Connection {
-    pub from: PortId,
-    pub to: PortId,
-    pub gain: f32,
-}
-
-/// Аудиограф
+/// Аудиограф - основной контейнер для узлов и соединений
 pub struct AudioGraph {
     nodes: HashMap<NodeId, Box<dyn AudioNode>>,
     connections: Vec<Connection>,
@@ -42,8 +19,8 @@ pub struct AudioGraph {
     output_connections: HashMap<PortId, Vec<Connection>>,
 }
 
-// Теперь реализация
 impl AudioGraph {
+    /// Создать новый граф с заданной частотой дискретизации
     pub fn new(sample_rate: f32) -> Self {
         Self {
             nodes: HashMap::new(),
@@ -58,6 +35,7 @@ impl AudioGraph {
         }
     }
     
+    /// Добавить узел в граф
     pub fn add_node(&mut self, mut node: Box<dyn AudioNode>) -> NodeId {
         node.init(self.sample_rate);
         let id = NodeId(self.next_id);
@@ -67,93 +45,87 @@ impl AudioGraph {
         id
     }
     
-    pub fn connect(&mut self, from: PortId, to: PortId, gain: f32) -> Result<(), AudioError> {
+    /// Удалить узел из графа
+    pub fn remove_node(&mut self, id: NodeId) -> Option<Box<dyn AudioNode>> {
+        let node = self.nodes.remove(&id);
+        
+        // Удаляем все соединения, связанные с этим узлом
+        self.connections.retain(|conn| {
+            conn.from.node != id && conn.to.node != id
+        });
+        
+        // Очищаем кэши соединений
+        self.rebuild_connection_cache();
+        self.update_processing_order();
+        
+        node
+    }
+    
+    /// Создать соединение между портами
+    pub fn connect(&mut self, from: PortId, to: PortId, gain: f32) -> GraphResult<()> {
         if !self.nodes.contains_key(&from.node) || !self.nodes.contains_key(&to.node) {
-            return Err(AudioError::Graph("Invalid node ID".to_string()));
+            return Err(GraphError::InvalidNodeId);
         }
         
-        if !from.is_input && to.is_input {
-            let conn = Connection { from, to, gain };
-            
-            self.connections.push(conn.clone());
-            
-            self.input_connections
-                .entry(to)
-                .or_default()
-                .push(conn.clone());
-            
-            self.output_connections
-                .entry(from)
-                .or_default()
-                .push(conn.clone());
-            
+        if !from.is_output() || !to.is_input() {
+            return Err(GraphError::InvalidConnectionDirection);
+        }
+        
+        let conn = Connection::new(from, to, gain);
+        self.connections.push(conn.clone());
+        
+        // Обновляем кэши
+        self.input_connections
+            .entry(to)
+            .or_default()
+            .push(conn.clone());
+        
+        self.output_connections
+            .entry(from)
+            .or_default()
+            .push(conn.clone());
+        
+        self.update_processing_order();
+        
+        Ok(())
+    }
+    
+    /// Удалить соединение
+    pub fn disconnect(&mut self, from: PortId, to: PortId) -> bool {
+        let initial_len = self.connections.len();
+        
+        self.connections.retain(|conn| {
+            !(conn.from == from && conn.to == to)
+        });
+        
+        if self.connections.len() != initial_len {
+            self.rebuild_connection_cache();
             self.update_processing_order();
-            Ok(())
-        } else {
-            Err(AudioError::Graph("Invalid connection direction".to_string()))
-        }
-    }
-
-    /// Инициализировать все узлы с новой частотой дискретизации
-    pub fn init_all(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-        for node in self.nodes.values_mut() {
-            node.init(sample_rate);
-        }
-    }
-
-    /// Сбросить состояние всех узлов в графе
-    /// 
-    /// Полезно для:
-    /// - Перезапуска обработки
-    /// - Очистки состояний фильтров и задержек
-    /// - Подготовки к новому семплу
-    pub fn reset(&mut self) {
-        for node in self.nodes.values_mut() {
-            node.reset();
-        }
-    }
-
-    /// Сбросить состояние конкретного узла
-    /// 
-    /// # Arguments
-    /// * `id` - ID узла для сброса
-    /// 
-    /// # Returns
-    /// * `true` если узел найден и сброшен, `false` в противном случае
-    pub fn reset_node(&mut self, id: NodeId) -> bool {
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.reset();
             true
         } else {
             false
         }
     }
-
-    /// Сбросить все узлы определенного типа
-    /// 
-    /// # Type parameters
-    /// * `T` - тип узла для сброса (должен реализовывать `AudioNode` и быть 'static)
-    pub fn reset_nodes_by_type<T: AudioNode + 'static>(&mut self) {
-        let target_type_id = T::static_type_id();  // T гарантированно 'static
-        for node in self.nodes.values_mut() {
-            if node.node_type_id() == target_type_id {
-                node.reset();
-            }
+    
+    /// Перестроить кэши соединений
+    fn rebuild_connection_cache(&mut self) {
+        self.input_connections.clear();
+        self.output_connections.clear();
+        
+        for conn in &self.connections {
+            self.input_connections
+                .entry(conn.to)
+                .or_default()
+                .push(conn.clone());
+            
+            self.output_connections
+                .entry(conn.from)
+                .or_default()
+                .push(conn.clone());
         }
     }
-
-    /// Получить частоту дискретизации графа
-    pub fn sample_rate(&self) -> f32 {
-        self.sample_rate
-    }
     
-    /// Получить мутабельную ссылку на частоту дискретизации (если нужно изменить)
-    pub fn sample_rate_mut(&mut self) -> &mut f32 {
-        &mut self.sample_rate
-    }
-    
-    // В graph/mod.rs
+    /// Обновить порядок обработки (топологическая сортировка)
     fn update_processing_order(&mut self) {
         let mut dependencies: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         let mut dependents: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
@@ -184,7 +156,6 @@ impl AudioGraph {
         let mut order = Vec::new();
         let mut visited = HashMap::new();
         
-        
         while let Some(node) = queue.pop_front() {
             if visited.contains_key(&node) {
                 continue;
@@ -192,7 +163,6 @@ impl AudioGraph {
             
             order.push(node);
             visited.insert(node, true);
-            
             
             if let Some(children) = dependents.get(&node) {
                 for &child in children {
@@ -220,23 +190,66 @@ impl AudioGraph {
     
     /// Получить неизменяемую ссылку на узел по ID
     pub fn get_node(&self, id: NodeId) -> Option<&dyn AudioNode> {
-        self.nodes.get(&id).map(|n| n.as_ref())
+        self.nodes.get(&id).map(|node| node.as_ref() as &dyn AudioNode)
     }
     
     /// Получить мутабельную ссылку на узел по ID
     pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut dyn AudioNode> {
-        self.nodes.get_mut(&id).map(|n| n.as_mut() as &mut dyn AudioNode)
+        self.nodes.get_mut(&id).map(|node| node.as_mut() as &mut dyn AudioNode)
     }
-
-    pub fn get_connections(&self) -> &[Connection] {
+    
+    /// Получить все соединения
+    pub fn connections(&self) -> &[Connection] {
         &self.connections
     }
     
-    pub fn get_processing_order(&self) -> &[NodeId] {
+    /// Получить порядок обработки
+    pub fn processing_order(&self) -> &[NodeId] {
         &self.processing_order
     }
     
-    pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+    /// Получить частоту дискретизации
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+    
+    /// Установить частоту дискретизации для всех узлов
+    pub fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+        for node in self.nodes.values_mut() {
+            node.init(sample_rate);
+        }
+    }
+    
+    /// Сбросить состояние всех узлов
+    pub fn reset(&mut self) {
+        for node in self.nodes.values_mut() {
+            node.reset();
+        }
+    }
+    
+    /// Сбросить состояние конкретного узла
+    pub fn reset_node(&mut self, id: NodeId) -> bool {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.reset();
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Сбросить все узлы определённого типа
+    pub fn reset_nodes_by_type<T: AudioNode + 'static>(&mut self) {
+        let target_type_id = T::static_type_id();
+        for node in self.nodes.values_mut() {
+            if node.node_type_id() == target_type_id {
+                node.reset();
+            }
+        }
+    }
+    
+    /// Обработать граф
+    pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> GraphResult<()> {
         if outputs.is_empty() {
             return Ok(());
         }
@@ -258,11 +271,7 @@ impl AudioGraph {
                 
                 // Собираем входные данные для этого узла
                 for input_idx in 0..num_inputs {
-                    let port_id = PortId {
-                        node: node_id,
-                        index: input_idx as u8,
-                        is_input: true,
-                    };
+                    let port_id = PortId::input(node_id, input_idx as u8);
                     
                     // Получаем соединения для этого входа
                     if let Some(connections) = self.input_connections.get(&port_id) {
@@ -300,7 +309,8 @@ impl AudioGraph {
                     .map(|buf| buf.as_mut_slice())
                     .collect();
                 
-                node.process(&input_slices, &mut output_slices)?;
+                node.process(&input_slices, &mut output_slices)
+                    .map_err(GraphError::Audio)?;
                 
                 // Сохраняем выходы узла
                 let node_idx = node_id.0 as usize;
@@ -310,7 +320,7 @@ impl AudioGraph {
             }
         }
         
-        // Находим выходные узлы (узлы, чьи выходы не подключены к другим узлам)
+        // Находим выходные узлы (узлы без выходных соединений)
         let output_node_ids: Vec<NodeId> = self.processing_order.iter()
             .filter(|&&node_id| {
                 let num_outputs = self.nodes.get(&node_id)
@@ -318,11 +328,7 @@ impl AudioGraph {
                     .unwrap_or(0);
                 
                 (0..num_outputs).all(|output_idx| {
-                    let port_id = PortId {
-                        node: node_id,
-                        index: output_idx as u8,
-                        is_input: false,
-                    };
+                    let port_id = PortId::output(node_id, output_idx as u8);
                     
                     // Если нет соединений от этого выхода
                     self.output_connections.get(&port_id)
@@ -333,7 +339,7 @@ impl AudioGraph {
             .copied()
             .collect();
         
-        // Если указаны выходные узлы, используем первый
+        // Копируем выходные данные
         if let Some(&output_node_id) = output_node_ids.first() {
             let node_idx = output_node_id.0 as usize;
             if node_idx < node_output_buffers.len() {
@@ -346,17 +352,15 @@ impl AudioGraph {
                     }
                 }
             }
-        } else {
+        } else if let Some(&last_node_id) = self.processing_order.last() {
             // Если не нашли явных выходных узлов, используем последний в порядке обработки
-            if let Some(&last_node_id) = self.processing_order.last() {
-                let node_idx = last_node_id.0 as usize;
-                if node_idx < node_output_buffers.len() {
-                    if let Some(Some(outputs_to_copy)) = node_output_buffers.get(node_idx) {
-                        for (i, output_channel) in outputs.iter_mut().enumerate() {
-                            if i < outputs_to_copy.len() {
-                                let copy_len = buffer_size.min(output_channel.len());
-                                output_channel[..copy_len].copy_from_slice(&outputs_to_copy[i][..copy_len]);
-                            }
+            let node_idx = last_node_id.0 as usize;
+            if node_idx < node_output_buffers.len() {
+                if let Some(Some(outputs_to_copy)) = node_output_buffers.get(node_idx) {
+                    for (i, output_channel) in outputs.iter_mut().enumerate() {
+                        if i < outputs_to_copy.len() {
+                            let copy_len = buffer_size.min(output_channel.len());
+                            output_channel[..copy_len].copy_from_slice(&outputs_to_copy[i][..copy_len]);
                         }
                     }
                 }
@@ -364,5 +368,103 @@ impl AudioGraph {
         }
         
         Ok(())
+    }
+    
+    /// Очистить граф
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.connections.clear();
+        self.input_connections.clear();
+        self.output_connections.clear();
+        self.processing_order.clear();
+        self.buffer_manager.release_all();
+    }
+    
+    /// Получить количество узлов
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+    
+    /// Получить количество соединений
+    pub fn connection_count(&self) -> usize {
+        self.connections.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    // Тестовый узел
+    struct TestNode {
+        id: u32,
+    }
+    
+    impl TestNode {
+        fn new(id: u32) -> Self {
+            Self { id }
+        }
+    }
+    
+    impl kama_core_traits::AudioNode for TestNode {
+        fn process(&mut self, _inputs: &[&[f32]], _outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+            Ok(())
+        }
+        
+        fn get_param(&self, _name: &str) -> Option<kama_core_traits::ParamValue> {
+            None
+        }
+        
+        fn set_param(&mut self, _name: &str, _value: kama_core_traits::ParamValue) -> Result<(), AudioError> {
+            Ok(())
+        }
+        
+        fn init(&mut self, _sample_rate: f32) {}
+        fn reset(&mut self) {}
+        fn num_inputs(&self) -> usize { 1 }
+        fn num_outputs(&self) -> usize { 1 }
+        
+        fn node_type_id(&self) -> kama_core_traits::NodeTypeId {
+            kama_core_traits::NodeTypeId::of::<Self>()
+        }
+        
+        fn metadata(&self) -> kama_core_traits::NodeMetadata {
+            unimplemented!()
+        }
+    }
+    
+    #[test]
+    fn test_graph_creation() {
+        let mut graph = AudioGraph::new(44100.0);
+        assert_eq!(graph.sample_rate(), 44100.0);
+        assert_eq!(graph.node_count(), 0);
+    }
+    
+    #[test]
+    fn test_add_node() {
+        let mut graph = AudioGraph::new(44100.0);
+        let node = Box::new(TestNode::new(1));
+        let id = graph.add_node(node);
+        
+        assert_eq!(graph.node_count(), 1);
+        assert!(graph.get_node(id).is_some());
+    }
+    
+    #[test]
+    fn test_connect_nodes() {
+        let mut graph = AudioGraph::new(44100.0);
+        
+        let node1 = Box::new(TestNode::new(1));
+        let node2 = Box::new(TestNode::new(2));
+        
+        let id1 = graph.add_node(node1);
+        let id2 = graph.add_node(node2);
+        
+        let out = PortId::output(id1, 0);
+        let in_port = PortId::input(id2, 0);
+        
+        graph.connect(out, in_port, 1.0).unwrap();
+        
+        assert_eq!(graph.connection_count(), 1);
     }
 }

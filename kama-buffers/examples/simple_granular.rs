@@ -1,5 +1,5 @@
-use kama_buffers::MultiHeadBuffer;
-use kama_core::AudioNode;
+use kama_buffers::{MultiHeadBuffer, ReadMode};
+use kama_core_traits::AudioNode;
 use std::f32::consts::PI;
 
 fn main() {
@@ -23,7 +23,7 @@ fn main() {
     let head_id = buffer.add_head();
     
     if let Some(head) = buffer.get_head_mut(head_id) {
-        head.read_mode = kama_buffers::ReadMode::Granular {
+        head.read_mode = ReadMode::Granular {
             grain_size: 256,
             grain_spacing: 512,
             randomization: 0.3,
@@ -39,13 +39,12 @@ fn main() {
         println!("  Pan: left (-0.5)");
     }
     
-    // Обрабатываем несколько блоков (оптимизированно)
+    // Обрабатываем несколько блоков
     const BUFFER_SIZE: usize = 512;
     const NUM_CHANNELS: usize = 2;
     
     // Предварительно аллоцированный буфер
     let mut output_storage = vec![0.0f32; BUFFER_SIZE * NUM_CHANNELS];
-    let mut temp_for_stats = vec![0.0f32; BUFFER_SIZE * NUM_CHANNELS];
     
     println!("\nProcessing granular synthesis...");
     
@@ -60,18 +59,15 @@ fn main() {
             break;
         }
         
-        // Для статистики копируем в временный буфер
-        temp_for_stats.copy_from_slice(&output_storage);
-        let max_amp = temp_for_stats.iter()
+        // Вычисляем статистику
+        let max_amp = output_storage.iter()
             .map(|&x| x.abs())
             .fold(0.0f32, |a, b| a.max(b));
         
         println!("  Block {}: max amplitude = {:.4}", block, max_amp);
         
-        // Быстро очищаем буферы (быстрее чем fill)
-        unsafe {
-            std::ptr::write_bytes(output_storage.as_mut_ptr(), 0, output_storage.len());
-        }
+        // Очищаем буферы
+        output_storage.fill(0.0);
     }
     
     println!("\n=== Granular Synthesis Concepts ===");

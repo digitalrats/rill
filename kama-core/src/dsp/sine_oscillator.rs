@@ -1,4 +1,4 @@
-use crate::node::{AudioNode, NodeMetadata, NodeCategory};
+use crate::node::{AudioNode, NodeMetadata, NodeCategory, NodeTypeId};
 use crate::param::{ParamValue, ParamType};
 use crate::AudioError;
 
@@ -28,7 +28,6 @@ impl SineOscillator {
 
 impl AudioNode for SineOscillator {
     fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        // ✅ Добавили _ перед inputs для подавления warning
         if outputs.is_empty() {
             return Ok(());
         }
@@ -40,7 +39,6 @@ impl AudioNode for SineOscillator {
             *sample = self.phase.sin() * self.amplitude;
             self.phase += phase_increment;
             
-            // Нормализовать фазу для сохранения точности
             if self.phase >= 2.0 * std::f32::consts::PI {
                 self.phase -= 2.0 * std::f32::consts::PI;
             }
@@ -79,8 +77,12 @@ impl AudioNode for SineOscillator {
         self.phase = 0.0;
     }
     
-    fn num_inputs(&self) -> usize { 0 } // Осциллятор не имеет входов
+    fn num_inputs(&self) -> usize { 0 }
     fn num_outputs(&self) -> usize { 1 }
+    
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<SineOscillator>()
+    }
     
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {

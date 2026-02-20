@@ -1,4 +1,4 @@
-use crate::node::{AudioNode, NodeMetadata, NodeCategory};
+use crate::node::{AudioNode, NodeMetadata, NodeCategory, NodeTypeId};
 use crate::param::{ParamValue, ParamType};
 use crate::AudioError;
 
@@ -183,6 +183,10 @@ impl AudioNode for BiquadFilter {
     
     fn num_inputs(&self) -> usize { 1 }
     fn num_outputs(&self) -> usize { 1 }
+    
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<BiquadFilter>()
+    }
     
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {

@@ -1,11 +1,9 @@
-//! Модуль времени – единый источник тактовой информации для всей системы.
+// Re-export базовых трейтов
+pub use kama_core_traits::time::{
+    Clock,
+    TimeProvider,
+    TickInfo,
+};
 
-mod tick_info;
-mod clock;
-mod provider;
 mod system_clock;
-
-pub use tick_info::TickInfo;
-pub use clock::Clock;
-pub use provider::TimeProvider;
 pub use system_clock::SystemClock;

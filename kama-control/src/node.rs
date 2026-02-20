@@ -3,10 +3,17 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
-use kama_core::{
-    AudioNode, NodeMetadata, NodeCategory, AudioError,
-    param::ParamValue, graph::NodeId,
+use kama_core::graph::NodeId;
+
+use kama_core_traits::{
+    AudioNode, 
+    NodeMetadata, 
+    NodeCategory, 
+    AudioError, 
+    NodeTypeId,
+    param::{ParamValue, ParamType, ParamMetadata},
 };
+
 use kama_signal::{ParameterChanged, SignalSource};
 
 #[cfg(feature = "automation")]
@@ -55,7 +62,7 @@ impl ControlNode {
             servos: HashMap::new(),
             
             #[cfg(feature = "automation")]
-            context: AutomationContext::new(44100.0),
+            context: AutomationContext::new(44100.0), // или другая инициализация
             
             signal_tx: None,
             name: "ControlNode".to_string(),
@@ -174,7 +181,6 @@ impl AudioNode for ControlNode {
                                 },
                             };
                             
-                            // ИСПРАВЛЕНО: try_read() возвращает Option, а не Result
                             if let Some(lock) = tx.try_read() {
                                 lock(signal);
                             }
@@ -218,6 +224,10 @@ impl AudioNode for ControlNode {
     fn num_inputs(&self) -> usize { 0 }
     fn num_outputs(&self) -> usize { 0 }
     
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<ControlNode>()
+    }
+    
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: self.name.clone(),
@@ -226,9 +236,9 @@ impl AudioNode for ControlNode {
             author: "Kama Control".to_string(),
             version: "0.1.0".to_string(),
             parameters: vec![
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "event_count".to_string(),
-                    typ: kama_core::param::ParamType::Int,
+                    typ: ParamType::Int,
                     default: ParamValue::Int(0),
                     min: Some(0.0),
                     max: None,
@@ -236,9 +246,9 @@ impl AudioNode for ControlNode {
                     unit: Some("events".to_string()),
                     choices: None,
                 },
-                kama_core::node::ParamMetadata {
+                ParamMetadata {
                     name: "mapping_count".to_string(),
-                    typ: kama_core::param::ParamType::Int,
+                    typ: ParamType::Int,
                     default: ParamValue::Int(0),
                     min: Some(0.0),
                     max: None,

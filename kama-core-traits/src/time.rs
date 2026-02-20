@@ -1,0 +1,48 @@
+use std::fmt::Debug;
+
+/// Базовый источник времени.
+///
+/// Предоставляет доступ к текущей позиции и частоте дискретизации.
+pub trait Clock: Send + Sync + Debug {
+    /// Частота дискретизации (сэмплов в секунду).
+    fn sample_rate(&self) -> f64;
+
+    /// Текущая позиция в сэмплах.
+    fn position_samples(&self) -> u64;
+
+    /// Текущая позиция в секундах.
+    fn position_seconds(&self) -> f64 {
+        self.position_samples() as f64 / self.sample_rate()
+    }
+    
+    /// Продвинуть время на указанное количество сэмплов.
+    fn advance(&self, samples: u64) -> u64;
+
+    /// Сбросить позицию в 0.
+    fn reset(&self);
+}
+
+/// Провайдер времени, дополняющий `Clock` информацией о темпе и тактах.
+pub trait TimeProvider: Clock {
+    /// Текущий темп (BPM).
+    fn bpm(&self) -> f64;
+
+    /// Установить темп.
+    fn set_bpm(&self, bpm: f64);
+
+    /// Получить детальную информацию о текущем такте/доле.
+    fn tick_info(&self) -> TickInfo;
+}
+
+/// Информация о текущей позиции в тактах и долях.
+#[derive(Debug, Clone, Copy)]
+pub struct TickInfo {
+    /// Номер такта (начиная с 0).
+    pub bar: u32,
+    /// Доля внутри такта (0-3, где 0 – первая доля).
+    pub beat: u8,
+    /// Шестнадцатая внутри доли (0-3).
+    pub sixteenth: u8,
+    /// Абсолютная позиция в сэмплах.
+    pub sample_pos: u64,
+}
