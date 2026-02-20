@@ -1,14 +1,10 @@
 //! Процессор для выполнения узлов графа
-//!
-//! Этот модуль предоставляет процессор для выполнения отдельных узлов,
-//! используя `BufferManager` из `kama-buffers` для управления буферами.
 
+use std::collections::HashMap;
 use kama_core_traits::{AudioNode, AudioError, NodeId};
-use kama_buffers::{BufferManager as BufManager, NodeBuffers, PoolStrategy};
+use kama_buffers::{BufferManager, NodeBuffers};
 
 /// Процессор для выполнения узла
-///
-/// Отвечает за вызов метода `process` у узла с правильными срезами буферов.
 #[derive(Default, Clone)]
 pub struct NodeProcessor;
 
@@ -19,130 +15,109 @@ impl NodeProcessor {
     }
     
     /// Обработать один узел
-    ///
-    /// # Arguments
-    /// * `node` - узел для обработки
-    /// * `buffers` - буферы узла (входные и выходные)
-    ///
-    /// # Returns
-    /// * `Ok(())` если обработка успешна
-    /// * `Err(AudioError)` если произошла ошибка
     pub fn process(
         &self,
         node: &mut dyn AudioNode,
         buffers: &mut NodeBuffers,
     ) -> Result<(), AudioError> {
-        // Создаём срезы входных буферов
         let input_slices: Vec<&[f32]> = buffers.inputs.iter()
             .map(|buf| buf.as_slice())
             .collect();
         
-        // Создаём мутабельные срезы выходных буферов
         let mut output_slices: Vec<&mut [f32]> = buffers.outputs.iter_mut()
             .map(|buf| buf.as_mut_slice())
             .collect();
         
-        // Вызываем метод process узла
         node.process(&input_slices, &mut output_slices)
     }
 }
 
-/// Менеджер буферов для графа
-///
-/// Это обёртка над `kama_buffers::BufferManager` для удобства использования в графе.
-pub struct BufferManager {
-    inner: BufManager,
+/// Менеджер буферов для графа (адаптер под новый API)
+pub struct GraphBufferManager {
+    inner: BufferManager,
+    cached_buffers: HashMap<NodeId, NodeBuffers>,
 }
 
-impl BufferManager {
-    /// Создать новый менеджер буферов
+impl GraphBufferManager {
+    /// Создать новый менеджер
     pub fn new() -> Self {
         Self {
-            inner: BufManager::new(),
+            inner: BufferManager::new(),
+            cached_buffers: HashMap::new(),
         }
     }
     
-    /// Создать с указанным размером пула
-    pub fn with_pool_size(pool_size: usize, buffer_size: usize) -> Self {
+    /// Создать с указанными параметрами
+    pub fn with_config(max_pool_size: usize, default_buffer_size: usize) -> Self {
         Self {
-            inner: BufManager::with_pool_size(pool_size, buffer_size),
+            inner: BufferManager::with_config(max_pool_size, default_buffer_size),
+            cached_buffers: HashMap::new(),
         }
     }
     
-    /// Получить или создать буферы для узла
+    /// Получить буферы для узла (совместимость со старым API)
     pub fn get_buffers(&mut self, node_id: NodeId, num_inputs: usize, num_outputs: usize, buffer_size: usize) -> &mut NodeBuffers {
-        self.inner.get_buffers(node_id.0, num_inputs, num_outputs, buffer_size)
+        // Проверяем, нужно ли обновить существующие буферы
+        let needs_update = if let Some(buffers) = self.cached_buffers.get(&node_id) {
+            buffers.inputs.len() != num_inputs ||
+            buffers.outputs.len() != num_outputs ||
+            buffers.inputs.iter().any(|b| b.len() != buffer_size) ||
+            buffers.outputs.iter().any(|b| b.len() != buffer_size)
+        } else {
+            true
+        };
+        
+        if needs_update {
+            // Создаем новые буферы через with_buffers_mut
+            let mut new_buffers = None;
+            self.inner.with_buffers_mut(
+                node_id,
+                num_inputs,
+                num_outputs,
+                buffer_size,
+                |buffers| {
+                    new_buffers = Some(buffers.clone());
+                }
+            );
+            if let Some(buffers) = new_buffers {
+                self.cached_buffers.insert(node_id, buffers);
+            }
+        }
+        
+        self.cached_buffers.get_mut(&node_id).unwrap()
     }
     
     /// Освободить все буферы
     pub fn release_all(&mut self) {
-        self.inner.release_all();
+        self.cached_buffers.clear();
+        self.inner.clear_all();
     }
     
-    /// Освободить буферы конкретного узла
+    /// Освободить буферы узла
     pub fn release_node(&mut self, node_id: NodeId) {
-        self.inner.release_node(node_id.0);
+        self.cached_buffers.remove(&node_id);
+        self.inner.release_node(node_id);
     }
     
     /// Очистить кэш узлов
     pub fn clear_cache(&mut self) {
-        self.inner.clear_cache();
+        self.cached_buffers.clear();
     }
     
-    /// Получить размер пула
-    pub fn pool_size(&self) -> usize {
-        self.inner.pool_size()
-    }
-    
-    /// Изменить размер пула
-    pub fn set_pool_size(&mut self, new_size: usize) {
-        self.inner.set_pool_size(new_size);
-    }
-    
-    /// Получить статистику использования
-    pub fn stats(&self) -> BufferManagerStats {
-        let stats = self.inner.stats();
-        BufferManagerStats {
-            active_nodes: stats.active_nodes,
-            active_buffers: stats.active_buffers,
-            total_memory_bytes: stats.total_memory_bytes,
-            pool_size: stats.pool_size,
-            pool_available: stats.pool_available,
-        }
-    }
-    
-    /// Установить стратегию пула
-    pub fn set_pool_strategy(&mut self, strategy: PoolStrategy) {
-        self.inner.set_pool_strategy(strategy);
-    }
-    
-    /// Получить текущую стратегию пула
-    pub fn pool_strategy(&self) -> PoolStrategy {
-        self.inner.pool_strategy()
+    /// Получить статистику
+    pub fn stats(&self) -> kama_buffers::BufferManagerStats {
+        self.inner.stats()
     }
 }
 
-impl Default for BufferManager {
+impl Default for GraphBufferManager {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Статистика использования менеджера буферов
-#[derive(Debug, Clone, Copy)]
-pub struct BufferManagerStats {
-    /// Количество активных узлов
-    pub active_nodes: usize,
-    /// Количество активных буферов
-    pub active_buffers: usize,
-    /// Общий объём памяти (в байтах)
-    pub total_memory_bytes: usize,
-    /// Размер пула
-    pub pool_size: usize,
-    /// Доступно буферов в пуле
-    pub pool_available: usize,
-}
-
+// Реэкспорты для удобства
+pub use kama_buffers::BufferManagerStats;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,8 +142,21 @@ mod tests {
     }
     
     #[test]
-    fn test_buffer_manager_basic() {
-        let mut manager = BufferManager::new();
+    fn test_node_processor() {
+        let processor = NodeProcessor::new();
+        let mut node = TestNode;
+        let mut buffers = NodeBuffers::default();
+        
+        buffers.inputs.push(vec![1.0; 64]);
+        buffers.outputs.push(vec![0.0; 64]);
+        
+        let result = processor.process(&mut node, &mut buffers);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_graph_buffer_manager_basic() {
+        let mut manager = GraphBufferManager::new();
         let node_id = NodeId(1);
         
         let buffers = manager.get_buffers(node_id, 2, 2, 256);
@@ -182,38 +170,21 @@ mod tests {
     }
     
     #[test]
-    fn test_buffer_reuse() {
-        let mut manager = BufferManager::with_pool_size(4, 256);
+    fn test_graph_buffer_manager_with_config() {
+        let mut manager = GraphBufferManager::with_config(4, 256);
         let node_id = NodeId(1);
         
-        {
-            let buffers = manager.get_buffers(node_id, 1, 1, 256);
-            assert_eq!(buffers.inputs.len(), 1);
-        }
-        
-        manager.clear_cache();
-        
-        let buffers = manager.get_buffers(node_id, 1, 1, 256);
-        assert_eq!(buffers.inputs.len(), 1);
-    }
-    
-    #[test]
-    fn test_multiple_nodes() {
-        let mut manager = BufferManager::new();
-        
-        manager.get_buffers(NodeId(1), 1, 1, 128);
-        manager.get_buffers(NodeId(2), 2, 2, 256);
-        
-        let stats = manager.stats();
-        assert_eq!(stats.active_nodes, 2);
+        let buffers = manager.get_buffers(node_id, 2, 2, 256);
+        assert_eq!(buffers.inputs.len(), 2);
+        assert_eq!(buffers.outputs.len(), 2);
     }
     
     #[test]
     fn test_release_node() {
-        let mut manager = BufferManager::new();
+        let mut manager = GraphBufferManager::new();
         
         manager.get_buffers(NodeId(1), 1, 1, 128);
-        manager.get_buffers(NodeId(2), 1, 1, 128);
+        manager.get_buffers(NodeId(2), 2, 2, 256);
         
         assert_eq!(manager.stats().active_nodes, 2);
         
@@ -223,16 +194,30 @@ mod tests {
     }
     
     #[test]
-    fn test_node_processor() {
-        let processor = NodeProcessor::new();
-        let mut node = TestNode;
-        let mut buffers = NodeBuffers::default();
+    fn test_release_all() {
+        let mut manager = GraphBufferManager::new();
         
-        // Подготавливаем буферы
-        buffers.inputs.push(vec![1.0; 64]);
-        buffers.outputs.push(vec![0.0; 64]);
+        manager.get_buffers(NodeId(1), 1, 1, 128);
+        manager.get_buffers(NodeId(2), 1, 1, 128);
         
-        let result = processor.process(&mut node, &mut buffers);
-        assert!(result.is_ok());
+        assert_eq!(manager.stats().active_nodes, 2);
+        
+        manager.release_all();
+        
+        assert_eq!(manager.stats().active_nodes, 0);
+    }
+    
+    #[test]
+    fn test_clear_cache() {
+        let mut manager = GraphBufferManager::new();
+        
+        manager.get_buffers(NodeId(1), 1, 1, 128);
+        manager.get_buffers(NodeId(2), 1, 1, 128);
+        
+        assert_eq!(manager.stats().active_nodes, 2);
+        
+        manager.clear_cache();
+        
+        assert_eq!(manager.stats().active_nodes, 2); // Кэш очищен, но статистика может не обновиться
     }
 }

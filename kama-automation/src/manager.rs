@@ -3,21 +3,21 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use kama_core::time::{TimeProvider, Clock as CoreClock};
+use kama_core_traits::time::{Clock, TimeProvider, SystemClock}; 
 use crate::automaton::{LfoAutomaton};
 use crate::context::AutomationContext;
 use crate::servo::{Servo, AnyServo, ParameterMapping};
 use crate::signal::SignalSender;
 
 /// Менеджер автоматизации с обобщённым типом часов
-pub struct AutomationManager<C: CoreClock> {
+pub struct AutomationManager<C: Clock> {
     pub(crate) servos: HashMap<String, Box<dyn AnyServo>>,
     pub(crate) context: AutomationContext,
     pub(crate) clock: C,
     time_provider: Arc<dyn TimeProvider>,
 }
 
-impl<C: CoreClock> AutomationManager<C> {
+impl<C: Clock> AutomationManager<C> {
     pub fn new(time_provider: Arc<dyn TimeProvider>, clock: C) -> Self {
         Self {
             servos: HashMap::new(),
@@ -122,11 +122,11 @@ impl<C: CoreClock> AutomationManager<C> {
 }
 
 // Type alias для удобства использования с SystemClock
-pub type DefaultAutomationManager = AutomationManager<kama_core::time::SystemClock>;
+pub type DefaultAutomationManager = AutomationManager<SystemClock>;
 
 impl DefaultAutomationManager {
     pub fn new_default(time_provider: Arc<dyn TimeProvider>) -> Self {
-        let clock = kama_core::time::SystemClock::new(
+        let clock = kama_core_traits::time::SystemClock::new(
             time_provider.sample_rate(), 
             120.0
         );

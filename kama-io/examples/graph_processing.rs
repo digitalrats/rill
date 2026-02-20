@@ -62,7 +62,7 @@ fn create_default_backend(config: AudioConfig) -> Result<DefaultBackend, Box<dyn
     }
 }
 
-fn create_audio_graph(sample_rate: f32) -> (AudioGraph, kama_core::graph::NodeId, kama_core::graph::NodeId) {
+fn create_audio_graph(sample_rate: f32) -> (AudioGraph, kama_core_traits::graph::NodeId, kama_core_traits::graph::NodeId) {
     let mut graph = AudioGraph::new(sample_rate);
     
     // Создаем узлы обработки
@@ -182,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 engine.update_processor(|proc: &mut GraphProcessor| {
                     proc.with_graph(|graph: &mut AudioGraph| {
                         // Собираем ID узлов в вектор для избежания проблем с заимствованием
-                        let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
+                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {
                                 if let Some(ParamValue::Float(val)) = node.get_param("gain") {
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Изменение выходного усиления на 1.2");
                 engine.update_processor(|proc: &mut GraphProcessor| {
                     proc.with_graph(|graph: &mut AudioGraph| {
-                        let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
+                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {
                                 if let Some(ParamValue::Float(val)) = node.get_param("gain") {
@@ -235,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         // Сбрасываем gain узлы
-                        let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
+                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {
                                 if let Some(ParamValue::Float(val)) = node.get_param("gain") {
@@ -265,7 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = proc.set_node_param::<DelayLine>("delay", ParamValue::Float(0.8));
                     
                     proc.with_graph(|graph: &mut AudioGraph| {
-                        let node_ids: Vec<kama_core::graph::NodeId> = graph.get_processing_order().to_vec();
+                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
                         for node_id in node_ids {
                             if let Some(node) = graph.get_node(node_id) {
                                 if let Some(ParamValue::Float(val)) = node.get_param("gain") {

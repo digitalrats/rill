@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use kama_core::graph::NodeId;
+use kama_core_traits::NodeId;
 use std::fmt;
 
 /// Паттерн для сопоставления событий

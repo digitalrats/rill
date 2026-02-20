@@ -17,6 +17,3 @@ lazy_static = "1.4"
 [features]
 default = []
 serde = ["dep:serde", "dep:serde_json"]
-
-[dev-dependencies]
-kama-core = { path = "../kama-core" }

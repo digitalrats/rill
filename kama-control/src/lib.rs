@@ -17,6 +17,9 @@ pub use mapping::{Mapping, Target, Transform, EventPattern};
 pub use node::ControlNode;
 pub use error::{ControlError, ControlResult};
 
+// Реэкспорты из kama-core-traits для удобства
+pub use kama_core_traits::{NodeId, AudioNode, ParamValue};
+
 /// Преобразует MIDI сообщение в ControlEvent
 pub fn midi_to_event(message: &[u8]) -> Option<ControlEvent> {
     if message.len() < 3 {

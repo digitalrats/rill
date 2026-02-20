@@ -8,7 +8,7 @@
 pub mod error;
 pub mod param;
 pub mod node;
-pub mod time;
+pub mod time;  // Модуль time содержит всё, что связано со временем
 
 // Реэкспорты для удобства
 pub use error::{AudioError, AudioResult};
@@ -17,4 +17,11 @@ pub use node::{
     AudioNode, NodeCategory, NodeMetadata, NodeCreator, NodeTypeId,
     NodeId, PortId,
 };
-pub use time::{Clock, TimeProvider, TickInfo};
+
+// Реэкспорты из модуля time
+pub use time::{
+    Clock,
+    TimeProvider,
+    TickInfo,
+    SystemClock,
+};

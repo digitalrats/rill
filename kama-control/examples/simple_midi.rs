@@ -1,14 +1,27 @@
-use kama_core::{
-    AudioGraph, AudioNode,
-    node::GainNode,
-    graph::PortId,
-};
+use kama_core_traits::{NodeId, AudioNode};
 use kama_control::{
     ControlBackend, ControlNode, Mapping, Target, Transform,
     backends::midi::MidiBackend,
 };
 use std::sync::Arc;
 use parking_lot::RwLock;
+
+// Заглушка для графа (в реальности будет использоваться kama-graph)
+struct DummyGraph {
+    nodes: Vec<NodeId>,
+}
+
+impl DummyGraph {
+    fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+    
+    fn add_node(&mut self, _node: Box<dyn AudioNode>) -> NodeId {
+        let id = NodeId(self.nodes.len() as u32);
+        self.nodes.push(id);
+        id
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,12 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Создаем узел управления
     let mut control_node = ControlNode::new(event_rx);
     
-    // Создаем граф
-    let mut graph = AudioGraph::new(44100.0);
+    // Создаем заглушку графа
+    let mut graph = DummyGraph::new();
     
     // Добавляем усилитель для управления
-    let gain = GainNode::new(0.5);
-    let gain_id = graph.add_node(Box::new(gain));
+    // В реальности это будет настоящий AudioNode
+    let gain_id = NodeId(0);
     
     // Создаем маппинг: MIDI контроллер 7 -> громкость
     use kama_control::EventPattern;

@@ -1,13 +1,14 @@
 //! Реализация `TimeProvider` на основе атомарных счётчиков.
 
-use std::fmt::Debug; // <-- Добавляем импорт Debug
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Clock, TimeProvider, TickInfo};
+use crate::{Clock, TimeProvider, TickInfo};
 
 /// Системные часы – эталонная реализация `TimeProvider`.
 ///
 /// Потокобезопасны (lock-free), могут использоваться в аудиопотоке.
+#[derive(Default)]
 pub struct SystemClock {
     sample_rate: f64,
     position: AtomicU64,
@@ -23,6 +24,16 @@ impl SystemClock {
             bpm: AtomicU64::new(initial_bpm.to_bits()),
         }
     }
+    
+    /// Создать часы с BPM по умолчанию (120)
+    pub fn with_sample_rate(sample_rate: f64) -> Self {
+        Self::new(sample_rate, 120.0)
+    }
+    
+    /// Получить текущую позицию в секундах
+    pub fn position_seconds(&self) -> f64 {
+        self.position_samples() as f64 / self.sample_rate()
+    }
 }
 
 impl Clock for SystemClock {
@@ -33,7 +44,6 @@ impl Clock for SystemClock {
     fn position_samples(&self) -> u64 {
         self.position.load(Ordering::Relaxed)
     }
-
 
     fn advance(&self, samples: u64) -> u64 {
         self.position.fetch_add(samples, Ordering::Relaxed)
@@ -69,7 +79,7 @@ impl TimeProvider for SystemClock {
             };
         }
 
-        // Общее количество долей (с учётом плавающей точки для точности)
+        // Общее количество долей
         let total_beats_f = pos as f64 / samples_per_beat as f64;
         let total_beats = total_beats_f.floor() as u64;
         
@@ -92,7 +102,6 @@ impl TimeProvider for SystemClock {
     }
 }
 
-// Реализация Debug для SystemClock
 impl Debug for SystemClock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SystemClock")
@@ -102,6 +111,7 @@ impl Debug for SystemClock {
             .finish()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,25 +135,31 @@ mod tests {
         assert_eq!(clock.bpm(), 140.0);
     }
 
-        #[test]
+    #[test]
     fn test_tick_info() {
         let clock = SystemClock::new(44100.0, 120.0);
         
         // При 120 BPM одна доля = 0.5 сек = 22050 сэмплов
-        clock.advance(22050); // прошла одна доля
+        clock.advance(22050);
         let info = clock.tick_info();
-        assert_eq!(info.beat, 1); // вторая доля (0-индексация)
+        assert_eq!(info.beat, 1);
         assert_eq!(info.bar, 0);
         assert_eq!(info.sixteenth, 0);
 
-        clock.advance(22050 * 2); // ещё две доли – всего три доли
+        clock.advance(22050 * 2);
         let info = clock.tick_info();
-        assert_eq!(info.beat, 3); // четвёртая доля
+        assert_eq!(info.beat, 3);
         assert_eq!(info.bar, 0);
 
-        clock.advance(22050); // ещё одна доля – прошёл полный такт
+        clock.advance(22050);
         let info = clock.tick_info();
-        assert_eq!(info.beat, 0); // начало нового такта
+        assert_eq!(info.beat, 0);
         assert_eq!(info.bar, 1);
+    }
+    
+    #[test]
+    fn test_default_bpm() {
+        let clock = SystemClock::with_sample_rate(48000.0);
+        assert_eq!(clock.bpm(), 120.0);
     }
 }

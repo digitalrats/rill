@@ -1,4 +1,4 @@
-use kama_buffers::{MultiHeadBuffer, ReadMode};
+use kama_buffers::{MultiHeadBuffer, BufferHead, ReadMode};
 use kama_core_traits::AudioNode;
 use std::f32::consts::PI;
 
@@ -25,15 +25,15 @@ fn main() {
     if let Some(head) = buffer.get_head_mut(head_id) {
         head.read_mode = ReadMode::Granular {
             grain_size: 256,
-            grain_spacing: 512,
+            spacing: 512,
             randomization: 0.3,
         };
-        head.state.speed = 0.7;
-        head.state.pan = -0.5;
+        head.set_speed(0.7);
+        head.set_pan(-0.5);
         
         println!("Added granular head:");
         println!("  Grain size: 256 samples");
-        println!("  Grain spacing: 512 samples");
+        println!("  Spacing: 512 samples");
         println!("  Randomization: 30%");
         println!("  Speed: 0.7x");
         println!("  Pan: left (-0.5)");
@@ -41,33 +41,27 @@ fn main() {
     
     // Обрабатываем несколько блоков
     const BUFFER_SIZE: usize = 512;
-    const NUM_CHANNELS: usize = 2;
-    
-    // Предварительно аллоцированный буфер
-    let mut output_storage = vec![0.0f32; BUFFER_SIZE * NUM_CHANNELS];
     
     println!("\nProcessing granular synthesis...");
     
     for block in 0..3 {
-        // Разделяем буфер на каналы
-        let (left_buf, right_buf) = output_storage.split_at_mut(BUFFER_SIZE);
+        let mut output_left = vec![0.0f32; BUFFER_SIZE];
+        let mut output_right = vec![0.0f32; BUFFER_SIZE];
         
-        let mut outputs = [&mut left_buf[..BUFFER_SIZE], &mut right_buf[..BUFFER_SIZE]];
+        let mut outputs = [&mut output_left[..], &mut output_right[..]];
         
-        if let Err(e) = buffer.process(&[&[]], &mut outputs) {
+        if let Err(e) = buffer.process(&[], &mut outputs) {
             eprintln!("Error: {}", e);
             break;
         }
         
         // Вычисляем статистику
-        let max_amp = output_storage.iter()
+        let max_amp = output_left.iter()
+            .chain(output_right.iter())
             .map(|&x| x.abs())
             .fold(0.0f32, |a, b| a.max(b));
         
         println!("  Block {}: max amplitude = {:.4}", block, max_amp);
-        
-        // Очищаем буферы
-        output_storage.fill(0.0);
     }
     
     println!("\n=== Granular Synthesis Concepts ===");

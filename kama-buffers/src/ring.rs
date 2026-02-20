@@ -1,121 +1,100 @@
+//! Кольцевой буфер с фиксированным размером
+
 use std::sync::Arc;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use crate::view::{BufferView, BufferViewMut};
 
 /// Кольцевой буфер с фиксированным размером
-/// Всегда содержит последние size записанных семплов
 #[derive(Clone, Debug)]
 pub struct RingBuffer {
-    buffer: Arc<RwLock<Vec<f32>>>,
-    write_pos: usize,
+    /// Внутренние данные буфера
+    pub(crate) buffer: Arc<RwLock<Vec<f32>>>,
+    /// Размер буфера (всегда степень двойки)
     size: usize,
+    /// Текущая позиция записи
+    pub(crate) write_pos: usize,
+    /// Маска для быстрого вычисления остатка (size - 1)
     mask: usize,
-    filled: bool,  // стал ли буфер полностью заполненным хотя бы раз
+    /// Флаг, указывающий, что буфер хотя бы раз был полностью заполнен
+    pub(crate) filled: bool,
 }
 
 impl RingBuffer {
+    /// Создать новый кольцевой буфер
     pub fn new(size: usize) -> Self {
         let size = size.next_power_of_two();
         Self {
             buffer: Arc::new(RwLock::new(vec![0.0; size])),
-            write_pos: 0,
             size,
+            write_pos: 0,
             mask: size - 1,
             filled: false,
         }
     }
     
+    /// Получить View для чтения
+    pub fn view(&self) -> BufferView<'_> {
+        BufferView::new(self)
+    }
+    
+    /// Получить View для записи (если нужен мутабельный доступ)
+    pub fn view_mut(&mut self) -> BufferViewMut<'_> {
+        BufferViewMut::new(self)
+    }
+    
+    /// Записать семплы в буфер
     pub fn write(&mut self, samples: &[f32]) {
-        let mut buffer = self.buffer.write();
-        let mut pos = self.write_pos;
-        
-        for &sample in samples {
-            buffer[pos] = sample;
-            pos = (pos + 1) & self.mask;
-        }
-        
-        self.write_pos = pos;
-        
-        // Если мы хотя бы раз заполнили весь буфер, отмечаем это
-        if !self.filled && self.write_pos == 0 {
-            self.filled = true;
-        }
+        // Используем view_mut для записи
+        let mut view = self.view_mut();
+        view.write_slice(samples);
     }
     
+    /// Прочитать семплы с фиксированной задержкой (упрощенный API)
     pub fn read(&self, delay_samples: usize, output: &mut [f32]) {
-        let buffer = self.buffer.read();
-        
-        // Если буфер ещё не полностью заполнен, читаем только реальные данные
-        let available = if !self.filled {
-            self.write_pos
-        } else {
-            self.size
-        };
-        
-        // delay_samples не может быть больше доступных семплов
-        let delay = delay_samples.min(available);
-        
+        let view = self.view();
         for i in 0..output.len() {
-            // Позиция: (write_pos - delay - i) mod size
-            // Используем сложение с size для избежания отрицательных чисел
-            let pos = (self.write_pos + self.size - delay - i) % self.size;
-            output[i] = buffer[pos];
+            output[i] = view.read_delayed(delay_samples, i);
         }
     }
     
-pub fn read_interpolated(&self, delay_samples: f32, output: &mut [f32]) {
-    let buffer = self.buffer.read();
-    
-    // Если буфер ещё не полностью заполнен, используем только реальные данные
-    let available = if !self.filled {
-        self.write_pos
-    } else {
-        self.size
-    } as f32;
-    
-    // Нормализуем задержку, чтобы она не превышала доступные данные
-    let delay = delay_samples.min(available - 0.001);
-    
-    // Вычисляем начальную позицию для первого семпла
-    let mut read_pos = self.write_pos as f32 - delay;
-    
-    // Нормализуем начальную позицию в диапазон [0, size)
-    while read_pos < 0.0 {
-        read_pos += self.size as f32;
-    }
-    while read_pos >= self.size as f32 {
-        read_pos -= self.size as f32;
+    /// Прочитать с интерполяцией (упрощенный API)
+    pub fn read_interpolated(&self, delay_samples: f32, output: &mut [f32]) {
+        let view = self.view();
+        view.read_sequence_interpolated(delay_samples, output);
     }
     
-    for (i, out) in output.iter_mut().enumerate() {
-        // Текущая позиция с учётом обёртывания
-        let current_pos = read_pos + i as f32;
-        
-        // Нормализуем в диапазон [0, size)
-        let mut pos = current_pos;
-        while pos >= self.size as f32 {
-            pos -= self.size as f32;
-        }
-        
-        // Находим два ближайших целых индекса для интерполяции
-        let idx1 = pos.floor() as usize;
-        let idx2 = (idx1 + 1) % self.size;
-        let frac = pos.fract();
-        
-        let s1 = buffer[idx1];
-        let s2 = buffer[idx2];
-        
-        *out = s1 + frac * (s2 - s1);
-        
-        println!("i={}, pos={:.2}, idx1={}, idx2={}, frac={:.2}, s1={}, s2={}, out={}", 
-                 i, pos, idx1, idx2, frac, s1, s2, *out);
+    /// Получить доступ к данным для чтения (внутреннее использование)
+    pub(crate) fn read_guard(&self) -> RwLockReadGuard<'_, Vec<f32>> {
+        self.buffer.read()
     }
-}
     
+    /// Получить доступ к данным для записи (внутреннее использование)
+    pub(crate) fn write_guard(&mut self) -> RwLockWriteGuard<'_, Vec<f32>> {
+        self.buffer.write()
+    }
+    
+    /// Получить размер буфера
     pub fn size(&self) -> usize {
         self.size
     }
     
-    /// Получить количество реально записанных семплов
+    /// Получить текущую позицию записи
+    pub fn write_pos(&self) -> usize {
+        self.write_pos
+    }
+    
+    /// Получить маску (size - 1)
+    pub fn mask(&self) -> usize {
+        self.mask
+    }
+    
+    /// Проверить, заполнен ли буфер хотя бы раз
+    pub fn is_filled(&self) -> bool {
+        self.filled
+    }
+    
+    /// Получить количество записанных семплов
     pub fn len(&self) -> usize {
         if self.filled {
             self.size
@@ -124,15 +103,10 @@ pub fn read_interpolated(&self, delay_samples: f32, output: &mut [f32]) {
         }
     }
     
-    /// Получить значение по индексу (для внутреннего использования в крейте)
-    pub(crate) fn get(&self, index: usize) -> f32 {
-        let buffer = self.buffer.read();
-        buffer[index & self.mask]
-    }
-    
-    /// Получить доступ к данным для чтения (возвращает guard)
-    pub(crate) fn read_guard(&self) -> parking_lot::RwLockReadGuard<'_, Vec<f32>> {
-        self.buffer.read()
+    /// Сбросить буфер
+    pub fn reset(&mut self) {
+        let mut view = self.view_mut();
+        view.clear();
     }
 }
 
@@ -143,7 +117,6 @@ mod tests {
     #[test]
     fn test_ring_buffer_basic() {
         let mut buffer = RingBuffer::new(8);
-        
         let test_data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         buffer.write(&test_data);
         
@@ -189,7 +162,7 @@ mod tests {
         
         // Записываем больше, чем размер буфера
         buffer.write(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        // Теперь буфер должен содержать [5,6,3,4]? Нет, последние 4 семпла: 3,4,5,6
+        // Теперь буфер должен содержать последние 4 семпла: 3,4,5,6
         
         let mut output = vec![0.0; 4];
         buffer.read(1, &mut output);
@@ -230,5 +203,38 @@ mod tests {
         // затем между 1.0 (индекс 0) и 2.0 (индекс 1) -> 1.5
         assert!((output[0] - 2.5).abs() < 1e-6, "output[0] = {}, expected 2.5", output[0]);
         assert!((output[1] - 1.5).abs() < 1e-6, "output[1] = {}, expected 1.5", output[1]);
+    }
+    
+    #[test]
+    fn test_ring_buffer_len() {
+        let mut buffer = RingBuffer::new(4);
+        assert_eq!(buffer.len(), 0);
+        
+        buffer.write(&[1.0, 2.0]);
+        assert_eq!(buffer.len(), 2);
+        
+        buffer.write(&[3.0, 4.0]);
+        assert_eq!(buffer.len(), 4);
+        assert!(buffer.is_filled());
+        
+        buffer.write(&[5.0, 6.0]);
+        assert_eq!(buffer.len(), 4); // Размер не меняется после перезаписи
+        assert!(buffer.is_filled());
+    }
+    
+    #[test]
+    fn test_ring_buffer_reset() {
+        let mut buffer = RingBuffer::new(4);
+        buffer.write(&[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(buffer.len(), 4);
+        
+        buffer.reset();
+        assert_eq!(buffer.len(), 0);
+        assert!(!buffer.is_filled());
+        
+        let view = buffer.view();
+        for i in 0..4 {
+            assert_eq!(view.get(i), 0.0);
+        }
     }
 }

@@ -190,7 +190,7 @@ fn create_granular_buffer(sample: Vec<f32>, sample_rate: f32) -> MultiHeadBuffer
 }
 
 /// Создание графа обработки для гранулярного синтеза
-fn create_processing_graph(sample_rate: f32) -> (AudioGraph, kama_core::graph::NodeId, kama_core::graph::NodeId) {
+fn create_processing_graph(sample_rate: f32) -> (AudioGraph, kama_core_traits::graph::NodeId, kama_core_traits::graph::NodeId) {
     let mut graph = AudioGraph::new(sample_rate);
     
     // 1. Входной узел (принимает сигнал от буфера)
@@ -307,8 +307,8 @@ impl GranularState {
 /// Процессор для гранулярного синтеза
 struct GranularProcessor {
     graph: AudioGraph,
-    input_id: kama_core::graph::NodeId,
-    output_id: kama_core::graph::NodeId,
+    input_id: kama_core_traits::graph::NodeId,
+    output_id: kama_core_traits::graph::NodeId,
     state: Arc<RwLock<GranularState>>,
     temp_input: Vec<f32>,
     temp_output: Vec<f32>,
@@ -317,8 +317,8 @@ struct GranularProcessor {
 impl GranularProcessor {
     fn new(
         graph: AudioGraph,
-        input_id: kama_core::graph::NodeId,
-        output_id: kama_core::graph::NodeId,
+        input_id: kama_core_traits::graph::NodeId,
+        output_id: kama_core_traits::graph::NodeId,
         state: Arc<RwLock<GranularState>>,
     ) -> Self {
         Self {

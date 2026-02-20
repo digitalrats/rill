@@ -1,8 +1,5 @@
-// kama-automation/tests/lfo_envelope_tests.rs
-//! Тесты для LfoWithEnvelopeAutomaton
-
 use std::sync::Arc;
-use kama_core::time::{SystemClock, Clock, TimeProvider, TickInfo};
+use kama_core_traits::time::{SystemClock, Clock, TimeProvider, TickInfo};  // <-- Обновляем импорт
 use kama_automation::{
     AutomationContext, LfoAction, Automaton,
     automaton::{LfoWithEnvelopeAutomaton, LfoWithEnvelopeState, EnvelopeStage},

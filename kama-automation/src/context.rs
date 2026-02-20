@@ -1,7 +1,7 @@
 //! Контекст выполнения автоматов
 
 use std::sync::Arc;
-use kama_core::time::TimeProvider;
+use kama_core_traits::time::TimeProvider;
 use crate::parameter::ParameterMap;
 use crate::signal::SignalSender;
 

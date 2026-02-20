@@ -1,12 +1,8 @@
-use kama_graph::AudioGraph;
-use kama_core_traits::{AudioNode, ParamValue, NodeTypeId};
+use kama_core_traits::{AudioNode, NodeTypeId, ParamValue};
 use kama_buffers::MultiHeadBuffer;
 
 fn main() {
     let sample_rate = 44100.0;
-    
-    // Создаём граф
-    let mut graph = AudioGraph::new(sample_rate);
     
     // Создаём многоголовый буфер
     let mut buffer = MultiHeadBuffer::new(4096, sample_rate);
@@ -16,31 +12,29 @@ fn main() {
     let head2_id = buffer.add_head();
     
     if let Some(head1) = buffer.get_head_mut(head1_id) {
-        head1.state.speed = 0.5;
-        head1.state.pan = -0.5;
+        head1.set_speed(0.5);
+        head1.set_pan(-0.5);
     }
     
     if let Some(head2) = buffer.get_head_mut(head2_id) {
-        head2.state.speed = 2.0;
-        head2.state.pan = 0.5;
+        head2.set_speed(2.0);
+        head2.set_pan(0.5);
     }
     
-    // Добавляем в граф
-    let buffer_id = graph.add_node(Box::new(buffer));
+    println!("MultiHeadBuffer создан");
+    println!("Количество головок: {}", buffer.head_count());
+    println!("Размер буфера: {} сэмплов", buffer.buffer_size());
     
-    println!("MultiHeadBuffer добавлен в граф с ID: {:?}", buffer_id);
+    // Записываем тестовые данные
+    let test_data: Vec<f32> = (0..256).map(|i| i as f32 / 255.0).collect();
+    buffer.write(&test_data);
     
-    // Получаем информацию через параметры
-    if let Some(node) = graph.get_node(buffer_id) {
-        if node.node_type_id() == NodeTypeId::of::<MultiHeadBuffer>() {
-            if let Some(ParamValue::Int(num_heads)) = node.get_param("num_heads") {
-                println!("Количество головок: {}", num_heads);
-            }
-            if let Some(ParamValue::Int(buffer_size)) = node.get_param("buffer_size") {
-                println!("Размер буфера: {} сэмплов", buffer_size);
-            }
-        }
-    }
+    // Обрабатываем
+    let mut output_left = vec![0.0f32; 64];
+    let mut output_right = vec![0.0f32; 64];
+    let mut outputs = [&mut output_left[..], &mut output_right[..]];
     
-    println!("Готово!");
+    buffer.process(&[], &mut outputs).unwrap();
+    
+    println!("Готово! Сигнал обработан.");
 }

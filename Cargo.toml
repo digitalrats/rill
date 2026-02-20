@@ -7,6 +7,8 @@ members = [
     "kama-control",
     "kama-signal",
     "kama-registry",
+    # "kama-dsp-common",  # временно отключаем
+    # "kama-mixer",       # временно отключаем
 ]
 resolver = "2"
 

@@ -3,14 +3,13 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
-use kama_core::graph::NodeId;
-
 use kama_core_traits::{
     AudioNode, 
     NodeMetadata, 
     NodeCategory, 
     AudioError, 
     NodeTypeId,
+    NodeId,
     param::{ParamValue, ParamType, ParamMetadata},
 };
 
@@ -62,7 +61,7 @@ impl ControlNode {
             servos: HashMap::new(),
             
             #[cfg(feature = "automation")]
-            context: AutomationContext::new(44100.0), // или другая инициализация
+            context: AutomationContext::new(Arc::new(DummyTimeProvider)), // нужно будет заменить
             
             signal_tx: None,
             name: "ControlNode".to_string(),
@@ -148,6 +147,30 @@ impl ControlNode {
     }
 }
 
+// Заглушка для TimeProvider
+#[derive(Debug)]
+struct DummyTimeProvider;
+
+impl kama_core_traits::Clock for DummyTimeProvider {
+    fn sample_rate(&self) -> f64 { 44100.0 }
+    fn position_samples(&self) -> u64 { 0 }
+    fn advance(&self, _samples: u64) -> u64 { 0 }
+    fn reset(&self) {}
+}
+
+impl kama_core_traits::TimeProvider for DummyTimeProvider {
+    fn bpm(&self) -> f64 { 120.0 }
+    fn set_bpm(&self, _bpm: f64) {}
+    fn tick_info(&self) -> kama_core_traits::TickInfo {
+        kama_core_traits::TickInfo {
+            bar: 0,
+            beat: 0,
+            sixteenth: 0,
+            sample_pos: 0,
+        }
+    }
+}
+
 impl AudioNode for ControlNode {
     fn process(&mut self, _inputs: &[&[f32]], _outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
         // Проверяем новые события (без блокировки)
@@ -225,7 +248,7 @@ impl AudioNode for ControlNode {
     fn num_outputs(&self) -> usize { 0 }
     
     fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<ControlNode>()
+        NodeTypeId::of::<Self>()
     }
     
     fn metadata(&self) -> NodeMetadata {

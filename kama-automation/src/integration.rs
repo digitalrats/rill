@@ -1,10 +1,11 @@
 use crate::{AutomationManager, SignalSender};
-use kama_core::{
+use kama_core_traits::{
     node::AudioNode,
     param::ParamValue,
-    signal::{SignalDispatcher, AdvancedSignalDispatcher},
     AudioError,
 };
+
+use kama_signal::{SignalDispatcher, AdvancedSignalDispatcher},
 
 /// Адаптер для отправки сигналов в kama-core систему
 pub struct KamaSignalSender {

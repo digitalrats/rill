@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
-use kama_core::time::{SystemClock, Clock};
+use kama_core_traits::time::{SystemClock, Clock};
 use kama_automation::{
     AutomationContext, AutomationManager,
     automaton::LfoWithEnvelopeAutomaton,  // Исправленный импорт

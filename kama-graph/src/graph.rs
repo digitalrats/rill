@@ -1,8 +1,11 @@
+//! Основная реализация графа обработки
+
 use std::collections::{HashMap, VecDeque};
 use kama_core_traits::{AudioNode, AudioError, NodeId, PortId};
-use crate::error::{GraphError, GraphResult};
+use kama_buffers::BufferManager;
 use crate::connection::Connection;
-use crate::processor::{BufferManager, NodeProcessor};
+use crate::error::{GraphError, GraphResult};
+use crate::processor::{GraphBufferManager, NodeProcessor};
 
 /// Аудиограф - основной контейнер для узлов и соединений
 pub struct AudioGraph {
@@ -11,7 +14,7 @@ pub struct AudioGraph {
     processing_order: Vec<NodeId>,
     sample_rate: f32,
     next_id: u32,
-    buffer_manager: BufferManager,
+    buffer_manager: GraphBufferManager,
     node_processor: NodeProcessor,
     
     // Таблицы соединений для быстрого доступа
@@ -20,7 +23,7 @@ pub struct AudioGraph {
 }
 
 impl AudioGraph {
-    /// Создать новый граф с заданной частотой дискретизации
+    /// Создать новый граф
     pub fn new(sample_rate: f32) -> Self {
         Self {
             nodes: HashMap::new(),
@@ -28,7 +31,7 @@ impl AudioGraph {
             processing_order: Vec::new(),
             sample_rate,
             next_id: 0,
-            buffer_manager: BufferManager::new(),
+            buffer_manager: GraphBufferManager::new(),
             node_processor: NodeProcessor::new(),
             input_connections: HashMap::new(),
             output_connections: HashMap::new(),
@@ -54,14 +57,14 @@ impl AudioGraph {
             conn.from.node != id && conn.to.node != id
         });
         
-        // Очищаем кэши соединений
         self.rebuild_connection_cache();
         self.update_processing_order();
+        self.buffer_manager.release_node(id);
         
         node
     }
     
-    /// Создать соединение между портами
+    /// Создать соединение
     pub fn connect(&mut self, from: PortId, to: PortId, gain: f32) -> GraphResult<()> {
         if !self.nodes.contains_key(&from.node) || !self.nodes.contains_key(&to.node) {
             return Err(GraphError::InvalidNodeId);
@@ -74,7 +77,6 @@ impl AudioGraph {
         let conn = Connection::new(from, to, gain);
         self.connections.push(conn.clone());
         
-        // Обновляем кэши
         self.input_connections
             .entry(to)
             .or_default()
@@ -86,28 +88,10 @@ impl AudioGraph {
             .push(conn.clone());
         
         self.update_processing_order();
-        
         Ok(())
     }
     
-    /// Удалить соединение
-    pub fn disconnect(&mut self, from: PortId, to: PortId) -> bool {
-        let initial_len = self.connections.len();
-        
-        self.connections.retain(|conn| {
-            !(conn.from == from && conn.to == to)
-        });
-        
-        if self.connections.len() != initial_len {
-            self.rebuild_connection_cache();
-            self.update_processing_order();
-            true
-        } else {
-            false
-        }
-    }
-    
-    /// Перестроить кэши соединений
+    /// Перестроить кэш соединений
     fn rebuild_connection_cache(&mut self) {
         self.input_connections.clear();
         self.output_connections.clear();
@@ -147,7 +131,7 @@ impl AudioGraph {
                 .push(conn.to.node);
         }
         
-        // Начинаем с узлов без зависимостей (источников)
+        // Топологическая сортировка
         let mut queue: VecDeque<NodeId> = self.nodes.keys()
             .filter(|&id| dependencies.get(id).map_or(true, |d| d.is_empty()))
             .copied()
@@ -178,7 +162,7 @@ impl AudioGraph {
             }
         }
         
-        // Добавляем оставшиеся узлы (если есть циклы или изолированные узлы)
+        // Добавляем оставшиеся узлы (если есть циклы)
         for &node_id in self.nodes.keys() {
             if !order.contains(&node_id) {
                 order.push(node_id);
@@ -188,15 +172,15 @@ impl AudioGraph {
         self.processing_order = order;
     }
     
-    /// Получить неизменяемую ссылку на узел по ID
+    /// Получить узел по ID
     pub fn get_node(&self, id: NodeId) -> Option<&dyn AudioNode> {
-        self.nodes.get(&id).map(|node| node.as_ref() as &dyn AudioNode)
+        self.nodes.get(&id).map(|n| n.as_ref())
     }
     
-    /// Получить мутабельную ссылку на узел по ID
-    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut dyn AudioNode> {
-        self.nodes.get_mut(&id).map(|node| node.as_mut() as &mut dyn AudioNode)
-    }
+/// Получить мутабельный узел по ID
+pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut dyn AudioNode> {
+    self.nodes.get_mut(&id).map(|node| node.as_mut() as &mut dyn AudioNode)
+}
     
     /// Получить все соединения
     pub fn connections(&self) -> &[Connection] {
@@ -213,173 +197,6 @@ impl AudioGraph {
         self.sample_rate
     }
     
-    /// Установить частоту дискретизации для всех узлов
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-        for node in self.nodes.values_mut() {
-            node.init(sample_rate);
-        }
-    }
-    
-    /// Сбросить состояние всех узлов
-    pub fn reset(&mut self) {
-        for node in self.nodes.values_mut() {
-            node.reset();
-        }
-    }
-    
-    /// Сбросить состояние конкретного узла
-    pub fn reset_node(&mut self, id: NodeId) -> bool {
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.reset();
-            true
-        } else {
-            false
-        }
-    }
-    
-    /// Сбросить все узлы определённого типа
-    pub fn reset_nodes_by_type<T: AudioNode + 'static>(&mut self) {
-        let target_type_id = T::static_type_id();
-        for node in self.nodes.values_mut() {
-            if node.node_type_id() == target_type_id {
-                node.reset();
-            }
-        }
-    }
-    
-    /// Обработать граф
-    pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> GraphResult<()> {
-        if outputs.is_empty() {
-            return Ok(());
-        }
-        
-        let buffer_size = outputs[0].len();
-        
-        // Временное хранилище для выходов узлов
-        let max_nodes = self.next_id as usize;
-        let mut node_output_buffers: Vec<Option<Vec<Vec<f32>>>> = vec![None; max_nodes];
-        
-        // Проходим по узлам в порядке обработки
-        for &node_id in &self.processing_order {
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                let num_inputs = node.num_inputs();
-                let num_outputs = node.num_outputs();
-                
-                // Создаём входные буферы для этого узла
-                let mut input_buffers = vec![vec![0.0; buffer_size]; num_inputs];
-                
-                // Собираем входные данные для этого узла
-                for input_idx in 0..num_inputs {
-                    let port_id = PortId::input(node_id, input_idx as u8);
-                    
-                    // Получаем соединения для этого входа
-                    if let Some(connections) = self.input_connections.get(&port_id) {
-                        for conn in connections {
-                            // Получаем выходы предыдущего узла
-                            let src_node_id = conn.from.node;
-                            let src_node_idx = src_node_id.0 as usize;
-                            
-                            if src_node_idx < node_output_buffers.len() {
-                                if let Some(Some(src_outputs)) = node_output_buffers.get(src_node_idx) {
-                                    let src_idx = conn.from.index as usize;
-                                    if src_idx < src_outputs.len() {
-                                        let src_buffer = &src_outputs[src_idx];
-                                        
-                                        // Суммируем с коэффициентом
-                                        for i in 0..buffer_size {
-                                            input_buffers[input_idx][i] += src_buffer[i] * conn.gain;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Обрабатываем узел
-                let mut output_buffers = vec![vec![0.0; buffer_size]; num_outputs];
-                
-                // Создаём срезы для метода process
-                let input_slices: Vec<&[f32]> = input_buffers.iter()
-                    .map(|buf| buf.as_slice())
-                    .collect();
-                
-                let mut output_slices: Vec<&mut [f32]> = output_buffers.iter_mut()
-                    .map(|buf| buf.as_mut_slice())
-                    .collect();
-                
-                node.process(&input_slices, &mut output_slices)
-                    .map_err(GraphError::Audio)?;
-                
-                // Сохраняем выходы узла
-                let node_idx = node_id.0 as usize;
-                if node_idx < node_output_buffers.len() {
-                    node_output_buffers[node_idx] = Some(output_buffers);
-                }
-            }
-        }
-        
-        // Находим выходные узлы (узлы без выходных соединений)
-        let output_node_ids: Vec<NodeId> = self.processing_order.iter()
-            .filter(|&&node_id| {
-                let num_outputs = self.nodes.get(&node_id)
-                    .map(|n| n.num_outputs())
-                    .unwrap_or(0);
-                
-                (0..num_outputs).all(|output_idx| {
-                    let port_id = PortId::output(node_id, output_idx as u8);
-                    
-                    // Если нет соединений от этого выхода
-                    self.output_connections.get(&port_id)
-                        .map(|conns| conns.is_empty())
-                        .unwrap_or(true)
-                })
-            })
-            .copied()
-            .collect();
-        
-        // Копируем выходные данные
-        if let Some(&output_node_id) = output_node_ids.first() {
-            let node_idx = output_node_id.0 as usize;
-            if node_idx < node_output_buffers.len() {
-                if let Some(Some(outputs_to_copy)) = node_output_buffers.get(node_idx) {
-                    for (i, output_channel) in outputs.iter_mut().enumerate() {
-                        if i < outputs_to_copy.len() {
-                            let copy_len = buffer_size.min(output_channel.len());
-                            output_channel[..copy_len].copy_from_slice(&outputs_to_copy[i][..copy_len]);
-                        }
-                    }
-                }
-            }
-        } else if let Some(&last_node_id) = self.processing_order.last() {
-            // Если не нашли явных выходных узлов, используем последний в порядке обработки
-            let node_idx = last_node_id.0 as usize;
-            if node_idx < node_output_buffers.len() {
-                if let Some(Some(outputs_to_copy)) = node_output_buffers.get(node_idx) {
-                    for (i, output_channel) in outputs.iter_mut().enumerate() {
-                        if i < outputs_to_copy.len() {
-                            let copy_len = buffer_size.min(output_channel.len());
-                            output_channel[..copy_len].copy_from_slice(&outputs_to_copy[i][..copy_len]);
-                        }
-                    }
-                }
-            }
-        }
-        
-        Ok(())
-    }
-    
-    /// Очистить граф
-    pub fn clear(&mut self) {
-        self.nodes.clear();
-        self.connections.clear();
-        self.input_connections.clear();
-        self.output_connections.clear();
-        self.processing_order.clear();
-        self.buffer_manager.release_all();
-    }
-    
     /// Получить количество узлов
     pub fn node_count(&self) -> usize {
         self.nodes.len()
@@ -388,6 +205,107 @@ impl AudioGraph {
     /// Получить количество соединений
     pub fn connection_count(&self) -> usize {
         self.connections.len()
+    }
+    
+    /// Обработать граф
+/// Обработать граф
+pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> GraphResult<()> {
+    if outputs.is_empty() {
+        return Ok(());
+    }
+    
+    let buffer_size = outputs[0].len();
+    
+    // Временное хранилище для выходов узлов
+    let max_nodes = self.next_id as usize;
+    let mut node_output_buffers: Vec<Option<Vec<Vec<f32>>>> = vec![None; max_nodes];
+    
+    // Проходим по узлам в порядке обработки
+    for &node_id in &self.processing_order {
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            let num_inputs = node.num_inputs();
+            let num_outputs = node.num_outputs();
+            
+            // Получаем буферы для узла
+            let buffers = self.buffer_manager.get_buffers(
+                node_id,
+                num_inputs,
+                num_outputs,
+                buffer_size
+            );
+            
+            // Создаём входные буферы для этого узла
+            let mut input_buffers = vec![vec![0.0; buffer_size]; num_inputs];
+            
+            // Собираем входные данные для этого узла
+            for input_idx in 0..num_inputs {
+                let port_id = PortId::input(node_id, input_idx as u8);
+                
+                if let Some(connections) = self.input_connections.get(&port_id) {
+                    for conn in connections {
+                        let src_node_id = conn.from.node;
+                        let src_node_idx = src_node_id.0 as usize;
+                        
+                        if src_node_idx < node_output_buffers.len() {
+                            if let Some(Some(src_outputs)) = node_output_buffers.get(src_node_idx) {
+                                let src_idx = conn.from.index as usize;
+                                if src_idx < src_outputs.len() {
+                                    let src_buffer = &src_outputs[src_idx];
+                                    
+                                    for i in 0..buffer_size {
+                                        input_buffers[input_idx][i] += src_buffer[i] * conn.gain;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Копируем входные данные в буферы узла
+            for (i, input_buf) in input_buffers.iter().enumerate() {
+                if i < buffers.inputs.len() {
+                    buffers.inputs[i].copy_from_slice(input_buf);
+                }
+            }
+            
+            // Обрабатываем узел - используем as_mut() для преобразования Box<dyn> в &mut dyn
+            self.node_processor.process(node.as_mut(), buffers)?;
+            
+            // Сохраняем выходы узла
+            let node_idx = node_id.0 as usize;
+            if node_idx < node_output_buffers.len() {
+                node_output_buffers[node_idx] = Some(buffers.outputs.clone());
+            }
+        }
+    }
+    
+    // Копируем выходные данные (берем последний узел в порядке обработки)
+    if let Some(&last_node_id) = self.processing_order.last() {
+        let node_idx = last_node_id.0 as usize;
+        if node_idx < node_output_buffers.len() {
+            if let Some(Some(outputs_to_copy)) = node_output_buffers.get(node_idx) {
+                for (i, output_channel) in outputs.iter_mut().enumerate() {
+                    if i < outputs_to_copy.len() {
+                        let copy_len = buffer_size.min(output_channel.len());
+                        output_channel[..copy_len].copy_from_slice(&outputs_to_copy[i][..copy_len]);
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+    /// Очистить граф
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.connections.clear();
+        self.input_connections.clear();
+        self.output_connections.clear();
+        self.processing_order.clear();
+        self.buffer_manager.release_all();
     }
 }
 
@@ -435,7 +353,7 @@ mod tests {
     
     #[test]
     fn test_graph_creation() {
-        let mut graph = AudioGraph::new(44100.0);
+        let graph = AudioGraph::new(44100.0);
         assert_eq!(graph.sample_rate(), 44100.0);
         assert_eq!(graph.node_count(), 0);
     }
@@ -448,6 +366,23 @@ mod tests {
         
         assert_eq!(graph.node_count(), 1);
         assert!(graph.get_node(id).is_some());
+    }
+    
+    #[test]
+    fn test_remove_node() {
+        let mut graph = AudioGraph::new(44100.0);
+        
+        let node1 = Box::new(TestNode::new(1));
+        let node2 = Box::new(TestNode::new(2));
+        
+        let id1 = graph.add_node(node1);
+        let id2 = graph.add_node(node2);
+        
+        assert_eq!(graph.node_count(), 2);
+        
+        graph.remove_node(id1);
+        assert_eq!(graph.node_count(), 1);
+        assert!(graph.get_node(id2).is_some());
     }
     
     #[test]

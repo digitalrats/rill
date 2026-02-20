@@ -1,6 +1,6 @@
 [package]
 name = "kama-buffers"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Advanced buffer management for Kama Audio"
 license = "MIT OR Apache-2.0"
@@ -10,28 +10,9 @@ kama-core-traits = { path = "../kama-core-traits", version = "0.1.0" }
 parking_lot = "0.12"
 thiserror = "1.0"
 rand = "0.8"
-smallvec = "1.11"
-
-# Убираем kama-graph из основных зависимостей полностью
 
 [dev-dependencies]
-# Для примеров и тестов
-kama-graph = { path = "../kama-graph", version = "0.1.0" }
 
 [features]
 default = []
 simd = []
-
-# Убираем feature "graph", так как теперь это dev-dependency
-
-[[example]]
-name = "advanced_buffer_demo"
-# Не требуется feature
-
-[[example]]
-name = "simple_granular"
-# Не требуется feature
-
-[[example]]
-name = "test_multihead_buffer"
-# Не требуется feature

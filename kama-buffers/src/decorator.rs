@@ -1,3 +1,5 @@
+//! Декораторы для обработки буферов
+
 /// Декоратор для панорамирования
 pub struct PanningDecorator {
     pan: f32,
@@ -5,23 +7,20 @@ pub struct PanningDecorator {
 
 impl PanningDecorator {
     pub fn new(pan: f32) -> Self {
-        Self { pan: pan.max(-1.0).min(1.0) }
+        Self { pan: pan.clamp(-1.0, 1.0) }
     }
     
     pub fn process(&self, left: &mut [f32], right: &mut [f32]) {
-        let (left_gain, right_gain) = self.pan_to_gains();
+        let (left_gain, right_gain) = if self.pan <= 0.0 {
+            (1.0, 1.0 + self.pan)
+        } else {
+            (1.0 - self.pan, 1.0)
+        };
         
         for i in 0..left.len().min(right.len()) {
             left[i] *= left_gain;
             right[i] *= right_gain;
         }
-    }
-    
-    fn pan_to_gains(&self) -> (f32, f32) {
-        let pan = self.pan;
-        let left_gain = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
-        let right_gain = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
-        (left_gain, right_gain)
     }
 }
 
@@ -37,7 +36,7 @@ impl LfoDecorator {
     pub fn new(frequency: f32, amplitude: f32, sample_rate: f32) -> Self {
         Self {
             frequency,
-            amplitude: amplitude.max(0.0).min(1.0),
+            amplitude: amplitude.clamp(0.0, 1.0),
             phase: 0.0,
             sample_rate,
         }
@@ -52,7 +51,7 @@ impl LfoDecorator {
         }
         
         self.phase += buffer.len() as f32 * phase_increment;
-        if self.phase > 2.0 * std::f32::consts::PI {
+        while self.phase > 2.0 * std::f32::consts::PI {
             self.phase -= 2.0 * std::f32::consts::PI;
         }
     }

@@ -1,8 +1,6 @@
-// kama-automation/tests/manager_tests.rs
-//! Интеграционные тесты для AutomationManager
 
 use std::sync::Arc;
-use kama_core::time::{SystemClock, Clock, TimeProvider, TickInfo};
+use kama_core_traits::time::{SystemClock, Clock, TimeProvider, TickInfo};  // <-- Обновляем импорт
 use kama_automation::{
     AutomationManager, AutomationContext, LfoAutomaton, Automaton,
     Servo, ParameterMapping, SignalSender, TestSignalSender,

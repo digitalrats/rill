@@ -11,8 +11,8 @@ use crate::error::{IoResult, IoError};
 /// Процессор, который обрабатывает аудио через AudioGraph
 pub struct GraphProcessor {
     graph: Arc<RwLock<AudioGraph>>,
-    input_node_id: Option<kama_core::graph::NodeId>,
-    output_node_id: Option<kama_core::graph::NodeId>,
+    input_node_id: Option<kama_core_traits::graph::NodeId>,
+    output_node_id: Option<kama_core_traits::graph::NodeId>,
     temp_input: Vec<f32>,
     temp_output: Vec<f32>,
     sample_rate: f32,
@@ -27,8 +27,8 @@ impl GraphProcessor {
     /// * `output_node_id` - ID узла, выход которого будет использоваться как выход процессора
     pub fn new(
         graph: AudioGraph,
-        input_node_id: Option<kama_core::graph::NodeId>,
-        output_node_id: Option<kama_core::graph::NodeId>,
+        input_node_id: Option<kama_core_traits::graph::NodeId>,
+        output_node_id: Option<kama_core_traits::graph::NodeId>,
     ) -> Self {
         let sample_rate = graph.sample_rate();
         
@@ -61,12 +61,12 @@ impl GraphProcessor {
     }
     
     /// Изменить входной узел
-    pub fn set_input_node(&mut self, node_id: Option<kama_core::graph::NodeId>) {
+    pub fn set_input_node(&mut self, node_id: Option<kama_core_traits::graph::NodeId>) {
         self.input_node_id = node_id;
     }
     
     /// Изменить выходной узел
-    pub fn set_output_node(&mut self, node_id: Option<kama_core::graph::NodeId>) {
+    pub fn set_output_node(&mut self, node_id: Option<kama_core_traits::graph::NodeId>) {
         self.output_node_id = node_id;
     }
     
@@ -76,7 +76,7 @@ impl GraphProcessor {
     }
     
     /// Найти узел по типу
-    pub fn find_node_by_type<T: AudioNode + 'static>(&self) -> Option<kama_core::graph::NodeId> {
+    pub fn find_node_by_type<T: AudioNode + 'static>(&self) -> Option<kama_core_traits::graph::NodeId> {
         self.with_graph_read(|graph| {
             for &node_id in graph.get_processing_order() {
                 if let Some(node) = graph.get_node(node_id) {
@@ -106,7 +106,7 @@ impl GraphProcessor {
     }
     
     // Статическая версия для использования внутри замыканий
-    fn find_node_by_type_static(graph: &AudioGraph, type_id: std::any::TypeId) -> Option<kama_core::graph::NodeId> {
+    fn find_node_by_type_static(graph: &AudioGraph, type_id: std::any::TypeId) -> Option<kama_core_traits::graph::NodeId> {
         for &node_id in graph.get_processing_order() {
             if let Some(node) = graph.get_node(node_id) {
                 if node.type_id() == type_id {
