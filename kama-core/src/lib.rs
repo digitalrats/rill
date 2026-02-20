@@ -5,19 +5,15 @@
 pub mod buffer;
 pub mod node;
 pub mod graph;
-pub mod automation;
 pub mod param;
-pub mod signal;
-pub mod sequencer;
-pub mod synth;
 pub mod dsp;
 pub mod util;
 pub mod control;
 pub mod mixer;
+pub mod time;
 
 // Re-exports для удобства
 // Убираем несуществующие типы
-pub use automation::Automaton;
 pub use graph::{AudioGraph, NodeId, PortId, Connection};
 pub use node::{NodeFactory, NodeMetadata, NodeCategory};
 pub use param::{ParamValue, ParamType, ParamRange};

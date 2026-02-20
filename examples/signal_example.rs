@@ -1,6 +1,6 @@
 //! Пример использования сигнальной системы
 
-use kama_core::signal::{SignalDispatcher, ParameterChanged, SignalSource};
+use kama_signal::{SignalDispatcher, ParameterChanged, SignalSource};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Kama Core Signal Example ===");

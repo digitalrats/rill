@@ -7,10 +7,11 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 kama-core = { path = "../kama-core", version = "0.1.0" }
+kama-signal = { path = "../kama-signal", version = "0.1.0" }  # <-- Переносим сюда из dev-dependencies
 parking_lot = "0.12"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "1.0"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }
-
+# kama-signal убрали отсюда

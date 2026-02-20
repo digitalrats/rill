@@ -2,13 +2,8 @@
 members = [
     "kama-core",
     "kama-automation",
-    "kama-buffers",
-    "kama-mixer",
-    "kama-hp",
-    "kama-lofi",
-    "kama-wdf",
-    "kama-io",
-    "kama-control"
+    "kama-control",
+    "kama-signal"
 ]
 resolver = "2"
 

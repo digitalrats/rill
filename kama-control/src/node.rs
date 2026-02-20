@@ -7,7 +7,7 @@ use kama_core::{
     AudioNode, NodeMetadata, NodeCategory, AudioError,
     param::ParamValue, graph::NodeId,
 };
-use kama_core::signal::{ParameterChanged, SignalSource};
+use kama_signal::{ParameterChanged, SignalSource};
 
 #[cfg(feature = "automation")]
 use kama_automation::{Servo, AutomationContext, Automaton};
@@ -168,7 +168,7 @@ impl AudioNode for ControlNode {
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis() as u64,
-                                source: kama_core::signal::SignalSource::Midi { 
+                                source: kama_signal::SignalSource::Midi { 
                                     channel: 0, 
                                     controller: 0 
                                 },
