@@ -9,6 +9,7 @@ members = [
     "kama-dsp-common",
     "kama-hp",
     "kama-lofi",
+    "kama-digital-filters",
     # "kama-wdf"        # временно отключаем
     # "kama-mixer",     # временно отключаем
     # "kama-io",        # временно отключаем

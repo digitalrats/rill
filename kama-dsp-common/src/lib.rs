@@ -10,10 +10,12 @@
 mod context;
 mod fn_node;
 mod dummy;
-mod macros;  // Добавляем модуль macros
+mod macros;
+pub mod filter;
 
 pub use context::DspContext;
 pub use fn_node::{stateless_fn_node, stateful_fn_node, block_fn_node};
+pub use filter::{Filter, FilterType, FilterFactory};
 
 // Реэкспорты для удобства
 pub use kama_core_traits::{

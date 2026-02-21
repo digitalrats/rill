@@ -1,0 +1,19 @@
+[package]
+name = "kama-digital-filters"
+version = "0.1.0"
+edition = "2021"
+description = "Digital filters for Kama Audio - Biquad, OnePole, StateVariable, etc."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+kama-core-traits = { path = "../kama-core-traits" }
+kama-dsp-common = { path = "../kama-dsp-common" }
+kama-signal = { path = "../kama-signal", optional = true }
+thiserror = "1.0"
+
+[features]
+default = []
+automation = ["kama-signal"]  # для отправки сигналов
+
+[dev-dependencies]
+float-cmp = "0.9"
