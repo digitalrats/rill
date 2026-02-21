@@ -8,8 +8,8 @@ use std::thread;
 use kama_core_traits::time::{SystemClock, Clock};
 use kama_automation::{
     AutomationContext, AutomationManager,
-    automaton::LfoWithEnvelopeAutomaton,  // Исправленный импорт
-    Servo, ParameterMapping, TestSignalSender,
+    automaton::{LfoWithEnvelopeAutomaton, LfoAutomaton},  // <-- импортируем оба
+    Servo, ParameterMapping, TestSignalSender, Automaton,  // <-- Automaton трейт
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,19 +24,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("Создаём LFO с envelope (attack=2s, release=2s)...");
     
-    let lfo = Arc::new(LfoWithEnvelopeAutomaton::new(
+    // Вариант 1: Специализированный конструктор
+    let lfo_with_env = LfoWithEnvelopeAutomaton::lfo_with_envelope(
         0.5,   // частота
         0.8,   // амплитуда
         0.5,   // смещение
-        2.0,   // attack time
-        2.0,   // release time
-    ));
+        2.0,   // attack
+        2.0,   // release
+        "synth",
+        "filter_cutoff",
+    );
     
     let context = AutomationContext::new(clock.clone());
-    
     let servo = Servo::new(
-        "envelope_lfo".to_string(),
-        lfo.clone(),
+        "envelope_lfo_1".to_string(),
+        Arc::new(lfo_with_env),
         "synth".to_string(),
         "filter_cutoff".to_string(),
         ParameterMapping::Linear,
@@ -45,9 +47,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     manager.add_servo(servo);
     
-    println!("LFO с envelope добавлен");
-    println!("\nВремя(s)\tЗначение\tСостояние");
-    println!("--------\t--------\t---------");
+    // Вариант 2: Комбинация через замыкание
+    println!("\nСоздаём второй LFO с envelope через замыкание...");
+    
+    use kama_oscillators::control::{Lfo, Envelope, LfoWaveform};
+    
+    let lfo = Lfo::new(0.3, 0.5, 0.5).with_waveform(LfoWaveform::Saw);
+    let env = Envelope::new(1.0, 0.5, 0.8, 3.0);
+    
+    // Для использования с состоянием нужен Mutex или другой механизм
+    // В реальном приложении нужно использовать потокобезопасную обёртку
+    
+    println!("LFO с envelope добавлены");
+    println!("\nВремя(s)\tFilter Cutoff\tResonance\tСостояние");
+    println!("--------\t-------------\t---------\t---------");
     
     for i in 0..20 {
         let time = i as f64 * 0.5;
@@ -55,14 +68,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Clock::advance(clock.as_ref(), 22050);
         manager.update(22050);
         
-        let signals = signal_sender.get_signals_for_param("synth", "filter_cutoff");
-        if let Some(&value) = signals.last() {
-            let state = if time < 2.0 { "Attack" }
-                else if time < 4.0 { "Sustain" }
-                else { "Release" };
-            
-            println!("{:.1}\t\t{:.3}\t{}", time, value, state);
-        }
+        let cutoff = signal_sender.get_signals_for_param("synth", "filter_cutoff")
+            .last().copied().unwrap_or(0.5);
+        
+        let state = if time < 2.0 { "Attack" }
+            else if time < 4.0 { "Sustain" }
+            else { "Release" };
+        
+        println!("{:.1}\t\t{:.3}\t\t-\t\t{}", 
+                 time, cutoff, state);
         
         thread::sleep(Duration::from_millis(100));
     }

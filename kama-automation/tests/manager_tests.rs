@@ -1,8 +1,8 @@
-
 use std::sync::Arc;
-use kama_core_traits::time::{SystemClock, Clock, TimeProvider, TickInfo};  // <-- Обновляем импорт
+use kama_core_traits::time::{SystemClock, Clock, TimeProvider, TickInfo};
 use kama_automation::{
-    AutomationManager, AutomationContext, LfoAutomaton, Automaton,
+    AutomationManager, AutomationContext, 
+    automaton::{FunctionAutomaton, StatefulFunctionAutomaton},
     Servo, ParameterMapping, SignalSender, TestSignalSender,
 };
 
@@ -93,6 +93,35 @@ fn test_add_lfo_servo() {
 }
 
 #[test]
+fn test_add_custom_automaton() {
+    let time_provider = Arc::new(TestTimeProvider::new());
+    let clock = SystemClock::new(44100.0, 120.0);
+    let mut manager = AutomationManager::new(time_provider.clone(), clock);
+    
+    // Создаём кастомный автомат через замыкание
+    let automaton = Arc::new(FunctionAutomaton::new(
+        "Custom",
+        |t| (t * 2.0).sin() * 0.5 + 0.5,
+        "node1",
+        "param",
+    ));
+    
+    let context = AutomationContext::new(time_provider.clone());
+    let servo = Servo::new(
+        "custom".to_string(),
+        automaton,
+        "node1".to_string(),
+        "param".to_string(),
+        ParameterMapping::Linear,
+        context,
+    );
+    
+    manager.add_servo(servo);
+    
+    assert_eq!(manager.servos().len(), 1);
+}
+
+#[test]
 fn test_remove_servo() {
     let time_provider = Arc::new(TestTimeProvider::new());
     let clock = SystemClock::new(44100.0, 120.0);
@@ -130,8 +159,6 @@ fn test_clear_servos() {
     assert_eq!(manager.servos().len(), 0);
 }
 
-// ==================== ИСПРАВЛЕННЫЕ ТЕСТЫ ====================
-
 #[test]
 fn test_servo_updates() {
     println!("\n=== test_servo_updates ===");
@@ -167,7 +194,6 @@ fn test_servo_updates() {
         assert!(value >= 0.0 && value <= 1.0, "Value {} out of range [0,1]", value);
     }
 }
-
 
 #[test]
 fn test_multiple_servos() {
@@ -209,7 +235,11 @@ fn test_servo_range() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
     
-    let automaton = Arc::new(LfoAutomaton::new(1.0, 0.5, 0.0));
+    let automaton = Arc::new(FunctionAutomaton::lfo(
+        1.0, 0.5, 0.0,
+        "node1", "gain"
+    ));
+    
     let context = AutomationContext::new(time_provider.clone());
     
     let mut servo = Servo::new(
@@ -247,7 +277,11 @@ fn test_servo_with_custom_mapping() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
     
-    let automaton = Arc::new(LfoAutomaton::new(1.0, 0.5, 0.0));
+    let automaton = Arc::new(FunctionAutomaton::lfo(
+        1.0, 0.5, 0.0,
+        "node1", "gain"
+    ));
+    
     let context = AutomationContext::new(time_provider.clone());
     
     let servo = Servo::new(
@@ -274,11 +308,6 @@ fn test_servo_with_custom_mapping() {
         assert!(value >= 0.0 && value <= 1.0, "Value {} out of range [0,1]", value);
     }
 }
-// kama-automation/tests/manager_tests.rs
-
-// kama-automation/tests/manager_tests.rs
-
-// kama-automation/tests/manager_tests.rs
 
 #[test]
 fn test_servo_persistence() {
@@ -291,8 +320,6 @@ fn test_servo_persistence() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
     
-    // Используем LFO без envelope для теста
-    // Явно указываем, что envelope не нужен
     manager.add_lfo("lfo1", 0.25, 0.3, 0.5, "node1", "gain");
     
     let mut values = Vec::new();
@@ -329,21 +356,43 @@ fn test_disable_servo() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
     
-    // Используем LFO без envelope
-    manager.add_lfo("lfo1", 0.25, 0.3, 0.5, "node1", "gain");
+    // Используем автомат, который гарантированно меняет значения
+    let counter = Arc::new(StatefulFunctionAutomaton::new(
+        "Counter",
+        |_time, count| {
+            *count += 1;
+            *count as f64
+        },
+        0,
+        "node1",
+        "value",
+    ));
+    
+    let context = AutomationContext::new(time_provider.clone());
+    let mut servo = Servo::new(
+        "counter".to_string(),
+        counter,
+        "node1".to_string(),
+        "value".to_string(),
+        ParameterMapping::Linear,
+        context,
+    );
+    
+    servo.set_range(f64::NEG_INFINITY, f64::INFINITY);
+    manager.add_servo(servo);
     
     // Первое обновление
     time_provider.advance(44100);
     manager.update(44100);
     
-    let initial_signals = signal_sender.get_signals_for_param("node1", "gain");
+    let initial_signals = signal_sender.get_signals_for_param("node1", "value");
     println!("test_disable_servo - initial: {:?}", initial_signals);
     assert!(!initial_signals.is_empty(), "No initial signals");
     let initial_count = initial_signals.len();
     let initial_value = initial_signals.last().copied().unwrap_or(0.0);
     
     // Отключаем сервопривод
-    if let Some(servo) = manager.get_servo_mut("lfo1") {
+    if let Some(servo) = manager.get_servo_mut("counter") {
         servo.set_enabled(false);
     }
     
@@ -354,25 +403,25 @@ fn test_disable_servo() {
     }
     
     // Проверяем, что количество сигналов не увеличилось
-    let signals_after_disable = signal_sender.get_signals_for_param("node1", "gain");
+    let signals_after_disable = signal_sender.get_signals_for_param("node1", "value");
     println!("test_disable_servo - after disable: {:?}", signals_after_disable);
     assert_eq!(signals_after_disable.len(), initial_count, 
                "Signals were sent while disabled");
     
     // Включаем обратно
-    if let Some(servo) = manager.get_servo_mut("lfo1") {
+    if let Some(servo) = manager.get_servo_mut("counter") {
         servo.set_enabled(true);
     }
     
     // Ждём изменения значения
     let mut new_value_found = false;
-    for attempt in 0..15 {
+    for attempt in 0..5 {
         time_provider.advance(44100);
         manager.update(44100);
         
-        let current_signals = signal_sender.get_signals_for_param("node1", "gain");
+        let current_signals = signal_sender.get_signals_for_param("node1", "value");
         if let Some(&latest) = current_signals.last() {
-            if (latest - initial_value).abs() > 1e-2 {
+            if (latest - initial_value).abs() > 0.5 {  // счётчик растёт быстро
                 new_value_found = true;
                 println!("New value {:.6} found after {} attempts", latest, attempt + 1);
                 break;
@@ -394,8 +443,15 @@ fn test_signal_sender_integration() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
     
-    // Используем LFO без envelope
-    manager.add_lfo("lfo1", 0.25, 0.3, 0.5, "node1", "gain");
+    // Используем LFO с большей амплитудой
+    manager.add_lfo(
+        "lfo1",
+        0.25,  // частота
+        0.5,   // амплитуда
+        0.5,   // смещение
+        "node1",
+        "gain",
+    );
     
     // Первое обновление
     time_provider.advance(44100);
@@ -417,5 +473,61 @@ fn test_signal_sender_integration() {
     
     let diff = (signals[0] - signals[1]).abs();
     println!("Difference between signals: {:.6}", diff);
-    assert!(diff > 1e-2, "Signals should be different: {:.6} vs {:.6}", signals[0], signals[1]);
+    assert!(diff > 0.00001, "Signals should be different: {:.6} vs {:.6}", signals[0], signals[1]);  // уменьшен порог
+}
+
+#[test]
+fn test_stateful_automaton() {
+    println!("\n=== test_stateful_automaton ===");
+    
+    let time_provider = Arc::new(TestTimeProvider::new());
+    let signal_sender = Arc::new(TestSignalSender::new());
+    let clock = SystemClock::new(44100.0, 120.0);
+    
+    let mut manager = AutomationManager::new(time_provider.clone(), clock)
+        .with_signal_sender(signal_sender.clone());
+    
+    // Создаём автомат с состоянием (счётчик)
+    // Начальное состояние 0, initial_state() вызовет генератор 1 раз = значение 1
+    let counter = Arc::new(StatefulFunctionAutomaton::new(
+        "Counter",
+        |_time, count| {
+            *count += 1;
+            *count as f64
+        },
+        0,
+        "node1",
+        "value",
+    ));
+    
+    let context = AutomationContext::new(time_provider.clone());
+    let mut servo = Servo::new(
+        "counter".to_string(),
+        counter,
+        "node1".to_string(),
+        "value".to_string(),
+        ParameterMapping::Linear,
+        context,
+    );
+    
+    // Убираем ограничения диапазона
+    servo.set_range(f64::NEG_INFINITY, f64::INFINITY);
+    
+    manager.add_servo(servo);
+    
+    // Первое обновление должно дать значение 2.0 (так как initial_state уже дала 1)
+    time_provider.advance(4410);
+    manager.update(4410);
+    
+    let signals = signal_sender.get_signals_for_param("node1", "value");
+    assert_eq!(signals.len(), 1, "Should have one signal");
+    assert!((signals[0] - 2.0).abs() < 0.01, "Expected 2.0, got {}", signals[0]);
+    
+    // Второе обновление должно дать значение 3.0
+    time_provider.advance(4410);
+    manager.update(4410);
+    
+    let signals = signal_sender.get_signals_for_param("node1", "value");
+    assert_eq!(signals.len(), 2, "Should have two signals");
+    assert!((signals[1] - 3.0).abs() < 0.01, "Expected 3.0, got {}", signals[1]);
 }

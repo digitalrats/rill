@@ -1,88 +1,19 @@
-//! Пример создания собственного автомата
+//! Пример создания собственного автомата через FunctionAutomaton
 //!
 //! Запуск: cargo run --example custom_automaton
 
 use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
-use kama_core_traits::time::{SystemClock, Clock};  // Добавили импорт Clock
+use kama_core_traits::time::{SystemClock, Clock};
 use kama_automation::{
-    AutomationContext, AutomationManager, Automaton,
-    Servo, ParameterMapping, TestSignalSender,
+    AutomationContext, AutomationManager,
+    automaton::{FunctionAutomaton, StatefulFunctionAutomaton, IntoAutomaton},
+    Servo, ParameterMapping, TestSignalSender, Automaton,  // <-- Automaton трейт
 };
 
-#[derive(Debug, Clone)]
-struct RandomWalkState {
-    value: f64,
-    last_time: f64,
-}
-
-struct RandomWalkAutomaton {
-    min: f64,
-    max: f64,
-    step_size: f64,
-    change_rate: f64,
-}
-
-impl RandomWalkAutomaton {
-    fn new(min: f64, max: f64, step_size: f64, change_rate: f64) -> Self {
-        Self { min, max, step_size, change_rate }
-    }
-}
-
-impl Automaton for RandomWalkAutomaton {
-    type Time = f64;
-    type Context = AutomationContext;
-    type Action = ();
-    type State = RandomWalkState;
-    
-    fn step(
-        &self,
-        time: f64,
-        _context: &Self::Context,
-        _action: Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<Self::Action>) {
-        let mut new_state = state.clone();
-        
-        let time_delta = if state.last_time > 0.0 {
-            time - state.last_time
-        } else {
-            0.0
-        };
-        
-        let expected_changes = time_delta * self.change_rate;
-        let actual_changes = expected_changes.floor() as usize;
-        
-        for _ in 0..actual_changes {
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            let step = if rng.gen_bool(0.5) { self.step_size } else { -self.step_size };
-            new_state.value = (new_state.value + step).clamp(self.min, self.max);
-        }
-        
-        new_state.last_time = time;
-        (new_state, None)
-    }
-    
-    fn initial_state(&self) -> Self::State {
-        RandomWalkState {
-            value: (self.min + self.max) / 2.0,
-            last_time: 0.0,
-        }
-    }
-    
-    fn name(&self) -> &str {
-        "RandomWalk"
-    }
-    
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        state.value
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Custom Automaton Example (Random Walk) ===\n");
+    println!("=== Custom Automaton Examples ===\n");
 
     let clock = Arc::new(SystemClock::new(44100.0, 120.0));
     let system_clock = SystemClock::new(44100.0, 120.0);
@@ -91,28 +22,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut manager = AutomationManager::new(clock.clone(), system_clock)
         .with_signal_sender(signal_sender.clone());
     
-    println!("Создаём Random Walk автомат...");
-    
-    let automaton = Arc::new(RandomWalkAutomaton::new(
-        0.0, 1.0, 0.05, 2.0
-    ));
+    // Пример 1: Простое замыкание через трейт IntoAutomaton
+    println!("1. Simple closure with IntoAutomaton:");
+    let simple_automaton = (|t: f64| (t * 0.5).sin() * 0.3 + 0.5)  // <-- явно указываем тип
+        .into_automaton("synth", "volume");
     
     let context = AutomationContext::new(clock.clone());
-    
     let servo = Servo::new(
-        "random_walk".to_string(),
-        automaton,
-        "effect".to_string(),
-        "parameter".to_string(),
+        "simple".to_string(),
+        Arc::new(simple_automaton),
+        "synth".to_string(),
+        "volume".to_string(),
         ParameterMapping::Linear,
         context,
     );
-    
     manager.add_servo(servo);
     
-    println!("Автомат добавлен\n");
-    println!("Время(s)\tЗначение");
-    println!("--------\t--------");
+    // Пример 2: Автомат с состоянием (интегратор)
+    println!("\n2. Stateful automaton (integrator):");
+    
+    let integrator = StatefulFunctionAutomaton::new(
+        "Integrator",
+        |sample: f64, state: &mut f64| {  // <-- явно указываем типы
+            *state += sample * 0.01;
+            if *state > 1.0 { *state = 0.0; }
+            *state
+        },
+        0.0,
+        "effect",
+        "position",
+    );
+    
+    let context = AutomationContext::new(clock.clone());
+    let servo = Servo::new(
+        "integrator".to_string(),
+        Arc::new(integrator),
+        "effect".to_string(),
+        "position".to_string(),
+        ParameterMapping::Linear,
+        context,
+    );
+    manager.add_servo(servo);
+    
+    // Пример 3: Random Walk
+    println!("\n3. Random Walk:");
+    
+    let random_walk = StatefulFunctionAutomaton::new(
+        "Random Walk",
+        |_time: f64, state: &mut f64| {  // <-- явно указываем типы
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let step = if rng.gen_bool(0.5) { 0.03 } else { -0.03 };
+            *state = (*state + step).clamp(0.0, 1.0);
+            *state
+        },
+        0.5,
+        "effect",
+        "random_param",
+    );
+    
+    let context = AutomationContext::new(clock.clone());
+    let servo = Servo::new(
+        "random".to_string(),
+        Arc::new(random_walk),
+        "effect".to_string(),
+        "random_param".to_string(),
+        ParameterMapping::Linear,
+        context,
+    );
+    manager.add_servo(servo);
+    
+    println!("\nЗапуск автоматизации...\n");
+    println!("Время(s)\tSimple\t\tIntgr\t\tRandom");
+    println!("--------\t------\t\t-----\t\t------");
     
     for i in 0..50 {
         let time = i as f64 * 0.1;
@@ -120,14 +102,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Clock::advance(clock.as_ref(), 4410);
         manager.update(4410);
         
-        let signals = signal_sender.get_signals_for_param("effect", "parameter");
-        if let Some(&value) = signals.last() {
-            println!("{:.1}\t\t{:.3}", time, value);
-        }
+        let simple = signal_sender.get_signals_for_param("synth", "volume")
+            .last().copied().unwrap_or(0.5);
+        let integrator = signal_sender.get_signals_for_param("effect", "position")
+            .last().copied().unwrap_or(0.0);
+        let random = signal_sender.get_signals_for_param("effect", "random_param")
+            .last().copied().unwrap_or(0.5);
+        
+        println!("{:.1}\t\t{:.3}\t\t{:.3}\t\t{:.3}", 
+                 time, simple, integrator, random);
         
         thread::sleep(Duration::from_millis(20));
     }
     
-    println!("\n✅ Свой автомат успешно работает");
+    println!("\n✅ Все кастомные автоматы работают");
     Ok(())
 }

@@ -4,7 +4,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use kama_core_traits::time::{Clock, TimeProvider, SystemClock}; 
-use crate::automaton::{LfoAutomaton};
+use kama_oscillators::control::LfoWaveform;
+use crate::automaton::{LfoAutomaton, LfoWithEnvelopeAutomaton};
 use crate::context::AutomationContext;
 use crate::servo::{Servo, AnyServo, ParameterMapping};
 use crate::signal::SignalSender;
@@ -32,6 +33,7 @@ impl<C: Clock> AutomationManager<C> {
         self
     }
     
+    /// Добавить LFO для автоматизации параметра
     pub fn add_lfo(
         &mut self,
         id: &str,
@@ -41,10 +43,11 @@ impl<C: Clock> AutomationManager<C> {
         target_node: &str,
         target_parameter: &str,
     ) {
-        let automaton = Arc::new(LfoAutomaton::new(frequency, amplitude, offset)
-            .with_envelope(0.01, 0.01));
+        let automaton = Arc::new(
+            LfoAutomaton::lfo(frequency, amplitude, offset, target_node, target_parameter)
+        );
         
-        // Создаём контекст с тем же signal_sender, что и у менеджера
+        // Создаём контекст с тем же signal_sender
         let mut context = AutomationContext::new(self.time_provider.clone());
         if let Some(sender) = &self.context.signal_sender {
             context = context.with_signal_sender(sender.clone());
@@ -56,13 +59,83 @@ impl<C: Clock> AutomationManager<C> {
             target_node.to_string(),
             target_parameter.to_string(),
             ParameterMapping::Linear,
-            context, // используем контекст с signal_sender
+            context,
         );
         
         self.add_servo(servo);
     }
     
-    // Также нужно исправить add_servo, чтобы он обновлял контекст с signal_sender
+    /// Добавить LFO с указанной формой волны
+    pub fn add_lfo_with_waveform(
+        &mut self,
+        id: &str,
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        waveform: LfoWaveform,
+        target_node: &str,
+        target_parameter: &str,
+    ) {
+        let automaton = Arc::new(
+            LfoAutomaton::lfo_with_waveform(
+                frequency, amplitude, offset, waveform,
+                target_node, target_parameter
+            )
+        );
+        
+        let mut context = AutomationContext::new(self.time_provider.clone());
+        if let Some(sender) = &self.context.signal_sender {
+            context = context.with_signal_sender(sender.clone());
+        }
+        
+        let servo = Servo::new(
+            id.to_string(),
+            automaton,
+            target_node.to_string(),
+            target_parameter.to_string(),
+            ParameterMapping::Linear,
+            context,
+        );
+        
+        self.add_servo(servo);
+    }
+    
+    /// Добавить LFO с огибающей
+    pub fn add_lfo_with_envelope(
+        &mut self,
+        id: &str,
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        attack: f64,
+        release: f64,
+        target_node: &str,
+        target_parameter: &str,
+    ) {
+        let automaton = Arc::new(
+            LfoWithEnvelopeAutomaton::lfo_with_envelope(
+                frequency, amplitude, offset, attack, release,
+                target_node, target_parameter
+            )
+        );
+        
+        let mut context = AutomationContext::new(self.time_provider.clone());
+        if let Some(sender) = &self.context.signal_sender {
+            context = context.with_signal_sender(sender.clone());
+        }
+        
+        let servo = Servo::new(
+            id.to_string(),
+            automaton,
+            target_node.to_string(),
+            target_parameter.to_string(),
+            ParameterMapping::Linear,
+            context,
+        );
+        
+        self.add_servo(servo);
+    }
+    
     pub fn add_servo<A>(&mut self, mut servo: Servo<A>) 
     where
         A: crate::automaton::Automaton<Time = f64, Context = AutomationContext> + 'static,
@@ -79,7 +152,6 @@ impl<C: Clock> AutomationManager<C> {
     }
     
     pub fn update(&mut self, sample_count: usize) {
-        // Приводим usize к u64
         let samples = sample_count as u64;
         let new_position = self.clock.advance(samples);
         
@@ -92,7 +164,7 @@ impl<C: Clock> AutomationManager<C> {
     }
     
     pub fn set_signal_sender(&mut self, sender: Arc<dyn SignalSender>) {
-        self.context.set_signal_sender(sender); // Используем мутабельную версию
+        self.context.set_signal_sender(sender);
     }
     
     pub fn get_servo(&self, id: &str) -> Option<&dyn AnyServo> {
@@ -126,7 +198,7 @@ pub type DefaultAutomationManager = AutomationManager<SystemClock>;
 
 impl DefaultAutomationManager {
     pub fn new_default(time_provider: Arc<dyn TimeProvider>) -> Self {
-        let clock = kama_core_traits::time::SystemClock::new(
+        let clock = SystemClock::new(
             time_provider.sample_rate(), 
             120.0
         );

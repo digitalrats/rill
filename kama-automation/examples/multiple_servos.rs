@@ -5,9 +5,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
-use kama_core_traits::time::{SystemClock, Clock};  // Добавили импорт Clock
+use kama_core_traits::time::{SystemClock, Clock};
+use kama_oscillators::control::LfoWaveform;
 use kama_automation::{
     AutomationManager, TestSignalSender,
+    automaton::FunctionAutomaton,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,28 +22,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut manager = AutomationManager::new(clock.clone(), system_clock)
         .with_signal_sender(signal_sender.clone());
     
-    println!("Добавляем несколько LFO для разных параметров:\n");
+    println!("Добавляем несколько автоматов для разных параметров:\n");
     
-    manager.add_lfo(
-        "volume_lfo",
-        0.2, 0.3, 0.5, "mixer", "volume"
+    // 1. Sine LFO для громкости
+    manager.add_servo(
+        kama_automation::Servo::new(
+            "volume_lfo".to_string(),
+            Arc::new(FunctionAutomaton::lfo_with_waveform(
+                0.2, 0.3, 0.5, LfoWaveform::Sine,
+                "mixer", "volume"
+            )),
+            "mixer".to_string(),
+            "volume".to_string(),
+            kama_automation::ParameterMapping::Linear,
+            kama_automation::AutomationContext::new(clock.clone()),
+        )
     );
-    println!("  Volume LFO: 0.2 Hz, range [0.2, 0.8]");
+    println!("  Volume LFO: 0.2 Hz Sine, range [0.2, 0.8]");
     
-    manager.add_lfo(
-        "pan_lfo",
-        2.0, 0.8, 0.0, "mixer", "pan"
+    // 2. Triangle LFO для панорамы
+    manager.add_servo(
+        kama_automation::Servo::new(
+            "pan_lfo".to_string(),
+            Arc::new(FunctionAutomaton::lfo_with_waveform(
+                2.0, 0.8, 0.0, LfoWaveform::Triangle,
+                "mixer", "pan"
+            )),
+            "mixer".to_string(),
+            "pan".to_string(),
+            kama_automation::ParameterMapping::Linear,
+            kama_automation::AutomationContext::new(clock.clone()),
+        )
     );
-    println!("  Pan LFO: 2.0 Hz, range [-0.8, 0.8]");
+    println!("  Pan LFO: 2.0 Hz Triangle, range [-0.8, 0.8]");
     
-    manager.add_lfo(
-        "filter_lfo",
-        1.0, 0.4, 0.5, "synth", "cutoff"
+    // 3. Square LFO для фильтра
+    manager.add_servo(
+        kama_automation::Servo::new(
+            "filter_lfo".to_string(),
+            Arc::new(FunctionAutomaton::lfo_with_waveform(
+                1.0, 0.4, 0.5, LfoWaveform::Square,
+                "synth", "cutoff"
+            )),
+            "synth".to_string(),
+            "cutoff".to_string(),
+            kama_automation::ParameterMapping::Linear,
+            kama_automation::AutomationContext::new(clock.clone()),
+        )
     );
-    println!("  Filter LFO: 1.0 Hz, range [0.1, 0.9]");
+    println!("  Filter LFO: 1.0 Hz Square, range [0.1, 0.9]");
     
-    println!("\nВремя(s)\tVolume\t\tPan\t\tCutoff");
-    println!("--------\t------\t\t---\t\t------");
+    // 4. Random Walk через состояние
+    let random_automaton = kama_automation::automaton::StatefulFunctionAutomaton::new(
+        "Random Walk",
+        |_time, state| {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            *state += (rng.gen::<f64>() - 0.5) * 0.1;
+            state.clamp(0.2, 0.8)
+        },
+        0.5,
+        "effect",
+        "parameter",
+    );
+    
+    manager.add_servo(
+        kama_automation::Servo::new(
+            "random_walk".to_string(),
+            Arc::new(random_automaton),
+            "effect".to_string(),
+            "parameter".to_string(),
+            kama_automation::ParameterMapping::Linear,
+            kama_automation::AutomationContext::new(clock.clone()),
+        )
+    );
+    println!("  Random Walk: smooth random changes");
+    
+    println!("\nВремя(s)\tVolume\t\tPan\t\tCutoff\t\tRandom");
+    println!("--------\t------\t\t---\t\t------\t\t------");
     
     for i in 0..20 {
         let time = i as f64 * 0.25;
@@ -55,9 +113,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .last().copied().unwrap_or(0.0);
         let cutoff = signal_sender.get_signals_for_param("synth", "cutoff")
             .last().copied().unwrap_or(0.5);
+        let random = signal_sender.get_signals_for_param("effect", "parameter")
+            .last().copied().unwrap_or(0.5);
         
-        println!("{:.2}\t\t{:.3}\t\t{:.3}\t\t{:.3}", 
-                 time, volume, pan, cutoff);
+        println!("{:.2}\t\t{:.3}\t\t{:.3}\t\t{:.3}\t\t{:.3}", 
+                 time, volume, pan, cutoff, random);
         
         thread::sleep(Duration::from_millis(50));
     }

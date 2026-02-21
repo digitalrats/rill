@@ -1,294 +1,226 @@
-// kama-automation/src/automaton/lfo.rs
+//! LFO автомат (обёртка над FunctionAutomaton)
 
-use super::{Automaton, AutomationContext, EnvelopeState, EnvelopeStage};
+use crate::automaton::function::FunctionAutomaton;
+use kama_oscillators::control::{Lfo, LfoWaveform};
+use std::sync::{Arc, Mutex};
 
-/// Действия LFO
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum LfoAction {
-    #[default]
-    None,
-    SetFrequency(f64),
-    SetAmplitude(f64),
-    Trigger,
-}
+/// LFO автомат - специализированная версия FunctionAutomaton
+pub type LfoAutomaton = FunctionAutomaton;
 
-/// Состояние LFO
-#[derive(Debug, Clone, Default)]
-pub struct LfoState {
-    pub phase: f64,
-    pub last_time: f64,
-    // Убираем envelope_state из основной структуры
-}
+/// LFO с огибающей - также FunctionAutomaton
+pub type LfoWithEnvelopeAutomaton = FunctionAutomaton;
 
-/// Состояние LFO с envelope (для случаев, когда он нужен)
-#[derive(Debug, Clone)]
-pub struct LfoWithEnvelopeState {
-    pub phase: f64,
-    pub last_time: f64,
-    pub envelope_state: EnvelopeState,
-}
-
-/// LFO автомат
-pub struct LfoAutomaton {
-    pub frequency: f64,
-    pub amplitude: f64,
-    pub offset: f64,
-    pub attack_time: f64,
-    pub release_time: f64,
-    pub use_envelope: bool,
-}
-
+/// Вспомогательные функции для создания LFO автоматов
 impl LfoAutomaton {
-    pub fn new(frequency: f64, amplitude: f64, offset: f64) -> Self {
-        Self {
-            frequency,
-            amplitude,
-            offset,
-            attack_time: 0.01,
-            release_time: 0.01,
-            use_envelope: false,
-        }
-    }
-    
-    pub fn with_envelope(mut self, attack: f64, release: f64) -> Self {
-        self.attack_time = attack;
-        self.release_time = release;
-        self.use_envelope = true;
-        self
-    }
-    
-    fn update_envelope(&self, envelope: &mut EnvelopeState, time_delta: f64, sample_rate: f64) {
-        let samples_delta = (time_delta * sample_rate) as usize;
+    /// Создать LFO автомат из параметров
+    pub fn lfo(
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        target_node: &str,
+        target_param: &str,
+    ) -> Self {
+        let lfo = Arc::new(Mutex::new(Lfo::new(frequency, amplitude, offset)));
         
-        match envelope.stage {
-            EnvelopeStage::Attack => {
-                let attack_samples = (self.attack_time * sample_rate) as usize;
-                envelope.samples_elapsed += samples_delta;
-                
-                if envelope.samples_elapsed >= attack_samples {
-                    envelope.stage = EnvelopeStage::Decay;
-                    envelope.value = 1.0;
-                    envelope.samples_elapsed = 0;
-                } else {
-                    envelope.value = envelope.samples_elapsed as f64 / attack_samples as f64;
-                }
-            }
-            
-            EnvelopeStage::Decay => {
-                envelope.stage = EnvelopeStage::Sustain;
-                envelope.value = 1.0;
-                envelope.samples_elapsed = 0;
-            }
-            
-            EnvelopeStage::Sustain => {
-                envelope.value = 1.0;
-            }
-            
-            EnvelopeStage::Release => {
-                let release_samples = (self.release_time * sample_rate) as usize;
-                envelope.samples_elapsed += samples_delta;
-                
-                if envelope.samples_elapsed >= release_samples {
-                    envelope.stage = EnvelopeStage::Off;
-                    envelope.value = 0.0;
-                    envelope.samples_elapsed = 0;
-                } else {
-                    envelope.value = 1.0 - (envelope.samples_elapsed as f64 / release_samples as f64);
-                }
-            }
-            
-            EnvelopeStage::Off => {
-                envelope.value = 0.0;
-            }
-        }
-    }
-}
-
-impl Automaton for LfoAutomaton {
-    type Time = f64;
-    type Context = AutomationContext;
-    type Action = LfoAction;
-    type State = LfoState;
-    
-    fn step(
-        &self,
-        time: f64,
-        context: &AutomationContext,
-        action: LfoAction,
-        state: &LfoState,
-    ) -> (LfoState, Option<LfoAction>) {
-        let mut new_state = state.clone();
-        let next_action = None;
-        
-        let time_delta = if state.last_time > 0.0 {
-            time - state.last_time
-        } else {
-            0.0
-        };
-        
-        println!("LfoAutomaton - time: {:.6}, last_time: {:.6}, delta: {:.6}", 
-                 time, state.last_time, time_delta);
-        
-        match action {
-            LfoAction::SetFrequency(freq) => {
-                println!("LfoAutomaton - setting frequency to {}", freq);
-            }
-            LfoAction::SetAmplitude(amp) => {
-                println!("LfoAutomaton - setting amplitude to {}", amp);
-            }
-            LfoAction::Trigger => {
-                println!("LfoAutomaton - trigger");
-                // При trigger ничего не делаем, так как у нас нет envelope
-            }
-            LfoAction::None => {}
-        }
-        
-        if time_delta > 0.0 {
-            new_state.phase += self.frequency * time_delta;
-            while new_state.phase >= 1.0 {
-                new_state.phase -= 1.0;
-            }
-        }
-        
-        new_state.last_time = time;
-        
-        println!("LfoAutomaton - new phase: {:.6}", new_state.phase);
-        
-        (new_state, next_action)
-    }
-    
-    fn initial_state(&self) -> LfoState {
-        LfoState {
-            phase: 0.0,
-            last_time: 0.0,
-        }
-    }
-    
-    fn name(&self) -> &str {
-        "LFO"
-    }
-    
-    fn extract_value(&self, state: &LfoState) -> f64 {
-        println!("extract_value - phase: {:.6}", state.phase);
-        
-        let sin_val = (state.phase * 2.0 * std::f64::consts::PI).sin();
-        println!("extract_value - sin_val: {:.6}", sin_val);
-        
-        let result = sin_val * self.amplitude + self.offset;
-        println!("extract_value - result: {:.6}", result);
-        
-        result
-    }
-}
-
-// Отдельный тип для LFO с envelope
-pub struct LfoWithEnvelopeAutomaton {
-    lfo: LfoAutomaton,
-}
-
-impl LfoWithEnvelopeAutomaton {
-    pub fn new(frequency: f64, amplitude: f64, offset: f64, attack: f64, release: f64) -> Self {
-        Self {
-            lfo: LfoAutomaton::new(frequency, amplitude, offset)
-                .with_envelope(attack, release),
-        }
-    }
-}
-
-impl Automaton for LfoWithEnvelopeAutomaton {
-    type Time = f64;
-    type Context = AutomationContext;
-    type Action = LfoAction;
-    type State = LfoWithEnvelopeState;
-    
-    fn step(
-        &self,
-        time: f64,
-        context: &AutomationContext,
-        action: LfoAction,
-        state: &LfoWithEnvelopeState,
-    ) -> (LfoWithEnvelopeState, Option<LfoAction>) {
-        let mut new_state = state.clone();
-        let next_action = None;
-        
-        // Вычисляем прошедшее время с последнего шага
-        let time_delta = if state.last_time > 0.0 {
-            time - state.last_time
-        } else {
-            // Если это первый шаг, используем время как дельту
-            time
-        };
-        
-        println!("LfoWithEnvelope - time: {:.6}, last_time: {:.6}, delta: {:.6}", 
-                 time, state.last_time, time_delta);
-        
-        match action {
-            LfoAction::SetFrequency(freq) => {
-                println!("LfoWithEnvelope - setting frequency to {}", freq);
-            }
-            LfoAction::SetAmplitude(amp) => {
-                println!("LfoWithEnvelope - setting amplitude to {}", amp);
-            }
-            LfoAction::Trigger => {
-                println!("LfoWithEnvelope - trigger");
-                new_state.envelope_state = EnvelopeState {
-                    stage: EnvelopeStage::Attack,
-                    value: 0.0,
-                    samples_elapsed: 0,
-                };
-            }
-            LfoAction::None => {}
-        }
-        
-        // Всегда обновляем фазу на основе времени
-        if time_delta > 0.0 {
-            new_state.phase += self.lfo.frequency * time_delta;
-            while new_state.phase >= 1.0 {
-                new_state.phase -= 1.0;
-            }
-        }
-        
-        // Всегда обновляем envelope, если он есть
-        if new_state.envelope_state.stage != EnvelopeStage::Off {
-            let sample_rate = context.time.sample_rate();
-            self.lfo.update_envelope(&mut new_state.envelope_state, time_delta, sample_rate);
-        }
-        
-        new_state.last_time = time;
-        
-        println!("LfoWithEnvelope - new phase: {:.6}, envelope: {:?}, value: {:.6}, last_time: {:.6}", 
-                 new_state.phase, new_state.envelope_state.stage, 
-                 new_state.envelope_state.value, new_state.last_time);
-        
-        (new_state, next_action)
-    }
-    
-    fn initial_state(&self) -> LfoWithEnvelopeState {
-        LfoWithEnvelopeState {
-            phase: 0.0,
-            last_time: 0.0,
-            envelope_state: EnvelopeState {
-                stage: EnvelopeStage::Off,
-                value: 0.0,
-                samples_elapsed: 0,
+        Self::new(
+            "LFO",
+            move |_time| {
+                let mut lfo = lfo.lock().unwrap();
+                lfo.generate()
             },
-        }
+            target_node,
+            target_param,
+        )
     }
     
-    fn name(&self) -> &str {
-        "LFO+Envelope"
+    /// Создать LFO автомат с указанной формой волны
+    pub fn lfo_with_waveform(
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        waveform: LfoWaveform,
+        target_node: &str,
+        target_param: &str,
+    ) -> Self {
+        let lfo = Arc::new(Mutex::new(
+            Lfo::new(frequency, amplitude, offset).with_waveform(waveform)
+        ));
+        
+        Self::new(
+            "LFO",
+            move |_time| {
+                let mut lfo = lfo.lock().unwrap();
+                lfo.generate()
+            },
+            target_node,
+            target_param,
+        )
     }
     
-    fn extract_value(&self, state: &LfoWithEnvelopeState) -> f64 {
-        println!("extract_value - phase: {:.6}, envelope: {:.6}", 
-                 state.phase, state.envelope_state.value);
+    /// Создать LFO автомат с возможностью сброса
+    pub fn lfo_with_reset(
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        target_node: &str,
+        target_param: &str,
+    ) -> Self {
+        let lfo = Arc::new(Mutex::new(Lfo::new(frequency, amplitude, offset)));
         
-        let sin_val = (state.phase * 2.0 * std::f64::consts::PI).sin();
-        println!("extract_value - sin_val: {:.6}", sin_val);
+        Self::new(
+            "LFO",
+            move |time| {
+                let mut lfo = lfo.lock().unwrap();
+                if time == 0.0 {
+                    lfo.reset();
+                }
+                lfo.generate()
+            },
+            target_node,
+            target_param,
+        )
+    }
+}
+
+/// Вспомогательные функции для создания LFO автоматов с огибающей
+impl LfoWithEnvelopeAutomaton {
+    /// Создать LFO с огибающей
+    pub fn lfo_with_envelope(
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        attack: f64,
+        release: f64,
+        target_node: &str,
+        target_param: &str,
+    ) -> Self {
+        use kama_oscillators::control::Envelope;
         
-        let result = sin_val * self.lfo.amplitude * state.envelope_state.value + self.lfo.offset;
-        println!("extract_value - result: {:.6}", result);
+        let lfo = Arc::new(Mutex::new(Lfo::new(frequency, amplitude, offset)));
+        let envelope = Arc::new(Mutex::new(Envelope::new(attack, 0.0, 1.0, release)));
         
-        result
+        Self::new(
+            "LFO+Envelope",
+            move |time| {
+                let mut lfo = lfo.lock().unwrap();
+                let mut envelope = envelope.lock().unwrap();
+                
+                if time == 0.0 {
+                    envelope.trigger();
+                }
+                
+                let lfo_val = lfo.generate();
+                let env_val = envelope.generate();
+                lfo_val * env_val
+            },
+            target_node,
+            target_param,
+        )
+    }
+    
+    /// Создать LFO с огибающей и конкретной формой волны
+    pub fn lfo_with_envelope_and_waveform(
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        waveform: LfoWaveform,
+        attack: f64,
+        release: f64,
+        target_node: &str,
+        target_param: &str,
+    ) -> Self {
+        use kama_oscillators::control::Envelope;
+        
+        let lfo = Arc::new(Mutex::new(
+            Lfo::new(frequency, amplitude, offset).with_waveform(waveform)
+        ));
+        let envelope = Arc::new(Mutex::new(Envelope::new(attack, 0.0, 1.0, release)));
+        
+        Self::new(
+            "LFO+Envelope",
+            move |time| {
+                let mut lfo = lfo.lock().unwrap();
+                let mut envelope = envelope.lock().unwrap();
+                
+                if time == 0.0 {
+                    envelope.trigger();
+                }
+                
+                let lfo_val = lfo.generate();
+                let env_val = envelope.generate();
+                lfo_val * env_val
+            },
+            target_node,
+            target_param,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::AutomationContext;
+    use crate::automaton::Automaton;
+    use float_cmp::approx_eq;
+    
+    #[test]
+    fn test_lfo_automaton_creation() {
+        let automaton = LfoAutomaton::lfo(1.0, 0.5, 0.0, "test", "param");
+        assert_eq!(automaton.name(), "LFO");
+    }
+    
+#[test]
+fn test_lfo_automaton_step() {
+    let automaton = LfoAutomaton::lfo(1.0, 0.5, 0.0, "test", "param");
+    
+    let state = automaton.initial_state();
+    println!("Initial state value: {:.6}", state.value);
+    
+    // Собираем несколько значений
+    let mut values = Vec::new();
+    let mut current_state = state;
+    
+    for i in 1..=10 {
+        let time = i as f64 * 0.1;
+        let (new_state, _) = automaton.step(time, &AutomationContext::dummy(), (), &current_state);
+        println!("Step {} (t={:.1}): value = {:.6}", i, time, new_state.value);
+        values.push(new_state.value);
+        current_state = new_state;
+    }
+    
+    // Проверяем, что значения действительно меняются (разница между первым и последним > 0)
+    let first = values[0];
+    let last = values[values.len() - 1];
+    println!("First value: {:.6}, Last value: {:.6}, Difference: {:.6}", 
+             first, last, (last - first).abs());
+    
+    // Значения должны отличаться друг от друга (пусть даже очень мало)
+    assert!((last - first).abs() > 0.0, "LFO values should change over time");
+    
+    // Можно также проверить монотонность (для sine LFO в начале фазы)
+    for i in 1..values.len() {
+        assert!(values[i] > values[i-1], 
+                "Values should be increasing: {:.6} -> {:.6}", 
+                values[i-1], values[i]);
+    }
+}
+    
+    #[test]
+    fn test_lfo_with_waveform_creation() {
+        let automaton = LfoAutomaton::lfo_with_waveform(
+            1.0, 0.5, 0.0,
+            LfoWaveform::Square,
+            "test", "param"
+        );
+        assert_eq!(automaton.name(), "LFO");
+    }
+    
+    #[test]
+    fn test_lfo_with_envelope_creation() {
+        let automaton = LfoWithEnvelopeAutomaton::lfo_with_envelope(
+            1.0, 0.5, 0.0, 0.1, 0.2,
+            "test", "param"
+        );
+        assert_eq!(automaton.name(), "LFO+Envelope");
     }
 }

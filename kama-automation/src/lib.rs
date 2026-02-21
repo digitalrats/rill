@@ -1,10 +1,5 @@
 // kama-automation/src/lib.rs
 //! Kama Automation - продвинутая система автоматизации
-//!
-//! Этот крейт предоставляет:
-//! - Автоматы (LFO, огибающие)
-//! - Сервоприводы для управления параметрами
-//! - Менеджер автоматизации
 
 #![warn(missing_docs)]
 
@@ -23,13 +18,11 @@ pub use context::AutomationContext;
 pub use parameter::{ParameterMap, ParameterData};
 pub use automaton::{
     Automaton,
-    LfoAutomaton, LfoAction, LfoState,
-    EnvelopeState, EnvelopeStage,
+    FunctionAutomaton, StatefulFunctionAutomaton,
+    LfoAutomaton, LfoWithEnvelopeAutomaton,  // Эти типы теперь доступны
+    Waveform,
 };
 pub use servo::{Servo, AnyServo, ParameterMapping};
-pub use manager::AutomationManager;
+pub use manager::{AutomationManager, DefaultAutomationManager};
 pub use signal::{SignalSender, TestSignalSender};
 pub use parameter_auto::AutomatedParameter;
-
-// Правильный импорт из kama-signal (без вложенного модуля signal)
-pub use kama_signal::{Signal, SignalHandler, ParameterChanged, SignalSource};
