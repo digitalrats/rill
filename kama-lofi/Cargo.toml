@@ -2,30 +2,21 @@
 name = "kama-lofi"
 version = "0.1.0"
 edition = "2021"
-description = "Lo-fi audio emulation: 8-bit, 12-bit, and classic digital audio systems"
+description = "Lo-fi audio emulation: 8-bit, 12-bit, NES, AY-3-8910, Akai S900"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-kama-core = { path = "../kama-core" }
-kama-buffers = { path = "../kama-buffers", optional = true }
-serde = { version = "1.0", features = ["derive"] }
-parking_lot = "0.12"
+kama-core-traits = { path = "../kama-core-traits" }
+kama-buffers = { path = "../kama-buffers", version = "0.2.0" }
+kama-signal = { path = "../kama-signal", optional = true }
 rand = "0.8"
 thiserror = "1.0"
-
-[dev-dependencies]
-serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }  # <-- убираем optional
 
 [features]
 default = []
-buffers = ["kama-buffers"]
-midi = []  # Для эмуляции MIDI-синтезаторов
-tape = []  # Для комбинирования с tape saturation
+automation = ["kama-signal"]
+buffers = []
 
-[[example]]
-name = "chiptune_demo"
-required-features = []
-
-#[[example]]
-#name = "sampler_demo"
-#required-features = ["buffers"]
+[dev-dependencies]
+serde_json = "1.0"

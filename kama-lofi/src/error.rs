@@ -1,5 +1,5 @@
 use thiserror::Error;
-use kama_core::AudioError;
+use kama_core_traits::AudioError;
 
 #[derive(Error, Debug)]
 pub enum LofiError {

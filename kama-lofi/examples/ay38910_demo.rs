@@ -1,7 +1,7 @@
 //! Демонстрация AY-3-8910 эмулятора
 
 use kama_lofi::emulators::Ay38910Emulator;
-use kama_core::AudioNode;
+use kama_lofi::AudioNode;  // <-- импортируем трейт
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== AY-3-8910 (ZX Spectrum 128) Demo ===\n");
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output = vec![0.0f32; sample_rate as usize];
     let mut outputs = [&mut output[..]];
     
-    ay.process(&[], &mut outputs)?;
+    ay.process(&[], &mut outputs)?;  // <-- теперь работает, трейт в области видимости
     
     // Анализ
     let max_amp = output.iter()
@@ -60,10 +60,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|&x| (x * 100.0) as i32)
                 .collect::<std::collections::HashSet<_>>()
                 .len());
-    
-    println!("\nРегистры AY-3-8910:");
-    // Не пытаемся получить доступ к приватным полям
-    println!("  Используются стандартные настройки чипа");
     
     Ok(())
 }

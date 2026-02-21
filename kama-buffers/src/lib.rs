@@ -1,4 +1,3 @@
-//! Буферы для аудиообработки
 
 #![warn(missing_docs)]
 
@@ -21,7 +20,7 @@ pub use view::{BufferView, BufferViewMut};
 pub use decorator::{PanningDecorator, LfoDecorator};
 pub use manager::{
     BufferManager, BufferManagerStats, NodeBuffers,
-    RegisteredBuffer,  // <-- Добавляем
+    RegisteredBuffer, PooledBuffer,  // <-- ДОБАВЛЯЕМ PooledBuffer
 };
 
 // Реэкспортируем NodeId напрямую из kama_core_traits

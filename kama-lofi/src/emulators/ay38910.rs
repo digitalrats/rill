@@ -1,5 +1,7 @@
-use kama_core::{AudioNode, ParamValue, NodeMetadata, NodeCategory, AudioError, node::ParamMetadata};
-use kama_core::param::ParamType;
+use kama_core_traits::{
+    AudioNode, ParamValue, NodeMetadata, NodeCategory, AudioError,
+    param::{ParamMetadata, ParamType}, NodeTypeId
+};
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
 
@@ -106,7 +108,7 @@ impl Ay38910Emulator {
             lofi: LofiProcessor::new(lofi_config),
         }
     }
-    
+
     pub fn write_register(&mut self, reg: usize, value: u8) {
         if reg < 16 {
             self.registers[reg] = value;
@@ -370,6 +372,12 @@ impl AudioNode for Ay38910Emulator {
     
     fn num_inputs(&self) -> usize { 0 }
     fn num_outputs(&self) -> usize { 1 }
+
+
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<Self>()
+    }
+    
     
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {

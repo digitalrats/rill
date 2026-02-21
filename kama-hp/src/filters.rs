@@ -7,6 +7,9 @@ pub enum BiquadType {
     HighPass,
     BandPass,
     Notch,
+    Peak,
+    LowShelf,
+    HighShelf,
 }
 
 /// Высокоточный биквадратный фильтр
@@ -16,104 +19,215 @@ pub struct HighPrecisionBiquad {
     x1: f64, x2: f64,
     y1: f64, y2: f64,
     sample_rate: f64,
+    filter_type: BiquadType,
+    frequency: f64,
+    q: f64,
+    gain_db: f64, // для пиковых и shelving фильтров
 }
 
 impl HighPrecisionBiquad {
     /// Создаёт фильтр нижних частот.
     pub fn new_lowpass(cutoff: f64, q: f64, sample_rate: f64) -> Self {
-        let omega = 2.0 * PI * cutoff / sample_rate;
-        let alpha = omega.sin() / (2.0 * q);
-        
-        let b0 = (1.0 - omega.cos()) / 2.0;
-        let b1 = 1.0 - omega.cos();
-        let b2 = b0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * omega.cos();
-        let a2 = 1.0 - alpha;
-        
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
+        let mut filter = Self {
+            b0: 0.0, b1: 0.0, b2: 0.0,
+            a1: 0.0, a2: 0.0,
             x1: 0.0, x2: 0.0,
             y1: 0.0, y2: 0.0,
             sample_rate,
-        }
+            filter_type: BiquadType::LowPass,
+            frequency: cutoff,
+            q,
+            gain_db: 0.0,
+        };
+        filter.update_coefficients();
+        filter
     }
     
     /// Создаёт фильтр верхних частот.
     pub fn new_highpass(cutoff: f64, q: f64, sample_rate: f64) -> Self {
-        let omega = 2.0 * PI * cutoff / sample_rate;
-        let alpha = omega.sin() / (2.0 * q);
-        let cos_omega = omega.cos();
-        
-        let b0 = (1.0 + cos_omega) / 2.0;
-        let b1 = -(1.0 + cos_omega);
-        let b2 = b0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_omega;
-        let a2 = 1.0 - alpha;
-        
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
+        let mut filter = Self {
+            b0: 0.0, b1: 0.0, b2: 0.0,
+            a1: 0.0, a2: 0.0,
             x1: 0.0, x2: 0.0,
             y1: 0.0, y2: 0.0,
             sample_rate,
-        }
+            filter_type: BiquadType::HighPass,
+            frequency: cutoff,
+            q,
+            gain_db: 0.0,
+        };
+        filter.update_coefficients();
+        filter
     }
     
     /// Создаёт полосовой фильтр.
     pub fn new_bandpass(cutoff: f64, q: f64, sample_rate: f64) -> Self {
-        let omega = 2.0 * PI * cutoff / sample_rate;
-        let alpha = omega.sin() / (2.0 * q);
-        
-        let b0 = alpha;
-        let b1 = 0.0;
-        let b2 = -alpha;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * omega.cos();
-        let a2 = 1.0 - alpha;
-        
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
+        let mut filter = Self {
+            b0: 0.0, b1: 0.0, b2: 0.0,
+            a1: 0.0, a2: 0.0,
             x1: 0.0, x2: 0.0,
             y1: 0.0, y2: 0.0,
             sample_rate,
-        }
+            filter_type: BiquadType::BandPass,
+            frequency: cutoff,
+            q,
+            gain_db: 0.0,
+        };
+        filter.update_coefficients();
+        filter
     }
     
     /// Создаёт режекторный фильтр.
     pub fn new_notch(cutoff: f64, q: f64, sample_rate: f64) -> Self {
-        let omega = 2.0 * PI * cutoff / sample_rate;
-        let alpha = omega.sin() / (2.0 * q);
-        let cos_omega = omega.cos();
-        
-        let b0 = 1.0;
-        let b1 = -2.0 * cos_omega;
-        let b2 = 1.0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_omega;
-        let a2 = 1.0 - alpha;
-        
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
+        let mut filter = Self {
+            b0: 0.0, b1: 0.0, b2: 0.0,
+            a1: 0.0, a2: 0.0,
             x1: 0.0, x2: 0.0,
             y1: 0.0, y2: 0.0,
             sample_rate,
+            filter_type: BiquadType::Notch,
+            frequency: cutoff,
+            q,
+            gain_db: 0.0,
+        };
+        filter.update_coefficients();
+        filter
+    }
+    
+    /// Создаёт пиковый фильтр с усилением.
+    pub fn new_peak(frequency: f64, q: f64, gain_db: f64, sample_rate: f64) -> Self {
+        let mut filter = Self {
+            b0: 0.0, b1: 0.0, b2: 0.0,
+            a1: 0.0, a2: 0.0,
+            x1: 0.0, x2: 0.0,
+            y1: 0.0, y2: 0.0,
+            sample_rate,
+            filter_type: BiquadType::Peak,
+            frequency,
+            q,
+            gain_db,
+        };
+        filter.update_coefficients();
+        filter
+    }
+    
+    /// Обновить коэффициенты на основе текущих параметров
+    fn update_coefficients(&mut self) {
+        let omega = 2.0 * PI * self.frequency / self.sample_rate;
+        let sin_omega = omega.sin();
+        let cos_omega = omega.cos();
+        let alpha = sin_omega / (2.0 * self.q);
+        
+        match self.filter_type {
+            BiquadType::LowPass => {
+                let b0 = (1.0 - cos_omega) / 2.0;
+                let b1 = 1.0 - cos_omega;
+                let b2 = b0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                
+                self.b0 = b0 / a0;
+                self.b1 = b1 / a0;
+                self.b2 = b2 / a0;
+                self.a1 = a1 / a0;
+                self.a2 = a2 / a0;
+            }
+            
+            BiquadType::HighPass => {
+                let b0 = (1.0 + cos_omega) / 2.0;
+                let b1 = -(1.0 + cos_omega);
+                let b2 = b0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                
+                self.b0 = b0 / a0;
+                self.b1 = b1 / a0;
+                self.b2 = b2 / a0;
+                self.a1 = a1 / a0;
+                self.a2 = a2 / a0;
+            }
+            
+            BiquadType::BandPass => {
+                let b0 = alpha;
+                let b1 = 0.0;
+                let b2 = -alpha;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                
+                self.b0 = b0 / a0;
+                self.b1 = b1 / a0;
+                self.b2 = b2 / a0;
+                self.a1 = a1 / a0;
+                self.a2 = a2 / a0;
+            }
+            
+            BiquadType::Notch => {
+                let b0 = 1.0;
+                let b1 = -2.0 * cos_omega;
+                let b2 = 1.0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                
+                self.b0 = b0 / a0;
+                self.b1 = b1 / a0;
+                self.b2 = b2 / a0;
+                self.a1 = a1 / a0;
+                self.a2 = a2 / a0;
+            }
+            
+            BiquadType::Peak => {
+                let a = 10.0_f64.powf(self.gain_db / 40.0);
+                let b0 = 1.0 + alpha * a;
+                let b1 = -2.0 * cos_omega;
+                let b2 = 1.0 - alpha * a;
+                let a0 = 1.0 + alpha / a;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha / a;
+                
+                self.b0 = b0 / a0;
+                self.b1 = b1 / a0;
+                self.b2 = b2 / a0;
+                self.a1 = a1 / a0;
+                self.a2 = a2 / a0;
+            }
+            
+            BiquadType::LowShelf => {
+                let a = 10.0_f64.powf(self.gain_db / 40.0);
+                let beta = (a * alpha).sqrt();
+                let b0 = a * ((a + 1.0) - (a - 1.0) * cos_omega + 2.0 * beta * sin_omega);
+                let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos_omega);
+                let b2 = a * ((a + 1.0) - (a - 1.0) * cos_omega - 2.0 * beta * sin_omega);
+                let a0 = (a + 1.0) + (a - 1.0) * cos_omega + 2.0 * beta * sin_omega;
+                let a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cos_omega);
+                let a2 = (a + 1.0) + (a - 1.0) * cos_omega - 2.0 * beta * sin_omega;
+                
+                self.b0 = b0 / a0;
+                self.b1 = b1 / a0;
+                self.b2 = b2 / a0;
+                self.a1 = a1 / a0;
+                self.a2 = a2 / a0;
+            }
+            
+            BiquadType::HighShelf => {
+                let a = 10.0_f64.powf(self.gain_db / 40.0);
+                let beta = (a * alpha).sqrt();
+                let b0 = a * ((a + 1.0) + (a - 1.0) * cos_omega + 2.0 * beta * sin_omega);
+                let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_omega);
+                let b2 = a * ((a + 1.0) + (a - 1.0) * cos_omega - 2.0 * beta * sin_omega);
+                let a0 = (a + 1.0) - (a - 1.0) * cos_omega + 2.0 * beta * sin_omega;
+                let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_omega);
+                let a2 = (a + 1.0) - (a - 1.0) * cos_omega - 2.0 * beta * sin_omega;
+                
+                self.b0 = b0 / a0;
+                self.b1 = b1 / a0;
+                self.b2 = b2 / a0;
+                self.a1 = a1 / a0;
+                self.a2 = a2 / a0;
+            }
         }
     }
     
@@ -135,6 +249,24 @@ impl HighPrecisionBiquad {
         for i in 0..input.len().min(output.len()) {
             output[i] = self.process(input[i]);
         }
+    }
+    
+    /// Изменить частоту среза
+    pub fn set_cutoff(&mut self, cutoff: f64) {
+        self.frequency = cutoff.max(20.0).min(self.sample_rate / 2.0);
+        self.update_coefficients();
+    }
+    
+    /// Изменить добротность
+    pub fn set_q(&mut self, q: f64) {
+        self.q = q.max(0.1).min(20.0);
+        self.update_coefficients();
+    }
+    
+    /// Изменить усиление (для peak/shelving фильтров)
+    pub fn set_gain_db(&mut self, gain_db: f64) {
+        self.gain_db = gain_db;
+        self.update_coefficients();
     }
     
     pub fn reset(&mut self) {
@@ -159,7 +291,7 @@ pub struct HighPrecisionLadderFilter {
 impl HighPrecisionLadderFilter {
     pub fn new(cutoff: f64, resonance: f64, sample_rate: f64) -> Self {
         Self {
-            cutoff,
+            cutoff: cutoff.max(20.0).min(sample_rate / 2.0),
             resonance: resonance.clamp(0.0, 1.0),
             sample_rate,
             stage1: 0.0,
@@ -204,54 +336,5 @@ impl HighPrecisionLadderFilter {
         self.stage2 = 0.0;
         self.stage3 = 0.0;
         self.stage4 = 0.0;
-    }
-}
-
-/// Каскад биквадратных фильтров (для фильтров высокого порядка)
-pub struct HighPrecisionBiquadCascade {
-    filters: Vec<HighPrecisionBiquad>,
-    temp_buffer: Vec<f64>,
-}
-
-impl HighPrecisionBiquadCascade {
-    pub fn new_elliptic_lowpass(
-        order: usize,
-        cutoff: f64,
-        _ripple: f64,
-        _stopband_attenuation: f64,
-        sample_rate: f64,
-    ) -> Self {
-        let filters = (0..order)
-            .map(|_| HighPrecisionBiquad::new_lowpass(cutoff, 0.707, sample_rate))
-            .collect();
-        
-        Self {
-            filters,
-            temp_buffer: Vec::new(),
-        }
-    }
-    
-    pub fn process_buffer(&mut self, input: &[f64], output: &mut [f64]) {
-        if self.temp_buffer.len() < input.len() * 2 {
-            self.temp_buffer.resize(input.len() * 2, 0.0);
-        }
-        
-        self.temp_buffer[..input.len()].copy_from_slice(input);
-        
-        // Вычисляем длину ДО начала итерации, чтобы избежать конфликта заимствований
-        let num_filters = self.filters.len();
-        
-        for (i, filter) in self.filters.iter_mut().enumerate() {
-            if i == num_filters - 1 {
-                // Последний фильтр: читаем из temp_buffer, пишем в output
-                filter.process_buffer(&self.temp_buffer[..input.len()], output);
-            } else {
-                // Промежуточный фильтр: читаем из первой половины, пишем во вторую
-                let (in_buf, out_buf) = self.temp_buffer.split_at_mut(input.len());
-                filter.process_buffer(in_buf, out_buf);
-                // Копируем результат обратно в первую половину для следующей итерации
-                in_buf[..input.len()].copy_from_slice(&out_buf[..input.len()]);
-            }
-        }
     }
 }

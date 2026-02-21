@@ -9,6 +9,8 @@ mod error;
 mod connection;
 mod processor;
 mod graph;
+mod node;
+mod registry;
 
 pub use error::{GraphError, GraphResult};
 pub use connection::Connection;

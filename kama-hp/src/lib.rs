@@ -1,10 +1,10 @@
-//! High-precision audio processing ecosystem
+//! High-precision audio processing ecosystem (f64)
 //! 
 //! Для приложений, требующих максимальной точности:
 //! - Профессиональные синтезаторы
 //! - Мастер-процессоры
 //! - Научные исследования
-//! - Машинное обучение для audio
+//! - Интеграция с kama-buffers для эффективного управления памятью
 
 #![warn(missing_docs)]
 
@@ -15,15 +15,14 @@ pub mod effects;
 pub mod analysis;
 pub mod converters;
 
-#[cfg(feature = "simd")]
-pub mod simd;
-
 // Re-export основных типов
-pub use buffers::HighPrecisionBuffer;
+pub use buffers::{HighPrecisionBuffer, HighPrecisionBufferPool};  // <-- ДОБАВЛЯЕМ
 pub use oscillators::{HighPrecisionSineOsc, HighPrecisionFMOsc};
-pub use filters::{HighPrecisionBiquad, HighPrecisionLadderFilter};
+pub use filters::{HighPrecisionBiquad, HighPrecisionLadderFilter, BiquadType};
 pub use effects::NoiseShaper;
-pub use converters::{Oversampler, PrecisionConverter};
+pub use converters::{Oversampler, PrecisionConverter, DitherType};
+
+use kama_core_traits::AudioError;
 
 /// Результат операций high-precision
 pub type HpResult<T> = Result<T, HpError>;
@@ -41,7 +40,7 @@ pub enum HpError {
     Conversion(String),
     
     #[error("Audio core error: {0}")]
-    Core(#[from] kama_core::AudioError),
+    Core(#[from] AudioError),
 }
 
 /// Конфигурация high-precision движка

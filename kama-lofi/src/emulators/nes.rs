@@ -1,4 +1,4 @@
-use kama_core::{AudioNode, ParamValue, NodeMetadata, NodeCategory, AudioError};
+use kama_core_traits::{AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue};
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
 
@@ -109,7 +109,7 @@ impl NesEmulator {
             sample_rate,
         }
     }
-    
+
     pub fn generate(&mut self, output: &mut [f32]) {
         for out in output.iter_mut() {
             let sample_rate = self.sample_rate;
@@ -194,6 +194,11 @@ impl NesEmulator {
 }
 
 impl AudioNode for NesEmulator {
+    fn node_type_id(&self) -> NodeTypeId {
+        NodeTypeId::of::<Self>()
+    }
+    
+
     fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
         if outputs.is_empty() {
             return Ok(());

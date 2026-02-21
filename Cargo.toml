@@ -6,8 +6,10 @@ members = [
     "kama-automation",
     "kama-control",
     "kama-signal",
-    "kama-registry",
     "kama-dsp-common",
+    "kama-hp",
+    "kama-lofi",
+    # "kama-wdf"        # временно отключаем
     # "kama-mixer",     # временно отключаем
     # "kama-io",        # временно отключаем
 ]

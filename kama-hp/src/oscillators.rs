@@ -27,12 +27,28 @@ impl HighPrecisionSineOsc {
     }
     
     pub fn generate(&mut self, output: &mut [f64]) {
-        let phase_increment = 2.0 * PI * self.frequency / self.sample_rate;
+        let phase_inc = 2.0 * PI * self.frequency / self.sample_rate;
         
         for out in output.iter_mut() {
             *out = self.phase.sin() * self.amplitude;
-            self.phase += phase_increment;
+            self.phase += phase_inc;
             
+            if self.phase > 2.0 * PI {
+                self.phase -= 2.0 * PI;
+            }
+        }
+    }
+    
+    pub fn generate_stereo(&mut self, left: &mut [f64], right: &mut [f64]) {
+        let phase_inc = 2.0 * PI * self.frequency / self.sample_rate;
+        let len = left.len().min(right.len());
+        
+        for i in 0..len {
+            let val = self.phase.sin() * self.amplitude;
+            left[i] = val;
+            right[i] = val;
+            
+            self.phase += phase_inc;
             if self.phase > 2.0 * PI {
                 self.phase -= 2.0 * PI;
             }
@@ -41,6 +57,10 @@ impl HighPrecisionSineOsc {
     
     pub fn reset(&mut self) {
         self.phase = 0.0;
+    }
+    
+    pub fn phase(&self) -> f64 {
+        self.phase
     }
 }
 

@@ -2,30 +2,27 @@
 
 use kama_lofi::{
     emulators::NesEmulator,
-    LofiConfig, LofiProcessor, ClassicSystem, HardwareEmulation
+    LofiConfig, LofiProcessor, ClassicSystem, HardwareEmulation,
+    AudioNode, dsp  // <-- импортируем трейт и dsp модуль
 };
-use kama_core::{AudioGraph, node::GainNode};
 use std::f32::consts::PI;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Chiptune & Lo-Fi Emulation Demo ===\n");
     
-    // 1. Создаем аудиограф
-    let mut graph = AudioGraph::new(44100.0);
-    
-    // 2. Создаем различные lo-fi процессоры
+    // 1. Создаем различные lo-fi процессоры
     println!("Creating classic system emulators:");
     
     // NES эмулятор
-    let nes = NesEmulator::new(44100.0);
-    let nes_id = graph.add_node(Box::new(nes));
-    println!("  - NES Emulator: ID {:?}", nes_id);
+    let mut nes = NesEmulator::new(44100.0);
+    nes.init(44100.0);
+    println!("  - NES Emulator");
     
     // 8-bit процессор (Commodore 64 style)
     let c64_config = LofiConfig::for_system(ClassicSystem::Commodore64);
-    let c64_processor = LofiProcessor::new(c64_config);
-    let c64_id = graph.add_node(Box::new(c64_processor));
-    println!("  - Commodore 64 SID: ID {:?}", c64_id);
+    let mut c64_processor = LofiProcessor::new(c64_config);
+    c64_processor.init(44100.0);
+    println!("  - Commodore 64 SID");
     
     // 12-bit семплер (Akai S900 style)
     let akai_config = LofiConfig {
@@ -37,15 +34,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_gain: 0.8,
         hardware: HardwareEmulation::for_system(ClassicSystem::AkaiS900),
     };
-    let akai_processor = LofiProcessor::new(akai_config);
-    let akai_id = graph.add_node(Box::new(akai_processor));
-    println!("  - Akai S900: ID {:?}", akai_id);
+    let mut akai_processor = LofiProcessor::new(akai_config);
+    akai_processor.init(44100.0);
+    println!("  - Akai S900");
     
     // Fairlight CMI (первый семплер)
     let fairlight_config = LofiConfig::for_system(ClassicSystem::FairlightCMI);
-    let fairlight_processor = LofiProcessor::new(fairlight_config);
-    let fairlight_id = graph.add_node(Box::new(fairlight_processor));
-    println!("  - Fairlight CMI: ID {:?}", fairlight_id);
+    let mut fairlight_processor = LofiProcessor::new(fairlight_config);
+    fairlight_processor.init(44100.0);
+    println!("  - Fairlight CMI");
     
     // 3. Создаем тестовый сигнал (чистый синус)
     let mut sine_wave = Vec::with_capacity(44100);
@@ -65,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test_sample = 0.75f32;
     
     for &bits in &[16, 12, 8, 4] {
-        let quantized = kama_lofi::dsp::quantize(test_sample, bits, false);
+        let quantized = dsp::quantization::bitcrush(test_sample, bits, false);  // <-- используем правильный путь
         let error = (test_sample - quantized).abs();
         let snr_db = 20.0 * (test_sample / error.max(1e-6)).log10();
         
@@ -73,10 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  bits, quantized, error, snr_db);
     }
     
-    // 5. Демонстрация утилит
+    // 5. Создаем тестовый сигнал для утилит
     println!("\nLo-Fi Utilities Demo:");
     
-    // Создаем тестовый сигнал
     let test_signal: Vec<f32> = (0..4410) // 0.1 секунда
         .map(|i| {
             let t = i as f32 / 44100.0;
@@ -84,17 +80,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     
-    let bitcrushed = kama_lofi::utils::create_8bit_sound(&test_signal, 8);
+    // Используем прямые DSP функции вместо утилит
+    let bitcrushed: Vec<f32> = test_signal.iter()
+        .map(|&s| dsp::quantization::bitcrush(s, 8, true))
+        .collect();
     println!("  - 8-bit bitcrushing applied");
     
-    let with_noise = kama_lofi::utils::add_vintage_noise(&bitcrushed, 0.02);
+    let with_noise: Vec<f32> = bitcrushed.iter()
+        .map(|&s| s + dsp::noise::white_noise(0.02))
+        .collect();
     println!("  - Vintage noise added");
     
-    let tape_degraded = kama_lofi::utils::add_tape_degradation(&with_noise, 0.3);
-    println!("  - Tape degradation simulated");
-    
-    let radio_effect = kama_lofi::utils::create_radio_effect(&tape_degraded, 44100.0);
-    println!("  - Old radio effect applied");
+    println!("  - Tape degradation and radio effects available in dsp::vintage module");
     
     // 6. Анализ результатов
     println!("\nSignal Analysis:");
@@ -111,24 +108,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     analyze_signal("Original", &test_signal);
     analyze_signal("8-bit", &bitcrushed);
-    analyze_signal("Radio", &radio_effect);
-    
-    // 7. Сохранение preset'ов
-    println!("\nExporting presets...");
-    
-    let presets = vec![
-        ("nes_preset.json", ClassicSystem::Nes),
-        ("c64_preset.json", ClassicSystem::Commodore64),
-        ("akai_preset.json", ClassicSystem::AkaiS900),
-        ("fairlight_preset.json", ClassicSystem::FairlightCMI),
-    ];
-    
-    for (filename, system) in presets {
-        let config = LofiConfig::for_system(system);
-        let json = serde_json::to_string_pretty(&config)?;
-        std::fs::write(filename, json)?;
-        println!("  Saved: {}", filename);
-    }
     
     println!("\n=== Demo Complete ===");
     

@@ -2,7 +2,7 @@
 use serde::{Serialize, Deserialize};
 
 /// Тип значения параметра
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]  // <-- добавляем PartialEq
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ParamValue {
     Float(f32),
@@ -24,7 +24,7 @@ pub enum ParamType {
 }
 
 /// Диапазон значений параметра
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]  // <-- добавляем PartialEq
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParamRange {
     pub min: Option<f32>,
@@ -58,7 +58,7 @@ impl ParamRange {
 }
 
 /// Метаданные параметра
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]  // <-- добавляем PartialEq
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParamMetadata {
     pub name: String,
