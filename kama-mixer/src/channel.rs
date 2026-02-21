@@ -1,79 +1,137 @@
-use serde::{Serialize, Deserialize};
-use crate::filter::FilterConfig;
-use crate::bus::SendConfig;
+//! Mixer channel implementation
 
-/// Тип канала микшера
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum ChannelType {
-    Mono,      // Моно канал
-    Stereo,    // Стерео канал (L/R)
-    DualMono,  // Два независимых моно канала
+use kama_core_traits::{AudioError, ParamValue};
+
+/// Channel mode (mono or stereo)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChannelMode {
+    Mono,
+    Stereo,
 }
 
-/// Конфигурация канала
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Configuration for a mixer channel
+#[derive(Debug, Clone)]
 pub struct ChannelConfig {
-    pub id: usize,
+    /// Channel name (for identification)
     pub name: String,
-    pub channel_type: ChannelType,
-    pub level: f64,           // 0.0 - 1.0
-    pub pan: f64,             // -1.0 (L) до 1.0 (R)
-    pub mute: bool,
-    pub solo: bool,
-    pub filters: Vec<FilterConfig>,
-    pub sends: Vec<SendConfig>,
+    /// Channel mode
+    pub mode: ChannelMode,
+    /// Volume (0.0 - 1.0, default 1.0)
+    pub volume: f32,
+    /// Pan (-1.0 left, 0.0 center, 1.0 right)
+    pub pan: f32,
+    /// Mute state
+    pub muted: bool,
+    /// Solo state
+    pub soloed: bool,
 }
 
-/// Состояние канала
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            name: "Channel".to_string(),
+            mode: ChannelMode::Mono,
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            soloed: false,
+        }
+    }
+}
+
+/// Runtime state of a mixer channel
 #[derive(Debug, Clone)]
 pub struct ChannelState {
-    pub config: ChannelConfig,
-    pub meter_level: (f64, f64), // Пиковый уровень для VU метра
-    pub last_level: f64,
+    config: ChannelConfig,
+    /// Current volume with smoothing
+    current_volume: f32,
+    /// Current pan
+    current_pan: f32,
+    /// Smoothing factor (0.0 - 1.0)
+    smoothing: f32,
 }
 
 impl ChannelState {
-    pub fn new(config: ChannelConfig, _sample_rate: f64, _channel_index: usize) -> Self {
-        let last_level = config.level;
-        
+    /// Create a new channel state
+    pub fn new(config: ChannelConfig) -> Self {
+        let current_volume = config.volume;
+        let current_pan = config.pan;
         Self {
             config,
-            meter_level: (0.0, 0.0),
-            last_level,
+            current_volume,
+            current_pan,
+            smoothing: 0.1, // default smoothing
         }
     }
     
-    pub fn process(&mut self, input: f64) -> (f64, f64) {
-        if self.config.mute {
+    /// Process a mono sample through the channel with pan
+    pub fn process_mono(&mut self, input: f32) -> (f32, f32) {
+        if self.config.muted {
             return (0.0, 0.0);
         }
         
-        // Моно в стерео с панорамой
-        let (left, right) = self.mono_to_stereo(input, self.config.pan);
+        // Smooth volume and pan
+        self.current_volume += (self.config.volume - self.current_volume) * self.smoothing;
+        self.current_pan += (self.config.pan - self.current_pan) * self.smoothing;
         
-        // Применяем уровень с плавным изменением
-        let smoothed_level = self.last_level + (self.config.level - self.last_level) * 0.1;
-        self.last_level = self.config.level;
+        // Apply pan (simple constant power panning)
+        let (left_gain, right_gain) = if self.current_pan <= 0.0 {
+            (1.0, 1.0 + self.current_pan)
+        } else {
+            (1.0 - self.current_pan, 1.0)
+        };
         
-        let left_out = left * smoothed_level;
-        let right_out = right * smoothed_level;
-        
-        // Обновляем meter
-        self.meter_level.0 = self.meter_level.0.max(left_out.abs());
-        self.meter_level.1 = self.meter_level.1.max(right_out.abs());
+        let left_out = input * self.current_volume * left_gain;
+        let right_out = input * self.current_volume * right_gain;
         
         (left_out, right_out)
     }
     
-    fn mono_to_stereo(&self, input: f64, pan: f64) -> (f64, f64) {
-        let pan = pan.clamp(-1.0, 1.0);
-        let left_gain = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
-        let right_gain = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+    /// Process a stereo sample through the channel
+    pub fn process_stereo(&mut self, left: f32, right: f32) -> (f32, f32) {
+        if self.config.muted {
+            return (0.0, 0.0);
+        }
         
-        (input * left_gain, input * right_gain)
+        // Smooth volume and pan
+        self.current_volume += (self.config.volume - self.current_volume) * self.smoothing;
+        self.current_pan += (self.config.pan - self.current_pan) * self.smoothing;
+        
+        // Apply pan (simple constant power panning)
+        let (left_gain, right_gain) = if self.current_pan <= 0.0 {
+            (1.0, 1.0 + self.current_pan)
+        } else {
+            (1.0 - self.current_pan, 1.0)
+        };
+        
+        let left_out = left * self.current_volume * left_gain;
+        let right_out = right * self.current_volume * right_gain;
+        
+        (left_out, right_out)
     }
     
-    pub fn reset_meter(&mut self) {
-        self.meter_level = (0.0, 0.0);
+    /// Update configuration
+    pub fn set_config(&mut self, config: ChannelConfig) {
+        self.config = config;
+    }
+    
+    /// Get current configuration
+    pub fn config(&self) -> &ChannelConfig {
+        &self.config
+    }
+    
+    /// Set smoothing factor (0.0 = instant, 1.0 = very slow)
+    pub fn set_smoothing(&mut self, factor: f32) {
+        self.smoothing = factor.clamp(0.0, 1.0);
+    }
+    
+    /// Get current volume (after smoothing)
+    pub fn current_volume(&self) -> f32 {
+        self.current_volume
+    }
+    
+    /// Get current pan (after smoothing)
+    pub fn current_pan(&self) -> f32 {
+        self.current_pan
     }
 }

@@ -2,26 +2,21 @@
 name = "kama-mixer"
 version = "0.1.0"
 edition = "2021"
-description = "Advanced mixing and routing extensions for Kama Audio - reactive mixer, buses, complex filters"
+description = "Audio mixer with channels, buses, and sends for Kama Audio"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-kama-core = { path = "../kama-core", version = "0.1.0" }
-serde = { version = "1.0", features = ["derive"] }
-parking_lot = "0.12"
-
-# Опциональные зависимости для реактивной функциональности
-tokio = { version = "1.0", features = ["full"], optional = true }
-futures = { version = "0.3", optional = true }
-either = { version = "1.9", optional = true }
+kama-core-traits = { path = "../kama-core-traits" }
+kama-dsp-common = { path = "../kama-dsp-common" }
+kama-buffers = { path = "../kama-buffers" }
+kama-signal = { path = "../kama-signal", optional = true }
+thiserror = "1.0"
 
 [features]
-default = ["reactive"]
-reactive = ["tokio", "futures", "either"]
-complex-filters = []
-buses = ["either"]
+default = []
+automation = ["kama-signal"]  # для отправки сигналов при изменении параметров
 
 [dev-dependencies]
-# Зависимости для тестов - не опциональные
-tokio = { version = "1.0", features = ["full"] }
-futures = "0.3"
+kama-oscillators = { path = "../kama-oscillators" }
+kama-digital-filters = { path = "../kama-digital-filters" }
+float-cmp = "0.9"

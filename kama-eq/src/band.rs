@@ -105,9 +105,20 @@ impl<F: Filter> EqBand<F> {
             return input;
         }
         
-        // Для упрощения - в реальности нужно использовать AudioNode::process
-        // Здесь будет правильная обработка через фильтр
-        input // временно
+        // Создаём входной буфер как срез
+        let input_slice = [input];
+        let inputs = [input_slice.as_slice()];
+        
+        // Создаём выходной буфер
+        let mut output = [0.0];
+        let mut outputs = [output.as_mut_slice()];
+        
+        // Вызываем AudioNode::process для фильтра
+        if self.filter.process(&inputs, &mut outputs).is_ok() {
+            output[0]
+        } else {
+            input
+        }
     }
     
     /// Update the filter with current parameters

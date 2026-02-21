@@ -10,6 +10,8 @@ members = [
     "kama-hp",
     "kama-lofi",
     "kama-digital-filters",
+    "kama-eq",
+    "kama-mixer",
     # "kama-wdf"        # временно отключаем
     # "kama-mixer",     # временно отключаем
     # "kama-io",        # временно отключаем

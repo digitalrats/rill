@@ -16,5 +16,6 @@ default = []
 automation = ["kama-signal"]  # для автоматизации параметров
 
 [dev-dependencies]
-kama-digital-filters = { path = "../kama-digital-filters" }  # для тестов
+kama-digital-filters = { path = "../kama-digital-filters" }
+kama-automation = { path = "../kama-automation" }
 float-cmp = "0.9"
