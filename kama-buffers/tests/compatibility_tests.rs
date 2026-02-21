@@ -25,11 +25,26 @@ fn test_new_manager_api() {
 }
 
 #[test]
+fn test_acquire_release_api() {
+    let manager = BufferManager::new();
+    let initial_available = manager.stats().pool_available;
+    
+    // Acquire буфера
+    let buffer = manager.acquire(256).unwrap();
+    assert_eq!(buffer.len(), 256);
+    assert_eq!(manager.stats().pool_available, initial_available - 1);
+    
+    // Release происходит автоматически при drop
+    drop(buffer);
+    assert_eq!(manager.stats().pool_available, initial_available);
+}
+
+#[test]
 fn test_acquire_named_api() {
     let manager = BufferManager::new();
     let initial_available = manager.stats().pool_available;
     
-    // Acquire and register - для долгоживущих буферов
+    // Acquire and register
     let buffer = manager.acquire_named("test", 256).unwrap();
     assert_eq!(buffer.read().len(), 256);
     assert_eq!(manager.stats().pool_available, initial_available - 1);
@@ -39,17 +54,19 @@ fn test_acquire_named_api() {
     let retrieved = manager.get_vector("test").unwrap();
     assert_eq!(retrieved.read().len(), 256);
     
-    // Unregister (удаляем из реестра, но буфер еще жив)
+    // Unregister (буфер еще жив, потому что у нас есть buffer)
     assert!(manager.unregister("test"));
     assert!(!manager.contains("test"));
     assert_eq!(manager.stats().registered_buffers, 0);
+    
+    // После unregister пул все еще уменьшен на 1, потому что buffer еще жив
     assert_eq!(manager.stats().pool_available, initial_available - 1);
     
-    // Буфер все еще существует, пул не восстановлен
+    // Release buffer
     drop(buffer);
     
-    // После drop пул все еще не восстановлен, потому что Arc не знает о пуле
-    // Это ожидаемо для именованных буферов
+    // После drop память освобождается, но в пул не возвращается
+    // Это нормальное поведение для именованных буферов
     assert_eq!(manager.stats().pool_available, initial_available - 1);
 }
 
@@ -58,18 +75,17 @@ fn test_acquire_named_and_release() {
     let manager = BufferManager::new();
     let initial_available = manager.stats().pool_available;
     
-    // Создаем именованный буфер в отдельном scope
+    // Создаем именованный буфер
     {
         let buffer = manager.acquire_named("test", 256).unwrap();
         assert_eq!(manager.stats().pool_available, initial_available - 1);
         assert_eq!(manager.stats().registered_buffers, 1);
     } // buffer умирает здесь
     
-    // После того как buffer умер, но имя все еще в реестре
-    assert_eq!(manager.stats().registered_buffers, 1);
+    assert_eq!(manager.stats().registered_buffers, 1); // имя все еще в реестре
     assert_eq!(manager.stats().pool_available, initial_available - 1);
     
-    // Теперь удаляем из реестра и возвращаем в пул
+    // Удаляем из реестра и возвращаем в пул
     assert!(manager.unregister_and_release("test"));
     assert_eq!(manager.stats().registered_buffers, 0);
     assert_eq!(manager.stats().pool_available, initial_available);
@@ -80,9 +96,12 @@ fn test_acquire_pooled_auto_release() {
     let manager = BufferManager::new();
     let initial_available = manager.stats().pool_available;
     
-    // Используем acquire_pooled для временных буферов
+    // Используем acquire для временных буферов
     {
-        let buffer = manager.acquire_pooled(256).unwrap();
+        let buffer = manager.acquire(256).unwrap();
+        assert_eq!(buffer.len(), 256);
+        assert_eq!(manager.stats().pool_available, initial_available - 1);
+        
         assert_eq!(buffer.len(), 256);
         assert_eq!(manager.stats().pool_available, initial_available - 1);
         
@@ -91,21 +110,6 @@ fn test_acquire_pooled_auto_release() {
         assert_eq!(slice.len(), 256);
     } // buffer автоматически возвращается в пул при drop
     
-    assert_eq!(manager.stats().pool_available, initial_available);
-}
-
-#[test]
-fn test_acquire_release_api() {
-    let manager = BufferManager::new();
-    let initial_available = manager.stats().pool_available;
-    
-    // Acquire pooled buffer
-    let buffer = manager.acquire_pooled(256).unwrap();
-    assert_eq!(buffer.len(), 256);
-    assert_eq!(manager.stats().pool_available, initial_available - 1);
-    
-    // Release происходит автоматически при drop
-    drop(buffer);
     assert_eq!(manager.stats().pool_available, initial_available);
 }
 

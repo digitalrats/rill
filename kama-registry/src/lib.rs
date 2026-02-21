@@ -400,21 +400,24 @@ mod tests {
         assert_eq!(node.node_type_id(), NodeTypeId::of::<TestNode>());
     }
     
-    #[test]
-    fn test_global_registry() {
-        Registry::clear();
-        
-        let metadata = TestNode::default().metadata();
-        Registry::register("test.global", metadata, || Box::new(TestNode::default())).unwrap();
-        
-        assert!(Registry::contains("test.global"));
-        
-        let node = Registry::create("test.global").unwrap();
-        assert_eq!(node.node_type_id(), NodeTypeId::of::<TestNode>());
-        
-        let names = Registry::list_type_names();
-        assert!(names.contains(&"test.global".to_string()));
-    }
+#[test]
+fn test_global_registry() {
+    // Очищаем перед тестом
+    Registry::clear();
+    
+    let metadata = TestNode::default().metadata();
+    let result = Registry::register("test.global", metadata, || Box::new(TestNode::default()));
+    assert!(result.is_ok());
+    
+    assert!(Registry::contains("test.global"));
+    
+    let node = Registry::create("test.global");
+    assert!(node.is_ok());
+    assert_eq!(node.unwrap().node_type_id(), NodeTypeId::of::<TestNode>());
+    
+    let names = Registry::list_type_names();
+    assert!(names.contains(&"test.global".to_string()));
+}
     
 #[test]
 fn test_register_macro() {

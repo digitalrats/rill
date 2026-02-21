@@ -1,33 +1,40 @@
 //! Контекст DSP-обработки
 
-use kama_buffers::BufferRegistry;
+use kama_buffers::BufferManager;
 
 /// Контекст выполнения DSP-узла
-///
-/// Предоставляет узлу всю необходимую информацию о текущем состоянии обработки:
-/// - Время (позиция, BPM, такты)
-/// - Параметры (доступ к значениям параметров)
-/// - Буферы (доступ к внешним буферам по имени)
-/// - Информацию о блоке (размер, позиция)
-#[derive(Debug, Clone)]
+#[derive(Clone)]  // Убираем Debug из derive
 pub struct DspContext<'a> {
-    /// Провайдер времени (позиция в сэмплах/секундах, BPM, такты)
+    /// Провайдер времени
     pub time: &'a dyn kama_core_traits::TimeProvider,
     
     /// Текущая частота дискретизации
     pub sample_rate: f32,
     
-    /// Размер текущего обрабатываемого блока (в сэмплах)
+    /// Размер текущего обрабатываемого блока
     pub block_size: usize,
     
-    /// Позиция текущего блока относительно начала потока (в сэмплах)
+    /// Позиция текущего блока
     pub block_position: usize,
     
-    /// Реестр для доступа к внешним буферам по имени
-    pub buffers: &'a BufferRegistry,
+    /// Менеджер буферов
+    pub buffers: &'a BufferManager,
     
-    /// Дополнительные пользовательские данные (опционально)
+    /// Дополнительные пользовательские данные
     pub user_data: Option<&'a dyn std::any::Any>,
+}
+
+// Ручная реализация Debug
+impl<'a> std::fmt::Debug for DspContext<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DspContext")
+            .field("sample_rate", &self.sample_rate)
+            .field("block_size", &self.block_size)
+            .field("block_position", &self.block_position)
+            .field("buffers", self.buffers)
+            .field("user_data", &self.user_data.is_some())
+            .finish()
+    }
 }
 
 impl<'a> DspContext<'a> {
@@ -37,7 +44,7 @@ impl<'a> DspContext<'a> {
         sample_rate: f32,
         block_size: usize,
         block_position: usize,
-        buffers: &'a BufferRegistry,
+        buffers: &'a BufferManager,
     ) -> Self {
         Self {
             time,

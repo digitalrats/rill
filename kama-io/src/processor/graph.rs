@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use kama_core::{AudioGraph, AudioNode, param::ParamValue};
+use kama_graph::{AudioGraph, AudioNode, param::ParamValue};
 
 use crate::engine::AudioProcessor;
 use crate::error::{IoResult, IoError};
@@ -11,8 +11,8 @@ use crate::error::{IoResult, IoError};
 /// Процессор, который обрабатывает аудио через AudioGraph
 pub struct GraphProcessor {
     graph: Arc<RwLock<AudioGraph>>,
-    input_node_id: Option<kama_core_traits::graph::NodeId>,
-    output_node_id: Option<kama_core_traits::graph::NodeId>,
+    input_node_id: Option<kama_core_traits::NodeId>,
+    output_node_id: Option<kama_core_traits::NodeId>,
     temp_input: Vec<f32>,
     temp_output: Vec<f32>,
     sample_rate: f32,

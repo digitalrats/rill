@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 kama-core-traits = { path = "../kama-core-traits", version = "0.1.0" }
-kama-buffers = { path = "../kama-buffers", version = "0.1.0" }
+kama-buffers = { path = "../kama-buffers", version = "0.2.0" }
 parking_lot = "0.12"
 thiserror = "1.0"
 

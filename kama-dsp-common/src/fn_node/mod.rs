@@ -1,13 +1,7 @@
 //! Конструкторы для создания узлов из функций
 
 use std::marker::PhantomData;
-
-use kama_core_traits::{
-    AudioNode, AudioError, NodeTypeId, NodeMetadata, NodeCategory,
-    param::{ParamValue},
-};
-use kama_core_traits::time::TimeProvider;  // <-- Добавляем импорт
-
+use kama_core_traits::{AudioNode, AudioError, NodeTypeId, NodeMetadata, NodeCategory, ParamValue};
 use crate::context::DspContext;
 use crate::dummy::DummyTimeProvider;
 
@@ -22,6 +16,7 @@ struct StatelessNodeCore<F> {
     sample_rate: f32,
     num_inputs: usize,
     num_outputs: usize,
+    _phantom: PhantomData<fn() -> F>,
 }
 
 impl<F> AudioNode for StatelessNodeCore<F>
@@ -37,9 +32,9 @@ where
         let output = &mut outputs[0];
         let buffer_size = output.len().min(input.len());
         
-        // Создаем временный контекст (в реальности будет передаваться из графа)
-        let dummy_time = crate::dummy::DummyTimeProvider;
-        let dummy_buffers = kama_buffers::BufferRegistry::new();
+        // Создаем временный контекст
+        let dummy_time = DummyTimeProvider;
+        let dummy_buffers = kama_buffers::BufferManager::new();
         let ctx = DspContext {
             time: &dummy_time,
             sample_rate: self.sample_rate,
@@ -81,17 +76,6 @@ where
 }
 
 /// Создать stateless узел из функции
-///
-/// # Пример
-/// ```
-/// use kama_dsp_common::{stateless_fn_node, NodeCategory};
-///
-/// let gain_node = stateless_fn_node(
-///     "Gain",
-///     NodeCategory::Effect,
-///     |sample, ctx| sample * 0.5
-/// );
-/// ```
 pub fn stateless_fn_node<F>(
     name: &str,
     category: NodeCategory,
@@ -115,6 +99,7 @@ where
         sample_rate: 44100.0,
         num_inputs: 1,
         num_outputs: 1,
+        _phantom: PhantomData,
     }
 }
 
@@ -126,6 +111,7 @@ where
 struct StatefulNodeCore<F, S> {
     func: F,
     state: S,
+    initial_state: S,
     metadata: NodeMetadata,
     sample_rate: f32,
     num_inputs: usize,
@@ -133,9 +119,31 @@ struct StatefulNodeCore<F, S> {
     _phantom: PhantomData<fn() -> S>,
 }
 
+impl<S: Clone, F> StatefulNodeCore<F, S> {
+    fn new(
+        func: F,
+        initial_state: S,
+        metadata: NodeMetadata,
+        sample_rate: f32,
+        num_inputs: usize,
+        num_outputs: usize,
+    ) -> Self {
+        Self {
+            func,
+            state: initial_state.clone(),
+            initial_state,
+            metadata,
+            sample_rate,
+            num_inputs,
+            num_outputs,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<S, F> AudioNode for StatefulNodeCore<F, S>
 where
-    S: Send + Sync + 'static,
+    S: Send + Sync + 'static + Clone,
     F: Fn(f32, &mut S, &DspContext) -> f32 + Send + Sync + 'static,
 {
     fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
@@ -147,8 +155,8 @@ where
         let output = &mut outputs[0];
         let buffer_size = output.len().min(input.len());
         
-        let dummy_time = crate::dummy::DummyTimeProvider;
-        let dummy_buffers = kama_buffers::BufferRegistry::new();
+        let dummy_time = DummyTimeProvider;
+        let dummy_buffers = kama_buffers::BufferManager::new();
         let ctx = DspContext {
             time: &dummy_time,
             sample_rate: self.sample_rate,
@@ -175,7 +183,9 @@ where
         self.sample_rate = sample_rate;
     }
     
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        self.state = self.initial_state.clone();
+    }
     
     fn num_inputs(&self) -> usize { self.num_inputs }
     fn num_outputs(&self) -> usize { self.num_outputs }
@@ -190,22 +200,6 @@ where
 }
 
 /// Создать stateful узел из функции с состоянием
-///
-/// # Пример
-/// ```
-/// use kama_dsp_common::{stateful_fn_node, NodeCategory};
-///
-/// let filter_node = stateful_fn_node(
-///     "OnePole",
-///     NodeCategory::Filter,
-///     0.0, // начальное состояние
-///     |sample, state, ctx| {
-///         let alpha = 0.1;
-///         *state = *state + alpha * (sample - *state);
-///         *state
-///     }
-/// );
-/// ```
 pub fn stateful_fn_node<S, F>(
     name: &str,
     category: NodeCategory,
@@ -213,7 +207,7 @@ pub fn stateful_fn_node<S, F>(
     func: F,
 ) -> impl AudioNode
 where
-    S: Send + Sync + 'static,
+    S: Send + Sync + 'static + Clone,
     F: Fn(f32, &mut S, &DspContext) -> f32 + Send + Sync + 'static,
 {
     let metadata = NodeMetadata {
@@ -225,22 +219,21 @@ where
         parameters: vec![],
     };
     
-    StatefulNodeCore {
+    StatefulNodeCore::new(
         func,
-        state: initial_state,
+        initial_state,
         metadata,
-        sample_rate: 44100.0,
-        num_inputs: 1,
-        num_outputs: 1,
-        _phantom: PhantomData,
-    }
+        44100.0,
+        1,
+        1,
+    )
 }
 
 // -----------------------------------------------------------------------------
-// Multi-channel и Block Processing
+// Block Processing Node (для SIMD и оптимизаций)
 // -----------------------------------------------------------------------------
 
-/// Создать узел для обработки целого блока (полезно для SIMD оптимизаций)
+/// Создать узел для обработки целого блока
 pub fn block_fn_node<F>(
     name: &str,
     category: NodeCategory,
@@ -264,8 +257,8 @@ where
         F: Fn(&[&[f32]], &mut [&mut [f32]], &DspContext) -> Result<(), AudioError> + Send + Sync + 'static,
     {
         fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-            let dummy_time = crate::dummy::DummyTimeProvider;
-            let dummy_buffers = kama_buffers::BufferRegistry::new();
+            let dummy_time = DummyTimeProvider;
+            let dummy_buffers = kama_buffers::BufferManager::new();
             let ctx = DspContext {
                 time: &dummy_time,
                 sample_rate: self.sample_rate,

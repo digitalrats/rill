@@ -1,5 +1,6 @@
 //! Пул буферов для повторного использования
 
+use std::fmt;
 use crate::error::{BufferError, BufferResult};
 
 /// Стратегия поведения при несоответствии размера буфера
@@ -12,7 +13,6 @@ pub enum PoolStrategy {
 }
 
 /// Пул буферов для повторного использования
-#[derive(Debug)]
 pub struct BufferPool {
     buffers: Vec<Vec<f32>>,
     size: usize,
@@ -24,7 +24,6 @@ impl BufferPool {
     /// Создать новый пул
     pub fn new(max_size: usize, buffer_size: usize, strategy: PoolStrategy) -> Self {
         let mut buffers = Vec::with_capacity(max_size);
-        // Инициализируем пул буферами
         for _ in 0..max_size {
             buffers.push(vec![0.0; buffer_size]);
         }
@@ -129,6 +128,17 @@ impl BufferPool {
     }
 }
 
+impl fmt::Debug for BufferPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BufferPool")
+            .field("size", &self.size)
+            .field("available", &self.available())
+            .field("strategy", &self.strategy)
+            .field("max_size", &self.max_size)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,7 +147,6 @@ mod tests {
     fn test_pool_basic() {
         let mut pool = BufferPool::new(2, 256, PoolStrategy::Resize);
         
-        // Пул должен быть инициализирован с 2 буферами
         assert_eq!(pool.available(), 2);
         
         let buf = pool.acquire().unwrap();
@@ -156,10 +165,10 @@ mod tests {
         
         let buf = pool.acquire_with_size(512).unwrap();
         assert_eq!(buf.len(), 512);
-        assert_eq!(pool.available(), 1); // Один буфер остался в пуле
+        assert_eq!(pool.available(), 1);
         
         pool.release(buf).unwrap();
-        assert_eq!(pool.available(), 2); // Буфер вернулся, но размер пула не изменился
+        assert_eq!(pool.available(), 2);
         assert_eq!(pool.current_size(), 256);
     }
 }

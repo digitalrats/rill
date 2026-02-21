@@ -6,8 +6,8 @@ description = "Audio I/O backends for Kama Audio - CPAL, ALSA, PipeWire, JACK"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-kama-core = { path = "../kama-core", version = "0.1.0" }
-kama-buffers = { path = "../kama-buffers", version = "0.1.0" }
+kama-core-traits = { path = "../kama-core-traits", version = "0.1.0" }
+kama-buffers = { path = "../kama-buffers", version = "0.2.0" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
