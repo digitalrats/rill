@@ -3,7 +3,8 @@ name = "kama-oscillators"
 version = "0.1.0"
 edition = "2021"
 description = "Unified oscillators for Kama Audio - audio oscillators, LFOs, envelopes, and control generators"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
+authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
 kama-core-traits = { path = "../kama-core-traits" }

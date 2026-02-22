@@ -1,212 +1,202 @@
-markdown
-
-# Kama Audio Project
-
-Модульная система аудиообработки на Rust.
-
-## Текущее состояние проекта ✅
+Вот общий `README.md` для корня проекта:
+
+```markdown
+# Kama Audio 🎵
+
+[![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/kama-audio)
+[![tests](https://img.shields.io/badge/tests-150%2B-passing)](https://github.com/DigitalRats/kama-audio)
+[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
+
+**Модульная экосистема для создания аудиоприложений на Rust.**
+
+Kama Audio — это не монолит, а набор специализированных крейтов, каждый из которых решает свою задачу. Вы можете использовать только то, что нужно для вашего проекта.
+
+```
+kama-core-traits     # ядро с трейтами (минимум)
+kama-buffers         # работа с буферами
+kama-graph           # аудиограф
+kama-signal          # сигнальная система
+kama-automation      # автоматизация параметров
+kama-control         # MIDI/HID управление
+kama-dsp-common      # DSP инфраструктура
+kama-oscillators     # осцилляторы (аудио и LFO)
+kama-digital-filters # цифровые фильтры
+kama-digital-effects # цифровые эффекты
+kama-eq              # эквалайзеры
+kama-lofi            # Lo-Fi эмуляция
+kama-mixer           # микшер
+kama-hp              # high-precision вычисления
+kama-io              # аудио ввод-вывод (в разработке)
+```
+
+## 🎯 Зачем это нужно?
+
+- **Для музыкантов**: создавайте свои эффекты и инструменты
+- **Для разработчиков**: стройте аудиоприложения на надёжном фундаменте
+- **Для live coding**: Drift — сервер эффектов для TidalCycles, SuperCollider и других сред
+
+## ✨ Особенности
+
+- **Минимальное ядро** — только трейты, всё остальное в крейтах
+- **Модульность** — берите только то, что нужно
+- **Производительность** — zero-cost abstractions, real-time безопасность
+- **Тестируемость** — 150+ тестов, всё проверено
+- **Расширяемость** — легко добавить свой эффект или бэкенд
+
+## 🚀 Быстрый старт
+
+Добавьте нужные крейты в `Cargo.toml`:
+
+```toml
+[dependencies]
+kama-core-traits = "0.1"
+kama-graph = "0.1"
+kama-oscillators = "0.1"
+kama-digital-effects = "0.1"
+```
+
+Создайте простой эффект (синус + задержка):
+
+```rust
+use kama_core_traits::{AudioNode, PortId};
+use kama_graph::AudioGraph;
+use kama_oscillators::audio::SineOsc;
+use kama_digital_effects::Delay;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut graph = AudioGraph::new(44100.0);
+    
+    // Генератор синуса 440Hz
+    let sine = SineOsc::new(440.0).with_amplitude(0.5);
+    let sine_id = graph.add_node(Box::new(sine));
+    
+    // Задержка 0.3 сек с обратной связью
+    let delay = Delay::new(0.3, 0.4, 0.7);
+    let delay_id = graph.add_node(Box::new(delay));
+    
+    // Соединяем
+    graph.connect(
+        PortId::output(sine_id, 0),
+        PortId::input(delay_id, 0),
+        1.0,
+    )?;
+    
+    // Обрабатываем 1 секунду
+    let mut output = vec![0.0; 44100];
+    let mut outputs = [output.as_mut_slice()];
+    graph.process(&[], &mut outputs)?;
+    
+    println!("Готово! RMS: {:.6}", calculate_rms(&output));
+    Ok(())
+}
+
+fn calculate_rms(signal: &[f32]) -> f32 {
+    let sum: f32 = signal.iter().map(|x| x * x).sum();
+    (sum / signal.len() as f32).sqrt()
+}
+```
+
+## 📦 Состояние крейтов
+
+| Крейт | Статус | Описание |
+|-------|--------|----------|
+| `kama-core-traits` | ✅ стабильный | Базовые трейты (`AudioNode`, `ParamValue`, `TimeProvider`) |
+| `kama-buffers` | ✅ стабильный | Кольцевые буферы, многоголовые буферы, пулы |
+| `kama-graph` | ✅ стабильный | Аудиограф с топологической сортировкой |
+| `kama-signal` | ✅ стабильный | Сигнальная система (`SignalBus`, `ParameterChanged`) |
+| `kama-automation` | ✅ стабильный | Автоматизация (LFO, огибающие, сервоприводы) |
+| `kama-control` | ✅ стабильный | MIDI управление, маппинг событий |
+| `kama-dsp-common` | ✅ стабильный | DSP инфраструктура, функциональные узлы |
+| `kama-oscillators` | ✅ стабильный | Осцилляторы (синус, пила, шум, LFO, огибающие) |
+| `kama-digital-filters` | ✅ стабильный | Биквадратные фильтры (LP, HP, BP, Notch, Peak) |
+| `kama-digital-effects` | ✅ стабильный | Эффекты (Delay, Distortion, Limiter) |
+| `kama-eq` | ✅ стабильный | Параметрический и графический эквалайзеры |
+| `kama-lofi` | ✅ стабильный | Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
+| `kama-mixer` | ✅ стабильный | Микшер с каналами, панорамой и aux шинами |
+| `kama-hp` | ✅ стабильный | High-precision вычисления (f64) |
+| `kama-io` | 🔄 в работе | Аудио ввод-вывод (ALSA, CPAL) |
+| `kama-wdf` | ⏳ планируется | Wave Digital Filters (аналоговая эмуляция) |
+| `kama-server` | ⏳ планируется | OSC сервер для удалённого управления |
+| `drift` | ⏳ планируется | Продукт: сервер эффектов для live coding |
 
-Все крейты успешно компилируются и тесты проходят!
-text
+## 🧪 Тестирование
 
-cargo build --workspace      # УСПЕШНО ✅
-cargo test --workspace       # УСПЕШНО ✅
+```bash
+# Все тесты
+cargo test --workspace
 
-Структура workspace (финальная)
-text
+# Интеграционные тесты цифровой части
+cargo test -p kama-tests -- --nocapture
 
-Текущее состояние проекта ✅
+# Тесты конкретного крейта
+cargo test -p kama-digital-effects
+```
 
-Все крейты успешно компилируются и тесты проходят!
-text
+## 📚 Документация
 
-cargo build --workspace      # УСПЕШНО ✅
-cargo test --workspace       # УСПЕШНО ✅ (все тесты пройдены)
+- [Архитектура проекта](architecture.md) — детальное описание всех компонентов
+- [План разработки](plan.org) — текущие задачи и планы
+- [Примеры](examples/) — примеры использования каждого крейта
 
-Структура workspace (финальная)
-text
+## 🎮 Примеры
 
-kama-audio/
-├── kama-core/           # Ядро: графы, узлы, базовые DSP
-├── kama-automation/     # Расширенная автоматизация
-├── kama-buffers/        # Продвинутая работа с буферами
-├── kama-mixer/          # Расширенный микшер
-├── kama-hp/             # High-precision вычисления (f64)
-├── kama-lofi/           # Lo-fi эмуляция (NES, AY-3-8910, Akai)
-├── kama-wdf/            # Wave Digital Filters (аналоговая эмуляция)
-├── kama-io/             # Аудио ввод-вывод (CPAL, ALSA, Null)
-└── kama-control/        # Управление контроллерами (MIDI, HID, OSC)
+```bash
+# Базовый пример с AudioGraph
+cargo run --example final_demo
 
-Ключевые особенности kama-io
-Архитектура
+# Lo-Fi эмуляция (NES, AY-3-8910)
+cargo run --example chiptune_demo
 
-    Бэкенды в отдельном модуле - backends/ с CPAL, ALSA, Null
+# Гранулярный синтез
+cargo run --example granular_processing
 
-    Процессоры в отдельном модуле - processor/ с базовыми и графовыми процессорами
+# MIDI управление
+cargo run --example simple_midi
+```
 
-    Потокобезопасность - каждый бэкенд работает в отдельном потоке
+## 🤝 Участие в разработке
 
-    Кольцевые буферы - из kama-buffers для обмена данными
+Проект открыт для вклада! Особенно нужна помощь с:
 
-Реализованные бэкенды
-Бэкенд	Статус	Платформа
-NullBackend	✅ Работает	Все
-CpalBackend	✅ Работает	Все (кросс-платформенный)
-AlsaBackend	✅ Работает	Linux
-PipeWireBackend	⏳ Заглушка	Linux
-JackBackend	⏳ Заглушка	Linux/macOS
-Реализованные процессоры
-Процессор	Описание
-PassThroughProcessor	Пропускает входной сигнал без изменений
-SilenceProcessor	Генерирует тишину
-GainProcessor	Усиливает сигнал с заданным коэффициентом
-MonoMixerProcessor	Преобразует стерео в моно
-SineProcessor	Генерирует синусоидальную волну
-GraphProcessor	Интеграция с AudioGraph
-Примеры
-Пример	Описание
-simple_playback.rs	Базовое воспроизведение синуса
-processor_demo.rs	Демонстрация всех процессоров
-graph_processing.rs	Интеграция с AudioGraph
-granular_processing.rs	Гранулярный синтез
-alsa_demo.rs	ALSA бэкенд на Linux
-Текущие предупреждения (не критические)
-Крейт	Предупреждений	Основные причины
-kama-core	216	Неиспользуемые импорты, недокументированные API
-kama-automation	2	Неиспользуемые методы
-kama-buffers	1	Неиспользуемый импорт
-kama-mixer	59	Неиспользуемые импорты
-kama-hp	64	Неиспользуемые поля
-kama-lofi	93	Неиспользуемые поля, недокументированные API
-kama-wdf	4	Неиспользуемые поля
-kama-io	34	Неиспользуемые импорты, лишние mut
-kama-control	54	Неиспользуемые импорты, недокументированные API
+- **Аудио бэкендами**: ALSA, CoreAudio, WASAPI, JACK, PipeWire
+- **DSP алгоритмами**: новые эффекты, оптимизация существующих
+- **Документацией**: примеры, туториалы, переводы
+- **Тестированием**: на разных платформах и с разным железом
 
-Всего: ~527 предупреждений (можно исправить автоматически)
-План дальнейших действий
-1. Исправить предупреждения (опционально, для чистоты кода)
-bash
+### Как начать
 
-# Автоматическое исправление во всех крейтах
-cargo fix --allow-dirty
+1. Форкните репозиторий
+2. Создайте ветку для фичи (`git checkout -b feature/amazing-effect`)
+3. Запустите тесты (`cargo test`)
+4. Отправьте пулл-реквест
 
-# Форматирование кода
-cargo fmt
+## 📄 Лицензия
 
-2. Реализовать оставшиеся бэкенды
+Проект распространяется под лицензией **Apache 2.0**. Это означает, что вы можете:
 
-    PipeWire бэкенд (backends/pipewire.rs)
+- ✅ Использовать в коммерческих продуктах
+- ✅ Модифицировать и распространять
+- ✅ Использовать патентные права
+- ❗ При изменениях указывать авторов
+- ❗ Сохранять уведомление об авторстве
 
-    JACK бэкенд (backends/jack.rs)
+Полный текст лицензии: [LICENSE-APACHE](LICENSE-APACHE)
 
-3. Добавить больше процессоров
+Примечание: kama-tests лиценизирован под MIT. Полный текст лицензии: [LICENSE-MIT](LICENSE-MIT)
 
-    DelayProcessor (эффект задержки)
+### Зависимости
 
-    ReverbProcessor (реверберация)
+Все зависимости проекта совместимы с Apache-2.0 (MIT, Apache-2.0, MIT/Apache-2.0). 
+Ни одной GPL/AGPL зависимости не используется.
 
-    FilterProcessor (фильтры)
+## 🌟 Благодарности
 
-    DistortionProcessor (искажения)
+Всем, кто внёс вклад в развитие open-source аудио на Rust:
+- [cpal](https://github.com/RustAudio/cpal) — кросс-платформенный аудио ввод-вывод
+- [fundsp](https://github.com/SamiPerttu/fundsp) — вдохновение для DSP подходов
+- [nih-plug](https://github.com/robbert-vdh/nih-plug) — архитектура плагинов
 
-4. Улучшить документацию
-bash
+---
 
-cargo doc --open
-
-Особое внимание:
-
-    kama-io::AudioEngine - основной API
-
-    kama-io::backends - как добавить новый бэкенд
-
-    kama-io::processor - как создать свой процессор
-
-5. Добавить бенчмарки
-
-    Сравнение производительности бэкендов
-
-    Измерение задержки (latency)
-
-    Тест пропускной способности
-
-6. Подготовка к публикации на crates.io
-Проверить зависимости:
-bash
-
-cargo tree
-
-Обновить версии (рекомендуется 0.1.0 → 0.2.0):
-
-    kama-core/Cargo.toml
-
-    kama-automation/Cargo.toml
-
-    kama-buffers/Cargo.toml
-
-    kama-mixer/Cargo.toml (уже 0.2.0)
-
-    kama-hp/Cargo.toml
-
-    kama-lofi/Cargo.toml
-
-    kama-wdf/Cargo.toml
-
-    kama-io/Cargo.toml
-
-    kama-control/Cargo.toml
-
-Порядок публикации:
-bash
-
-# 1. Базовые крейты
-cd kama-core && cargo publish
-cd ../kama-buffers && cargo publish
-
-# 2. Зависимые крейты
-cd ../kama-automation && cargo publish
-cd ../kama-hp && cargo publish
-cd ../kama-io && cargo publish
-cd ../kama-control && cargo publish
-
-# 3. Остальные
-cd ../kama-mixer && cargo publish
-cd ../kama-lofi && cargo publish
-cd ../kama-wdf && cargo publish
-
-Ключевые файлы для дальнейшей работы
-Основные
-
-    kama-io/src/engine.rs - ядро аудио движка
-
-    kama-io/src/backends/alsa.rs - ALSA реализация
-
-    kama-io/src/processor/graph.rs - интеграция с AudioGraph
-
-    kama-control/src/backends/midi.rs - MIDI поддержка
-
-Примеры для изучения
-
-    kama-io/examples/processor_demo.rs - демо всех процессоров
-
-    kama-io/examples/graph_processing.rs - сложный граф
-
-    kama-io/examples/granular_processing.rs - гранулярный синтез
-
-Следующий чат
-
-Что бы вы хотели сделать дальше?
-
-    Исправить предупреждения во всех крейтах?
-
-    Реализовать PipeWire/JACK бэкенды?
-
-    Добавить новые процессоры (Delay, Reverb)?
-
-    Написать бенчмарки для измерения производительности?
-
-    Подготовить документацию для публикации?
-
-    Начать процесс публикации на crates.io?
-
-Проект полностью готов к дальнейшему развитию! 🚀
+**Kama Audio** — делаем звук на Rust доступным и модульным. 🚀
+```

@@ -3,7 +3,8 @@ name = "kama-digital-filters"
 version = "0.1.0"
 edition = "2021"
 description = "Digital filters for Kama Audio - Biquad, OnePole, StateVariable, etc."
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
+authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
 kama-core-traits = { path = "../kama-core-traits" }

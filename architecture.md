@@ -1,159 +1,425 @@
-Отлично! Обновляю `architecture.md` в соответствии с текущим состоянием кодовой базы.
 
-## Kama Audio: Архитектура проекта (актуальная версия)
+## architecture.md
 
-### Общая концепция
-Kama Audio — это модульный open-source фреймворк для создания аудиоприложений на Rust. Ключевая идея: минимальное стабильное ядро + набор специализированных крейтов, расширяющих функциональность. Все крейты успешно компилируются и проходят тесты.
+```markdown
+# Архитектура Kama Audio
 
-### Текущее состояние проекта ✅
+## Общая концепция
+
+Kama Audio — это модульная экосистема, построенная вокруг минимального ядра с трейтами. Каждый крейт имеет чёткую ответственность и может использоваться независимо.
+
 ```
-kama-core-traits/     # ✅ 6 тестов - базовые трейты (ядро)
-kama-buffers/         # ✅ 21 тест - управление буферами
-kama-automation/      # ✅ 17 тестов - автоматизация параметров
-kama-control/         # ✅ 2 теста - управление (MIDI)
-kama-signal/          # ✅ 18 тестов - сигнальная система
-kama-graph/           # ✅ 12 тестов - аудиограф
-kama-dsp-common/      # ✅ 11 тестов - общие утилиты для DSP
-```
-
-### Структура крейтов (реализовано)
-
-#### 1. Базовые крейты (ядро и фундаментальные абстракции)
-| Крейт | Назначение | Ключевые компоненты |
-|-------|------------|---------------------|
-| **kama-core-traits** | Минимальное ядро с трейтами | `AudioNode`, `ParamValue`, `NodeId`, `PortId`, `Clock`, `TimeProvider`, `SystemClock`, `AudioError` |
-| **kama-signal** | Сигнальная система | `Signal` (маркер), `ParameterChanged`, `ClockTick`, `SystemEvent`, `SignalBus<T>`, `BusConfig`, `OverflowPolicy`, `SimpleSignalDispatcher` |
-
-#### 2. Утилитарные крейты
-| Крейт | Назначение | Ключевые компоненты |
-|-------|------------|---------------------|
-| **kama-buffers** | Работа с буферами | `RingBuffer`, `BufferPool`, `MultiHeadBuffer`, `BufferHead`, `BufferManager`, `ReadMode` (Simple, Loop, PingPong, Granular) |
-| **kama-graph** | Аудиограф | `AudioGraph`, `Connection`, `GraphBufferManager`, `NodeProcessor`, топологическая сортировка |
-
-#### 3. Автоматизация и управление
-| Крейт | Назначение | Ключевые компоненты |
-|-------|------------|---------------------|
-| **kama-automation** | Автоматизация параметров | `Automaton` (трейт), `Servo`, `AutomationManager`, `LfoAutomaton`, `EnvelopeState`, `ParameterMapping`, интеграция с `SignalSender` |
-| **kama-control** | MIDI-управление | `ControlBackend`, `MidiBackend`, `ControlNode`, `Mapping`, `EventPattern`, `Transform`, интеграция с `kama-signal` |
-
-#### 4. DSP-инфраструктура
-| Крейт | Назначение | Ключевые компоненты |
-|-------|------------|---------------------|
-| **kama-dsp-common** | Общие утилиты для DSP | `DspContext`, конструкторы узлов (`stateless_fn_node`, `stateful_fn_node`, `block_fn_node`), макросы (`effect!`, `filter!`, `generator!`) |
-
-### Структура workspace (актуальная)
-```toml
-[workspace]
-members = [
-    "kama-core-traits",      # ядро
-    "kama-buffers",          # буферы
-    "kama-graph",            # граф
-    "kama-automation",       # автоматизация
-    "kama-control",          # управление
-    "kama-signal",           # сигналы
-    "kama-dsp-common",       # DSP инфраструктура
-    # Следующие крейты в разработке:
-    # "kama-digital-oscillators",
-    # "kama-digital-filters",
-    # "kama-digital-effects",
-    # "kama-digital-eq",
-]
+┌─────────────────────────────────────────────────────────────┐
+│                         Продукты                             │
+│  ┌──────────┐                                                │
+│  │  drift   │  (сервер эффектов для live coding)            │
+│  └──────────┘                                                │
+├─────────────────────────────────────────────────────────────┤
+│                       Инфраструктура                          │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
+│  │kama-server │  │kama-client │  │kama-control│             │
+│  │(OSC сервер)│  │(CLI утилита)│  │(MIDI/HID)  │             │
+│  └────────────┘  └────────────┘  └────────────┘             │
+├─────────────────────────────────────────────────────────────┤
+│                      Обработка звука                          │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              kama-graph (аудиограф)                 │    │
+│  └─────────────────────────────────────────────────────┘    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐      │
+│  │осцилляторы│ │ фильтры  │ │ эффекты  │ │эквалайзер│      │
+│  │(kama-osc)│ │(kama-dig-│ │(kama-dig-│ │(kama-eq) │      │
+│  │          │ │ital-filt)│ │ital-eff) │ │          │      │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘      │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐      │
+│  │  микшер  │ │  lo-fi   │ │   wdf    │ │    hp    │      │
+│  │(kama-mix)│ │(kama-lofi)│ │(kama-wdf)│ │(kama-hp) │      │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘      │
+├─────────────────────────────────────────────────────────────┤
+│                      Ввод-вывод                              │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐      │
+│  │  ALSA    │ │  CPAL    │ │ PipeWire │ │   JACK   │      │
+│  │(kama-io) │ │(kama-io) │ │(kama-io) │ │(kama-io) │      │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘      │
+├─────────────────────────────────────────────────────────────┤
+│                         Ядро                                 │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              kama-core-traits                        │    │
+│  │  (AudioNode, ParamValue, TimeProvider, и т.д.)       │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Реализованные компоненты в деталях
+## Базовые крейты (ядро)
 
-#### `kama-core-traits`
-Базовые трейты, от которых зависят все остальные крейты:
-- `AudioNode` — основной трейт для всех аудиоузлов
-- `ParamValue` — типы параметров (Float, Int, Bool, String, Choice)
-- `NodeId`, `PortId` — идентификаторы
-- `Clock` / `TimeProvider` — работа со временем
-- `SystemClock` — эталонная реализация часов
+### `kama-core-traits`
+Минимальное ядро с трейтами и базовыми типами.
 
-#### `kama-buffers`
-Продвинутая система управления буферами:
-- `RingBuffer` — кольцевой буфер с интерполяцией
-- `BufferHead` — головки воспроизведения с разными режимами
-- `MultiHeadBuffer` — многоголовый буфер (до 8 головок)
-- `BufferManager` — пул буферов с acquire/release
-- `ReadMode` — Simple, Loop, PingPong, Granular
+```rust
+pub trait AudioNode: Send + Sync {
+    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> AudioResult<()>;
+    fn get_param(&self, name: &str) -> Option<ParamValue>;
+    fn set_param(&mut self, name: &str, value: ParamValue) -> AudioResult<()>;
+    fn num_inputs(&self) -> usize;
+    fn num_outputs(&self) -> usize;
+    // ...
+}
 
-#### `kama-graph`
-Полноценная реализация аудиографа:
-- Топологическая сортировка для определения порядка обработки
-- Управление соединениями между узлами
-- Интеграция с `BufferManager` для эффективного управления памятью
-- Кэширование буферов узлов
+pub enum ParamValue { Float(f32), Int(i32), Bool(bool), String(String), Choice(String) }
 
-#### `kama-automation`
-Система автоматизации параметров:
-- `Automaton` трейт для создания автоматов (LFO, огибающие)
-- `Servo` — сервопривод, связывающий автомат с параметром
-- `AutomationManager` — центральный менеджер
-- Интеграция с `kama-signal` для отправки изменений
+pub trait TimeProvider: Clock {
+    fn bpm(&self) -> f64;
+    fn set_bpm(&self, bpm: f64);
+    fn tick_info(&self) -> TickInfo;
+}
+```
 
-#### `kama-control`
-MIDI и управление:
-- `MidiBackend` — работа с MIDI-устройствами в отдельном потоке
-- `ControlNode` — узел для графа, преобразующий MIDI-события в параметры
-- Система маппинга с разными типами преобразований
+### `kama-signal`
+Сигнальная система для коммуникации между компонентами.
 
-#### `kama-signal`
-Гибкая сигнальная система:
 - `SignalBus<T>` — многопоточная шина с политиками переполнения
-- `SimpleSignalDispatcher` — синхронный диспетчер
-- Готовые типы сигналов: `ParameterChanged`, `ClockTick`, `SystemEvent`
+- `ParameterChanged`, `ClockTick`, `SystemEvent` — готовые типы сигналов
+- `SimpleSignalDispatcher` — синхронная диспетчеризация
 
-#### `kama-dsp-common`
-Фундамент для всех DSP-крейтов:
-- `DspContext` — контекст выполнения с временем, параметрами, буферами
-- Конструкторы функциональных узлов для быстрого создания эффектов
-- Макросы для минимального бойлерплейта
+## Утилитарные крейты
 
-### Ключевые архитектурные решения (реализованные)
+### `kama-buffers`
+Управление аудио буферами.
 
-1. **Минимальное ядро** (`kama-core-traits`) — только трейты и базовые типы, никакой логики
-2. **Реестр узлов** — глобальный реестр в `kama-graph` для создания узлов по имени
-3. **TimeProvider** — единый источник времени для всех компонентов
-4. **SignalBus** — гибкая шина событий с настраиваемыми каналами
-5. **DSP как функции** — возможность создавать узлы из простых функций
-6. **Клиент-серверная модель** — через `kama-control` (MIDI) и будущий `kama-server`
-7. **Многопоточность** — бэкенды в отдельных потоках, lock-free структуры где возможно
+```rust
+// Кольцевой буфер с интерполяцией
+let mut buffer = RingBuffer::new(1024);
+buffer.write(&samples);
+buffer.read_interpolated(1.5, &mut output);
 
-### Планируемые крейты (следующие шаги)
+// Многоголовый буфер для гранулярного синтеза
+let mut multi = MultiHeadBuffer::new(4096, 44100.0);
+let head = multi.add_head_with_params(1.0, 0.0, 1.0, ReadMode::Granular {
+    grain_size: 256,
+    spacing: 512,
+    randomization: 0.3,
+});
 
-```
-kama-digital-oscillators/     # осцилляторы (следующий)
-kama-digital-filters/         # цифровые фильтры
-kama-digital-effects/         # цифровые эффекты
-kama-digital-eq/              # эквалайзеры
-kama-mixer/                   # микшер (на базе kama-core-traits)
-kama-server/                  # сервер с OSC API
-kama-client/                  # CLI утилита
+// Менеджер буферов с пулом
+let manager = BufferManager::new();
+let buffer = manager.acquire(256)?;
 ```
 
-### Зависимости между крейтами (актуальные)
-```mermaid
-graph TD
-    A[kama-core-traits] --> B[kama-buffers]
-    A --> C[kama-signal]
-    A --> D[kama-automation]
-    A --> E[kama-control]
-    A --> F[kama-dsp-common]
-    
-    B --> G[kama-graph]
-    C --> D
-    C --> E
-    
-    F --> H[kama-digital-*]    # будущие DSP-крейты
-    G --> H
-    B --> H
-    
-    D --> I[kama-server]       # будущий
-    E --> I
-    H --> I
-    G --> I
+### `kama-graph`
+Аудиограф с топологической сортировкой.
+
+```rust
+let mut graph = AudioGraph::new(44100.0);
+let osc_id = graph.add_node(Box::new(SineOsc::new(440.0)));
+let filter_id = graph.add_node(Box::new(BiquadFilter::lowpass(1000.0, 0.707)));
+
+graph.connect(PortId::output(osc_id, 0), PortId::input(filter_id, 0), 1.0)?;
+
+// Автоматическая топологическая сортировка
+for &node_id in graph.processing_order() {
+    // узлы в правильном порядке
+}
 ```
 
-### Заключение
-Проект полностью готов к следующему этапу — созданию цифровых DSP-крейтов. Все базовые компоненты работают, протестированы и готовы к использованию. Архитектура обеспечивает модульность, расширяемость и производительность.
+## Автоматизация и управление
+
+### `kama-automation`
+Автоматизация параметров.
+
+```rust
+let mut manager = AutomationManager::new(time_provider, clock);
+
+// LFO для модуляции частоты фильтра
+let lfo = FunctionAutomaton::new(
+    "LFO",
+    move |time| 500.0 + 400.0 * (time * 0.5).sin(),
+    "filter",
+    "cutoff"
+);
+
+manager.add_servo(Servo::new(
+    "lfo1".to_string(),
+    Arc::new(lfo),
+    "filter".to_string(),
+    "cutoff".to_string(),
+    ParameterMapping::Linear,
+    context,
+));
+```
+
+### `kama-control`
+MIDI и HID управление.
+
+```rust
+let mut midi = MidiBackend::new("Kama Control")?;
+midi.open_port(0)?;
+
+let event_rx = midi.subscribe();
+let mut control_node = ControlNode::new(event_rx);
+
+// Маппинг MIDI контроллера на параметр
+control_node.add_mapping(Mapping::new(
+    EventPattern::MidiControl { channel: None, controller: 7 },
+    Target { node_id: gain_id, param_name: "gain".to_string(), min: 0.0, max: 1.0 },
+    Transform::Exponential,
+));
+```
+
+## DSP инфраструктура
+
+### `kama-dsp-common`
+Общие утилиты для DSP.
+
+```rust
+// Создание узла из функции
+let gain_node = stateless_fn_node(
+    "Gain",
+    NodeCategory::Effect,
+    |sample, ctx| sample * 0.5
+);
+
+// Узел с состоянием
+let filter_node = stateful_fn_node(
+    "OnePole",
+    NodeCategory::Filter,
+    0.0, // начальное состояние
+    |sample, state, ctx| {
+        *state = *state * 0.9 + sample * 0.1;
+        *state
+    }
+);
+
+// Макросы для ещё большего упрощения
+effect!(Gain, |sample, ctx| sample * 0.5);
+filter!(LowPass, |sample, ctx| sample * 0.5 + ctx.seconds().sin() * 0.1);
+```
+
+## Цифровые DSP крейты
+
+### `kama-oscillators`
+Унифицированные осцилляторы.
+
+```rust
+// Аудио осцилляторы (20Hz - 20kHz)
+let sine = SineOsc::new(440.0).with_amplitude(0.5);
+let saw = SawOsc::new(220.0).with_bandlimited(true);
+let noise = NoiseOsc::new().with_type(NoiseType::Pink);
+
+// LFO для модуляции (0.01Hz - 100Hz)
+let lfo = Lfo::new(1.0, 0.5, 0.0).with_waveform(LfoWaveform::Triangle);
+
+// Огибающие
+let mut envelope = Envelope::new(0.01, 0.1, 0.7, 0.2);
+envelope.trigger();
+```
+
+### `kama-digital-filters`
+Цифровые фильтры.
+
+```rust
+// Биквадратные фильтры
+let lp = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
+let hp = BiquadFilter::new(FilterType::HighPass, 200.0, 0.707, 0.0);
+let peak = BiquadFilter::new(FilterType::Peak, 1000.0, 2.0, 6.0);
+```
+
+### `kama-digital-effects`
+Цифровые эффекты.
+
+```rust
+let delay = Delay::new(0.3, 0.4, 0.7);
+let distortion = Distortion::new(DistortionType::SoftClip, 2.0, 0.8);
+let limiter = Limiter::new(-3.0, 0.005, 0.1, 1.0);
+```
+
+### `kama-eq`
+Эквалайзеры.
+
+```rust
+// Параметрический эквалайзер с 5 полосами
+let mut para_eq = ParametricEq::new(BiquadFactory, 5, 44100.0);
+para_eq.set_band(0, 100.0, 1.0, 3.0)?;
+para_eq.set_band(1, 1000.0, 2.0, -2.0)?;
+
+// Графический эквалайзер (1/3 октавы, 31 полоса)
+let graphic_eq = GraphicEq::new_third_octave(BiquadFactory, 44100.0);
+```
+
+### `kama-mixer`
+Микшер с каналами и aux шинами.
+
+```rust
+let mut mixer = MixerNode::new(4, 2); // 4 канала, 2 aux шины
+mixer.set_channel_pan(0, -0.5)?;
+mixer.set_channel_volume(1, 0.8)?;
+
+// Добавление send на aux шину
+mixer.add_send(0, SendConfig {
+    bus_index: 0,
+    level: 0.3,
+    send_type: SendType::PostFader,
+})?;
+```
+
+## Специализированные крейты
+
+### `kama-lofi`
+Lo-Fi эмуляция классических систем.
+
+```rust
+// NES эмулятор
+let mut nes = NesEmulator::new(44100.0);
+
+// Akai S900 (12-bit)
+let akai_config = LofiConfig::for_system(ClassicSystem::AkaiS900);
+let mut akai = LofiProcessor::new(akai_config);
+
+// AY-3-8910 (ZX Spectrum)
+let mut ay = Ay38910Emulator::new(44100.0);
+ay.write_register(0, 0x00); // программирование регистров
+```
+
+### `kama-hp`
+High-precision вычисления (f64).
+
+```rust
+let mut hp_buffer = HighPrecisionBuffer::new(1024, 2, 44100.0);
+let mut hp_filter = HighPrecisionBiquad::new_lowpass(1000.0, 0.707, 44100.0);
+```
+
+## Аудио ввод-вывод (kama-io) - в разработке
+
+### Архитектура kama-io
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      AudioEngine                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │              Поток обработки                     │   │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐         │   │
+│  │  │ читаем  │→│ процесс │→│ пишем   │         │   │
+│  │  │ из буфера│  │ (граф)  │  │ в буфер │         │   │
+│  │  └─────────┘  └─────────┘  └─────────┘         │   │
+│  └─────────────────────────────────────────────────┘   │
+│                         │                               │
+│  ┌──────────────────────┼───────────────────────────┐  │
+│  ▼                      ▼                           ▼  │
+│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│ │  ALSABackend │  │  CpalBackend │  │  NullBackend │  │
+│ │   (Linux)    │  │(кроссплатформ)│  │  (тестирование)│  │
+│ └──────────────┘  └──────────────┘  └──────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Ключевые компоненты
+
+```rust
+// Трейт AudioBackend
+pub trait AudioBackend: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn init(&mut self) -> IoResult<()>;
+    fn start(&mut self) -> IoResult<()>;
+    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize>;
+    fn write(&mut self, buffer: &[f32]) -> IoResult<usize>;
+    // ...
+}
+
+// Основной движок
+pub struct AudioEngine<B: AudioBackend, P: AudioProcessor> {
+    backend: B,
+    processor: P,
+    // ...
+}
+
+impl<B, P> AudioEngine<B, P> {
+    pub fn start(&mut self) -> IoResult<()>;
+    pub fn stop(&mut self) -> IoResult<()>;
+    pub fn update_processor<F>(&self, f: F) -> IoResult<()>
+    where F: FnOnce(&mut P) + Send + 'static;
+}
+```
+
+### Процессоры для AudioEngine
+
+```rust
+// Базовые процессоры
+let pass = PassThroughProcessor;        // пропускает без изменений
+let silence = SilenceProcessor;         // генерирует тишину
+let gain = GainProcessor::new(0.8);     // усиливает сигнал
+
+// Интеграция с AudioGraph
+let graph_processor = GraphProcessor::new(
+    graph,
+    Some(input_node_id),
+    Some(output_node_id)
+);
+```
+
+## Планируемые крейты
+
+### `kama-wdf`
+Wave Digital Filters для аналоговой эмуляции.
+
+```rust
+let moog = WdfMoogFilterNode::new(44100.0, 1000.0, 0.7);
+let cassette = CassetteDeckNode::new(44100.0);
+```
+
+### `kama-server`
+OSC сервер для удалённого управления.
+
+```
+/node/add sine 440
+/connect sine 0 filter 0 1.0
+/node/set filter cutoff 800
+```
+
+### `drift`
+Продукт: сервер эффектов для live coding.
+
+```rust
+// Запуск сервера со всеми эффектами
+drift --backend alsa --port 9000
+```
+
+## Ключевые принципы архитектуры
+
+1. **Минимальное ядро** — только трейты, без реализаций
+2. **Модульность** — каждый крейт имеет чёткую ответственность
+3. **Композиция** — сложные узлы строятся из простых
+4. **Производительность** — zero-cost abstractions, real-time safety
+5. **Тестируемость** — все компоненты тестируются изолированно
+6. **Расширяемость** — реестр фабрик для динамической загрузки
+
+## Зависимости между крейтами
+
+```
+kama-core-traits
+├── kama-buffers
+├── kama-signal
+├── kama-automation
+├── kama-control
+├── kama-dsp-common
+│   ├── kama-oscillators
+│   ├── kama-digital-filters
+│   ├── kama-digital-effects
+│   └── kama-eq
+├── kama-graph
+├── kama-mixer
+├── kama-lofi
+├── kama-hp
+├── kama-wdf
+└── kama-io
+    ├── backends (ALSA, CPAL, Null)
+    └── processors
+```
+
+## Заключение
+
+Архитектура Kama Audio обеспечивает:
+- **Гибкость** — можно использовать только нужные крейты
+- **Производительность** — оптимизирована для real-time
+- **Надёжность** — все компоненты тщательно протестированы
+- **Расширяемость** — легко добавлять новые эффекты и бэкенды
+
+Цифровая часть полностью готова. Следующий шаг — завершение аудио-ввода/вывода (kama-io) и создание первого продукта Drift.
+```

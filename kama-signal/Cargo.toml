@@ -3,7 +3,8 @@ name = "kama-signal"
 version = "0.1.0"
 edition = "2021"
 description = "Signal bus system for Kama Audio"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
+authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
 crossbeam-channel = "0.5"
