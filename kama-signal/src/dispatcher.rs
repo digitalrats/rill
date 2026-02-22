@@ -1,3 +1,14 @@
+//! # SimpleSignalDispatcher — синхронный диспетчер сигналов
+//! 
+//! Предоставляет механизм регистрации обработчиков для разных типов сигналов
+//! и синхронной диспетчеризации сигналов всем зарегистрированным обработчикам.
+//! 
+//! ## Особенности
+//! 
+//! - Типобезопасность через generics
+//! - Множество обработчиков на один тип сигнала
+//! - Синхронная обработка (все обработчики вызываются в том же потоке)
+
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use parking_lot::RwLock;
@@ -5,6 +16,7 @@ use crate::error::{SignalError, SignalResult};
 use crate::Signal;
 
 /// Динамический обработчик сигналов
+    /// Динамический обработчик сигналов (для type erasure).
 pub trait DynSignalHandler: Send + Sync {
     fn handle_any(&mut self, signal: &dyn Any) -> SignalResult<()>;
     fn signal_type_id(&self) -> TypeId;
@@ -36,16 +48,24 @@ where
 }
 
 /// Обработчик сигналов конкретного типа
+    /// Обработчик сигналов конкретного типа.
+    ///
+    /// Реализуется для типов, которые хотят получать сигналы определённого типа.
 pub trait SignalHandler<T: Signal>: Send + Sync {
     fn handle(&mut self, signal: &T);
 }
 
 /// Простой диспетчер сигналов (синхронный)
+    /// Синхронный диспетчер сигналов.
+    ///
+    /// Хранит обработчики для разных типов сигналов и вызывает их
+    /// при получении сигнала соответствующего типа.
 pub struct SimpleSignalDispatcher {
     handlers: HashMap<TypeId, Vec<Box<dyn DynSignalHandler>>>,
 }
 
 impl SimpleSignalDispatcher {
+    /// Создать новый диспетчер.
     pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
