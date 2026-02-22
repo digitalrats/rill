@@ -11,10 +11,11 @@ members = [
     "kama-lofi",
     "kama-digital-filters",
     "kama-eq",
-    "kama-mixer", "kama-digital-effects",
+    "kama-mixer", 
+    "kama-digital-effects",
     # "kama-wdf"        # временно отключаем
-    # "kama-mixer",     # временно отключаем
-    # "kama-io",        # временно отключаем
+    # "kama-io",        # временно отключаем,
+    "kama-tests",
 ]
 resolver = "2"
 
