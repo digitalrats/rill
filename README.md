@@ -21,7 +21,9 @@ kama-control         # MIDI/HID управление
 kama-dsp-common      # DSP инфраструктура
 kama-oscillators     # осцилляторы (аудио и LFO)
 kama-digital-filters # цифровые фильтры
-kama-digital-effects # цифровые эффекты
+kama-digital-effects # цифровые эффекты## 📄 Лицензия
+
+Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
 kama-eq              # эквалайзеры
 kama-lofi            # Lo-Fi эмуляция
 kama-mixer           # микшер
@@ -31,7 +33,9 @@ kama-io              # аудио ввод-вывод (в разработке)
 
 ## 🎯 Зачем это нужно?
 
-- **Для музыкантов**: создавайте свои эффекты и инструменты
+- **Для музыкантов**: создавайте свои эффекты и инструменты## 📄 Лицензия
+
+Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
 - **Для разработчиков**: стройте аудиоприложения на надёжном фундаменте
 - **Для live coding**: Drift — сервер эффектов для TidalCycles, SuperCollider и других сред
 
@@ -57,7 +61,9 @@ kama-digital-effects = "0.1"
 
 Создайте простой эффект (синус + задержка):
 
-```rust
+```rust## 📄 Лицензия
+
+Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
 use kama_core_traits::{AudioNode, PortId};
 use kama_graph::AudioGraph;
 use kama_oscillators::audio::SineOsc;
@@ -91,7 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn calculate_rms(signal: &[f32]) -> f32 {
-    let sum: f32 = signal.iter().map(|x| x * x).sum();
+    let sum: f32 = signal.iter().map(|x| x * x).sum();## 📄 Лицензия
+
+Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
     (sum / signal.len() as f32).sqrt()
 }
 ```
