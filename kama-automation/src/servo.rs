@@ -1,11 +1,33 @@
 //! Сервопривод для управления параметрами
+//! 
+//! Сервопривод получает сигнал от автомата, преобразует его согласно
+//! заданному маппингу и применяет к конкретному параметру узла.
+//! 
+//! ## Что делает сервопривод?
+//! 
+//! 1. **Получает сигнал** от автомата (LFO, огибающей и т.д.)
+//! 2. **Трансформирует** его согласно маппингу (линейно, экспоненциально)
+//! 3. **Применяет** к конкретному параметру узла
+//! 4. **Отправляет сигнал** об изменении через `SignalSender`
+//! 
+//! ## Жизненный цикл
+//! 
+//! 1. Создаётся с автоматом, целью и контекстом
+//! 2. Добавляется в [`AutomationManager`](crate::AutomationManager)
+//! 3. Менеджер регулярно вызывает [`update`](Servo::update)
+//! 4. Серво получает от автомата новое значение, применяет маппинг и,
+//!    если значение изменилось, отправляет сигнал
 
 use std::sync::Arc;
 use crate::automaton::Automaton;
 use crate::context::AutomationContext;
 use crate::signal::SignalSender;
 
-/// Тип маппинга значений
+/// Тип маппинга значений — как преобразовать сигнал от автомата
+/// в значение, подходящее для целевого параметра.
+///
+/// Автомат генерирует значения в некотором условном диапазоне (обычно -1..1 или 0..1),
+/// а маппинг приводит их к физическому диапазону параметра (например, 20..20000 Гц).
 pub enum ParameterMapping {
     Linear,
     Exponential,
@@ -35,24 +57,52 @@ impl Clone for ParameterMapping {
     }
 }
 
-/// Сервопривод для управления параметром через автомат
+/// Сервопривод — связующее звено между автоматом и параметром узла.
+///
+/// # Жизненный цикл
+/// 1. Создаётся с автоматом, целью и контекстом.
+/// 2. Добавляется в [`AutomationManager`](crate::AutomationManager).
+/// 3. Менеджер регулярно вызывает [`update`](Servo::update), передавая текущее время.
+/// 4. Серво получает от автомата новое значение, применяет маппинг и,
+///    если значение изменилось, отправляет сигнал.
+///
+/// # Сглаживание
+/// Серво не выполняет сглаживание само — это задача автомата или параметра узла.
+/// Однако он хранит `last_value`, чтобы не отправлять одинаковые сигналы.
+///
+/// # Безопасность
+/// Все методы сервопривода могут вызываться из любого потока,
+/// так как внутреннее состояние защищено типом `Servo<A>`, а автомат
+/// требует `Send + Sync`.
 pub struct Servo<A>
 where
     A: Automaton<Time = f64, Context = AutomationContext>,
     A::Action: Default,
 {
+    /// Уникальное имя сервопривода (для идентификации в менеджере).
     pub id: String,
+    /// Автомат, генерирующий сигнал.
     pub automaton: Arc<A>,
+    /// ID целевого узла в аудиографе.
     pub target_node: String,
+    /// Имя целевого параметра.
     pub target_parameter: String,
+    /// Преобразование значения.
     pub mapping: ParameterMapping,
+    /// Минимальное значение параметра (после маппинга).
     pub min_value: f64,
+    /// Максимальное значение параметра.
     pub max_value: f64,
+    /// Включён ли сервопривод.
     pub enabled: bool,
     
+    /// Текущее состояние автомата.
     pub(crate) state: A::State,
+    /// Последнее отправленное значение.
     pub(crate) last_value: f64,
+    /// Время последнего обновления.
     pub(crate) last_update_time: f64,
+    /// Контекст выполнения.
     pub(crate) context: AutomationContext,
 }
 
@@ -151,25 +201,45 @@ pub fn update(&mut self, _time: f64) -> Option<f64> {
     Some(clamped_value)
 }
 
+    /// Включить или выключить сервопривод.
+    /// Если выключен, значения не генерируются и не отправляются.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
     
+    /// Установить диапазон выходных значений.
+    /// После маппинга значение будет ограничено этим диапазоном.
     pub fn set_range(&mut self, min: f64, max: f64) {
         self.min_value = min;
         self.max_value = max;
     }
     
+    /// Получить целевой узел и параметр.
     pub fn target(&self) -> (&str, &str) {
         (&self.target_node, &self.target_parameter)
     }
 }
 
-/// Трейт для типа-стирания сервоприводов
+/// # Пример\
+/// ```\
+/// # use kama_automation::{AnyServo, Servo, automaton::LfoAutomaton, AutomationContext, ParameterMapping};\
+/// # use std::sync::Arc;\
+/// # let context = AutomationContext::dummy();\
+/// # let lfo = Arc::new(LfoAutomaton::lfo(1.0, 0.5, 0.0, "test", "param"));\
+/// # let servo = Servo::new("test".to_string(), lfo, "node".to_string(), "param".to_string(), ParameterMapping::Linear, context);\
+/// let servos: Vec<Box<dyn AnyServo>> = vec![\
+///     Box::new(servo),  // Любой сервопривод, реализующий AnyServo\
+/// ];\
+/// ```
+/// ```
 pub trait AnyServo: Send + Sync {
+    /// Обновить сервопривод. Возвращает новое значение, если оно изменилось.
     fn update(&mut self, time: f64) -> Option<f64>;
+    /// Получить идентификатор.
     fn id(&self) -> &str;
+    /// Включить/выключить.
     fn set_enabled(&mut self, enabled: bool);
+    /// Получить цель (узел, параметр).
     fn target(&self) -> (&str, &str);
 }
 
