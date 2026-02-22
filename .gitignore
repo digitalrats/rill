@@ -29,3 +29,6 @@ Thumbs.db
 
 # IDE
 .history/
+
+# Other files
+*.patch
