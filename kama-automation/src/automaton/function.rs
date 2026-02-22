@@ -1,3 +1,53 @@
+//! # Функциональные автоматы
+//! 
+//! Универсальные автоматы, построенные на Rust-замыканиях.
+//! Это самый гибкий способ создания автоматов — вы можете использовать любую
+//! математическую функцию или алгоритм.
+//! 
+//! ## Два варианта
+//! 
+//! 1. [`FunctionAutomaton`] — без сохранения состояния (stateless).
+//!    Подходит для чистых функций времени: `f(t) -> значение`.
+//! 
+//! 2. [`StatefulFunctionAutomaton`] — с пользовательским состоянием.
+//!    Позволяет создавать генераторы, которым нужно помнить информацию
+//!    между вызовами: счётчики, интеграторы, генераторы случайных блужданий.
+//! 
+//! ## Состояние
+//! 
+//! [`FunctionState`] хранит текущее значение, время последнего обновления и,
+//! опционально, пользовательские данные любого типа (через `Arc<dyn Any>`).
+//! 
+//! ## Примеры
+//! 
+//! ### Stateless: генератор синуса
+//! ```
+//! use kama_automation::automaton::FunctionAutomaton;
+//! 
+//! let sine = FunctionAutomaton::new(
+//!     "Sine",
+//!     |t| (t * 2.0 * std::f64::consts::PI).sin(),
+//!     "osc",
+//!     "fm_input"
+//! );
+//! ```
+//! 
+//! ### Stateful: счётчик
+//! ```
+//! use kama_automation::automaton::StatefulFunctionAutomaton;
+//! 
+//! let counter = StatefulFunctionAutomaton::new(
+//!     "Counter",
+//!     |_time, count: &mut u32| {
+//!         *count += 1;
+//!         *count as f64
+//!     },
+//!     0,
+//!     "seq",
+//!     "step"
+//! );
+//! ```
+
 //! Обобщённый автомат на основе функции-генератора
 
 use crate::automaton::Automaton;
@@ -19,6 +69,13 @@ pub struct FunctionState {
 
 impl FunctionState {
     /// Создать новое состояние
+    /// Создать новый функциональный автомат.
+    ///
+    /// # Аргументы
+    /// * `name` — имя автомата
+    /// * `generator` — замыкание времени
+    /// * `target_node` — ID целевого узла
+    /// * `target_param` — имя параметра
     pub fn new(value: f64, time: f64) -> Self {
         Self {
             value,
@@ -96,12 +153,15 @@ impl FunctionAutomaton {
     }
     
     /// Установить отправитель сигналов
+    /// Установить отправитель сигналов.
     pub fn with_signal_sender(mut self, sender: Arc<dyn SignalSender>) -> Self {
         self.signal_sender = Some(sender);
         self
     }
     
     /// Установить порог для отправки сигналов
+    /// Установить порог для отправки сигналов.
+    /// Значение по умолчанию: 1e-6.
     pub fn with_threshold(mut self, threshold: f64) -> Self {
         self.threshold = threshold;
         self
@@ -206,12 +266,15 @@ impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
     }
     
     /// Установить отправитель сигналов
+    /// Установить отправитель сигналов.
     pub fn with_signal_sender(mut self, sender: Arc<dyn SignalSender>) -> Self {
         self.signal_sender = Some(sender);
         self
     }
     
     /// Установить порог для отправки сигналов
+    /// Установить порог для отправки сигналов.
+    /// Значение по умолчанию: 1e-6.
     pub fn with_threshold(mut self, threshold: f64) -> Self {
         self.threshold = threshold;
         self

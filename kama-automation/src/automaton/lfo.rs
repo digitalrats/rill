@@ -1,3 +1,30 @@
+//! # LFO автоматы — низкочастотные генераторы
+//! 
+//! Специализированные конструкторы для создания LFO (Low Frequency Oscillators).
+//! Все реализации — это удобные обёртки над [`FunctionAutomaton`](super::FunctionAutomaton),
+//! что позволяет легко комбинировать LFO с другими возможностями системы.
+//! 
+//! ## Доступные формы волны
+//! 
+//! - `Sine` — гладкая синусоида
+//! - `Triangle` — треугольная волна
+//! - `Saw` — пилообразная (нарастающая)
+//! - `Square` — прямоугольная
+//! - `SampleAndHold` — случайные значения, удерживаемые в течение периода
+//! - `RandomWalk` — плавное случайное блуждание
+//! 
+//! ## Диапазон значений
+//! 
+//! LFO генерирует значения в диапазоне `[offset - amplitude, offset + amplitude]`.
+//! Для форм волны, колеблющихся от -1 до 1 (синус, треугольник, пила),
+//! итоговый сигнал: `offset + amplitude * raw_wave`.
+//! Для `SampleAndHold` и `RandomWalk` амплитуда масштабирует случайные значения.
+//! 
+//! ## LFO с огибающей
+//! 
+//! [`LfoWithEnvelopeAutomaton`] комбинирует LFO и ADSR-огибающую.
+//! Сигнал на выходе равен `lfo_signal * envelope_signal`.
+
 //! LFO автомат (обёртка над FunctionAutomaton)
 
 use crate::automaton::function::FunctionAutomaton;
@@ -13,6 +40,12 @@ pub type LfoWithEnvelopeAutomaton = FunctionAutomaton;
 /// Вспомогательные функции для создания LFO автоматов
 impl LfoAutomaton {
     /// Создать LFO автомат из параметров
+    /// Создать LFO автомат с формой волны по умолчанию (синус).
+    ///
+    /// # Аргументы
+    /// * `frequency` — частота в Hz (0.01–100)
+    /// * `amplitude` — амплитуда (0.0–1.0)
+    /// * `offset` — смещение (-1.0–1.0)
     pub fn lfo(
         frequency: f64,
         amplitude: f64,
@@ -34,6 +67,7 @@ impl LfoAutomaton {
     }
     
     /// Создать LFO автомат с указанной формой волны
+    /// Создать LFO автомат с указанной формой волны.
     pub fn lfo_with_waveform(
         frequency: f64,
         amplitude: f64,
@@ -58,6 +92,7 @@ impl LfoAutomaton {
     }
     
     /// Создать LFO автомат с возможностью сброса
+    /// Создать LFO автомат с возможностью сброса фазы при t=0.
     pub fn lfo_with_reset(
         frequency: f64,
         amplitude: f64,
@@ -85,6 +120,7 @@ impl LfoAutomaton {
 /// Вспомогательные функции для создания LFO автоматов с огибающей
 impl LfoWithEnvelopeAutomaton {
     /// Создать LFO с огибающей
+    /// Создать LFO с огибающей.
     pub fn lfo_with_envelope(
         frequency: f64,
         amplitude: f64,

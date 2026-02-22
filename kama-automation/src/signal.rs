@@ -1,3 +1,22 @@
+//! # Интерфейс отправки сигналов
+//! 
+//! Этот модуль определяет, как сервоприводы общаются с внешним миром.
+//! Когда значение параметра изменяется, сервопривод вызывает
+//! [`SignalSender::send_parameter_changed`], и внешний код (обычно аудиограф)
+//! может отреагировать на это изменение.
+//! 
+//! ## Две реализации
+//! 
+//! 1. [`TestSignalSender`] — для тестирования. Сохраняет отправленные сигналы
+//!    в вектор для последующей проверки.
+//! 2. `KamaSignalSender` (в `integration.rs`) — реальная реализация, которая
+//!    отправляет сигналы в `kama-signal` систему.
+//! 
+//! ## Расширяемость
+//! 
+//! Вы можете реализовать свой `SignalSender`, например, для отправки
+//! сигналов по OSC или в GUI.
+
 // kama-automation/src/signal.rs
 //! Интерфейс для отправки сигналов
 
@@ -15,22 +34,26 @@ pub struct TestSignalSender {
 }
 
 impl TestSignalSender {
+    /// Создать новый тестовый отправитель.
     pub fn new() -> Self {
         Self {
             sent_signals: RwLock::new(Vec::new()),
         }
     }
 
+    /// Очистить все сохранённые сигналы.
     pub fn clear_signals(&self) {
         let mut signals = self.sent_signals.write().unwrap();
         signals.clear();
     }
     
+    /// Получить количество отправленных сигналов.
     pub fn get_signals_count(&self) -> usize {
         let signals = self.sent_signals.read().unwrap();
         signals.len()
     }
     
+    /// Получить все значения для конкретного параметра.
     pub fn get_signals_for_param(&self, node_id: &str, param_id: &str) -> Vec<f32> {
         let signals = self.sent_signals.read().unwrap();
         println!("TestSignalSender - searching for {}:{} in {:?}", node_id, param_id, signals);
@@ -40,6 +63,7 @@ impl TestSignalSender {
             .collect()
     }
 
+    /// Получить все сохранённые сигналы.
     pub fn get_all_signals(&self) -> Vec<(String, String, f32)> {
         let signals = self.sent_signals.read().unwrap();
         signals.clone()
