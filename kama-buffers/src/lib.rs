@@ -1,3 +1,4 @@
+//! Буферы для аудиообработки
 
 #![warn(missing_docs)]
 
@@ -16,11 +17,11 @@ pub use pool::{BufferPool, PoolStrategy};
 pub use ring::RingBuffer;
 pub use head::{BufferHead, HeadState, Direction, ReadMode};
 pub use multi_head::MultiHeadBuffer;
-pub use view::{BufferView, BufferViewMut};
+pub use view::{BufferView, BufferViewMut, BufferIterator};  // добавили BufferIterator
 pub use decorator::{PanningDecorator, LfoDecorator};
 pub use manager::{
     BufferManager, BufferManagerStats, NodeBuffers,
-    RegisteredBuffer, PooledBuffer,  // <-- ДОБАВЛЯЕМ PooledBuffer
+    RegisteredBuffer, PooledBuffer,
 };
 
 // Реэкспортируем NodeId напрямую из kama_core_traits

@@ -1,0 +1,22 @@
+[package]
+name = "kama-digital-effects"
+version = "0.1.0"
+edition = "2021"
+description = "Digital audio effects for Kama Audio - Delay, Distortion, Chorus, Reverb, etc."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+kama-core-traits = { path = "../kama-core-traits" }
+kama-dsp-common = { path = "../kama-dsp-common" }
+kama-buffers = { path = "../kama-buffers" }
+kama-oscillators = { path = "../kama-oscillators", optional = true }
+kama-signal = { path = "../kama-signal", optional = true }
+thiserror = "1.0"
+
+[features]
+default = []
+modulation = ["kama-oscillators"]  # для LFO в модуляционных эффектах
+automation = ["kama-signal"]       # для автоматизации параметров
+
+[dev-dependencies]
+float-cmp = "0.9"

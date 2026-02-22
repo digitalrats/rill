@@ -15,7 +15,6 @@ pub struct BufferView<'a> {
 impl<'a> BufferView<'a> {
     /// Создать новое представление из RingBuffer
     pub fn new(buffer: &'a RingBuffer) -> Self {
-        // Получаем все необходимые данные ДО создания guard
         let size = buffer.size();
         let write_pos = buffer.write_pos();
         let mask = buffer.mask();
@@ -49,7 +48,7 @@ impl<'a> BufferView<'a> {
         s1 + frac * (s2 - s1)
     }
     
-    /// Прочитать семпл с задержкой
+    /// Прочитать семпл с задержкой (в прошлое)
     pub fn read_delayed(&self, delay_samples: usize, offset: usize) -> f32 {
         let available = if !self.filled {
             self.write_pos
@@ -62,6 +61,34 @@ impl<'a> BufferView<'a> {
         self.data[pos]
     }
     
+    /// Прочитать семпл с задержкой в будущее (lookahead)
+    pub fn read_lookahead(&self, lookahead: usize, offset: usize) -> f32 {
+        if !self.filled {
+            // Для незаполненного буфера семплы находятся в начале (0..write_pos)
+            // write_pos указывает на следующую свободную позицию
+            // Записанные семплы: индексы 0..write_pos-1
+            
+            // Позиция для чтения: lookahead указывает, сколько семплов вперёд от начала
+            // Например, если write_pos=5, то:
+            // lookahead=0 -> индекс 0
+            // lookahead=1 -> индекс 1
+            // lookahead=4 -> индекс 4
+            // lookahead=5 -> уже за пределами (нет семпла)
+            
+            if lookahead >= self.write_pos {
+                return 0.0;
+            }
+            
+            let idx = (lookahead + offset) % self.size;
+            self.data[idx]
+        } else {
+            // Для заполненного буфера - циклическое чтение от write_pos
+            let pos = (self.write_pos + lookahead) % self.size;
+            let idx = (pos + offset) % self.size;
+            self.data[idx]
+        }
+    }
+    
     /// Прочитать семпл с задержкой и интерполяцией
     pub fn read_delayed_interpolated(&self, delay_samples: f32, offset: usize) -> f32 {
         let available = if !self.filled {
@@ -72,10 +99,7 @@ impl<'a> BufferView<'a> {
         
         let delay = delay_samples.min(available - 0.001);
         
-        // Вычисляем позицию для чтения с учетом задержки
         let mut read_pos = self.write_pos as f32 - delay - offset as f32;
-        
-        // Нормализуем в диапазон [0, size)
         while read_pos < 0.0 {
             read_pos += self.size as f32;
         }
@@ -93,7 +117,7 @@ impl<'a> BufferView<'a> {
         s1 + frac * (s2 - s1)
     }
     
-    /// Прочитать последовательность семплов с интерполяцией (для ring_buffer.read_interpolated)
+    /// Прочитать последовательность семплов с интерполяцией
     pub fn read_sequence_interpolated(&self, start_delay: f32, output: &mut [f32]) {
         let available = if !self.filled {
             self.write_pos
@@ -102,16 +126,10 @@ impl<'a> BufferView<'a> {
         } as f32;
         
         let delay = start_delay.min(available - 0.001);
-        
-        // Вычисляем начальную позицию (точка в прошлом, от которой начинаем читать)
         let start_pos = self.write_pos as f32 - delay;
         
         for i in 0..output.len() {
-            // Для каждого семпла движемся вперед от начальной позиции
-            let current_pos = start_pos + i as f32;
-            
-            // Нормализуем
-            let mut pos = current_pos;
+            let mut pos = start_pos + i as f32;
             while pos < 0.0 {
                 pos += self.size as f32;
             }
