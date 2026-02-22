@@ -1,8 +1,20 @@
-//! Высокоточные буферы с интеграцией с kama-buffers
+//! # Высокоточные буферы
+//! 
+//! Предоставляет [`HighPrecisionBuffer`] для работы с аудиоданными в формате `f64`
+//! и интеграцию с [`kama-buffers`] через [`HighPrecisionBufferPool`].
+//! 
+//! ## Особенности
+//! 
+//! - Поддержка нескольких каналов (interleaved формат)
+//! - Интерполяция при чтении с дробной позицией
+//! - Конвертация между f32 и f64
+//! - Интеграция с пулом буферов из `kama-buffers`
 
 use kama_buffers::{BufferManager, PooledBuffer};
 
-/// Высокоточный аудиобуфер (f64)
+/// Высокоточный аудиобуфер (f64).
+/// 
+/// Хранит данные в interleaved формате: `[L, R, L, R, ...]`.
 #[derive(Debug, Clone)]
 pub struct HighPrecisionBuffer {
     data: Vec<f64>,
@@ -12,7 +24,12 @@ pub struct HighPrecisionBuffer {
 }
 
 impl HighPrecisionBuffer {
-    /// Создать новый буфер
+    /// Создать новый буфер.
+    /// 
+    /// # Аргументы
+    /// * `size` — количество фреймов
+    /// * `channels` — количество каналов
+    /// * `sample_rate` — частота дискретизации
     pub fn new(size: usize, channels: usize, sample_rate: f64) -> Self {
         Self {
             data: vec![0.0; size * channels],
@@ -22,7 +39,7 @@ impl HighPrecisionBuffer {
         }
     }
     
-    /// Создать из PooledBuffer (из kama-buffers)
+    /// Создать из PooledBuffer (из kama-buffers).
     pub fn from_pooled_buffer(buffer: &PooledBuffer, channels: usize, sample_rate: f64) -> Self {
         let frames = buffer.len() / channels;
         let mut hp_buffer = Self::new(frames, channels, sample_rate);
@@ -36,7 +53,7 @@ impl HighPrecisionBuffer {
         hp_buffer
     }
     
-    /// Создать из f32 слайса
+    /// Создать из f32 слайса.
     pub fn from_f32_slice(data: &[f32], channels: usize, sample_rate: f64) -> Self {
         let frames = data.len() / channels;
         let mut buffer = Self::new(frames, channels, sample_rate);
@@ -50,7 +67,7 @@ impl HighPrecisionBuffer {
         buffer
     }
     
-    /// Записать значение в позицию
+    /// Записать значение в позицию.
     pub fn write(&mut self, position: usize, channel: usize, value: f64) {
         let idx = position * self.channels + channel;
         if idx < self.data.len() {
@@ -58,7 +75,7 @@ impl HighPrecisionBuffer {
         }
     }
     
-    /// Записать целый блок данных (interleaved)
+    /// Записать целый блок данных (interleaved).
     pub fn write_block(&mut self, start_frame: usize, data: &[f64]) {
         let start_idx = start_frame * self.channels;
         let end_idx = (start_idx + data.len()).min(self.data.len());
@@ -71,7 +88,7 @@ impl HighPrecisionBuffer {
         }
     }
     
-    /// Записать целый блок из f32 (interleaved)
+    /// Записать целый блок из f32 (interleaved).
     pub fn write_block_f32(&mut self, start_frame: usize, data: &[f32]) {
         let start_idx = start_frame * self.channels;
         let end_idx = (start_idx + data.len()).min(self.data.len());
@@ -84,13 +101,13 @@ impl HighPrecisionBuffer {
         }
     }
     
-    /// Прочитать значение из позиции
+    /// Прочитать значение из позиции.
     pub fn read(&self, position: usize, channel: usize) -> f64 {
         let idx = position * self.channels + channel;
         self.data.get(idx).copied().unwrap_or(0.0)
     }
     
-    /// Прочитать целый канал
+    /// Прочитать целый канал.
     pub fn read_channel(&self, channel: usize) -> Vec<f64> {
         let mut result = Vec::with_capacity(self.size);
         for frame in 0..self.size {
@@ -99,7 +116,7 @@ impl HighPrecisionBuffer {
         result
     }
     
-    /// Прочитать с интерполяцией
+    /// Прочитать с интерполяцией.
     pub fn read_interpolated(&self, position: f64, channel: usize) -> f64 {
         let pos_floor = position.floor() as usize;
         let frac = position.fract();
@@ -113,7 +130,7 @@ impl HighPrecisionBuffer {
         s1 + frac * (s2 - s1)
     }
     
-    /// Прочитать блок данных (interleaved)
+    /// Прочитать блок данных (interleaved).
     pub fn read_block(&self, start_frame: usize, num_frames: usize) -> Vec<f64> {
         let start_idx = start_frame * self.channels;
         let end_idx = (start_idx + num_frames * self.channels).min(self.data.len());
@@ -121,7 +138,7 @@ impl HighPrecisionBuffer {
         self.data[start_idx..end_idx].to_vec()
     }
     
-    /// Прочитать блок и сконвертировать в f32
+    /// Прочитать блок и сконвертировать в f32.
     pub fn read_block_f32(&self, start_frame: usize, num_frames: usize) -> Vec<f32> {
         self.read_block(start_frame, num_frames)
             .iter()
@@ -129,12 +146,12 @@ impl HighPrecisionBuffer {
             .collect()
     }
     
-    /// Конвертировать в f32 вектор (interleaved)
+    /// Конвертировать в f32 вектор (interleaved).
     pub fn to_f32(&self) -> Vec<f32> {
         self.data.iter().map(|&x| x as f32).collect()
     }
     
-    /// Конвертировать в f32 вектор и записать в PooledBuffer
+    /// Конвертировать в f32 вектор и записать в PooledBuffer.
     pub fn copy_to_pooled_buffer(&self, pooled: &mut PooledBuffer) -> usize {
         let f32_data = self.to_f32();
         let copy_len = f32_data.len().min(pooled.len());
@@ -142,7 +159,7 @@ impl HighPrecisionBuffer {
         copy_len
     }
     
-    /// Конвертировать в f32 вектор, разделённый по каналам
+    /// Конвертировать в f32 вектор, разделённый по каналам.
     pub fn to_f32_deinterleaved(&self) -> Vec<Vec<f32>> {
         let mut result = vec![Vec::with_capacity(self.size); self.channels];
         
@@ -155,7 +172,7 @@ impl HighPrecisionBuffer {
         result
     }
     
-    /// Заполнить буфер из f32 вектора, разделённого по каналам
+    /// Заполнить буфер из f32 вектора, разделённого по каналам.
     pub fn from_f32_deinterleaved(data: &[Vec<f32>], sample_rate: f64) -> Self {
         let channels = data.len();
         let size = if channels > 0 { data[0].len() } else { 0 };
@@ -171,7 +188,7 @@ impl HighPrecisionBuffer {
         buffer
     }
     
-    /// Применить функцию к каждому сэмплу
+    /// Применить функцию к каждому сэмплу.
     pub fn apply<F>(&mut self, mut f: F)
     where
         F: FnMut(f64) -> f64,
@@ -181,7 +198,7 @@ impl HighPrecisionBuffer {
         }
     }
     
-    /// Применить функцию к каждому сэмплу с учётом позиции и канала
+    /// Применить функцию к каждому сэмплу с учётом позиции и канала.
     pub fn apply_with_pos<F>(&mut self, mut f: F)
     where
         F: FnMut(usize, usize, f64) -> f64,
@@ -194,43 +211,45 @@ impl HighPrecisionBuffer {
         }
     }
     
-    /// Очистить буфер (заполнить нулями)
+    /// Очистить буфер (заполнить нулями).
     pub fn clear(&mut self) {
         self.data.fill(0.0);
     }
     
-    /// Получить размер во фреймах
+    /// Получить размер во фреймах.
     pub fn size(&self) -> usize {
         self.size
     }
     
-    /// Получить количество каналов
+    /// Получить количество каналов.
     pub fn channels(&self) -> usize {
         self.channels
     }
     
-    /// Получить частоту дискретизации
+    /// Получить частоту дискретизации.
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
     
-    /// Получить общее количество сэмплов
+    /// Получить общее количество сэмплов.
     pub fn total_samples(&self) -> usize {
         self.data.len()
     }
     
-    /// Получить сырые данные (для продвинутого использования)
+    /// Получить сырые данные (для продвинутого использования).
     pub fn raw_data(&self) -> &[f64] {
         &self.data
     }
     
-    /// Получить мутабельные сырые данные
+    /// Получить мутабельные сырые данные.
     pub fn raw_data_mut(&mut self) -> &mut [f64] {
         &mut self.data
     }
 }
 
-/// Пул высокоточных буферов (обёртка над BufferManager)
+/// Пул высокоточных буферов.
+/// 
+/// Обёртка над [`BufferManager`](kama_buffers::BufferManager) для работы с f64 буферами.
 pub struct HighPrecisionBufferPool {
     manager: BufferManager,
     channels: usize,
@@ -238,7 +257,7 @@ pub struct HighPrecisionBufferPool {
 }
 
 impl HighPrecisionBufferPool {
-    /// Создать новый пул
+    /// Создать новый пул.
     pub fn new(manager: BufferManager, channels: usize, sample_rate: f64) -> Self {
         Self {
             manager,
@@ -247,7 +266,7 @@ impl HighPrecisionBufferPool {
         }
     }
     
-    /// Получить буфер из пула
+    /// Получить буфер из пула.
     pub fn acquire(&mut self, frames: usize) -> Option<HighPrecisionBuffer> {
         let total_samples = frames * self.channels;
         self.manager.acquire(total_samples).ok().map(|pooled| {
@@ -255,7 +274,7 @@ impl HighPrecisionBufferPool {
         })
     }
     
-    /// Вернуть буфер в пул
+    /// Вернуть буфер в пул.
     pub fn release(&mut self, buffer: HighPrecisionBuffer) {
         // Конвертируем обратно в f32 и возвращаем в менеджер
         if let Ok(mut pooled) = self.manager.acquire(buffer.total_samples()) {
@@ -264,7 +283,7 @@ impl HighPrecisionBufferPool {
         }
     }
     
-    /// Получить доступ к внутреннему менеджеру
+    /// Получить доступ к внутреннему менеджеру.
     pub fn manager(&self) -> &BufferManager {
         &self.manager
     }

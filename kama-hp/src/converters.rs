@@ -1,17 +1,26 @@
-//! Конвертеры и oversampling
+//! # Конвертеры и oversampling
+//! 
+//! Предоставляет инструменты для изменения частоты дискретизации и разрядности:
+//! 
+//! - [`Oversampler`] — повышение/понижение частоты дискретизации
+//! - [`PrecisionConverter`] — конвертация f64 ↔ f32 с dither'ом и noise shaping'ом
 
 use rand::Rng;
 use std::f64::consts::PI;
 
 pub use crate::effects::DitherType;
 
-/// Конвертер с oversampling'ом
+/// Конвертер с oversampling'ом.
 pub struct Oversampler {
     factor: usize,
     temp_buffer: Vec<f64>,
 }
 
 impl Oversampler {
+    /// Создать новый oversampler.
+    /// 
+    /// # Аргументы
+    /// * `factor` — коэффициент oversampling'а
     pub fn new(factor: usize) -> Self {
         Self {
             factor,
@@ -19,7 +28,7 @@ impl Oversampler {
         }
     }
     
-    /// Повышает частоту дискретизации вставкой нулей.
+    /// Повысить частоту дискретизации вставкой нулей.
     pub fn upsample(&mut self, input: &[f64], output: &mut [f64]) {
         let os_factor = self.factor;
         let output_len = input.len() * os_factor;
@@ -37,7 +46,7 @@ impl Oversampler {
         }
     }
     
-    /// Понижает частоту дискретизации простой децимацией.
+    /// Понизить частоту дискретизации простой децимацией.
     pub fn downsample(&mut self, input: &[f64], output: &mut [f64]) {
         let os_factor = self.factor;
         
@@ -59,6 +68,12 @@ pub struct PrecisionConverter {
 }
 
 impl PrecisionConverter {
+    /// Создать новый конвертер.
+    /// 
+    /// # Аргументы
+    /// * `dither_enabled` — включить dither
+    /// * `dither_type` — тип dither'а
+    /// * `bit_depth` — целевая разрядность (для dither'а)
     pub fn new(dither_enabled: bool, dither_type: DitherType, bit_depth: u8) -> Self {
         Self {
             dither_enabled,
@@ -68,7 +83,7 @@ impl PrecisionConverter {
         }
     }
     
-    /// Конвертирует f64 → f32 с возможным dither'ом.
+    /// Конвертировать f64 → f32 с возможным dither'ом.
     pub fn f64_to_f32(&mut self, input: &[f64], output: &mut [f32]) {
         for i in 0..input.len().min(output.len()) {
             let mut sample = input[i];
@@ -77,7 +92,7 @@ impl PrecisionConverter {
                 sample = self.apply_dither(sample);
             }
             
-            // Простое noise shaping (первого порядка)
+            // Простое noise shaping первого порядка
             sample += self.last_error * 0.5;
             
             let quantized = sample as f32;
@@ -87,7 +102,7 @@ impl PrecisionConverter {
         }
     }
     
-    /// Конвертирует f32 → f64 (простое приведение).
+    /// Конвертировать f32 → f64 (простое приведение).
     pub fn f32_to_f64(&self, input: &[f32], output: &mut [f64]) {
         for i in 0..input.len().min(output.len()) {
             output[i] = input[i] as f64;

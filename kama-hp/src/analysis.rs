@@ -1,12 +1,18 @@
-//! Анализ аудиосигналов (спектр, пики и т.д.)
+//! # Анализ аудиосигналов
+//! 
+//! Предоставляет инструменты для анализа аудиоданных:
+//! 
+//! - [`SpectrumAnalyzer`] — анализ спектра
+//! - [`PeakDetector`] — детектор пиков (для VU-метров, лимитеров)
 
-/// Анализатор спектра (FFT)
+/// Анализатор спектра (FFT).
 pub struct SpectrumAnalyzer {
     fft_size: usize,
     magnitudes: Vec<f64>,
 }
 
 impl SpectrumAnalyzer {
+    /// Создать новый анализатор спектра.
     pub fn new(fft_size: usize) -> Self {
         Self {
             fft_size,
@@ -14,7 +20,13 @@ impl SpectrumAnalyzer {
         }
     }
     
-    /// Простой анализ спектра (без FFT, для примера)
+    /// Выполнить анализ спектра.
+    /// 
+    /// # Аргументы
+    /// * `signal` — входной сигнал
+    /// 
+    /// # Возвращает
+    /// Вектор амплитуд для каждой частотной полосы
     pub fn analyze(&mut self, signal: &[f64]) -> Vec<f64> {
         let mut result = Vec::new();
         for i in 0..self.magnitudes.len() {
@@ -33,22 +45,30 @@ impl SpectrumAnalyzer {
     }
 }
 
-/// Детектор пиков
+/// Детектор пиков.
+/// 
+/// Полезен для VU-метров, лимитеров, компрессоров.
 pub struct PeakDetector {
     peak: f64,
     decay: f64,
 }
 
 impl PeakDetector {
+    /// Создать новый детектор пиков.
+    /// 
+    /// # Аргументы
+    /// * `decay` — скорость затухания пика (0.0-1.0)
     pub fn new(decay: f64) -> Self {
         Self { peak: 0.0, decay }
     }
     
+    /// Обработать семпл, вернуть текущий пик.
     pub fn process(&mut self, sample: f64) -> f64 {
         self.peak = (self.peak * self.decay).max(sample.abs());
         self.peak
     }
     
+    /// Сбросить состояние.
     pub fn reset(&mut self) {
         self.peak = 0.0;
     }

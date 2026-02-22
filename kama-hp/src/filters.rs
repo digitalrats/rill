@@ -1,18 +1,32 @@
+//! # Высокоточные фильтры
+//! 
+//! Предоставляет реализации фильтров с повышенной точностью:
+//! 
+//! - [`HighPrecisionBiquad`] — биквадратный фильтр (LowPass, HighPass, BandPass, Notch, Peak, Shelf)
+//! - [`HighPrecisionLadderFilter`] — лестничный фильтр (Moog ladder)
+
 use std::f64::consts::PI;
 
-/// Тип биквадратного фильтра
+/// Тип биквадратного фильтра.
 #[derive(Debug, Clone, Copy)]
 pub enum BiquadType {
+    /// Фильтр нижних частот
     LowPass,
+    /// Фильтр верхних частот
     HighPass,
+    /// Полосовой фильтр
     BandPass,
+    /// Режекторный фильтр
     Notch,
+    /// Пиковый фильтр (эквалайзер)
     Peak,
+    /// Полочный фильтр низких частот
     LowShelf,
+    /// Полочный фильтр высоких частот
     HighShelf,
 }
 
-/// Высокоточный биквадратный фильтр
+/// Высокоточный биквадратный фильтр.
 pub struct HighPrecisionBiquad {
     b0: f64, b1: f64, b2: f64,
     a1: f64, a2: f64,
@@ -26,7 +40,7 @@ pub struct HighPrecisionBiquad {
 }
 
 impl HighPrecisionBiquad {
-    /// Создаёт фильтр нижних частот.
+    /// Создать фильтр нижних частот.
     pub fn new_lowpass(cutoff: f64, q: f64, sample_rate: f64) -> Self {
         let mut filter = Self {
             b0: 0.0, b1: 0.0, b2: 0.0,
@@ -43,7 +57,7 @@ impl HighPrecisionBiquad {
         filter
     }
     
-    /// Создаёт фильтр верхних частот.
+    /// Создать фильтр верхних частот.
     pub fn new_highpass(cutoff: f64, q: f64, sample_rate: f64) -> Self {
         let mut filter = Self {
             b0: 0.0, b1: 0.0, b2: 0.0,
@@ -60,7 +74,7 @@ impl HighPrecisionBiquad {
         filter
     }
     
-    /// Создаёт полосовой фильтр.
+    /// Создать полосовой фильтр.
     pub fn new_bandpass(cutoff: f64, q: f64, sample_rate: f64) -> Self {
         let mut filter = Self {
             b0: 0.0, b1: 0.0, b2: 0.0,
@@ -77,7 +91,7 @@ impl HighPrecisionBiquad {
         filter
     }
     
-    /// Создаёт режекторный фильтр.
+    /// Создать режекторный фильтр.
     pub fn new_notch(cutoff: f64, q: f64, sample_rate: f64) -> Self {
         let mut filter = Self {
             b0: 0.0, b1: 0.0, b2: 0.0,
@@ -94,7 +108,7 @@ impl HighPrecisionBiquad {
         filter
     }
     
-    /// Создаёт пиковый фильтр с усилением.
+    /// Создать пиковый фильтр с усилением.
     pub fn new_peak(frequency: f64, q: f64, gain_db: f64, sample_rate: f64) -> Self {
         let mut filter = Self {
             b0: 0.0, b1: 0.0, b2: 0.0,
@@ -231,7 +245,7 @@ impl HighPrecisionBiquad {
         }
     }
     
-    /// Обрабатывает один семпл.
+    /// Обработать один семпл.
     pub fn process(&mut self, input: f64) -> f64 {
         let output = self.b0 * input + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1 - self.a2 * self.y2;
@@ -244,31 +258,32 @@ impl HighPrecisionBiquad {
         output
     }
     
-    /// Обрабатывает буфер целиком.
+    /// Обработать буфер целиком.
     pub fn process_buffer(&mut self, input: &[f64], output: &mut [f64]) {
         for i in 0..input.len().min(output.len()) {
             output[i] = self.process(input[i]);
         }
     }
     
-    /// Изменить частоту среза
+    /// Изменить частоту среза.
     pub fn set_cutoff(&mut self, cutoff: f64) {
         self.frequency = cutoff.max(20.0).min(self.sample_rate / 2.0);
         self.update_coefficients();
     }
     
-    /// Изменить добротность
+    /// Изменить добротность.
     pub fn set_q(&mut self, q: f64) {
         self.q = q.max(0.1).min(20.0);
         self.update_coefficients();
     }
     
-    /// Изменить усиление (для peak/shelving фильтров)
+    /// Изменить усиление (для peak/shelving фильтров).
     pub fn set_gain_db(&mut self, gain_db: f64) {
         self.gain_db = gain_db;
         self.update_coefficients();
     }
     
+    /// Сбросить внутреннее состояние.
     pub fn reset(&mut self) {
         self.x1 = 0.0;
         self.x2 = 0.0;
@@ -277,7 +292,7 @@ impl HighPrecisionBiquad {
     }
 }
 
-/// Высокоточный лестничный фильтр (Moog ladder)
+/// Высокоточный лестничный фильтр (Moog ladder).
 pub struct HighPrecisionLadderFilter {
     cutoff: f64,
     resonance: f64,
@@ -289,6 +304,7 @@ pub struct HighPrecisionLadderFilter {
 }
 
 impl HighPrecisionLadderFilter {
+    /// Создать новый лестничный фильтр.
     pub fn new(cutoff: f64, resonance: f64, sample_rate: f64) -> Self {
         Self {
             cutoff: cutoff.max(20.0).min(sample_rate / 2.0),
@@ -301,15 +317,17 @@ impl HighPrecisionLadderFilter {
         }
     }
     
+    /// Установить частоту среза.
     pub fn set_cutoff(&mut self, cutoff: f64) {
         self.cutoff = cutoff.max(20.0).min(self.sample_rate / 2.0);
     }
     
+    /// Установить резонанс.
     pub fn set_resonance(&mut self, resonance: f64) {
         self.resonance = resonance.clamp(0.0, 1.0);
     }
     
-    /// Обрабатывает один семпл.
+    /// Обработать один семпл.
     pub fn process(&mut self, input: f64) -> f64 {
         let f = 2.0 * (PI * self.cutoff / self.sample_rate).sin();
         let fb = self.resonance * 4.0;
@@ -324,13 +342,14 @@ impl HighPrecisionLadderFilter {
         self.stage4
     }
     
-    /// Обрабатывает буфер целиком.
+    /// Обработать буфер целиком.
     pub fn process_buffer(&mut self, input: &[f64], output: &mut [f64]) {
         for i in 0..input.len().min(output.len()) {
             output[i] = self.process(input[i]);
         }
     }
     
+    /// Сбросить состояние.
     pub fn reset(&mut self) {
         self.stage1 = 0.0;
         self.stage2 = 0.0;

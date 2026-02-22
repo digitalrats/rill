@@ -1,10 +1,49 @@
-//! High-precision audio processing ecosystem (f64)
+//! # High-precision audio processing (f64)
 //! 
-//! Для приложений, требующих максимальной точности:
+//! Этот крейт предоставляет компоненты для высокоточной обработки аудио с использованием `f64`.
+//! Предназначен для приложений, где критична точность вычислений:
+//! 
 //! - Профессиональные синтезаторы
-//! - Мастер-процессоры
+//! - Мастер-процессоры (лимитеры, компрессоры)
 //! - Научные исследования
-//! - Интеграция с kama-buffers для эффективного управления памятью
+//! - Интеграция с [`kama-buffers`] для эффективного управления памятью
+//! 
+//! ## Основные компоненты
+//! 
+//! - **Буферы** — [`HighPrecisionBuffer`] для работы с f64 данными, интеграция с `kama-buffers`
+//! - **Осцилляторы** — [`HighPrecisionSineOsc`], [`HighPrecisionFMOsc`] для генерации сигналов
+//! - **Фильтры** — [`HighPrecisionBiquad`], [`HighPrecisionLadderFilter`] для обработки
+//! - **Эффекты** — [`NoiseShaper`] для понижения разрядности с минимальными потерями
+//! - **Анализ** — [`SpectrumAnalyzer`], [`PeakDetector`] для анализа сигналов
+//! - **Конвертеры** — [`Oversampler`], [`PrecisionConverter`] для изменения частоты и разрядности
+//! 
+//! ## Пример использования
+//! 
+//! ```no_run
+//! use kama_hp::{HighPrecisionBuffer, HighPrecisionBiquad};
+//! 
+//! // Создаём буфер и фильтр
+//! let mut buffer = HighPrecisionBuffer::new(1024, 2, 48000.0);
+//! let mut filter = HighPrecisionBiquad::new_lowpass(1000.0, 0.707, 48000.0);
+//! 
+//! // Обрабатываем сигнал
+//! for i in 0..1024 {
+//!     let sample = buffer.read(i, 0);
+//!     let filtered = filter.process(sample);
+//!     buffer.write(i, 0, filtered);
+//! }
+//! ```
+//! 
+//! [`HighPrecisionBuffer`]: crate::buffers::HighPrecisionBuffer
+//! [`HighPrecisionSineOsc`]: crate::oscillators::HighPrecisionSineOsc
+//! [`HighPrecisionFMOsc`]: crate::oscillators::HighPrecisionFMOsc
+//! [`HighPrecisionBiquad`]: crate::filters::HighPrecisionBiquad
+//! [`HighPrecisionLadderFilter`]: crate::filters::HighPrecisionLadderFilter
+//! [`NoiseShaper`]: crate::effects::NoiseShaper
+//! [`SpectrumAnalyzer`]: crate::analysis::SpectrumAnalyzer
+//! [`PeakDetector`]: crate::analysis::PeakDetector
+//! [`Oversampler`]: crate::converters::Oversampler
+//! [`PrecisionConverter`]: crate::converters::PrecisionConverter
 
 #![warn(missing_docs)]
 
@@ -16,7 +55,7 @@ pub mod analysis;
 pub mod converters;
 
 // Re-export основных типов
-pub use buffers::{HighPrecisionBuffer, HighPrecisionBufferPool};  // <-- ДОБАВЛЯЕМ
+pub use buffers::{HighPrecisionBuffer, HighPrecisionBufferPool};
 pub use oscillators::{HighPrecisionSineOsc, HighPrecisionFMOsc};
 pub use filters::{HighPrecisionBiquad, HighPrecisionLadderFilter, BiquadType};
 pub use effects::NoiseShaper;
@@ -30,15 +69,19 @@ pub type HpResult<T> = Result<T, HpError>;
 /// Ошибки high-precision обработки
 #[derive(Debug, thiserror::Error)]
 pub enum HpError {
+    /// Неверный параметр
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
     
+    /// Ошибка буфера
     #[error("Buffer error: {0}")]
     Buffer(String),
     
+    /// Ошибка конвертации
     #[error("Conversion error: {0}")]
     Conversion(String),
     
+    /// Ошибка аудио ядра
     #[error("Audio core error: {0}")]
     Core(#[from] AudioError),
 }

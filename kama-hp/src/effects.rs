@@ -1,15 +1,25 @@
-//! Эффекты high-precision, включая noise shaping и реверберацию.
+//! # Высокоточные эффекты
+//! 
+//! Предоставляет эффекты для высокоточной обработки:
+//! 
+//! - [`NoiseShaper`] — понижение разрядности с noise shaping'ом
+//! - [`SimpleReverb`] — простая реверберация
 
 use rand::Rng;
 use std::f64::consts::PI;
 
-/// Тип dither'а
+/// Тип dither'а для понижения разрядности.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DitherType {
+    /// Без dither'а
     None,
+    /// Прямоугольный dither (RPDF)
     Rectangular,
+    /// Треугольный dither (TPDF)
     Triangular,
+    /// Гауссов dither (GPDF)
     Gaussian,
+    /// High-pass dither
     HighPass,
 }
 
@@ -24,6 +34,7 @@ pub struct NoiseShaper {
 }
 
 impl NoiseShaper {
+    /// Создать новый noise shaper.
     pub fn new(dither_type: DitherType, bit_depth: u8) -> Self {
         Self {
             dither_type,
@@ -34,7 +45,9 @@ impl NoiseShaper {
         }
     }
     
-    /// Обрабатывает один семпл, возвращая квантованное значение с noise shaping'ом.
+    /// Обработать один семпл.
+    /// 
+    /// Возвращает квантованное значение с noise shaping'ом.
     pub fn process(&mut self, input: f64) -> f32 {
         let quant_step = 2.0_f64.powi(-(self.bit_depth as i32) + 1);
         
@@ -80,14 +93,15 @@ impl NoiseShaper {
         quantized as f32
     }
     
-    /// Обрабатывает буфер целиком.
+    /// Обработать буфер целиком.
     pub fn process_buffer(&mut self, input: &[f64], output: &mut [f32]) {
         for i in 0..input.len().min(output.len()) {
             output[i] = self.process(input[i]);
         }
     }
 }
-/// Простой ревербератор (комбинация гребенчатых фильтров)
+
+/// Простой ревербератор (комбинация гребенчатых фильтров).
 pub struct SimpleReverb {
     comb_filters: Vec<f64>, // упрощённо: буферы задержки
     comb_pos: Vec<usize>,
@@ -101,6 +115,7 @@ pub struct SimpleReverb {
 }
 
 impl SimpleReverb {
+    /// Создать новый ревербератор.
     pub fn new(decay: f64, mix: f64, sample_rate: f64) -> Self {
         // Классические задержки для ревербератора
         let comb_delays = [0.0297, 0.0371, 0.0411, 0.0437];
@@ -113,7 +128,7 @@ impl SimpleReverb {
             .flatten()
             .collect();
         // Упрощённо: здесь нужна более аккуратная реализация с отдельными буферами.
-        // Для brevity оставим заглушку.
+        // Для краткости оставим заглушку.
         
         Self {
             comb_filters: Vec::new(),
@@ -128,6 +143,7 @@ impl SimpleReverb {
         }
     }
     
+    /// Обработать один семпл.
     pub fn process(&mut self, input: f64) -> f64 {
         // Заглушка
         input * (1.0 - self.mix)
