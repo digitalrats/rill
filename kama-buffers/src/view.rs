@@ -1,9 +1,19 @@
+//! # Представления буферов для безопасного доступа
+//! 
+//! Предоставляет безопасные абстракции для чтения и записи в кольцевой буфер:
+//! - [`BufferView`] — для чтения (несколько читателей)
+//! - [`BufferViewMut`] — для записи (исключительный доступ)
+//! - [`BufferIterator`] — итератор по семплам
+
 //! Представления буферов для безопасного доступа
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use crate::RingBuffer;
 
 /// Представление буфера для чтения
+    /// Представление буфера для чтения.
+    ///
+    /// Позволяет читать данные из буфера без возможности изменения.
 pub struct BufferView<'a> {
     data: RwLockReadGuard<'a, Vec<f32>>,
     size: usize,
@@ -14,6 +24,7 @@ pub struct BufferView<'a> {
 
 impl<'a> BufferView<'a> {
     /// Создать новое представление из RingBuffer
+    /// Создать новое представление из RingBuffer.
     pub fn new(buffer: &'a RingBuffer) -> Self {
         let size = buffer.size();
         let write_pos = buffer.write_pos();
@@ -30,11 +41,13 @@ impl<'a> BufferView<'a> {
     }
     
     /// Получить семпл по индексу
+    /// Получить семпл по индексу.
     pub fn get(&self, index: usize) -> f32 {
         self.data[index % self.size]
     }
     
     /// Получить семпл с интерполяцией по позиции (0..size)
+    /// Получить семпл с интерполяцией по позиции (0..size).
     pub fn get_interpolated(&self, position: f32) -> f32 {
         let pos_floor = position.floor() as usize;
         let frac = position.fract();
@@ -49,6 +62,7 @@ impl<'a> BufferView<'a> {
     }
     
     /// Прочитать семпл с задержкой (в прошлое)
+    /// Прочитать семпл с задержкой (в прошлое).
     pub fn read_delayed(&self, delay_samples: usize, offset: usize) -> f32 {
         let available = if !self.filled {
             self.write_pos
@@ -62,6 +76,7 @@ impl<'a> BufferView<'a> {
     }
     
     /// Прочитать семпл с задержкой в будущее (lookahead)
+    /// Прочитать семпл с задержкой в будущее (lookahead).
     pub fn read_lookahead(&self, lookahead: usize, offset: usize) -> f32 {
         if !self.filled {
             // Для незаполненного буфера семплы находятся в начале (0..write_pos)
@@ -90,6 +105,7 @@ impl<'a> BufferView<'a> {
     }
     
     /// Прочитать семпл с задержкой и интерполяцией
+    /// Прочитать семпл с задержкой и интерполяцией.
     pub fn read_delayed_interpolated(&self, delay_samples: f32, offset: usize) -> f32 {
         let available = if !self.filled {
             self.write_pos
@@ -118,6 +134,7 @@ impl<'a> BufferView<'a> {
     }
     
     /// Прочитать последовательность семплов с интерполяцией
+    /// Прочитать последовательность семплов с интерполяцией.
     pub fn read_sequence_interpolated(&self, start_delay: f32, output: &mut [f32]) {
         let available = if !self.filled {
             self.write_pos
@@ -149,11 +166,13 @@ impl<'a> BufferView<'a> {
     }
     
     /// Получить размер буфера
+    /// Получить размер буфера.
     pub fn size(&self) -> usize {
         self.size
     }
     
     /// Получить итератор по семплам
+    /// Получить итератор по семплам.
     pub fn iter(&self) -> BufferIterator<'_, '_> {
         BufferIterator {
             view: self,
@@ -163,6 +182,12 @@ impl<'a> BufferView<'a> {
 }
 
 /// Представление буфера для записи (мутабельное)
+    /// Представление буфера для чтения.
+    ///
+    /// Позволяет читать данные из буфера без возможности изменения.
+    /// Представление буфера для записи.
+    ///
+    /// Позволяет изменять данные в буфере.
 pub struct BufferViewMut<'a> {
     data: RwLockWriteGuard<'a, Vec<f32>>,
     size: usize,
@@ -173,6 +198,7 @@ pub struct BufferViewMut<'a> {
 
 impl<'a> BufferViewMut<'a> {
     /// Создать новое мутабельное представление
+    /// Создать новое представление из RingBuffer.
     pub fn new(buffer: &'a mut RingBuffer) -> Self {
         let size = buffer.size();
         let mask = buffer.mask();
@@ -228,6 +254,7 @@ impl<'a> BufferViewMut<'a> {
 }
 
 /// Итератор по семплам буфера
+    /// Итератор по семплам буфера.
 pub struct BufferIterator<'a, 'b> {
     view: &'b BufferView<'a>,
     index: usize,

@@ -1,3 +1,8 @@
+//! # Пул буферов для повторного использования
+//! 
+//! Предоставляет механизм пулинга буферов для эффективного переиспользования памяти.
+//! Буферы выдаются из пула и автоматически возвращаются при освобождении.
+
 //! Пул буферов для повторного использования
 
 use std::fmt;
@@ -5,6 +10,12 @@ use crate::error::{BufferError, BufferResult};
 
 /// Стратегия поведения при несоответствии размера буфера
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// Стратегия поведения при несоответствии размера буфера.
+    ///
+    /// - `Error` — возвращать ошибку
+    /// - `Resize` — изменить размер буфера
+    /// - `CreateNew` — создать новый буфер нужного размера
+    /// - `ResizePool` — изменить размер всех буферов в пуле
 pub enum PoolStrategy {
     Error,
     Resize,
@@ -13,6 +24,9 @@ pub enum PoolStrategy {
 }
 
 /// Пул буферов для повторного использования
+    /// Пул буферов для повторного использования.
+    ///
+    /// Хранит вектор предварительно выделенных буферов и выдаёт их по запросу.
 pub struct BufferPool {
     buffers: Vec<Vec<f32>>,
     size: usize,
@@ -22,6 +36,7 @@ pub struct BufferPool {
 
 impl BufferPool {
     /// Создать новый пул
+    /// Создать новый пул с указанными параметрами.
     pub fn new(max_size: usize, buffer_size: usize, strategy: PoolStrategy) -> Self {
         let mut buffers = Vec::with_capacity(max_size);
         for _ in 0..max_size {
@@ -37,11 +52,13 @@ impl BufferPool {
     }
     
     /// Получить буфер стандартного размера
+    /// Получить буфер стандартного размера из пула.
     pub fn acquire(&mut self) -> BufferResult<Vec<f32>> {
         self.buffers.pop().ok_or(BufferError::PoolEmpty)
     }
     
     /// Получить буфер указанного размера с учётом стратегии
+    /// Получить буфер указанного размера с учётом стратегии.
     pub fn acquire_with_size(&mut self, size: usize) -> BufferResult<Vec<f32>> {
         if size == self.size {
             return self.acquire();
@@ -76,6 +93,7 @@ impl BufferPool {
     }
     
     /// Вернуть буфер в пул
+    /// Вернуть буфер в пул.
     pub fn release(&mut self, mut buffer: Vec<f32>) -> BufferResult<()> {
         if self.buffers.len() >= self.max_size {
             return Ok(());
@@ -113,16 +131,19 @@ impl BufferPool {
     }
     
     /// Получить количество доступных буферов
+    /// Получить количество доступных буферов.
     pub fn available(&self) -> usize {
         self.buffers.len()
     }
     
     /// Получить текущий размер буферов в пуле
+    /// Получить текущий размер буферов в пуле.
     pub fn current_size(&self) -> usize {
         self.size
     }
     
     /// Очистить пул
+    /// Очистить пул.
     pub fn clear(&mut self) {
         self.buffers.clear();
     }

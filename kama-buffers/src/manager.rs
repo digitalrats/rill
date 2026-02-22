@@ -1,4 +1,27 @@
 //! Единый менеджер буферов
+//! 
+//! ## Основные возможности
+//! 
+//! - **Пул буферов** — эффективное переиспользование памяти
+//! - **Реестр именованных буферов** — доступ по имени из любого места
+//! - **Кэш узлов графа** — временные буферы для обработки
+//! - **Статистика использования** — мониторинг потребления памяти
+//! 
+//! ## Пример использования
+//! 
+//! ```no_run
+//! use kama_buffers::BufferManager;
+//! 
+//! let manager = BufferManager::new();
+//! 
+//! // Получить буфер из пула
+//! let mut buffer = manager.acquire(256).unwrap();
+//! buffer.as_mut_slice().fill(0.5);
+//! 
+//! // Создать именованный кольцевой буфер
+//! let ring = manager.create_ring("delay", 1024);
+//! ```
+
 //!
 //! Пул буферов владеет всеми буферами. Буферы выдаются через acquire и должны
 //! возвращаться через release. Реестр хранит ссылки на буферы, которые были
@@ -146,6 +169,7 @@ impl fmt::Debug for BufferPool {
 // -----------------------------------------------------------------------------
 
 /// Буфер, полученный из пула. При Drop автоматически возвращается в пул.
+    /// Буфер, полученный из пула. При Drop автоматически возвращается в пул.
 pub struct PooledBuffer {
     data: Vec<f32>,
     pool: Weak<RwLock<BufferPool>>,
@@ -161,26 +185,31 @@ impl PooledBuffer {
     }
     
     /// Получить доступ к данным
+    /// Получить доступ к данным.
     pub fn as_slice(&self) -> &[f32] {
         &self.data
     }
     
     /// Получить мутабельный доступ к данным
+    /// Получить мутабельный доступ к данным.
     pub fn as_mut_slice(&mut self) -> &mut [f32] {
         &mut self.data
     }
     
     /// Получить длину буфера
+    /// Получить длину буфера.
     pub fn len(&self) -> usize {
         self.data.len()
     }
     
     /// Проверить, пуст ли буфер
+    /// Проверить, пуст ли буфер.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
     
     /// Преобразовать в Vec (забирает владение, не возвращает в пул)
+    /// Преобразовать в Vec (забирает владение, не возвращает в пул).
     pub fn into_vec(mut self) -> Vec<f32> {
         std::mem::take(&mut self.data)
     }
@@ -212,6 +241,7 @@ impl fmt::Debug for PooledBuffer {
 
 /// Тип зарегистрированного буфера
 #[derive(Clone)]
+    /// Тип зарегистрированного буфера.
 pub enum RegisteredBuffer {
     /// Простой вектор (ссылка на буфер из пула)
     Vector(Arc<RwLock<Vec<f32>>>),
@@ -274,6 +304,7 @@ impl fmt::Debug for RegisteredBuffer {
 
 /// Временные буферы для обработки узла
 #[derive(Debug, Default, Clone)]
+    /// Временные буферы для обработки узла.
 pub struct NodeBuffers {
     pub inputs: Vec<Vec<f32>>,
     pub outputs: Vec<Vec<f32>>,
@@ -281,6 +312,10 @@ pub struct NodeBuffers {
 
 /// Статистика использования менеджера буферов
 #[derive(Clone, Copy)]
+    /// Статистика использования менеджера буферов.
+    /// Единый менеджер буферов.
+    ///
+    /// Управляет пулом буферов, реестром именованных буферов и кэшем узлов графа.
 pub struct BufferManagerStats {
     pub active_nodes: usize,
     pub active_buffers: usize,
@@ -295,6 +330,9 @@ pub struct BufferManagerStats {
 // -----------------------------------------------------------------------------
 
 /// Единый менеджер буферов - пул владеет буферами, выдача через acquire
+    /// Единый менеджер буферов.
+    ///
+    /// Управляет пулом буферов, реестром именованных буферов и кэшем узлов графа.
 pub struct BufferManager {
     // Пул буферов (владелец всех данных)
     pool: Arc<RwLock<BufferPool>>,
@@ -312,11 +350,13 @@ pub struct BufferManager {
 
 impl BufferManager {
     /// Создать новый менеджер
+    /// Создать новый менеджер с параметрами по умолчанию.
     pub fn new() -> Self {
         Self::with_config(16, 4096)
     }
     
     /// Создать с указанными параметрами
+    /// Создать менеджер с указанными параметрами.
     pub fn with_config(max_pool_size: usize, default_buffer_size: usize) -> Self {
         let pool = BufferPool::new(max_pool_size, default_buffer_size, PoolStrategy::Resize);
         
@@ -334,12 +374,14 @@ impl BufferManager {
     // -------------------------------------------------------------------------
     
     /// Получить буфер из пула
+    /// Получить буфер из пула.
     pub fn acquire(&self, size: usize) -> BufferResult<PooledBuffer> {
         let data = self.pool.write().acquire_with_size(size)?;
         Ok(PooledBuffer::new(data, &self.pool))
     }
     
     /// Получить буфер и сразу зарегистрировать его под именем
+    /// Получить буфер и сразу зарегистрировать его под именем.
     pub fn acquire_named(&self, name: &str, size: usize) -> BufferResult<Arc<RwLock<Vec<f32>>>> {
         let data = self.pool.write().acquire_with_size(size)?;
         let arc_buffer = Arc::new(RwLock::new(data));
@@ -351,6 +393,7 @@ impl BufferManager {
     }
     
     /// Создать кольцевой буфер (использует свой внутренний пул)
+    /// Создать кольцевой буфер и зарегистрировать его.
     pub fn create_ring(&self, name: &str, size: usize) -> Arc<RwLock<RingBuffer>> {
         let buffer = RingBuffer::new(size);
         let arc_buffer = Arc::new(RwLock::new(buffer));
@@ -362,6 +405,7 @@ impl BufferManager {
     }
     
     /// Создать многоголовый буфер
+    /// Создать многоголовый буфер и зарегистрировать его.
     pub fn create_multi_head(&self, name: &str, size: usize, sample_rate: f32) -> Arc<RwLock<MultiHeadBuffer>> {
         let buffer = MultiHeadBuffer::new(size, sample_rate);
         let arc_buffer = Arc::new(RwLock::new(buffer));
@@ -377,12 +421,14 @@ impl BufferManager {
     // -------------------------------------------------------------------------
     
     /// Получить зарегистрированный буфер по имени
+    /// Получить зарегистрированный буфер по имени.
     pub fn get(&self, name: &str) -> Option<RegisteredBuffer> {
         let registry = self.registry.read();
         registry.get(name).cloned()
     }
     
     /// Получить вектор по имени
+    /// Получить вектор по имени.
     pub fn get_vector(&self, name: &str) -> Option<Arc<RwLock<Vec<f32>>>> {
         match self.get(name) {
             Some(RegisteredBuffer::Vector(v)) => Some(v),
@@ -391,6 +437,7 @@ impl BufferManager {
     }
     
     /// Получить кольцевой буфер по имени
+    /// Получить кольцевой буфер по имени.
     pub fn get_ring(&self, name: &str) -> Option<Arc<RwLock<RingBuffer>>> {
         match self.get(name) {
             Some(RegisteredBuffer::Ring(r)) => Some(r),
@@ -399,6 +446,7 @@ impl BufferManager {
     }
     
     /// Получить многоголовый буфер по имени
+    /// Получить многоголовый буфер по имени.
     pub fn get_multi_head(&self, name: &str) -> Option<Arc<RwLock<MultiHeadBuffer>>> {
         match self.get(name) {
             Some(RegisteredBuffer::MultiHead(m)) => Some(m),
@@ -407,21 +455,25 @@ impl BufferManager {
     }
     
     /// Проверить наличие буфера в реестре
+    /// Проверить наличие буфера в реестре.
     pub fn contains(&self, name: &str) -> bool {
         self.registry.read().contains_key(name)
     }
     
     /// Получить список всех имен
+    /// Получить список всех имён зарегистрированных буферов.
     pub fn names(&self) -> Vec<String> {
         self.registry.read().keys().cloned().collect()
     }
     
     /// Удалить буфер из реестра (НЕ возвращает в пул - буфер может быть еще использован)
+    /// Удалить буфер из реестра (НО не возвращает в пул).
     pub fn unregister(&self, name: &str) -> bool {
         self.registry.write().remove(name).is_some()
     }
     
     /// Удалить буфер из реестра и вернуть в пул (если это вектор и больше нет ссылок)
+    /// Удалить буфер из реестра и вернуть в пул.
     pub fn unregister_and_release(&self, name: &str) -> bool {
         let mut registry = self.registry.write();
         if let Some(RegisteredBuffer::Vector(arc)) = registry.remove(name) {
@@ -467,6 +519,7 @@ impl BufferManager {
     }
     
     /// Получить доступ к буферам узла для чтения
+    /// Получить доступ к буферам узла для чтения.
     pub fn read_buffers(&self, node_id: NodeId) -> Option<RwLockReadGuard<'_, HashMap<NodeId, NodeBuffers>>> {
         let guard = self.node_buffers.read();
         if guard.contains_key(&node_id) {
@@ -494,6 +547,7 @@ impl BufferManager {
     }
     
     /// Освободить буферы узла (возвращаются в пул)
+    /// Освободить буферы узла (возвращаются в пул).
     pub fn release_node(&self, node_id: NodeId) {
         let mut guard = self.node_buffers.write();
         if let Some(buffers) = guard.remove(&node_id) {
@@ -512,6 +566,7 @@ impl BufferManager {
     // -------------------------------------------------------------------------
     
     /// Получить статистику
+    /// Получить статистику использования.
     pub fn stats(&self) -> BufferManagerStats {
         let node_buffers = self.node_buffers.read();
         let pool = self.pool.read();
@@ -541,6 +596,7 @@ impl BufferManager {
     }
     
     /// Очистить всё (возвращает все буферы в пул)
+    /// Очистить всё (возвращает все буферы в пул).
     pub fn clear_all(&self) {
         // Очищаем кэш узлов (буферы возвращаются в пул)
         let mut node_guard = self.node_buffers.write();
@@ -574,11 +630,13 @@ impl BufferManager {
     }
     
     /// Получить максимальный размер пула
+    /// Получить максимальный размер пула.
     pub fn max_pool_size(&self) -> usize {
         self.max_pool_size
     }
     
     /// Получить размер по умолчанию
+    /// Получить размер буфера по умолчанию.
     pub fn default_size(&self) -> usize {
         self.default_size
     }

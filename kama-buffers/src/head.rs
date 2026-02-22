@@ -1,9 +1,19 @@
+//! # Головки воспроизведения для буферов
+//! 
+//! Головки воспроизведения позволяют читать данные из буфера с разными параметрами:
+//! - скорость воспроизведения
+//! - направление (вперёд/назад)
+//! - панорама
+//! - громкость
+//! - режим чтения (Simple, Loop, PingPong, Granular)
+
 //! Головки воспроизведения для буферов
 
 use crate::view::BufferView;
 
 /// Состояние головки воспроизведения
 #[derive(Debug, Clone, Copy)]
+    /// Состояние головки воспроизведения.
 pub struct HeadState {
     /// Текущая позиция (с плавающей точкой для интерполяции)
     pub position: f32,
@@ -31,6 +41,7 @@ impl Default for HeadState {
 
 /// Направление воспроизведения
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// Направление воспроизведения.
 pub enum Direction {
     Forward,
     Reverse,
@@ -44,6 +55,7 @@ impl Default for Direction {
 
 /// Режим чтения буфера
 #[derive(Debug, Clone, Copy)]
+    /// Режим чтения буфера.
 pub enum ReadMode {
     /// Простое последовательное чтение
     Simple,
@@ -70,6 +82,9 @@ impl Default for ReadMode {
 
 /// Головка воспроизведения
 #[derive(Clone)]
+    /// Головка воспроизведения.
+    ///
+    /// Позволяет читать данные из буфера с независимыми параметрами.
 pub struct BufferHead {
     /// Текущее состояние
     pub state: HeadState,
@@ -88,6 +103,7 @@ pub struct BufferHead {
 
 impl BufferHead {
     /// Создать новую головку с указанным ID
+    /// Создать новую головку с указанным ID.
     pub fn new(id: usize) -> Self {
         Self {
             state: HeadState::default(),
@@ -102,30 +118,35 @@ impl BufferHead {
     }
     
     /// Создать головку с начальной скоростью
+    /// Создать головку с начальной скоростью.
     pub fn with_speed(mut self, speed: f32) -> Self {
         self.state.speed = speed;
         self
     }
     
     /// Создать головку с панорамой
+    /// Создать головку с панорамой.
     pub fn with_pan(mut self, pan: f32) -> Self {
         self.state.pan = pan.clamp(-1.0, 1.0);
         self
     }
     
     /// Создать головку с громкостью
+    /// Создать головку с громкостью.
     pub fn with_volume(mut self, volume: f32) -> Self {
         self.state.volume = volume.clamp(0.0, 1.0);
         self
     }
     
     /// Создать головку с режимом чтения
+    /// Создать головку с режимом чтения.
     pub fn with_read_mode(mut self, mode: ReadMode) -> Self {
         self.read_mode = mode;
         self
     }
     
     /// Прочитать один семпл из View
+    /// Прочитать один семпл из View.
     pub fn read_sample(&mut self, view: &BufferView) -> f32 {
         if !self.enabled {
             return 0.0;
@@ -283,6 +304,7 @@ fn read_pingpong(&mut self, view: &BufferView, buffer_size: f32) -> f32 {
     }
     
     /// Сбросить внутреннее состояние
+    /// Сбросить внутреннее состояние.
     pub fn reset(&mut self) {
         self.state.position = 0.0;
         self.state.direction = Direction::Forward;
@@ -293,31 +315,37 @@ fn read_pingpong(&mut self, view: &BufferView, buffer_size: f32) -> f32 {
     }
     
     /// Установить скорость воспроизведения
+    /// Установить скорость воспроизведения.
     pub fn set_speed(&mut self, speed: f32) {
         self.state.speed = speed;
     }
     
     /// Установить панораму
+    /// Установить панораму.
     pub fn set_pan(&mut self, pan: f32) {
         self.state.pan = pan.clamp(-1.0, 1.0);
     }
     
     /// Установить громкость
+    /// Установить громкость.
     pub fn set_volume(&mut self, volume: f32) {
         self.state.volume = volume.clamp(0.0, 1.0);
     }
     
     /// Включить/выключить головку
+    /// Включить/выключить головку.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
     
     /// Получить текущую позицию
+    /// Получить текущую позицию.
     pub fn position(&self) -> f32 {
         self.state.position
     }
     
     /// Установить позицию
+    /// Установить позицию.
     pub fn set_position(&mut self, position: f32) {
         self.state.position = position;
     }

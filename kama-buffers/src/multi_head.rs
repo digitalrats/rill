@@ -1,3 +1,9 @@
+//! # Многоголовый буфер для гранулярного синтеза и сложного воспроизведения
+//! 
+//! Позволяет создавать несколько независимых головок воспроизведения,
+//! каждая со своими параметрами (скорость, панорама, режим чтения).
+//! Идеально подходит для гранулярного синтеза и сложных текстур.
+
 use std::sync::Arc;
 use parking_lot::RwLock;
 
@@ -15,6 +21,9 @@ use crate::{
 };
 
 /// Многоголовый буфер для гранулярного синтеза и сложного воспроизведения
+    /// Многоголовый буфер.
+    ///
+    /// Содержит внутренний кольцевой буфер и коллекцию головок воспроизведения.
 pub struct MultiHeadBuffer {
     /// Внутренний кольцевой буфер
     buffer: Arc<RwLock<RingBuffer>>,
@@ -30,6 +39,7 @@ pub struct MultiHeadBuffer {
 
 impl MultiHeadBuffer {
     /// Создать новый многоголовый буфер
+    /// Создать новый многоголовый буфер.
     pub fn new(size: usize, sample_rate: f32) -> Self {
         Self {
             buffer: Arc::new(RwLock::new(RingBuffer::new(size))),
@@ -41,12 +51,14 @@ impl MultiHeadBuffer {
     }
     
     /// Установить ID узла для интеграции с BufferManager
+    /// Установить ID узла для интеграции с BufferManager.
     pub fn with_node_id(mut self, node_id: NodeId) -> Self {
         self.node_id = Some(node_id);
         self
     }
     
     /// Добавить новую головку
+    /// Добавить новую головку.
     pub fn add_head(&mut self) -> usize {
         if self.heads.len() >= self.max_heads {
             return 0;
@@ -58,6 +70,7 @@ impl MultiHeadBuffer {
     }
     
     /// Добавить головку с параметрами
+    /// Добавить головку с параметрами.
     pub fn add_head_with_params(
         &mut self,
         speed: f32,
@@ -81,6 +94,7 @@ impl MultiHeadBuffer {
     }
     
     /// Удалить головку по ID
+    /// Удалить головку по ID.
     pub fn remove_head(&mut self, id: usize) -> bool {
         if id == 0 || id > self.heads.len() {
             return false;
@@ -97,6 +111,7 @@ impl MultiHeadBuffer {
     }
     
     /// Получить ссылку на головку
+    /// Получить ссылку на головку.
     pub fn get_head(&self, id: usize) -> Option<&BufferHead> {
         if id == 0 || id > self.heads.len() {
             return None;
@@ -105,6 +120,7 @@ impl MultiHeadBuffer {
     }
     
     /// Получить мутабельную ссылку на головку
+    /// Получить мутабельную ссылку на головку.
     pub fn get_head_mut(&mut self, id: usize) -> Option<&mut BufferHead> {
         if id == 0 || id > self.heads.len() {
             return None;
@@ -113,6 +129,7 @@ impl MultiHeadBuffer {
     }
     
     /// Записать данные в буфер
+    /// Записать данные в буфер.
     pub fn write(&mut self, samples: &[f32]) {
         self.buffer.write().write(samples);
     }
@@ -128,26 +145,31 @@ impl MultiHeadBuffer {
     }
     
     /// Очистить буфер
+    /// Очистить буфер.
     pub fn clear(&mut self) {
         self.buffer.write().reset();
     }
     
     /// Получить размер буфера
+    /// Получить размер буфера.
     pub fn buffer_size(&self) -> usize {
         self.buffer.read().size()
     }
     
     /// Получить количество головок
+    /// Получить количество головок.
     pub fn head_count(&self) -> usize {
         self.heads.len()
     }
     
     /// Получить максимальное количество головок
+    /// Получить максимальное количество головок.
     pub fn max_heads(&self) -> usize {
         self.max_heads
     }
     
     /// Установить максимальное количество головок
+    /// Установить максимальное количество головок.
     pub fn set_max_heads(&mut self, max: usize) {
         self.max_heads = max;
         if self.heads.len() > max {
@@ -156,6 +178,7 @@ impl MultiHeadBuffer {
     }
     
     /// Сбросить все головки
+    /// Сбросить все головки.
     pub fn reset_heads(&mut self) {
         for head in &mut self.heads {
             head.reset();
@@ -163,6 +186,7 @@ impl MultiHeadBuffer {
     }
     
     /// Сбросить конкретную головку
+    /// Сбросить конкретную головку.
     pub fn reset_head(&mut self, id: usize) -> bool {
         if let Some(head) = self.get_head_mut(id) {
             head.reset();
@@ -173,6 +197,7 @@ impl MultiHeadBuffer {
     }
     
     /// Включить/выключить все головки
+    /// Включить/выключить все головки.
     pub fn set_all_heads_enabled(&mut self, enabled: bool) {
         for head in &mut self.heads {
             head.set_enabled(enabled);
