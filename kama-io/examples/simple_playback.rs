@@ -1,62 +1,37 @@
+//! Простое воспроизведение с автоматическим выбором бэкенда
+
 use kama_io::{
-    AudioConfig, AudioEngine, AudioBackend,  // <-- ДОБАВЛЯЕМ AudioBackend
+    AudioConfig, AudioEngine, 
+    BackendType,
+    backends::{CpalBackend, NullBackend},
     processor::SineProcessor,
 };
 
-#[cfg(feature = "cpal")]
-use kama_io::CpalBackend;
-
 #[cfg(feature = "alsa")]
-use kama_io::AlsaBackend;
+use kama_io::backends::AlsaBackend;
 
-// Определяем тип бэкенда по умолчанию для текущей платформы
-#[cfg(all(target_os = "linux", feature = "alsa"))]
-type DefaultBackend = AlsaBackend;
-
-#[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
-type DefaultBackend = CpalBackend;
-
-#[cfg(all(not(target_os = "linux"), feature = "cpal"))]
-type DefaultBackend = CpalBackend;
-
-// Если ничего не подходит, используем заглушку
-#[cfg(not(any(
-    all(target_os = "linux", feature = "alsa"),
-    all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
-    all(not(target_os = "linux"), feature = "cpal")
-)))]
-type DefaultBackend = kama_io::NullBackend;
-
-// Функция для создания бэкенда с конкретным типом
-fn create_default_backend(config: AudioConfig) -> Result<DefaultBackend, Box<dyn std::error::Error>> {
+fn create_backend(config: AudioConfig) -> Result<Box<dyn kama_io::AudioBackend>, Box<dyn std::error::Error>> {
+    // Пробуем ALSA на Linux
     #[cfg(all(target_os = "linux", feature = "alsa"))]
     {
-        Ok(DefaultBackend::new(config)?)
+        let backend = AlsaBackend::new(config.clone())?;
+        return Ok(Box::new(backend));
     }
     
-    #[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+    // Пробуем CPAL как запасной вариант
+    #[cfg(feature = "cpal")]
     {
-        Ok(DefaultBackend::new(config)?)
+        let backend = CpalBackend::new(config.clone())?;
+        return Ok(Box::new(backend));
     }
     
-    #[cfg(all(not(target_os = "linux"), feature = "cpal"))]
-    {
-        Ok(DefaultBackend::new(config)?)
-    }
-    
-    #[cfg(not(any(
-        all(target_os = "linux", feature = "alsa"),
-        all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
-        all(not(target_os = "linux"), feature = "cpal")
-    )))]
-    {
-        Ok(DefaultBackend::new(config))
-    }
+    // Если ничего не работает, используем Null
+    Ok(Box::new(NullBackend::new(config)))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Kama IO Simple Playback Demo ===\n");
+    println!("=== Kama IO Simple Playback ===\n");
     
     let config = AudioConfig::default()
         .with_sample_rate(44100)
@@ -64,11 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_channels(2);
     
     println!("Audio config: {} Hz, {} samples, {} channels",
-             config.sample_rate, config.buffer_size, config.channels);
+             config.sample_rate, config.buffer_size, config.output_channels);
     
-    // Создаем бэкенд с конкретным типом
-    let backend = create_default_backend(config.clone())?;
-    println!("\nUsing backend: {}", backend.name());  // <-- теперь метод name доступен
+    // Создаём бэкенд
+    let backend = create_backend(config.clone())?;
+    println!("\nUsing backend: {}", backend.backend_type().name());
     
     let processor = SineProcessor::new(440.0, config.sample_rate as f32);
     let mut engine = AudioEngine::new(backend, processor);

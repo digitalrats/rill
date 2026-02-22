@@ -1,5 +1,8 @@
+//! Типы ошибок для kama-io
+
 use thiserror::Error;
 
+/// Ошибки ввода-вывода
 #[derive(Error, Debug)]
 pub enum IoError {
     #[error("Backend error: {0}")]
@@ -25,6 +28,10 @@ pub enum IoError {
     
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    
+    #[error("Channel error")]
+    Channel,
 }
 
+/// Результат операций ввода-вывода
 pub type IoResult<T> = Result<T, IoError>;

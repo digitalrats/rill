@@ -14,7 +14,6 @@ mod pipewire;
 #[cfg(feature = "jack")]
 mod jack;
 
-// Реэкспорты
 pub use null::NullBackend;
 
 #[cfg(feature = "cpal")]

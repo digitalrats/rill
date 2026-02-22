@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
+use std::fmt;
 use parking_lot::RwLock;
 use crossbeam_channel::{unbounded, Sender, Receiver};
 
@@ -10,11 +11,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use kama_buffers::RingBuffer;
 
-use crate::backend::AudioBackend;
+use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 
 // Команды для потока
+#[derive(Debug)]
 enum Command {
     Init {
         input_device: Option<String>,
@@ -45,11 +47,21 @@ pub struct CpalBackend {
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
+impl fmt::Debug for CpalBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CpalBackend")
+            .field("config", &self.config)
+            .field("xruns", &self.xruns)
+            .field("thread_handle", &self.thread_handle.is_some())
+            .finish()
+    }
+}
+
 impl CpalBackend {
     /// Создать новый CPAL бэкенд
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         let host = Arc::new(cpal::default_host());
-        let buffer_size = (config.buffer_size * config.channels * 4) as usize;
+        let buffer_size = (config.buffer_size * config.output_channels * 4) as usize;
         
         let (command_tx, command_rx) = unbounded();
         let (status_tx, status_rx) = unbounded();
@@ -135,7 +147,7 @@ fn run_cpal_thread(
                     let xruns_clone = xruns.clone();
                     
                     let stream_config = cpal::StreamConfig {
-                        channels: config.channels as u16,
+                        channels: config.output_channels as u16,
                         sample_rate: cpal::SampleRate(config.sample_rate),
                         buffer_size: cpal::BufferSize::Fixed(config.buffer_size),
                     };
@@ -203,8 +215,8 @@ fn find_device(host: &cpal::Host, name: Option<&str>, is_input: bool) -> IoResul
 }
 
 impl AudioBackend for CpalBackend {
-    fn name(&self) -> &'static str {
-        "CPAL"
+    fn backend_type(&self) -> BackendType {
+        BackendType::Cpal
     }
     
     fn config(&self) -> &AudioConfig {
@@ -258,10 +270,6 @@ impl AudioBackend for CpalBackend {
         Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64
         )
-    }
-    
-    fn is_available(&self) -> bool {
-        true
     }
     
     fn list_input_devices(&self) -> Vec<String> {

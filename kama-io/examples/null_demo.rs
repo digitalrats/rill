@@ -1,22 +1,13 @@
+//! Пример с Null бэкендом
+
 use kama_io::{
-    AudioConfig, AudioEngine, AudioProcessor,
-    AudioBackend,  // <-- импортируем трейт
-    NullBackend,
+    AudioConfig, AudioEngine,
+    backends::NullBackend,
+    processor::SilenceProcessor,
 };
 
-struct SilenceProcessor;
-
-impl AudioProcessor for SilenceProcessor {
-    fn process(&mut self, _input: &[f32], output: &mut [f32]) {
-        output.fill(0.0);
-    }
-    
-    fn reset(&mut self) {}
-    
-    fn set_sample_rate(&mut self, _sample_rate: f32) {}
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Kama IO Null Backend Demo ===\n");
     
     let config = AudioConfig::default()
@@ -25,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_channels(2);
     
     let backend = NullBackend::new(config.clone());
-    println!("Using backend: {}", backend.name());  // <-- теперь работает
+    println!("Using backend: {}", backend.backend_type().name());
     
     let processor = SilenceProcessor;
     let mut engine = AudioEngine::new(backend, processor);

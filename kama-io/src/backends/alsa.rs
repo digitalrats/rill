@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
+use std::fmt;
 use parking_lot::RwLock;
 use crossbeam_channel::{unbounded, Sender, Receiver};
 
@@ -11,11 +12,12 @@ use alsa::pcm::{HwParams, Access, Format, State};
 
 use kama_buffers::RingBuffer;
 
-use crate::backend::AudioBackend;
+use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 
 /// Команды для ALSA потока
+#[derive(Debug)]
 enum AlsaCommand {
     Start,
     Stop,
@@ -38,13 +40,25 @@ pub struct AlsaBackend {
     output_buffer: Arc<RwLock<RingBuffer>>,
     thread_handle: Option<thread::JoinHandle<()>>,
     state: Arc<RwLock<AlsaState>>,
-    device_name: Arc<RwLock<String>>,  // <-- Изменено на Arc<RwLock>
+    device_name: Arc<RwLock<String>>,
+}
+
+impl fmt::Debug for AlsaBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AlsaBackend")
+            .field("config", &self.config)
+            .field("xruns", &self.xruns)
+            .field("state", &self.state.read().clone())
+            .field("device_name", &self.device_name.read().clone())
+            .field("thread_handle", &self.thread_handle.is_some())
+            .finish()
+    }
 }
 
 impl AlsaBackend {
     /// Создать новый ALSA бэкенд
     pub fn new(config: AudioConfig) -> IoResult<Self> {
-        let buffer_size = (config.buffer_size * config.channels * 4) as usize;
+        let buffer_size = (config.buffer_size * config.output_channels * 4) as usize;
         let (command_tx, command_rx) = unbounded();
         
         let xruns = Arc::new(RwLock::new(0));
@@ -151,7 +165,7 @@ fn run_alsa_thread(
                     *state.write() = AlsaState::Running;
                     
                     // Запускаем цикл обработки
-                    let buffer_size = (config.buffer_size * config.channels) as usize;
+                    let buffer_size = (config.buffer_size * config.output_channels) as usize;
                     let mut playback_buffer = vec![0i16; buffer_size]; // ALSA обычно использует i16
                     
                     while running {
@@ -166,7 +180,7 @@ fn run_alsa_thread(
                             *sample = (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16;
                         }
                         
-                        // Записываем в ALSA - ИСПРАВЛЕНО: io_i16() возвращает Result
+                        // Записываем в ALSA
                         match pcm.io_i16() {
                             Ok(io) => {
                                 match io.writei(&playback_buffer) {
@@ -175,7 +189,7 @@ fn run_alsa_thread(
                                         eprintln!("ALSA write error: {}", e);
                                         *xruns.write() += 1;
                                         
-                                        // Пытаемся восстановиться - ИСПРАВЛЕНО: silent: bool
+                                        // Пытаемся восстановиться
                                         if let Err(recover_err) = pcm.try_recover(e, true) {
                                             eprintln!("Failed to recover ALSA: {}", recover_err);
                                             running = false;
@@ -231,7 +245,7 @@ fn configure_alsa_pcm(pcm: &mut PCM, config: &AudioConfig) -> IoResult<()> {
     hw_params.set_rate(config.sample_rate as u32, ValueOr::Nearest)
         .map_err(|e| IoError::Config(e.to_string()))?;
     
-    hw_params.set_channels(config.channels as u32)
+    hw_params.set_channels(config.output_channels as u32)
         .map_err(|e| IoError::Config(e.to_string()))?;
     
     // Устанавливаем размер буфера
@@ -246,6 +260,10 @@ fn configure_alsa_pcm(pcm: &mut PCM, config: &AudioConfig) -> IoResult<()> {
 }
 
 impl AudioBackend for AlsaBackend {
+    fn backend_type(&self) -> BackendType {
+        BackendType::Alsa
+    }
+    
     fn name(&self) -> &'static str {
         "ALSA"
     }

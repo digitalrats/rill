@@ -1,3 +1,5 @@
+//! Основной аудио движок
+
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -8,7 +10,7 @@ use crate::backend::AudioBackend;
 use crate::error::{IoError, IoResult};
 
 /// Тип процессора аудио
-pub trait AudioProcessor: Send + Sync {
+pub trait AudioProcessor: Send + Sync + 'static {
     /// Обработать блок аудио
     fn process(&mut self, input: &[f32], output: &mut [f32]);
     
@@ -22,22 +24,27 @@ pub trait AudioProcessor: Send + Sync {
 /// Состояние аудио движка
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineState {
+    /// Остановлен
     Stopped,
+    /// Запущен
     Running,
+    /// Приостановлен
     Paused,
+    /// Ошибка
     Error,
 }
 
 /// Команды для потока обработки
 enum ProcessorCommand<P: AudioProcessor> {
+    /// Обновить процессор
     Update(Box<dyn FnOnce(&mut P) + Send>),
 }
 
-/// Основной аудио движок (синхронная версия)
+/// Основной аудио движок
 pub struct AudioEngine<B, P>
 where
-    B: AudioBackend + 'static,  // <-- Добавлено 'static в определение
-    P: AudioProcessor + 'static, // <-- Добавлено 'static в определение
+    B: AudioBackend + 'static,
+    P: AudioProcessor + 'static,
 {
     backend: Option<B>,
     processor: Arc<RwLock<Option<P>>>,
@@ -56,10 +63,11 @@ where
     B: AudioBackend + Send + Sync + 'static,
     P: AudioProcessor + Send + Sync + 'static,
 {
+    /// Создать новый аудио движок
     pub fn new(backend: B, processor: P) -> Self {
         let sample_rate = backend.config().sample_rate as f32;
         let buffer_size = backend.config().buffer_size as usize;
-        let channels = backend.config().channels as usize;
+        let channels = backend.config().output_channels as usize;
         
         let (command_tx, command_rx) = unbounded();
         
@@ -84,7 +92,8 @@ where
         }
         
         // Забираем backend из Option
-        let mut backend = self.backend.take().ok_or_else(|| IoError::Backend("Backend already taken".to_string()))?;
+        let mut backend = self.backend.take()
+            .ok_or_else(|| IoError::Backend("Backend already taken".to_string()))?;
         
         backend.init()?;
         backend.start()?;
@@ -127,18 +136,19 @@ where
                         
                         // Записываем выходные данные
                         if let Err(e) = backend.write(&output_buffer[..read]) {
-                            eprintln!("Write error: {}", e);
+                            log::error!("Write error: {}", e);
                             *xrun_count.write() += 1;
                         }
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        eprintln!("Read error: {}", e);
+                        log::error!("Read error: {}", e);
                         *xrun_count.write() += 1;
                     }
                 }
                 
-                thread::sleep(Duration::from_micros(1000));
+                // Небольшая пауза для снижения нагрузки на CPU
+                thread::sleep(Duration::from_micros(100));
             }
         });
         
@@ -224,25 +234,13 @@ where
     }
     
     /// Обновить процессор через замыкание (безопасно для многопоточности)
-    /// 
-    /// Это единственный способ изменить состояние процессора, когда движок запущен.
-    /// Замыкание выполняется в контексте потока обработки.
     pub fn update_processor<F>(&self, f: F) -> IoResult<()>
     where
         F: FnOnce(&mut P) + Send + 'static,
     {
         self.command_tx.send(ProcessorCommand::Update(Box::new(f)))
-            .map_err(|e| IoError::Backend(e.to_string()))?;
+            .map_err(|_| IoError::Channel)?;
         Ok(())
-    }
-    
-    /// Отправить команду изменения параметра в поток обработки (устаревший метод)
-    #[deprecated(since = "0.2.0", note = "use update_processor instead")]
-    pub fn update_parameter<F>(&self, f: F) -> IoResult<()>
-    where
-        F: FnOnce(&mut P) + Send + 'static,
-    {
-        self.update_processor(f)
     }
 }
 

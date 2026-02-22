@@ -1,34 +1,51 @@
-//! Null бэкенд для тестирования
+//! PipeWire бэкенд для Linux (заглушка)
 
 use std::time::Duration;
 use std::fmt;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
-use crate::error::IoResult;
+use crate::error::{IoResult, IoError};
 
-/// Null бэкенд - не производит реального аудио ввода-вывода
-#[derive(Debug)]
-pub struct NullBackend {
+/// PipeWire бэкенд (заглушка)
+pub struct PipewireBackend {
     config: AudioConfig,
     is_running: bool,
     xruns: u32,
 }
 
-impl NullBackend {
-    /// Создать новый Null бэкенд
-    pub fn new(config: AudioConfig) -> Self {
-        Self {
-            config,
-            is_running: false,
-            xruns: 0,
-        }
+impl fmt::Debug for PipewireBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PipewireBackend")
+            .field("config", &self.config)
+            .field("is_running", &self.is_running)
+            .field("xruns", &self.xruns)
+            .finish()
     }
 }
 
-impl AudioBackend for NullBackend {
+impl PipewireBackend {
+    /// Создать новый PipeWire бэкенд
+    pub fn new(config: AudioConfig) -> IoResult<Self> {
+        if !cfg!(target_os = "linux") {
+            return Err(IoError::Unsupported("PipeWire is only available on Linux".into()));
+        }
+        
+        Ok(Self {
+            config,
+            is_running: false,
+            xruns: 0,
+        })
+    }
+}
+
+impl AudioBackend for PipewireBackend {
     fn backend_type(&self) -> BackendType {
-        BackendType::Null
+        BackendType::PipeWire
+    }
+    
+    fn name(&self) -> &'static str {
+        "PipeWire"
     }
     
     fn config(&self) -> &AudioConfig {
@@ -40,6 +57,7 @@ impl AudioBackend for NullBackend {
     }
     
     fn init(&mut self) -> IoResult<()> {
+        // Заглушка
         Ok(())
     }
     
@@ -72,11 +90,15 @@ impl AudioBackend for NullBackend {
         )
     }
     
+    fn is_available(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+    
     fn list_input_devices(&self) -> Vec<String> {
-        vec!["Null Input".to_string()]
+        vec!["default".to_string()]
     }
     
     fn list_output_devices(&self) -> Vec<String> {
-        vec!["Null Output".to_string()]
+        vec!["default".to_string()]
     }
 }

@@ -1,301 +1,100 @@
+//! Пример использования GraphProcessor
 
-use kama_core::{
-    AudioGraph,
-    dsp::{BiquadFilter, BiquadType, DelayLine},
-    node::GainNode,
-    graph::PortId,
-    param::ParamValue,
-};
+use kama_core_traits::{AudioNode, ParamValue, NodeId, PortId};
+use kama_graph::AudioGraph;
+use kama_oscillators::audio::SineOsc;
+use kama_digital_filters::{BiquadFilter, FilterType};
+use kama_digital_effects::Delay;
 use kama_io::{
-    AudioConfig, AudioEngine, AudioBackend,  // <-- ДОБАВЛЯЕМ AudioBackend
-    GraphProcessor,
+    AudioConfig, AudioEngine,
+    BackendType,
+    backends::{CpalBackend, NullBackend},
+    processor::GraphProcessor,
 };
-
-#[cfg(feature = "cpal")]
-use kama_io::CpalBackend;
 
 #[cfg(feature = "alsa")]
-use kama_io::AlsaBackend;
+use kama_io::backends::AlsaBackend;
 
-// Определяем тип бэкенда по умолчанию для текущей платформы
-#[cfg(all(target_os = "linux", feature = "alsa"))]
-type DefaultBackend = AlsaBackend;
-
-#[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
-type DefaultBackend = CpalBackend;
-
-#[cfg(all(not(target_os = "linux"), feature = "cpal"))]
-type DefaultBackend = CpalBackend;
-
-// Если ничего не подходит, используем заглушку
-#[cfg(not(any(
-    all(target_os = "linux", feature = "alsa"),
-    all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
-    all(not(target_os = "linux"), feature = "cpal")
-)))]
-type DefaultBackend = kama_io::NullBackend;
-
-// Функция для создания бэкенда с конкретным типом
-fn create_default_backend(config: AudioConfig) -> Result<DefaultBackend, Box<dyn std::error::Error>> {
+fn create_backend(config: AudioConfig) -> Result<Box<dyn kama_io::AudioBackend>, Box<dyn std::error::Error>> {
     #[cfg(all(target_os = "linux", feature = "alsa"))]
     {
-        Ok(DefaultBackend::new(config)?)
+        let backend = AlsaBackend::new(config.clone())?;
+        return Ok(Box::new(backend));
     }
     
-    #[cfg(all(target_os = "linux", not(feature = "alsa"), feature = "cpal"))]
+    #[cfg(feature = "cpal")]
     {
-        Ok(DefaultBackend::new(config)?)
+        let backend = CpalBackend::new(config.clone())?;
+        return Ok(Box::new(backend));
     }
     
-    #[cfg(all(not(target_os = "linux"), feature = "cpal"))]
-    {
-        Ok(DefaultBackend::new(config)?)
-    }
-    
-    #[cfg(not(any(
-        all(target_os = "linux", feature = "alsa"),
-        all(target_os = "linux", not(feature = "alsa"), feature = "cpal"),
-        all(not(target_os = "linux"), feature = "cpal")
-    )))]
-    {
-        Ok(DefaultBackend::new(config))
-    }
+    Ok(Box::new(NullBackend::new(config)))
 }
 
-fn create_audio_graph(sample_rate: f32) -> (AudioGraph, kama_core_traits::graph::NodeId, kama_core_traits::graph::NodeId) {
+fn create_audio_graph(sample_rate: f32) -> (AudioGraph, NodeId, NodeId) {
     let mut graph = AudioGraph::new(sample_rate);
     
-    // Создаем узлы обработки
-    let filter = BiquadFilter::new(BiquadType::LowPass, 1000.0, 0.707);
+    // Создаём узлы
+    let osc = SineOsc::new(440.0).with_amplitude(0.5);
+    let osc_id = graph.add_node(Box::new(osc));
+    
+    let filter = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
     let filter_id = graph.add_node(Box::new(filter));
     
-    let delay = DelayLine::new(1.0, sample_rate);
+    let delay = Delay::new(0.3, 0.4, 0.7);
     let delay_id = graph.add_node(Box::new(delay));
     
-    let gain = GainNode::new(0.8);
-    let gain_id = graph.add_node(Box::new(gain));
-    
-    let input_gain = GainNode::new(1.0);
-    let input_id = graph.add_node(Box::new(input_gain));
-    
-    let output_gain = GainNode::new(1.0);
-    let output_id = graph.add_node(Box::new(output_gain));
-    
-    let feedback_gain = GainNode::new(0.3);
-    let feedback_id = graph.add_node(Box::new(feedback_gain));
-    
-    // Строим цепочку
+    // Соединяем
     graph.connect(
-        PortId { node: input_id, index: 0, is_input: false },
-        PortId { node: filter_id, index: 0, is_input: true },
+        PortId::output(osc_id, 0),
+        PortId::input(filter_id, 0),
         1.0,
     ).unwrap();
     
     graph.connect(
-        PortId { node: filter_id, index: 0, is_input: false },
-        PortId { node: delay_id, index: 0, is_input: true },
+        PortId::output(filter_id, 0),
+        PortId::input(delay_id, 0),
         1.0,
     ).unwrap();
     
-    graph.connect(
-        PortId { node: delay_id, index: 0, is_input: false },
-        PortId { node: gain_id, index: 0, is_input: true },
-        1.0,
-    ).unwrap();
-    
-    graph.connect(
-        PortId { node: gain_id, index: 0, is_input: false },
-        PortId { node: output_id, index: 0, is_input: true },
-        1.0,
-    ).unwrap();
-    
-    // Feedback
-    graph.connect(
-        PortId { node: delay_id, index: 0, is_input: false },
-        PortId { node: feedback_id, index: 0, is_input: true },
-        1.0,
-    ).unwrap();
-    
-    graph.connect(
-        PortId { node: feedback_id, index: 0, is_input: false },
-        PortId { node: filter_id, index: 0, is_input: true },
-        0.3,
-    ).unwrap();
-    
-    (graph, input_id, output_id)
+    (graph, osc_id, delay_id)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Kama IO + AudioGraph Integration via GraphProcessor ===\n");
+    println!("=== Kama IO Graph Processing Demo ===\n");
     
     let config = AudioConfig::default()
         .with_sample_rate(44100)
         .with_buffer_size(256)
         .with_channels(2);
     
-    println!("Audio config: {} Hz, {} samples buffer",
+    println!("Audio config: {} Hz, {} samples", 
              config.sample_rate, config.buffer_size);
     
-    // Создаем граф
+    // Создаём граф
     let (graph, input_id, output_id) = create_audio_graph(config.sample_rate as f32);
     
-    println!("\nГраф обработки:");
-    println!("  Микрофон -> Фильтр (LowPass 1000Hz) -> Задержка (0.3s) -> Усилитель (0.8) -> Динамики");
-    println!("  Задержка -> Фильтр (feedback 0.3)");
-    
-    // Создаем процессор на основе графа
+    // Создаём процессор
     let processor = GraphProcessor::new(graph, Some(input_id), Some(output_id));
     
-    // Создаем бэкенд с конкретным типом
-    let backend = create_default_backend(config.clone())?;
+    // Создаём бэкенд
+    let backend = create_backend(config.clone())?;
+    println!("Using backend: {}", backend.backend_type().name());
     
-    println!("Using backend: {}", backend.name());
-    
-    // Создаем движок
+    // Создаём движок
     let mut engine = AudioEngine::new(backend, processor);
     
-    println!("\nЗапуск аудио обработки...");
+    println!("\nStarting audio engine...");
     engine.start()?;
     
-    println!("\n=== Демонстрация изменения параметров в реальном времени ===");
+    println!("Playing processed sine wave for 3 seconds...");
+    std::thread::sleep(std::time::Duration::from_secs(3));
     
-    // Демонстрация изменения параметров
-    for i in 0..6 {
-        println!("\n--- Шаг {} ---", i + 1);
-        
-        match i {
-            0 => {
-                println!("Изменение частоты среза фильтра на 500 Hz");
-                engine.update_processor(|proc: &mut GraphProcessor| {
-                    let _ = proc.set_node_param::<BiquadFilter>("cutoff", ParamValue::Float(500.0));
-                })?;
-            }
-            1 => {
-                println!("Изменение времени задержки на 0.5 с");
-                engine.update_processor(|proc: &mut GraphProcessor| {
-                    let _ = proc.set_node_param::<DelayLine>("delay", ParamValue::Float(0.5));
-                })?;
-            }
-            2 => {
-                println!("Изменение обратной связи на 0.5");
-                engine.update_processor(|proc: &mut GraphProcessor| {
-                    proc.with_graph(|graph: &mut AudioGraph| {
-                        // Собираем ID узлов в вектор для избежания проблем с заимствованием
-                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
-                        for node_id in node_ids {
-                            if let Some(node) = graph.get_node(node_id) {
-                                if let Some(ParamValue::Float(val)) = node.get_param("gain") {
-                                    if (val - 0.3).abs() < 0.1 {
-                                        if let Some(node_mut) = graph.get_node_mut(node_id) {
-                                            let _ = node_mut.set_param("gain", ParamValue::Float(0.5));
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                })?;
-            }
-            3 => {
-                println!("Изменение выходного усиления на 1.2");
-                engine.update_processor(|proc: &mut GraphProcessor| {
-                    proc.with_graph(|graph: &mut AudioGraph| {
-                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
-                        for node_id in node_ids {
-                            if let Some(node) = graph.get_node(node_id) {
-                                if let Some(ParamValue::Float(val)) = node.get_param("gain") {
-                                    if (val - 0.8).abs() < 0.1 {
-                                        if let Some(node_mut) = graph.get_node_mut(node_id) {
-                                            let _ = node_mut.set_param("gain", ParamValue::Float(1.2));
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                })?;
-            }
-            4 => {
-                println!("Возврат к исходным параметрам");
-                engine.update_processor(|proc: &mut GraphProcessor| {
-                    proc.with_graph(|graph: &mut AudioGraph| {
-                        graph.reset();
-                        // Восстанавливаем исходные значения
-                        if let Some(filter_id) = proc.find_node_by_type::<BiquadFilter>() {
-                            if let Some(filter) = graph.get_node_mut(filter_id) {
-                                let _ = filter.set_param("cutoff", ParamValue::Float(1000.0));
-                            }
-                        }
-                        if let Some(delay_id) = proc.find_node_by_type::<DelayLine>() {
-                            if let Some(delay) = graph.get_node_mut(delay_id) {
-                                let _ = delay.set_param("delay", ParamValue::Float(0.3));
-                            }
-                        }
-                        // Сбрасываем gain узлы
-                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
-                        for node_id in node_ids {
-                            if let Some(node) = graph.get_node(node_id) {
-                                if let Some(ParamValue::Float(val)) = node.get_param("gain") {
-                                    if (val - 0.3).abs() < 0.1 {
-                                        if let Some(node_mut) = graph.get_node_mut(node_id) {
-                                            let _ = node_mut.set_param("gain", ParamValue::Float(0.3));
-                                        }
-                                    } else if (val - 0.8).abs() < 0.1 {
-                                        if let Some(node_mut) = graph.get_node_mut(node_id) {
-                                            let _ = node_mut.set_param("gain", ParamValue::Float(0.8));
-                                        }
-                                    } else if (val - 1.0).abs() < 0.1 {
-                                        if let Some(node_mut) = graph.get_node_mut(node_id) {
-                                            let _ = node_mut.set_param("gain", ParamValue::Float(1.0));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                })?;
-            }
-            5 => {
-                println!("Экстремальные значения");
-                engine.update_processor(|proc: &mut GraphProcessor| {
-                    let _ = proc.set_node_param::<BiquadFilter>("cutoff", ParamValue::Float(200.0));
-                    let _ = proc.set_node_param::<DelayLine>("delay", ParamValue::Float(0.8));
-                    
-                    proc.with_graph(|graph: &mut AudioGraph| {
-                        let node_ids: Vec<kama_core_traits::graph::NodeId> = graph.get_processing_order().to_vec();
-                        for node_id in node_ids {
-                            if let Some(node) = graph.get_node(node_id) {
-                                if let Some(ParamValue::Float(val)) = node.get_param("gain") {
-                                    if (val - 0.3).abs() < 0.1 {
-                                        if let Some(node_mut) = graph.get_node_mut(node_id) {
-                                            let _ = node_mut.set_param("gain", ParamValue::Float(0.8));
-                                        }
-                                    } else if (val - 0.8).abs() < 0.1 {
-                                        if let Some(node_mut) = graph.get_node_mut(node_id) {
-                                            let _ = node_mut.set_param("gain", ParamValue::Float(1.5));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                })?;
-            }
-            _ => {}
-        }
-        
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    }
-    
-    println!("\nОстановка обработки...");
+    println!("Stopping...");
     engine.stop()?;
     
-    println!("\nСтатистика:");
-    println!("  Xruns: {}", engine.xruns());
-    println!("  Задержка: {:?}", engine.latency());
+    println!("\nDone! Xruns: {}", engine.xruns());
     
     Ok(())
 }

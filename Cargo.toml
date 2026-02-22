@@ -14,7 +14,7 @@ members = [
     "kama-mixer", 
     "kama-digital-effects",
     # "kama-wdf"        # временно отключаем
-    # "kama-io",        # временно отключаем,
+    "kama-io",
     "kama-tests",
 ]
 resolver = "2"
