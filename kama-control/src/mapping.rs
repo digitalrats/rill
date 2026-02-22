@@ -1,9 +1,23 @@
+//! # Маппинг событий на параметры
+//! 
+//! Предоставляет механизмы для связывания событий контроллеров с параметрами узлов.
+//! 
+//! ## Основные компоненты
+//! 
+//! - [`EventPattern`] — паттерн для сопоставления событий
+//! - [`Target`] — целевой параметр узла
+//! - [`Transform`] — преобразование значения (линейное, экспоненциальное и т.д.)
+//! - [`Mapping`] — полное описание связи
+
 use std::sync::Arc;
 use kama_core_traits::NodeId;
 use std::fmt;
 
 /// Паттерн для сопоставления событий
 #[derive(Debug, Clone, PartialEq)]
+    /// Паттерн для сопоставления событий.
+    ///
+    /// Используется для фильтрации событий контроллера.
 pub enum EventPattern {
     /// Любая кнопка
     AnyButton,
@@ -73,6 +87,9 @@ impl fmt::Display for EventPattern {
 
 /// Целевой параметр
 #[derive(Debug, Clone)]
+    /// Целевой параметр узла.
+    ///
+    /// Содержит ID узла, имя параметра и диапазон значений.
 pub struct Target {
     /// ID узла в графе
     pub node_id: NodeId,
@@ -86,6 +103,10 @@ pub struct Target {
 
 /// Тип преобразования
 #[derive(Clone)]  // Убрали Debug
+    /// Тип преобразования значения.
+    ///
+    /// Определяет, как нормализованное значение (0-1) преобразуется
+    /// в значение параметра в заданном диапазоне.
 pub enum Transform {
     /// Линейное: out = min + value * (max - min)
     Linear,
@@ -117,6 +138,8 @@ impl std::fmt::Debug for Transform {
 
 impl Transform {
     /// Применить преобразование к нормализованному значению (0-1)
+    /// Применить преобразование к нормализованному значению (0-1).
+    /// Применить событие и получить значение параметра.
     pub fn apply(&self, value: f32, min: f32, max: f32) -> f32 {
         let range = max - min;
         let normalized = value.clamp(0.0, 1.0);
@@ -135,6 +158,9 @@ impl Transform {
 
 /// Маппинг события на параметр
 #[derive(Debug, Clone)]
+    /// Маппинг события на параметр.
+    ///
+    /// Связывает паттерн события с целевым параметром и преобразованием.
 pub struct Mapping {
     /// Паттерн события
     pub pattern: EventPattern,
@@ -149,6 +175,7 @@ pub struct Mapping {
 }
 
 impl Mapping {
+    /// Создать новый маппинг.
     pub fn new(pattern: EventPattern, target: Target, transform: Transform) -> Self {
         let name = format!("{} -> {}", pattern, target.param_name);
         Self {
@@ -161,6 +188,7 @@ impl Mapping {
     }
     
     /// Проверить, подходит ли событие под этот маппинг
+    /// Проверить, подходит ли событие под этот маппинг.
     pub fn matches(&self, event: &crate::backend::ControlEvent) -> bool {
         if !self.enabled {
             return false;
@@ -192,6 +220,8 @@ impl Mapping {
     }
     
     /// Применить событие и получить значение параметра
+    /// Применить преобразование к нормализованному значению (0-1).
+    /// Применить событие и получить значение параметра.
     pub fn apply(&self, event: &crate::backend::ControlEvent) -> Option<f32> {
         if !self.matches(event) {
             return None;

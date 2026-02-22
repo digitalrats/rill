@@ -1,3 +1,12 @@
+//! # MIDI бэкенд
+//! 
+//! Реализует [`ControlBackend`](crate::ControlBackend) для MIDI устройств.
+//! Поддерживает:
+//! - Note On/Off
+//! - Control Change
+//! - Подключение к нескольким портам
+//! - Многопоточную обработку
+
 use std::sync::Arc;
 use std::thread;
 use parking_lot::RwLock;
@@ -11,6 +20,9 @@ use crate::error::{ControlResult, ControlError};
 
 // MIDI бэкенд работает в отдельном потоке, поэтому все структуры midir
 // находятся в этом потоке и не влияют на Sync основной структуры
+    /// MIDI бэкенд.
+    ///
+    /// Работает в отдельном потоке, отправляет события через broadcast канал.
 pub struct MidiBackend {
     name: String,
     // Каналы для коммуникации с MIDI потоком
@@ -31,6 +43,10 @@ enum MidiCommand {
 }
 
 impl MidiBackend {
+    /// Создать новый MIDI бэкенд.
+    ///
+    /// # Аргументы
+    /// * `client_name` — имя клиента для MIDI системы
     pub fn new(client_name: &str) -> ControlResult<Self> {
         let (command_tx, command_rx) = unbounded();
         let (event_tx, event_rx) = broadcast::channel(128);
@@ -65,6 +81,7 @@ impl MidiBackend {
     }
     
     /// Открыть порт по индексу
+    /// Открыть порт по индексу.
     pub fn open_port(&self, port_index: usize) -> ControlResult<()> {
         self.command_tx.send(MidiCommand::OpenPort(port_index))
             .map_err(|_| ControlError::Channel)?;
@@ -72,6 +89,7 @@ impl MidiBackend {
     }
     
     /// Открыть порт по имени
+    /// Открыть порт по имени (содержит подстроку).
     pub fn open_port_by_name(&self, port_name: &str) -> ControlResult<()> {
         self.command_tx.send(MidiCommand::OpenPortByName(port_name.to_string()))
             .map_err(|_| ControlError::Channel)?;
@@ -79,6 +97,7 @@ impl MidiBackend {
     }
     
     /// Открыть все доступные порты
+    /// Открыть все доступные порты.
     pub fn open_all_ports(&self) -> ControlResult<usize> {
         // В этой реализации открываем только первый порт
         self.open_port(0)?;

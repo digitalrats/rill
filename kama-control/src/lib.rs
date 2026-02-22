@@ -1,3 +1,74 @@
+//! # Управление контроллерами для Kama Audio
+//! 
+//! Этот крейт предоставляет унифицированный интерфейс для работы с различными
+//! типами контроллеров (MIDI, HID, OSC) и их интеграцию с аудиографом через [`ControlNode`].
+//! 
+//! ## Основные компоненты
+//! 
+//! - **Бэкенды** — реализуют [`ControlBackend`] для конкретных типов устройств
+//! - **События** — [`ControlEvent`] представляет все типы входящих сообщений
+//! - **Маппинги** — [`Mapping`] связывает события с параметрами узлов
+//! - **Узел управления** — [`ControlNode`] обрабатывает события и применяет маппинги
+//! 
+//! ## Пример использования
+//! 
+//! ```no_run
+//! use kama_control::{ControlBackend, ControlNode, Mapping, Target, Transform};
+//! use kama_control::backends::midi::MidiBackend;
+//! use kama_core_traits::NodeId;
+//! 
+//! // Создаём MIDI бэкенд
+//! let mut midi = MidiBackend::new("MyApp").unwrap();
+//! midi.open_port(0).unwrap();
+//! 
+//! // Создаём узел управления
+//! let event_rx = midi.subscribe();
+//! let mut control_node = ControlNode::new(event_rx);
+//! 
+//! // Маппим MIDI контроллер 7 на громкость
+//! use kama_control::EventPattern;
+//! control_node.add_mapping(Mapping::new(
+//!     EventPattern::MidiControl { channel: None, controller: 7 },
+//!     Target { node_id: NodeId(0), param_name: "gain".to_string(), min: 0.0, max: 1.0 },
+//!     Transform::Exponential,
+//! ));
+//! ```
+
+//! # Управление контроллерами для Kama Audio
+//! 
+//! Этот крейт предоставляет унифицированный интерфейс для работы с различными
+//! типами контроллеров (MIDI, HID, OSC) и их интеграцию с аудиографом через [`ControlNode`].
+//! 
+//! ## Основные компоненты
+//! 
+//! - **Бэкенды** — реализуют [`ControlBackend`] для конкретных типов устройств
+//! - **События** — [`ControlEvent`] представляет все типы входящих сообщений
+//! - **Маппинги** — [`Mapping`] связывает события с параметрами узлов
+//! - **Узел управления** — [`ControlNode`] обрабатывает события и применяет маппинги
+//! 
+//! ## Пример использования
+//! 
+//! ```no_run
+//! use kama_control::{ControlBackend, ControlNode, Mapping, Target, Transform};
+//! use kama_control::backends::midi::MidiBackend;
+//! 
+//! // Создаём MIDI бэкенд
+//! let mut midi = MidiBackend::new("MyApp").unwrap();
+//! midi.open_port(0).unwrap();
+//! 
+//! // Создаём узел управления
+//! let event_rx = midi.subscribe();
+//! let mut control_node = ControlNode::new(event_rx);
+//! 
+//! // Маппим MIDI контроллер 7 на громкость
+//! use kama_control::EventPattern;
+//! control_node.add_mapping(Mapping::new(
+//!     EventPattern::MidiControl { channel: None, controller: 7 },
+//!     Target { node_id: NodeId(0), param_name: "gain".to_string(), min: 0.0, max: 1.0 },
+//!     Transform::Exponential,
+//! ));
+//! ```
+
 //! Control backends for Kama Audio - MIDI, HID, OSC, Mackie
 //! 
 //! Этот крейт предоставляет унифицированный интерфейс для различных

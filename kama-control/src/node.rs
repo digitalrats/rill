@@ -1,3 +1,8 @@
+//! # Узел управления для AudioGraph
+//! 
+//! Предоставляет [`ControlNode`] — специальный узел, который обрабатывает
+//! события от контроллеров и применяет их к параметрам других узлов.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -23,6 +28,10 @@ use crate::mapping::{Mapping, EventPattern, Target, Transform};
 use crate::error::ControlResult;
 
 /// Узел управления для AudioGraph
+    /// Узел управления для AudioGraph.
+    ///
+    /// Получает события от контроллеров, применяет маппинги и
+    /// отправляет сигналы об изменении параметров.
 pub struct ControlNode {
     /// Получатель событий
     event_rx: broadcast::Receiver<ControlEvent>,
@@ -51,6 +60,10 @@ pub struct ControlNode {
 
 impl ControlNode {
     /// Создать новый узел управления
+    /// Создать новый узел управления.
+    ///
+    /// # Аргументы
+    /// * `event_rx` — получатель событий от бэкенда
     pub fn new(event_rx: broadcast::Receiver<ControlEvent>) -> Self {
         Self {
             event_rx,
@@ -70,11 +83,21 @@ impl ControlNode {
     }
     
     /// Добавить маппинг
+    /// Добавить маппинг.
     pub fn add_mapping(&mut self, mapping: Mapping) {
         self.mappings.push(mapping);
     }
     
     /// Добавить маппинг из строк (удобно для скриптов)
+    /// Добавить маппинг из строк (удобно для скриптов).
+    ///
+    /// # Формат строки
+    /// - `button:1` — кнопка с ID 1
+    /// - `knob:2` — ручка с ID 2
+    /// - `fader:3` — фейдер с ID 3
+    /// - `midi:7` — MIDI контроллер 7
+    /// - `midi:1:7` — MIDI контроллер 7 на канале 1
+    /// - `osc:/filter/cutoff` — OSC сообщение
     pub fn add_mapping_str(
         &mut self,
         pattern: &str,
@@ -131,11 +154,13 @@ impl ControlNode {
     }
     
     /// Установить имя узла
+    /// Установить имя узла.
     pub fn set_name(&mut self, name: &str) {
         self.name = name.to_string();
     }
     
     /// Получить статистику
+    /// Получить статистику (количество событий, маппингов).
     pub fn stats(&self) -> (usize, usize) {
         (self.event_count, self.mappings.len())
     }
