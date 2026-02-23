@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "kama-core-traits",
+    "kama-core",
     "kama-buffers",
     "kama-graph",
     "kama-automation",
