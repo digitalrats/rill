@@ -3,17 +3,21 @@
 mod error;
 mod node;
 mod param;
+mod port;  // новый модуль
 pub mod time;
 
+// Публично реэкспортируем всё из модулей
 pub use error::*;
 pub use node::*;
 pub use param::*;
+pub use port::*;
 pub use time::*;
 
 /// Прелюдия для удобного импорта основных трейтов
 pub mod prelude {
     pub use super::error::AudioResult;
-    pub use super::node::{AudioNode, NodeId};
-    pub use super::param::{ParamValue, ParameterId, ParamType, ParamMetadata};  // добавили ParameterId
-    pub use super::time::{Clock, TimeProvider};
+    pub use super::node::{AudioNode, NodeId, NodeMetadata, NodeCategory, NodeTypeId};
+    pub use super::param::{ParamValue, ParamType, ParamMetadata};
+    pub use super::port::PortId;
+    pub use super::time::{Clock, TimeProvider, TickInfo};
 }

@@ -1,8 +1,8 @@
 //! Sawtooth wave oscillator
 
 use super::AudioOscillator;
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 
@@ -193,7 +193,7 @@ impl AudioNode for SawOsc {
             category: NodeCategory::Generator,
             description: "Sawtooth wave generator with optional band-limiting".to_string(),
             author: "Kama Oscillators".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "frequency".to_string(),

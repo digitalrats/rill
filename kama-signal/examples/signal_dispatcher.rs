@@ -2,7 +2,7 @@
 //!
 //! Запуск: cargo run --example signal_dispatcher
 
-use kama_signal::{
+use kama_core::signal::{
     ClockTick, ParameterChanged, SignalHandler, SignalSource, SimpleSignalDispatcher, SystemEvent,
 };
 use std::sync::{Arc, Mutex};

@@ -1,7 +1,7 @@
 // kama-signal/tests/dispatcher_tests.rs
 //! Тесты для SimpleSignalDispatcher
 
-use kama_signal::{
+use kama_core::signal::{
     ClockTick, ParameterChanged, Signal, SignalHandler, SignalSource, SimpleSignalDispatcher,
 };
 use std::sync::{Arc, Mutex};

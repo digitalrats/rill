@@ -61,7 +61,7 @@ pub use effects::NoiseShaper;
 pub use filters::{BiquadType, HighPrecisionBiquad, HighPrecisionLadderFilter};
 pub use oscillators::{HighPrecisionFMOsc, HighPrecisionSineOsc};
 
-use kama_core_traits::AudioError;
+use kama_core::traits::AudioError;
 
 /// Результат операций high-precision
 pub type HpResult<T> = Result<T, HpError>;

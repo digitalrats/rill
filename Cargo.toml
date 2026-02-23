@@ -1,20 +1,18 @@
 [workspace]
 members = [
-    "kama-core-traits",
     "kama-core",
     "kama-buffers",
     "kama-graph",
     "kama-automation",
     "kama-control",
-    "kama-signal",
     "kama-dsp-common",
-    "kama-hp",
-    "kama-lofi",
+    "kama-oscillators",
     "kama-digital-filters",
-    "kama-eq",
-    "kama-mixer", 
     "kama-digital-effects",
-    # "kama-wdf"        # временно отключаем
+    "kama-eq",
+    "kama-mixer",
+    "kama-lofi",
+    "kama-hp",
     "kama-io",
     "kama-tests",
 ]
@@ -30,3 +28,8 @@ parking_lot = "0.12"
 num-traits = "0.2"
 thiserror = "1.0"
 async-trait = "0.1"
+serde = "1.0"  # убрали optional
+rand = "0.8"
+log = "0.4"
+crossbeam-channel = "0.5"
+tokio = "1.0"

@@ -1,5 +1,9 @@
-use kama_core_traits::{param::ParamValue, AudioNode, NodeMetadata, NodeTypeId};
-use std::any::Any;
+use kama_core::traits::{
+    AudioNode, 
+    NodeMetadata, 
+    NodeTypeId, 
+    ParamValue  // напрямую, не через param::
+};
 
 /// Функция для создания узла
 pub type NodeFactoryFn = fn() -> Box<dyn AudioNode>;

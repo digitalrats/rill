@@ -10,7 +10,7 @@
 
 use crate::context::DspContext;
 use crate::dummy::DummyTimeProvider;
-use kama_core_traits::{AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue};
+use kama_core::traits::{AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue};
 use std::marker::PhantomData;
 
 // -----------------------------------------------------------------------------
@@ -99,7 +99,7 @@ where
         category,
         description: format!("Stateless function node: {}", name),
         author: "Kama DSP Common".to_string(),
-        version: "0.1.0".to_string(),
+        version: "0.2.0".to_string(),
         parameters: vec![],
     };
 
@@ -231,7 +231,7 @@ where
         category,
         description: format!("Stateful function node: {}", name),
         author: "Kama DSP Common".to_string(),
-        version: "0.1.0".to_string(),
+        version: "0.2.0".to_string(),
         parameters: vec![],
     };
 
@@ -319,7 +319,7 @@ where
         category,
         description: format!("Block processing node: {}", name),
         author: "Kama DSP Common".to_string(),
-        version: "0.1.0".to_string(),
+        version: "0.2.0".to_string(),
         parameters: vec![],
     };
 

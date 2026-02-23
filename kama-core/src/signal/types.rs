@@ -39,9 +39,9 @@ pub enum SignalSource {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterChanged {
     /// ID узла
-    pub node_id: NodeId,
+    pub node_id: String,
     /// ID параметра
-    pub parameter_id: ParameterId,  // заменяем String на ParameterId
+    pub parameter_id: String,
     /// Значение
     pub value: f32,
     /// Нормализованное значение (0-1)

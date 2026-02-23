@@ -1,7 +1,7 @@
 use kama_control::{
     backends::midi::MidiBackend, ControlBackend, ControlNode, Mapping, Target, Transform,
 };
-use kama_core_traits::{AudioNode, NodeId};
+use kama_core::traits::{AudioNode, NodeId};
 use parking_lot::RwLock;
 use std::sync::Arc;
 

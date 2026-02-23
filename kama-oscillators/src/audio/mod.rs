@@ -15,7 +15,7 @@ pub use square::SquareOsc;
 pub use triangle::TriangleOsc;
 
 /// Common trait for all audio oscillators
-pub trait AudioOscillator: kama_core_traits::AudioNode {
+pub trait AudioOscillator: kama_core::traits::AudioNode {
     /// Set oscillator frequency in Hz
     fn set_frequency(&mut self, freq: f32);
 

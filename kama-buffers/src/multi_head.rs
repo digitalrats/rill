@@ -4,16 +4,21 @@
 //! каждая со своими параметрами (скорость, панорама, режим чтения).
 //! Идеально подходит для гранулярного синтеза и сложных текстур.
 
-use parking_lot::RwLock;
 use std::sync::Arc;
+use parking_lot::RwLock;
 
-use kama_core_traits::{
-    node::{NodeCategory, NodeMetadata, NodeTypeId},
-    param::{ParamMetadata, ParamType, ParamValue},
-    AudioError, AudioNode, NodeId,
+use kama_core::traits::{
+    AudioNode, AudioError,
+    NodeMetadata, NodeCategory, NodeTypeId,  // напрямую из traits
+    ParamValue, ParamType, ParamMetadata,
+    NodeId,
 };
 
-use crate::{BufferHead, BufferViewMut, RingBuffer};
+use crate::{
+    RingBuffer,
+    BufferHead,
+    BufferViewMut,
+};
 
 /// Многоголовый буфер для гранулярного синтеза и сложного воспроизведения
 /// Многоголовый буфер.

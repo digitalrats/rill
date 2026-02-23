@@ -6,9 +6,9 @@
 use float_cmp::approx_eq;
 use kama_automation::automaton::{FunctionAutomaton, LfoAutomaton};
 use kama_automation::{AutomationManager, ParameterMapping, Servo, TestSignalSender};
-use kama_core_traits::time::{SystemClock, TimeProvider};
-use kama_core_traits::Clock; // для advance
-use kama_core_traits::{AudioNode, ParamValue};
+use kama_core::traits::time::{SystemClock, TimeProvider};
+use kama_core::traits::Clock; // для advance
+use kama_core::traits::{AudioNode, ParamValue};
 use kama_digital_filters::{BiquadFactory, BiquadFilter, FilterType};
 use kama_eq::{BandType, GraphicEq, ParametricEq};
 use std::sync::Arc;

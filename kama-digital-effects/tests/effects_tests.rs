@@ -1,5 +1,5 @@
 use float_cmp::approx_eq;
-use kama_core_traits::{AudioNode, ParamValue};
+use kama_core::traits::{AudioNode, ParamValue};
 use kama_digital_effects::{Delay, Distortion, DistortionType, Limiter};
 
 ///--------------------------------------------------------------------------------------------------------------------

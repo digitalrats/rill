@@ -16,7 +16,7 @@ pub enum GraphError {
     Graph(String),
 
     #[error("Audio error: {0}")]
-    Audio(#[from] kama_core_traits::AudioError),
+    Audio(#[from] kama_core::traits::AudioError),
 
     #[error("Buffer error: {0}")]
     Buffer(String),

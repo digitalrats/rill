@@ -1,6 +1,6 @@
 [package]
 name = "kama-tests"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Integration tests for Kama Audio"
 license = "MIT"
@@ -8,7 +8,7 @@ authors = ["Digital Rats / Kama Audio Team"]
 publish = false
 
 [dependencies]
-kama-core-traits = { path = "../kama-core-traits" }
+kama-core = { path = "../kama-core", version = "0.2.0" }
 kama-graph = { path = "../kama-graph" }
 kama-oscillators = { path = "../kama-oscillators" }
 kama-digital-filters = { path = "../kama-digital-filters" }
@@ -16,6 +16,5 @@ kama-digital-effects = { path = "../kama-digital-effects" }
 kama-eq = { path = "../kama-eq" }
 kama-mixer = { path = "../kama-mixer" }
 kama-automation = { path = "../kama-automation" }
-kama-signal = { path = "../kama-signal" }
 kama-lofi = { path = "../kama-lofi" }
 kama-dsp-common = { path = "../kama-dsp-common" }

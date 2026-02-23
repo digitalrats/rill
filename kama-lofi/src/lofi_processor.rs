@@ -1,6 +1,6 @@
-use kama_core_traits::{
+use kama_core::traits::{
     AudioNode, AudioError, ParamValue, NodeMetadata, NodeCategory, NodeTypeId,
-    param::{ParamType, ParamMetadata}
+    ParamMetadata, ParamType
 };
 use kama_buffers::{RingBuffer, BufferHead, ReadMode, BufferManager};
 use crate::config::{LofiConfig, ClassicSystem};
@@ -332,7 +332,7 @@ impl AudioNode for LofiProcessor {
             category: NodeCategory::Effect,
             description,
             author: "Kama Lo-Fi".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "system".to_string(),

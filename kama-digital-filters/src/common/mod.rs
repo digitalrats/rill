@@ -1,7 +1,7 @@
 //! Common imports and utilities for tests
 
 pub use kama_digital_filters::{BiquadFilter, FilterType};
-pub use kama_core_traits::AudioNode;  // для init, reset, process
+pub use kama_core::traits::AudioNode;  // для init, reset, process
 pub use kama_dsp_common::filter::Filter;  // для cutoff, q, gain_db
 pub use float_cmp::approx_eq;
 

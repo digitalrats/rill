@@ -47,11 +47,11 @@ pub use pool::{BufferPool, PoolStrategy};
 pub use ring::RingBuffer;
 pub use view::{BufferIterator, BufferView, BufferViewMut}; // добавили BufferIterator
 
-// Реэкспортируем NodeId напрямую из kama_core_traits
-pub use kama_core_traits::NodeId;
+// Реэкспортируем NodeId напрямую из kama_core::traits
+pub use kama_core::traits::NodeId;
 
 // Re-export из kama-core-traits для удобства
-pub use kama_core_traits::AudioNode;
+pub use kama_core::traits::AudioNode;
 
 /// Тип аудиобуфера для удобства
 pub type AudioBuffer = Vec<f32>;

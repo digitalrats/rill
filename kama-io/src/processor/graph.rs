@@ -4,8 +4,8 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use kama_graph::{AudioGraph, AudioNode};
-use kama_core_traits::param::ParamValue;
-use kama_core_traits::NodeId;  // <-- Добавляем явный импорт
+use kama_core::traits::ParamValue;
+use kama_core::traits::NodeId;  // <-- Добавляем явный импорт
 
 use crate::engine::AudioProcessor;
 use crate::error::{IoResult, IoError};
@@ -92,7 +92,7 @@ impl GraphProcessor {
         node_id: NodeId,
         param_name: &str,
         value: ParamValue,
-    ) -> Result<(), kama_core_traits::AudioError> {
+    ) -> Result<(), kama_core::traits::AudioError> {
         self.with_graph(|graph: &mut AudioGraph| {  // <-- Явный тип
             if let Some(node) = graph.get_node_mut(node_id) {
                 node.set_param(param_name, value)

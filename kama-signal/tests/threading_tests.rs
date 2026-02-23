@@ -1,7 +1,7 @@
 // kama-signal/tests/threading_tests.rs
 //! Тесты многопоточности для SignalBus
 
-use kama_signal::{BusConfig, OverflowPolicy, Signal, SignalBus};
+use kama_core::signal::{BusConfig, OverflowPolicy, Signal, SignalBus};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

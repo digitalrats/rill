@@ -1,6 +1,6 @@
 [package]
 name = "kama-core"
-version = "0.3.0"
+version = "0.2.0"
 edition = "2021"
 description = "Ядро экосистемы Kama Audio: базовые трейты и сигнальная система"
 license = "Apache-2.0"

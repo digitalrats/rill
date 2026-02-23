@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Weak};
 
-use kama_core_traits::NodeId;
+use kama_core::traits::NodeId;
 
 use crate::{
     BufferError, BufferResult, BufferView, BufferViewMut, MultiHeadBuffer, PoolStrategy, RingBuffer,

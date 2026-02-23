@@ -1,15 +1,14 @@
 [package]
 name = "kama-automation"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Advanced automation system for Kama Audio"
 license = "Apache-2.0"
 authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
-kama-core-traits = { path = "../kama-core-traits", version = "0.1.0" }
-kama-signal = { path = "../kama-signal", version = "0.1.0" }
-kama-oscillators = { path = "../kama-oscillators", version = "0.1.0" }
+kama-core = { path = "../kama-core", version = "0.2.0" }
+kama-oscillators = { path = "../kama-oscillators", version = "0.2.0" }
 parking_lot = "0.12"
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "1.0"

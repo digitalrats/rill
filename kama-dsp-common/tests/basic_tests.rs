@@ -1,6 +1,6 @@
 //! Базовые тесты для kama-dsp-common
 
-use kama_core_traits::{AudioNode, Clock, NodeCategory, TickInfo, TimeProvider};
+use kama_core::traits::{AudioNode, Clock, NodeCategory, TickInfo, TimeProvider};
 use kama_dsp_common::*;
 use std::sync::Arc;
 

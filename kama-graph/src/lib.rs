@@ -18,11 +18,11 @@ pub use graph::AudioGraph;
 pub use processor::{BufferManagerStats, GraphBufferManager, NodeProcessor};
 
 // Реэкспорты для удобства
-pub use kama_core_traits::{AudioError, AudioNode, NodeId, PortId};
+pub use kama_core::traits::{AudioError, AudioNode, NodeId, PortId};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kama_core_traits::{
+    use kama_core::traits::{
         AudioError, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeTypeId, ParamValue, PortId,
     };
 

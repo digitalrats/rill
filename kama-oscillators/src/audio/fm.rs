@@ -1,8 +1,8 @@
 //! Frequency Modulation synthesis oscillator
 
 use super::{AudioOscillator, SineOsc};
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use std::f32::consts::PI;
@@ -214,7 +214,7 @@ impl AudioNode for FmOsc {
             category: NodeCategory::Generator,
             description: "Frequency Modulation synthesizer".to_string(),
             author: "Kama Oscillators".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "carrier_freq".to_string(),

@@ -2,15 +2,15 @@
 
 use crate::band::{BandType, EqBand};
 use crate::utils::parse_band_param;
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
 use std::sync::Arc;
 
 #[cfg(feature = "automation")]
-use kama_signal::{ParameterChanged, SignalBus, SignalSource};
+use kama_core::signal::{ParameterChanged, SignalBus, SignalSource};
 
 /// Parametric equalizer with configurable bands
 ///
@@ -501,7 +501,7 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
                 self.factory.factory_name()
             ),
             author: "Kama EQ".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: params,
         }
     }

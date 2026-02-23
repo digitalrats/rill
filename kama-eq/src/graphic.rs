@@ -1,8 +1,8 @@
 //! Graphic equalizer implementation
 
 use crate::band::{BandType, EqBand};
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
@@ -236,7 +236,7 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
                 self.factory.factory_name()
             ),
             author: "Kama EQ".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: params,
         }
     }

@@ -1,7 +1,7 @@
 //! Процессор для выполнения узлов графа
 
 use kama_buffers::{BufferManager, NodeBuffers};
-use kama_core_traits::{AudioError, AudioNode, NodeId};
+use kama_core::traits::{AudioError, AudioNode, NodeId};
 use std::collections::HashMap;
 
 /// Процессор для выполнения узла
@@ -122,7 +122,7 @@ pub use kama_buffers::BufferManagerStats;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kama_core_traits::{AudioError, AudioNode, NodeMetadata, NodeTypeId, ParamValue};
+    use kama_core::traits::{AudioError, AudioNode, NodeMetadata, NodeTypeId, ParamValue};
 
     // Тестовый узел
     struct TestNode;

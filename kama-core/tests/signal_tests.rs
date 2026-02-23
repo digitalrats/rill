@@ -1,5 +1,4 @@
 use kama_core::signal::*;
-use kama_core::traits::{NodeId, ParameterId};
 
 #[test]
 fn test_signal_bus_basic() {
@@ -7,8 +6,8 @@ fn test_signal_bus_basic() {
     let receiver = bus.receiver();
     
     let signal = ParameterChanged {
-        node_id: NodeId(42),
-        parameter_id: ParameterId::from_name("test"),  // используем from_name
+        node_id: "node_42".to_string(),  // используем String
+        parameter_id: "test".to_string(),
         value: 1.0,
         normalized_value: 1.0,
         timestamp: 12345,
@@ -18,7 +17,7 @@ fn test_signal_bus_basic() {
     bus.send(signal).unwrap();
     
     let received = receiver.try_recv().unwrap();
-    assert_eq!(received.node_id, NodeId(42));
-    assert_eq!(received.parameter_id, ParameterId::from_name("test"));  // сравниваем с ParameterId
+    assert_eq!(received.node_id, "node_42");  // сравниваем String с &str
+    assert_eq!(received.parameter_id, "test");
     assert_eq!(received.value, 1.0);
 }

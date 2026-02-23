@@ -1,4 +1,4 @@
-use kama_core_traits::PortId;
+use kama_core::traits::PortId;
 
 /// Соединение между портами узлов
 #[derive(Debug, Clone)]

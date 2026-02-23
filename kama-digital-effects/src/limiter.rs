@@ -2,8 +2,8 @@
 
 use crate::delay::Delay;
 use kama_buffers::RingBuffer;
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 
@@ -378,7 +378,7 @@ impl AudioNode for Limiter {
             category: NodeCategory::Effect,
             description: "Lookahead limiter using Delay".to_string(),
             author: "Kama Digital Effects".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "threshold".to_string(),

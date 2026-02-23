@@ -1,15 +1,14 @@
 [package]
 name = "kama-control"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Control backends for Kama Audio - MIDI, HID, OSC, Mackie"
 license = "Apache-2.0"
 authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
-kama-core-traits = { path = "../kama-core-traits", version = "0.1.0" }
-kama-automation = { path = "../kama-automation", version = "0.1.0", optional = true }
-kama-signal = { path = "../kama-signal", version = "0.1.0" }
+kama-core = { path = "../kama-core", version = "0.2.0" }
+kama-automation = { path = "../kama-automation", version = "0.2.0", optional = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }

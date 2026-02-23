@@ -2,7 +2,7 @@
 //!
 //! Запуск: cargo run --example bus_with_policies
 
-use kama_signal::{BusConfig, OverflowPolicy, Signal, SignalBus};
+use kama_core::signal::{BusConfig, OverflowPolicy, Signal, SignalBus};
 use std::thread;
 use std::time::Duration;
 

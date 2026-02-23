@@ -15,7 +15,7 @@ use kama_automation::{
     automaton::{FunctionAutomaton, LfoAutomaton},
     AutomationContext, AutomationManager, ParameterMapping, Servo, TestSignalSender,
 };
-use kama_core_traits::{
+use kama_core::traits::{
     time::{Clock, SystemClock, TimeProvider},
     AudioError, AudioNode, NodeId, ParamValue, PortId,
 };
@@ -26,7 +26,7 @@ use kama_graph::AudioGraph;
 use kama_lofi::{ClassicSystem, LofiProcessor};
 use kama_mixer::{ChannelConfig, MixerNode, SendConfig, SendType};
 use kama_oscillators::audio::{AudioOscillator, NoiseOsc, SineOsc};
-use kama_signal::{ParameterChanged, SignalBus, SignalSource};
+use kama_core::signal::{ParameterChanged, SignalBus, SignalSource};
 
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -308,7 +308,7 @@ fn test_mixer_automation() -> Result<(), Box<dyn std::error::Error>> {
     let mut graph = AudioGraph::new(sample_rate);
 
     // Сигнальная шина для отслеживания изменений
-    let signal_bus = SignalBus::<ParameterChanged>::new(kama_signal::BusConfig::Unbounded);
+    let signal_bus = SignalBus::<ParameterChanged>::new(kama_core::signal::BusConfig::Unbounded);
     let signal_rx = signal_bus.receiver();
 
     // 1. Создаём узлы

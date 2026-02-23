@@ -1,7 +1,7 @@
 //! Biquad filter implementation
 
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
@@ -338,7 +338,7 @@ impl AudioNode for BiquadFilter {
             category: NodeCategory::Filter,
             description: "Digital biquad filter".to_string(),
             author: "Kama Digital Filters".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "cutoff".to_string(),

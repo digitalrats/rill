@@ -10,7 +10,7 @@
 //! - [`Mapping`] — полное описание связи
 
 use std::sync::Arc;
-use kama_core_traits::NodeId;
+use kama_core::traits::NodeId;
 use std::fmt;
 
 /// Паттерн для сопоставления событий

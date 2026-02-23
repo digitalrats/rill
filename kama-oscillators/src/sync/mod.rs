@@ -12,7 +12,7 @@ pub use pulse::PulseGenerator;
 pub use trigger::{Trigger, TriggerMode};
 
 /// Common trait for sync generators
-pub trait SyncGenerator: kama_core_traits::AudioNode {
+pub trait SyncGenerator: kama_core::traits::AudioNode {
     /// Get current tempo in BPM
     fn tempo(&self) -> f32;
 

@@ -13,7 +13,7 @@ pub use random::RandomWalk;
 pub use sample_hold::SampleAndHold;
 
 /// Common trait for all control oscillators
-pub trait ControlOscillator: kama_core_traits::AudioNode {
+pub trait ControlOscillator: kama_core::traits::AudioNode {
     /// Generate next value
     fn generate(&mut self) -> f64;
 

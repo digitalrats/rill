@@ -1,7 +1,7 @@
 //! Пример гранулярного синтеза
 
 use kama_buffers::{MultiHeadBuffer, ReadMode};
-use kama_core_traits::{AudioNode, NodeId, ParamValue, PortId};
+use kama_core::traits::{AudioNode, NodeId, ParamValue, PortId};
 use kama_digital_effects::Delay;
 use kama_digital_filters::{BiquadFilter, FilterType};
 use kama_graph::AudioGraph;

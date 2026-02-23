@@ -1,7 +1,7 @@
 // kama-signal/tests/signal_bus_tests.rs
 //! Тесты для SignalBus
 
-use kama_signal::{
+use kama_core::signal::{
     BusConfig, ClockTick, OverflowPolicy, ParameterChanged, Signal, SignalBus, SignalSource,
     SystemEvent,
 };

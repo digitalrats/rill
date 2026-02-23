@@ -1,8 +1,8 @@
 //! Noise generators
 
 use super::AudioOscillator;
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use rand::Rng;
@@ -263,7 +263,7 @@ impl AudioNode for NoiseOsc {
             category: NodeCategory::Generator,
             description: "White, pink, and brown noise generator".to_string(),
             author: "Kama Oscillators".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "type".to_string(),

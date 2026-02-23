@@ -9,13 +9,13 @@
 //! Контекст — это разделяемое состояние, поэтому он обёрнут в `Arc`
 //! и клонируется при передаче между сервоприводами.
 //!
-//! [`TimeProvider`]: kama_core_traits::time::TimeProvider
+//! [`TimeProvider`]: kama_core::traits::time::TimeProvider
 
 //! Контекст выполнения автоматов
 
 use crate::parameter::ParameterMap;
 use crate::signal::SignalSender;
-use kama_core_traits::time::{SystemClock, TimeProvider};
+use kama_core::traits::time::{SystemClock, TimeProvider};
 use std::sync::Arc;
 
 /// Контекст выполнения автоматов
@@ -52,7 +52,7 @@ impl AutomationContext {
     /// Создать контекст для тестов с заглушками.
     /// Использует [`SystemClock`] с частотой 44.1 kHz и BPM=120.
     pub fn dummy() -> Self {
-        use kama_core_traits::time::SystemClock;
+        use kama_core::traits::time::SystemClock;
 
         let clock = Arc::new(SystemClock::new(44100.0, 120.0));
         Self::new(clock)

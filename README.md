@@ -64,7 +64,7 @@ kama-digital-effects = "0.1"
 ```rust## 📄 Лицензия
 
 Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
-use kama_core_traits::{AudioNode, PortId};
+use kama_core::traits::{AudioNode, PortId};
 use kama_graph::AudioGraph;
 use kama_oscillators::audio::SineOsc;
 use kama_digital_effects::Delay;

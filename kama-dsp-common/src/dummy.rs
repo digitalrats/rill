@@ -1,7 +1,7 @@
 //! Временные заглушки для контекста
 //! В реальном использовании будут заменены на настоящие реализации
 
-use kama_core_traits::time::{Clock, TickInfo, TimeProvider};
+use kama_core::traits::time::{Clock, TickInfo, TimeProvider};
 
 /// Заглушка для TimeProvider
 #[derive(Debug)]

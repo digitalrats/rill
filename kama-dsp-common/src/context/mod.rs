@@ -18,7 +18,7 @@ use kama_buffers::BufferManager;
 pub struct DspContext<'a> {
     /// Провайдер времени
     /// Провайдер времени (позиция, BPM, такты).
-    pub time: &'a dyn kama_core_traits::TimeProvider,
+    pub time: &'a dyn kama_core::traits::TimeProvider,
 
     /// Текущая частота дискретизации
     /// Текущая частота дискретизации в Hz.
@@ -58,7 +58,7 @@ impl<'a> DspContext<'a> {
     /// Создать новый контекст
     /// Создать новый контекст.
     pub fn new(
-        time: &'a dyn kama_core_traits::TimeProvider,
+        time: &'a dyn kama_core::traits::TimeProvider,
         sample_rate: f32,
         block_size: usize,
         block_position: usize,

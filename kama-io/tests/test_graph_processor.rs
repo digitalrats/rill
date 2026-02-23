@@ -1,6 +1,6 @@
 #![cfg(feature = "graph")]
 
-use kama_core_traits::{AudioNode, ParamValue, PortId};
+use kama_core::traits::{AudioNode, ParamValue, PortId};
 use kama_digital_filters::{BiquadFilter, FilterType};
 use kama_graph::AudioGraph;
 use kama_io::{

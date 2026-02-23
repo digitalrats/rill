@@ -18,7 +18,7 @@ pub use lofi_processor::LofiProcessor;
 pub use emulators::{NesEmulator, Ay38910Emulator, AkaiS900Emulator};
 
 // Реэкспорт для удобства
-pub use kama_core_traits::AudioNode;
+pub use kama_core::traits::AudioNode;
 pub use kama_buffers::{BufferHead, ReadMode};
 
 #[cfg(feature = "automation")]

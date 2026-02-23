@@ -1,5 +1,5 @@
 use kama_buffers::MultiHeadBuffer;
-use kama_core_traits::{AudioNode, NodeTypeId, ParamValue};
+use kama_core::traits::{AudioNode, NodeTypeId, ParamValue};
 
 fn main() {
     let sample_rate = 44100.0;

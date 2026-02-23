@@ -13,7 +13,7 @@
 //!
 //! ```rust
 //! use kama_core::signal::*;
-//! use kama_core::traits::{NodeId, ParameterId};
+//! use kama_core::traits::NodeId;
 //!
 //! // Создаём шину для сигналов изменения параметров
 //! let bus = SignalBus::<ParameterChanged>::new(BusConfig::Unbounded);
@@ -21,8 +21,8 @@
 //!
 //! // Отправляем сигнал
 //! let signal = ParameterChanged {
-//!     node_id: NodeId(42),
-//!     parameter_id: ParameterId::from_name("frequency"),  // исправлено
+//!     node_id: NodeId(42).to_string(),  // конвертируем NodeId в String
+//!     parameter_id: "frequency".to_string(),
 //!     value: 440.0,
 //!     normalized_value: 0.5,
 //!     timestamp: 12345,

@@ -10,7 +10,7 @@
 
 //! Common filter traits and types for DSP filters
 
-use kama_core_traits::AudioNode;
+use kama_core::traits::AudioNode;
 
 /// Type of filter
 #[derive(Debug, Clone, Copy, PartialEq)]

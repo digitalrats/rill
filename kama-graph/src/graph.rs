@@ -4,7 +4,7 @@ use crate::connection::Connection;
 use crate::error::{GraphError, GraphResult};
 use crate::processor::{GraphBufferManager, NodeProcessor};
 use kama_buffers::BufferManager;
-use kama_core_traits::{AudioError, AudioNode, NodeId, PortId};
+use kama_core::traits::{AudioError, AudioNode, NodeId, PortId};
 use std::collections::{HashMap, VecDeque};
 
 /// Аудиограф - основной контейнер для узлов и соединений
@@ -330,7 +330,7 @@ mod tests {
         }
     }
 
-    impl kama_core_traits::AudioNode for TestNode {
+    impl kama_core::traits::AudioNode for TestNode {
         fn process(
             &mut self,
             _inputs: &[&[f32]],
@@ -339,14 +339,14 @@ mod tests {
             Ok(())
         }
 
-        fn get_param(&self, _name: &str) -> Option<kama_core_traits::ParamValue> {
+        fn get_param(&self, _name: &str) -> Option<kama_core::traits::ParamValue> {
             None
         }
 
         fn set_param(
             &mut self,
             _name: &str,
-            _value: kama_core_traits::ParamValue,
+            _value: kama_core::traits::ParamValue,
         ) -> Result<(), AudioError> {
             Ok(())
         }
@@ -360,11 +360,11 @@ mod tests {
             1
         }
 
-        fn node_type_id(&self) -> kama_core_traits::NodeTypeId {
-            kama_core_traits::NodeTypeId::of::<Self>()
+        fn node_type_id(&self) -> kama_core::traits::NodeTypeId {
+            kama_core::traits::NodeTypeId::of::<Self>()
         }
 
-        fn metadata(&self) -> kama_core_traits::NodeMetadata {
+        fn metadata(&self) -> kama_core::traits::NodeMetadata {
             unimplemented!()
         }
     }

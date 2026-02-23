@@ -1,6 +1,6 @@
 //! Equalizer band implementation
 
-use kama_core_traits::{AudioError, ParamValue};
+use kama_core::traits::{AudioError, ParamValue};
 use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
 
 /// Type of EQ band

@@ -11,7 +11,7 @@ use kama_automation::{
     Servo,
     TestSignalSender,
 };
-use kama_core_traits::time::{Clock, SystemClock};
+use kama_core::traits::time::{Clock, SystemClock};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

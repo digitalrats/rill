@@ -2,7 +2,7 @@
 //!
 //! Запуск: cargo run --example multiple_signal_types
 
-use kama_signal::{
+use kama_core::signal::{
     BusConfig, ClockTick, ParameterChanged, Signal, SignalBus, SignalSource, SystemEvent,
 };
 use std::thread;

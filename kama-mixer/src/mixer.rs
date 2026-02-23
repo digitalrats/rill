@@ -2,8 +2,8 @@
 
 use crate::channel::{ChannelConfig, ChannelMode, ChannelState};
 use crate::send::{SendConfig, SendType};
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use std::collections::HashMap;
@@ -399,7 +399,7 @@ impl AudioNode for MixerNode {
                 self.buses.len()
             ),
             author: "Kama Mixer".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: params,
         }
     }

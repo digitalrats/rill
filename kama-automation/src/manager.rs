@@ -24,7 +24,7 @@ use crate::automaton::{LfoAutomaton, LfoWithEnvelopeAutomaton};
 use crate::context::AutomationContext;
 use crate::servo::{AnyServo, ParameterMapping, Servo};
 use crate::signal::SignalSender;
-use kama_core_traits::time::{Clock, SystemClock, TimeProvider};
+use kama_core::traits::time::{Clock, SystemClock, TimeProvider};
 use kama_oscillators::control::LfoWaveform;
 use std::collections::HashMap;
 use std::sync::Arc;

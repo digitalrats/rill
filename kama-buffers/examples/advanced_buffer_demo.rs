@@ -1,5 +1,5 @@
 use kama_buffers::{BufferManager, MultiHeadBuffer};
-use kama_core_traits::AudioNode;
+use kama_core::traits::AudioNode;
 use std::thread;
 use std::time::Duration;
 

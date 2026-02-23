@@ -1,6 +1,6 @@
 //! Пример использования сигнальной системы
 
-use kama_signal::{SignalDispatcher, ParameterChanged, SignalSource};
+use kama_core::signal::{SignalDispatcher, ParameterChanged, SignalSource};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Kama Core Signal Example ===");
@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Создаём тестовый сигнал
     let signal = ParameterChanged {
         node_id: "test_node".to_string(),
-        parameter_id: "gain".to_string(),
+        parameter_id: ParameterId::from_name("frequency"),
         value: 0.75,
         normalized_value: 0.75,
         timestamp: 1234567890,

@@ -1,7 +1,7 @@
 //! Sample & Hold generator
 
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use rand::Rng;
@@ -182,7 +182,7 @@ impl AudioNode for SampleAndHold {
             category: NodeCategory::Generator,
             description: "Random sample and hold generator".to_string(),
             author: "Kama Oscillators".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "hold_time".to_string(),

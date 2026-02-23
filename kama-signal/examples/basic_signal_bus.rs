@@ -2,7 +2,7 @@
 //!
 //! Запуск: cargo run --example basic_signal_bus
 
-use kama_signal::{BusConfig, Signal, SignalBus};
+use kama_core::signal::{BusConfig, Signal, SignalBus};
 use std::thread;
 use std::time::Duration;
 
@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bounded_bus = SignalBus::<NoteOn>::new(BusConfig::Bounded(
         3,
-        kama_signal::OverflowPolicy::DropOldest,
+        kama_core::signal::OverflowPolicy::DropOldest,
     ));
     let bounded_rx = bounded_bus.receiver();
 

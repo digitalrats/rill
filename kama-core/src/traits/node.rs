@@ -3,8 +3,9 @@
 use std::fmt;
 use std::any::TypeId;
 
-use super::error::AudioResult;
+use super::error::{AudioError, AudioResult};
 use super::param::{ParamValue, ParamMetadata};
+// PortId больше не нужен здесь, он в отдельном модуле
 
 /// Категории узлов
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,11 +54,22 @@ impl NodeId {
     pub fn new(id: u32) -> Self {
         Self(id)
     }
+    
+    /// Получить внутреннее значение
+    pub fn inner(&self) -> u32 {
+        self.0
+    }
 }
 
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Node({})", self.0)
+    }
+}
+
+impl From<u32> for NodeId {
+    fn from(id: u32) -> Self {
+        Self(id)
     }
 }
 
@@ -70,6 +82,11 @@ impl NodeTypeId {
     pub fn of<T: 'static>() -> Self {
         Self(TypeId::of::<T>())
     }
+    
+    /// Получить внутренний TypeId
+    pub fn as_type_id(&self) -> TypeId {
+        self.0
+    }
 }
 
 /// Базовый трейт для всех аудиоузлов
@@ -79,9 +96,9 @@ pub trait AudioNode: Send + Sync {
     
     /// Обработать аудиоблок
     fn process(
-        &mut self,
-        inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
+        &mut self, 
+        inputs: &[&[f32]], 
+        outputs: &mut [&mut [f32]]
     ) -> AudioResult<()>;
     
     /// Получить значение параметра

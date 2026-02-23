@@ -54,20 +54,32 @@
 
 #![warn(missing_docs)]
 
+//! # Общие DSP утилиты для Kama Audio
+
+#![warn(missing_docs)]
+
 mod context;
-mod dummy;
-pub mod filter;
 mod fn_node;
+mod dummy;
 mod macros;
+pub mod filter;
 
 pub use context::DspContext;
-pub use filter::{Filter, FilterFactory, FilterType};
-pub use fn_node::{block_fn_node, stateful_fn_node, stateless_fn_node};
+pub use fn_node::{stateless_fn_node, stateful_fn_node, block_fn_node};
+pub use filter::{Filter, FilterType, FilterFactory};
 
-// Реэкспорты для удобства
-pub use kama_core_traits::{
-    param::{ParamMetadata, ParamType, ParamValue},
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId,
+// Импортируем напрямую из kama_core::traits, не из вложенных модулей
+pub use kama_core::traits::{
+    AudioNode, 
+    AudioError, 
+    NodeCategory, 
+    NodeMetadata, 
+    NodeTypeId,
+    ParamValue, 
+    ParamType, 
+    ParamMetadata,
+    NodeId,
+    PortId,
 };
 
 // Реэкспортируем макросы

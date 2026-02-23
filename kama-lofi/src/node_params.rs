@@ -1,5 +1,5 @@
 // kama-lofi/src/node_params.rs
-use kama_core_traits::param::{ParamMetadata, ParamValue, ParamType};
+use kama_core::traits::{ParamMetadata, ParamValue, ParamType};
 
 pub fn bit_depth_param(default: u8) -> ParamMetadata {
     ParamMetadata {

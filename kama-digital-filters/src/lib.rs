@@ -16,7 +16,7 @@ pub use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
 mod tests {
     use super::*;
     use float_cmp::approx_eq;
-    use kama_core_traits::AudioNode;
+    use kama_core::traits::AudioNode;
 
     #[test]
     fn test_biquad_lowpass() {

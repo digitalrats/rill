@@ -1,7 +1,6 @@
 //! Базовый пример использования сигнальной системы
 
 use kama_core::signal::*;
-use kama_core::traits::{NodeId, ParameterId};
 
 fn main() {
     println!("=== Basic Signals Example ===");
@@ -12,8 +11,8 @@ fn main() {
     
     // Создаём и отправляем сигнал
     let signal = ParameterChanged {
-        node_id: NodeId(42),
-        parameter_id: ParameterId::from_name("frequency"),  // используем from_name
+        node_id: "node_42".to_string(),  // используем String
+        parameter_id: "frequency".to_string(),
         value: 440.0,
         normalized_value: 0.5,
         timestamp: 12345,

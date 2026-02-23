@@ -3,7 +3,7 @@
 //! Все тесты процессора находятся здесь, чтобы избежать дублирования
 //! с unit-тестами в исходном коде.
 
-use kama_core_traits::ParamValue;
+use kama_core::traits::ParamValue;
 use kama_lofi::{
     dsp,
     emulators::{AkaiS900Emulator, Ay38910Emulator, NesEmulator},

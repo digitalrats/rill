@@ -25,7 +25,7 @@
 //! use kama_automation::automaton::{FunctionAutomaton, Automaton};
 //! use kama_automation::AutomationContext;
 //! use std::sync::Arc;
-//! use kama_core_traits::time::SystemClock;
+//! use kama_core::traits::time::SystemClock;
 //!
 //! // Создаём контекст вручную (dummy доступен только в тестах)
 //! let clock = Arc::new(SystemClock::new(44100.0, 120.0));

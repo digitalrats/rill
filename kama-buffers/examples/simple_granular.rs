@@ -1,5 +1,5 @@
 use kama_buffers::{BufferHead, MultiHeadBuffer, ReadMode};
-use kama_core_traits::AudioNode;
+use kama_core::traits::AudioNode;
 use std::f32::consts::PI;
 
 fn main() {

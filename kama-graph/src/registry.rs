@@ -28,7 +28,7 @@ pub use crate::node::{
     SerializableParameter,
 };
 
-use kama_core_traits::{AudioNode, NodeMetadata, NodeTypeId};
+use kama_core::traits::{AudioNode, NodeMetadata, NodeTypeId};
 
 lazy_static::lazy_static! {
     /// Глобальный реестр узлов
@@ -178,7 +178,7 @@ impl Registry {
 
     /// Сериализовать граф (требует feature "serde")
     #[cfg(feature = "serde")]
-    pub fn serialize_graph(graph: &dyn kama_core_traits::AudioGraph) -> RegistryResult<String> {
+    pub fn serialize_graph(graph: &dyn kama_core::traits::AudioGraph) -> RegistryResult<String> {
         // Здесь должна быть реализация
         Err(RegistryError::Serialization(
             "Graph serialization not yet implemented".into(),
@@ -187,7 +187,7 @@ impl Registry {
 
     /// Десериализовать граф (требует feature "serde")
     #[cfg(feature = "serde")]
-    pub fn deserialize_graph(data: &str) -> RegistryResult<Box<dyn kama_core_traits::AudioGraph>> {
+    pub fn deserialize_graph(data: &str) -> RegistryResult<Box<dyn kama_core::traits::AudioGraph>> {
         // Здесь должна быть реализация
         Err(RegistryError::Deserialization(
             "Graph deserialization not yet implemented".into(),

@@ -1,7 +1,7 @@
 //! Integration tests for BiquadFilter
 
 use float_cmp::approx_eq;
-use kama_core_traits::AudioNode; // для init(), reset(), process()
+use kama_core::traits::AudioNode; // для init(), reset(), process()
 use kama_digital_filters::{BiquadFilter, FilterType};
 use kama_dsp_common::filter::Filter; // для cutoff(), q(), gain_db(), etc.
 

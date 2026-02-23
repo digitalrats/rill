@@ -1,7 +1,7 @@
 //! Distortion effect with waveshaping
 
-use kama_core_traits::{
-    param::{ParamMetadata, ParamType},
+use kama_core::traits::{
+    ParamMetadata, ParamType,
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 
@@ -192,7 +192,7 @@ impl AudioNode for Distortion {
             category: NodeCategory::Effect,
             description: "Distortion with multiple waveshaping types".to_string(),
             author: "Kama Digital Effects".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "type".to_string(),

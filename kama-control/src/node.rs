@@ -1,24 +1,29 @@
 //! # Узел управления для AudioGraph
-//! 
-//! Предоставляет [`ControlNode`] — специальный узел, который обрабатывает
-//! события от контроллеров и применяет их к параметрам других узлов.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
-use kama_core_traits::{
+// Исправляем импорты - используем правильные пути из kama-core
+use kama_core::traits::{
     AudioNode, 
     NodeMetadata, 
     NodeCategory, 
     AudioError, 
     NodeTypeId,
     NodeId,
-    param::{ParamValue, ParamType, ParamMetadata},
+    ParamValue,  // теперь доступен через prelude или прямой импорт
+    ParamType, 
+    ParamMetadata,
+    Clock,
+    TimeProvider,
+    TickInfo,
 };
 
-use kama_signal::{ParameterChanged, SignalSource};
+use kama_core::signal::{ParameterChanged, SignalSource};
+
+// ... остальной код
 
 #[cfg(feature = "automation")]
 use kama_automation::{Servo, AutomationContext, Automaton};
@@ -176,18 +181,18 @@ impl ControlNode {
 #[derive(Debug)]
 struct DummyTimeProvider;
 
-impl kama_core_traits::Clock for DummyTimeProvider {
+impl kama_core::traits::Clock for DummyTimeProvider {
     fn sample_rate(&self) -> f64 { 44100.0 }
     fn position_samples(&self) -> u64 { 0 }
     fn advance(&self, _samples: u64) -> u64 { 0 }
     fn reset(&self) {}
 }
 
-impl kama_core_traits::TimeProvider for DummyTimeProvider {
+impl kama_core::traits::TimeProvider for DummyTimeProvider {
     fn bpm(&self) -> f64 { 120.0 }
     fn set_bpm(&self, _bpm: f64) {}
-    fn tick_info(&self) -> kama_core_traits::TickInfo {
-        kama_core_traits::TickInfo {
+    fn tick_info(&self) -> kama_core::traits::TickInfo {
+        kama_core::traits::TickInfo {
             bar: 0,
             beat: 0,
             sixteenth: 0,
@@ -223,7 +228,7 @@ impl AudioNode for ControlNode {
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis() as u64,
-                                source: kama_signal::SignalSource::Midi { 
+                                source: kama_core::signal::SignalSource::Midi { 
                                     channel: 0, 
                                     controller: 0 
                                 },
@@ -282,7 +287,7 @@ impl AudioNode for ControlNode {
             category: NodeCategory::Utility,
             description: "Control node that maps controller events to parameters".to_string(),
             author: "Kama Control".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "event_count".to_string(),

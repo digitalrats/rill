@@ -1,4 +1,4 @@
-use kama_core_traits::{AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue};
+use kama_core::traits::{AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue};
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
 
