@@ -1,0 +1,20 @@
+# Базовые настройки (работают в stable)
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+
+# Импорты (stable)
+reorder_imports = true
+reorder_modules = true
+
+# Форматирование кода (stable)
+force_explicit_abi = true
+merge_derives = true
+newline_style = "Unix"
+remove_nested_parens = true
+use_field_init_shorthand = true
+use_try_shorthand = false
+
+# Атрибуты (stable)
+# (минимальные настройки)
