@@ -191,6 +191,129 @@ cargo run --example simple_midi
 3. Запустите тесты (`cargo test`)
 4. Отправьте пулл-реквест
 
+## 🔄 Процесс разработки (Git Flow)
+
+Kama Audio использует [Git Flow](https://www.atlassian.com/git/tutorials/comparing-workflows/gitflow-workflow) для управления разработкой и релизами.
+
+### Структура веток
+
+- `main` — стабильные релизы
+- `develop` — интеграционная ветка для разработки
+- `feature/*` — новые возможности
+- `release/*` — подготовка релизов
+- `hotfix/*` — срочные исправления
+
+### Начало работы
+
+```bash
+# Клонируем репозиторий
+git clone https://github.com/DigitalRats/kama-audio
+cd kama-audio
+
+# Инициализируем git-flow (один раз)
+git flow init -d
+```
+
+### Создание новой возможности
+
+```bash
+# Начинаем новую фичу (от develop)
+git flow feature start my-awesome-effect
+
+# Работаем...
+git add .
+git commit -m "feat(effects): add awesome effect"
+
+# Публикуем (если нужно поделиться)
+git flow feature publish my-awesome-effect
+
+# Завершаем фичу (мерж в develop)
+git flow feature finish my-awesome-effect
+```
+
+### Подготовка релиза
+
+```bash
+# Начинаем релиз (от develop)
+git flow release start 0.3.0
+
+# Обновляем версии во всех Cargo.toml
+./scripts/bump-version.sh 0.3.0
+
+# Обновляем CHANGELOG.md
+git add .
+git commit -m "chore(release): prepare 0.3.0"
+
+# Финальное тестирование
+cargo test --workspace
+cargo run --example final_demo
+
+# Завершаем релиз (мерж в main и develop, создаёт тег)
+git flow release finish 0.3.0
+
+# Пушим всё (включая теги)
+git push --all origin
+git push --tags origin
+```
+
+### Горячие исправления
+
+```bash
+# Начинаем hotfix (от main)
+git flow hotfix start 0.2.1
+
+# Фиксим баг
+git add .
+git commit -m "fix(automation): prevent crash on zero frequency"
+
+# Завершаем hotfix
+git flow hotfix finish 0.2.1
+
+# Пушим
+git push --all origin
+git push --tags origin
+```
+
+### Правила коммитов
+
+Используем [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+**Типы:**
+- `feat` — новая возможность
+- `fix` — исправление бага
+- `docs` — документация
+- `style` — форматирование кода
+- `refactor` — рефакторинг
+- `test` — тесты
+- `chore` — обслуживание
+
+**Примеры:**
+```bash
+feat(core): add ParameterId with validation
+fix(automation): prevent crash when LFO frequency is zero
+docs(readme): add git flow section
+test(eq): add frequency response tests
+```
+
+### Версионирование
+
+Следуем [Semantic Versioning](https://semver.org/):
+
+- **MAJOR** — несовместимые изменения API
+- **MINOR** — новая функциональность с обратной совместимостью
+- **PATCH** — исправления багов с обратной совместимостью
+
+Все крейты в workspace версионируются синхронно (одинаковая версия).
+
+
 ## 📄 Лицензия
 
 Проект распространяется под лицензией **Apache 2.0**. Это означает, что вы можете:
