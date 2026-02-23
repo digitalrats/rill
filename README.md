@@ -1,10 +1,8 @@
-Вот общий `README.md` для корня проекта:
-
-```markdown
 # Kama Audio 🎵
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/kama-audio)
-[![tests](https://img.shields.io/badge/tests-150%2B-passing)](https://github.com/DigitalRats/kama-audio)
+[![tests](https://img.shields.io/badge/tests-20%2B-passing)](https://github.com/DigitalRats/kama-audio)
+[![version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/DigitalRats/kama-audio)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 **Модульная экосистема для создания аудиоприложений на Rust.**
@@ -12,39 +10,35 @@
 Kama Audio — это не монолит, а набор специализированных крейтов, каждый из которых решает свою задачу. Вы можете использовать только то, что нужно для вашего проекта.
 
 ```
-kama-core-traits     # ядро с трейтами (минимум)
-kama-buffers         # работа с буферами
-kama-graph           # аудиограф
-kama-signal          # сигнальная система
-kama-automation      # автоматизация параметров
-kama-control         # MIDI/HID управление
-kama-dsp-common      # DSP инфраструктура
-kama-oscillators     # осцилляторы (аудио и LFO)
-kama-digital-filters # цифровые фильтры
-kama-digital-effects # цифровые эффекты## 📄 Лицензия
-
-Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
-kama-eq              # эквалайзеры
-kama-lofi            # Lo-Fi эмуляция
-kama-mixer           # микшер
-kama-hp              # high-precision вычисления
-kama-io              # аудио ввод-вывод (в разработке)
+kama-core              # единое ядро (трейты + сигналы)
+kama-buffers           # работа с буферами
+kama-graph             # аудиограф
+kama-automation        # автоматизация параметров
+kama-control           # MIDI/HID управление
+kama-dsp-common        # DSP инфраструктура
+kama-oscillators       # осцилляторы (аудио и LFO)
+kama-digital-filters   # цифровые фильтры
+kama-digital-effects   # цифровые эффекты
+kama-eq                # эквалайзеры
+kama-lofi              # Lo-Fi эмуляция
+kama-mixer             # микшер
+kama-hp                # high-precision вычисления
+kama-io                # аудио ввод-вывод
 ```
 
 ## 🎯 Зачем это нужно?
 
-- **Для музыкантов**: создавайте свои эффекты и инструменты## 📄 Лицензия
-
-Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
+- **Для музыкантов**: создавайте свои эффекты и инструменты
 - **Для разработчиков**: стройте аудиоприложения на надёжном фундаменте
 - **Для live coding**: Drift — сервер эффектов для TidalCycles, SuperCollider и других сред
 
 ## ✨ Особенности
 
-- **Минимальное ядро** — только трейты, всё остальное в крейтах
+- **Единое ядро** — `kama-core` объединяет все базовые трейты и сигнальную систему
+- **Минимальные зависимости** — каждый крейт зависит только от того, что реально использует
 - **Модульность** — берите только то, что нужно
 - **Производительность** — zero-cost abstractions, real-time безопасность
-- **Тестируемость** — 150+ тестов, всё проверено
+- **Тестируемость** — 20+ тестов, всё проверено
 - **Расширяемость** — легко добавить свой эффект или бэкенд
 
 ## 🚀 Быстрый старт
@@ -53,18 +47,17 @@ kama-io              # аудио ввод-вывод (в разработке)
 
 ```toml
 [dependencies]
-kama-core-traits = "0.1"
-kama-graph = "0.1"
-kama-oscillators = "0.1"
-kama-digital-effects = "0.1"
+kama-core = "0.2"
+kama-graph = "0.2"
+kama-oscillators = "0.2"
+kama-digital-effects = "0.2"
 ```
 
 Создайте простой эффект (синус + задержка):
 
-```rust## 📄 Лицензия
-
-Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
-use kama_core::traits::{AudioNode, PortId};
+```rust
+use kama_core::traits::*;
+use kama_core::prelude::*;
 use kama_graph::AudioGraph;
 use kama_oscillators::audio::SineOsc;
 use kama_digital_effects::Delay;
@@ -97,35 +90,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn calculate_rms(signal: &[f32]) -> f32 {
-    let sum: f32 = signal.iter().map(|x| x * x).sum();## 📄 Лицензия
-
-Проект распространяется под лицензиями **MIT** или **Apache-2.0** (на ваш выбор).
+    let sum: f32 = signal.iter().map(|x| x * x).sum();
     (sum / signal.len() as f32).sqrt()
 }
 ```
 
-## 📦 Состояние крейтов
+## 📦 Состояние крейтов (версия 0.2.0)
 
-| Крейт | Статус | Описание |
+| Крейт | Версия | Описание |
 |-------|--------|----------|
-| `kama-core-traits` | ✅ стабильный | Базовые трейты (`AudioNode`, `ParamValue`, `TimeProvider`) |
-| `kama-buffers` | ✅ стабильный | Кольцевые буферы, многоголовые буферы, пулы |
-| `kama-graph` | ✅ стабильный | Аудиограф с топологической сортировкой |
-| `kama-signal` | ✅ стабильный | Сигнальная система (`SignalBus`, `ParameterChanged`) |
-| `kama-automation` | ✅ стабильный | Автоматизация (LFO, огибающие, сервоприводы) |
-| `kama-control` | ✅ стабильный | MIDI управление, маппинг событий |
-| `kama-dsp-common` | ✅ стабильный | DSP инфраструктура, функциональные узлы |
-| `kama-oscillators` | ✅ стабильный | Осцилляторы (синус, пила, шум, LFO, огибающие) |
-| `kama-digital-filters` | ✅ стабильный | Биквадратные фильтры (LP, HP, BP, Notch, Peak) |
-| `kama-digital-effects` | ✅ стабильный | Эффекты (Delay, Distortion, Limiter) |
-| `kama-eq` | ✅ стабильный | Параметрический и графический эквалайзеры |
-| `kama-lofi` | ✅ стабильный | Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
-| `kama-mixer` | ✅ стабильный | Микшер с каналами, панорамой и aux шинами |
-| `kama-hp` | ✅ стабильный | High-precision вычисления (f64) |
-| `kama-io` | 🔄 в работе | Аудио ввод-вывод (ALSA, CPAL) |
-| `kama-wdf` | ⏳ планируется | Wave Digital Filters (аналоговая эмуляция) |
-| `kama-server` | ⏳ планируется | OSC сервер для удалённого управления |
-| `drift` | ⏳ планируется | Продукт: сервер эффектов для live coding |
+| **kama-core** | 0.2.0 | ✅ **Единое ядро** (трейты + сигналы) |
+| kama-buffers | 0.2.0 | ✅ Кольцевые буферы, многоголовые буферы, пулы |
+| kama-graph | 0.2.0 | ✅ Аудиограф с топологической сортировкой |
+| kama-automation | 0.2.0 | ✅ Автоматизация (LFO, огибающие, сервоприводы) |
+| kama-control | 0.2.0 | ✅ MIDI/HID управление, маппинг событий |
+| kama-dsp-common | 0.2.0 | ✅ DSP инфраструктура, функциональные узлы |
+| kama-oscillators | 0.2.0 | ✅ Осцилляторы (синус, пила, шум, LFO, огибающие) |
+| kama-digital-filters | 0.2.0 | ✅ Биквадратные фильтры (LP, HP, BP, Notch, Peak) |
+| kama-digital-effects | 0.2.0 | ✅ Эффекты (Delay, Distortion, Limiter) |
+| kama-eq | 0.2.0 | ✅ Параметрический и графический эквалайзеры |
+| kama-lofi | 0.2.0 | ✅ Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
+| kama-mixer | 0.2.0 | ✅ Микшер с каналами, панорамой и aux шинами |
+| kama-hp | 0.2.0 | ✅ High-precision вычисления (f64) |
+| kama-io | 0.2.0 | ✅ Аудио ввод-вывод (ALSA, CPAL) |
+| kama-tests | 0.2.0 | ✅ Интеграционные тесты |
+
+## 🏗️ Архитектура ядра
+
+```
+kama-core/
+├── traits/              # Базовые трейты
+│   ├── node.rs          # AudioNode, NodeId, NodeCategory
+│   ├── param.rs         # ParamValue, ParamType, ParamMetadata
+│   ├── port.rs          # PortId (выделен в отдельный модуль!)
+│   ├── error.rs         # AudioError, AudioResult
+│   └── time/            # Clock, TimeProvider, SystemClock
+└── signal/              # Сигнальная система
+    ├── bus.rs           # SignalBus, BusConfig, OverflowPolicy
+    ├── types.rs         # ParameterChanged, SystemEvent, SignalSource
+    └── dispatcher.rs    # SimpleSignalDispatcher
+```
 
 ## 🧪 Тестирование
 
@@ -133,7 +137,7 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 # Все тесты
 cargo test --workspace
 
-# Интеграционные тесты цифровой части
+# Интеграционные тесты
 cargo test -p kama-tests -- --nocapture
 
 # Тесты конкретного крейта
@@ -161,6 +165,15 @@ cargo run --example granular_processing
 # MIDI управление
 cargo run --example simple_midi
 ```
+
+## 🔮 Планы на 0.3.0
+
+- 🔄 **ParameterId** — замена `String` на типобезопасный идентификатор
+- 📐 **kama-core-math** — обобщённые математические абстракции (Float, AudioNum)
+- 🎛️ **Source/Processor/Sync** — типизация узлов по ролям
+- ⚡ **Двухпоточная автоматизация** — разделение на control-поток и audio-поток
+- 🌐 **kama-osc** — выделение OSC в отдельный крейт
+- 🔌 **Унификация IO** — объединение audio/MIDI/CV в kama-io
 
 ## 🤝 Участие в разработке
 
@@ -190,12 +203,7 @@ cargo run --example simple_midi
 
 Полный текст лицензии: [LICENSE-APACHE](LICENSE-APACHE)
 
-Примечание: kama-tests лиценизирован под MIT. Полный текст лицензии: [LICENSE-MIT](LICENSE-MIT)
-
-### Зависимости
-
-Все зависимости проекта совместимы с Apache-2.0 (MIT, Apache-2.0, MIT/Apache-2.0). 
-Ни одной GPL/AGPL зависимости не используется.
+Примечание: kama-tests лицензирован под MIT. Полный текст лицензии: [LICENSE-MIT](LICENSE-MIT)
 
 ## 🌟 Благодарности
 
@@ -206,5 +214,4 @@ cargo run --example simple_midi
 
 ---
 
-**Kama Audio** — делаем звук на Rust доступным и модульным. 🚀
-```
+**Kama Audio 0.2.0** — стабильное ядро, чистая архитектура, готовность к следующему этапу. 🚀
