@@ -5,7 +5,7 @@
 //! ## Основные компоненты
 //!
 //! - **SignalBus** — многопоточные шины для передачи сигналов
-//! - **ParameterChanged** — сигнал об изменении параметра узла
+//! - **ParameterChanged** — сигнал об изменении параметра порта
 //! - **SystemEvent** — системные события (граф изменён, транспорт и т.д.)
 //! - **SimpleSignalDispatcher** — синхронная диспетчеризация сигналов
 //!
@@ -13,21 +13,25 @@
 //!
 //! ```rust
 //! use kama_core::signal::*;
-//! use kama_core::traits::NodeId;
+//! use kama_core::traits::{NodeId, ParameterId, PortId};
 //!
 //! // Создаём шину для сигналов изменения параметров
 //! let bus = SignalBus::<ParameterChanged>::new(BusConfig::Unbounded);
 //! let receiver = bus.receiver();
 //!
+//! // Создаём идентификаторы
+//! let node = NodeId(42);
+//! let port = PortId::node(node);
+//! let param = ParameterId::new("frequency").unwrap();
+//!
 //! // Отправляем сигнал
-//! let signal = ParameterChanged {
-//!     node_id: NodeId(42).to_string(),  // конвертируем NodeId в String
-//!     parameter_id: "frequency".to_string(),
-//!     value: 440.0,
-//!     normalized_value: 0.5,
-//!     timestamp: 12345,
-//!     source: SignalSource::Automation,
-//! };
+//! let signal = ParameterChanged::new(
+//!     port,
+//!     param,
+//!     440.0,
+//!     0.5,
+//!     SignalSource::Automation,
+//! );
 //!
 //! bus.send(signal).unwrap();
 //! ```

@@ -3,10 +3,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::traits::{NodeId, ParameterId};  // обновляем импорт
-
-/// Маркерный трейт для типов, которые могут использоваться как сигналы
-pub trait Signal: Send + Sync + 'static {}
+use crate::traits::{PortId, ParameterId};  // обновляем импорт
 
 /// Источник сигнала изменения параметра
 #[derive(Debug, Clone)]
@@ -34,26 +31,59 @@ pub enum SignalSource {
     External,
 }
 
-/// Сигнал об изменении параметра узла
+/// Сигнал изменения параметра.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterChanged {
-    /// ID узла
-    pub node_id: String,
-    /// ID параметра
-    pub parameter_id: String,
-    /// Значение
+    pub port: PortId,
+    pub parameter: ParameterId,
     pub value: f32,
-    /// Нормализованное значение (0-1)
-    pub normalized_value: f32,
-    /// Временная метка
+    pub normalized: f32,
     pub timestamp: u64,
-    /// Источник сигнала
     pub source: SignalSource,
 }
 
-impl Signal for ParameterChanged {}
+impl ParameterChanged {
+    pub fn new(
+        port: PortId,
+        parameter: ParameterId,
+        value: f32,
+        normalized: f32,
+        source: SignalSource,
+    ) -> Self {
+        Self {
+            port,
+            parameter,
+            value,
+            normalized,
+            timestamp: current_timestamp(),
+            source,
+        }
+    }
 
+    pub fn node_parameter(
+        node: crate::traits::NodeId,
+        parameter: ParameterId,
+        value: f32,
+        normalized: f32,
+        source: SignalSource,
+    ) -> Self {
+        Self::new(PortId::node(node), parameter, value, normalized, source)
+    }
+}
+
+fn current_timestamp() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
+/// Маркерный трейт для сигналов.
+pub trait Signal: Send + Sync + 'static {}
+
+impl Signal for ParameterChanged {}
 /// Тактовый сигнал от транспорта
 #[derive(Debug, Clone)]
 pub struct ClockTick {

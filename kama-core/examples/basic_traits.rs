@@ -9,6 +9,14 @@ fn main() {
     let node_id = NodeId(42);
     println!("Node ID: {}", node_id);
     
+    // Создаём идентификатор параметра
+    let param = ParameterId::new("frequency").unwrap();
+    println!("Parameter: {}", param);
+    
+    // Создаём идентификатор порта
+    let port = PortId::audio_in(node_id, 0);
+    println!("Port: {}", port);
+    
     // Создаём параметры
     let float_param = ParamValue::Float(0.5);
     let int_param = ParamValue::Int(10);

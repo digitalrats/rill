@@ -1,62 +1,162 @@
-//! Идентификаторы портов для соединения узлов
+// kama-core/src/traits/port.rs
 
 use std::fmt;
 use super::node::NodeId;
 
-/// Идентификатор порта узла
-///
-/// Уникально идентифицирует конкретный порт (входной или выходной) узла в графе.
+/// Тип порта.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PortType {
+    /// Порт самого узла (для параметров узла)
+    Node,
+    /// Входной аудиопорт
+    AudioIn,
+    /// Выходной аудиопорт
+    AudioOut,
+    /// Управляющий порт (для автоматизации)
+    Control,
+    /// CV вход
+    CvIn,
+    /// CV выход
+    CvOut,
+    /// Тактовый порт
+    Clock,
+    /// Триггерный порт
+    Trigger,
+}
+
+impl PortType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            PortType::Node => "node",
+            PortType::AudioIn => "audio_in",
+            PortType::AudioOut => "audio_out",
+            PortType::Control => "control",
+            PortType::CvIn => "cv_in",
+            PortType::CvOut => "cv_out",
+            PortType::Clock => "clock",
+            PortType::Trigger => "trigger",
+        }
+    }
+
+    pub fn is_input(&self) -> bool {
+        matches!(self,
+            PortType::AudioIn | PortType::Control | PortType::CvIn |
+            PortType::Clock | PortType::Trigger
+        )
+    }
+
+    pub fn is_output(&self) -> bool {
+        matches!(self, PortType::AudioOut | PortType::CvOut)
+    }
+
+    /// Для CV портов возвращает направление (true - вход, false - выход)
+    pub fn cv_direction(&self) -> Option<bool> {
+        match self {
+            PortType::CvIn => Some(true),
+            PortType::CvOut => Some(false),
+            _ => None,
+        }
+    }
+}
+
+/// Идентификатор порта.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PortId {
-    /// ID узла, которому принадлежит порт
+    /// Узел, которому принадлежит порт.
     pub node: NodeId,
-    /// Индекс порта (0 для первого входа/выхода)
-    pub index: u8,
-    /// true - входной порт, false - выходной
-    pub is_input: bool,
+    /// Индекс порта (уникален в рамках узла для данного типа).
+    pub index: u16,
+    /// Тип порта.
+    pub port_type: PortType,
 }
 
 impl PortId {
-    /// Создать новый PortId
-    pub fn new(node: NodeId, index: u8, is_input: bool) -> Self {
-        Self { node, index, is_input }
+    pub fn new(node: NodeId, index: u16, port_type: PortType) -> Self {
+        Self { node, index, port_type }
     }
-    
-    /// Создать входной порт
-    pub fn input(node: NodeId, index: u8) -> Self {
-        Self { node, index, is_input: true }
+
+    pub fn node(node: NodeId) -> Self {
+        Self::new(node, 0, PortType::Node)
     }
-    
-    /// Создать выходной порт
-    pub fn output(node: NodeId, index: u8) -> Self {
-        Self { node, index, is_input: false }
+
+    pub fn audio_in(node: NodeId, index: u16) -> Self {
+        Self::new(node, index, PortType::AudioIn)
     }
-    
-    /// Проверить, является ли порт входным
+
+    pub fn audio_out(node: NodeId, index: u16) -> Self {
+        Self::new(node, index, PortType::AudioOut)
+    }
+
+    pub fn control(node: NodeId, index: u16) -> Self {
+        Self::new(node, index, PortType::Control)
+    }
+
+    pub fn cv_in(node: NodeId, index: u16) -> Self {
+        Self::new(node, index, PortType::CvIn)
+    }
+
+    pub fn cv_out(node: NodeId, index: u16) -> Self {
+        Self::new(node, index, PortType::CvOut)
+    }
+
+    pub fn clock(node: NodeId, index: u16) -> Self {
+        Self::new(node, index, PortType::Clock)
+    }
+
+    pub fn trigger(node: NodeId, index: u16) -> Self {
+        Self::new(node, index, PortType::Trigger)
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node
+    }
+
+    pub fn index(&self) -> u16 {
+        self.index
+    }
+
+    pub fn port_type(&self) -> PortType {
+        self.port_type
+    }
+
     pub fn is_input(&self) -> bool {
-        self.is_input
+        self.port_type.is_input()
     }
-    
-    /// Проверить, является ли порт выходным
+
     pub fn is_output(&self) -> bool {
-        !self.is_input
-    }
-    
-    /// Получить строковое представление для отладки
-    pub fn as_str(&self) -> String {
-        format!("{}", self)
+        self.port_type.is_output()
     }
 }
 
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let port_type = if self.is_input { "in" } else { "out" };
-        write!(f, "{}.{}[{}]", self.node, port_type, self.index)
+        write!(f, "{}.{}[{}]", self.node, self.port_type.name(), self.index)
     }
 }
 
-impl From<(NodeId, u8, bool)> for PortId {
-    fn from((node, index, is_input): (NodeId, u8, bool)) -> Self {
-        Self::new(node, index, is_input)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_port_type() {
+        assert!(PortType::AudioIn.is_input());
+        assert!(!PortType::AudioIn.is_output());
+        assert_eq!(PortType::AudioIn.name(), "audio_in");
+        assert_eq!(PortType::Control.name(), "control");
+    }
+
+    #[test]
+    fn test_port_id() {
+        let node = NodeId(42);
+        let port = PortId::audio_in(node, 0);
+        assert_eq!(port.node_id(), node);
+        assert_eq!(port.index(), 0);
+        assert_eq!(port.port_type(), PortType::AudioIn);
+        assert!(port.is_input());
+        assert!(!port.is_output());
+        assert_eq!(port.to_string(), "#42.audio_in[0]");
     }
 }

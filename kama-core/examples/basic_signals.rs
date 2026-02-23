@@ -1,6 +1,7 @@
 //! Базовый пример использования сигнальной системы
 
 use kama_core::signal::*;
+use kama_core::traits::{NodeId, ParameterId, PortId};
 
 fn main() {
     println!("=== Basic Signals Example ===");
@@ -9,25 +10,29 @@ fn main() {
     let bus = SignalBus::<ParameterChanged>::new(BusConfig::Unbounded);
     let receiver = bus.receiver();
     
-    // Создаём и отправляем сигнал
-    let signal = ParameterChanged {
-        node_id: "node_42".to_string(),  // используем String
-        parameter_id: "frequency".to_string(),
-        value: 440.0,
-        normalized_value: 0.5,
-        timestamp: 12345,
-        source: SignalSource::Automation,
-    };
+    // Создаём идентификаторы
+    let node = NodeId(42);
+    let port = PortId::node(node);
+    let param = ParameterId::new("frequency").unwrap();
     
-    println!("Отправляем сигнал: node_id={}, param={}, value={}", 
-             signal.node_id, signal.parameter_id, signal.value);
+    // Создаём и отправляем сигнал
+    let signal = ParameterChanged::new(
+        port,
+        param.clone(),
+        440.0,
+        0.5,
+        SignalSource::Automation,
+    );
+    
+    println!("Отправляем сигнал: порт={}, параметр={}, значение={}",
+             signal.port, signal.parameter, signal.value);
     bus.send(signal).unwrap();
     
     // Получаем сигнал
     match receiver.try_recv() {
         Ok(received) => {
-            println!("Получен сигнал: node_id={}, param={}, value={}", 
-                     received.node_id, received.parameter_id, received.value);
+            println!("Получен сигнал: порт={}, параметр={}, значение={}",
+                     received.port, received.parameter, received.value);
         }
         Err(e) => {
             println!("Ошибка при получении сигнала: {:?}", e);

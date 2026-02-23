@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(graph.node_count(), 2);
 
         graph
-            .connect(PortId::output(id1, 0), PortId::input(id2, 0), 1.0)
+            .connect(PortId::audio_out(id1, 0), PortId::audio_in(id2, 0), 1.0)
             .unwrap();
 
         assert_eq!(graph.connection_count(), 1);
