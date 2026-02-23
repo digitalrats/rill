@@ -1,25 +1,25 @@
 //! # SignalBus — многопоточная шина сигналов
-//! 
+//!
 //! Предоставляет MPMC (Multiple Producers, Multiple Consumers) канал
 //! для передачи сигналов между компонентами системы.
-//! 
+//!
 //! ## Особенности
-//! 
+//!
 //! - Типобезопасность — каждая шина работает с одним типом сигналов
 //! - Настраиваемая политика переполнения
 //! - Неблокирующее чтение через `try_recv`
 //! - Возможность клонирования отправителей и получателей
 
-use crossbeam_channel::{self, Receiver, Sender, TrySendError};
 use crate::error::{SignalError, SignalResult};
+use crossbeam_channel::{self, Receiver, Sender, TrySendError};
 
 /// Политика переполнения канала
 #[derive(Debug, Clone, Copy)]
-    /// Политика поведения при переполнении ограниченной очереди.
-    ///
-    /// - `DropNewest` - отбрасывать новые сообщения
-    /// - `DropOldest` - отбрасывать самые старые сообщения
-    /// - `Block` - блокировать отправителя до появления места
+/// Политика поведения при переполнении ограниченной очереди.
+///
+/// - `DropNewest` - отбрасывать новые сообщения
+/// - `DropOldest` - отбрасывать самые старые сообщения
+/// - `Block` - блокировать отправителя до появления места
 pub enum OverflowPolicy {
     DropNewest,
     DropOldest,
@@ -28,10 +28,10 @@ pub enum OverflowPolicy {
 
 /// Конфигурация шины сигналов
 #[derive(Debug, Clone)]
-    /// Конфигурация шины сигналов.
-    ///
-    /// - `Bounded(capacity, policy)` - ограниченная очередь с политикой
-    /// - `Unbounded` - неограниченная очередь
+/// Конфигурация шины сигналов.
+///
+/// - `Bounded(capacity, policy)` - ограниченная очередь с политикой
+/// - `Unbounded` - неограниченная очередь
 pub enum BusConfig {
     Bounded(usize, OverflowPolicy),
     Unbounded,
@@ -39,10 +39,10 @@ pub enum BusConfig {
 
 /// Шина сигналов для определённого типа
 #[derive(Debug, Clone)]
-    /// Многопоточная шина сигналов определённого типа.
-    ///
-    /// Поддерживает множество отправителей и множество получателей.
-    /// Каждое сообщение доставляется ровно одному получателю.
+/// Многопоточная шина сигналов определённого типа.
+///
+/// Поддерживает множество отправителей и множество получателей.
+/// Каждое сообщение доставляется ровно одному получателю.
 pub struct SignalBus<T: crate::Signal> {
     tx: Sender<T>,
     rx: Receiver<T>,
@@ -74,16 +74,22 @@ impl<T: crate::Signal> SignalBus<T> {
                     if self.tx.is_full() {
                         let _ = self.rx.try_recv();
                     }
-                    self.tx.send(signal).map_err(|_| SignalError::Disconnected)?;
+                    self.tx
+                        .send(signal)
+                        .map_err(|_| SignalError::Disconnected)?;
                     Ok(())
                 }
                 OverflowPolicy::Block => {
-                    self.tx.send(signal).map_err(|_| SignalError::Disconnected)?;
+                    self.tx
+                        .send(signal)
+                        .map_err(|_| SignalError::Disconnected)?;
                     Ok(())
                 }
             },
             BusConfig::Unbounded => {
-                self.tx.send(signal).map_err(|_| SignalError::Disconnected)?;
+                self.tx
+                    .send(signal)
+                    .map_err(|_| SignalError::Disconnected)?;
                 Ok(())
             }
         }

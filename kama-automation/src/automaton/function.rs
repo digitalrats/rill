@@ -1,29 +1,29 @@
 //! # Функциональные автоматы
-//! 
+//!
 //! Универсальные автоматы, построенные на Rust-замыканиях.
 //! Это самый гибкий способ создания автоматов — вы можете использовать любую
 //! математическую функцию или алгоритм.
-//! 
+//!
 //! ## Два варианта
-//! 
+//!
 //! 1. [`FunctionAutomaton`] — без сохранения состояния (stateless).
 //!    Подходит для чистых функций времени: `f(t) -> значение`.
-//! 
+//!
 //! 2. [`StatefulFunctionAutomaton`] — с пользовательским состоянием.
 //!    Позволяет создавать генераторы, которым нужно помнить информацию
 //!    между вызовами: счётчики, интеграторы, генераторы случайных блужданий.
-//! 
+//!
 //! ## Состояние
-//! 
+//!
 //! [`FunctionState`] хранит текущее значение, время последнего обновления и,
 //! опционально, пользовательские данные любого типа (через `Arc<dyn Any>`).
-//! 
+//!
 //! ## Примеры
-//! 
+//!
 //! ### Stateless: генератор синуса
 //! ```
 //! use kama_automation::automaton::FunctionAutomaton;
-//! 
+//!
 //! let sine = FunctionAutomaton::new(
 //!     "Sine",
 //!     |t| (t * 2.0 * std::f64::consts::PI).sin(),
@@ -31,11 +31,11 @@
 //!     "fm_input"
 //! );
 //! ```
-//! 
+//!
 //! ### Stateful: счётчик
 //! ```
 //! use kama_automation::automaton::StatefulFunctionAutomaton;
-//! 
+//!
 //! let counter = StatefulFunctionAutomaton::new(
 //!     "Counter",
 //!     |_time, count: &mut u32| {
@@ -53,8 +53,8 @@
 use crate::automaton::Automaton;
 use crate::context::AutomationContext;
 use crate::signal::SignalSender;
-use std::sync::Arc;
 use std::fmt;
+use std::sync::Arc;
 
 /// Состояние функционального автомата
 #[derive(Clone)]
@@ -83,7 +83,7 @@ impl FunctionState {
             user_state: Arc::new(()),
         }
     }
-    
+
     /// Создать состояние с пользовательскими данными
     pub fn with_user_state<T: Send + Sync + 'static>(value: f64, time: f64, state: T) -> Self {
         Self {
@@ -92,7 +92,7 @@ impl FunctionState {
             user_state: Arc::new(state),
         }
     }
-    
+
     /// Получить ссылку на пользовательское состояние
     pub fn get_user_state<T: 'static>(&self) -> Option<&T> {
         self.user_state.downcast_ref::<T>()
@@ -133,12 +133,7 @@ pub struct FunctionAutomaton {
 
 impl FunctionAutomaton {
     /// Создать новый функциональный автомат
-    pub fn new<F>(
-        name: &str,
-        mut generator: F,
-        target_node: &str,
-        target_param: &str,
-    ) -> Self
+    pub fn new<F>(name: &str, mut generator: F, target_node: &str, target_param: &str) -> Self
     where
         F: FnMut(f64) -> f64 + Send + Sync + 'static,
     {
@@ -151,14 +146,14 @@ impl FunctionAutomaton {
             threshold: 1e-6,
         }
     }
-    
+
     /// Установить отправитель сигналов
     /// Установить отправитель сигналов.
     pub fn with_signal_sender(mut self, sender: Arc<dyn SignalSender>) -> Self {
         self.signal_sender = Some(sender);
         self
     }
-    
+
     /// Установить порог для отправки сигналов
     /// Установить порог для отправки сигналов.
     /// Значение по умолчанию: 1e-6.
@@ -166,15 +161,11 @@ impl FunctionAutomaton {
         self.threshold = threshold;
         self
     }
-    
+
     /// Отправить сигнал об изменении параметра
     fn send_signal(&self, value: f64) {
         if let Some(sender) = &self.signal_sender {
-            sender.send_parameter_changed(
-                &self.target_node,
-                &self.target_param,
-                value as f32,
-            );
+            sender.send_parameter_changed(&self.target_node, &self.target_param, value as f32);
         }
     }
 }
@@ -184,7 +175,7 @@ impl Automaton for FunctionAutomaton {
     type Context = AutomationContext;
     type Action = ();
     type State = FunctionState;
-    
+
     fn step(
         &self,
         time: Self::Time,
@@ -196,17 +187,17 @@ impl Automaton for FunctionAutomaton {
             let mut guard = self.generator.lock().unwrap();
             guard(time)
         };
-        
+
         // Отправляем сигнал если значение изменилось значительно
         if (value - state.value).abs() > self.threshold {
             self.send_signal(value);
         }
-        
+
         let new_state = FunctionState::new(value, time);
-        
+
         (new_state, None)
     }
-    
+
     fn initial_state(&self) -> Self::State {
         let value = {
             let mut guard = self.generator.lock().unwrap();
@@ -214,11 +205,11 @@ impl Automaton for FunctionAutomaton {
         };
         FunctionState::new(value, 0.0)
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn extract_value(&self, state: &Self::State) -> f64 {
         state.value
     }
@@ -264,14 +255,14 @@ impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
             threshold: 1e-6,
         }
     }
-    
+
     /// Установить отправитель сигналов
     /// Установить отправитель сигналов.
     pub fn with_signal_sender(mut self, sender: Arc<dyn SignalSender>) -> Self {
         self.signal_sender = Some(sender);
         self
     }
-    
+
     /// Установить порог для отправки сигналов
     /// Установить порог для отправки сигналов.
     /// Значение по умолчанию: 1e-6.
@@ -279,14 +270,10 @@ impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
         self.threshold = threshold;
         self
     }
-    
+
     fn send_signal(&self, value: f64) {
         if let Some(sender) = &self.signal_sender {
-            sender.send_parameter_changed(
-                &self.target_node,
-                &self.target_param,
-                value as f32,
-            );
+            sender.send_parameter_changed(&self.target_node, &self.target_param, value as f32);
         }
     }
 }
@@ -296,7 +283,7 @@ impl<S: Send + Sync + Clone + 'static> Automaton for StatefulFunctionAutomaton<S
     type Context = AutomationContext;
     type Action = ();
     type State = FunctionState;
-    
+
     fn step(
         &self,
         time: Self::Time,
@@ -310,22 +297,22 @@ impl<S: Send + Sync + Clone + 'static> Automaton for StatefulFunctionAutomaton<S
         } else {
             self.initial_state.clone()
         };
-        
+
         let value = {
             let mut guard = self.generator.lock().unwrap();
             guard(time, &mut user_state)
         };
-        
+
         // Отправляем сигнал если значение изменилось значительно
         if (value - state.value).abs() > self.threshold {
             self.send_signal(value);
         }
-        
+
         let new_state = FunctionState::with_user_state(value, time, user_state);
-        
+
         (new_state, None)
     }
-    
+
     fn initial_state(&self) -> Self::State {
         let mut user_state = self.initial_state.clone();
         let value = {
@@ -334,11 +321,11 @@ impl<S: Send + Sync + Clone + 'static> Automaton for StatefulFunctionAutomaton<S
         };
         FunctionState::with_user_state(value, 0.0, user_state)
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn extract_value(&self, state: &Self::State) -> f64 {
         state.value
     }
@@ -348,12 +335,12 @@ impl<S: Send + Sync + Clone + 'static> Automaton for StatefulFunctionAutomaton<S
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    
+
     #[derive(Debug)]
     struct TestSender {
         last_value: Arc<Mutex<Option<f32>>>,
     }
-    
+
     impl TestSender {
         fn new() -> Self {
             Self {
@@ -361,47 +348,38 @@ mod tests {
             }
         }
     }
-    
+
     impl SignalSender for TestSender {
         fn send_parameter_changed(&self, _node_id: &str, _param_id: &str, value: f32) {
             *self.last_value.lock().unwrap() = Some(value);
         }
     }
-    
+
     #[test]
     fn test_function_automaton_basic() {
-        let automaton = FunctionAutomaton::new(
-            "Test",
-            |time| time * 2.0,
-            "node",
-            "param",
-        );
-        
+        let automaton = FunctionAutomaton::new("Test", |time| time * 2.0, "node", "param");
+
         let state = automaton.initial_state();
         assert_eq!(state.value, 0.0);
-        
+
         let (new_state, _) = automaton.step(1.0, &AutomationContext::dummy(), (), &state);
         assert_eq!(new_state.value, 2.0);
     }
-    
+
     #[test]
     fn test_function_automaton_signal() {
         let sender = Arc::new(TestSender::new());
         let last_value = sender.last_value.clone();
-        
-        let automaton = FunctionAutomaton::new(
-            "Test",
-            |time| time,
-            "node",
-            "param",
-        ).with_signal_sender(sender);
-        
+
+        let automaton =
+            FunctionAutomaton::new("Test", |time| time, "node", "param").with_signal_sender(sender);
+
         let state = automaton.initial_state();
         let (new_state, _) = automaton.step(1.0, &AutomationContext::dummy(), (), &state);
-        
+
         assert_eq!(*last_value.lock().unwrap(), Some(1.0));
     }
-    
+
     #[test]
     fn test_stateful_automaton() {
         let automaton = StatefulFunctionAutomaton::new(
@@ -414,10 +392,10 @@ mod tests {
             "node",
             "param",
         );
-        
+
         let state = automaton.initial_state();
         assert_eq!(state.value, 1.0);
-        
+
         let (new_state, _) = automaton.step(1.0, &AutomationContext::dummy(), (), &state);
         assert_eq!(new_state.value, 2.0);
     }

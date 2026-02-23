@@ -6,22 +6,14 @@
 #![warn(missing_docs)]
 
 pub mod error;
-pub mod param;
 pub mod node;
-pub mod time;  // Модуль time содержит всё, что связано со временем
+pub mod param;
+pub mod time; // Модуль time содержит всё, что связано со временем
 
 // Реэкспорты для удобства
 pub use error::{AudioError, AudioResult};
-pub use param::{ParamValue, ParamType, ParamRange, ParamMetadata};
-pub use node::{
-    AudioNode, NodeCategory, NodeMetadata, NodeCreator, NodeTypeId,
-    NodeId, PortId,
-};
+pub use node::{AudioNode, NodeCategory, NodeCreator, NodeId, NodeMetadata, NodeTypeId, PortId};
+pub use param::{ParamMetadata, ParamRange, ParamType, ParamValue};
 
 // Реэкспорты из модуля time
-pub use time::{
-    Clock,
-    TimeProvider,
-    TickInfo,
-    SystemClock,
-};
+pub use time::{Clock, SystemClock, TickInfo, TimeProvider};

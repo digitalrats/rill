@@ -2,7 +2,7 @@
 //!
 //! Запуск: cargo run --example basic_signal_bus
 
-use kama_signal::{Signal, SignalBus, BusConfig};
+use kama_signal::{BusConfig, Signal, SignalBus};
 use std::thread;
 use std::time::Duration;
 
@@ -41,10 +41,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             velocity: 100,
             channel: 1,
         };
-        
+
         note_bus.send(signal)?;
         println!("  Отправлена нота: {} (velocity=100)", note);
-        
+
         // Небольшая задержка между нотами
         thread::sleep(Duration::from_millis(200));
     }
@@ -53,19 +53,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Читаем все отправленные ноты
     while let Ok(signal) = receiver.try_recv() {
-        println!("  Получена нота: {} на канале {}", signal.note, signal.channel);
+        println!(
+            "  Получена нота: {} на канале {}",
+            signal.note, signal.channel
+        );
     }
 
     // Пример с bounded очередью
     println!("\n=== Bounded Queue Example ===");
-    
-    let bounded_bus = SignalBus::<NoteOn>::new(
-        BusConfig::Bounded(3, kama_signal::OverflowPolicy::DropOldest)
-    );
+
+    let bounded_bus = SignalBus::<NoteOn>::new(BusConfig::Bounded(
+        3,
+        kama_signal::OverflowPolicy::DropOldest,
+    ));
     let bounded_rx = bounded_bus.receiver();
 
     println!("Отправляем 5 нот в очередь размером 3 (DropOldest)...");
-    
+
     for i in 0..5 {
         let note = 60 + i;
         let signal = NoteOn {
@@ -73,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             velocity: 100,
             channel: 1,
         };
-        
+
         match bounded_bus.send(signal) {
             Ok(()) => println!("  Нота {} отправлена", note),
             Err(e) => println!("  Нота {} не отправлена: {:?}", note, e),

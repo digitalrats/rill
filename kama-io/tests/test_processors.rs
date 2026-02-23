@@ -1,9 +1,6 @@
 use kama_io::{
+    processor::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor},
     AudioProcessor,
-    processor::{
-        GainProcessor, PassThroughProcessor, SilenceProcessor, 
-        MonoMixerProcessor,
-    },
 };
 
 #[cfg(feature = "examples")]
@@ -19,7 +16,7 @@ fn test_gain_processor() {
     let mut output = vec![0.0; 3];
     proc.process(&input, &mut output);
     assert_eq!(output, vec![0.2, 0.4, 0.6]);
-    
+
     proc.set_gain(0.5);
     let mut output2 = vec![0.0; 3];
     proc.process(&input, &mut output2);
@@ -58,15 +55,15 @@ fn test_mono_mixer_processor() {
 fn test_sine_processor() {
     let sample_rate = 44100.0;
     let mut proc = SineProcessor::new(440.0, sample_rate);
-    
+
     let mut output = vec![0.0; 1024];
     proc.process(&[], &mut output);
-    
+
     assert!(output.iter().any(|&x| x != 0.0));
     for &s in &output {
         assert!(s >= -1.0 && s <= 1.0);
     }
-    
+
     proc.set_frequency(880.0);
     let mut output2 = vec![0.0; 1024];
     proc.process(&[], &mut output2);

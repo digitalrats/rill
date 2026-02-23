@@ -1,11 +1,11 @@
 //! Delay effect with feedback
 
-use std::f32::consts::PI;
-use kama_core_traits::{
-    AudioNode, AudioError, ParamValue, NodeMetadata, NodeCategory, NodeTypeId,
-    param::{ParamType, ParamMetadata}
-};
 use kama_buffers::RingBuffer;
+use kama_core_traits::{
+    param::{ParamMetadata, ParamType},
+    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+};
+use std::f32::consts::PI;
 
 /// Delay effect with feedback
 ///
@@ -34,9 +34,9 @@ impl Delay {
         let sample_rate = 44100.0;
         let max_delay_samples = (2.0 * sample_rate) as usize; // 2 seconds max
         let buffer = RingBuffer::new(max_delay_samples);
-        
+
         let delay_samples = (delay_time * sample_rate) as usize;
-        
+
         Self {
             buffer,
             delay_time,
@@ -46,36 +46,37 @@ impl Delay {
             sample_rate,
         }
     }
-    
+
     /// Set delay time in seconds
     pub fn set_delay_time(&mut self, time: f32) {
         self.delay_time = time.clamp(0.01, 2.0);
         self.delay_samples = (self.delay_time * self.sample_rate) as usize;
     }
-    
+
     /// Set feedback amount
     pub fn set_feedback(&mut self, fb: f32) {
         self.feedback = fb.clamp(0.0, 0.99);
     }
-    
+
     /// Set dry/wet mix
     pub fn set_mix(&mut self, mix: f32) {
         self.mix = mix.clamp(0.0, 1.0);
     }
-    
+
     /// Process a single sample
     pub fn process_sample(&mut self, input: f32) -> f32 {
         // Read from delay buffer
         let mut delayed = 0.0;
-        self.buffer.read(self.delay_samples, std::slice::from_mut(&mut delayed));
-        
+        self.buffer
+            .read(self.delay_samples, std::slice::from_mut(&mut delayed));
+
         // Calculate output
         let output = input * (1.0 - self.mix) + delayed * self.mix;
-        
+
         // Write to buffer with feedback
         let write_sample = input + delayed * self.feedback;
         self.buffer.write(&[write_sample]);
-        
+
         output
     }
 }
@@ -85,18 +86,18 @@ impl AudioNode for Delay {
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
-        
+
         let input = inputs[0];
         let output = &mut outputs[0];
         let len = input.len().min(output.len());
-        
+
         for i in 0..len {
             output[i] = self.process_sample(input[i]);
         }
-        
+
         Ok(())
     }
-    
+
     fn get_param(&self, name: &str) -> Option<ParamValue> {
         match name {
             "delay_time" => Some(ParamValue::Float(self.delay_time)),
@@ -105,7 +106,7 @@ impl AudioNode for Delay {
             _ => None,
         }
     }
-    
+
     fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
         match (name, value) {
             ("delay_time", ParamValue::Float(t)) => {
@@ -120,28 +121,35 @@ impl AudioNode for Delay {
                 self.set_mix(m);
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!("Unknown parameter: {}", name))),
+            _ => Err(AudioError::Parameter(format!(
+                "Unknown parameter: {}",
+                name
+            ))),
         }
     }
-    
+
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.delay_samples = (self.delay_time * sample_rate) as usize;
         // Reset buffer?
         self.buffer.reset();
     }
-    
+
     fn reset(&mut self) {
         self.buffer.reset();
     }
-    
-    fn num_inputs(&self) -> usize { 1 }
-    fn num_outputs(&self) -> usize { 1 }
-    
+
+    fn num_inputs(&self) -> usize {
+        1
+    }
+    fn num_outputs(&self) -> usize {
+        1
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "Delay".to_string(),

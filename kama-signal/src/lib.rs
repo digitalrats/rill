@@ -8,28 +8,15 @@
 
 #![warn(missing_docs)]
 
-mod error;
-mod types;
 mod bus;
 mod dispatcher;
+mod error;
+mod types;
 
 // Делаем все модули публичными, чтобы их можно было использовать
-pub use error::{SignalError, SignalResult};
-pub use types::{
-    Signal,
-    SignalSource,
-    ParameterChanged,
-    ClockTick,
-    SystemEvent,
-};
-pub use bus::{
-    SignalBus,
-    BusConfig,
-    OverflowPolicy,
-};
+pub use bus::{BusConfig, OverflowPolicy, SignalBus};
 pub use dispatcher::{
-    SimpleSignalDispatcher,
-    SignalHandler,
-    DynSignalHandler,
-    SignalHandlerWrapper,
+    DynSignalHandler, SignalHandler, SignalHandlerWrapper, SimpleSignalDispatcher,
 };
+pub use error::{SignalError, SignalResult};
+pub use types::{ClockTick, ParameterChanged, Signal, SignalSource, SystemEvent};

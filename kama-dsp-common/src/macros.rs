@@ -1,20 +1,20 @@
 //! # Макросы для упрощения создания DSP-узлов
-//! 
+//!
 //! Предоставляет макросы, которые значительно упрощают создание типовых узлов:
-//! 
+//!
 //! - [`effect!`] — для простых эффектов
 //! - [`effect_with_state!`] — для эффектов с состоянием
 //! - [`filter!`] — для фильтров
 //! - [`generator!`] — для генераторов (осцилляторов)
-//! 
+//!
 //! ## Примеры использования
-//! 
+//!
 //! ```
 //! use kama_dsp_common::{effect, effect_with_state, filter, generator};
-//! 
+//!
 //! // Простой эффект усиления
 //! effect!(Gain, |sample, _ctx| sample * 0.5);
-//! 
+//!
 //! // Фильтр нижних частот
 //! filter!(LowPass, |sample, ctx| {
 //!     let alpha = 0.1;
@@ -36,11 +36,7 @@
 macro_rules! effect {
     ($name:ident, $process:expr) => {
         pub fn $name() -> impl $crate::AudioNode {
-            $crate::stateless_fn_node(
-                stringify!($name),
-                $crate::NodeCategory::Effect,
-                $process
-            )
+            $crate::stateless_fn_node(stringify!($name), $crate::NodeCategory::Effect, $process)
         }
     };
 }
@@ -65,7 +61,7 @@ macro_rules! effect_with_state {
                 stringify!($name),
                 $crate::NodeCategory::Effect,
                 $initial,
-                $process
+                $process,
             )
         }
     };
@@ -76,11 +72,7 @@ macro_rules! effect_with_state {
 macro_rules! filter {
     ($name:ident, $process:expr) => {
         pub fn $name() -> impl $crate::AudioNode {
-            $crate::stateless_fn_node(
-                stringify!($name),
-                $crate::NodeCategory::Filter,
-                $process
-            )
+            $crate::stateless_fn_node(stringify!($name), $crate::NodeCategory::Filter, $process)
         }
     };
 }
@@ -90,11 +82,7 @@ macro_rules! filter {
 macro_rules! generator {
     ($name:ident, $process:expr) => {
         pub fn $name() -> impl $crate::AudioNode {
-            $crate::stateless_fn_node(
-                stringify!($name),
-                $crate::NodeCategory::Generator,
-                $process
-            )
+            $crate::stateless_fn_node(stringify!($name), $crate::NodeCategory::Generator, $process)
         }
     };
 }

@@ -3,7 +3,7 @@
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Clock, TimeProvider, TickInfo};
+use crate::{Clock, TickInfo, TimeProvider};
 
 /// Системные часы – эталонная реализация `TimeProvider`.
 ///
@@ -24,12 +24,12 @@ impl SystemClock {
             bpm: AtomicU64::new(initial_bpm.to_bits()),
         }
     }
-    
+
     /// Создать часы с BPM по умолчанию (120)
     pub fn with_sample_rate(sample_rate: f64) -> Self {
         Self::new(sample_rate, 120.0)
     }
-    
+
     /// Получить текущую позицию в секундах
     pub fn position_seconds(&self) -> f64 {
         self.position_samples() as f64 / self.sample_rate()
@@ -82,10 +82,10 @@ impl TimeProvider for SystemClock {
         // Общее количество долей
         let total_beats_f = pos as f64 / samples_per_beat as f64;
         let total_beats = total_beats_f.floor() as u64;
-        
+
         // Доля внутри такта (0-3)
         let beat_in_bar = (total_beats % 4) as u8;
-        
+
         // Номер такта
         let bar = (total_beats / 4) as u32;
 
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_tick_info() {
         let clock = SystemClock::new(44100.0, 120.0);
-        
+
         // При 120 BPM одна доля = 0.5 сек = 22050 сэмплов
         clock.advance(22050);
         let info = clock.tick_info();
@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(info.beat, 0);
         assert_eq!(info.bar, 1);
     }
-    
+
     #[test]
     fn test_default_bpm() {
         let clock = SystemClock::with_sample_rate(48000.0);

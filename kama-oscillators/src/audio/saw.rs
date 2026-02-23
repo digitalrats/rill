@@ -1,10 +1,10 @@
 //! Sawtooth wave oscillator
 
-use kama_core_traits::{
-    AudioNode, AudioError, ParamValue, NodeMetadata, NodeCategory, NodeTypeId,
-    param::{ParamType, ParamMetadata}
-};
 use super::AudioOscillator;
+use kama_core_traits::{
+    param::{ParamMetadata, ParamType},
+    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+};
 
 /// Sawtooth wave oscillator
 ///
@@ -33,42 +33,42 @@ impl SawOsc {
             bandlimited: true,
         }
     }
-    
+
     /// Create with custom amplitude
     pub fn with_amplitude(mut self, amp: f32) -> Self {
         self.amplitude = amp.clamp(0.0, 1.0);
         self
     }
-    
+
     /// Enable/disable band-limiting
     pub fn with_bandlimited(mut self, bl: bool) -> Self {
         self.bandlimited = bl;
         self
     }
-    
+
     /// Generate next sample (non-bandlimited)
     fn generate_raw(&mut self) -> f32 {
         let sample = 2.0 * self.phase - 1.0;
-        
+
         let phase_inc = self.frequency / self.sample_rate;
         self.phase += phase_inc;
         if self.phase >= 1.0 {
             self.phase -= 1.0;
         }
-        
+
         sample * self.amplitude
     }
-    
+
     /// Generate next sample with band-limiting (BLEP)
     fn generate_bandlimited(&mut self) -> f32 {
         // Simple BLEP (Band-Limited Impulse) approximation
         // For a proper implementation, we'd need a more sophisticated algorithm
         let raw = 2.0 * self.phase - 1.0;
-        
+
         // Check if we just passed a discontinuity
         let phase_inc = self.frequency / self.sample_rate;
         let next_phase = self.phase + phase_inc;
-        
+
         let correction = if next_phase >= 1.0 {
             // We passed the discontinuity, apply BLEP
             let t = (1.0 - self.phase) / phase_inc; // fractional position of discontinuity
@@ -76,16 +76,16 @@ impl SawOsc {
         } else {
             0.0
         };
-        
+
         self.phase = if next_phase >= 1.0 {
             next_phase - 1.0
         } else {
             next_phase
         };
-        
+
         (raw + correction) * self.amplitude
     }
-    
+
     /// Generate a block of samples
     pub fn generate_block(&mut self, output: &mut [f32]) {
         if self.bandlimited {
@@ -104,36 +104,40 @@ impl AudioOscillator for SawOsc {
     fn set_frequency(&mut self, freq: f32) {
         self.frequency = freq.max(20.0).min(20000.0);
     }
-    
+
     fn frequency(&self) -> f32 {
         self.frequency
     }
-    
+
     fn set_amplitude(&mut self, amp: f32) {
         self.amplitude = amp.clamp(0.0, 1.0);
     }
-    
+
     fn amplitude(&self) -> f32 {
         self.amplitude
     }
-    
+
     fn reset_phase(&mut self) {
         self.phase = 0.0;
     }
 }
 
 impl AudioNode for SawOsc {
-    fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+    fn process(
+        &mut self,
+        _inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) -> Result<(), AudioError> {
         if outputs.is_empty() {
             return Ok(());
         }
-        
+
         let output = &mut outputs[0];
         self.generate_block(output);
-        
+
         Ok(())
     }
-    
+
     fn get_param(&self, name: &str) -> Option<ParamValue> {
         match name {
             "frequency" => Some(ParamValue::Float(self.frequency)),
@@ -142,7 +146,7 @@ impl AudioNode for SawOsc {
             _ => None,
         }
     }
-    
+
     fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
         match (name, value) {
             ("frequency", ParamValue::Float(f)) => {
@@ -157,25 +161,32 @@ impl AudioNode for SawOsc {
                 self.bandlimited = b;
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!("Unknown parameter: {}", name))),
+            _ => Err(AudioError::Parameter(format!(
+                "Unknown parameter: {}",
+                name
+            ))),
         }
     }
-    
+
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
     }
-    
+
     fn reset(&mut self) {
         self.phase = 0.0;
     }
-    
-    fn num_inputs(&self) -> usize { 0 }
-    fn num_outputs(&self) -> usize { 1 }
-    
+
+    fn num_inputs(&self) -> usize {
+        0
+    }
+    fn num_outputs(&self) -> usize {
+        1
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "Sawtooth Oscillator".to_string(),
@@ -222,35 +233,35 @@ impl AudioNode for SawOsc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_saw_osc_generate() {
         let mut osc = SawOsc::new(440.0).with_amplitude(0.5);
         osc.init(44100.0);
-        
+
         let sample = osc.generate_raw();
         assert!(sample >= -0.5 && sample <= 0.5);
     }
-    
+
     #[test]
     fn test_saw_osc_block() {
         let mut osc = SawOsc::new(440.0);
         osc.init(44100.0);
-        
+
         let mut output = vec![0.0; 1024];
         osc.generate_block(&mut output);
-        
+
         assert!(output.iter().any(|&x| x != 0.0));
     }
-    
+
     #[test]
     fn test_saw_osc_bandlimited() {
         let mut osc = SawOsc::new(440.0).with_bandlimited(true);
         osc.init(44100.0);
-        
+
         let raw = osc.generate_raw();
         let bl = osc.generate_bandlimited();
-        
+
         // Bandlimited version should be different
         assert!((raw - bl).abs() > 0.001);
     }

@@ -20,17 +20,17 @@
 //! - [`LfoWithEnvelopeAutomaton`] — LFO с огибающей
 //!
 //! ## Пример
-//! 
+//!
 //! ```
 //! use kama_automation::automaton::{FunctionAutomaton, Automaton};
 //! use kama_automation::AutomationContext;
 //! use std::sync::Arc;
 //! use kama_core_traits::time::SystemClock;
-//! 
+//!
 //! // Создаём контекст вручную (dummy доступен только в тестах)
 //! let clock = Arc::new(SystemClock::new(44100.0, 120.0));
 //! let ctx = AutomationContext::new(clock);
-//! 
+//!
 //! // Простой LFO через замыкание
 //! let lfo = FunctionAutomaton::new(
 //!     "Sine LFO",
@@ -38,7 +38,7 @@
 //!     "filter",
 //!     "cutoff"
 //! );
-//! 
+//!
 //! let state = lfo.initial_state();
 //! let (new_state, _) = lfo.step(0.5, &ctx, (), &state);
 //! println!("Value at t=0.5: {}", lfo.extract_value(&new_state));
@@ -63,7 +63,7 @@
 mod function;
 mod lfo;
 
-pub use function::{FunctionAutomaton, StatefulFunctionAutomaton, FunctionState, GeneratorFn};
+pub use function::{FunctionAutomaton, FunctionState, GeneratorFn, StatefulFunctionAutomaton};
 pub use lfo::{LfoAutomaton, LfoWithEnvelopeAutomaton};
 
 // Реэкспортируем из kama-oscillators для удобства
@@ -115,7 +115,7 @@ pub trait Automaton: Send + Sync {
     type Action: Clone + Default + Send + Sync + 'static;
     /// Тип внутреннего состояния.
     type State: Clone + Send + Sync + 'static;
-    
+
     /// Выполнить один шаг автомата.
     ///
     /// # Аргументы
@@ -133,7 +133,7 @@ pub trait Automaton: Send + Sync {
         action: Self::Action,
         state: &Self::State,
     ) -> (Self::State, Option<Self::Action>);
-    
+
     /// Начальное состояние автомата.
     fn initial_state(&self) -> Self::State;
     /// Имя автомата (для отладки и метаданных).
@@ -156,7 +156,7 @@ pub trait Automaton: Send + Sync {
 pub trait IntoAutomaton {
     /// Тип создаваемого автомата.
     type Automaton: Automaton + 'static;
-    
+
     /// Преобразовать замыкание в автомат.
     ///
     /// # Аргументы
@@ -170,7 +170,7 @@ where
     F: Fn(f64) -> f64 + Send + Sync + 'static,
 {
     type Automaton = FunctionAutomaton;
-    
+
     fn into_automaton(self, target_node: &str, target_param: &str) -> Self::Automaton {
         FunctionAutomaton::new("Custom", self, target_node, target_param)
     }
@@ -179,7 +179,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_into_automaton() {
         let automaton = (|t: f64| t.sin()).into_automaton("test", "param");

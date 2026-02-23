@@ -3,9 +3,7 @@
 //! Быстрые тесты используют моки и не требуют реальных устройств.
 //! Живые тесты с реальными устройствами игнорируются по умолчанию.
 
-use kama_io::{
-    AudioConfig, AudioBackend, BackendType,
-};
+use kama_io::{AudioBackend, AudioConfig, BackendType};
 
 #[cfg(feature = "cpal")]
 use kama_io::backends::CpalBackend;
@@ -14,7 +12,7 @@ use kama_io::backends::CpalBackend;
 use kama_io::backends::AlsaBackend;
 
 mod mocks;
-use mocks::{MockBackend, test_config};
+use mocks::{test_config, MockBackend};
 
 // =============================================================================
 // ТЕСТЫ С МОКАМИ (ВСЕГДА БЫСТРЫЕ)
@@ -24,10 +22,10 @@ use mocks::{MockBackend, test_config};
 #[test]
 fn test_backend_availability() {
     println!("\n=== Test: Backend Availability ===");
-    
+
     println!("Platform: {}", std::env::consts::OS);
     println!("Backend availability:");
-    
+
     let backends = [
         BackendType::Cpal,
         BackendType::Alsa,
@@ -35,15 +33,22 @@ fn test_backend_availability() {
         BackendType::Jack,
         BackendType::Null,
     ];
-    
+
     for &backend in &backends {
         let available = backend.is_available();
-        println!("  {:8}: {}", backend.name(), if available { "✅" } else { "❌" });
-        
+        println!(
+            "  {:8}: {}",
+            backend.name(),
+            if available { "✅" } else { "❌" }
+        );
+
         match backend {
             BackendType::Cpal => assert!(available, "CPAL should be available on all platforms"),
-            BackendType::Alsa => assert_eq!(available, cfg!(target_os = "linux"), 
-                                           "ALSA should only be available on Linux"),
+            BackendType::Alsa => assert_eq!(
+                available,
+                cfg!(target_os = "linux"),
+                "ALSA should only be available on Linux"
+            ),
             BackendType::Null => assert!(available, "Null backend should always be available"),
             _ => {}
         }
@@ -54,23 +59,23 @@ fn test_backend_availability() {
 #[test]
 fn test_mock_backend_basic() {
     println!("\n=== Test: Mock Backend Basic ===");
-    
+
     let config = test_config();
     let mut backend = MockBackend::new(config);
-    
+
     assert_eq!(backend.backend_type().name(), "Null");
     assert!(backend.init().is_ok());
     assert!(backend.start().is_ok());
-    
+
     let mut buf = vec![0.0; 256];
     let read = backend.read(&mut buf).unwrap();
     assert_eq!(read, 256);
     assert!(buf.iter().all(|&x| x == 0.0));
-    
+
     let write_buf = vec![0.5; 256];
     let written = backend.write(&write_buf).unwrap();
     assert_eq!(written, 256);
-    
+
     assert!(backend.stop().is_ok());
     assert_eq!(backend.xruns(), 0);
 }
@@ -79,10 +84,10 @@ fn test_mock_backend_basic() {
 #[test]
 fn test_mock_backend_failure() {
     println!("\n=== Test: Mock Backend Failure ===");
-    
+
     let config = test_config();
     let mut backend = MockBackend::new(config).with_failure(true);
-    
+
     assert!(backend.init().is_err());
     assert!(backend.start().is_err());
 }
@@ -91,13 +96,13 @@ fn test_mock_backend_failure() {
 #[test]
 fn test_mock_list_devices() {
     println!("\n=== Test: Mock List Devices ===");
-    
+
     let config = test_config();
     let backend = MockBackend::new(config);
-    
+
     let inputs = backend.list_input_devices();
     let outputs = backend.list_output_devices();
-    
+
     assert_eq!(inputs.len(), 1);
     assert_eq!(inputs[0], "Mock Input");
     assert_eq!(outputs.len(), 1);
@@ -108,13 +113,11 @@ fn test_mock_list_devices() {
 #[test]
 fn test_mock_config() {
     println!("\n=== Test: Mock Config ===");
-    
-    let config = test_config()
-        .with_sample_rate(48000)
-        .with_buffer_size(512);
-    
+
+    let config = test_config().with_sample_rate(48000).with_buffer_size(512);
+
     let backend = MockBackend::new(config);
-    
+
     assert_eq!(backend.config().sample_rate, 48000);
     assert_eq!(backend.config().buffer_size, 512);
 }

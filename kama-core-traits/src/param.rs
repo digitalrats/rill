@@ -1,8 +1,8 @@
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Тип значения параметра
-#[derive(Debug, Clone, PartialEq)]  // <-- добавляем PartialEq
+#[derive(Debug, Clone, PartialEq)] // <-- добавляем PartialEq
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ParamValue {
     Float(f32),
@@ -24,7 +24,7 @@ pub enum ParamType {
 }
 
 /// Диапазон значений параметра
-#[derive(Debug, Clone, PartialEq)]  // <-- добавляем PartialEq
+#[derive(Debug, Clone, PartialEq)] // <-- добавляем PartialEq
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParamRange {
     pub min: Option<f32>,
@@ -40,17 +40,17 @@ impl ParamRange {
             step: None,
         }
     }
-    
+
     pub fn with_min(mut self, min: f32) -> Self {
         self.min = Some(min);
         self
     }
-    
+
     pub fn with_max(mut self, max: f32) -> Self {
         self.max = Some(max);
         self
     }
-    
+
     pub fn with_step(mut self, step: f32) -> Self {
         self.step = Some(step);
         self
@@ -58,7 +58,7 @@ impl ParamRange {
 }
 
 /// Метаданные параметра
-#[derive(Debug, Clone, PartialEq)]  // <-- добавляем PartialEq
+#[derive(Debug, Clone, PartialEq)] // <-- добавляем PartialEq
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParamMetadata {
     pub name: String,

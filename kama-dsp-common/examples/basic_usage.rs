@@ -24,22 +24,22 @@ fn create_delay() -> impl AudioNode {
         |sample, buffer, ctx| {
             // TODO: реализация задержки
             sample
-        }
+        },
     )
 }
 
 fn main() {
     println!("=== kama-dsp-common Example ===\n");
-    
+
     // Создаем несколько эффектов
     let gain = Gain();
     let filter = OnePole();
     let delay = create_delay();
-    
+
     println!("Created effects:");
     println!("  - {}", gain.metadata().name);
     println!("  - {}", filter.metadata().name);
     println!("  - {}", delay.metadata().name);
-    
+
     println!("\n✅ kama-dsp-common работает!");
 }

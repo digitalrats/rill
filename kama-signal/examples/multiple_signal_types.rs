@@ -3,8 +3,7 @@
 //! Запуск: cargo run --example multiple_signal_types
 
 use kama_signal::{
-    Signal, SignalBus, BusConfig,
-    ParameterChanged, SignalSource, ClockTick, SystemEvent,
+    BusConfig, ClockTick, ParameterChanged, Signal, SignalBus, SignalSource, SystemEvent,
 };
 use std::thread;
 use std::time::Duration;
@@ -54,8 +53,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Получаем параметрический сигнал
     if let Ok(signal) = param_rx.try_recv() {
-        println!("  [PARAM] {} = {} (источник: {:?})", 
-                 signal.parameter_id, signal.value, signal.source);
+        println!(
+            "  [PARAM] {} = {} (источник: {:?})",
+            signal.parameter_id, signal.value, signal.source
+        );
     }
 
     // Получаем тактовый сигнал

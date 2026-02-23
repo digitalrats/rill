@@ -1,16 +1,16 @@
 //! Parametric equalizer implementation
 
-use std::sync::Arc;
+use crate::band::{BandType, EqBand};
+use crate::utils::parse_band_param;
 use kama_core_traits::{
-    AudioNode, AudioError, ParamValue, NodeMetadata, NodeCategory, NodeTypeId,
-    param::{ParamType, ParamMetadata}
+    param::{ParamMetadata, ParamType},
+    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
-use crate::band::{EqBand, BandType};
-use crate::utils::parse_band_param;
+use std::sync::Arc;
 
 #[cfg(feature = "automation")]
-use kama_signal::{SignalBus, ParameterChanged, SignalSource};
+use kama_signal::{ParameterChanged, SignalBus, SignalSource};
 
 /// Parametric equalizer with configurable bands
 ///
@@ -27,13 +27,15 @@ pub struct ParametricEq<F: Filter + 'static, Factory: FilterFactory<F> + Send + 
     output_gain: f32,
     /// Band names for automation
     band_names: Vec<String>,
-    
+
     #[cfg(feature = "automation")]
     /// Signal bus for automation
     signal_bus: Option<SignalBus<ParameterChanged>>,
 }
 
-impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> ParametricEq<F, Factory> {
+impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
+    ParametricEq<F, Factory>
+{
     /// Create a new parametric equalizer with specified number of bands
     pub fn new(factory: Factory, num_bands: usize, sample_rate: f32) -> Self {
         let mut eq = Self {
@@ -42,11 +44,11 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Par
             sample_rate,
             output_gain: 1.0,
             band_names: (0..num_bands).map(|i| format!("band_{}", i)).collect(),
-            
+
             #[cfg(feature = "automation")]
             signal_bus: None,
         };
-        
+
         // Initialize bands with reasonable default frequencies
         for i in 0..num_bands {
             // Logarithmic spacing from 20Hz to 20kHz
@@ -64,10 +66,10 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Par
             );
             eq.bands.push(band);
         }
-        
+
         eq
     }
-    
+
     /// Set parameters for a specific band
     pub fn set_band(
         &mut self,
@@ -77,85 +79,94 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Par
         gain_db: f32,
     ) -> Result<(), AudioError> {
         if index >= self.bands.len() {
-            return Err(AudioError::Parameter(format!("Band index {} out of range", index)));
+            return Err(AudioError::Parameter(format!(
+                "Band index {} out of range",
+                index
+            )));
         }
-        
+
         let band = &mut self.bands[index];
         band.set_frequency(frequency);
         band.set_q(q);
         band.set_gain_db(gain_db);
         band.update_filter(&self.factory);
-        
+
         #[cfg(feature = "automation")]
         self.send_band_update(index);
-        
+
         Ok(())
     }
-    
+
     /// Set band type
     pub fn set_band_type(&mut self, index: usize, band_type: BandType) -> Result<(), AudioError> {
         if index >= self.bands.len() {
-            return Err(AudioError::Parameter(format!("Band index {} out of range", index)));
+            return Err(AudioError::Parameter(format!(
+                "Band index {} out of range",
+                index
+            )));
         }
-        
+
         let band = &mut self.bands[index];
         band.band_type = band_type;
         band.update_filter(&self.factory);
-        
+
         #[cfg(feature = "automation")]
         self.send_band_update(index);
-        
+
         Ok(())
     }
-    
+
     /// Enable/disable band
     pub fn set_band_enabled(&mut self, index: usize, enabled: bool) -> Result<(), AudioError> {
         if index >= self.bands.len() {
-            return Err(AudioError::Parameter(format!("Band index {} out of range", index)));
+            return Err(AudioError::Parameter(format!(
+                "Band index {} out of range",
+                index
+            )));
         }
-        
+
         self.bands[index].set_enabled(enabled);
-        
+
         #[cfg(feature = "automation")]
         self.send_band_update(index);
-        
+
         Ok(())
     }
-    
+
     /// Set output gain
     pub fn set_output_gain(&mut self, gain: f32) {
         self.output_gain = gain.max(0.0).min(4.0);
-        
+
         #[cfg(feature = "automation")]
         self.send_parameter_update("output_gain", self.output_gain);
     }
-    
+
     /// Get band frequency
     pub fn get_band_frequency(&self, index: usize) -> Option<f32> {
         self.bands.get(index).map(|b| b.frequency())
     }
-    
+
     /// Get band Q
     pub fn get_band_q(&self, index: usize) -> Option<f32> {
         self.bands.get(index).map(|b| b.q())
     }
-    
+
     /// Get band gain
     pub fn get_band_gain(&self, index: usize) -> Option<f32> {
         self.bands.get(index).map(|b| b.gain_db())
     }
-    
+
     /// Get band type
     pub fn get_band_type(&self, index: usize) -> Option<BandType> {
         self.bands.get(index).map(|b| b.band_type())
     }
-    
+
     #[cfg(feature = "automation")]
     /// Connect to signal bus for automation
     pub fn connect_signals(&mut self, bus: SignalBus<ParameterChanged>) {
         self.signal_bus = Some(bus);
     }
-    
+
     #[cfg(feature = "automation")]
     fn send_band_update(&self, index: usize) {
         if let Some(bus) = &self.signal_bus {
@@ -172,7 +183,7 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Par
                     source: SignalSource::Automation,
                 };
                 let _ = bus.send(signal);
-                
+
                 let signal = ParameterChanged {
                     node_id: "eq".to_string(),
                     parameter_id: format!("band_{}_gain", index),
@@ -188,7 +199,7 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Par
             }
         }
     }
-    
+
     #[cfg(feature = "automation")]
     fn send_parameter_update(&self, param: &str, value: f32) {
         if let Some(bus) = &self.signal_bus {
@@ -208,32 +219,34 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Par
     }
 }
 
-impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> AudioNode for ParametricEq<F, Factory> {
+impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> AudioNode
+    for ParametricEq<F, Factory>
+{
     fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
-        
+
         let input = inputs[0];
         let output = &mut outputs[0];
         let buffer_size = input.len().min(output.len());
-        
+
         // Process through all bands sequentially
         for i in 0..buffer_size {
             let mut sample = input[i];
-            
+
             for band in &mut self.bands {
                 if band.is_enabled() {
                     sample = band.process(sample);
                 }
             }
-            
+
             output[i] = sample * self.output_gain;
         }
-        
+
         Ok(())
     }
-    
+
     fn get_param(&self, name: &str) -> Option<ParamValue> {
         match name {
             "num_bands" => Some(ParamValue::Int(self.bands.len() as i32)),
@@ -246,7 +259,9 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
                             "q" => Some(ParamValue::Float(band.q())),
                             "gain" => Some(ParamValue::Float(band.gain_db())),
                             "enabled" => Some(ParamValue::Bool(band.is_enabled())),
-                            "type" => Some(ParamValue::Choice(band.band_type().as_str().to_string())),
+                            "type" => {
+                                Some(ParamValue::Choice(band.band_type().as_str().to_string()))
+                            }
                             _ => None,
                         }
                     } else {
@@ -258,118 +273,136 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
             }
         }
     }
-    
-fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-    match (name, value.clone()) {  // <-- клонируем для проверки
-        ("output_gain", ParamValue::Float(g)) => {
-            self.set_output_gain(g);
-            Ok(())
-        }
-        _ => {
-            if let Some((index, param)) = parse_band_param(name) {
-                if index >= self.bands.len() {
-                    return Err(AudioError::Parameter(format!("Band index {} out of range", index)));
-                }
-                
-                match param {
-                    "freq" | "frequency" => {
-                        if let ParamValue::Float(f) = value {  // используем оригинальный value
-                            self.bands[index].set_frequency(f);
-                            self.bands[index].update_filter(&self.factory);
-                            
-                            #[cfg(feature = "automation")]
-                            self.send_band_update(index);
-                            
-                            Ok(())
-                        } else {
-                            Err(AudioError::Parameter("Expected float".into()))
-                        }
+
+    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
+        match (name, value.clone()) {
+            // <-- клонируем для проверки
+            ("output_gain", ParamValue::Float(g)) => {
+                self.set_output_gain(g);
+                Ok(())
+            }
+            _ => {
+                if let Some((index, param)) = parse_band_param(name) {
+                    if index >= self.bands.len() {
+                        return Err(AudioError::Parameter(format!(
+                            "Band index {} out of range",
+                            index
+                        )));
                     }
-                    "q" => {
-                        if let ParamValue::Float(q) = value {
-                            self.bands[index].set_q(q);
-                            self.bands[index].update_filter(&self.factory);
-                            
-                            #[cfg(feature = "automation")]
-                            self.send_band_update(index);
-                            
-                            Ok(())
-                        } else {
-                            Err(AudioError::Parameter("Expected float".into()))
-                        }
-                    }
-                    "gain" => {
-                        if let ParamValue::Float(g) = value {
-                            self.bands[index].set_gain_db(g);
-                            self.bands[index].update_filter(&self.factory);
-                            
-                            #[cfg(feature = "automation")]
-                            self.send_band_update(index);
-                            
-                            Ok(())
-                        } else {
-                            Err(AudioError::Parameter("Expected float".into()))
-                        }
-                    }
-                    "enabled" => {
-                        if let ParamValue::Bool(e) = value {
-                            self.bands[index].set_enabled(e);
-                            
-                            #[cfg(feature = "automation")]
-                            self.send_band_update(index);
-                            
-                            Ok(())
-                        } else {
-                            Err(AudioError::Parameter("Expected bool".into()))
-                        }
-                    }
-                    "type" => {
-                        // Используем клонированное значение для проверки типа
-                        if let ParamValue::Choice(type_str) = value.clone() {
-                            if let Some(band_type) = BandType::from_str(&type_str) {
-                                self.bands[index].band_type = band_type;
+
+                    match param {
+                        "freq" | "frequency" => {
+                            if let ParamValue::Float(f) = value {
+                                // используем оригинальный value
+                                self.bands[index].set_frequency(f);
                                 self.bands[index].update_filter(&self.factory);
-                                
+
                                 #[cfg(feature = "automation")]
                                 self.send_band_update(index);
-                                
+
                                 Ok(())
                             } else {
-                                Err(AudioError::Parameter(format!("Unknown band type: {}", type_str)))
+                                Err(AudioError::Parameter("Expected float".into()))
                             }
-                        } else {
-                            Err(AudioError::Parameter("Expected choice".into()))
                         }
+                        "q" => {
+                            if let ParamValue::Float(q) = value {
+                                self.bands[index].set_q(q);
+                                self.bands[index].update_filter(&self.factory);
+
+                                #[cfg(feature = "automation")]
+                                self.send_band_update(index);
+
+                                Ok(())
+                            } else {
+                                Err(AudioError::Parameter("Expected float".into()))
+                            }
+                        }
+                        "gain" => {
+                            if let ParamValue::Float(g) = value {
+                                self.bands[index].set_gain_db(g);
+                                self.bands[index].update_filter(&self.factory);
+
+                                #[cfg(feature = "automation")]
+                                self.send_band_update(index);
+
+                                Ok(())
+                            } else {
+                                Err(AudioError::Parameter("Expected float".into()))
+                            }
+                        }
+                        "enabled" => {
+                            if let ParamValue::Bool(e) = value {
+                                self.bands[index].set_enabled(e);
+
+                                #[cfg(feature = "automation")]
+                                self.send_band_update(index);
+
+                                Ok(())
+                            } else {
+                                Err(AudioError::Parameter("Expected bool".into()))
+                            }
+                        }
+                        "type" => {
+                            // Используем клонированное значение для проверки типа
+                            if let ParamValue::Choice(type_str) = value.clone() {
+                                if let Some(band_type) = BandType::from_str(&type_str) {
+                                    self.bands[index].band_type = band_type;
+                                    self.bands[index].update_filter(&self.factory);
+
+                                    #[cfg(feature = "automation")]
+                                    self.send_band_update(index);
+
+                                    Ok(())
+                                } else {
+                                    Err(AudioError::Parameter(format!(
+                                        "Unknown band type: {}",
+                                        type_str
+                                    )))
+                                }
+                            } else {
+                                Err(AudioError::Parameter("Expected choice".into()))
+                            }
+                        }
+                        _ => Err(AudioError::Parameter(format!(
+                            "Unknown band parameter: {}",
+                            param
+                        ))),
                     }
-                    _ => Err(AudioError::Parameter(format!("Unknown band parameter: {}", param))),
+                } else {
+                    Err(AudioError::Parameter(format!(
+                        "Unknown parameter: {}",
+                        name
+                    )))
                 }
-            } else {
-                Err(AudioError::Parameter(format!("Unknown parameter: {}", name)))
             }
         }
     }
-}
-    
+
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         for band in &mut self.bands {
             band.filter.init(sample_rate);
         }
     }
-    
+
     fn reset(&mut self) {
         for band in &mut self.bands {
             band.filter.reset();
         }
     }
-    
-    fn num_inputs(&self) -> usize { 1 }
-    fn num_outputs(&self) -> usize { 1 }
-    
+
+    fn num_inputs(&self) -> usize {
+        1
+    }
+    fn num_outputs(&self) -> usize {
+        1
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         let mut params = vec![
             ParamMetadata {
@@ -393,7 +426,7 @@ fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError>
                 choices: None,
             },
         ];
-        
+
         // Add band parameters to metadata
         for i in 0..self.bands.len() {
             params.push(ParamMetadata {
@@ -406,7 +439,7 @@ fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError>
                 unit: Some("Hz".to_string()),
                 choices: None,
             });
-            
+
             params.push(ParamMetadata {
                 name: format!("band_{}_gain", i),
                 typ: ParamType::Float,
@@ -417,7 +450,7 @@ fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError>
                 unit: Some("dB".to_string()),
                 choices: None,
             });
-            
+
             params.push(ParamMetadata {
                 name: format!("band_{}_q", i),
                 typ: ParamType::Float,
@@ -428,7 +461,7 @@ fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError>
                 unit: Some("Q".to_string()),
                 choices: None,
             });
-            
+
             params.push(ParamMetadata {
                 name: format!("band_{}_enabled", i),
                 typ: ParamType::Bool,
@@ -439,7 +472,7 @@ fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError>
                 unit: None,
                 choices: None,
             });
-            
+
             params.push(ParamMetadata {
                 name: format!("band_{}_type", i),
                 typ: ParamType::Choice,
@@ -459,11 +492,14 @@ fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError>
                 ]),
             });
         }
-        
+
         NodeMetadata {
             name: format!("Parametric EQ ({} bands)", self.bands.len()),
             category: NodeCategory::Filter,
-            description: format!("Parametric equalizer using {} filters", self.factory.factory_name()),
+            description: format!(
+                "Parametric equalizer using {} filters",
+                self.factory.factory_name()
+            ),
             author: "Kama EQ".to_string(),
             version: "0.1.0".to_string(),
             parameters: params,

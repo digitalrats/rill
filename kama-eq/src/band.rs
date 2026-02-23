@@ -36,7 +36,7 @@ impl BandType {
             _ => None,
         }
     }
-    
+
     /// Get string representation
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -49,7 +49,7 @@ impl BandType {
             BandType::Notch => "notch",
         }
     }
-    
+
     /// Convert to FilterType
     pub fn to_filter_type(&self) -> FilterType {
         match self {
@@ -82,13 +82,7 @@ pub struct EqBand<F: Filter> {
 
 impl<F: Filter> EqBand<F> {
     /// Create a new EQ band
-    pub fn new(
-        filter: F,
-        band_type: BandType,
-        frequency: f32,
-        q: f32,
-        gain_db: f32,
-    ) -> Self {
+    pub fn new(filter: F, band_type: BandType, frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
             filter,
             band_type,
@@ -98,21 +92,21 @@ impl<F: Filter> EqBand<F> {
             enabled: true,
         }
     }
-    
+
     /// Process a single sample through this band
     pub fn process(&mut self, input: f32) -> f32 {
         if !self.enabled {
             return input;
         }
-        
+
         // Создаём входной буфер как срез
         let input_slice = [input];
         let inputs = [input_slice.as_slice()];
-        
+
         // Создаём выходной буфер
         let mut output = [0.0];
         let mut outputs = [output.as_mut_slice()];
-        
+
         // Вызываем AudioNode::process для фильтра
         if self.filter.process(&inputs, &mut outputs).is_ok() {
             output[0]
@@ -120,7 +114,7 @@ impl<F: Filter> EqBand<F> {
             input
         }
     }
-    
+
     /// Update the filter with current parameters
     pub fn update_filter<Factory: FilterFactory<F>>(&mut self, factory: &Factory) {
         self.filter = factory.create_filter(
@@ -130,47 +124,47 @@ impl<F: Filter> EqBand<F> {
             self.gain_db,
         );
     }
-    
+
     /// Set frequency
     pub fn set_frequency(&mut self, freq: f32) {
         self.frequency = freq.max(20.0).min(20000.0);
     }
-    
+
     /// Set Q factor
     pub fn set_q(&mut self, q: f32) {
         self.q = q.max(0.1).min(20.0);
     }
-    
+
     /// Set gain in dB
     pub fn set_gain_db(&mut self, gain: f32) {
         self.gain_db = gain.max(-24.0).min(24.0);
     }
-    
+
     /// Enable/disable band
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
-    
+
     /// Get current frequency
     pub fn frequency(&self) -> f32 {
         self.frequency
     }
-    
+
     /// Get current Q
     pub fn q(&self) -> f32 {
         self.q
     }
-    
+
     /// Get current gain in dB
     pub fn gain_db(&self) -> f32 {
         self.gain_db
     }
-    
+
     /// Check if band is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
-    
+
     /// Get band type
     pub fn band_type(&self) -> BandType {
         self.band_type

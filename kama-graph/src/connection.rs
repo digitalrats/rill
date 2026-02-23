@@ -16,7 +16,7 @@ impl Connection {
     pub fn new(from: PortId, to: PortId, gain: f32) -> Self {
         Self { from, to, gain }
     }
-    
+
     /// Проверить валидность соединения
     pub fn is_valid(&self) -> bool {
         self.from.is_output() && self.to.is_input()

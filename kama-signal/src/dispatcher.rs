@@ -1,22 +1,22 @@
 //! # SimpleSignalDispatcher — синхронный диспетчер сигналов
-//! 
+//!
 //! Предоставляет механизм регистрации обработчиков для разных типов сигналов
 //! и синхронной диспетчеризации сигналов всем зарегистрированным обработчикам.
-//! 
+//!
 //! ## Особенности
-//! 
+//!
 //! - Типобезопасность через generics
 //! - Множество обработчиков на один тип сигнала
 //! - Синхронная обработка (все обработчики вызываются в том же потоке)
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use parking_lot::RwLock;
 use crate::error::{SignalError, SignalResult};
 use crate::Signal;
+use parking_lot::RwLock;
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 
 /// Динамический обработчик сигналов
-    /// Динамический обработчик сигналов (для type erasure).
+/// Динамический обработчик сигналов (для type erasure).
 pub trait DynSignalHandler: Send + Sync {
     fn handle_any(&mut self, signal: &dyn Any) -> SignalResult<()>;
     fn signal_type_id(&self) -> TypeId;
@@ -48,18 +48,18 @@ where
 }
 
 /// Обработчик сигналов конкретного типа
-    /// Обработчик сигналов конкретного типа.
-    ///
-    /// Реализуется для типов, которые хотят получать сигналы определённого типа.
+/// Обработчик сигналов конкретного типа.
+///
+/// Реализуется для типов, которые хотят получать сигналы определённого типа.
 pub trait SignalHandler<T: Signal>: Send + Sync {
     fn handle(&mut self, signal: &T);
 }
 
 /// Простой диспетчер сигналов (синхронный)
-    /// Синхронный диспетчер сигналов.
-    ///
-    /// Хранит обработчики для разных типов сигналов и вызывает их
-    /// при получении сигнала соответствующего типа.
+/// Синхронный диспетчер сигналов.
+///
+/// Хранит обработчики для разных типов сигналов и вызывает их
+/// при получении сигнала соответствующего типа.
 pub struct SimpleSignalDispatcher {
     handlers: HashMap<TypeId, Vec<Box<dyn DynSignalHandler>>>,
 }
@@ -72,10 +72,7 @@ impl SimpleSignalDispatcher {
         }
     }
 
-    pub fn register<T: Signal + 'static, H: SignalHandler<T> + 'static>(
-        &mut self,
-        handler: H,
-    ) {
+    pub fn register<T: Signal + 'static, H: SignalHandler<T> + 'static>(&mut self, handler: H) {
         let type_id = TypeId::of::<T>();
         let wrapper = SignalHandlerWrapper {
             handler,

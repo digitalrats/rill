@@ -2,11 +2,10 @@
 //!
 //! Запуск: cargo run --example signal_dispatcher
 
-use std::sync::{Arc, Mutex};
 use kama_signal::{
-    SimpleSignalDispatcher, SignalHandler,
-    ParameterChanged, SignalSource, ClockTick, SystemEvent,
+    ClockTick, ParameterChanged, SignalHandler, SignalSource, SimpleSignalDispatcher, SystemEvent,
 };
+use std::sync::{Arc, Mutex};
 
 // Обработчик для логирования - теперь с Clone
 #[derive(Clone)]
@@ -22,7 +21,7 @@ impl LoggingHandler {
             log: Arc::new(Mutex::new(Vec::new())),
         }
     }
-    
+
     fn print_log(&self) {
         let log = self.log.lock().unwrap();
         println!("Лог обработчика '{}':", self.name);
@@ -34,8 +33,10 @@ impl LoggingHandler {
 
 impl SignalHandler<ParameterChanged> for LoggingHandler {
     fn handle(&mut self, signal: &ParameterChanged) {
-        let msg = format!("[{}] Параметр {}:{} = {:.2}", 
-                          self.name, signal.node_id, signal.parameter_id, signal.value);
+        let msg = format!(
+            "[{}] Параметр {}:{} = {:.2}",
+            self.name, signal.node_id, signal.parameter_id, signal.value
+        );
         println!("{}", msg);
         self.log.lock().unwrap().push(msg);
     }
@@ -78,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timestamp: 1234567890 + i as u64,
             source: SignalSource::Automation,
         };
-        
+
         dispatcher.emit(signal)?;
         println!("  Отправлен ParameterChanged #{}", i);
     }
@@ -89,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sample_pos: 44100 * (i + 1),
             samples_since_last: 44100,
         };
-        
+
         dispatcher.emit(signal)?;
         println!("  Отправлен ClockTick #{}", i);
     }

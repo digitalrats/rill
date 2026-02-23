@@ -1,5 +1,5 @@
+use kama_core_traits::{param::ParamValue, AudioNode, NodeMetadata, NodeTypeId};
 use std::any::Any;
-use kama_core_traits::{AudioNode, NodeMetadata, NodeTypeId, param::ParamValue};
 
 /// Функция для создания узла
 pub type NodeFactoryFn = fn() -> Box<dyn AudioNode>;
@@ -71,43 +71,65 @@ pub struct SerializableGraph {
 impl SerializableParameter {
     pub fn from_param(name: &str, value: &ParamValue) -> Self {
         let (param_type, json_value) = match value {
-            ParamValue::Float(f) => ("float", serde_json::Value::Number(serde_json::Number::from_f64(*f as f64).unwrap_or(0.into()))),
-            ParamValue::Int(i) => ("int", serde_json::Value::Number(serde_json::Number::from(*i))),
+            ParamValue::Float(f) => (
+                "float",
+                serde_json::Value::Number(
+                    serde_json::Number::from_f64(*f as f64).unwrap_or(0.into()),
+                ),
+            ),
+            ParamValue::Int(i) => (
+                "int",
+                serde_json::Value::Number(serde_json::Number::from(*i)),
+            ),
             ParamValue::Bool(b) => ("bool", serde_json::Value::Bool(*b)),
             ParamValue::String(s) => ("string", serde_json::Value::String(s.clone())),
             ParamValue::Choice(s) => ("choice", serde_json::Value::String(s.clone())),
         };
-        
+
         Self {
             name: name.to_string(),
             param_type: param_type.to_string(),
             value: json_value,
         }
     }
-    
+
     pub fn to_param(&self) -> RegistryResult<ParamValue> {
         match self.param_type.as_str() {
             "float" => {
-                let f = self.value.as_f64().ok_or_else(|| RegistryError::InvalidParameter("Invalid float value".into()))?;
+                let f = self
+                    .value
+                    .as_f64()
+                    .ok_or_else(|| RegistryError::InvalidParameter("Invalid float value".into()))?;
                 Ok(ParamValue::Float(f as f32))
             }
             "int" => {
-                let i = self.value.as_i64().ok_or_else(|| RegistryError::InvalidParameter("Invalid int value".into()))?;
+                let i = self
+                    .value
+                    .as_i64()
+                    .ok_or_else(|| RegistryError::InvalidParameter("Invalid int value".into()))?;
                 Ok(ParamValue::Int(i as i32))
             }
             "bool" => {
-                let b = self.value.as_bool().ok_or_else(|| RegistryError::InvalidParameter("Invalid bool value".into()))?;
+                let b = self
+                    .value
+                    .as_bool()
+                    .ok_or_else(|| RegistryError::InvalidParameter("Invalid bool value".into()))?;
                 Ok(ParamValue::Bool(b))
             }
             "string" | "choice" => {
-                let s = self.value.as_str().ok_or_else(|| RegistryError::InvalidParameter("Invalid string value".into()))?;
+                let s = self.value.as_str().ok_or_else(|| {
+                    RegistryError::InvalidParameter("Invalid string value".into())
+                })?;
                 if self.param_type == "choice" {
                     Ok(ParamValue::Choice(s.to_string()))
                 } else {
                     Ok(ParamValue::String(s.to_string()))
                 }
             }
-            _ => Err(RegistryError::InvalidParameter(format!("Unknown parameter type: {}", self.param_type))),
+            _ => Err(RegistryError::InvalidParameter(format!(
+                "Unknown parameter type: {}",
+                self.param_type
+            ))),
         }
     }
 }

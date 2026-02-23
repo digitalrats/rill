@@ -29,7 +29,7 @@ pub trait Clock: Send + Sync + Debug {
     fn position_seconds(&self) -> f64 {
         self.position_samples() as f64 / self.sample_rate()
     }
-    
+
     /// Продвинуть время на указанное количество сэмплов.
     fn advance(&self, samples: u64) -> u64;
 

@@ -1,8 +1,8 @@
 //! Trigger generator for events and gates
 
 use kama_core_traits::{
-    AudioNode, AudioError, ParamValue, NodeMetadata, NodeCategory, NodeTypeId,
-    param::{ParamType, ParamMetadata}
+    param::{ParamMetadata, ParamType},
+    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 
 /// Trigger modes
@@ -23,7 +23,7 @@ impl TriggerMode {
     pub fn names() -> Vec<&'static str> {
         vec!["rising", "falling", "gate", "toggle"]
     }
-    
+
     /// Get mode from string
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -66,26 +66,26 @@ impl Trigger {
             toggle_state: false,
         }
     }
-    
+
     /// Set trigger mode
     pub fn with_mode(mut self, mode: TriggerMode) -> Self {
         self.mode = mode;
         self
     }
-    
+
     /// Set pulse duration in samples
     pub fn with_pulse_duration(mut self, samples: usize) -> Self {
         self.pulse_duration = samples.max(1);
         self
     }
-    
+
     /// Set pulse duration in milliseconds
     pub fn with_pulse_ms(mut self, ms: f32, sample_rate: f32) -> Self {
         self.pulse_duration = ((ms / 1000.0) * sample_rate) as usize;
         self.pulse_duration = self.pulse_duration.max(1);
         self
     }
-    
+
     /// Process one sample with input
     pub fn process(&mut self, input: f32) -> f32 {
         // Update pulse counter (decrement if active)
@@ -95,7 +95,7 @@ impl Trigger {
                 self.output = 0.0;
             }
         }
-        
+
         // Edge detection and trigger generation
         match self.mode {
             TriggerMode::Rising => {
@@ -118,11 +118,11 @@ impl Trigger {
                 }
             }
         }
-        
+
         self.last_input = input;
         self.output
     }
-    
+
     /// Process a block of samples
     pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         let len = input.len().min(output.len());
@@ -130,23 +130,23 @@ impl Trigger {
             output[i] = self.process(input[i]);
         }
     }
-    
+
     /// Generate a trigger pulse
     fn trigger(&mut self) {
         self.pulse_counter = self.pulse_duration;
         self.output = 1.0;
     }
-    
+
     /// Check if currently triggered
     pub fn is_triggered(&self) -> bool {
         self.pulse_counter > 0
     }
-    
+
     /// Get current output value
     pub fn output(&self) -> f32 {
         self.output
     }
-    
+
     /// Reset state
     pub fn reset(&mut self) {
         self.output = 0.0;
@@ -154,7 +154,7 @@ impl Trigger {
         self.pulse_counter = 0;
         self.toggle_state = false;
     }
-    
+
     /// Set pulse duration in samples
     pub fn set_pulse_duration(&mut self, samples: usize) {
         self.pulse_duration = samples.max(1);
@@ -172,15 +172,15 @@ impl AudioNode for Trigger {
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
-        
+
         let input = inputs[0];
         let output = &mut outputs[0];
-        
+
         self.process_block(input, output);
-        
+
         Ok(())
     }
-    
+
     fn get_param(&self, name: &str) -> Option<ParamValue> {
         match name {
             "mode" => {
@@ -198,7 +198,7 @@ impl AudioNode for Trigger {
             _ => None,
         }
     }
-    
+
     fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
         match (name, value) {
             ("mode", ParamValue::Choice(m)) => {
@@ -213,25 +213,32 @@ impl AudioNode for Trigger {
                 self.set_pulse_duration(d as usize);
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!("Unknown parameter: {}", name))),
+            _ => Err(AudioError::Parameter(format!(
+                "Unknown parameter: {}",
+                name
+            ))),
         }
     }
-    
+
     fn init(&mut self, _sample_rate: f32) {
         // Nothing to initialize
     }
-    
+
     fn reset(&mut self) {
         self.reset();
     }
-    
-    fn num_inputs(&self) -> usize { 1 }
-    fn num_outputs(&self) -> usize { 1 }
-    
+
+    fn num_inputs(&self) -> usize {
+        1
+    }
+    fn num_outputs(&self) -> usize {
+        1
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "Trigger".to_string(),
@@ -248,10 +255,13 @@ impl AudioNode for Trigger {
                     max: None,
                     step: None,
                     unit: None,
-                    choices: Some(TriggerMode::names().iter()
-                        .enumerate()
-                        .map(|(i, &name)| (name.to_string(), i as f32))
-                        .collect()),
+                    choices: Some(
+                        TriggerMode::names()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &name)| (name.to_string(), i as f32))
+                            .collect(),
+                    ),
                 },
                 ParamMetadata {
                     name: "pulse_duration".to_string(),
@@ -271,33 +281,32 @@ impl AudioNode for Trigger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_trigger_rising() {
         let mut trigger = Trigger::new()
             .with_mode(TriggerMode::Rising)
             .with_pulse_duration(5);
-        
+
         trigger.reset();
-        
+
         assert_eq!(trigger.process(0.0), 0.0);
         assert_eq!(trigger.process(0.3), 0.0);
         assert_eq!(trigger.process(0.7), 1.0); // rising edge triggers immediately
         assert_eq!(trigger.process(0.8), 1.0); // still in pulse
-        // after 5 samples, pulse ends
+                                               // after 5 samples, pulse ends
         for _ in 0..4 {
             trigger.process(0.9);
         }
         assert_eq!(trigger.process(1.0), 0.0);
     }
-    
+
     #[test]
     fn test_trigger_gate() {
-        let mut trigger = Trigger::new()
-            .with_mode(TriggerMode::Gate);
-        
+        let mut trigger = Trigger::new().with_mode(TriggerMode::Gate);
+
         trigger.reset();
-        
+
         assert_eq!(trigger.process(0.0), 0.0);
         assert_eq!(trigger.process(0.3), 0.0);
         assert_eq!(trigger.process(0.7), 1.0); // follows input
@@ -305,14 +314,13 @@ mod tests {
         assert_eq!(trigger.process(0.4), 0.0);
         assert_eq!(trigger.process(0.3), 0.0);
     }
-    
+
     #[test]
     fn test_trigger_toggle() {
-        let mut trigger = Trigger::new()
-            .with_mode(TriggerMode::Toggle);
-        
+        let mut trigger = Trigger::new().with_mode(TriggerMode::Toggle);
+
         trigger.reset();
-        
+
         assert_eq!(trigger.process(0.0), 0.0);
         assert_eq!(trigger.process(0.3), 0.0);
         assert_eq!(trigger.process(0.7), 1.0); // first rising toggles on
@@ -321,17 +329,16 @@ mod tests {
         assert_eq!(trigger.process(0.7), 0.0); // second rising toggles off
         assert_eq!(trigger.process(0.8), 0.0);
     }
-    
+
     #[test]
     fn test_trigger_block() {
-        let mut trigger = Trigger::new()
-            .with_pulse_duration(3);
-        
+        let mut trigger = Trigger::new().with_pulse_duration(3);
+
         let input = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0];
         let mut output = vec![0.0; 8];
-        
+
         trigger.process_block(&input, &mut output);
-        
+
         assert_eq!(output[0], 0.0);
         assert_eq!(output[1], 0.0);
         assert_eq!(output[2], 0.0);

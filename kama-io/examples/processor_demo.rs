@@ -1,48 +1,46 @@
 //! Демонстрация различных процессоров
 
 use kama_io::{
-    AudioConfig, AudioEngine,
-    BackendType,
     backends::{CpalBackend, NullBackend},
-    processor::{
-        PassThroughProcessor,
-        GainProcessor,
-        MonoMixerProcessor,
-        SineProcessor,
-    },
+    processor::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SineProcessor},
+    AudioConfig, AudioEngine, BackendType,
 };
 
 #[cfg(feature = "alsa")]
 use kama_io::backends::AlsaBackend;
 
-fn create_backend(config: AudioConfig) -> Result<Box<dyn kama_io::AudioBackend>, Box<dyn std::error::Error>> {
+fn create_backend(
+    config: AudioConfig,
+) -> Result<Box<dyn kama_io::AudioBackend>, Box<dyn std::error::Error>> {
     #[cfg(all(target_os = "linux", feature = "alsa"))]
     {
         let backend = AlsaBackend::new(config.clone())?;
         return Ok(Box::new(backend));
     }
-    
+
     #[cfg(feature = "cpal")]
     {
         let backend = CpalBackend::new(config.clone())?;
         return Ok(Box::new(backend));
     }
-    
+
     Ok(Box::new(NullBackend::new(config)))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Kama IO Processor Demo ===\n");
-    
+
     let config = AudioConfig::default()
         .with_sample_rate(44100)
         .with_buffer_size(256)
         .with_channels(2);
-    
-    println!("Audio config: {} Hz, {} samples, {} channels",
-             config.sample_rate, config.buffer_size, config.output_channels);
-    
+
+    println!(
+        "Audio config: {} Hz, {} samples, {} channels",
+        config.sample_rate, config.buffer_size, config.output_channels
+    );
+
     // Демо 1: Sine Processor
     println!("\n1. SineWave Processor (440Hz)");
     let backend1 = create_backend(config.clone())?;
@@ -53,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Playing for 2 seconds...");
     std::thread::sleep(std::time::Duration::from_secs(2));
     engine1.stop()?;
-    
+
     // Демо 2: PassThrough Processor
     println!("\n2. PassThrough Processor (echo)");
     let backend2 = create_backend(config.clone())?;
@@ -64,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Playing for 2 seconds...");
     std::thread::sleep(std::time::Duration::from_secs(2));
     engine2.stop()?;
-    
+
     // Демо 3: Gain Processor
     println!("\n3. Gain Processor (2x)");
     let backend3 = create_backend(config.clone())?;
@@ -75,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Playing for 2 seconds...");
     std::thread::sleep(std::time::Duration::from_secs(2));
     engine3.stop()?;
-    
+
     // Демо 4: Mono Mixer
     println!("\n4. Mono Mixer (stereo to mono)");
     let backend4 = create_backend(config.clone())?;
@@ -86,8 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Playing for 2 seconds...");
     std::thread::sleep(std::time::Duration::from_secs(2));
     engine4.stop()?;
-    
+
     println!("\nDemo completed successfully!");
-    
+
     Ok(())
 }

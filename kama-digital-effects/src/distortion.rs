@@ -1,8 +1,8 @@
 //! Distortion effect with waveshaping
 
 use kama_core_traits::{
-    AudioNode, AudioError, ParamValue, NodeMetadata, NodeCategory, NodeTypeId,
-    param::{ParamType, ParamMetadata}
+    param::{ParamMetadata, ParamType},
+    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 
 /// Distortion type
@@ -23,7 +23,7 @@ impl DistortionType {
     pub fn names() -> Vec<&'static str> {
         vec!["hard_clip", "soft_clip", "tube", "fuzz"]
     }
-    
+
     /// Get type from string
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -60,18 +60,14 @@ impl Distortion {
             output_gain: output_gain.clamp(0.0, 2.0),
         }
     }
-    
+
     /// Process a single sample
     pub fn process_sample(&self, input: f32) -> f32 {
         let driven = input * self.drive;
-        
+
         let distorted = match self.distortion_type {
-            DistortionType::HardClip => {
-                driven.clamp(-1.0, 1.0)
-            }
-            DistortionType::SoftClip => {
-                driven.tanh()
-            }
+            DistortionType::HardClip => driven.clamp(-1.0, 1.0),
+            DistortionType::SoftClip => driven.tanh(),
             DistortionType::Tube => {
                 // Tube-like saturation
                 if driven > 0.0 {
@@ -89,20 +85,20 @@ impl Distortion {
                 }
             }
         };
-        
+
         distorted * self.output_gain
     }
-    
+
     /// Set distortion type
     pub fn set_type(&mut self, distortion_type: DistortionType) {
         self.distortion_type = distortion_type;
     }
-    
+
     /// Set drive
     pub fn set_drive(&mut self, drive: f32) {
         self.drive = drive.max(1.0).min(100.0);
     }
-    
+
     /// Set output gain
     pub fn set_output_gain(&mut self, gain: f32) {
         self.output_gain = gain.clamp(0.0, 2.0);
@@ -114,18 +110,18 @@ impl AudioNode for Distortion {
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
-        
+
         let input = inputs[0];
         let output = &mut outputs[0];
         let len = input.len().min(output.len());
-        
+
         for i in 0..len {
             output[i] = self.process_sample(input[i]);
         }
-        
+
         Ok(())
     }
-    
+
     fn get_param(&self, name: &str) -> Option<ParamValue> {
         match name {
             "type" => {
@@ -142,7 +138,7 @@ impl AudioNode for Distortion {
             _ => None,
         }
     }
-    
+
     fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
         match (name, value) {
             ("type", ParamValue::Choice(t)) => {
@@ -150,7 +146,10 @@ impl AudioNode for Distortion {
                     self.set_type(dt);
                     Ok(())
                 } else {
-                    Err(AudioError::Parameter(format!("Unknown distortion type: {}", t)))
+                    Err(AudioError::Parameter(format!(
+                        "Unknown distortion type: {}",
+                        t
+                    )))
                 }
             }
             ("drive", ParamValue::Float(d)) => {
@@ -161,25 +160,32 @@ impl AudioNode for Distortion {
                 self.set_output_gain(g);
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!("Unknown parameter: {}", name))),
+            _ => Err(AudioError::Parameter(format!(
+                "Unknown parameter: {}",
+                name
+            ))),
         }
     }
-    
+
     fn init(&mut self, _sample_rate: f32) {
         // Nothing to initialize
     }
-    
+
     fn reset(&mut self) {
         // Nothing to reset
     }
-    
-    fn num_inputs(&self) -> usize { 1 }
-    fn num_outputs(&self) -> usize { 1 }
-    
+
+    fn num_inputs(&self) -> usize {
+        1
+    }
+    fn num_outputs(&self) -> usize {
+        1
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "Distortion".to_string(),
@@ -196,10 +202,13 @@ impl AudioNode for Distortion {
                     max: None,
                     step: None,
                     unit: None,
-                    choices: Some(DistortionType::names().iter()
-                        .enumerate()
-                        .map(|(i, &name)| (name.to_string(), i as f32))
-                        .collect()),
+                    choices: Some(
+                        DistortionType::names()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &name)| (name.to_string(), i as f32))
+                            .collect(),
+                    ),
                 },
                 ParamMetadata {
                     name: "drive".to_string(),

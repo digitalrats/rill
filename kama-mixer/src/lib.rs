@@ -9,12 +9,12 @@
 #![warn(missing_docs)]
 
 mod channel;
-mod send;
 mod mixer;
+mod send;
 
 pub use channel::{ChannelConfig, ChannelMode, ChannelState};
-pub use send::{SendConfig, SendType};
 pub use mixer::MixerNode;
+pub use send::{SendConfig, SendType};
 
 // Re-export common types
 pub use kama_core_traits::{AudioNode, ParamValue};

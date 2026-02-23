@@ -3,26 +3,28 @@
 
 #![warn(missing_docs)]
 
-pub mod error;
-pub mod context;
-pub mod parameter;
 pub mod automaton;
-pub mod servo;
+pub mod context;
+pub mod error;
 pub mod manager;
-pub mod signal;
+pub mod parameter;
 pub mod parameter_auto;
+pub mod servo;
+pub mod signal;
 
 // Реэкспорт основных типов
-pub use error::{AutomationError, AutomationResult};
-pub use context::AutomationContext;
-pub use parameter::{ParameterMap, ParameterData};
 pub use automaton::{
     Automaton,
-    FunctionAutomaton, StatefulFunctionAutomaton,
-    LfoAutomaton, LfoWithEnvelopeAutomaton,  // Эти типы теперь доступны
+    FunctionAutomaton,
+    LfoAutomaton,
+    LfoWithEnvelopeAutomaton, // Эти типы теперь доступны
+    StatefulFunctionAutomaton,
     Waveform,
 };
-pub use servo::{Servo, AnyServo, ParameterMapping};
+pub use context::AutomationContext;
+pub use error::{AutomationError, AutomationResult};
 pub use manager::{AutomationManager, DefaultAutomationManager};
-pub use signal::{SignalSender, TestSignalSender};
+pub use parameter::{ParameterData, ParameterMap};
 pub use parameter_auto::AutomatedParameter;
+pub use servo::{AnyServo, ParameterMapping, Servo};
+pub use signal::{SignalSender, TestSignalSender};

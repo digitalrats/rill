@@ -1,17 +1,17 @@
 //! # Конструкторы функциональных узлов
-//! 
+//!
 //! Предоставляет функции для быстрого создания узлов из замыканий:
-//! 
+//!
 //! - [`stateless_fn_node`] — для узлов без состояния (чистые функции)
 //! - [`stateful_fn_node`] — для узлов с внутренним состоянием
 //! - [`block_fn_node`] — для узлов, обрабатывающих целые блоки (SIMD, оптимизации)
 
 //! Конструкторы для создания узлов из функций
 
-use std::marker::PhantomData;
-use kama_core_traits::{AudioNode, AudioError, NodeTypeId, NodeMetadata, NodeCategory, ParamValue};
 use crate::context::DspContext;
 use crate::dummy::DummyTimeProvider;
+use kama_core_traits::{AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue};
+use std::marker::PhantomData;
 
 // -----------------------------------------------------------------------------
 // Stateless Node (без состояния)
@@ -35,11 +35,11 @@ where
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
-        
+
         let input = inputs[0];
         let output = &mut outputs[0];
         let buffer_size = output.len().min(input.len());
-        
+
         // Создаем временный контекст
         let dummy_time = DummyTimeProvider;
         let dummy_buffers = kama_buffers::BufferManager::new();
@@ -51,44 +51,46 @@ where
             buffers: &dummy_buffers,
             user_data: None,
         };
-        
+
         for i in 0..buffer_size {
             output[i] = (self.func)(input[i], &ctx);
         }
-        
+
         Ok(())
     }
-    
-    fn get_param(&self, _name: &str) -> Option<ParamValue> { None }
-    
+
+    fn get_param(&self, _name: &str) -> Option<ParamValue> {
+        None
+    }
+
     fn set_param(&mut self, _name: &str, _value: ParamValue) -> Result<(), AudioError> {
         Ok(())
     }
-    
+
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
     }
-    
+
     fn reset(&mut self) {}
-    
-    fn num_inputs(&self) -> usize { self.num_inputs }
-    fn num_outputs(&self) -> usize { self.num_outputs }
-    
+
+    fn num_inputs(&self) -> usize {
+        self.num_inputs
+    }
+    fn num_outputs(&self) -> usize {
+        self.num_outputs
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 }
 
 /// Создать stateless узел из функции
-pub fn stateless_fn_node<F>(
-    name: &str,
-    category: NodeCategory,
-    func: F,
-) -> impl AudioNode
+pub fn stateless_fn_node<F>(name: &str, category: NodeCategory, func: F) -> impl AudioNode
 where
     F: Fn(f32, &DspContext) -> f32 + Send + Sync + 'static,
 {
@@ -100,7 +102,7 @@ where
         version: "0.1.0".to_string(),
         parameters: vec![],
     };
-    
+
     StatelessNodeCore {
         func,
         metadata,
@@ -158,11 +160,11 @@ where
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
-        
+
         let input = inputs[0];
         let output = &mut outputs[0];
         let buffer_size = output.len().min(input.len());
-        
+
         let dummy_time = DummyTimeProvider;
         let dummy_buffers = kama_buffers::BufferManager::new();
         let ctx = DspContext {
@@ -173,35 +175,41 @@ where
             buffers: &dummy_buffers,
             user_data: None,
         };
-        
+
         for i in 0..buffer_size {
             output[i] = (self.func)(input[i], &mut self.state, &ctx);
         }
-        
+
         Ok(())
     }
-    
-    fn get_param(&self, _name: &str) -> Option<ParamValue> { None }
-    
+
+    fn get_param(&self, _name: &str) -> Option<ParamValue> {
+        None
+    }
+
     fn set_param(&mut self, _name: &str, _value: ParamValue) -> Result<(), AudioError> {
         Ok(())
     }
-    
+
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
     }
-    
+
     fn reset(&mut self) {
         self.state = self.initial_state.clone();
     }
-    
-    fn num_inputs(&self) -> usize { self.num_inputs }
-    fn num_outputs(&self) -> usize { self.num_outputs }
-    
+
+    fn num_inputs(&self) -> usize {
+        self.num_inputs
+    }
+    fn num_outputs(&self) -> usize {
+        self.num_outputs
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
@@ -226,15 +234,8 @@ where
         version: "0.1.0".to_string(),
         parameters: vec![],
     };
-    
-    StatefulNodeCore::new(
-        func,
-        initial_state,
-        metadata,
-        44100.0,
-        1,
-        1,
-    )
+
+    StatefulNodeCore::new(func, initial_state, metadata, 44100.0, 1, 1)
 }
 
 // -----------------------------------------------------------------------------
@@ -250,7 +251,10 @@ pub fn block_fn_node<F>(
     func: F,
 ) -> impl AudioNode
 where
-    F: Fn(&[&[f32]], &mut [&mut [f32]], &DspContext) -> Result<(), AudioError> + Send + Sync + 'static,
+    F: Fn(&[&[f32]], &mut [&mut [f32]], &DspContext) -> Result<(), AudioError>
+        + Send
+        + Sync
+        + 'static,
 {
     struct BlockNode<F> {
         func: F,
@@ -259,12 +263,19 @@ where
         num_inputs: usize,
         num_outputs: usize,
     }
-    
+
     impl<F> AudioNode for BlockNode<F>
     where
-        F: Fn(&[&[f32]], &mut [&mut [f32]], &DspContext) -> Result<(), AudioError> + Send + Sync + 'static,
+        F: Fn(&[&[f32]], &mut [&mut [f32]], &DspContext) -> Result<(), AudioError>
+            + Send
+            + Sync
+            + 'static,
     {
-        fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+        fn process(
+            &mut self,
+            inputs: &[&[f32]],
+            outputs: &mut [&mut [f32]],
+        ) -> Result<(), AudioError> {
             let dummy_time = DummyTimeProvider;
             let dummy_buffers = kama_buffers::BufferManager::new();
             let ctx = DspContext {
@@ -275,20 +286,34 @@ where
                 buffers: &dummy_buffers,
                 user_data: None,
             };
-            
+
             (self.func)(inputs, outputs, &ctx)
         }
-        
-        fn get_param(&self, _name: &str) -> Option<ParamValue> { None }
-        fn set_param(&mut self, _name: &str, _value: ParamValue) -> Result<(), AudioError> { Ok(()) }
-        fn init(&mut self, sample_rate: f32) { self.sample_rate = sample_rate; }
+
+        fn get_param(&self, _name: &str) -> Option<ParamValue> {
+            None
+        }
+        fn set_param(&mut self, _name: &str, _value: ParamValue) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn init(&mut self, sample_rate: f32) {
+            self.sample_rate = sample_rate;
+        }
         fn reset(&mut self) {}
-        fn num_inputs(&self) -> usize { self.num_inputs }
-        fn num_outputs(&self) -> usize { self.num_outputs }
-        fn node_type_id(&self) -> NodeTypeId { NodeTypeId::of::<Self>() }
-        fn metadata(&self) -> NodeMetadata { self.metadata.clone() }
+        fn num_inputs(&self) -> usize {
+            self.num_inputs
+        }
+        fn num_outputs(&self) -> usize {
+            self.num_outputs
+        }
+        fn node_type_id(&self) -> NodeTypeId {
+            NodeTypeId::of::<Self>()
+        }
+        fn metadata(&self) -> NodeMetadata {
+            self.metadata.clone()
+        }
     }
-    
+
     let metadata = NodeMetadata {
         name: name.to_string(),
         category,
@@ -297,7 +322,7 @@ where
         version: "0.1.0".to_string(),
         parameters: vec![],
     };
-    
+
     BlockNode {
         func,
         metadata,

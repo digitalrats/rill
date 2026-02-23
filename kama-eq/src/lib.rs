@@ -24,14 +24,14 @@
 
 #![warn(missing_docs)]
 
-mod parametric;
-mod graphic;
 mod band;
+mod graphic;
+mod parametric;
 mod utils;
 
-pub use parametric::ParametricEq;
+pub use band::{BandType, EqBand};
 pub use graphic::GraphicEq;
-pub use band::{EqBand, BandType};
+pub use parametric::ParametricEq;
 pub use utils::log_spaced_frequencies;
 
 // Re-export for convenience

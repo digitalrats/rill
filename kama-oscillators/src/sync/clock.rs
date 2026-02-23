@@ -1,8 +1,8 @@
 //! Clock generator for tempo synchronization
 
 use kama_core_traits::{
-    AudioNode, AudioError, ParamValue, NodeMetadata, NodeCategory, NodeTypeId,
-    param::{ParamType, ParamMetadata}
+    param::{ParamMetadata, ParamType},
+    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 
 /// Clock division ratios
@@ -21,7 +21,7 @@ impl ClockDivision {
     pub fn names() -> Vec<&'static str> {
         vec!["1/1", "1/2", "1/4", "1/8", "1/16", "1/32"]
     }
-    
+
     /// Get division from string
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -34,7 +34,7 @@ impl ClockDivision {
             _ => None,
         }
     }
-    
+
     /// Get division as multiplier (1.0 = quarter note)
     pub fn as_multiplier(&self) -> f32 {
         match self {
@@ -58,19 +58,19 @@ pub struct Clock {
     division: ClockDivision,
     /// Sample rate
     sample_rate: f32,
-    
+
     /// Current phase (0.0 - 1.0)
     phase: f32,
     /// Current pulse state (0.0 or 1.0)
     pulse: f32,
     /// Whether a trigger occurred this sample
     triggered: bool,
-    
+
     /// Samples per quarter note
     samples_per_quarter: f32,
     /// Samples per pulse based on division
     samples_per_pulse: f32,
-    
+
     /// Whether clock is running
     running: bool,
 }
@@ -92,33 +92,33 @@ impl Clock {
         clock.update_timing();
         clock
     }
-    
+
     /// Set clock division
     pub fn with_division(mut self, division: ClockDivision) -> Self {
         self.division = division;
         self.update_timing();
         self
     }
-    
+
     /// Update timing calculations
     fn update_timing(&mut self) {
         self.samples_per_quarter = (60.0 / self.tempo) * self.sample_rate;
         self.samples_per_pulse = self.samples_per_quarter * self.division.as_multiplier();
     }
-    
+
     /// Generate next sample
     pub fn generate(&mut self) -> f32 {
         if !self.running {
             return 0.0;
         }
-        
+
         // Current pulse value for this sample
         let current_pulse = self.pulse;
         self.triggered = current_pulse > 0.5;
-        
+
         // Advance phase
         self.phase += 1.0 / self.samples_per_pulse;
-        
+
         // Set next pulse if needed
         if self.phase >= 1.0 {
             self.phase -= 1.0;
@@ -126,58 +126,58 @@ impl Clock {
         } else {
             self.pulse = 0.0;
         }
-        
+
         current_pulse
     }
-    
+
     /// Generate a block of samples
     pub fn generate_block(&mut self, output: &mut [f32]) {
         for out in output.iter_mut() {
             *out = self.generate();
         }
     }
-    
+
     /// Get trigger state for current sample
     pub fn triggered(&self) -> bool {
         self.triggered
     }
-    
+
     /// Set tempo in BPM
     pub fn set_tempo(&mut self, bpm: f32) {
         self.tempo = bpm.clamp(20.0, 300.0);
         self.update_timing();
     }
-    
+
     /// Set division
     pub fn set_division(&mut self, division: ClockDivision) {
         self.division = division;
         self.update_timing();
     }
-    
+
     /// Start the clock
     pub fn start(&mut self) {
         self.running = true;
     }
-    
+
     /// Stop the clock
     pub fn stop(&mut self) {
         self.running = false;
         self.pulse = 0.0;
         self.triggered = false;
     }
-    
+
     /// Reset phase (does not generate pulse immediately)
     pub fn reset(&mut self) {
         self.phase = 0.0;
         self.pulse = 0.0;
         self.triggered = false;
     }
-    
+
     /// Get current phase (0.0 - 1.0)
     pub fn phase(&self) -> f32 {
         self.phase
     }
-    
+
     /// Get current pulse value
     pub fn pulse(&self) -> f32 {
         self.pulse
@@ -185,17 +185,21 @@ impl Clock {
 }
 
 impl AudioNode for Clock {
-    fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+    fn process(
+        &mut self,
+        _inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) -> Result<(), AudioError> {
         if outputs.is_empty() {
             return Ok(());
         }
-        
+
         let output = &mut outputs[0];
         self.generate_block(output);
-        
+
         Ok(())
     }
-    
+
     fn get_param(&self, name: &str) -> Option<ParamValue> {
         match name {
             "tempo" => Some(ParamValue::Float(self.tempo)),
@@ -216,7 +220,7 @@ impl AudioNode for Clock {
             _ => None,
         }
     }
-    
+
     fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
         match (name, value) {
             ("tempo", ParamValue::Float(t)) => {
@@ -239,26 +243,33 @@ impl AudioNode for Clock {
                 }
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!("Unknown parameter: {}", name))),
+            _ => Err(AudioError::Parameter(format!(
+                "Unknown parameter: {}",
+                name
+            ))),
         }
     }
-    
+
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_timing();
     }
-    
+
     fn reset(&mut self) {
         self.reset();
     }
-    
-    fn num_inputs(&self) -> usize { 0 }
-    fn num_outputs(&self) -> usize { 1 }
-    
+
+    fn num_inputs(&self) -> usize {
+        0
+    }
+    fn num_outputs(&self) -> usize {
+        1
+    }
+
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
-    
+
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "Clock Generator".to_string(),
@@ -285,10 +296,13 @@ impl AudioNode for Clock {
                     max: None,
                     step: None,
                     unit: None,
-                    choices: Some(ClockDivision::names().iter()
-                        .enumerate()
-                        .map(|(i, &name)| (name.to_string(), i as f32))
-                        .collect()),
+                    choices: Some(
+                        ClockDivision::names()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &name)| (name.to_string(), i as f32))
+                            .collect(),
+                    ),
                 },
                 ParamMetadata {
                     name: "running".to_string(),
@@ -308,13 +322,12 @@ impl AudioNode for Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_clock_generate() {
-        let mut clock = Clock::new(120.0)
-            .with_division(ClockDivision::ThirtySecond); // 32-е ноты — чаще
+        let mut clock = Clock::new(120.0).with_division(ClockDivision::ThirtySecond); // 32-е ноты — чаще
         clock.init(44100.0);
-        
+
         let mut found = false;
         for i in 0..10000 {
             if clock.generate() > 0.5 {
@@ -325,13 +338,12 @@ mod tests {
         }
         assert!(found, "No clock pulse detected within 10000 samples");
     }
-    
+
     #[test]
     fn test_clock_trigger() {
-        let mut clock = Clock::new(120.0)
-            .with_division(ClockDivision::ThirtySecond);
+        let mut clock = Clock::new(120.0).with_division(ClockDivision::ThirtySecond);
         clock.init(44100.0);
-        
+
         let mut triggered = false;
         for _ in 0..10000 {
             clock.generate();
@@ -342,28 +354,30 @@ mod tests {
         }
         assert!(triggered, "Clock should trigger within 10000 samples");
     }
-    
+
     #[test]
     fn test_clock_division() {
         let mut clock = Clock::new(120.0);
         clock.init(44100.0);
-        
+
         clock.set_division(ClockDivision::Eighth);
         assert_eq!(clock.division.as_multiplier(), 0.5);
     }
-    
+
     #[test]
     fn test_clock_block() {
-        let mut clock = Clock::new(120.0)
-            .with_division(ClockDivision::ThirtySecond);
+        let mut clock = Clock::new(120.0).with_division(ClockDivision::ThirtySecond);
         clock.init(44100.0);
-        
+
         let mut output = vec![0.0; 10000];
         clock.generate_block(&mut output);
-        
+
         let pulse_count = output.iter().filter(|&&x| x == 1.0).count();
         println!("Clock pulses: {}", pulse_count);
         assert!(pulse_count > 0, "Should have pulses");
-        assert!(pulse_count < output.len(), "Not all samples should be pulses");
+        assert!(
+            pulse_count < output.len(),
+            "Not all samples should be pulses"
+        );
     }
 }

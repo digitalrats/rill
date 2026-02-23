@@ -1,10 +1,8 @@
 //! Моки для тестирования kama-io без реальных устройств
 
-use std::time::Duration;
+use kama_io::{AudioBackend, AudioConfig, BackendType, IoError, IoResult};
 use std::sync::atomic::{AtomicU32, Ordering};
-use kama_io::{
-    AudioConfig, AudioBackend, BackendType, IoResult, IoError,
-};
+use std::time::Duration;
 
 /// Мок бэкенда для тестирования
 #[derive(Debug)]
@@ -22,7 +20,7 @@ impl MockBackend {
             should_fail: false,
         }
     }
-    
+
     pub fn with_failure(mut self, fail: bool) -> Self {
         self.should_fail = fail;
         self
@@ -33,15 +31,15 @@ impl AudioBackend for MockBackend {
     fn backend_type(&self) -> BackendType {
         BackendType::Null
     }
-    
+
     fn config(&self) -> &AudioConfig {
         &self.config
     }
-    
+
     fn config_mut(&mut self) -> &mut AudioConfig {
         &mut self.config
     }
-    
+
     fn init(&mut self) -> IoResult<()> {
         if self.should_fail {
             Err(IoError::Init("Mock failure".into()))
@@ -49,7 +47,7 @@ impl AudioBackend for MockBackend {
             Ok(())
         }
     }
-    
+
     fn start(&mut self) -> IoResult<()> {
         if self.should_fail {
             Err(IoError::Backend("Mock failure".into()))
@@ -57,32 +55,32 @@ impl AudioBackend for MockBackend {
             Ok(())
         }
     }
-    
+
     fn stop(&mut self) -> IoResult<()> {
         Ok(())
     }
-    
+
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
         buffer.fill(0.0);
         Ok(buffer.len())
     }
-    
+
     fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
         Ok(buffer.len())
     }
-    
+
     fn xruns(&self) -> u32 {
         self.xruns.load(Ordering::Relaxed)
     }
-    
+
     fn latency(&self) -> Duration {
         Duration::from_micros(0)
     }
-    
+
     fn list_input_devices(&self) -> Vec<String> {
         vec!["Mock Input".to_string()]
     }
-    
+
     fn list_output_devices(&self) -> Vec<String> {
         vec!["Mock Output".to_string()]
     }

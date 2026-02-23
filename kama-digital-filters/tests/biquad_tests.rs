@@ -1,195 +1,213 @@
 //! Integration tests for BiquadFilter
 
-use kama_digital_filters::{BiquadFilter, FilterType};
-use kama_core_traits::AudioNode;  // для init(), reset(), process()
-use kama_dsp_common::filter::Filter;  // для cutoff(), q(), gain_db(), etc.
 use float_cmp::approx_eq;
+use kama_core_traits::AudioNode; // для init(), reset(), process()
+use kama_digital_filters::{BiquadFilter, FilterType};
+use kama_dsp_common::filter::Filter; // для cutoff(), q(), gain_db(), etc.
 
 /// Test low-pass filter frequency response
 #[test]
 fn test_biquad_lowpass_response() {
     println!("\n=== Test: Low-Pass Filter Response ===");
-    
+
     let sample_rate = 44100.0;
     let cutoff = 1000.0;
     let mut filter = BiquadFilter::new(FilterType::LowPass, cutoff, 0.707, 0.0);
     filter.init(sample_rate);
-    
+
     let test_freqs = [100.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0];
     let mut results = Vec::new();
-    
+
     for &freq in &test_freqs {
         filter.reset();
-        
+
         // Даём фильтру стабилизироваться
         for _ in 0..1000 {
             filter.process_sample(0.0);
         }
-        
+
         let num_samples = (sample_rate * 0.2) as usize; // 200ms
         let mut sum_squares: f32 = 0.0;
         let mut peak: f32 = 0.0;
-        
+
         for i in 0..num_samples {
             let t = i as f32 / sample_rate;
             let input = (2.0 * std::f32::consts::PI * freq * t).sin();
             let output = filter.process_sample(input);
-            
+
             sum_squares += output * output;
             peak = peak.max(output.abs());
         }
-        
+
         let rms = (sum_squares / num_samples as f32).sqrt();
         results.push((freq, rms, peak));
-        
-        println!("Frequency: {:6.0} Hz | RMS: {:.6} | Peak: {:.6}", 
-                 freq, rms, peak);
+
+        println!(
+            "Frequency: {:6.0} Hz | RMS: {:.6} | Peak: {:.6}",
+            freq, rms, peak
+        );
     }
-    
+
     // At cutoff, amplitude should be around 0.707 (-3dB) of the low-frequency gain
     let low_freq_gain = results[0].1; // 100 Hz gain
-    let cutoff_idx = results.iter().position(|(f, _, _)| (*f - 1000.0).abs() < 1.0).unwrap();
+    let cutoff_idx = results
+        .iter()
+        .position(|(f, _, _)| (*f - 1000.0).abs() < 1.0)
+        .unwrap();
     let cutoff_gain = results[cutoff_idx].1;
-    
+
     println!("Low freq (100 Hz) RMS: {:.6}", low_freq_gain);
     println!("At cutoff (1000 Hz) RMS: {:.6}", cutoff_gain);
     println!("Ratio: {:.3}", cutoff_gain / low_freq_gain);
-    
+
     // At cutoff, gain should be 0.707 (-3dB) relative to low frequency gain
     let ratio = cutoff_gain / low_freq_gain;
-    assert!((ratio - 0.707).abs() < 0.1,
-            "At cutoff, gain should be 0.707 of low freq gain, got {:.3}", ratio);
+    assert!(
+        (ratio - 0.707).abs() < 0.1,
+        "At cutoff, gain should be 0.707 of low freq gain, got {:.3}",
+        ratio
+    );
 }
 
 /// Test high-pass filter frequency response
 #[test]
 fn test_biquad_highpass_response() {
     println!("\n=== Test: High-Pass Filter Response ===");
-    
+
     let sample_rate = 44100.0;
     let cutoff = 1000.0;
     let mut filter = BiquadFilter::new(FilterType::HighPass, cutoff, 0.707, 0.0);
     filter.init(sample_rate);
-    
+
     let test_freqs = [100.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0];
     let mut results = Vec::new();
-    
+
     for &freq in &test_freqs {
         filter.reset();
-        
+
         let num_samples = (sample_rate * 0.1) as usize;
         let mut output_sum = 0.0;
-        
+
         for i in 0..num_samples {
             let t = i as f32 / sample_rate;
             let input = (2.0 * std::f32::consts::PI * freq * t).sin();
             let output = filter.process_sample(input);
-            
+
             if i > 1000 {
                 output_sum += output.abs();
             }
         }
-        
+
         let avg_output = output_sum / (num_samples - 1000) as f32;
         results.push((freq, avg_output));
-        
+
         println!("Frequency: {:6.0} Hz | Avg: {:.6}", freq, avg_output);
     }
-    
+
     // Lower frequencies should be attenuated
-    assert!(results[0].1 < results[results.len()-1].1,
-            "Low frequencies should be attenuated more than high frequencies");
+    assert!(
+        results[0].1 < results[results.len() - 1].1,
+        "Low frequencies should be attenuated more than high frequencies"
+    );
 }
 
 /// Test band-pass filter
 #[test]
 fn test_biquad_bandpass() {
     println!("\n=== Test: Band-Pass Filter ===");
-    
+
     let sample_rate = 44100.0;
     let center = 1000.0;
     let q = 5.0; // Higher Q = narrower band
     let mut filter = BiquadFilter::new(FilterType::BandPass, center, q, 0.0);
     filter.init(sample_rate);
-    
+
     let test_freqs = [500.0, 800.0, 1000.0, 1200.0, 1500.0, 2000.0];
     let mut results = Vec::new();
-    
+
     for &freq in &test_freqs {
         filter.reset();
-        
+
         let num_samples = (sample_rate * 0.1) as usize;
         let mut output_sum = 0.0;
-        
+
         for i in 0..num_samples {
             let t = i as f32 / sample_rate;
             let input = (2.0 * std::f32::consts::PI * freq * t).sin();
             let output = filter.process_sample(input);
-            
+
             if i > 1000 {
                 output_sum += output.abs();
             }
         }
-        
+
         let avg_output = output_sum / (num_samples - 1000) as f32;
         results.push((freq, avg_output));
-        
+
         println!("Frequency: {:6.0} Hz | Avg: {:.6}", freq, avg_output);
     }
-    
+
     // Center frequency should have highest amplitude
-    let max_idx = results.iter()
+    let max_idx = results
+        .iter()
         .enumerate()
         .max_by(|(_, a), (_, b)| a.1.partial_cmp(&b.1).unwrap())
         .map(|(i, _)| i)
         .unwrap();
-    
-    assert!((test_freqs[max_idx] - 1000.0).abs() < 200.0,
-            "Peak should be near center frequency (1000 Hz)");
+
+    assert!(
+        (test_freqs[max_idx] - 1000.0).abs() < 200.0,
+        "Peak should be near center frequency (1000 Hz)"
+    );
 }
 
 /// Test notch filter
 #[test]
 fn test_biquad_notch() {
     println!("\n=== Test: Notch Filter ===");
-    
+
     let sample_rate = 44100.0;
     let center = 1000.0;
     let q = 10.0;
     let mut filter = BiquadFilter::new(FilterType::Notch, center, q, 0.0);
     filter.init(sample_rate);
-    
+
     let test_freqs = [900.0, 950.0, 1000.0, 1050.0, 1100.0];
     let mut results = Vec::new();
-    
+
     for &freq in &test_freqs {
         filter.reset();
-        
+
         let num_samples = (sample_rate * 0.1) as usize;
         let mut output_sum = 0.0;
-        
+
         for i in 0..num_samples {
             let t = i as f32 / sample_rate;
             let input = (2.0 * std::f32::consts::PI * freq * t).sin();
             let output = filter.process_sample(input);
-            
+
             if i > 1000 {
                 output_sum += output.abs();
             }
         }
-        
+
         let avg_output = output_sum / (num_samples - 1000) as f32;
         results.push((freq, avg_output));
-        
+
         println!("Frequency: {:6.0} Hz | Avg: {:.6}", freq, avg_output);
     }
-    
+
     // Center frequency should have lowest amplitude
-    let center_idx = results.iter().position(|(f, _)| (*f - 1000.0).abs() < 1.0).unwrap();
+    let center_idx = results
+        .iter()
+        .position(|(f, _)| (*f - 1000.0).abs() < 1.0)
+        .unwrap();
     for i in 0..results.len() {
         if i != center_idx {
-            assert!(results[i].1 > results[center_idx].1,
-                    "Center frequency should be attenuated more than others");
+            assert!(
+                results[i].1 > results[center_idx].1,
+                "Center frequency should be attenuated more than others"
+            );
         }
     }
 }
@@ -198,11 +216,11 @@ fn test_biquad_notch() {
 #[test]
 fn test_biquad_peak() {
     println!("\n=== Test: Peak Filter ===");
-    
+
     let sample_rate = 44100.0;
     let center = 1000.0;
-    let q = 10.0;  // более высокий Q для более точного пика
-    
+    let q = 10.0; // более высокий Q для более точного пика
+
     // Тестовый сигнал
     let num_samples = (sample_rate * 0.2) as usize;
     let mut input_signal = Vec::with_capacity(num_samples);
@@ -210,189 +228,209 @@ fn test_biquad_peak() {
         let t = i as f32 / sample_rate;
         input_signal.push((2.0 * std::f32::consts::PI * center * t).sin());
     }
-    
+
     // Вычисляем RMS входного сигнала
     let input_rms = (input_signal.iter().map(|&x| x * x).sum::<f32>() / num_samples as f32).sqrt();
     println!("Input RMS: {:.6}", input_rms);
-    
+
     // Test boost
     let mut boost = BiquadFilter::new(FilterType::Peak, center, q, 6.0);
     boost.init(sample_rate);
-    
+
     // Test cut
     let mut cut = BiquadFilter::new(FilterType::Peak, center, q, -6.0);
     cut.init(sample_rate);
-    
+
     // Даём фильтрам стабилизироваться
     for _ in 0..1000 {
         boost.process_sample(0.0);
         cut.process_sample(0.0);
     }
-    
+
     let mut boost_sum_squares: f32 = 0.0;
     let mut cut_sum_squares: f32 = 0.0;
-    
+
     for i in 0..num_samples {
         let boost_out = boost.process_sample(input_signal[i]);
         let cut_out = cut.process_sample(input_signal[i]);
-        
+
         boost_sum_squares += boost_out * boost_out;
         cut_sum_squares += cut_out * cut_out;
     }
-    
+
     let boost_rms = (boost_sum_squares / num_samples as f32).sqrt();
     let cut_rms = (cut_sum_squares / num_samples as f32).sqrt();
-    
+
     println!("Boost (+6dB) RMS output: {:.6}", boost_rms);
     println!("Cut (-6dB) RMS output: {:.6}", cut_rms);
-    
+
     // Вычисляем усиление относительно входа
     let boost_gain = boost_rms / input_rms;
     let cut_gain = cut_rms / input_rms;
-    
-    println!("Boost gain: {:.3} ({:.1} dB)", boost_gain, 20.0 * boost_gain.log10());
-    println!("Cut gain: {:.3} ({:.1} dB)", cut_gain, 20.0 * cut_gain.log10());
-    
+
+    println!(
+        "Boost gain: {:.3} ({:.1} dB)",
+        boost_gain,
+        20.0 * boost_gain.log10()
+    );
+    println!(
+        "Cut gain: {:.3} ({:.1} dB)",
+        cut_gain,
+        20.0 * cut_gain.log10()
+    );
+
     // Для +6dB ожидаем усиление ~2.0 (6dB = 20*log10(2))
-    assert!((boost_gain - 2.0).abs() < 0.5, 
-            "Boost gain should be near 2.0 (6dB), got {:.3}", boost_gain);
-    
+    assert!(
+        (boost_gain - 2.0).abs() < 0.5,
+        "Boost gain should be near 2.0 (6dB), got {:.3}",
+        boost_gain
+    );
+
     // Для -6dB ожидаем усиление ~0.5 (-6dB = 20*log10(0.5))
-    assert!((cut_gain - 0.5).abs() < 0.2, 
-            "Cut gain should be near 0.5 (-6dB), got {:.3}", cut_gain);
+    assert!(
+        (cut_gain - 0.5).abs() < 0.2,
+        "Cut gain should be near 0.5 (-6dB), got {:.3}",
+        cut_gain
+    );
 }
 
 /// Test shelving filters
 #[test]
 fn test_biquad_shelving() {
     println!("\n=== Test: Shelving Filters ===");
-    
+
     let sample_rate = 44100.0;
     let freq = 1000.0;
     let q = 0.7;
     let gain = 6.0;
-    
+
     // Low shelf
     let mut low_shelf = BiquadFilter::new(FilterType::LowShelf, freq, q, gain);
     low_shelf.init(sample_rate);
-    
+
     // High shelf
     let mut high_shelf = BiquadFilter::new(FilterType::HighShelf, freq, q, gain);
     high_shelf.init(sample_rate);
-    
+
     // Test low frequencies
     let low_freq = 100.0;
     let mut low_shelf_low_sum = 0.0;
     let mut high_shelf_low_sum = 0.0;
-    
+
     for i in 0..2000 {
         let t = i as f32 / sample_rate;
         let input = (2.0 * std::f32::consts::PI * low_freq * t).sin();
-        
+
         low_shelf_low_sum += low_shelf.process_sample(input).abs();
         high_shelf_low_sum += high_shelf.process_sample(input).abs();
     }
-    
+
     let low_shelf_low_avg = low_shelf_low_sum / 2000.0;
     let high_shelf_low_avg = high_shelf_low_sum / 2000.0;
-    
+
     println!("Low frequency ({:.0} Hz):", low_freq);
     println!("  Low shelf avg: {:.6}", low_shelf_low_avg);
     println!("  High shelf avg: {:.6}", high_shelf_low_avg);
-    
-    assert!(low_shelf_low_avg > high_shelf_low_avg,
-            "Low shelf should boost low frequencies more than high shelf");
-    
+
+    assert!(
+        low_shelf_low_avg > high_shelf_low_avg,
+        "Low shelf should boost low frequencies more than high shelf"
+    );
+
     // Test high frequencies
     low_shelf.reset();
     high_shelf.reset();
-    
+
     let high_freq = 5000.0;
     let mut low_shelf_high_sum = 0.0;
     let mut high_shelf_high_sum = 0.0;
-    
+
     for i in 0..2000 {
         let t = i as f32 / sample_rate;
         let input = (2.0 * std::f32::consts::PI * high_freq * t).sin();
-        
+
         low_shelf_high_sum += low_shelf.process_sample(input).abs();
         high_shelf_high_sum += high_shelf.process_sample(input).abs();
     }
-    
+
     let low_shelf_high_avg = low_shelf_high_sum / 2000.0;
     let high_shelf_high_avg = high_shelf_high_sum / 2000.0;
-    
+
     println!("\nHigh frequency ({:.0} Hz):", high_freq);
     println!("  Low shelf avg: {:.6}", low_shelf_high_avg);
     println!("  High shelf avg: {:.6}", high_shelf_high_avg);
-    
-    assert!(high_shelf_high_avg > low_shelf_high_avg,
-            "High shelf should boost high frequencies more than low shelf");
+
+    assert!(
+        high_shelf_high_avg > low_shelf_high_avg,
+        "High shelf should boost high frequencies more than low shelf"
+    );
 }
 
 /// Test all-pass filter (phase shifter)
 #[test]
 fn test_biquad_allpass() {
     println!("\n=== Test: All-Pass Filter ===");
-    
+
     let sample_rate = 44100.0;
     let freq = 1000.0;
     let q = 0.7;
     let mut filter = BiquadFilter::new(FilterType::AllPass, freq, q, 0.0);
     filter.init(sample_rate);
-    
+
     let num_samples = 10000;
     let mut input_energy = 0.0;
     let mut output_energy = 0.0;
-    
+
     for i in 0..num_samples {
         let t = i as f32 / sample_rate;
         // Mix of frequencies
         let input = (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5
-                  + (2.0 * std::f32::consts::PI * 880.0 * t).sin() * 0.3
-                  + (2.0 * std::f32::consts::PI * 1760.0 * t).sin() * 0.2;
-        
+            + (2.0 * std::f32::consts::PI * 880.0 * t).sin() * 0.3
+            + (2.0 * std::f32::consts::PI * 1760.0 * t).sin() * 0.2;
+
         let output = filter.process_sample(input);
-        
+
         input_energy += input * input;
         output_energy += output * output;
     }
-    
+
     let input_rms = (input_energy / num_samples as f32).sqrt();
     let output_rms = (output_energy / num_samples as f32).sqrt();
-    
+
     println!("Input RMS: {:.6}", input_rms);
     println!("Output RMS: {:.6}", output_rms);
-    
+
     // All-pass should preserve energy
-    assert!((input_rms - output_rms).abs() < 0.1,
-            "All-pass filter should preserve energy");
+    assert!(
+        (input_rms - output_rms).abs() < 0.1,
+        "All-pass filter should preserve energy"
+    );
 }
 
 /// Test parameter changes
 #[test]
 fn test_biquad_parameters() {
     println!("\n=== Test: Parameter Changes ===");
-    
+
     let mut filter = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
     filter.init(44100.0);
-    
+
     // Test cutoff change
     filter.set_cutoff(2000.0);
     assert_eq!(filter.cutoff(), 2000.0);
-    
+
     // Test Q change
     filter.set_q(2.0);
     assert_eq!(filter.q(), 2.0);
-    
+
     // Test gain change
     filter.set_gain_db(3.0);
     assert_eq!(filter.gain_db(), 3.0);
-    
+
     // Test type change (via new)
     let new_filter = BiquadFilter::new(FilterType::HighPass, 500.0, 1.0, 0.0);
     assert_eq!(new_filter.filter_type(), FilterType::HighPass);
-    
+
     println!("All parameter changes verified");
 }
 
@@ -400,25 +438,25 @@ fn test_biquad_parameters() {
 #[test]
 fn test_biquad_reset() {
     println!("\n=== Test: Filter Reset ===");
-    
+
     let mut filter = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
     filter.init(44100.0);
-    
+
     // Run some samples through
     for i in 0..1000 {
         let t = i as f32 / 44100.0;
         let input = (2.0 * std::f32::consts::PI * 440.0 * t).sin();
         filter.process_sample(input);
     }
-    
+
     // Reset should clear internal state
     filter.reset();
-    
+
     // Give it a moment to stabilize
     for _ in 0..10 {
         filter.process_sample(0.0);
     }
-    
+
     // After reset, DC should settle to steady state
     let mut steady_state: f32 = 0.0;
     for i in 0..100 {
@@ -428,24 +466,27 @@ fn test_biquad_reset() {
         }
     }
     steady_state /= 10.0;
-    
+
     println!("DC steady state after reset: {:.6}", steady_state);
-    assert!(steady_state > 0.9 && steady_state < 1.1,
-            "After reset, DC steady state should be near 1.0, got {:.6}", steady_state);
+    assert!(
+        steady_state > 0.9 && steady_state < 1.1,
+        "After reset, DC steady state should be near 1.0, got {:.6}",
+        steady_state
+    );
 }
 
 /// Test boundary conditions
 #[test]
 fn test_biquad_boundaries() {
     println!("\n=== Test: Boundary Conditions ===");
-    
+
     let mut filter = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
     filter.init(44100.0);
-    
+
     // Test very low frequency
     let output_low = filter.process_sample(1.0);
     assert!(!output_low.is_nan(), "Output should not be NaN");
-    
+
     // Test very high frequency
     filter.reset();
     let mut output_high = 0.0;
@@ -455,55 +496,60 @@ fn test_biquad_boundaries() {
         output_high = filter.process_sample(input);
     }
     assert!(!output_high.is_nan(), "Output should not be NaN");
-    
+
     // Test with extreme parameter values
     let mut extreme = BiquadFilter::new(FilterType::Peak, 20000.0, 20.0, 24.0);
     extreme.init(44100.0);
-    
+
     let output_extreme = extreme.process_sample(1.0);
-    assert!(!output_extreme.is_nan(), "Output should not be NaN with extreme parameters");
-    assert!(output_extreme >= -2.0 && output_extreme <= 2.0,
-            "Output should be bounded");
+    assert!(
+        !output_extreme.is_nan(),
+        "Output should not be NaN with extreme parameters"
+    );
+    assert!(
+        output_extreme >= -2.0 && output_extreme <= 2.0,
+        "Output should be bounded"
+    );
 }
 
 /// Test stereo processing
 #[test]
 fn test_biquad_stereo() {
     println!("\n=== Test: Stereo Processing ===");
-    
+
     let sample_rate = 44100.0;
     let mut left = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
     let mut right = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
-    
+
     left.init(sample_rate);
     right.init(sample_rate);
-    
+
     let num_samples = 1000;
     let mut left_input = Vec::with_capacity(num_samples);
     let mut right_input = Vec::with_capacity(num_samples);
-    
+
     for i in 0..num_samples {
         let t = i as f32 / sample_rate;
         left_input.push((2.0 * std::f32::consts::PI * 440.0 * t).sin());
         right_input.push((2.0 * std::f32::consts::PI * 880.0 * t).sin());
     }
-    
+
     let mut left_output = vec![0.0; num_samples];
     let mut right_output = vec![0.0; num_samples];
-    
+
     // Process left channel
     let left_inputs = [left_input.as_slice()];
     let mut left_outputs = [left_output.as_mut_slice()];
     left.process(&left_inputs, &mut left_outputs).unwrap();
-    
+
     // Process right channel
     let right_inputs = [right_input.as_slice()];
     let mut right_outputs = [right_output.as_mut_slice()];
     right.process(&right_inputs, &mut right_outputs).unwrap();
-    
+
     // Verify both channels processed correctly
     assert!(left_output.iter().any(|&x| x != 0.0));
     assert!(right_output.iter().any(|&x| x != 0.0));
-    
+
     println!("Stereo processing completed successfully");
 }

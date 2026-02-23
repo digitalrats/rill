@@ -1,27 +1,27 @@
 //! Сервопривод для управления параметрами
-//! 
+//!
 //! Сервопривод получает сигнал от автомата, преобразует его согласно
 //! заданному маппингу и применяет к конкретному параметру узла.
-//! 
+//!
 //! ## Что делает сервопривод?
-//! 
+//!
 //! 1. **Получает сигнал** от автомата (LFO, огибающей и т.д.)
 //! 2. **Трансформирует** его согласно маппингу (линейно, экспоненциально)
 //! 3. **Применяет** к конкретному параметру узла
 //! 4. **Отправляет сигнал** об изменении через `SignalSender`
-//! 
+//!
 //! ## Жизненный цикл
-//! 
+//!
 //! 1. Создаётся с автоматом, целью и контекстом
 //! 2. Добавляется в [`AutomationManager`](crate::AutomationManager)
 //! 3. Менеджер регулярно вызывает [`update`](Servo::update)
 //! 4. Серво получает от автомата новое значение, применяет маппинг и,
 //!    если значение изменилось, отправляет сигнал
 
-use std::sync::Arc;
 use crate::automaton::Automaton;
 use crate::context::AutomationContext;
 use crate::signal::SignalSender;
+use std::sync::Arc;
 
 /// Тип маппинга значений — как преобразовать сигнал от автомата
 /// в значение, подходящее для целевого параметра.
@@ -95,7 +95,7 @@ where
     pub max_value: f64,
     /// Включён ли сервопривод.
     pub enabled: bool,
-    
+
     /// Текущее состояние автомата.
     pub(crate) state: A::State,
     /// Последнее отправленное значение.
@@ -134,86 +134,90 @@ where
             context,
         }
     }
-    
-// kama-automation/src/servo.rs
 
-pub fn update(&mut self, _time: f64) -> Option<f64> {
-    if !self.enabled {
-        println!("Servo[{}] - disabled", self.id);
-        return None;
-    }
-    
-    let current_time = self.context.time.position_seconds();
-    let delta_time = current_time - self.last_update_time;
-    
-    println!("Servo[{}] - current_time: {:.6}, last_update: {:.6}, delta: {:.6}", 
-             self.id, current_time, self.last_update_time, delta_time);
-    
-    if delta_time <= 0.0 {
-        println!("Servo[{}] - delta_time <= 0, skipping", self.id);
-        return None;
-    }
-    
-    println!("Servo[{}] - calling automaton.step()", self.id);
-    let (new_state, _next_action) = self.automaton.step(
-        current_time,
-        &self.context,
-        A::Action::default(),
-        &self.state,
-    );
-    
-    self.state = new_state;
-    let raw_value = self.automaton.extract_value(&self.state);
-    println!("Servo[{}] - raw_value: {:.6}", self.id, raw_value);
-    
-    let mapped_value = match &self.mapping {
-        ParameterMapping::Linear => raw_value,
-        ParameterMapping::Exponential => raw_value.exp(),
-        ParameterMapping::Logarithmic => raw_value.abs().ln_1p(),
-        ParameterMapping::Custom(func) => func(raw_value),
-    };
-    
-    let clamped_value = mapped_value.clamp(self.min_value, self.max_value);
-    println!("Servo[{}] - mapped_value: {:.6}, clamped: {:.6}", 
-             self.id, mapped_value, clamped_value);
-    
-    if (clamped_value - self.last_value).abs() > 1e-6 {
-        println!("Servo[{}] - sending value: {:.6}", self.id, clamped_value);
-        
-        if let Some(sender) = &self.context.signal_sender {
-            println!("Servo[{}] - signal_sender exists, sending...", self.id);
-            let sender_ref: &dyn SignalSender = sender.as_ref();
-            sender_ref.send_parameter_changed(
-                &self.target_node,
-                &self.target_parameter,
-                clamped_value as f32,
-            );
-            println!("Servo[{}] - send_parameter_changed called", self.id);
-        } else {
-            println!("Servo[{}] - WARNING: signal_sender is None", self.id);
+    // kama-automation/src/servo.rs
+
+    pub fn update(&mut self, _time: f64) -> Option<f64> {
+        if !self.enabled {
+            println!("Servo[{}] - disabled", self.id);
+            return None;
         }
-        self.last_value = clamped_value;
-    } else {
-        println!("Servo[{}] - value unchanged, skipping send", self.id);
+
+        let current_time = self.context.time.position_seconds();
+        let delta_time = current_time - self.last_update_time;
+
+        println!(
+            "Servo[{}] - current_time: {:.6}, last_update: {:.6}, delta: {:.6}",
+            self.id, current_time, self.last_update_time, delta_time
+        );
+
+        if delta_time <= 0.0 {
+            println!("Servo[{}] - delta_time <= 0, skipping", self.id);
+            return None;
+        }
+
+        println!("Servo[{}] - calling automaton.step()", self.id);
+        let (new_state, _next_action) = self.automaton.step(
+            current_time,
+            &self.context,
+            A::Action::default(),
+            &self.state,
+        );
+
+        self.state = new_state;
+        let raw_value = self.automaton.extract_value(&self.state);
+        println!("Servo[{}] - raw_value: {:.6}", self.id, raw_value);
+
+        let mapped_value = match &self.mapping {
+            ParameterMapping::Linear => raw_value,
+            ParameterMapping::Exponential => raw_value.exp(),
+            ParameterMapping::Logarithmic => raw_value.abs().ln_1p(),
+            ParameterMapping::Custom(func) => func(raw_value),
+        };
+
+        let clamped_value = mapped_value.clamp(self.min_value, self.max_value);
+        println!(
+            "Servo[{}] - mapped_value: {:.6}, clamped: {:.6}",
+            self.id, mapped_value, clamped_value
+        );
+
+        if (clamped_value - self.last_value).abs() > 1e-6 {
+            println!("Servo[{}] - sending value: {:.6}", self.id, clamped_value);
+
+            if let Some(sender) = &self.context.signal_sender {
+                println!("Servo[{}] - signal_sender exists, sending...", self.id);
+                let sender_ref: &dyn SignalSender = sender.as_ref();
+                sender_ref.send_parameter_changed(
+                    &self.target_node,
+                    &self.target_parameter,
+                    clamped_value as f32,
+                );
+                println!("Servo[{}] - send_parameter_changed called", self.id);
+            } else {
+                println!("Servo[{}] - WARNING: signal_sender is None", self.id);
+            }
+            self.last_value = clamped_value;
+        } else {
+            println!("Servo[{}] - value unchanged, skipping send", self.id);
+        }
+
+        self.last_update_time = current_time;
+        Some(clamped_value)
     }
-    
-    self.last_update_time = current_time;
-    Some(clamped_value)
-}
 
     /// Включить или выключить сервопривод.
     /// Если выключен, значения не генерируются и не отправляются.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
-    
+
     /// Установить диапазон выходных значений.
     /// После маппинга значение будет ограничено этим диапазоном.
     pub fn set_range(&mut self, min: f64, max: f64) {
         self.min_value = min;
         self.max_value = max;
     }
-    
+
     /// Получить целевой узел и параметр.
     pub fn target(&self) -> (&str, &str) {
         (&self.target_node, &self.target_parameter)
@@ -251,15 +255,15 @@ where
     fn update(&mut self, time: f64) -> Option<f64> {
         Servo::update(self, time)
     }
-    
+
     fn id(&self) -> &str {
         &self.id
     }
-    
+
     fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
-    
+
     fn target(&self) -> (&str, &str) {
         (&self.target_node, &self.target_parameter)
     }
