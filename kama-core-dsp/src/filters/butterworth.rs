@@ -276,7 +276,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX
         AlgorithmMetadata {
             name: "Butterworth Filter",
             category: AlgorithmCategory::Filter,
-            description: format!("Butterworth filter (order {})", self.order),
+            description: format!("Butterworth filter (order {})", self.order).leak(),
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }

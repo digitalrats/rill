@@ -79,7 +79,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DEL
         AlgorithmMetadata {
             name: "Comb Filter",
             category: AlgorithmCategory::Filter,
-            description: "Comb filter for reverb and physical modeling".to_string(),
+            description: "Comb filter for reverb and physical modeling",
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }

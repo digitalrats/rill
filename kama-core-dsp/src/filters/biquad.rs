@@ -102,7 +102,7 @@ impl<T: AudioNum> Algorithm<T> for Biquad<T> {
         AlgorithmMetadata {
             name: "Biquad Filter",
             category: AlgorithmCategory::Filter,
-            description: "Universal biquad filter".to_string(),
+            description: "Universal biquad filter",
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }

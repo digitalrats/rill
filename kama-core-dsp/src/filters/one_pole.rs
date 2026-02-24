@@ -82,7 +82,7 @@ impl<T: AudioNum> Algorithm<T> for OnePole<T> {
         AlgorithmMetadata {
             name: "One-Pole Filter",
             category: AlgorithmCategory::Filter,
-            description: "Fast one-pole filter for smoothing".to_string(),
+            description: "Fast one-pole filter for smoothing",
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }

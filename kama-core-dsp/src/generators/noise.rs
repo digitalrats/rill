@@ -209,7 +209,7 @@ impl<T: AudioNum> Algorithm<T> for NoiseGenerator<T> {
         AlgorithmMetadata {
             name: self.noise_type.name(),
             category: AlgorithmCategory::Generator,
-            description: self.noise_type.description().to_string(),
+            description: self.noise_type.description(),
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }

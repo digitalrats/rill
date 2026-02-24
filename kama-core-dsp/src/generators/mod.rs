@@ -1,36 +1,39 @@
 //! # Генераторы сигналов
 //!
 //! Этот модуль предоставляет различные генераторы для синтеза звука:
-//! - Базовые осцилляторы (Sine, Saw, Square, Triangle)
+//! - Базовые осцилляторы (Sine, Saw, Square, Triangle, Pulse)
 //! - Шумовые генераторы (White, Pink, Brown, Blue, Violet)
 //! - Огибающие (ADSR, AR, ASR)
 //! - LFO для модуляции
-//! - Pulse wave с PWM
-//! - Вейвтейбл генераторы
 //! - FM синтез
 //!
-//! Все генераторы параметризованы типом `T: AudioNum` и RT-safe.
+//! Все генераторы реализуют общий трейт [`Generator`] и параметризованы
+//! типом `T: AudioNum` (f32 или f64).
 
+// Импортируем необходимые типы и трейты
+use crate::math::AudioNum;
+use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
+
+// Объявляем подмодули
 mod basic;
 mod noise;
 mod envelope;
 mod lfo;
-mod pulse;
-mod wavetable;
 mod fm;
 
+// Реэкспортируем всё из подмодулей
 pub use basic::*;
 pub use noise::*;
 pub use envelope::*;
 pub use lfo::*;
-pub use pulse::*;
-pub use wavetable::*;
 pub use fm::*;
 
-use crate::math::AudioNum;
-use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
-
 /// Базовый трейт для всех генераторов
+///
+/// Предоставляет основные методы управления генератором:
+/// - управление фазой
+/// - изменение частоты
+/// - изменение амплитуды
 pub trait Generator<T: AudioNum>: Algorithm<T> {
     /// Получить текущую фазу (0.0 - 1.0)
     fn phase(&self) -> T;
@@ -57,8 +60,14 @@ pub trait Generator<T: AudioNum>: Algorithm<T> {
 }
 
 /// Генератор с синхронизацией
+///
+/// Позволяет синхронизировать несколько генераторов
+/// по фазе или тактовому сигналу.
 pub trait SyncableGenerator<T: AudioNum>: Generator<T> {
     /// Синхронизировать с внешним тактовым сигналом
+    ///
+    /// # Arguments
+    /// * `reset` - если true, сбросить фазу в 0
     fn sync(&mut self, reset: bool);
     
     /// Получить количество периодов с последнего сброса
@@ -66,11 +75,17 @@ pub trait SyncableGenerator<T: AudioNum>: Generator<T> {
 }
 
 /// Генератор с модуляцией частоты
+///
+/// Поддерживает частотную модуляцию (FM) для создания
+/// сложных тембров.
 pub trait ModulatableGenerator<T: AudioNum>: Generator<T> {
     /// Применить модуляцию частоты
+    ///
+    /// # Arguments
+    /// * `amount` - величина модуляции
     fn modulate_frequency(&mut self, amount: T);
     
-    /// Индекс модуляции
+    /// Индекс модуляции (текущая величина FM)
     fn modulation_index(&self) -> T;
     
     /// Установить индекс модуляции
@@ -121,7 +136,50 @@ impl GeneratorComparison {
          → AR - перкуссия\n\
          → ASR - орга́нные звуки\n\n\
          🎵 **Модуляция**:\n\
-         → LFO - вибрато, тремоло, фильтр-свип\n\
-         → Random - генеративные патчи"
+         → LFO - вибрато, тремоло, фильтр-свип"
+    }
+    
+    /// Характеристики производительности
+    pub fn performance_guide() -> &'static str {
+        "Производительность (относительная):\n\
+         ⚡ **Sine** - 1x (самый быстрый)\n\
+         ⚡⚡ **Triangle, Square** - 1.5x\n\
+         ⚡⚡⚡ **Saw** - 2x (с анти-алиасингом)\n\
+         ⚡⚡⚡ **Noise** - 2x\n\
+         ⚡⚡⚡⚡ **Envelope** - 3x\n\
+         ⚡⚡⚡⚡ **FM Synth** - зависит от числа операторов"
+    }
+}
+
+// =============================================================================
+// Тесты
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_generator_trait_bounds() {
+        // Проверяем, что все генераторы реализуют нужные трейты
+        fn assert_generator<T: AudioNum, G: Generator<T>>() {}
+        fn assert_syncable<T: AudioNum, G: SyncableGenerator<T>>() {}
+        fn assert_modulatable<T: AudioNum, G: ModulatableGenerator<T>>() {}
+        
+        assert_generator::<f32, BasicOscillator<f32>>();
+        assert_generator::<f32, NoiseGenerator<f32>>();
+        assert_generator::<f32, EnvelopeGenerator<f32>>();
+        assert_generator::<f32, LFO<f32>>();
+        assert_generator::<f32, SimpleFmSynth<f32>>();
+        
+        assert_syncable::<f32, BasicOscillator<f32>>();
+        assert_modulatable::<f32, BasicOscillator<f32>>();
+    }
+    
+    #[test]
+    fn test_comparison_guides() {
+        assert!(!GeneratorComparison::harmonic_content().is_empty());
+        assert!(!GeneratorComparison::usage_guide().is_empty());
+        assert!(!GeneratorComparison::performance_guide().is_empty());
     }
 }

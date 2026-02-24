@@ -15,7 +15,7 @@ pub struct AlgorithmMetadata {
     /// Категория
     pub category: AlgorithmCategory,
     /// Описание
-    pub description: String,
+    pub description: &'static str,
     /// Автор
     pub author: &'static str,
     /// Версия

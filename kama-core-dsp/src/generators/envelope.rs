@@ -246,9 +246,9 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
             },
             category: AlgorithmCategory::Generator,
             description: match self.env_type {
-                EnvelopeType::ADSR => "Attack-Decay-Sustain-Release envelope generator".to_string(),
-                EnvelopeType::AR => "Attack-Release envelope generator (percussion)".to_string(),
-                EnvelopeType::ASR => "Attack-Sustain-Release envelope generator (organ)".to_string(),
+                EnvelopeType::ADSR => "Attack-Decay-Sustain-Release envelope generator",
+                EnvelopeType::AR => "Attack-Release envelope generator (percussion)",
+                EnvelopeType::ASR => "Attack-Sustain-Release envelope generator (organ)",
             },
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),

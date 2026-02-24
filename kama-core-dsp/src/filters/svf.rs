@@ -108,7 +108,7 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
         AlgorithmMetadata {
             name: "State Variable Filter",
             category: AlgorithmCategory::Filter,
-            description: "SVF with simultaneous LP/HP/BP outputs".to_string(),
+            description: "SVF with simultaneous LP/HP/BP outputs",
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }

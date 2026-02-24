@@ -236,7 +236,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevI<T, MAX_
             name: "Chebyshev Type I Filter",
             category: AlgorithmCategory::Filter,
             description: format!("Chebyshev Type I filter (order {}, ripple {} dB)", 
-                                  self.params.order, self.params.ripple_db),
+                                  self.params.order, self.params.ripple_db).leak(),
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }
@@ -374,7 +374,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevII<T, MAX
             name: "Chebyshev Type II Filter",
             category: AlgorithmCategory::Filter,
             description: format!("Chebyshev Type II filter (order {}, ripple {} dB)", 
-                                  self.params.order, self.params.ripple_db),
+                                  self.params.order, self.params.ripple_db).leak(),
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }

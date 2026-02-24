@@ -189,7 +189,7 @@ impl<T: AudioNum> BasicOscillator<T> {
             self.phase = self.phase.sub(one);
             self.periods += 1;
         }
-        
+  
         output
     }
     
@@ -241,7 +241,7 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
         AlgorithmMetadata {
             name: self.waveform.name(),
             category: AlgorithmCategory::Generator,
-            description: self.waveform.description().to_string(),
+            description: self.waveform.description(),
             author: "Kama Audio",
             version: env!("CARGO_PKG_VERSION"),
         }
