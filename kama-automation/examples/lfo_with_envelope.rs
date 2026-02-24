@@ -1,17 +1,17 @@
 //! Пример использования LFO с envelope для автоматизации
-//!
-//! Запуск: cargo run --example lfo_with_envelope
 
 use kama_automation::{
-    automaton::{LfoAutomaton, LfoWithEnvelopeAutomaton}, // <-- импортируем оба
+    automaton::{LfoAutomaton, LfoWithEnvelopeAutomaton},
     AutomationContext,
     AutomationManager,
-    Automaton, // <-- Automaton трейт
+    Automaton,
     ParameterMapping,
     Servo,
     TestSignalSender,
+    Waveform,
 };
 use kama_core::traits::time::{Clock, SystemClock};
+use kama_core::traits::{NodeId, ParameterId, PortId};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -26,56 +26,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut manager = AutomationManager::new(clock.clone(), system_clock)
         .with_signal_sender(signal_sender.clone());
 
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let filter_param = ParameterId::new("filter_cutoff")?;
+
     println!("Создаём LFO с envelope (attack=2s, release=2s)...");
 
-    // Вариант 1: Специализированный конструктор
-    let lfo_with_env = LfoWithEnvelopeAutomaton::lfo_with_envelope(
-        0.5, // частота
-        0.8, // амплитуда
-        0.5, // смещение
-        2.0, // attack
-        2.0, // release
-        "synth",
-        "filter_cutoff",
+    // LFO с огибающей
+    manager.add_lfo_with_envelope(
+        "envelope_lfo",
+        0.5,  // частота
+        0.8,  // амплитуда
+        0.5,  // смещение
+        2.0,  // attack
+        2.0,  // release
+        port,
+        filter_param,
     );
 
-    let context = AutomationContext::new(clock.clone());
-    let servo = Servo::new(
-        "envelope_lfo_1".to_string(),
-        Arc::new(lfo_with_env),
-        "synth".to_string(),
-        "filter_cutoff".to_string(),
-        ParameterMapping::Linear,
-        context,
-    );
-
-    manager.add_servo(servo);
-
-    // Вариант 2: Комбинация через замыкание
-    println!("\nСоздаём второй LFO с envelope через замыкание...");
-
-    use kama_oscillators::control::{Envelope, Lfo, LfoWaveform};
-
-    let lfo = Lfo::new(0.3, 0.5, 0.5).with_waveform(LfoWaveform::Saw);
-    let env = Envelope::new(1.0, 0.5, 0.8, 3.0);
-
-    // Для использования с состоянием нужен Mutex или другой механизм
-    // В реальном приложении нужно использовать потокобезопасную обёртку
-
-    println!("LFO с envelope добавлены");
-    println!("\nВремя(s)\tFilter Cutoff\tResonance\tСостояние");
-    println!("--------\t-------------\t---------\t---------");
+    println!("\nВремя(s)\tFilter Cutoff\tСостояние");
+    println!("--------\t-------------\t---------");
 
     for i in 0..20 {
         let time = i as f64 * 0.5;
 
-        Clock::advance(clock.as_ref(), 22050);
+        clock.advance(22050);
         manager.update(22050);
 
         let cutoff = signal_sender
-            .get_signals_for_param("synth", "filter_cutoff")
+            .get_signals_for_param(&ParameterId::new("filter_cutoff")?)
             .last()
-            .copied()
+            .map(|s| s.value)
             .unwrap_or(0.5);
 
         let state = if time < 2.0 {
@@ -86,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Release"
         };
 
-        println!("{:.1}\t\t{:.3}\t\t-\t\t{}", time, cutoff, state);
+        println!("{:.1}\t\t{:.3}\t\t{}", time, cutoff, state);
 
         thread::sleep(Duration::from_millis(100));
     }

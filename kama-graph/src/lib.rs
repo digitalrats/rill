@@ -23,30 +23,26 @@ use kama_core::traits::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kama_core::traits::{
-        AudioError, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeTypeId, ParamValue, PortId,
-    };
+    use kama_core::traits::*;
 
-    // Простой тестовый узел для демонстрации
-    struct GainNode {
+    // Простой тестовый узел для публичных тестов
+    struct TestGain {
         gain: f32,
     }
 
-    impl GainNode {
+    impl TestGain {
         fn new(gain: f32) -> Self {
             Self { gain }
         }
     }
 
-    impl AudioNode for GainNode {
+    impl AudioNode for TestGain {
         fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
             if inputs.is_empty() || outputs.is_empty() {
                 return Ok(());
             }
-            let input = inputs[0];
-            let output = &mut outputs[0];
-            for i in 0..input.len().min(output.len()) {
-                output[i] = input[i] * self.gain;
+            for i in 0..inputs[0].len().min(outputs[0].len()) {
+                outputs[0][i] = inputs[0][i] * self.gain;
             }
             Ok(())
         }
@@ -55,20 +51,21 @@ mod tests {
             match port_type {
                 PortType::AudioIn => 1,
                 PortType::AudioOut => 1,
+                PortType::Node => 1,
                 _ => 0,
             }
         }
 
-        fn get_port_param(&self, port: PortId, param: ParameterId) -> Option<ParamValue> {
-            if port.port_type() == PortType::AudioOut && param.as_str() == "gain" {
+        fn get_port_param(&self, port: PortId, param: &ParameterId) -> Option<ParamValue> {
+            if port.port_type() == PortType::Node && param.as_str() == "gain" {
                 Some(ParamValue::Float(self.gain))
             } else {
                 None
             }
         }
 
-        fn set_port_param(&mut self, port: PortId, param: ParameterId, value: ParamValue) -> Result<(), AudioError> {
-            if port.port_type() == PortType::AudioOut && param.as_str() == "gain" {
+        fn set_port_param(&mut self, port: PortId, param: &ParameterId, value: ParamValue) -> Result<(), AudioError> {
+            if port.port_type() == PortType::Node && param.as_str() == "gain" {
                 if let ParamValue::Float(g) = value {
                     self.gain = g;
                     Ok(())
@@ -76,21 +73,19 @@ mod tests {
                     Err(AudioError::Parameter("Expected float".into()))
                 }
             } else {
-                Err(AudioError::Parameter(format!("Unknown port/param: {}/{}", port, param)))
+                Err(AudioError::Parameter("Unknown parameter".into()))
             }
         }
 
         fn init(&mut self, _sample_rate: f32) {}
         fn reset(&mut self) {}
-        fn node_type_id(&self) -> NodeTypeId {
-            NodeTypeId::of::<Self>()
-        }
+        fn node_type_id(&self) -> NodeTypeId { NodeTypeId::of::<Self>() }
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
-                name: "Gain".to_string(),
+                name: "TestGain".to_string(),
                 category: NodeCategory::Effect,
-                description: "Simple gain control".to_string(),
-                author: "Kama".to_string(),
+                description: "Test gain".to_string(),
+                author: "test".to_string(),
                 version: "1.0".to_string(),
                 parameters: vec![],
             }
@@ -98,39 +93,28 @@ mod tests {
     }
 
     #[test]
-    fn test_graph_process() {
+    fn test_graph_basic_operations() {
         let mut graph = AudioGraph::new(44100.0);
-
-        let gain = Box::new(GainNode::new(0.5));
-        let gain_id = graph.add_node(gain);
-
-        let mut output = vec![0.0f32; 10];
-        graph.process(&[], &mut [&mut output]).unwrap();
-
-        // Граф без входов должен работать (генераторы обрабатываются)
-        assert_eq!(output.len(), 10);
-    }
-
-    #[test]
-    fn test_remove_node() {
-        let mut graph = AudioGraph::new(44100.0);
-
-        let node1 = Box::new(GainNode::new(0.5));
-        let node2 = Box::new(GainNode::new(0.7));
-
-        let id1 = graph.add_node(node1);
-        let id2 = graph.add_node(node2);
-
+        
+        // Добавление узлов
+        let id1 = graph.add_node(Box::new(TestGain::new(0.5)));
+        let id2 = graph.add_node(Box::new(TestGain::new(0.7)));
         assert_eq!(graph.node_count(), 2);
-
-        graph
-            .connect(PortId::audio_out(id1, 0), PortId::audio_in(id2, 0), 1.0)
-            .unwrap();
-
+        
+        // Соединение
+        graph.connect(
+            PortId::audio_out(id1, 0),
+            PortId::audio_in(id2, 0),
+            1.0
+        ).unwrap();
         assert_eq!(graph.connection_count(), 1);
-
+        
+        // Обработка
+        let mut output = vec![0.0; 10];
+        graph.process(&[], &mut [&mut output]).unwrap();
+        
+        // Удаление
         graph.remove_node(id1);
-
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.connection_count(), 0);
     }

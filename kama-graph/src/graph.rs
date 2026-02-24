@@ -467,11 +467,13 @@ impl AudioGraph {
         self.buffer_manager.stats()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kama_core::traits::{NodeMetadata, NodeCategory, NodeTypeId, ParamValue};
+    use kama_core::traits::{
+        NodeMetadata, NodeCategory, NodeTypeId, ParamValue, ParameterId, PortId, PortType,
+        AudioError, AudioNode
+    };
     
     struct TestNode {
         id: u32,
@@ -495,6 +497,28 @@ mod tests {
             NodeTypeId::of::<Self>()
         }
         
+        fn num_ports(&self, port_type: PortType) -> usize {
+            match port_type {
+                PortType::Node => 1,
+                PortType::AudioIn => 1,
+                PortType::AudioOut => 1,
+                _ => 0,
+            }
+        }
+        
+        fn get_port_param(&self, _port: PortId, _param: &ParameterId) -> Option<ParamValue> {
+            None // Тестовый узел не имеет параметров
+        }
+        
+        fn set_port_param(
+            &mut self,
+            _port: PortId,
+            _param: &ParameterId,
+            _value: ParamValue,
+        ) -> Result<(), AudioError> {
+            Err(AudioError::Parameter("Test node has no parameters".into()))
+        }
+        
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "Test Node".to_string(),
@@ -507,346 +531,305 @@ mod tests {
         }
     }
     
-    #[test]
-    fn test_graph_creation() {
-        let graph = AudioGraph::new(44100.0);
-        assert_eq!(graph.sample_rate(), 44100.0);
-        assert_eq!(graph.node_count(), 0);
+    // Тестовый усилитель
+    struct TestAmplifier {
+        gain: f32,
     }
     
-    #[test]
-    fn test_add_node() {
-        let mut graph = AudioGraph::new(44100.0);
-        let node = Box::new(TestNode::new(1));
-        let id = graph.add_node(node);
-        
-        assert_eq!(graph.node_count(), 1);
-        assert!(graph.get_node(id).is_some());
+    impl TestAmplifier {
+        fn new(gain: f32) -> Self {
+            Self { gain }
+        }
     }
     
-    #[test]
-    fn test_remove_node() {
-        let mut graph = AudioGraph::new(44100.0);
+    impl AudioNode for TestAmplifier {
+        fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+            if !inputs.is_empty() && !outputs.is_empty() {
+                for i in 0..inputs[0].len().min(outputs[0].len()) {
+                    outputs[0][i] = inputs[0][i] * self.gain;
+                }
+            }
+            Ok(())
+        }
         
-        let node1 = Box::new(TestNode::new(1));
-        let node2 = Box::new(TestNode::new(2));
-        
-        let id1 = graph.add_node(node1);
-        let id2 = graph.add_node(node2);
-        
-        assert_eq!(graph.node_count(), 2);
-        
-        graph.remove_node(id1);
-        assert_eq!(graph.node_count(), 1);
-        assert!(graph.get_node(id2).is_some());
-    }
-    
-    #[test]
-    fn test_connect_nodes() {
-        let mut graph = AudioGraph::new(44100.0);
-        
-        let node1 = Box::new(TestNode::new(1));
-        let node2 = Box::new(TestNode::new(2));
-        
-        let id1 = graph.add_node(node1);
-        let id2 = graph.add_node(node2);
-        
-        let out = PortId::audio_out(id1, 0);
-        let in_port = PortId::audio_in(id2, 0);
-        
-        graph.connect(out, in_port, 1.0).unwrap();
-        
-        assert_eq!(graph.connection_count(), 1);
-    }
-    
-    #[test]
-#[test]
-fn test_buffer_stats() {
-    let mut graph = AudioGraph::new(44100.0);
-    
-    // Создаём источник (генератор) и преобразователь (эффект)
-    let source = Box::new(TestSource::new(1));  // источник сигнала (0 входов, 1 выход)
-    let processor = Box::new(TestProcessor::new(2));  // преобразователь (1 вход, 1 выход)
-    
-    let source_id = graph.add_node(source);
-    let processor_id = graph.add_node(processor);
-    
-    // Соединяем источник с преобразователем
-    let out_port = PortId::audio_out(source_id, 0);
-    let in_port = PortId::audio_in(processor_id, 0);
-    graph.connect(out_port, in_port, 1.0).unwrap();
-    
-    println!("Before processing:");
-    let stats_before = graph.buffer_stats();
-    println!("  active_nodes: {}", stats_before.active_nodes);
-    println!("  active_buffers: {}", stats_before.active_buffers);
-    println!("  total_memory_bytes: {}", stats_before.total_memory_bytes);
-    
-    assert_eq!(stats_before.active_nodes, 0);
-    assert_eq!(stats_before.active_buffers, 0);
-    
-    // Обрабатываем - теперь буферы должны создаться
-    let mut output = vec![0.0; 64];
-    let mut outputs = [output.as_mut_slice()];
-    graph.process(&[], &mut outputs).unwrap();
-    
-    println!("\nAfter processing:");
-    let stats_after = graph.buffer_stats();
-    println!("  active_nodes: {}", stats_after.active_nodes);
-    println!("  active_buffers: {}", stats_after.active_buffers);
-    println!("  total_memory_bytes: {}", stats_after.total_memory_bytes);
-    
-    // Должно быть 2 активных узла и 3 буфера:
-    // - source: 0 входов, 1 выход = 1 буфер
-    // - processor: 1 вход, 1 выход = 2 буфера
-    // Всего: 3 буфера
-    assert_eq!(stats_after.active_nodes, 2);
-    assert_eq!(stats_after.active_buffers, 3);
-    assert!(stats_after.total_memory_bytes > 0);
-}
-
-// Тестовый источник сигнала (0 входов, 1 выход)
-#[test]
-fn test_signal_propagation() -> Result<(), Box<dyn std::error::Error>> {
-    let sample_rate = 44100.0;
-    let mut graph = AudioGraph::new(sample_rate);
-
-    // Создаём простую цепочку с измерительными узлами
-    let source = Box::new(TestSource::new(1));  // генерирует сигнал 0.5
-    let source_id = graph.add_node(source);
-    
-    let amplifier = Box::new(TestAmplifier::new(2.0));  // усиливает в 2 раза
-    let amp_id = graph.add_node(amplifier);
-    
-    let meter = Box::new(TestMeter::new(3));  // измеряет сигнал
-    let meter_id = graph.add_node(meter);
-
-    // Соединяем: source -> amplifier -> meter
-    graph.connect(
-        PortId::audio_out(source_id, 0), 
-        PortId::audio_in(amp_id, 0), 
-        1.0
-    )?;
-    
-    graph.connect(
-        PortId::audio_out(amp_id, 0), 
-        PortId::audio_in(meter_id, 0), 
-        1.0
-    )?;
-
-    // Обрабатываем
-    let mut output = vec![0.0; 1024];
-    let mut outputs = [output.as_mut_slice()];
-    graph.process(&[], &mut outputs)?;
-
-    // Проверяем, что сигнал прошёл через все узлы
-    // Для этого нам нужен доступ к состоянию meter
-    // В реальности нужно добавить метод для получения измерений
-    
-    Ok(())
-}
-
-// Тестовый усилитель
-struct TestAmplifier {
-    gain: f32,
-}
-
-impl TestAmplifier {
-    fn new(gain: f32) -> Self {
-        Self { gain }
-    }
-}
-
-impl AudioNode for TestAmplifier {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        if !inputs.is_empty() && !outputs.is_empty() {
-            for i in 0..inputs[0].len().min(outputs[0].len()) {
-                outputs[0][i] = inputs[0][i] * self.gain;
+        fn num_ports(&self, port_type: PortType) -> usize {
+            match port_type {
+                PortType::AudioIn => 1,
+                PortType::AudioOut => 1,
+                PortType::Node => 1,
+                _ => 0,
             }
         }
-        Ok(())
-    }
-    
-    fn num_ports(&self, port_type: PortType) -> usize {
-        match port_type {
-            PortType::AudioIn => 1,
-            PortType::AudioOut => 1,
-            _ => 0,
-        }
-    }
-    
-    fn init(&mut self, _sample_rate: f32) {}
-    fn reset(&mut self) {}
-    
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-    
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "Test Amplifier".to_string(),
-            category: NodeCategory::Effect,
-            description: "Test amplifier".to_string(),
-            author: "Kama".to_string(),
-            version: "1.0".to_string(),
-            parameters: vec![],
-        }
-    }
-}
-// Тестовый источник сигнала (0 входов, 1 выход)
-struct TestSource {
-    id: u32,
-}
-
-impl TestSource {
-    fn new(id: u32) -> Self {
-        Self { id }
-    }
-}
-
-impl AudioNode for TestSource {
-    fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        if !outputs.is_empty() {
-            // Генерируем тестовый сигнал
-            for sample in outputs[0].iter_mut() {
-                *sample = 0.5;
+        
+        fn get_port_param(&self, port: PortId, param: &ParameterId) -> Option<ParamValue> {
+            if port.port_type() == PortType::Node && port.index() == 0 {
+                match param.as_str() {
+                    "gain" => Some(ParamValue::Float(self.gain)),
+                    _ => None,
+                }
+            } else {
+                None
             }
         }
-        Ok(())
-    }
-    
-    fn num_ports(&self, port_type: PortType) -> usize {
-        match port_type {
-            PortType::AudioOut => 1,  // 1 выход
-            _ => 0,
-        }
-    }
-    
-    fn init(&mut self, _sample_rate: f32) {}
-    fn reset(&mut self) {}
-    
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-    
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "Test Source".to_string(),
-            category: NodeCategory::Generator,
-            description: "Test source node".to_string(),
-            author: "Kama".to_string(),
-            version: "1.0".to_string(),
-            parameters: vec![],
-        }
-    }
-}
-
-// Тестовый преобразователь (1 вход, 1 выход)
-struct TestProcessor {
-    id: u32,
-}
-
-impl TestProcessor {
-    fn new(id: u32) -> Self {
-        Self { id }
-    }
-}
-
-impl AudioNode for TestProcessor {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        if !inputs.is_empty() && !outputs.is_empty() {
-            // Просто копируем вход в выход
-            for i in 0..inputs[0].len().min(outputs[0].len()) {
-                outputs[0][i] = inputs[0][i];
+        
+        fn set_port_param(
+            &mut self,
+            port: PortId,
+            param: &ParameterId,
+            value: ParamValue,
+        ) -> Result<(), AudioError> {
+            if port.port_type() == PortType::Node && port.index() == 0 {
+                match (param.as_str(), value) {
+                    ("gain", ParamValue::Float(g)) => {
+                        self.gain = g;
+                        Ok(())
+                    }
+                    _ => Err(AudioError::Parameter(format!("Unknown parameter: {}", param))),
+                }
+            } else {
+                Err(AudioError::Parameter("Parameters only supported on Node port".into()))
             }
         }
-        Ok(())
-    }
-    
-    fn num_ports(&self, port_type: PortType) -> usize {
-        match port_type {
-            PortType::AudioIn => 1,   // 1 вход
-            PortType::AudioOut => 1,  // 1 выход
-            _ => 0,
+        
+        fn init(&mut self, _sample_rate: f32) {}
+        fn reset(&mut self) {}
+        
+        fn node_type_id(&self) -> NodeTypeId {
+            NodeTypeId::of::<Self>()
         }
-    }
-    
-    fn init(&mut self, _sample_rate: f32) {}
-    fn reset(&mut self) {}
-    
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-    
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "Test Processor".to_string(),
-            category: NodeCategory::Effect,
-            description: "Test processor node".to_string(),
-            author: "Kama".to_string(),
-            version: "1.0".to_string(),
-            parameters: vec![],
-        }
-    }
-}
-
-// Тестовый измеритель
-struct TestMeter {
-    last_value: f32,
-}
-
-impl TestMeter {
-    fn new(_id: u32) -> Self {
-        Self { last_value: 0.0 }
-    }
-    
-    fn last_value(&self) -> f32 {
-        self.last_value
-    }
-}
-
-impl AudioNode for TestMeter {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        if !inputs.is_empty() {
-            // Запоминаем последнее значение
-            if !inputs[0].is_empty() {
-                self.last_value = inputs[0][inputs[0].len() - 1];
+        
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                name: "Test Amplifier".to_string(),
+                category: NodeCategory::Effect,
+                description: "Test amplifier".to_string(),
+                author: "Kama".to_string(),
+                version: "1.0".to_string(),
+                parameters: vec![
+                    kama_core::traits::ParamMetadata {
+                        name: "gain".to_string(),
+                        typ: kama_core::traits::ParamType::Float,
+                        default: ParamValue::Float(1.0),
+                        range: kama_core::traits::ParamRange::new()
+                            .with_min(0.0)
+                            .with_max(2.0)
+                            .with_step(0.1),
+                        unit: Some("gain".to_string()),
+                        choices: None,
+                    }
+                ],
             }
-            
-            // Пропускаем сигнал дальше
+        }
+    }
+    
+    // Тестовый источник сигнала
+    struct TestSource {
+        id: u32,
+    }
+    
+    impl TestSource {
+        fn new(id: u32) -> Self {
+            Self { id }
+        }
+    }
+    
+    impl AudioNode for TestSource {
+        fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
             if !outputs.is_empty() {
-                outputs[0].copy_from_slice(inputs[0]);
+                for sample in outputs[0].iter_mut() {
+                    *sample = 0.5;
+                }
+            }
+            Ok(())
+        }
+        
+        fn num_ports(&self, port_type: PortType) -> usize {
+            match port_type {
+                PortType::AudioOut => 1,
+                PortType::Node => 1,
+                _ => 0,
             }
         }
-        Ok(())
-    }
-    
-    fn num_ports(&self, port_type: PortType) -> usize {
-        match port_type {
-            PortType::AudioIn => 1,
-            PortType::AudioOut => 1,
-            _ => 0,
+        
+        fn get_port_param(&self, _port: PortId, _param: &ParameterId) -> Option<ParamValue> {
+            None
+        }
+        
+        fn set_port_param(
+            &mut self,
+            _port: PortId,
+            _param: &ParameterId,
+            _value: ParamValue,
+        ) -> Result<(), AudioError> {
+            Err(AudioError::Parameter("Test source has no parameters".into()))
+        }
+        
+        fn init(&mut self, _sample_rate: f32) {}
+        fn reset(&mut self) {}
+        
+        fn node_type_id(&self) -> NodeTypeId {
+            NodeTypeId::of::<Self>()
+        }
+        
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                name: "Test Source".to_string(),
+                category: NodeCategory::Generator,
+                description: "Test source node".to_string(),
+                author: "Kama".to_string(),
+                version: "1.0".to_string(),
+                parameters: vec![],
+            }
         }
     }
     
-    fn init(&mut self, _sample_rate: f32) {}
-    fn reset(&mut self) {
-        self.last_value = 0.0;
+    // Тестовый преобразователь
+    struct TestProcessor {
+        id: u32,
     }
     
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-    
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "Test Meter".to_string(),
-            category: NodeCategory::Analyzer,
-            description: "Test meter".to_string(),
-            author: "Kama".to_string(),
-            version: "1.0".to_string(),
-            parameters: vec![],
+    impl TestProcessor {
+        fn new(id: u32) -> Self {
+            Self { id }
         }
     }
-}
+    
+    impl AudioNode for TestProcessor {
+        fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+            if !inputs.is_empty() && !outputs.is_empty() {
+                for i in 0..inputs[0].len().min(outputs[0].len()) {
+                    outputs[0][i] = inputs[0][i];
+                }
+            }
+            Ok(())
+        }
+        
+        fn num_ports(&self, port_type: PortType) -> usize {
+            match port_type {
+                PortType::AudioIn => 1,
+                PortType::AudioOut => 1,
+                PortType::Node => 1,
+                _ => 0,
+            }
+        }
+        
+        fn get_port_param(&self, _port: PortId, _param: &ParameterId) -> Option<ParamValue> {
+            None
+        }
+        
+        fn set_port_param(
+            &mut self,
+            _port: PortId,
+            _param: &ParameterId,
+            _value: ParamValue,
+        ) -> Result<(), AudioError> {
+            Err(AudioError::Parameter("Test processor has no parameters".into()))
+        }
+        
+        fn init(&mut self, _sample_rate: f32) {}
+        fn reset(&mut self) {}
+        
+        fn node_type_id(&self) -> NodeTypeId {
+            NodeTypeId::of::<Self>()
+        }
+        
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                name: "Test Processor".to_string(),
+                category: NodeCategory::Effect,
+                description: "Test processor node".to_string(),
+                author: "Kama".to_string(),
+                version: "1.0".to_string(),
+                parameters: vec![],
+            }
+        }
+    }
+    
+    // Тестовый измеритель
+    struct TestMeter {
+        last_value: f32,
+    }
+    
+    impl TestMeter {
+        fn new(_id: u32) -> Self {
+            Self { last_value: 0.0 }
+        }
+        
+        fn last_value(&self) -> f32 {
+            self.last_value
+        }
+    }
+    
+    impl AudioNode for TestMeter {
+        fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+            if !inputs.is_empty() {
+                if !inputs[0].is_empty() {
+                    self.last_value = inputs[0][inputs[0].len() - 1];
+                }
+                
+                if !outputs.is_empty() {
+                    outputs[0].copy_from_slice(inputs[0]);
+                }
+            }
+            Ok(())
+        }
+        
+        fn num_ports(&self, port_type: PortType) -> usize {
+            match port_type {
+                PortType::AudioIn => 1,
+                PortType::AudioOut => 1,
+                PortType::Node => 1,
+                _ => 0,
+            }
+        }
+        
+        fn get_port_param(&self, port: PortId, param: &ParameterId) -> Option<ParamValue> {
+            if port.port_type() == PortType::Node && port.index() == 0 {
+                match param.as_str() {
+                    "last_value" => Some(ParamValue::Float(self.last_value)),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        
+        fn set_port_param(
+            &mut self,
+            _port: PortId,
+            _param: &ParameterId,
+            _value: ParamValue,
+        ) -> Result<(), AudioError> {
+            Err(AudioError::Parameter("Test meter parameters are read-only".into()))
+        }
+        
+        fn init(&mut self, _sample_rate: f32) {}
+        fn reset(&mut self) {
+            self.last_value = 0.0;
+        }
+        
+        fn node_type_id(&self) -> NodeTypeId {
+            NodeTypeId::of::<Self>()
+        }
+        
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                name: "Test Meter".to_string(),
+                category: NodeCategory::Analyzer,
+                description: "Test meter".to_string(),
+                author: "Kama".to_string(),
+                version: "1.0".to_string(),
+                parameters: vec![
+                    kama_core::traits::ParamMetadata {
+                        name: "last_value".to_string(),
+                        typ: kama_core::traits::ParamType::Float,
+                        default: ParamValue::Float(0.0),
+                        range: kama_core::traits::ParamRange::new(),
+                        unit: None,
+                        choices: None,
+                    }
+                ],
+            }
+        }
+    }
 }

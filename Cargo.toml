@@ -3,8 +3,8 @@ members = [
     "kama-core",
     "kama-buffers",
     "kama-graph",
-    #"kama-automation",
-    #"kama-control",
+    "kama-automation",
+    "kama-control",
     "kama-core-dsp",
     #"kama-oscillators", # Временно отключен
     #"kama-digital-filters", # Временно отключен
@@ -12,7 +12,6 @@ members = [
     #"kama-eq", # Временно отключен
     #"kama-mixer", # Временно отключен
     #"kama-lofi", # Временно отключен
-    #"kama-hp", # Временно отключен
     #"kama-io", # Временно отключен
     #"kama-tests", # Временно отключен
 ]

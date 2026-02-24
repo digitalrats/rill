@@ -1,28 +1,10 @@
 //! Сервопривод для управления параметрами
-//!
-//! Сервопривод получает сигнал от автомата, преобразует его согласно
-//! заданному маппингу и применяет к конкретному параметру узла.
-//!
-//! ## Что делает сервопривод?
-//!
-//! 1. **Получает сигнал** от автомата (LFO, огибающей и т.д.)
-//! 2. **Трансформирует** его согласно маппингу (линейно, экспоненциально)
-//! 3. **Применяет** к конкретному параметру узла
-//! 4. **Отправляет сигнал** об изменении через `SignalSender`
-//!
-//! ## Жизненный цикл
-//!
-//! 1. Создаётся с автоматом, целью и контекстом
-//! 2. Добавляется в [`AutomationManager`](crate::AutomationManager)
-//! 3. Менеджер регулярно вызывает [`update`](Servo::update)
-//! 4. Серво получает от автомата новое значение, применяет маппинг и,
-//!    если значение изменилось, отправляет сигнал
 
 use crate::automaton::Automaton;
 use crate::context::AutomationContext;
 use crate::signal::SignalSender;
 use kama_core::signal::ParameterChanged;
-use kama_core::traits::{NodeId, ParameterId, PortId, SignalSource};
+use kama_core::traits::{ParameterId, PortId, SignalSource};
 use std::sync::Arc;
 
 /// Тип маппинга значений
@@ -123,11 +105,13 @@ where
         if (clamped_value - self.last_value).abs() > 1e-6 {
             self.last_value = clamped_value;
 
+            let normalized = (clamped_value - self.min_value) / (self.max_value - self.min_value);
+            
             let signal = ParameterChanged::new(
                 self.target_port,
                 self.target_parameter.clone(),
                 clamped_value as f32,
-                (clamped_value - self.min_value) / (self.max_value - self.min_value) as f32,
+                normalized as f32,
                 SignalSource::Automation,
             );
 

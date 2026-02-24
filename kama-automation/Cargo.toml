@@ -1,6 +1,6 @@
 [package]
 name = "kama-automation"
-version = "0.2.0"
+version = "0.3.0"  # Обновляем версию
 edition = "2021"
 description = "Advanced automation system for Kama Audio"
 license = "Apache-2.0"
@@ -8,28 +8,12 @@ authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
 kama-core = { path = "../kama-core", version = "0.3.0" }
-kama-oscillators = { path = "../kama-oscillators", version = "0.2.0" }
+kama-core-dsp = { path = "../kama-core-dsp", version = "0.3.0" }  # Добавляем
 parking_lot = "0.12"
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "1.0"
-rand = "0.8"  # <-- добавляем
+rand = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }
-float-cmp = "0.9"  # для сравнения чисел с плавающей точкой
-
-[[example]]
-name = "basic_lfo"
-path = "examples/basic_lfo.rs"
-
-[[example]]
-name = "lfo_with_envelope"
-path = "examples/lfo_with_envelope.rs"
-
-[[example]]
-name = "multiple_servos"
-path = "examples/multiple_servos.rs"
-
-[[example]]
-name = "custom_automaton"
-path = "examples/custom_automaton.rs"
+float-cmp = "0.9"

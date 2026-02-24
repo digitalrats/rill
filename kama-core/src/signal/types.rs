@@ -1,9 +1,4 @@
-//! # Типы сигналов
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-use crate::traits::{PortId, ParameterId};  // обновляем импорт
+use crate::traits::{ParameterId, PortId};
 
 /// Источник сигнала изменения параметра
 #[derive(Debug, Clone)]
@@ -35,15 +30,22 @@ pub enum SignalSource {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterChanged {
+    /// Порт, к которому относится параметр
     pub port: PortId,
+    /// Идентификатор параметра
     pub parameter: ParameterId,
+    /// Текущее значение
     pub value: f32,
+    /// Нормализованное значение (0.0 - 1.0)
     pub normalized: f32,
+    /// Временная метка (микросекунды)
     pub timestamp: u64,
+    /// Источник изменения
     pub source: SignalSource,
 }
 
 impl ParameterChanged {
+    /// Создает новый сигнал изменения параметра.
     pub fn new(
         port: PortId,
         parameter: ParameterId,
@@ -61,6 +63,7 @@ impl ParameterChanged {
         }
     }
 
+    /// Создает сигнал для параметра самого узла (не порта).
     pub fn node_parameter(
         node: crate::traits::NodeId,
         parameter: ParameterId,

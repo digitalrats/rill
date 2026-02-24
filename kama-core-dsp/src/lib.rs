@@ -22,8 +22,8 @@ pub mod context;
 pub mod generators;
 pub mod math;
 
-//#[macro_use]
-//pub mod macros;
+#[macro_use]
+pub mod macros;
 
 // Re-exports
 pub use math::AudioNum;

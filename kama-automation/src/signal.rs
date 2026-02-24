@@ -18,11 +18,12 @@
 //! сигналов по OSC или в GUI.
 
 use kama_core::signal::ParameterChanged;
+use kama_core::traits::{ParameterId, PortId};
 use std::sync::RwLock;
 
 /// Интерфейс для отправки сигналов в kama-core систему
 pub trait SignalSender: std::fmt::Debug + Send + Sync {
-    fn send_parameter_changed(&self, signal: ParameterChanged);
+    fn send_parameter_changed(&self, port: PortId, parameter: ParameterId, value: f32);
 }
 
 /// Тестовая реализация SignalSender
@@ -56,13 +57,32 @@ impl TestSignalSender {
             .collect()
     }
 
+    pub fn get_signals_for_param(&self, param: &ParameterId) -> Vec<ParameterChanged> {
+        self.sent_signals
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|s| s.parameter == *param)
+            .cloned()
+            .collect()
+    }
+
     pub fn get_all_signals(&self) -> Vec<ParameterChanged> {
         self.sent_signals.read().unwrap().clone()
     }
 }
 
 impl SignalSender for TestSignalSender {
-    fn send_parameter_changed(&self, signal: ParameterChanged) {
+    fn send_parameter_changed(&self, port: PortId, parameter: ParameterId, value: f32) {
+        use kama_core::signal::SignalSource;
+        
+        let signal = ParameterChanged::new(
+            port,
+            parameter,
+            value,
+            value, // Упрощенно, нормализация не используется в тестах
+            SignalSource::Automation,
+        );
         self.sent_signals.write().unwrap().push(signal);
     }
 }

@@ -1,54 +1,10 @@
-//! Макросы для создания генераторов (источников сигнала).
-//!
-//! Генераторы - это узлы, которые производят сигнал без входов.
-//! Они могут иметь состояние (фаза, счётчики) и параметры.
-//!
-//! # Пример
-//! ```
-//! use kama_core_dsp::macros::generator;
-//! use kama_core_dsp::math::AudioNum;
-//!
-//! generator! {
-//!     /// Sine wave oscillator
-//!     pub SineOsc<T: AudioNum, const BLOCK_SIZE: usize> {
-//!         params {
-//!             /// Frequency in Hz
-//!             frequency: f32 = 440.0,
-//!             /// Amplitude (0.0 to 1.0)
-//!             amplitude: f32 = 0.5,
-//!         }
-//!         
-//!         state {
-//!             /// Current phase (0.0 to 1.0)
-//!             phase: T = T::ZERO
-//!         }
-//!     }
-//!     
-//!     ports {
-//!         audio_out: 1,
-//!     }
-//!     
-//!     generate_fn = |this| {
-//!         use core::f32::consts::PI;
-//!         
-//!         let phase_rad = this.phase * T::from_f32(2.0 * PI);
-//!         let sample = phase_rad.sin() * T::from_f32(this.amplitude);
-//!         
-//!         this.phase = this.phase + T::from_f32(this.frequency / this.sample_rate);
-//!         if this.phase.as_f32() >= 1.0 {
-//!             this.phase = this.phase - T::from_f32(1.0);
-//!         }
-//!         
-//!         sample
-//!     }
-//! }
-//! ```
+//! Макросы для создания генераторов.
 
 #[macro_export]
 macro_rules! generator {
     (
         $(#[$struct_meta:meta])*
-        $vis:vis $name:ident<T: AudioNum, const BLOCK_SIZE: usize> {
+        $vis:vis $name:ident {
             params {
                 $(
                     $(#[$param_meta:meta])*
@@ -63,78 +19,152 @@ macro_rules! generator {
         
         ports {
             audio_out: $audio_out:expr,
-            $(control: $control:expr)?
         }
         
         generate_fn = $generate:expr
     ) => {
-        // Реализация как в предыдущем ответе
+        $(#[$struct_meta])*
+        $vis struct $name {
+            $($param_name: $param_type),*,
+            $($($state_name: $state_type),*)?
+            sample_rate: f32,
+            phase: f32,
+        }
+
+        impl $name {
+            pub fn new($($param_name: $param_type),*) -> Self {
+                Self {
+                    $($param_name),*,
+                    $($($state_name: $state_init),*)?
+                    sample_rate: 44100.0,
+                    phase: 0.0,
+                }
+            }
+        }
+
+        impl $crate::Algorithm<f32> for $name {
+            fn init(&mut self, sample_rate: f32) {
+                self.sample_rate = sample_rate;
+            }
+            
+            fn reset(&mut self) {
+                self.phase = 0.0;
+            }
+            
+            fn process_sample(&mut self, _input: f32) -> f32 {
+                let sample = ($generate)(self);
+                sample
+            }
+            
+            fn metadata(&self) -> $crate::AlgorithmMetadata {
+                $crate::AlgorithmMetadata {
+                    name: stringify!($name),
+                    category: $crate::AlgorithmCategory::Generator,
+                    description: "Generated oscillator",
+                    author: "Kama Audio",
+                    version: env!("CARGO_PKG_VERSION"),
+                }
+            }
+        }
     };
 }
 
-/// Специализированный макрос для LFO (низкочастотных генераторов)
 #[macro_export]
 macro_rules! lfo {
     (
         $(#[$struct_meta:meta])*
-        $vis:vis $name:ident<T: AudioNum, const BLOCK_SIZE: usize> {
+        $vis:vis $name:ident {
             params {
-                /// Frequency in Hz (0.01 - 100.0)
-                frequency: f32 = 1.0,
-                /// Amplitude
-                amplitude: T = T::from_f32(1.0),
-                /// Offset (-1.0 to 1.0)
-                offset: T = T::ZERO,
+                frequency: f32 = $freq_default:expr,
+                amplitude: f32 = $amp_default:expr,
+                offset: f32 = $offset_default:expr,
             }
             
             waveform: $waveform:expr
         }
         
-        $(control: $control:expr)?
+        ports {
+            audio_out: 1,
+        }
     ) => {
-        generator! {
-            $(#[$struct_meta])*
-            $vis $name<T, BLOCK_SIZE> {
-                params {
-                    frequency: f32 = frequency,
-                    amplitude: T = amplitude,
-                    offset: T = offset,
-                }
-                
-                state {
-                    phase: T = T::ZERO
+        $(#[$struct_meta])*
+        $vis struct $name {
+            frequency: f32,
+            amplitude: f32,
+            offset: f32,
+            phase: f32,
+            sample_rate: f32,
+        }
+
+        impl $name {
+            pub fn new(frequency: f32, amplitude: f32, offset: f32) -> Self {
+                Self {
+                    frequency,
+                    amplitude,
+                    offset,
+                    phase: 0.0,
+                    sample_rate: 44100.0,
                 }
             }
-            
-            ports {
-                audio_out: 1,
-                $(control: $control)?
+        }
+
+        impl $crate::Algorithm<f32> for $name {
+            fn init(&mut self, sample_rate: f32) {
+                self.sample_rate = sample_rate;
             }
             
-            generate_fn = |this| {
-                use kama_core_dsp::generators::lfo_generate;
-                let value = lfo_generate(this.phase, $waveform);
+            fn reset(&mut self) {
+                self.phase = 0.0;
+            }
+            
+            fn process_sample(&mut self, _input: f32) -> f32 {
+                use std::f32::consts::PI;
                 
-                this.phase = this.phase + T::from_f32(this.frequency / this.sample_rate);
-                if this.phase.as_f32() >= 1.0 {
-                    this.phase = this.phase - T::from_f32(1.0);
+                let phase_inc = self.frequency / self.sample_rate;
+                let raw = match $waveform {
+                    $crate::generators::Waveform::Sine => (self.phase * 2.0 * PI).sin(),
+                    $crate::generators::Waveform::Triangle => {
+                        if self.phase < 0.5 {
+                            4.0 * self.phase - 1.0
+                        } else {
+                            3.0 - 4.0 * self.phase
+                        }
+                    }
+                    $crate::generators::Waveform::Saw => 2.0 * self.phase - 1.0,
+                    $crate::generators::Waveform::Square => {
+                        if self.phase < 0.5 { 1.0 } else { -1.0 }
+                    }
+                    _ => (self.phase * 2.0 * PI).sin(),
+                };
+                
+                self.phase += phase_inc;
+                if self.phase >= 1.0 {
+                    self.phase -= 1.0;
                 }
                 
-                value * this.amplitude + this.offset
+                raw * self.amplitude + self.offset
+            }
+            
+            fn metadata(&self) -> $crate::AlgorithmMetadata {
+                $crate::AlgorithmMetadata {
+                    name: stringify!($name),
+                    category: $crate::AlgorithmCategory::Generator,
+                    description: "LFO generator",
+                    author: "Kama Audio",
+                    version: env!("CARGO_PKG_VERSION"),
+                }
             }
         }
     };
 }
 
-/// Специализированный макрос для шумовых генераторов
 #[macro_export]
 macro_rules! noise_generator {
     (
         $(#[$struct_meta:meta])*
-        $vis:vis $name:ident<T: AudioNum, const BLOCK_SIZE: usize> {
+        $vis:vis $name:ident {
             params {
-                /// Amplitude (0.0 to 1.0)
-                amplitude: T = T::from_f32(1.0),
+                amplitude: f32 = $amp_default:expr,
             }
             
             noise_type: $noise_type:expr
@@ -144,47 +174,52 @@ macro_rules! noise_generator {
             audio_out: 1,
         }
     ) => {
-        generator! {
-            $(#[$struct_meta])*
-            $vis $name<T, BLOCK_SIZE> {
-                params {
-                    amplitude: T = amplitude,
-                }
-                
-                state {
-                    rng_state: T = T::from_f32(123456789.0),
-                    $(filter_state: [T; 6] = [T::ZERO; 6])?
+        $(#[$struct_meta])*
+        $vis struct $name {
+            amplitude: f32,
+            sample_rate: f32,
+            state: u32,
+        }
+
+        impl $name {
+            pub fn new(amplitude: f32) -> Self {
+                Self {
+                    amplitude,
+                    sample_rate: 44100.0,
+                    state: 123456789,
                 }
             }
-            
-            ports {
-                audio_out: 1,
+        }
+
+        impl $crate::Algorithm<f32> for $name {
+            fn init(&mut self, sample_rate: f32) {
+                self.sample_rate = sample_rate;
             }
             
-            generate_fn = |this| {
+            fn reset(&mut self) {
+                self.state = 123456789;
+            }
+            
+            fn process_sample(&mut self, _input: f32) -> f32 {
                 // Xorshift RNG
-                let mut x = this.rng_state.as_f32();
+                let mut x = self.state;
                 x ^= x << 13;
                 x ^= x >> 17;
                 x ^= x << 5;
-                this.rng_state = T::from_f32(x);
+                self.state = x;
                 
-                let white = this.rng_state.fract() * T::from_f32(2.0) - T::from_f32(1.0);
-                
-                // Окраска шума в зависимости от типа
-                let colored = match $noise_type {
-                    NoiseType::White => white,
-                    NoiseType::Pink => {
-                        // Реализация розового шума
-                        white // упрощённо
-                    }
-                    NoiseType::Brown => {
-                        // Реализация броуновского шума
-                        white // упрощённо
-                    }
-                };
-                
-                colored * this.amplitude
+                let white = (x as f32 / 2147483648.0) - 1.0;
+                white * self.amplitude
+            }
+            
+            fn metadata(&self) -> $crate::AlgorithmMetadata {
+                $crate::AlgorithmMetadata {
+                    name: stringify!($name),
+                    category: $crate::AlgorithmCategory::Generator,
+                    description: "Noise generator",
+                    author: "Kama Audio",
+                    version: env!("CARGO_PKG_VERSION"),
+                }
             }
         }
     };

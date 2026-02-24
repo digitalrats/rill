@@ -16,14 +16,13 @@
 //! Все методы должны вызываться из одного потока (обычно это аудиопоток).
 //! Однако сервоприводы внутри менеджера требуют `Send + Sync`, так как
 //! они могут быть переданы в другие потоки для инициализации.
-
-use crate::automaton::{LfoAutomaton, LfoWithEnvelopeAutomaton};
+use crate::automaton::{FunctionAutomaton, LfoAutomaton, LfoWithEnvelopeAutomaton};
 use crate::context::AutomationContext;
 use crate::servo::{AnyServo, ParameterMapping, Servo};
 use crate::signal::SignalSender;
+use crate::Waveform; // LfoWaveform
 use kama_core::traits::time::{Clock, SystemClock, TimeProvider};
-use kama_core::traits::{NodeId, ParameterId, PortId};
-use kama_oscillators::control::LfoWaveform;
+use kama_core::traits::{ParameterId, PortId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -63,8 +62,7 @@ impl<C: Clock> AutomationManager<C> {
             frequency,
             amplitude,
             offset,
-            target_port.to_string().as_str(),  // временно для совместимости
-            target_parameter.as_str(),
+            target_parameter.clone(),
         ));
 
         let mut context = AutomationContext::new(self.time_provider.clone());
@@ -90,7 +88,7 @@ impl<C: Clock> AutomationManager<C> {
         frequency: f64,
         amplitude: f64,
         offset: f64,
-        waveform: LfoWaveform,
+        waveform: Waveform,
         target_port: PortId,
         target_parameter: ParameterId,
     ) {
@@ -99,8 +97,44 @@ impl<C: Clock> AutomationManager<C> {
             amplitude,
             offset,
             waveform,
-            target_port.to_string().as_str(),
-            target_parameter.as_str(),
+            target_parameter.clone(),
+        ));
+
+        let mut context = AutomationContext::new(self.time_provider.clone());
+        if let Some(sender) = &self.context.signal_sender {
+            context = context.with_signal_sender(sender.clone());
+        }
+
+        let servo = Servo::new(
+            id.to_string(),
+            automaton,
+            target_port,
+            target_parameter,
+            ParameterMapping::Linear,
+            context,
+        );
+
+        self.add_servo(servo);
+    }
+
+    pub fn add_lfo_with_envelope(
+        &mut self,
+        id: &str,
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        attack: f64,
+        release: f64,
+        target_port: PortId,
+        target_parameter: ParameterId,
+    ) {
+        let automaton = Arc::new(LfoWithEnvelopeAutomaton::lfo_with_envelope(
+            frequency,
+            amplitude,
+            offset,
+            attack,
+            release,
+            target_parameter.clone(),
         ));
 
         let mut context = AutomationContext::new(self.time_provider.clone());

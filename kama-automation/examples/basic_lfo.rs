@@ -1,11 +1,8 @@
 //! Базовый пример использования LFO для автоматизации параметра
-//!
-//! Запуск: cargo run --example basic_lfo
 
-use kama_automation::{automaton::FunctionAutomaton, AutomationManager, TestSignalSender};
+use kama_automation::{automaton::LfoAutomaton, AutomationManager, TestSignalSender};
 use kama_core::traits::time::{Clock, SystemClock};
 use kama_core::traits::{NodeId, ParameterId, PortId};
-use kama_oscillators::control::LfoWaveform;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -26,14 +23,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Добавляем LFO для автоматизации громкости...");
 
-    manager.add_lfo_with_waveform(
+    manager.add_lfo(
         "volume_lfo",
-        0.5,
-        0.3,
-        0.5,
-        LfoWaveform::Sine,
+        0.5,  // 0.5 Hz
+        0.3,  // amplitude
+        0.5,  // offset
         port,
-        param.clone(),
+        param,
     );
 
     println!("LFO добавлен. Начинаем автоматизацию...\n");
@@ -45,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         clock.advance(22050);
         manager.update(22050);
 
-        let signals = signal_sender.get_signals_for_port(port);
+        let signals = signal_sender.get_signals_for_param(&param);
         if let Some(signal) = signals.last() {
             println!("{:.1}\t\t{:.3}", time, signal.value);
         }

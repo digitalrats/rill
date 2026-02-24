@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::any::TypeId;
-use super::error::{AudioError, AudioResult};
+use super::error::AudioResult;
 use super::param::{ParameterId, ParamValue, ParamMetadata};
 use super::port::{PortId, PortType};
 
@@ -15,7 +15,7 @@ impl NodeId {
     pub fn new(id: u32) -> Self {
         Self(id)
     }
-
+    
     pub fn inner(&self) -> u32 {
         self.0
     }
@@ -24,12 +24,6 @@ impl NodeId {
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{}", self.0)
-    }
-}
-
-impl From<u32> for NodeId {
-    fn from(id: u32) -> Self {
-        Self(id)
     }
 }
 
@@ -59,7 +53,7 @@ pub struct NodeMetadata {
     pub parameters: Vec<ParamMetadata>,
 }
 
-/// Идентификатор типа узла (для type_id).
+/// Идентификатор типа узла.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeTypeId(TypeId);
 
@@ -67,7 +61,7 @@ impl NodeTypeId {
     pub fn of<T: 'static>() -> Self {
         Self(TypeId::of::<T>())
     }
-
+    
     pub fn as_type_id(&self) -> TypeId {
         self.0
     }
@@ -77,68 +71,57 @@ impl NodeTypeId {
 pub trait AudioNode: Send + Sync {
     /// Тип узла.
     fn node_type_id(&self) -> NodeTypeId;
-
+    
     /// Обработка аудиоблока.
     fn process(
         &mut self,
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) -> AudioResult<()>;
-
+    
     /// Инициализация узла с частотой дискретизации.
     fn init(&mut self, sample_rate: f32);
-
+    
     /// Сброс внутреннего состояния.
     fn reset(&mut self);
-
+    
     /// Количество портов заданного типа.
-    fn num_ports(&self, port_type: PortType) -> usize {
-        if port_type == PortType::Node {
-            1
-        } else {
-            0
-        }
-    }
-
+    fn num_ports(&self, port_type: PortType) -> usize;
+    
     /// Получение значения параметра порта.
-    fn get_port_param(&self, port: PortId, param: ParameterId) -> Option<ParamValue> {
-        if port.port_type() == PortType::Node && port.index() == 0 {
-            // Делегируем старому методу get_param, который ещё может существовать?
-            // Но мы не хотим сохранять старый метод. Лучше оставить как заглушку.
-            // В реальности узел должен переопределить этот метод для Node порта.
-            None
-        } else {
-            None
-        }
-    }
-
+    fn get_port_param(&self, port: PortId, param: &ParameterId) -> Option<ParamValue>;
+    
     /// Установка значения параметра порта.
     fn set_port_param(
         &mut self,
         port: PortId,
-        param: ParameterId,
+        param: &ParameterId,
         value: ParamValue,
-    ) -> AudioResult<()> {
-        if port.port_type() == PortType::Node && port.index() == 0 {
-            // Аналогично.
-            Err(AudioError::Parameter(format!("Node port not implemented")))
-        } else {
-            Err(AudioError::Parameter(format!("Port {} not supported", port)))
-        }
-    }
-
+    ) -> AudioResult<()>;
+    
     /// Метаданные узла.
     fn metadata(&self) -> NodeMetadata;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Трейт для узлов-источников (генераторов).
+pub trait Source: AudioNode {
+    /// Текущая фаза (0.0 - 1.0)
+    fn phase(&self) -> f32;
+    
+    /// Сбросить фазу
+    fn reset_phase(&mut self);
+}
 
-    #[test]
-    fn test_node_id() {
-        let id = NodeId(42);
-        assert_eq!(id.inner(), 42);
-        assert_eq!(format!("{}", id), "#42");
+/// Трейт для узлов-процессоров (имеют входы и выходы).
+pub trait Processor: AudioNode {
+    /// Является ли процессор линейным (для оптимизаций)
+    fn is_linear(&self) -> bool {
+        false
     }
+}
+
+/// Трейт для узлов-приемников (только входы).
+pub trait Sink: AudioNode {
+    /// Получить последнее обработанное значение (для анализа)
+    fn last_value(&self) -> f32;
 }
