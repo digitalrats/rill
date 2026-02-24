@@ -32,8 +32,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Weak};
 
-use kama_core::traits::NodeId;
-
 use crate::{
     BufferError, BufferResult, BufferView, BufferViewMut, MultiHeadBuffer, PoolStrategy, RingBuffer,
 };
@@ -315,7 +313,6 @@ pub struct NodeBuffers {
 ///
 /// Управляет пулом буферов, реестром именованных буферов и кэшем узлов графа.
 pub struct BufferManagerStats {
-    pub active_nodes: usize,
     pub active_buffers: usize,
     pub total_memory_bytes: usize,
     pub pool_size: usize,
@@ -338,9 +335,6 @@ pub struct BufferManager {
     // Реестр именованных буферов (ссылки на буферы из пула)
     registry: Arc<RwLock<HashMap<String, RegisteredBuffer>>>,
 
-    // Кэш буферов для узлов графа
-    node_buffers: Arc<RwLock<HashMap<NodeId, NodeBuffers>>>,
-
     // Конфигурация
     max_pool_size: usize,
     default_size: usize,
@@ -361,7 +355,6 @@ impl BufferManager {
         Self {
             pool: Arc::new(RwLock::new(pool)),
             registry: Arc::new(RwLock::new(HashMap::new())),
-            node_buffers: Arc::new(RwLock::new(HashMap::new())),
             max_pool_size,
             default_size: default_buffer_size,
         }
@@ -500,123 +493,20 @@ impl BufferManager {
     }
 
     // -------------------------------------------------------------------------
-    // API для работы с буферами узлов графа
-    // -------------------------------------------------------------------------
-
-    /// Получить буферы для узла через замыкание
-    pub fn with_buffers_mut<F, R>(
-        &self,
-        node_id: NodeId,
-        num_inputs: usize,
-        num_outputs: usize,
-        buffer_size: usize,
-        f: F,
-    ) -> R
-    where
-        F: FnOnce(&mut NodeBuffers) -> R,
-    {
-        let mut guard = self.node_buffers.write();
-
-        let needs_update = if let Some(buffers) = guard.get(&node_id) {
-            buffers.inputs.len() != num_inputs
-                || buffers.outputs.len() != num_outputs
-                || buffers.inputs.iter().any(|b| b.len() != buffer_size)
-                || buffers.outputs.iter().any(|b| b.len() != buffer_size)
-        } else {
-            true
-        };
-
-        if needs_update {
-            let buffers = self.create_node_buffers(num_inputs, num_outputs, buffer_size);
-            guard.insert(node_id, buffers);
-        }
-
-        f(guard.get_mut(&node_id).unwrap())
-    }
-
-    /// Получить доступ к буферам узла для чтения
-    /// Получить доступ к буферам узла для чтения.
-    pub fn read_buffers(
-        &self,
-        node_id: NodeId,
-    ) -> Option<RwLockReadGuard<'_, HashMap<NodeId, NodeBuffers>>> {
-        let guard = self.node_buffers.read();
-        if guard.contains_key(&node_id) {
-            Some(guard)
-        } else {
-            None
-        }
-    }
-
-    /// Создать буферы для узла (берутся из пула)
-    fn create_node_buffers(
-        &self,
-        num_inputs: usize,
-        num_outputs: usize,
-        buffer_size: usize,
-    ) -> NodeBuffers {
-        let mut inputs = Vec::with_capacity(num_inputs);
-        let mut outputs = Vec::with_capacity(num_outputs);
-
-        let mut pool = self.pool.write();
-
-        for _ in 0..num_inputs {
-            inputs.push(
-                pool.acquire_with_size(buffer_size)
-                    .unwrap_or_else(|_| vec![0.0; buffer_size]),
-            );
-        }
-        for _ in 0..num_outputs {
-            outputs.push(
-                pool.acquire_with_size(buffer_size)
-                    .unwrap_or_else(|_| vec![0.0; buffer_size]),
-            );
-        }
-
-        NodeBuffers { inputs, outputs }
-    }
-
-    /// Освободить буферы узла (возвращаются в пул)
-    /// Освободить буферы узла (возвращаются в пул).
-    pub fn release_node(&self, node_id: NodeId) {
-        let mut guard = self.node_buffers.write();
-        if let Some(buffers) = guard.remove(&node_id) {
-            let mut pool = self.pool.write();
-            for buf in buffers.inputs {
-                let _ = pool.release(buf);
-            }
-            for buf in buffers.outputs {
-                let _ = pool.release(buf);
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
     // Управление и статистика
     // -------------------------------------------------------------------------
 
     /// Получить статистику
     /// Получить статистику использования.
     pub fn stats(&self) -> BufferManagerStats {
-        let node_buffers = self.node_buffers.read();
         let pool = self.pool.read();
         let registry = self.registry.read();
 
         let mut total_buffers = 0;
         let mut total_memory = 0;
 
-        for buffers in node_buffers.values() {
-            total_buffers += buffers.inputs.len() + buffers.outputs.len();
-            for buf in &buffers.inputs {
-                total_memory += buf.len() * std::mem::size_of::<f32>();
-            }
-            for buf in &buffers.outputs {
-                total_memory += buf.len() * std::mem::size_of::<f32>();
-            }
-        }
 
         BufferManagerStats {
-            active_nodes: node_buffers.len(),
             active_buffers: total_buffers,
             total_memory_bytes: total_memory,
             pool_size: pool.current_size(),
@@ -628,18 +518,7 @@ impl BufferManager {
     /// Очистить всё (возвращает все буферы в пул)
     /// Очистить всё (возвращает все буферы в пул).
     pub fn clear_all(&self) {
-        // Очищаем кэш узлов (буферы возвращаются в пул)
-        let mut node_guard = self.node_buffers.write();
         let mut pool = self.pool.write();
-
-        for (_, buffers) in node_guard.drain() {
-            for buf in buffers.inputs {
-                let _ = pool.release(buf);
-            }
-            for buf in buffers.outputs {
-                let _ = pool.release(buf);
-            }
-        }
 
         // Очищаем реестр (пытаемся вернуть векторы в пул)
         let mut registry = self.registry.write();
@@ -685,7 +564,6 @@ impl fmt::Debug for BufferManager {
             .field("default_size", &self.default_size)
             .field("pool_available", &self.pool.read().available())
             .field("registered_buffers", &self.registry.read().len())
-            .field("active_nodes", &self.node_buffers.read().len())
             .finish()
     }
 }
@@ -693,7 +571,6 @@ impl fmt::Debug for BufferManager {
 impl fmt::Debug for BufferManagerStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BufferManagerStats")
-            .field("active_nodes", &self.active_nodes)
             .field("active_buffers", &self.active_buffers)
             .field("total_memory_bytes", &self.total_memory_bytes)
             .field("pool_size", &self.pool_size)
@@ -775,27 +652,6 @@ mod tests {
     }
 
     #[test]
-    fn test_node_buffers() {
-        let manager = BufferManager::new();
-        let initial_available = manager.stats().pool_available;
-        let node_id = NodeId(42);
-
-        manager.with_buffers_mut(node_id, 2, 2, 256, |buffers| {
-            assert_eq!(buffers.inputs.len(), 2);
-            assert_eq!(buffers.outputs.len(), 2);
-            buffers.inputs[0][0] = 1.0;
-        });
-
-        assert_eq!(manager.stats().active_nodes, 1);
-        assert_eq!(manager.stats().active_buffers, 4);
-        assert_eq!(manager.stats().pool_available, initial_available - 4);
-
-        manager.release_node(node_id);
-        assert_eq!(manager.stats().active_nodes, 0);
-        assert_eq!(manager.stats().pool_available, initial_available);
-    }
-
-    #[test]
     fn test_stats() {
         let manager = BufferManager::new();
         let initial_available = manager.stats().pool_available;
@@ -808,24 +664,4 @@ mod tests {
         assert_eq!(stats.pool_available, initial_available - 2);
     }
 
-    #[test]
-    fn test_clear_all() {
-        let manager = BufferManager::new();
-        let initial_available = manager.stats().pool_available;
-
-        let _buf1 = manager.acquire_named("buf1", 256).unwrap();
-        let _buf2 = manager.acquire_named("buf2", 256).unwrap();
-
-        let node_id = NodeId(1);
-        manager.with_buffers_mut(node_id, 1, 1, 128, |_| {});
-
-        assert_eq!(manager.stats().registered_buffers, 2);
-        assert_eq!(manager.stats().active_nodes, 1);
-
-        manager.clear_all();
-
-        assert_eq!(manager.stats().registered_buffers, 0);
-        assert_eq!(manager.stats().active_nodes, 0);
-        assert_eq!(manager.stats().pool_available, initial_available);
-    }
 }

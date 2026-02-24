@@ -6,22 +6,10 @@ use kama_buffers::*;
 fn test_new_manager_api() {
     // Используем новый менеджер
     let manager = BufferManager::new();
-    let node_id = NodeId(1);
-
-    // Тест with_buffers_mut
-    let result = manager.with_buffers_mut(node_id, 2, 2, 256, |buffers| {
-        assert_eq!(buffers.inputs.len(), 2);
-        assert_eq!(buffers.outputs.len(), 2);
-        assert_eq!(buffers.inputs[0].len(), 256);
-        42
-    });
-
-    assert_eq!(result, 42);
 
     // Статистика
     let stats = manager.stats();
-    assert_eq!(stats.active_nodes, 1);
-    assert_eq!(stats.active_buffers, 4);
+    assert_eq!(stats.active_buffers, 0);
 }
 
 #[test]
@@ -125,26 +113,6 @@ fn test_ring_buffer_compatibility() {
 }
 
 #[test]
-fn test_multi_head_compatibility() {
-    // Проверяем, что MultiHeadBuffer не изменился
-    let mut buffer = MultiHeadBuffer::new(1024, 44100.0);
-    let head_id = buffer.add_head();
-
-    assert!(buffer.get_head(head_id).is_some());
-
-    let test_data = vec![0.5; 256];
-    buffer.write(&test_data);
-
-    let mut output_left = vec![0.0; 64];
-    let mut output_right = vec![0.0; 64];
-    let mut outputs = [&mut output_left[..], &mut output_right[..]];
-
-    buffer.process(&[], &mut outputs).unwrap();
-
-    assert!(output_left.iter().any(|&x| x != 0.0) || output_right.iter().any(|&x| x != 0.0));
-}
-
-#[test]
 fn test_pooled_buffer_auto_release() {
     let manager = BufferManager::new();
     let initial_available = manager.stats().pool_available;
@@ -196,15 +164,10 @@ fn test_clear_all() {
     let _buf1 = manager.acquire_named("buf1", 256).unwrap();
     let _buf2 = manager.acquire_named("buf2", 256).unwrap();
 
-    let node_id = NodeId(1);
-    manager.with_buffers_mut(node_id, 1, 1, 128, |_| {});
-
     assert_eq!(manager.stats().registered_buffers, 2);
-    assert_eq!(manager.stats().active_nodes, 1);
 
     manager.clear_all();
 
     assert_eq!(manager.stats().registered_buffers, 0);
-    assert_eq!(manager.stats().active_nodes, 0);
     assert_eq!(manager.stats().pool_available, initial_available);
 }

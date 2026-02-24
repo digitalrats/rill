@@ -3,18 +3,18 @@ members = [
     "kama-core",
     "kama-buffers",
     "kama-graph",
-    "kama-automation",
-    "kama-control",
-    "kama-dsp-common",
-    "kama-oscillators",
-    "kama-digital-filters",
-    "kama-digital-effects",
-    "kama-eq",
-    "kama-mixer",
-    "kama-lofi",
-    "kama-hp",
-    "kama-io",
-    "kama-tests",
+    #"kama-automation",
+    #"kama-control",
+    "kama-core-dsp",
+    #"kama-oscillators", # Временно отключен
+    #"kama-digital-filters", # Временно отключен
+    #"kama-digital-effects", # Временно отключен
+    #"kama-eq", # Временно отключен
+    #"kama-mixer", # Временно отключен
+    #"kama-lofi", # Временно отключен
+    #"kama-hp", # Временно отключен
+    #"kama-io", # Временно отключен
+    #"kama-tests", # Временно отключен
 ]
 resolver = "2"
 

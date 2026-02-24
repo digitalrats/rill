@@ -7,8 +7,8 @@ license = "Apache-2.0"
 authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
-kama-core = { path = "../kama-core", version = "0.2.0" }
-kama-buffers = { path = "../kama-buffers", version = "0.2.0" }
+kama-core = { path = "../kama-core", version = "0.3.0" }
+kama-buffers = { path = "../kama-buffers", version = "0.3.0" }
 parking_lot = "0.12"
 thiserror = "1.0"
 lazy_static = "1.4"

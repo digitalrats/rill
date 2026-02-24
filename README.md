@@ -15,7 +15,7 @@ kama-buffers           # работа с буферами
 kama-graph             # аудиограф
 kama-automation        # автоматизация параметров
 kama-control           # MIDI/HID управление
-kama-dsp-common        # DSP инфраструктура
+kama-core-dsp          # DSP инфраструктура
 kama-oscillators       # осцилляторы (аудио и LFO)
 kama-digital-filters   # цифровые фильтры
 kama-digital-effects   # цифровые эффекты
@@ -104,7 +104,7 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 | kama-graph | 0.2.0 | ✅ Аудиограф с топологической сортировкой |
 | kama-automation | 0.2.0 | ✅ Автоматизация (LFO, огибающие, сервоприводы) |
 | kama-control | 0.2.0 | ✅ MIDI/HID управление, маппинг событий |
-| kama-dsp-common | 0.2.0 | ✅ DSP инфраструктура, функциональные узлы |
+| kama-core-dsp | 0.3.0 | ✅ DSP инфраструктура, функциональные узлы |
 | kama-oscillators | 0.2.0 | ✅ Осцилляторы (синус, пила, шум, LFO, огибающие) |
 | kama-digital-filters | 0.2.0 | ✅ Биквадратные фильтры (LP, HP, BP, Notch, Peak) |
 | kama-digital-effects | 0.2.0 | ✅ Эффекты (Delay, Distortion, Limiter) |

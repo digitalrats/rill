@@ -1,19 +1,18 @@
 [package]
 name = "kama-buffers"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Advanced buffer management for Kama Audio"
+description = "Advanced buffer management for Kama Audio - pure data structures"
 license = "Apache-2.0"
 authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
-kama-core = { path = "../kama-core", version = "0.2.0" }
 parking_lot = "0.12"
 thiserror = "1.0"
 rand = "0.8"
 
 [dev-dependencies]
-
+# Зависимости для тестов остаются, но kama-core больше не нужен
 [features]
 default = []
 simd = []

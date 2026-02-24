@@ -8,7 +8,7 @@
 
 pub mod biquad;
 
-// Re-export main types from kama-dsp-common
+// Re-export main types from kama-core-dsp
 pub use biquad::{BiquadFactory, BiquadFilter};
 pub use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
 

@@ -7,8 +7,8 @@ license = "Apache-2.0"
 authors = ["Digital Rats / Kama Audio Team"]
 
 [dependencies]
-kama-core = { path = "../kama-core", version = "0.2.0" }
-kama-dsp-common = { path = "../kama-dsp-common" }
+kama-core = { path = "../kama-core", version = "0.3.0" }
+kama-core-dsp = { path = "../kama-core-dsp" }
 kama-buffers = { path = "../kama-buffers" }
 kama-oscillators = { path = "../kama-oscillators", optional = true }
 thiserror = "1.0"

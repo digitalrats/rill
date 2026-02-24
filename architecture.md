@@ -238,7 +238,7 @@ control_node.add_mapping(Mapping::new(
 
 ## DSP инфраструктура
 
-### `kama-dsp-common` (0.2.0)
+### `kama-core-dsp` (0.3.0)
 Общие утилиты для DSP.
 
 ```rust
@@ -368,7 +368,7 @@ kama-core (0.2.0)
 ├── kama-graph (0.2.0)
 ├── kama-automation (0.2.0)
 ├── kama-control (0.2.0)
-├── kama-dsp-common (0.2.0)
+├── kama-core-dsp (0.3.0)
 ├── kama-oscillators (0.2.0)
 ├── kama-digital-filters (0.2.0)
 ├── kama-digital-effects (0.2.0)

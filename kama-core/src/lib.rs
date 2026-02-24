@@ -9,6 +9,7 @@
 
 pub mod traits;
 pub mod signal;
+pub mod macros;
 
 /// Прелюдия для удобного импорта основных типов
 pub mod prelude {

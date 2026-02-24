@@ -5,7 +5,7 @@ use kama_core::traits::{
     AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
 };
 use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
-use std::f32::consts::PI; // <-- импортируем из kama-dsp-common
+use std::f32::consts::PI; // <-- импортируем из kama-core-dsp
 
 /// Biquad filter coefficients
 #[derive(Debug, Clone)]

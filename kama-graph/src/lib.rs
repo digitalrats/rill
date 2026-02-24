@@ -9,16 +9,17 @@ mod connection;
 mod error;
 mod graph;
 mod node;
-mod processor;
 mod registry;
 
 pub use connection::Connection;
 pub use error::{GraphError, GraphResult};
 pub use graph::AudioGraph;
-pub use processor::{BufferManagerStats, GraphBufferManager, NodeProcessor};
 
-// Реэкспорты для удобства
-pub use kama_core::traits::{AudioError, AudioNode, NodeId, PortId};
+use kama_core::traits::{
+    AudioError, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeTypeId, 
+    ParamValue, ParameterId, PortId, PortType
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,58 +39,52 @@ mod tests {
     }
 
     impl AudioNode for GainNode {
-        fn process(
-            &mut self,
-            inputs: &[&[f32]],
-            outputs: &mut [&mut [f32]],
-        ) -> Result<(), AudioError> {
+        fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
             if inputs.is_empty() || outputs.is_empty() {
                 return Ok(());
             }
-
             let input = inputs[0];
             let output = &mut outputs[0];
-
             for i in 0..input.len().min(output.len()) {
                 output[i] = input[i] * self.gain;
             }
-
             Ok(())
         }
 
-        fn get_param(&self, name: &str) -> Option<ParamValue> {
-            match name {
-                "gain" => Some(ParamValue::Float(self.gain)),
-                _ => None,
+        fn num_ports(&self, port_type: PortType) -> usize {
+            match port_type {
+                PortType::AudioIn => 1,
+                PortType::AudioOut => 1,
+                _ => 0,
             }
         }
 
-        fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-            match (name, value) {
-                ("gain", ParamValue::Float(g)) => {
+        fn get_port_param(&self, port: PortId, param: ParameterId) -> Option<ParamValue> {
+            if port.port_type() == PortType::AudioOut && param.as_str() == "gain" {
+                Some(ParamValue::Float(self.gain))
+            } else {
+                None
+            }
+        }
+
+        fn set_port_param(&mut self, port: PortId, param: ParameterId, value: ParamValue) -> Result<(), AudioError> {
+            if port.port_type() == PortType::AudioOut && param.as_str() == "gain" {
+                if let ParamValue::Float(g) = value {
                     self.gain = g;
                     Ok(())
+                } else {
+                    Err(AudioError::Parameter("Expected float".into()))
                 }
-                _ => Err(AudioError::Parameter(format!(
-                    "Unknown parameter: {}",
-                    name
-                ))),
+            } else {
+                Err(AudioError::Parameter(format!("Unknown port/param: {}/{}", port, param)))
             }
         }
 
         fn init(&mut self, _sample_rate: f32) {}
         fn reset(&mut self) {}
-        fn num_inputs(&self) -> usize {
-            1
-        }
-        fn num_outputs(&self) -> usize {
-            1
-        }
-
         fn node_type_id(&self) -> NodeTypeId {
             NodeTypeId::of::<Self>()
         }
-
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "Gain".to_string(),

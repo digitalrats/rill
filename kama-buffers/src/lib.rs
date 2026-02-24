@@ -24,11 +24,8 @@
 //! [`BufferView`]: crate::view::BufferView
 //! [`BufferViewMut`]: crate::view::BufferViewMut
 
-//! Буферы для аудиообработки
-
 #![warn(missing_docs)]
 
-mod decorator;
 mod error;
 mod head;
 mod manager;
@@ -38,20 +35,12 @@ mod ring;
 mod view;
 
 // Реэкспорты
-pub use decorator::{LfoDecorator, PanningDecorator};
 pub use error::{BufferError, BufferResult};
 pub use head::{BufferHead, Direction, HeadState, ReadMode};
 pub use manager::{BufferManager, BufferManagerStats, NodeBuffers, PooledBuffer, RegisteredBuffer};
 pub use multi_head::MultiHeadBuffer;
 pub use pool::{BufferPool, PoolStrategy};
 pub use ring::RingBuffer;
-pub use view::{BufferIterator, BufferView, BufferViewMut}; // добавили BufferIterator
+pub use view::{BufferIterator, BufferView, BufferViewMut};
 
-// Реэкспортируем NodeId напрямую из kama_core::traits
-pub use kama_core::traits::NodeId;
-
-// Re-export из kama-core-traits для удобства
-pub use kama_core::traits::AudioNode;
-
-/// Тип аудиобуфера для удобства
-pub type AudioBuffer = Vec<f32>;
+// Убрали реэкспорт kama_core::traits

@@ -1,7 +1,7 @@
 //! Generic equalizer implementations for Kama Audio
 //!
 //! This crate provides equalizers that work with any filter implementation
-//! that implements the `Filter` trait from `kama-dsp-common`.
+//! that implements the `Filter` trait from `kama-core-dsp`.
 //!
 //! # Integration with kama-automation
 //!

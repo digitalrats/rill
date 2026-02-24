@@ -3,6 +3,7 @@ use kama_automation::{
     AutomationContext, AutomationManager, ParameterMapping, Servo, SignalSender, TestSignalSender,
 };
 use kama_core::traits::time::{Clock, SystemClock, TickInfo, TimeProvider};
+use kama_core::traits::{NodeId, ParameterId, PortId};
 use std::sync::Arc;
 
 // Вспомогательная структура для тестового TimeProvider
@@ -73,20 +74,24 @@ fn test_add_lfo_servo() {
     let clock = SystemClock::new(44100.0, 120.0);
     let mut manager = AutomationManager::new(time_provider.clone(), clock);
 
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("gain").unwrap();
+
     manager.add_lfo(
-        "lfo1", 2.0, // 2 Hz
+        "lfo1",
+        2.0, // 2 Hz
         0.3, // amplitude
         0.5, // offset
-        "node1", "gain",
+        port,
+        param,
     );
 
     assert_eq!(manager.servos().len(), 1);
 
     let servo = manager.get_servo("lfo1").unwrap();
     assert_eq!(servo.id(), "lfo1");
-    let (node, param) = servo.target();
-    assert_eq!(node, "node1");
-    assert_eq!(param, "gain");
+    assert_eq!(servo.target(), port);
 }
 
 #[test]
@@ -95,26 +100,29 @@ fn test_add_custom_automaton() {
     let clock = SystemClock::new(44100.0, 120.0);
     let mut manager = AutomationManager::new(time_provider.clone(), clock);
 
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("param").unwrap();
+
     // Создаём кастомный автомат через замыкание
     let automaton = Arc::new(FunctionAutomaton::new(
         "Custom",
         |t| (t * 2.0).sin() * 0.5 + 0.5,
-        "node1",
-        "param",
+        port.to_string().as_str(),
+        param.as_str(),
     ));
 
     let context = AutomationContext::new(time_provider.clone());
     let servo = Servo::new(
         "custom".to_string(),
         automaton,
-        "node1".to_string(),
-        "param".to_string(),
+        port,
+        param,
         ParameterMapping::Linear,
         context,
     );
 
     manager.add_servo(servo);
-
     assert_eq!(manager.servos().len(), 1);
 }
 
@@ -124,8 +132,13 @@ fn test_remove_servo() {
     let clock = SystemClock::new(44100.0, 120.0);
     let mut manager = AutomationManager::new(time_provider, clock);
 
-    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, "node1", "gain");
-    manager.add_lfo("lfo2", 2.0, 0.3, 0.3, "node1", "pan");
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param_gain = ParameterId::new("gain").unwrap();
+    let param_pan = ParameterId::new("pan").unwrap();
+
+    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, port, param_gain);
+    manager.add_lfo("lfo2", 2.0, 0.3, 0.3, port, param_pan);
 
     assert_eq!(manager.servos().len(), 2);
 
@@ -146,9 +159,14 @@ fn test_clear_servos() {
     let clock = SystemClock::new(44100.0, 120.0);
     let mut manager = AutomationManager::new(time_provider, clock);
 
-    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, "node1", "gain");
-    manager.add_lfo("lfo2", 2.0, 0.3, 0.3, "node1", "pan");
-    manager.add_lfo("lfo3", 0.5, 0.1, 0.7, "node2", "cutoff");
+    let node = NodeId(1);
+    let port1 = PortId::control(node, 0);
+    let port2 = PortId::control(node, 1);
+    let param = ParameterId::new("gain").unwrap();
+
+    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, port1, param.clone());
+    manager.add_lfo("lfo2", 2.0, 0.3, 0.3, port2, param.clone());
+    manager.add_lfo("lfo3", 0.5, 0.1, 0.7, port1, param);
 
     assert_eq!(manager.servos().len(), 3);
 
@@ -167,40 +185,30 @@ fn test_servo_updates() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
-    println!("Adding LFO: id='lfo1', node='node1', param='gain'");
-    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, "node1", "gain");
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("gain").unwrap();
 
-    println!(
-        "Initial signals count: {}",
-        signal_sender.get_signals_count()
-    );
-    println!(
-        "Manager has signal_sender: {:?}",
-        manager.context().signal_sender.is_some()
-    );
+    println!("Adding LFO: id='lfo1', port={}, param='gain'", port);
+    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, port, param);
 
     for i in 1..=3 {
         println!("\n--- Update {} ---", i);
         time_provider.advance(4410);
         manager.update(4410);
 
-        println!(
-            "After update - signals count: {}",
-            signal_sender.get_signals_count()
-        );
-        let all_signals = signal_sender.get_all_signals();
-        println!("All signals: {:?}", all_signals);
+        let signals = signal_sender.get_signals_for_port(port);
+        println!("Signals for {}: {:?}", port, signals);
     }
 
-    let signals = signal_sender.get_signals_for_param("node1", "gain");
-    println!("\nFinal signals for node1/gain: {:?}", signals);
+    let signals = signal_sender.get_signals_for_port(port);
     assert!(!signals.is_empty(), "No signals were sent");
 
-    for &value in &signals {
+    for signal in &signals {
         assert!(
-            value >= 0.0 && value <= 1.0,
+            signal.value >= 0.0 && signal.value <= 1.0,
             "Value {} out of range [0,1]",
-            value
+            signal.value
         );
     }
 }
@@ -214,22 +222,31 @@ fn test_multiple_servos() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
-    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, "node1", "gain");
-    manager.add_lfo("lfo2", 2.0, 0.3, 0.3, "node1", "pan");
-    manager.add_lfo("lfo3", 0.5, 0.1, 0.7, "node2", "cutoff");
+    let node = NodeId(1);
+    let port1 = PortId::control(node, 0);
+    let port2 = PortId::control(node, 1);
+    let port3 = PortId::control(node, 2);
+
+    let param_gain = ParameterId::new("gain").unwrap();
+    let param_pan = ParameterId::new("pan").unwrap();
+    let param_cutoff = ParameterId::new("cutoff").unwrap();
+
+    manager.add_lfo("lfo1", 1.0, 0.2, 0.5, port1, param_gain);
+    manager.add_lfo("lfo2", 2.0, 0.3, 0.3, port2, param_pan);
+    manager.add_lfo("lfo3", 0.5, 0.1, 0.7, port3, param_cutoff);
 
     for _ in 0..10 {
         time_provider.advance(4410);
         manager.update(4410);
     }
 
-    let signals1 = signal_sender.get_signals_for_param("node1", "gain");
-    let signals2 = signal_sender.get_signals_for_param("node1", "pan");
-    let signals3 = signal_sender.get_signals_for_param("node2", "cutoff");
+    let signals1 = signal_sender.get_signals_for_port(port1);
+    let signals2 = signal_sender.get_signals_for_port(port2);
+    let signals3 = signal_sender.get_signals_for_port(port3);
 
-    println!("test_multiple_servos - gain: {:?}", signals1);
-    println!("test_multiple_servos - pan: {:?}", signals2);
-    println!("test_multiple_servos - cutoff: {:?}", signals3);
+    println!("test_multiple_servos - port1 (gain): {:?}", signals1);
+    println!("test_multiple_servos - port2 (pan): {:?}", signals2);
+    println!("test_multiple_servos - port3 (cutoff): {:?}", signals3);
 
     assert!(!signals1.is_empty(), "No gain signals");
     assert!(!signals2.is_empty(), "No pan signals");
@@ -245,15 +262,19 @@ fn test_servo_range() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
-    let automaton = Arc::new(FunctionAutomaton::lfo(1.0, 0.5, 0.0, "node1", "gain"));
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("gain").unwrap();
+
+    let automaton = Arc::new(FunctionAutomaton::lfo(1.0, 0.5, 0.0, port.to_string().as_str(), param.as_str()));
 
     let context = AutomationContext::new(time_provider.clone());
 
     let mut servo = Servo::new(
         "range_lfo".to_string(),
         automaton,
-        "node1".to_string(),
-        "gain".to_string(),
+        port,
+        param,
         ParameterMapping::Linear,
         context,
     );
@@ -266,15 +287,15 @@ fn test_servo_range() {
         manager.update(4410);
     }
 
-    let signals = signal_sender.get_signals_for_param("node1", "gain");
+    let signals = signal_sender.get_signals_for_port(port);
     println!("test_servo_range - signals: {:?}", signals);
     assert!(!signals.is_empty(), "No range signals");
 
-    for &value in &signals {
+    for signal in &signals {
         assert!(
-            value >= 0.2 && value <= 0.8,
+            signal.value >= 0.2 && signal.value <= 0.8,
             "Value {} out of range [0.2, 0.8]",
-            value
+            signal.value
         );
     }
 }
@@ -288,15 +309,19 @@ fn test_servo_with_custom_mapping() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
-    let automaton = Arc::new(FunctionAutomaton::lfo(1.0, 0.5, 0.0, "node1", "gain"));
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("gain").unwrap();
+
+    let automaton = Arc::new(FunctionAutomaton::lfo(1.0, 0.5, 0.0, port.to_string().as_str(), param.as_str()));
 
     let context = AutomationContext::new(time_provider.clone());
 
     let servo = Servo::new(
         "exp_lfo".to_string(),
         automaton,
-        "node1".to_string(),
-        "gain".to_string(),
+        port,
+        param,
         ParameterMapping::Exponential,
         context,
     );
@@ -308,15 +333,15 @@ fn test_servo_with_custom_mapping() {
         manager.update(4410);
     }
 
-    let signals = signal_sender.get_signals_for_param("node1", "gain");
+    let signals = signal_sender.get_signals_for_port(port);
     println!("test_servo_with_custom_mapping - signals: {:?}", signals);
     assert!(!signals.is_empty(), "No custom mapping signals");
 
-    for &value in &signals {
+    for signal in &signals {
         assert!(
-            value >= 0.0 && value <= 1.0,
+            signal.value >= 0.0 && signal.value <= 1.0,
             "Value {} out of range [0,1]",
-            value
+            signal.value
         );
     }
 }
@@ -332,7 +357,11 @@ fn test_servo_persistence() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
-    manager.add_lfo("lfo1", 0.25, 0.3, 0.5, "node1", "gain");
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("gain").unwrap();
+
+    manager.add_lfo("lfo1", 0.25, 0.3, 0.5, port, param);
 
     let mut values = Vec::new();
     let mut last_value = None;
@@ -341,13 +370,13 @@ fn test_servo_persistence() {
         time_provider.advance(44100);
         manager.update(44100);
 
-        let signals = signal_sender.get_signals_for_param("node1", "gain");
-        if let Some(&current) = signals.last() {
-            println!("Iteration {}: value = {:.6}", i, current);
+        let signals = signal_sender.get_signals_for_port(port);
+        if let Some(signal) = signals.last() {
+            println!("Iteration {}: value = {:.6}", i, signal.value);
 
-            if last_value != Some(current) {
-                values.push(current);
-                last_value = Some(current);
+            if last_value != Some(signal.value) {
+                values.push(signal.value);
+                last_value = Some(signal.value);
                 println!("  -> NEW VALUE at iteration {}", i);
             }
         }
@@ -376,6 +405,10 @@ fn test_disable_servo() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("value").unwrap();
+
     // Используем автомат, который гарантированно меняет значения
     let counter = Arc::new(StatefulFunctionAutomaton::new(
         "Counter",
@@ -384,16 +417,16 @@ fn test_disable_servo() {
             *count as f64
         },
         0,
-        "node1",
-        "value",
+        port.to_string().as_str(),
+        param.as_str(),
     ));
 
     let context = AutomationContext::new(time_provider.clone());
     let mut servo = Servo::new(
         "counter".to_string(),
         counter,
-        "node1".to_string(),
-        "value".to_string(),
+        port,
+        param,
         ParameterMapping::Linear,
         context,
     );
@@ -405,11 +438,11 @@ fn test_disable_servo() {
     time_provider.advance(44100);
     manager.update(44100);
 
-    let initial_signals = signal_sender.get_signals_for_param("node1", "value");
+    let initial_signals = signal_sender.get_signals_for_port(port);
     println!("test_disable_servo - initial: {:?}", initial_signals);
     assert!(!initial_signals.is_empty(), "No initial signals");
     let initial_count = initial_signals.len();
-    let initial_value = initial_signals.last().copied().unwrap_or(0.0);
+    let initial_value = initial_signals.last().unwrap().value;
 
     // Отключаем сервопривод
     if let Some(servo) = manager.get_servo_mut("counter") {
@@ -423,7 +456,7 @@ fn test_disable_servo() {
     }
 
     // Проверяем, что количество сигналов не увеличилось
-    let signals_after_disable = signal_sender.get_signals_for_param("node1", "value");
+    let signals_after_disable = signal_sender.get_signals_for_port(port);
     println!(
         "test_disable_servo - after disable: {:?}",
         signals_after_disable
@@ -445,14 +478,13 @@ fn test_disable_servo() {
         time_provider.advance(44100);
         manager.update(44100);
 
-        let current_signals = signal_sender.get_signals_for_param("node1", "value");
-        if let Some(&latest) = current_signals.last() {
-            if (latest - initial_value).abs() > 0.5 {
-                // счётчик растёт быстро
+        let current_signals = signal_sender.get_signals_for_port(port);
+        if let Some(signal) = current_signals.last() {
+            if (signal.value - initial_value).abs() > 0.5 {
                 new_value_found = true;
                 println!(
                     "New value {:.6} found after {} attempts",
-                    latest,
+                    signal.value,
                     attempt + 1
                 );
                 break;
@@ -474,28 +506,25 @@ fn test_signal_sender_integration() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
-    // Используем LFO с большей амплитудой
-    manager.add_lfo(
-        "lfo1", 0.25, // частота
-        0.5,  // амплитуда
-        0.5,  // смещение
-        "node1", "gain",
-    );
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("gain").unwrap();
+
+    manager.add_lfo("lfo1", 0.25, 0.5, 0.5, port, param);
 
     // Первое обновление
     time_provider.advance(44100);
     manager.update(44100);
 
-    let signals = signal_sender.get_signals_for_param("node1", "gain");
+    let signals = signal_sender.get_signals_for_port(port);
     println!("test_signal_sender_integration - first: {:?}", signals);
     assert_eq!(signals.len(), 1, "Expected 1 signal after first update");
-    let first_value = signals[0];
 
     // Второе обновление
     time_provider.advance(44100);
     manager.update(44100);
 
-    let signals = signal_sender.get_signals_for_param("node1", "gain");
+    let signals = signal_sender.get_signals_for_port(port);
     println!("test_signal_sender_integration - second: {:?}", signals);
 
     assert!(
@@ -504,14 +533,14 @@ fn test_signal_sender_integration() {
         signals.len()
     );
 
-    let diff = (signals[0] - signals[1]).abs();
+    let diff = (signals[0].value - signals[1].value).abs();
     println!("Difference between signals: {:.6}", diff);
     assert!(
         diff > 0.00001,
         "Signals should be different: {:.6} vs {:.6}",
-        signals[0],
-        signals[1]
-    ); // уменьшен порог
+        signals[0].value,
+        signals[1].value
+    );
 }
 
 #[test]
@@ -525,8 +554,11 @@ fn test_stateful_automaton() {
     let mut manager = AutomationManager::new(time_provider.clone(), clock)
         .with_signal_sender(signal_sender.clone());
 
+    let node = NodeId(1);
+    let port = PortId::control(node, 0);
+    let param = ParameterId::new("value").unwrap();
+
     // Создаём автомат с состоянием (счётчик)
-    // Начальное состояние 0, initial_state() вызовет генератор 1 раз = значение 1
     let counter = Arc::new(StatefulFunctionAutomaton::new(
         "Counter",
         |_time, count| {
@@ -534,46 +566,44 @@ fn test_stateful_automaton() {
             *count as f64
         },
         0,
-        "node1",
-        "value",
+        port.to_string().as_str(),
+        param.as_str(),
     ));
 
     let context = AutomationContext::new(time_provider.clone());
     let mut servo = Servo::new(
         "counter".to_string(),
         counter,
-        "node1".to_string(),
-        "value".to_string(),
+        port,
+        param,
         ParameterMapping::Linear,
         context,
     );
 
-    // Убираем ограничения диапазона
     servo.set_range(f64::NEG_INFINITY, f64::INFINITY);
-
     manager.add_servo(servo);
 
-    // Первое обновление должно дать значение 2.0 (так как initial_state уже дала 1)
+    // Первое обновление должно дать значение 2.0 (initial_state дала 1)
     time_provider.advance(4410);
     manager.update(4410);
 
-    let signals = signal_sender.get_signals_for_param("node1", "value");
+    let signals = signal_sender.get_signals_for_port(port);
     assert_eq!(signals.len(), 1, "Should have one signal");
     assert!(
-        (signals[0] - 2.0).abs() < 0.01,
+        (signals[0].value - 2.0).abs() < 0.01,
         "Expected 2.0, got {}",
-        signals[0]
+        signals[0].value
     );
 
     // Второе обновление должно дать значение 3.0
     time_provider.advance(4410);
     manager.update(4410);
 
-    let signals = signal_sender.get_signals_for_param("node1", "value");
+    let signals = signal_sender.get_signals_for_port(port);
     assert_eq!(signals.len(), 2, "Should have two signals");
     assert!(
-        (signals[1] - 3.0).abs() < 0.01,
+        (signals[1].value - 3.0).abs() < 0.01,
         "Expected 3.0, got {}",
-        signals[1]
+        signals[1].value
     );
 }
