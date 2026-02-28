@@ -9,7 +9,7 @@ use kama_automation::{
     Servo,
     TestSignalSender,
 };
-use kama_core::traits::time::{Clock, SystemClock};
+use kama_core::time::{Clock, SystemClock};
 use kama_core::traits::{NodeId, ParameterId, PortId};
 use std::sync::Arc;
 use std::thread;

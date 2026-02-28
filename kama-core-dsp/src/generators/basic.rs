@@ -1,6 +1,6 @@
 //! Базовые осцилляторы (Sine, Saw, Square, Triangle)
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 use crate::generators::{Generator, SyncableGenerator, ModulatableGenerator};
 use std::f32::consts::PI;

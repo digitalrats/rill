@@ -2,7 +2,7 @@ use kama_automation::{
     automaton::{FunctionAutomaton, StatefulFunctionAutomaton},
     AutomationContext, AutomationManager, ParameterMapping, Servo, SignalSender, TestSignalSender,
 };
-use kama_core::traits::time::{Clock, SystemClock, TickInfo, TimeProvider};
+use kama_core::time::{Clock, SystemClock, TickInfo, TimeProvider};
 use kama_core::traits::{NodeId, ParameterId, PortId};
 use std::sync::Arc;
 

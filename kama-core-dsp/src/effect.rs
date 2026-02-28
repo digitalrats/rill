@@ -1,6 +1,6 @@
 //! Трейты для эффектов
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm};
 
 /// Базовый трейт для эффектов

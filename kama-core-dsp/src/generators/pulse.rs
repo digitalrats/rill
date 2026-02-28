@@ -1,6 +1,6 @@
 //! Pulse wave генератор с PWM (Pulse Width Modulation)
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 use super::Generator;
 
@@ -60,7 +60,7 @@ impl<T: AudioNum> PulseOscillator<T> {
     
     /// Anti-aliased pulse wave
     fn generate_pulse(&mut self, width: T) -> T {
-        let raw = if self.phase.as_f32() < width.as_f32() {
+        let raw = if self.phase.to_f32() < width.to_f32() {
             self.amplitude
         } else {
             self.amplitude.neg()
@@ -79,7 +79,7 @@ impl<T: AudioNum> PulseOscillator<T> {
         }
         
         // Нисходящий фронт (при переполнении фазы)
-        if next_phase.as_f32() >= 1.0 {
+        if next_phase.to_f32() >= 1.0 {
             let t = T::from_f32(1.0).sub(self.phase).div(inc);
             blep = blep.sub(T::from_f32(2.0).mul(t).sub(T::from_f32(1.0)));
         }
@@ -104,7 +104,7 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
         let output = self.generate_pulse(width);
         
         self.phase = self.phase.add(self.phase_inc);
-        if self.phase.as_f32() >= 1.0 {
+        if self.phase.to_f32() >= 1.0 {
             self.phase = self.phase.sub(T::from_f32(1.0));
         }
         

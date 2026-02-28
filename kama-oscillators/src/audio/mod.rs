@@ -15,4 +15,4 @@ pub use noise::{NoiseOsc, NoiseType};
 pub use fm::FmOsc;
 
 // Re-export core types
-pub use kama_core_dsp::math::AudioNum;
+pub use kama_core::AudioNum;

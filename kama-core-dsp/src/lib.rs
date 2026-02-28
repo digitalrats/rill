@@ -15,7 +15,6 @@
 // Для сложных const expr (опционально)
 #![cfg_attr(feature = "unstable", feature(generic_const_exprs))]
 
-pub mod buffer;
 pub mod algorithm;
 pub mod filters;
 pub mod context;
@@ -26,8 +25,6 @@ pub mod math;
 pub mod macros;
 
 // Re-exports
-pub use math::AudioNum;
-pub use buffer::{RingBuffer, FixedBuffer, DelayLine};
 pub use algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
 //pub use filters::{Filter, FilterType, FilterParams};
 //pub use generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
@@ -35,8 +32,6 @@ pub use context::DspContext;
 
 /// Prelude для удобного импорта
 pub mod prelude {
-    pub use crate::math::AudioNum;
-    pub use crate::buffer::{RingBuffer, FixedBuffer, DelayLine};
     pub use crate::algorithm::Algorithm;
     pub use crate::context::DspContext;
     pub use crate::math::*;

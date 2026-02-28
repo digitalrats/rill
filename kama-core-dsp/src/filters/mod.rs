@@ -23,7 +23,7 @@
 //!
 //! ```rust
 //! use kama_core_dsp::filters::*;
-//! use kama_core_dsp::math::AudioNum;
+//! use kama_core::AudioNum;
 //!
 //! fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
 //!     filter.set_cutoff(1000.0);
@@ -87,7 +87,7 @@ pub use butterworth::Butterworth;
 pub use chebyshev::{ChebyshevI, ChebyshevII, ChebyshevParams};
 pub use comb::CombFilter;
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata};
 
 /// Общий тип параметров для всех фильтров
@@ -280,7 +280,7 @@ impl FilterType {
 /// # Пример
 /// ```
 /// use kama_core_dsp::filters::*;
-/// use kama_core_dsp::math::AudioNum;
+/// use kama_core::AudioNum;
 ///
 /// fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
 ///     filter.set_cutoff(1000.0);
@@ -414,7 +414,7 @@ impl FilterComparison {
 mod examples {
     /// ```rust
     /// use kama_core_dsp::filters::*;
-    /// use kama_core_dsp::math::AudioNum;
+    /// use kama_core::AudioNum;
     /// use kama_core_dsp::Algorithm;
     /// use std::f32::consts::PI;
     ///

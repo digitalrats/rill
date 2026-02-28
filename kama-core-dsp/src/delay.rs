@@ -6,7 +6,7 @@
 //! - Многоголовая задержка (Multi-tap Delay)
 //! - Диффузионная задержка (для реверберации)
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::buffer::{RingBuffer, DelayLine};
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
 
@@ -473,7 +473,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> ModulatedDelay<T, MAX_DELAY> {
     
     /// Вычислить текущую задержку с учётом модуляции
     fn current_delay(&self) -> f32 {
-        let lfo = self.lfo_phase.as_f32().sin() * 0.5 + 0.5; // 0..1
+        let lfo = self.lfo_phase.to_f32().sin() * 0.5 + 0.5; // 0..1
         self.params.base_delay + lfo * self.params.depth
     }
 }
@@ -494,7 +494,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX
         // Обновляем фазу LFO
         let phase_inc = T::from_f32(self.params.rate / self.sample_rate);
         self.lfo_phase = self.lfo_phase.add(phase_inc);
-        if self.lfo_phase.as_f32() >= 1.0 {
+        if self.lfo_phase.to_f32() >= 1.0 {
             self.lfo_phase = self.lfo_phase.sub(T::from_f32(1.0));
         }
         

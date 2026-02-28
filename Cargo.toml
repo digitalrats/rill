@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "kama-core",
-    #"kama-core-dsp",
+    "kama-core-dsp",
     #"kama-graph",
     #"kama-patchbay",
     #"kama-oscillators", # Временно отключен

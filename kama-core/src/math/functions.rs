@@ -11,13 +11,13 @@ pub fn lerp<T: AudioNum>(a: T, b: T, t: T) -> T {
 /// Преобразовать децибелы в линейный коэффициент
 #[inline(always)]
 pub fn db_to_linear<T: AudioNum>(db: T) -> T {
-    T::from_f32(10.0_f32.powf(db.as_f32() / 20.0))
+    T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
 }
 
 /// Преобразовать линейный коэффициент в децибелы
 #[inline(always)]
 pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
-    T::from_f32(20.0 * linear.as_f32().log10())
+    T::from_f32(20.0 * linear.to_f32().log10())
 }
 
 /// Преобразовать MIDI ноту в частоту
@@ -30,7 +30,7 @@ pub fn midi_to_freq<T: AudioNum>(note: u8) -> T {
 /// Преобразовать частоту в MIDI ноту
 #[inline(always)]
 pub fn freq_to_midi<T: AudioNum>(freq: T) -> f32 {
-    69.0 + 12.0 * (freq.as_f32() / 440.0).log2()
+    69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
 }
 
 /// Преобразовать секунды в семплы
@@ -48,15 +48,15 @@ pub fn samples_to_seconds(samples: usize, sample_rate: f32) -> f32 {
 /// Быстрая аппроксимация tanh
 #[inline(always)]
 pub fn fast_tanh<T: AudioNum>(x: T) -> T {
-    let xf = x.as_f32();
+    let xf = x.to_f32();
     T::from_f32(xf / (1.0 + xf.abs()))
 }
 
 /// Мягкое клиппирование
 #[inline(always)]
 pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
-    let xf = x.as_f32();
-    let t = threshold.as_f32();
+    let xf = x.to_f32();
+    let t = threshold.to_f32();
     
     if xf > t {
         T::from_f32(t + (xf - t) / (1.0 + ((xf - t) / (1.0 - t)).powi(2)))

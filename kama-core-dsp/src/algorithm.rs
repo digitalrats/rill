@@ -3,7 +3,7 @@
 //! Алгоритм - это чистая DSP логика, не зависящая от графа.
 //! Все алгоритмы должны быть RT-safe.
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use kama_core::traits::ParamValue;
 use std::any::Any;
 

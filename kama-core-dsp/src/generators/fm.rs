@@ -6,7 +6,7 @@
 //! - Поддержка различных форм волны для каждого оператора
 //! - Гибкая маршрутизация модуляции
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 use crate::generators::{Generator, ModulatableGenerator};
 use super::basic::{BasicOscillator, Waveform};

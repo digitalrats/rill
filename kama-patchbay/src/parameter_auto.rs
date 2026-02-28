@@ -51,7 +51,7 @@ impl fmt::Debug for DummyTimeProvider {
     }
 }
 
-impl kama_core::traits::time::Clock for DummyTimeProvider {
+impl kama_core::time::Clock for DummyTimeProvider {
     fn sample_rate(&self) -> f64 {
         44100.0
     }
@@ -64,13 +64,13 @@ impl kama_core::traits::time::Clock for DummyTimeProvider {
     fn reset(&self) {}
 }
 
-impl kama_core::traits::time::TimeProvider for DummyTimeProvider {
+impl kama_core::time::TimeProvider for DummyTimeProvider {
     fn bpm(&self) -> f64 {
         120.0
     }
     fn set_bpm(&self, _bpm: f64) {}
-    fn tick_info(&self) -> kama_core::traits::time::TickInfo {
-        kama_core::traits::time::TickInfo {
+    fn tick_info(&self) -> kama_core::time::TickInfo {
+        kama_core::time::TickInfo {
             bar: 0,
             beat: 0,
             sixteenth: 0,

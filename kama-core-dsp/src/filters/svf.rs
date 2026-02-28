@@ -5,7 +5,7 @@
 //! - Стабилен при высоких резонансах
 //! - Идеален для аналоговой эмуляции
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use super::{Filter, FilterParams, FilterType};
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
 use core::f32::consts::PI;

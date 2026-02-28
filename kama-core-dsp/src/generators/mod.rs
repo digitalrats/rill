@@ -11,7 +11,7 @@
 //! типом `T: AudioNum` (f32 или f64).
 
 // Импортируем необходимые типы и трейты
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 
 // Объявляем подмодули

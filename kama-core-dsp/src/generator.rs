@@ -1,6 +1,6 @@
 //! Трейты для генераторов (источников сигнала)
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::Algorithm;
 
 /// Базовый трейт для генераторов

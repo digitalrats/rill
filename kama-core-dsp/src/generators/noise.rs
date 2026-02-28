@@ -1,6 +1,6 @@
 //! Генераторы шума (White, Pink, Brown, Blue, Violet)
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 use crate::filters::{OnePole, FilterParams, FilterType};
 use super::Generator;

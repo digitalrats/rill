@@ -33,7 +33,7 @@ pub use crate::time::{
 };
 
 // Re-export math abstractions
-pub use crate::math::AudioNum;
+pub use crate::AudioNum;
 
 // Re-export buffer types
 pub use crate::buffer::{

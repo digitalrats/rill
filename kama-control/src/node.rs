@@ -188,7 +188,7 @@ impl kama_core::traits::Clock for DummyTimeProvider {
     fn reset(&self) {}
 }
 
-impl kama_core::traits::TimeProvider for DummyTimeProvider {
+impl kama_core::timeProvider for DummyTimeProvider {
     fn bpm(&self) -> f64 { 120.0 }
     fn set_bpm(&self, _bpm: f64) {}
     fn tick_info(&self) -> kama_core::traits::TickInfo {

@@ -1,6 +1,6 @@
 //! # Фильтры Баттерворта (Butterworth Filters)
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use super::{Filter, FilterParams, FilterType};
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
 use std::f64::consts::PI as PI64;
@@ -201,11 +201,11 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> {
                     let (b0, b1, b2, a1, a2) = self.sections[i].coeffs;
                     
                     let b = Complex64::new(
-                        (b0.as_f32() + b1.as_f32() + b2.as_f32()) as f64,
+                        (b0.to_f32() + b1.to_f32() + b2.to_f32()) as f64,
                         0.0
                     );
                     let a = Complex64::new(
-                        (1.0 + a1.as_f32() + a2.as_f32()) as f64,
+                        (1.0 + a1.to_f32() + a2.to_f32()) as f64,
                         0.0
                     );
                     
@@ -221,11 +221,11 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> {
                     let (b0, b1, b2, a1, a2) = self.sections[i].coeffs;
                     
                     let b = Complex64::new(
-                        (b0.as_f32() - b1.as_f32() + b2.as_f32()) as f64,
+                        (b0.to_f32() - b1.to_f32() + b2.to_f32()) as f64,
                         0.0
                     );
                     let a = Complex64::new(
-                        (1.0 - a1.as_f32() + a2.as_f32()) as f64,
+                        (1.0 - a1.to_f32() + a2.to_f32()) as f64,
                         0.0
                     );
                     

@@ -1,6 +1,7 @@
 //! Генераторы огибающих (ADSR, AR, ASR)
 
-use crate::math::{AudioNum, Smoother};
+use kama_core::AudioNum;
+use crate::math::Smoother;
 use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 use super::Generator;
 
@@ -170,9 +171,9 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
     
     fn process_sample(&mut self, gate_signal: T) -> T {
         // Обновляем gate из входного сигнала если есть
-        if gate_signal.as_f32() > 0.5 && !self.gate {
+        if gate_signal.to_f32() > 0.5 && !self.gate {
             self.trigger();
-        } else if gate_signal.as_f32() <= 0.5 && self.gate {
+        } else if gate_signal.to_f32() <= 0.5 && self.gate {
             self.release();
         }
         

@@ -1,7 +1,7 @@
 //! Контекст выполнения DSP-алгоритмов
 
-use crate::math::AudioNum;
-use kama_core::traits::time::TimeProvider;
+use kama_core::AudioNum;
+use kama_core::time::TimeProvider;
 
 /// Контекст DSP-обработки
 ///
@@ -58,7 +58,7 @@ impl<'a, T: AudioNum> DspContext<'a, T> {
     }
     
     /// Получить информацию о текущем такте
-    pub fn tick_info(&self) -> kama_core::traits::time::TickInfo {
+    pub fn tick_info(&self) -> kama_core::time::TickInfo {
         self.time.tick_info()
     }
     

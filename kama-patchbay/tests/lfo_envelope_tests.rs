@@ -2,7 +2,7 @@ use kama_automation::{
     automaton::{LfoAutomaton, LfoWithEnvelopeAutomaton},
     AutomationContext, AutomationManager, Automaton, ParameterMapping, Servo, TestSignalSender,
 };
-use kama_core::traits::time::{Clock, SystemClock, TickInfo, TimeProvider};
+use kama_core::time::{Clock, SystemClock, TickInfo, TimeProvider};
 use std::sync::Arc;
 
 // Вспомогательная структура для тестового TimeProvider

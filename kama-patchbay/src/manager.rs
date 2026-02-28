@@ -4,7 +4,7 @@ use crate::queues::{AutomationCommand, CommandQueue, TelemetryData, TelemetryQue
 use crate::sensor::{Sensor, SensorManager, SensorProcessor};
 use crate::servo::{ParameterMapping, Servo};
 use crossbeam_channel::Receiver;
-use kama_core::traits::time::{Clock, SystemClock, TimeProvider};
+use kama_core::time::{Clock, SystemClock, TimeProvider};
 use kama_core::traits::{NodeId, ParameterId, PortId};
 use std::collections::HashMap;
 use std::sync::Arc;

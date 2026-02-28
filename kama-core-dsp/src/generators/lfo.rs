@@ -4,7 +4,7 @@
 //! звука: вибрато (частота), тремоло (амплитуда), фильтр-свип (частота среза)
 //! и другие эффекты.
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 use crate::generators::{Generator, SyncableGenerator};
 use super::basic::{BasicOscillator, Waveform};
@@ -333,7 +333,7 @@ mod tests {
         
         // Записываем начальную фазу
         let initial_phase = lfo.phase();
-        println!("Initial phase: {}", initial_phase.as_f32());
+        println!("Initial phase: {}", initial_phase.to_f32());
         
         // Продвигаем фазу на несколько периодов
         for i in 0..samples_per_period * 3 {  // 3 полных периода
@@ -343,21 +343,21 @@ mod tests {
             
             // Проверяем, не произошёл ли сброс фазы
             if after_phase < before_phase {
-                println!("Phase reset at sample {}: {} -> {}", i, before_phase.as_f32(), after_phase.as_f32());
+                println!("Phase reset at sample {}: {} -> {}", i, before_phase.to_f32(), after_phase.to_f32());
                 println!("Periods count: {}", lfo.periods());
             }
             
             // Для отладки выведем информацию на ключевых точках
             if i == samples_per_period - 1 {
                 println!("After 1 period (sample {}): phase={}, periods={}", 
-                         i, lfo.phase().as_f32(), lfo.periods());
+                         i, lfo.phase().to_f32(), lfo.periods());
             } else if i == samples_per_period * 2 - 1 {
                 println!("After 2 periods (sample {}): phase={}, periods={}", 
-                         i, lfo.phase().as_f32(), lfo.periods());
+                         i, lfo.phase().to_f32(), lfo.periods());
             }
         }
         
-        println!("Final phase: {}", lfo.phase().as_f32());
+        println!("Final phase: {}", lfo.phase().to_f32());
         println!("Final periods: {}", lfo.periods());
         
         assert!(lfo.periods() > initial_periods, 

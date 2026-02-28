@@ -1,6 +1,6 @@
 //! # Фильтры Чебышева (Chebyshev Filters)
 
-use crate::math::AudioNum;
+use kama_core::AudioNum;
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
 use std::f64::consts::PI as PI64;

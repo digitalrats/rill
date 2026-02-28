@@ -9,220 +9,7 @@
 //! - Интерполяцию и сглаживание
 
 use core::f32::consts::PI;
-
-// -----------------------------------------------------------------------------
-// AudioNum - абстракция числовых типов
-// -----------------------------------------------------------------------------
-
-/// Числовой тип для аудио (маркерный трейт)
-///
-/// Позволяет писать DSP алгоритмы, параметризованные типом точности.
-/// Все операции должны быть RT-safe (без аллокаций, без паники).
-pub trait AudioNum: Copy + Clone + Send + Sync + 'static + Default + PartialOrd {
-    /// Нулевое значение
-    const ZERO: Self;
-    
-    /// Минимальное значение (для клиппинга)
-    const MIN: Self;
-    
-    /// Максимальное значение (для клиппинга)
-    const MAX: Self;
-    
-    /// Преобразование в f32 (для интерфейсов)
-    fn as_f32(self) -> f32;
-    
-    /// Преобразование из f32
-    fn from_f32(value: f32) -> Self;
-    
-    /// Преобразование в f64 (для высокоточных расчётов)
-    fn as_f64(self) -> f64 {
-        self.as_f32() as f64
-    }
-    
-    /// Арифметические операции
-    fn add(self, other: Self) -> Self;
-    fn sub(self, other: Self) -> Self;
-    fn mul(self, other: Self) -> Self;
-    fn div(self, other: Self) -> Self;
-    
-    /// Унарный минус
-    fn neg(self) -> Self;
-    
-    /// Абсолютное значение
-    fn abs(self) -> Self;
-    
-    /// Минимум
-    fn min(self, other: Self) -> Self;
-    
-    /// Максимум
-    fn max(self, other: Self) -> Self;
-    
-    /// Клиппинг
-    fn clamp(self, min: Self, max: Self) -> Self;
-    
-    /// Квадратный корень
-    fn sqrt(self) -> Self;
-    
-    /// Экспонента
-    fn exp(self) -> Self;
-    
-    /// Натуральный логарифм
-    fn ln(self) -> Self;
-    
-    /// Синус
-    fn sin(self) -> Self;
-    
-    /// Косинус
-    fn cos(self) -> Self;
-    
-    /// Тангенс
-    fn tan(self) -> Self;
-    
-    /// Параболический тангенс (быстрая аппроксимация)
-    fn fast_tanh(self) -> Self;
-    
-    /// Степень
-    fn powf(self, exp: Self) -> Self;
-}
-
-// -----------------------------------------------------------------------------
-// Реализация для f32
-// -----------------------------------------------------------------------------
-
-impl AudioNum for f32 {
-    const ZERO: f32 = 0.0;
-    const MIN: f32 = -1.0;
-    const MAX: f32 = 1.0;
-    
-    #[inline(always)]
-    fn as_f32(self) -> f32 { self }
-    
-    #[inline(always)]
-    fn from_f32(value: f32) -> f32 { value }
-    
-    #[inline(always)]
-    fn add(self, other: f32) -> f32 { self + other }
-    
-    #[inline(always)]
-    fn sub(self, other: f32) -> f32 { self - other }
-    
-    #[inline(always)]
-    fn mul(self, other: f32) -> f32 { self * other }
-    
-    #[inline(always)]
-    fn div(self, other: f32) -> f32 { self / other }
-    
-    #[inline(always)]
-    fn neg(self) -> f32 { -self }
-    
-    #[inline(always)]
-    fn abs(self) -> f32 { self.abs() }
-    
-    #[inline(always)]
-    fn min(self, other: f32) -> f32 { self.min(other) }
-    
-    #[inline(always)]
-    fn max(self, other: f32) -> f32 { self.max(other) }
-    
-    #[inline(always)]
-    fn clamp(self, min: f32, max: f32) -> f32 { self.clamp(min, max) }
-    
-    #[inline(always)]
-    fn sqrt(self) -> f32 { self.sqrt() }
-    
-    #[inline(always)]
-    fn exp(self) -> f32 { self.exp() }
-    
-    #[inline(always)]
-    fn ln(self) -> f32 { self.ln() }
-    
-    #[inline(always)]
-    fn sin(self) -> f32 { self.sin() }
-    
-    #[inline(always)]
-    fn cos(self) -> f32 { self.cos() }
-    
-    #[inline(always)]
-    fn tan(self) -> f32 { self.tan() }
-    
-    #[inline(always)]
-    fn fast_tanh(self) -> f32 {
-        // Аппроксимация tanh: x / (1 + |x|)
-        self / (1.0 + self.abs())
-    }
-    
-    #[inline(always)]
-    fn powf(self, exp: f32) -> f32 { self.powf(exp) }
-}
-
-// -----------------------------------------------------------------------------
-// Реализация для f64
-// -----------------------------------------------------------------------------
-
-impl AudioNum for f64 {
-    const ZERO: f64 = 0.0;
-    const MIN: f64 = -1.0;
-    const MAX: f64 = 1.0;
-    
-    #[inline(always)]
-    fn as_f32(self) -> f32 { self as f32 }
-    
-    #[inline(always)]
-    fn from_f32(value: f32) -> f64 { value as f64 }
-    
-    #[inline(always)]
-    fn add(self, other: f64) -> f64 { self + other }
-    
-    #[inline(always)]
-    fn sub(self, other: f64) -> f64 { self - other }
-    
-    #[inline(always)]
-    fn mul(self, other: f64) -> f64 { self * other }
-    
-    #[inline(always)]
-    fn div(self, other: f64) -> f64 { self / other }
-    
-    #[inline(always)]
-    fn neg(self) -> f64 { -self }
-    
-    #[inline(always)]
-    fn abs(self) -> f64 { self.abs() }
-    
-    #[inline(always)]
-    fn min(self, other: f64) -> f64 { self.min(other) }
-    
-    #[inline(always)]
-    fn max(self, other: f64) -> f64 { self.max(other) }
-    
-    #[inline(always)]
-    fn clamp(self, min: f64, max: f64) -> f64 { self.clamp(min, max) }
-    
-    #[inline(always)]
-    fn sqrt(self) -> f64 { self.sqrt() }
-    
-    #[inline(always)]
-    fn exp(self) -> f64 { self.exp() }
-    
-    #[inline(always)]
-    fn ln(self) -> f64 { self.ln() }
-    
-    #[inline(always)]
-    fn sin(self) -> f64 { self.sin() }
-    
-    #[inline(always)]
-    fn cos(self) -> f64 { self.cos() }
-    
-    #[inline(always)]
-    fn tan(self) -> f64 { self.tan() }
-    
-    #[inline(always)]
-    fn fast_tanh(self) -> f64 {
-        self / (1.0 + self.abs())
-    }
-    
-    #[inline(always)]
-    fn powf(self, exp: f64) -> f64 { self.powf(exp) }
-}
+use kama_core::AudioNum;
 
 // -----------------------------------------------------------------------------
 // Конвертация между шкалами
@@ -239,7 +26,7 @@ impl AudioNum for f64 {
 /// - +6 dB → 2.0
 #[inline(always)]
 pub fn db_to_linear<T: AudioNum>(db: T) -> T {
-    T::from_f32(10.0_f32.powf(db.as_f32() / 20.0))
+    T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
 }
 
 /// Преобразовать линейный коэффициент в децибелы
@@ -248,7 +35,7 @@ pub fn db_to_linear<T: AudioNum>(db: T) -> T {
 /// `dB = 20 * log10(linear)`
 #[inline(always)]
 pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
-    T::from_f32(20.0 * linear.as_f32().log10())
+    T::from_f32(20.0 * linear.to_f32().log10())
 }
 
 /// Преобразовать MIDI ноту в частоту
@@ -264,7 +51,7 @@ pub fn midi_to_freq<T: AudioNum>(note: u8) -> T {
 /// Преобразовать частоту в MIDI ноту
 #[inline(always)]
 pub fn freq_to_midi<T: AudioNum>(freq: T) -> f32 {
-    69.0 + 12.0 * (freq.as_f32() / 440.0).log2()
+    69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
 }
 
 /// Преобразовать семплы в секунды
@@ -288,7 +75,7 @@ pub fn seconds_to_samples(seconds: f32, sample_rate: f32) -> usize {
 /// Точность ~ 1e-5, в 2-3 раза быстрее стандартной exp()
 #[inline(always)]
 pub fn fast_exp<T: AudioNum>(x: T) -> T {
-    let xf = x.as_f32();
+    let xf = x.to_f32();
     
     // exp(x) ≈ (1 + x/n)^n для большого n
     // Используем n = 2^4 = 16 для хорошего баланса
@@ -306,7 +93,7 @@ pub fn fast_exp<T: AudioNum>(x: T) -> T {
 /// Точность ~ 1e-3, очень быстрая (без ветвлений)
 #[inline(always)]
 pub fn fast_tanh<T: AudioNum>(x: T) -> T {
-    let xf = x.as_f32();
+    let xf = x.to_f32();
     
     // tanh(x) ≈ x * (27 + x^2) / (27 + 9*x^2)
     // Точность хороша для |x| < 3
@@ -322,7 +109,7 @@ pub fn fast_tanh<T: AudioNum>(x: T) -> T {
 /// Точность ~ 1e-3 для |x| < π, очень быстрая
 #[inline(always)]
 pub fn fast_sin<T: AudioNum>(x: T) -> T {
-    let xf = x.as_f32();
+    let xf = x.to_f32();
     
     // sin(x) ≈ x - x^3/6 + x^5/120
     let x2 = xf * xf;
@@ -335,8 +122,8 @@ pub fn fast_sin<T: AudioNum>(x: T) -> T {
 /// Мягкое клиппирование (wave shaping)
 #[inline(always)]
 pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
-    let xf = x.as_f32();
-    let t = threshold.as_f32();
+    let xf = x.to_f32();
+    let t = threshold.to_f32();
     
     if xf > t {
         T::from_f32(t + (xf - t) / (1.0 + ((xf - t) / (1.0 - t)).powi(2)))
@@ -376,7 +163,7 @@ pub fn triangle_phase<T: AudioNum>(phase: T) -> T {
 /// Генерация квадратной волны (фаза 0..1, pulse_width 0..1)
 #[inline(always)]
 pub fn square_phase<T: AudioNum>(phase: T, pulse_width: T) -> T {
-    if phase.as_f32() < pulse_width.as_f32() {
+    if phase.to_f32() < pulse_width.to_f32() {
         T::from_f32(1.0)
     } else {
         T::from_f32(-1.0)
@@ -805,7 +592,7 @@ pub fn triangle_phase<T: AudioNum>(phase: T) -> T {
     // Исправленная формула:
     // Для фазы 0..0.5: 4 * phase - 1
     // Для фазы 0.5..1: 3 - 4 * phase
-    let p = phase.as_f32();
+    let p = phase.to_f32();
     if p < 0.5 {
         T::from_f32(4.0 * p - 1.0)
     } else {

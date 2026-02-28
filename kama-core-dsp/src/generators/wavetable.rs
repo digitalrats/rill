@@ -65,7 +65,7 @@ impl<T: AudioNum, const SIZE: usize> WavetableOscillator<T, SIZE> {
     /// Линейная интерполяция
     #[inline(always)]
     fn read_linear(&self, idx: T) -> T {
-        let idx_f = idx.as_f32();
+        let idx_f = idx.to_f32();
         let i0 = idx_f.floor() as usize % SIZE;
         let i1 = (i0 + 1) % SIZE;
         let frac = T::from_f32(idx_f.fract());
@@ -76,7 +76,7 @@ impl<T: AudioNum, const SIZE: usize> WavetableOscillator<T, SIZE> {
     /// Кубическая интерполяция (Hermite)
     #[inline(always)]
     fn read_cubic(&self, idx: T) -> T {
-        let idx_f = idx.as_f32();
+        let idx_f = idx.to_f32();
         let i = idx_f.floor() as usize;
         
         let i0 = (i + SIZE - 1) % SIZE;
@@ -122,7 +122,7 @@ impl<T: AudioNum, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZ
         }.mul(self.amplitude);
         
         self.phase = self.phase.add(self.phase_inc);
-        while self.phase.as_f32() >= SIZE as f32 {
+        while self.phase.to_f32() >= SIZE as f32 {
             self.phase = self.phase.sub(T::from_f32(SIZE as f32));
         }
         
