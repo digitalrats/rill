@@ -1,19 +1,13 @@
 [package]
 name = "kama-oscillators"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Unified oscillators for Kama Audio - audio oscillators, LFOs, envelopes, and control generators"
-license = "Apache-2.0"
-authors = ["Digital Rats / Kama Audio Team"]
+description = "Oscillators for Kama Audio - using kama-core-dsp algorithms"
 
 [dependencies]
-kama-core = { path = "../kama-core", version = "0.3.0" }
+kama-core = { path = "../kama-core" }
 kama-core-dsp = { path = "../kama-core-dsp" }
-rand = "0.8"
 thiserror = "1.0"
-
-[features]
-default = []
 
 [dev-dependencies]
 float-cmp = "0.9"

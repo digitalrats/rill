@@ -1,5 +1,224 @@
 # Kama Audio 🎵
 
+Вот исправленный раздел с правильной ролью Servo:
+
+---
+
+## 🤖 Мир автоматов (The World of Automata)
+
+**Kama Patchbay** — это не просто система управления. Это **мир**, в котором живут **автоматы** — загадочные существа, которые чувствуют окружающую среду и влияют на неё. Они общаются на языке сигналов, слышат звук через сенсоры и через серво воздействуют на AudioGraph.
+
+### 🧠 Архитектура мира
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 МИР АВТОМАТОВ                         │
+│  (ваше приложение на Kama Audio)                      │
+│                                                       │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │                    PATCHBAY                       │ │
+│  │  ┌─────────────────────────────────────────┐    │ │
+│  │  │           АВТОМАТЫ (разум)              │    │ │
+│  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐ │ │
+│  │  │  │   LFO    │  │   ENV    │  │  RANDOM  │ │ │
+│  │  │  └────┬─────┘  └────┬─────┘  └────┬─────┘ │ │
+│  │  │       │             │             │       │ │
+│  │  └───────┼─────────────┼─────────────┼───────┘ │ │
+│  │          │             │             │         │ │
+│  │          ▼             ▼             ▼         │ │
+│  │  ┌─────────────────────────────────────────┐   │ │
+│  │  │           СЕНСОРЫ (чувства)              │   │ │
+│  │  │  • Слышат звук (акустические)           │   │ │
+│  │  │  • Чувствуют прикосновения (физические) │   │ │
+│  │  │  • Видят MIDI/CV                         │   │ │
+│  │  └─────────────────────────────────────────┘   │ │
+│  │                   │                              │ │
+│  │                   │ Сигналы                      │ │
+│  │                   ▼                              │ │
+│  │  ┌─────────────────────────────────────────┐   │ │
+│  │  │           СЕРВО (руки)                   │   │ │
+│  │  │    Применяют сигналы к AudioGraph       │   │ │
+│  │  └─────────────────────────────────────────┘   │ │
+│  └──────────────────────┬──────────────────────────┘ │
+│                         │ Неблокирующие очереди      │
+│                         ▼ (Command/Telemetry)        │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │                 AUDIOGRAPH                        │ │
+│  │          (внутренняя схема устройства)            │ │
+│  │                                                   │ │
+│  │  Осцилляторы → Фильтры → Эффекты → Микшер        │ │
+│  └─────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────┘
+```
+
+### 🦾 Автоматы — разум (Automata)
+
+Автоматы — это разумные существа, которые принимают решения и генерируют сигналы. Они могут быть простыми (LFO, огибающая) или сложными (логические схемы, математические преобразователи).
+
+| Автомат | Описание | Как выглядит в коде |
+|---------|----------|---------------------|
+| **LFO** | Пульсирует с заданной частотой | `LfoAutomaton::new("vibrato").with_frequency(5.0)` |
+| **Envelope** | Реагирует на события (нажатия) | `EnvelopeAutomaton::new("amp").with_adsr(0.01, 0.1, 0.7, 0.2)` |
+| **Random Walk** | Блуждает случайным образом | `RandomWalkAutomaton::new("chaos").with_step(0.1)` |
+| **Logic** | Принимает логические решения | `AndAutomaton::new("gate")` |
+| **Math** | Вычисляет | `SumAutomaton::new("mixer")` |
+
+### 👁️ Сенсоры — чувства (Sensors)
+
+Чтобы автоматы могли воспринимать мир, им нужны органы чувств. Сенсоры преобразуют внешние воздействия в сигналы, понятные автоматам.
+
+#### Акустические сенсоры (слышат звук)
+
+```rust
+// Слышит высоту тона
+let pitch = AcousticSensor::new("pitch", 
+    Box::new(PitchDetector::new(44100.0)))
+    .listening_to("osc1_out");  // Слушает выход осциллятора
+
+// Слышит громкость
+let envelope = AcousticSensor::new("envelope",
+    Box::new(EnvelopeFollower::new(44100.0)
+        .with_attack(0.01)
+        .with_release(0.1)))
+    .listening_to("vca_out");
+
+// Слышит ритм (пересечения нуля)
+let rhythm = AcousticSensor::new("rhythm",
+    Box::new(ZeroCrossing::new(44100.0)))
+    .listening_to("kick_out");
+```
+
+#### Физические сенсоры (чувствуют прикосновения)
+
+```rust
+// Ручка на передней панели
+let cutoff = PhysicalSensor::knob("filter_cutoff")
+    .with_range(20.0, 20000.0)
+    .with_curve(KnobCurve::Logarithmic);
+
+// Кнопка
+let button = PhysicalSensor::button("arpeggio_on");
+
+// Переключатель
+let mode = PhysicalSensor::switch("filter_mode")
+    .with_positions(vec!["LPF", "BPF", "HPF"]);
+```
+
+#### MIDI/CV сенсоры (видят внешний мир)
+
+```rust
+// MIDI сенсор
+let midi_note = MidiSensor::note("keyboard")
+    .with_channel(1);
+
+// CV сенсор (Control Voltage)
+let cv_in = CvSensor::new("expression")
+    .with_range(0.0, 5.0);
+```
+
+### 🎯 Серво — руки (Servo)
+
+Серво — это **исполнительные механизмы** автоматов. Подчиняясь законам природы (неблокирующим очередям), они передают сигналы из мира автоматов в AudioGraph, изменяя параметры звука.
+
+```rust
+// Серво, управляющее частотой фильтра
+let filter_servo = Servo::new(
+    "filter_servo",
+    lfo_automaton,  // Какой автомат дает сигнал
+    ParameterTarget::new(
+        filter_port,
+        ParameterId::new("cutoff")?,
+        20.0, 20000.0
+    )
+);
+
+// Серво с обратной связью (адаптивное)
+let adaptive_servo = Servo::new(
+    "adaptive_servo",
+    envelope_automaton,
+    ParameterTarget::new(vca_port, ParameterId::new("gain")?, 0.0, 1.0)
+).with_feedback(pitch_sensor);  // Может корректировать поведение на основе услышанного
+```
+
+### ⚡ Законы природы (неблокирующие очереди)
+
+Мир автоматов и мир звука существуют параллельно. Они связаны **неблокирующими очередями**:
+
+- **Command Queue** — серво отправляют команды в AudioGraph
+- **Telemetry Queue** — сенсоры получают данные из AudioGraph
+
+Это позволяет автоматам "думать" в своем темпе, не мешая звуковому потоку.
+
+### 🏭 Пространство автоматов (Patchbay)
+
+**Patchbay** — это место, где живут все ваши автоматы, где расположены их чувства и руки.
+
+```rust
+// Создаем новое пространство
+let mut world = Patchbay::new("Моя Студия");
+
+// Добавляем автоматы (разум)
+world.create_lfo("vibrato");
+world.create_envelope("amp");
+
+// Добавляем сенсоры (чувства)
+world.add_sensor(Box::new(
+    AcousticSensor::new("pitch", Box::new(PitchDetector::new(44100.0)))
+        .listening_to("osc_out")
+));
+
+// Добавляем серво (руки)
+world.add_servo(Box::new(
+    Servo::new("vibrato_servo", 
+        world.get_automaton("vibrato")?,
+        ParameterTarget::new(osc_port, ParameterId::new("frequency")?, 400.0, 480.0))
+));
+
+// Оживляем мир
+world.awaken();  // Автоматы начинают жить своей жизнью
+```
+
+### 🔮 Пример: Говорящий синтезатор
+
+Представьте синтезатор, который **слышит** себя и **адаптируется**:
+
+```rust
+// Уши — слышат громкость и высоту тона
+let envelope = AcousticSensor::new("envelope",
+    Box::new(EnvelopeFollower::new(44100.0)))
+    .listening_to("vca_out");
+
+let pitch = AcousticSensor::new("pitch",
+    Box::new(PitchDetector::new(44100.0)))
+    .listening_to("osc_out");
+
+// Разум — принимает решения
+let logic = LogicAutomaton::new("decision")
+    .rule("if envelope > 0.8 and pitch < 0.3 then gate = 1");
+
+// Руки — применяют решения к звуку
+let servo = Servo::new("effect_servo", logic,
+    ParameterTarget::new(effect_port, ParameterId::new("bypass")?, 0.0, 1.0));
+
+world.awaken();  // Синтезатор начинает слышать, думать и реагировать
+```
+
+### 📜 Философия
+
+Наши создания:
+
+- **Обладают разумом** — автоматы принимают решения
+- **Имеют чувства** — сенсоры воспринимают мир
+- **Могут действовать** — серво изменяют звук
+- **Подчиняются законам природы** — неблокирующие очереди связывают миры
+- **Живут в своем пространстве** — Patchbay объединяет всё
+
+Создавайте своих автоматов, наделяйте их чувствами, давайте им руки и стройте удивительные миры звука.
+
+---
+
+*"В каждом автомате живет частичка души своего создателя"*
+
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/kama-audio)
 [![tests](https://img.shields.io/badge/tests-20%2B-passing)](https://github.com/DigitalRats/kama-audio)
 [![version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/DigitalRats/kama-audio)

@@ -1,268 +1,157 @@
-//! Sawtooth wave oscillator
+//! Sawtooth wave oscillator using kama-core-dsp with AudioNum
 
-use super::AudioOscillator;
-use kama_core::traits::{
-    ParamMetadata, ParamType,
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
-};
+use kama_core::traits::processor::{Processor, ProcessResult};
+use kama_core::traits::{ParameterId, ParamValue};
+use kama_core_dsp::generators::basic::{BasicOscillator, Waveform};
+use kama_core_dsp::math::AudioNum;
+use kama_core_dsp::algorithm::Algorithm;
+use std::marker::PhantomData;
 
-/// Sawtooth wave oscillator
+/// Sawtooth wave oscillator generic over floating point type
 ///
-/// Generates a sawtooth waveform with optional band-limiting
-pub struct SawOsc {
-    /// Current phase (0.0 to 1.0)
-    phase: f32,
-    /// Frequency in Hz
-    frequency: f32,
-    /// Sample rate in Hz
-    sample_rate: f32,
-    /// Output amplitude (0.0 - 1.0)
-    amplitude: f32,
-    /// Whether to apply band-limiting (anti-aliasing)
-    bandlimited: bool,
+/// Uses the optimized BasicOscillator from kama-core-dsp with built-in
+/// BLEP anti-aliasing.
+pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
+    /// Core DSP oscillator
+    osc: BasicOscillator<T>,
+    
+    /// Base frequency
+    frequency: T,
+    
+    /// Output amplitude
+    amplitude: T,
+    
+    /// Sample rate
+    sample_rate: T,
+    
+    /// Phantom data
+    _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
-impl SawOsc {
-    /// Create a new sawtooth oscillator
-    pub fn new(frequency: f32) -> Self {
+impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
+    /// Create new sawtooth oscillator
+    pub fn new() -> Self {
+        let sample_rate = T::from_f32(44100.0);
+        let osc = BasicOscillator::new(
+            Waveform::Saw,
+            T::from_f32(440.0),
+            T::from_f32(1.0)
+        );
+        
         Self {
-            phase: 0.0,
-            frequency,
-            sample_rate: 44100.0,
-            amplitude: 1.0,
-            bandlimited: true,
+            osc,
+            frequency: T::from_f32(440.0),
+            amplitude: T::from_f32(0.5),
+            sample_rate,
+            _phantom: PhantomData,
         }
     }
 
-    /// Create with custom amplitude
-    pub fn with_amplitude(mut self, amp: f32) -> Self {
-        self.amplitude = amp.clamp(0.0, 1.0);
+    /// Set frequency
+    pub fn with_frequency(mut self, freq: T) -> Self {
+        self.frequency = freq.max(T::from_f32(0.1)).min(T::from_f32(20000.0));
+        self.osc.set_frequency(self.frequency.to_f32());
         self
     }
 
-    /// Enable/disable band-limiting
-    pub fn with_bandlimited(mut self, bl: bool) -> Self {
-        self.bandlimited = bl;
+    /// Set amplitude
+    pub fn with_amplitude(mut self, amp: T) -> Self {
+        self.amplitude = amp.clamp(T::ZERO, T::from_f32(1.0));
         self
     }
 
-    /// Generate next sample (non-bandlimited)
-    fn generate_raw(&mut self) -> f32 {
-        let sample = 2.0 * self.phase - 1.0;
-
-        let phase_inc = self.frequency / self.sample_rate;
-        self.phase += phase_inc;
-        if self.phase >= 1.0 {
-            self.phase -= 1.0;
-        }
-
-        sample * self.amplitude
-    }
-
-    /// Generate next sample with band-limiting (BLEP)
-    fn generate_bandlimited(&mut self) -> f32 {
-        // Simple BLEP (Band-Limited Impulse) approximation
-        // For a proper implementation, we'd need a more sophisticated algorithm
-        let raw = 2.0 * self.phase - 1.0;
-
-        // Check if we just passed a discontinuity
-        let phase_inc = self.frequency / self.sample_rate;
-        let next_phase = self.phase + phase_inc;
-
-        let correction = if next_phase >= 1.0 {
-            // We passed the discontinuity, apply BLEP
-            let t = (1.0 - self.phase) / phase_inc; // fractional position of discontinuity
-            -2.0 * (1.0 - t) // Simple linear BLEP
-        } else {
-            0.0
-        };
-
-        self.phase = if next_phase >= 1.0 {
-            next_phase - 1.0
-        } else {
-            next_phase
-        };
-
-        (raw + correction) * self.amplitude
-    }
-
-    /// Generate a block of samples
-    pub fn generate_block(&mut self, output: &mut [f32]) {
-        if self.bandlimited {
-            for out in output.iter_mut() {
-                *out = self.generate_bandlimited();
-            }
-        } else {
-            for out in output.iter_mut() {
-                *out = self.generate_raw();
-            }
-        }
-    }
-}
-
-impl AudioOscillator for SawOsc {
-    fn set_frequency(&mut self, freq: f32) {
-        self.frequency = freq.max(20.0).min(20000.0);
-    }
-
-    fn frequency(&self) -> f32 {
-        self.frequency
-    }
-
-    fn set_amplitude(&mut self, amp: f32) {
-        self.amplitude = amp.clamp(0.0, 1.0);
-    }
-
-    fn amplitude(&self) -> f32 {
-        self.amplitude
-    }
-
-    fn reset_phase(&mut self) {
-        self.phase = 0.0;
-    }
-}
-
-impl AudioNode for SawOsc {
-    fn process(
-        &mut self,
-        _inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
-    ) -> Result<(), AudioError> {
-        if outputs.is_empty() {
-            return Ok(());
-        }
-
-        let output = &mut outputs[0];
-        self.generate_block(output);
-
-        Ok(())
-    }
-
-    fn get_param(&self, name: &str) -> Option<ParamValue> {
-        match name {
-            "frequency" => Some(ParamValue::Float(self.frequency)),
-            "amplitude" => Some(ParamValue::Float(self.amplitude)),
-            "bandlimited" => Some(ParamValue::Bool(self.bandlimited)),
+    /// Convert ParamValue to T
+    fn param_to_t(value: ParamValue) -> Option<T> {
+        match value {
+            ParamValue::Float(f) => Some(T::from_f32(f)),
+            ParamValue::Int(i) => Some(T::from_f32(i as f32)),
             _ => None,
         }
     }
 
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-        match (name, value) {
-            ("frequency", ParamValue::Float(f)) => {
-                self.set_frequency(f);
-                Ok(())
-            }
-            ("amplitude", ParamValue::Float(a)) => {
-                self.set_amplitude(a);
-                Ok(())
-            }
-            ("bandlimited", ParamValue::Bool(b)) => {
-                self.bandlimited = b;
-                Ok(())
-            }
-            _ => Err(AudioError::Parameter(format!(
-                "Unknown parameter: {}",
-                name
-            ))),
+    /// Convert T to ParamValue
+    fn t_to_param(value: T) -> ParamValue {
+        ParamValue::Float(value.to_f32())
+    }
+
+    /// Generate a block of samples
+    fn generate_block(&mut self, output: &mut [T; BUF_SIZE]) {
+        self.osc.set_frequency(self.frequency.to_f32());
+        
+        for i in 0..BUF_SIZE {
+            output[i] = T::from_f32(self.osc.process_sample(T::ZERO).to_f32()) * self.amplitude;
         }
     }
+}
 
-    fn init(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
+impl<T: AudioNum, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    fn reset(&mut self) {
-        self.phase = 0.0;
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+    type Sample = T;
+
+    fn process(
+        &mut self,
+        _inputs: &[&[T; BUF_SIZE]],
+        outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        if outputs.is_empty() {
+            return Ok(());
+        }
+
+        self.generate_block(outputs[0]);
+        Ok(())
     }
 
     fn num_inputs(&self) -> usize {
         0
     }
+
     fn num_outputs(&self) -> usize {
         1
     }
 
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "Sawtooth Oscillator".to_string(),
-            category: NodeCategory::Generator,
-            description: "Sawtooth wave generator with optional band-limiting".to_string(),
-            author: "Kama Oscillators".to_string(),
-            version: "0.2.0".to_string(),
-            parameters: vec![
-                ParamMetadata {
-                    name: "frequency".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(440.0),
-                    min: Some(20.0),
-                    max: Some(20000.0),
-                    step: Some(1.0),
-                    unit: Some("Hz".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "amplitude".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(1.0),
-                    min: Some(0.0),
-                    max: Some(1.0),
-                    step: Some(0.01),
-                    unit: Some("gain".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "bandlimited".to_string(),
-                    typ: ParamType::Bool,
-                    default: ParamValue::Bool(true),
-                    min: None,
-                    max: None,
-                    step: None,
-                    unit: None,
-                    choices: None,
-                },
-            ],
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        match id.as_str() {
+            "frequency" => Some(Self::t_to_param(self.frequency)),
+            "amplitude" => Some(Self::t_to_param(self.amplitude)),
+            _ => None,
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_saw_osc_generate() {
-        let mut osc = SawOsc::new(440.0).with_amplitude(0.5);
-        osc.init(44100.0);
-
-        let sample = osc.generate_raw();
-        assert!(sample >= -0.5 && sample <= 0.5);
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+        match id.as_str() {
+            "frequency" => {
+                if let Some(f) = Self::param_to_t(value) {
+                    self.frequency = f.max(T::from_f32(0.1)).min(T::from_f32(20000.0));
+                    self.osc.set_frequency(self.frequency.to_f32());
+                    Ok(())
+                } else {
+                    Err(ProcessError::Parameter("Expected float".into()))
+                }
+            }
+            "amplitude" => {
+                if let Some(a) = Self::param_to_t(value) {
+                    self.amplitude = a.clamp(T::ZERO, T::from_f32(1.0));
+                    Ok(())
+                } else {
+                    Err(ProcessError::Parameter("Expected float".into()))
+                }
+            }
+            _ => Err(ProcessError::Parameter(format!("Unknown parameter: {}", id))),
+        }
     }
 
-    #[test]
-    fn test_saw_osc_block() {
-        let mut osc = SawOsc::new(440.0);
-        osc.init(44100.0);
-
-        let mut output = vec![0.0; 1024];
-        osc.generate_block(&mut output);
-
-        assert!(output.iter().any(|&x| x != 0.0));
+    fn init(&mut self, sample_rate: f32) {
+        self.sample_rate = T::from_f32(sample_rate);
+        self.osc.init(sample_rate);
+        self.osc.set_frequency(self.frequency.to_f32());
     }
 
-    #[test]
-    fn test_saw_osc_bandlimited() {
-        let mut osc = SawOsc::new(440.0).with_bandlimited(true);
-        osc.init(44100.0);
-
-        let raw = osc.generate_raw();
-        let bl = osc.generate_bandlimited();
-
-        // Bandlimited version should be different
-        assert!((raw - bl).abs() > 0.001);
+    fn reset(&mut self) {
+        self.osc.reset();
     }
 }

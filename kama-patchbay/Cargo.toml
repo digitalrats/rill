@@ -1,0 +1,18 @@
+[package]
+name = "kama-patchbay"
+version = "0.3.0"
+edition = "2021"
+description = "The world where Automata live - control system for Kama Audio"
+license = "Apache-2.0"
+authors = ["Digital Rats / Kama Audio Team"]
+
+[dependencies]
+kama-core = { path = "../kama-core", version = "0.3.0" }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+thiserror = "1.0"
+rand = "0.8"
+log = "0.4"
+
+[dev-dependencies]
+float-cmp = "0.9"

@@ -1,23 +1,25 @@
-//! Базовые трейты экосистемы Kama Audio
+//! Core traits for the Kama Audio ecosystem
 
-mod error;
 mod node;
 mod param;
-mod port;  // новый модуль
-pub mod time;
+mod port;
 
-// Публично реэкспортируем всё из модулей
-pub use error::*;
+// Re-exports
 pub use node::*;
 pub use param::*;
 pub use port::*;
-pub use time::*;
 
-/// Прелюдия для удобного импорта основных трейтов
+// Time traits are re-exported from the time module
+pub use crate::time::{Clock, TimeProvider, SystemClock, TickInfo};
+
+/// Prelude for common trait imports
 pub mod prelude {
-    pub use super::error::AudioResult;
-    pub use super::node::{AudioNode, NodeId, NodeMetadata, NodeCategory, NodeTypeId};
-    pub use super::param::{ParamValue, ParamType, ParamMetadata};
-    pub use super::port::PortId;
-    pub use super::time::{Clock, TimeProvider, TickInfo};
+    pub use super::{
+        Source, Processor, Sink,
+        NodeId, NodeMetadata, NodeCategory, NodeTypeId,
+        ParameterId, ParamValue, ParamType, ParamRange, ParamMetadata,
+        PortId, PortType,
+        // Time traits from the time module
+        Clock, TimeProvider, SystemClock, TickInfo,
+    };
 }
