@@ -1,0 +1,536 @@
+//! # Скалярные реализации векторных операций
+//!
+//! Fallback реализации для платформ без SIMD поддержки или для отладки.
+
+use kama_core::AudioNum;
+use super::traits::*;
+
+// -----------------------------------------------------------------------------
+// Скалярные векторные типы
+// -----------------------------------------------------------------------------
+
+/// Скалярный вектор из 2 элементов
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ScalarVector2<T: AudioNum>([T; 2]);
+
+/// Скалярный вектор из 4 элементов
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ScalarVector4<T: AudioNum>([T; 4]);
+
+/// Скалярный вектор из 8 элементов
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ScalarVector8<T: AudioNum>([T; 8]);
+
+// -----------------------------------------------------------------------------
+// Реализация Vector для ScalarVector4
+// -----------------------------------------------------------------------------
+
+impl<T: AudioNum> Vector<T, 4> for ScalarVector4<T> {
+    fn splat(value: T) -> Self {
+        ScalarVector4([value; 4])
+    }
+    
+    fn load(slice: &[T]) -> Self {
+        let mut arr = [T::ZERO; 4];
+        arr.copy_from_slice(&slice[0..4]);
+        ScalarVector4(arr)
+    }
+    
+    fn store(&self, slice: &mut [T]) {
+        slice[0..4].copy_from_slice(&self.0);
+    }
+    
+    fn extract(&self, index: usize) -> T {
+        self.0[index]
+    }
+    
+    fn insert(&self, index: usize, value: T) -> Self {
+        let mut arr = self.0;
+        arr[index] = value;
+        ScalarVector4(arr)
+    }
+    
+    fn add(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] + other.0[i];
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn sub(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] - other.0[i];
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn mul(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] * other.0[i];
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn div(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] / other.0[i];
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn rem(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] % other.0[i];
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn neg(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = -self.0[i];
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn abs(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].abs();
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn min(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].min(other.0[i]);
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn max(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].max(other.0[i]);
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn clamp(&self, min: &Self, max: &Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].clamp(min.0[i], max.0[i]);
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn sqrt(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].sqrt();
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn exp(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].exp();
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn ln(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].ln();
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn sin(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].sin();
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn cos(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].cos();
+        }
+        ScalarVector4(arr)
+    }
+    
+    fn tan(&self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i].tan();
+        }
+        ScalarVector4(arr)
+    }
+}
+
+impl<T: AudioNum> Default for ScalarVector4<T> {
+    fn default() -> Self {
+        ScalarVector4([T::ZERO; 4])
+    }
+}
+
+// Реализации для ScalarVector2 и ScalarVector8 аналогичны (опущены для краткости)
+
+impl<T: AudioNum> Vector<T, 2> for ScalarVector2<T> {
+    fn splat(value: T) -> Self {
+        ScalarVector2([value; 2])
+    }
+    
+    fn load(slice: &[T]) -> Self {
+        let mut arr = [T::ZERO; 2];
+        arr.copy_from_slice(&slice[0..2]);
+        ScalarVector2(arr)
+    }
+    
+    fn store(&self, slice: &mut [T]) {
+        slice[0..2].copy_from_slice(&self.0);
+    }
+    
+    fn extract(&self, index: usize) -> T {
+        self.0[index]
+    }
+    
+    fn insert(&self, index: usize, value: T) -> Self {
+        let mut arr = self.0;
+        arr[index] = value;
+        ScalarVector2(arr)
+    }
+    
+    fn add(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] + other.0[i];
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn sub(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] - other.0[i];
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn mul(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] * other.0[i];
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn div(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] / other.0[i];
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn rem(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] % other.0[i];
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn neg(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = -self.0[i];
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn abs(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].abs();
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn min(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].min(other.0[i]);
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn max(&self, other: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].max(other.0[i]);
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn clamp(&self, min: &Self, max: &Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].clamp(min.0[i], max.0[i]);
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn sqrt(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].sqrt();
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn exp(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].exp();
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn ln(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].ln();
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn sin(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].sin();
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn cos(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].cos();
+        }
+        ScalarVector2(arr)
+    }
+    
+    fn tan(&self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i].tan();
+        }
+        ScalarVector2(arr)
+    }
+}
+
+impl<T: AudioNum> Default for ScalarVector2<T> {
+    fn default() -> Self {
+        ScalarVector2([T::ZERO; 2])
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Реализация операторов
+// -----------------------------------------------------------------------------
+
+use std::ops::{Add, Sub, Mul, Div, Rem, Neg};
+
+impl<T: AudioNum> Add for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn add(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] + rhs.0[i];
+        }
+        ScalarVector4(arr)
+    }
+}
+
+impl<T: AudioNum> Sub for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn sub(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] - rhs.0[i];
+        }
+        ScalarVector4(arr)
+    }
+}
+
+impl<T: AudioNum> Mul for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn mul(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] * rhs.0[i];
+        }
+        ScalarVector4(arr)
+    }
+}
+
+impl<T: AudioNum> Div for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn div(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] / rhs.0[i];
+        }
+        ScalarVector4(arr)
+    }
+}
+
+impl<T: AudioNum> Rem for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn rem(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = self.0[i] % rhs.0[i];
+        }
+        ScalarVector4(arr)
+    }
+}
+
+impl<T: AudioNum> Neg for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn neg(self) -> Self {
+        let mut arr = [T::ZERO; 4];
+        for i in 0..4 {
+            arr[i] = -self.0[i];
+        }
+        ScalarVector4(arr)
+    }
+}
+
+impl<T: AudioNum> Add for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn add(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] + rhs.0[i];
+        }
+        ScalarVector2(arr)
+    }
+}
+
+impl<T: AudioNum> Sub for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn sub(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] - rhs.0[i];
+        }
+        ScalarVector2(arr)
+    }
+}
+
+impl<T: AudioNum> Mul for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn mul(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] * rhs.0[i];
+        }
+        ScalarVector2(arr)
+    }
+}
+
+impl<T: AudioNum> Div for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn div(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] / rhs.0[i];
+        }
+        ScalarVector2(arr)
+    }
+}
+
+impl<T: AudioNum> Rem for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn rem(self, rhs: Self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = self.0[i] % rhs.0[i];
+        }
+        ScalarVector2(arr)
+    }
+}
+
+impl<T: AudioNum> Neg for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn neg(self) -> Self {
+        let mut arr = [T::ZERO; 2];
+        for i in 0..2 {
+            arr[i] = -self.0[i];
+        }
+        ScalarVector2(arr)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Тесты
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_scalar_vector4_basic() {
+        let a = ScalarVector4::<f32>::splat(2.0);
+        let b = ScalarVector4::<f32>::splat(3.0);
+        let c = a + b;
+        assert_eq!(c.extract(0), 5.0);
+        assert_eq!(c.extract(3), 5.0);
+    }
+    
+    #[test]
+    fn test_scalar_vector4_math() {
+        let a = ScalarVector4::<f32>::splat(0.0);
+        let b = a.sin();
+        assert_eq!(b.extract(0), 0.0);
+        
+        let c = ScalarVector4::<f32>::splat(1.0);
+        let d = c.sqrt();
+        assert_eq!(d.extract(0), 1.0);
+    }
+    
+    #[test]
+    fn test_scalar_vector2() {
+        let a = ScalarVector2::<f64>::splat(5.0);
+        let b = ScalarVector2::<f64>::splat(2.0);
+        let c = a * b;
+        assert_eq!(c.extract(0), 10.0);
+        assert_eq!(c.extract(1), 10.0);
+    }
+}

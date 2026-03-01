@@ -20,6 +20,7 @@ pub mod filters;
 pub mod context;
 pub mod generators;
 pub mod math;
+pub mod vector;
 
 #[macro_use]
 pub mod macros;
@@ -35,5 +36,6 @@ pub mod prelude {
     pub use crate::algorithm::Algorithm;
     pub use crate::context::DspContext;
     pub use crate::math::*;
+    pub use crate::vector::prelude::*;
     //pub use crate::macros::prelude::*;
 }
