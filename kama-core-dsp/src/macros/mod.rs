@@ -39,4 +39,15 @@
 //! ```
 
 #[macro_use]
-mod algorithm;
+mod simple;
+#[macro_use]
+mod parameterized;
+#[macro_use]
+mod filter;
+#[macro_use]
+mod effect;
+#[macro_use]
+mod generator;
+
+/// Prelude для удобного импорта макросов
+pub mod prelude;

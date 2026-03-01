@@ -39,5 +39,5 @@ pub mod prelude {
     pub use crate::generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
     pub use crate::math::*;
     pub use crate::vector::prelude::*;
-    //pub use crate::macros::prelude::*;
+    pub use crate::macros::prelude::*;
 }
