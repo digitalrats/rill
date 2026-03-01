@@ -13,5 +13,3 @@ pub mod sync;
 
 // Re-export common types for convenience
 pub use audio::*;
-pub use control::*;
-pub use sync::*;

@@ -8,6 +8,7 @@ description = "Oscillators for Kama Audio - using kama-core-dsp algorithms"
 kama-core = { path = "../kama-core" }
 kama-core-dsp = { path = "../kama-core-dsp" }
 thiserror = "1.0"
+rand = "0.8"
 
 [dev-dependencies]
 float-cmp = "0.9"

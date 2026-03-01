@@ -1,63 +1,56 @@
-//! Basic oscillator example with new graph architecture
-
-use kama_core::traits::processor::Processor;
-use kama_core::traits::{NodeId, PortId};
-use kama_graph::prelude::*;
-use kama_oscillators::prelude::*;
+//! Basic oscillator example
+use kama_core::traits::Processor;
+use kama_oscillators::{SineOsc, SawOsc, NoiseOsc, NoiseType};
 
 const BLOCK_SIZE: usize = 64;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Kama Oscillators Example ===\n");
 
-    // Create graph
     let sample_rate = 44100.0;
-    let mut graph = AudioGraph::<BLOCK_SIZE>::new(sample_rate);
 
     // Create oscillators
-    let sine = SineOsc::<BLOCK_SIZE>::new()
+    let mut sine = SineOsc::<f32, BLOCK_SIZE>::new()
         .with_frequency(440.0)
         .with_amplitude(0.3);
-    
-    let saw = SawOsc::<BLOCK_SIZE>::new()
-        .with_frequency(440.0)
-        .with_amplitude(0.3)
-        .with_bandlimited(true);
-    
-    let lfo = LFO::<BLOCK_SIZE>::new()
-        .with_frequency(5.0)
-        .with_waveform(LfoWaveform::Triangle)
-        .with_range(0.0, 1.0);
 
-    // Add to graph
-    let sine_id = graph.add_processor(Box::new(sine));
-    let saw_id = graph.add_processor(Box::new(saw));
-    let lfo_id = graph.add_processor(Box::new(lfo));
+    let mut saw = SawOsc::<f32, BLOCK_SIZE>::new()
+        .with_frequency(220.0)
+        .with_amplitude(0.2);
 
-    println!("Added processors:");
-    println!("  Sine: {:?}", sine_id);
-    println!("  Saw: {:?}", saw_id);
-    println!("  LFO: {:?}", lfo_id);
+    let mut noise = NoiseOsc::<BLOCK_SIZE>::new()
+        .with_type(NoiseType::Pink)
+        .with_amplitude(0.1);
 
-    // Configure as producer (for testing)
-    let sine_out = PortId::audio_out(sine_id, 0);
-    graph.configure_as_producer(vec![sine_out])?;
-    graph.start()?;
+    // Initialize with sample rate
+    sine.init(sample_rate);
+    saw.init(sample_rate);
+    noise.init(sample_rate);
 
-    println!("\nGenerating 1 second of audio...");
+    // Prepare buffers
+    let mut sine_output = [0.0; BLOCK_SIZE];
+    let mut saw_output = [0.0; BLOCK_SIZE];
+    let mut noise_output = [0.0; BLOCK_SIZE];
 
-    // Produce 43 blocks (approx 1 second at 44.1kHz with BLOCK_SIZE=64)
-    for i in 0..43 {
-        let output = graph.produce_next(sine_out)?;
-        
-        // Print first few samples of first block
-        if i == 0 {
-            println!("First block samples: {:?}", &output[..5]);
-        }
-    }
+    let mut sine_outputs = [&mut sine_output];
+    let mut saw_outputs = [&mut saw_output];
+    let mut noise_outputs = [&mut noise_output];
 
-    println!("\nStatistics: {:?}", graph.stats());
+    // Process one block each
+    sine.process(&[], &mut sine_outputs, &[])?;
+    saw.process(&[], &mut saw_outputs, &[])?;
+    noise.process(&[], &mut noise_outputs, &[])?;
+
+    // Print first few samples
+    println!("Sine first 5 samples: {:?}", &sine_output[..5]);
+    println!("Saw first 5 samples: {:?}", &saw_output[..5]);
+    println!("Noise first 5 samples: {:?}", &noise_output[..5]);
+
+    // Verify they are not silent
+    assert!(sine_output.iter().any(|&x| x != 0.0));
+    assert!(saw_output.iter().any(|&x| x != 0.0));
+    assert!(noise_output.iter().any(|&x| x != 0.0));
+
     println!("\n✅ Example completed successfully!");
-
     Ok(())
 }

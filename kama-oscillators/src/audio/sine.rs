@@ -2,7 +2,7 @@
 
 use kama_core::traits::{Processor, ParameterId, ParamValue};
 use kama_core::{ProcessResult, ProcessError};
-use kama_core_dsp::generators::basic::{BasicOscillator, Waveform};
+use kama_core_dsp::generators::{BasicOscillator, Waveform, Generator};
 use kama_core::AudioNum;
 use kama_core_dsp::algorithm::Algorithm;
 use std::marker::PhantomData;
@@ -57,9 +57,9 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
     /// Create new sine oscillator with default settings
     pub fn new() -> Self {
         let sample_rate = T::from_f32(44100.0);
-        let mut osc = BasicOscillator::new(
+        let osc = BasicOscillator::new(
             Waveform::Sine,
-            T::from_f32(440.0),
+            440.0,
             T::from_f32(1.0)
         );
         
@@ -158,13 +158,12 @@ impl<T: AudioNum, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<BUF_SIZE> for SineOsc<T, BUF_SIZE> {
-    type Sample = T;
-
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn process(
         &mut self,
         inputs: &[&[T; BUF_SIZE]],
         outputs: &mut [&mut [T; BUF_SIZE]],
+        _control: &[f32],
     ) -> ProcessResult<()> {
         if outputs.is_empty() {
             return Ok(());
@@ -179,11 +178,11 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<BUF_SIZE> for SineOsc<T, BUF_
         Ok(())
     }
 
-    fn num_inputs(&self) -> usize {
+    fn num_audio_inputs(&self) -> usize {
         if self.use_fm { 1 } else { 0 }
     }
 
-    fn num_outputs(&self) -> usize {
+    fn num_audio_outputs(&self) -> usize {
         1
     }
 
@@ -299,7 +298,7 @@ mod tests {
         let mut output = [0.0; 64];
         let mut outputs = [&mut output];
         
-        osc.process(&[], &mut outputs).unwrap();
+        osc.process(&[], &mut outputs, &[]).unwrap();
         
         // First sample should be near 0 (sine with phase 0)
         assert!(approx_eq!(f32, output[0], 0.0, epsilon = 1e-4));
@@ -321,7 +320,7 @@ mod tests {
         let mut output = [0.0; 64];
         let mut outputs = [&mut output];
         
-        osc.process(&[], &mut outputs).unwrap();
+        osc.process(&[], &mut outputs, &[]).unwrap();
         
         // First sample should be near 0
         assert!((output[0]).abs() < 1e-10);
@@ -345,7 +344,7 @@ mod tests {
         let inputs = [&fm_input];
         let mut outputs = [&mut output];
         
-        osc.process(&inputs, &mut outputs).unwrap();
+        osc.process(&inputs, &mut outputs, &[]).unwrap();
         
         // Should produce valid output
         assert!(output.iter().any(|&x| x != 0.0));

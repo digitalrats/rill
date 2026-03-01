@@ -149,11 +149,12 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Processor<BUF_SIZE> for NoiseOsc<BUF_SIZE> {
+impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn process(
         &mut self,
         _inputs: &[&[f32; BUF_SIZE]],
         outputs: &mut [&mut [f32; BUF_SIZE]],
+        _control: &[f32],
     ) -> ProcessResult<()> {
         if outputs.is_empty() {
             return Ok(());
@@ -163,11 +164,11 @@ impl<const BUF_SIZE: usize> Processor<BUF_SIZE> for NoiseOsc<BUF_SIZE> {
         Ok(())
     }
 
-    fn num_inputs(&self) -> usize {
+    fn num_audio_inputs(&self) -> usize {
         0
     }
 
-    fn num_outputs(&self) -> usize {
+    fn num_audio_outputs(&self) -> usize {
         1
     }
 
@@ -245,7 +246,7 @@ mod tests {
         let mut output = [0.0; 64];
         let mut outputs = [&mut output];
         
-        noise.process(&[], &mut outputs).unwrap();
+        noise.process(&[], &mut outputs, &[]).unwrap();
         
         // Should have some non-zero samples
         assert!(output.iter().any(|&x| x != 0.0));
@@ -269,7 +270,7 @@ mod tests {
             let mut output = [0.0; 64];
             let mut outputs = [&mut output];
             
-            noise.process(&[], &mut outputs).unwrap();
+            noise.process(&[], &mut outputs, &[]).unwrap();
             
             // All types should produce valid output
             assert!(output.iter().any(|&x| x != 0.0));

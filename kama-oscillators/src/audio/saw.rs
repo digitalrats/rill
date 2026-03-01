@@ -2,7 +2,7 @@
 
 use kama_core::traits::{Processor, ParameterId, ParamValue};
 use kama_core::{ProcessResult, ProcessError};
-use kama_core_dsp::generators::basic::{BasicOscillator, Waveform};
+use kama_core_dsp::generators::{BasicOscillator, Waveform, Generator};
 use kama_core::AudioNum;
 use kama_core_dsp::algorithm::Algorithm;
 use std::marker::PhantomData;
@@ -34,7 +34,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
         let sample_rate = T::from_f32(44100.0);
         let osc = BasicOscillator::new(
             Waveform::Saw,
-            T::from_f32(440.0),
+            440.0,
             T::from_f32(1.0)
         );
         
@@ -90,13 +90,12 @@ impl<T: AudioNum, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<BUF_SIZE> for SawOsc<T, BUF_SIZE> {
-    type Sample = T;
-
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
     fn process(
         &mut self,
         _inputs: &[&[T; BUF_SIZE]],
         outputs: &mut [&mut [T; BUF_SIZE]],
+        _control: &[f32],
     ) -> ProcessResult<()> {
         if outputs.is_empty() {
             return Ok(());
@@ -106,11 +105,11 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<BUF_SIZE> for SawOsc<T, BUF_S
         Ok(())
     }
 
-    fn num_inputs(&self) -> usize {
+    fn num_audio_inputs(&self) -> usize {
         0
     }
 
-    fn num_outputs(&self) -> usize {
+    fn num_audio_outputs(&self) -> usize {
         1
     }
 
