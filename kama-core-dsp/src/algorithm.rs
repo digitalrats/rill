@@ -53,6 +53,14 @@ pub trait Algorithm<T: AudioNum>: Send + Sync {
         }
     }
     
+    /// Обработка блока с использованием векторного eDSL (опционально)
+    ///
+    /// По умолчанию вызывает `process_block`. Алгоритмы могут переопределить этот метод
+    /// для использования векторных операций через `vec_map!` или другие векторные примитивы.
+    fn process_block_vector(&mut self, input: &[T], output: &mut [T]) {
+        self.process_block(input, output);
+    }
+    
     /// Получить метаданные алгоритма
     fn metadata(&self) -> AlgorithmMetadata;
     

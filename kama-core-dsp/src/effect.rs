@@ -19,6 +19,11 @@ pub trait Effect<T: AudioNum>: ParameterizedAlgorithm<T> {
     fn process_stereo(&mut self, left: T, right: T) -> (T, T) {
         (self.process_sample(left), self.process_sample(right))
     }
+    
+    /// Обработать блок с использованием векторного eDSL (опционально)
+    fn process_block_vector(&mut self, input: &[T], output: &mut [T]) {
+        self.process_block(input, output);
+    }
 }
 
 /// Эффект с возможностью bypass

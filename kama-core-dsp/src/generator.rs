@@ -10,6 +10,18 @@ pub trait Generator<T: AudioNum>: Algorithm<T> {
         self.process_sample(T::ZERO)
     }
     
+    /// Генерировать блок семплов (по умолчанию использует generate)
+    fn generate_block(&mut self, output: &mut [T]) {
+        for out in output.iter_mut() {
+            *out = self.generate();
+        }
+    }
+    
+    /// Генерировать блок с использованием векторного eDSL (опционально)
+    fn generate_block_vector(&mut self, output: &mut [T]) {
+        self.generate_block(output);
+    }
+    
     /// Сбросить фазу
     fn reset_phase(&mut self);
     
