@@ -3,7 +3,7 @@
 //! Run with: cargo run --example basic_filter
 
 use kama_core_dsp::Algorithm; // для init, reset, process_block
-use kama_digital_filters::{BiquadFilter, FilterType};
+use kama_digital_filters::{BiquadFilter, FilterType, BiquadExt};
 use kama_core_dsp::filters::FilterParams;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

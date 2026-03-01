@@ -14,10 +14,10 @@
 //! ```
 //! use kama_core_dsp::vector::prelude::*;
 //!
-//! let a = Vector4::splat(1.0);
-//! let b = Vector4::splat(2.0);
+//! let a = ScalarVector4::splat(1.0);
+//! let b = ScalarVector4::splat(2.0);
 //! let c = a + b;
-//! assert_eq!(c, Vector4::splat(3.0));
+//! assert_eq!(c, ScalarVector4::splat(3.0));
 //! ```
 //!
 //! ## Архитектура
