@@ -42,7 +42,9 @@
 //! ```
 #[macro_export]
 macro_rules! source_node {
+    // Generic version with explicit audio type
     (
+        <$type:ty>
         $(#[$struct_meta:meta])*
         $vis:vis struct $name:ident {
             params: {
@@ -132,10 +134,13 @@ macro_rules! source_node {
             }
         }
 
-        impl $crate::traits::Source<f32, { $crate::DEFAULT_BLOCK_SIZE }> for $name {
+        impl $crate::traits::Source<$type, { $crate::DEFAULT_BLOCK_SIZE }> for $name
+        where
+            $type: $crate::math::AudioNum + Send + Sync,
+        {
             fn generate(
                 &mut self,
-                outputs: &mut [&mut [f32; { $crate::DEFAULT_BLOCK_SIZE }]],
+                outputs: &mut [&mut [$type; { $crate::DEFAULT_BLOCK_SIZE }]],
                 control: &[f32],
             ) -> $crate::ProcessResult<()> {
                 if outputs.is_empty() {
@@ -145,7 +150,7 @@ macro_rules! source_node {
                 let generate_fn: fn(
                     &mut Self,
                     usize,
-                    &mut [f32; { $crate::DEFAULT_BLOCK_SIZE }],
+                    &mut [$type; { $crate::DEFAULT_BLOCK_SIZE }],
                     &[f32]
                 ) = $generate;
 
@@ -208,6 +213,21 @@ macro_rules! source_node {
                 for val in &mut self.control_values {
                     *val = 0.0;
                 }
+            }
+        }
+    };
+    // Backward-compatible version (defaults to f32)
+    (
+        $(#[$struct_meta:meta])*
+        $vis:vis struct $name:ident {
+            $($rest:tt)*
+        }
+    ) => {
+        $crate::source_node! {
+            <f32>
+            $(#[$struct_meta])*
+            $vis struct $name {
+                $($rest)*
             }
         }
     };

@@ -1,21 +1,21 @@
 //! Real-time audio graph with proper separation of audio and control
+#![allow(unused)]
 
 use kama_core::buffer::pipe::PipeBuffer;
-use kama_core::traits::processor::{Processor, ProcessResult};
-use kama_core::traits::{NodeId, ParameterId, ParamValue, PortId, PortType};
-use kama_core::queues::{CommandEnum, CommandQueue, SetParameter, TelemetryQueue, MicroControlObserver};
+use kama_core::traits::{NodeId, PortId, PortType};
+use kama_core::traits::Processor;
+use kama_core::{CommandEnum, CommandQueue, TelemetryQueue, MicroControlObserver};
 use kama_core::time::TickInfo;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicF32, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 /// Control value (single sample, atomically updated)
-type ControlValue = Arc<AtomicF32>;
+type ControlValue = Arc<AtomicU32>;
 
 pub struct AudioGraph<const BUF_SIZE: usize> {
     // Core audio processing
-    audio_nodes: HashMap<NodeId, Box<dyn Processor<BUF_SIZE, Sample = f32>>>,
+    audio_nodes: HashMap<NodeId, Box<dyn Processor<f32, BUF_SIZE>>>,
     audio_connections: HashMap<PortId, PipeBuffer<f32, BUF_SIZE>>,
     audio_input_map: HashMap<PortId, PortId>,
     

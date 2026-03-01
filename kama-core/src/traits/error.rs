@@ -1,9 +1,13 @@
 //! # Error Types for Kama Core
 //!
 //! This module defines the error types used throughout the Kama Audio ecosystem.
+#![allow(dead_code)]
 
 use thiserror::Error;
 use std::fmt;
+
+/// Alias for `ProcessError` used in trait definitions.
+pub type AudioError = ProcessError;
 
 // ============================================================================
 // Core Process Error
@@ -258,9 +262,9 @@ pub enum ParameterError {
     #[error("Parameter type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch {
         /// Expected parameter type
-        expected: super::traits::ParamType,
+        expected: crate::traits::ParamType,
         /// Actual parameter type
-        got: super::traits::ParamType,
+        got: crate::traits::ParamType,
     },
     
     /// Value out of range
@@ -293,7 +297,7 @@ impl ParameterError {
     }
     
     /// Create a new type mismatch error
-    pub fn type_mismatch(expected: super::traits::ParamType, got: super::traits::ParamType) -> Self {
+    pub fn type_mismatch(expected: crate::traits::ParamType, got: crate::traits::ParamType) -> Self {
         Self::TypeMismatch { expected, got }
     }
     

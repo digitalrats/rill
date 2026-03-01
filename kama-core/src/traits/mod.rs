@@ -3,11 +3,13 @@
 mod node;
 mod param;
 mod port;
+mod error;
 
 // Re-exports
 pub use node::*;
 pub use param::*;
 pub use port::*;
+pub use error::AudioError;
 
 // Time traits are re-exported from the time module
 pub use crate::time::{Clock, TimeProvider, SystemClock, TickInfo};

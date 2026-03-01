@@ -1,5 +1,5 @@
 // kama-core/src/traits/source.rs
-use crate::traits::AudioError;
+use crate::ProcessError as AudioError;
 
 /// Активный источник сигнала.
 /// Заполняет предоставленный выходной буфер новыми семплами.

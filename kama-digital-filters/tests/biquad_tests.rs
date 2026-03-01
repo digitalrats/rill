@@ -1,9 +1,9 @@
 //! Integration tests for BiquadFilter
 
 use float_cmp::approx_eq;
-use kama_core::traits::AudioNode; // для init(), reset(), process()
+use kama_core_dsp::Algorithm; // для init(), reset(), process_sample()
 use kama_digital_filters::{BiquadFilter, FilterType};
-use kama_dsp_common::filter::Filter; // для cutoff(), q(), gain_db(), etc.
+use kama_core_dsp::filters::{Filter, FilterParams}; // для cutoff(), q(), gain_db(), etc.
 
 /// Test low-pass filter frequency response
 #[test]
@@ -12,7 +12,12 @@ fn test_biquad_lowpass_response() {
 
     let sample_rate = 44100.0;
     let cutoff = 1000.0;
-    let mut filter = BiquadFilter::new(FilterType::LowPass, cutoff, 0.707, 0.0);
+    let mut filter = BiquadFilter::new(FilterParams {
+        filter_type: FilterType::LowPass,
+        cutoff,
+        q: 0.707,
+        gain_db: 0.0,
+    });
     filter.init(sample_rate);
 
     let test_freqs = [100.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0];
@@ -76,7 +81,12 @@ fn test_biquad_highpass_response() {
 
     let sample_rate = 44100.0;
     let cutoff = 1000.0;
-    let mut filter = BiquadFilter::new(FilterType::HighPass, cutoff, 0.707, 0.0);
+    let mut filter = BiquadFilter::new(FilterParams {
+        filter_type: FilterType::HighPass,
+        cutoff,
+        q: 0.707,
+        gain_db: 0.0,
+    });
     filter.init(sample_rate);
 
     let test_freqs = [100.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0];

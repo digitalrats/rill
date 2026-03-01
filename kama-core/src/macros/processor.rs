@@ -39,7 +39,9 @@
 //! ```
 #[macro_export]
 macro_rules! processor_node {
+    // Generic version with explicit audio type
     (
+        <$type:ty>
         $(#[$struct_meta:meta])*
         $vis:vis struct $name:ident {
             params: {
@@ -63,6 +65,7 @@ macro_rules! processor_node {
             inputs: $num_inputs:expr,
             outputs: $num_outputs:expr,
             process: $process:expr
+            $(, after_param_change: $after_param_change:expr)?
         }
     ) => {
         $(#[$struct_meta])*
@@ -85,13 +88,16 @@ macro_rules! processor_node {
             )*
             
             /// Sample rate
-            pub sample_rate: f32,
+            pub sample_rate: $type,
             
             /// Control input values (updated from graph)
-            pub control_values: Vec<f32>,
+            pub control_values: Vec<$type>,
             
             /// Parameter IDs for automation
             pub param_ids: std::collections::HashMap<String, $crate::traits::ParameterId>,
+
+            /// Optional hook called after a parameter changes
+            pub after_param_change_closure: fn(&mut Self, &str, $type),
         }
 
         impl $name {
@@ -109,11 +115,12 @@ macro_rules! processor_node {
                 
                 Self {
                     $($param_name),*,
-                    $($($control_name: $control_default),*)?,
+                    $($($control_name: $control_default,)*)?
                     $($state_name: $state_default),*,
                     sample_rate: 44100.0,
                     control_values: vec![0.0; control_count],
                     param_ids,
+                    after_param_change_closure: $crate::processor_node!(@after_param_change_inner $($after_param_change)?),
                 }
             }
             
@@ -123,19 +130,24 @@ macro_rules! processor_node {
             }
             
             /// Update control input value
-            pub fn set_control(&mut self, index: usize, value: f32) {
+            pub fn set_control(&mut self, index: usize, value: $type) {
                 if index < self.control_values.len() {
                     self.control_values[index] = value;
                 }
             }
+
+
         }
 
-        impl $crate::traits::Processor<f32, { $crate::DEFAULT_BLOCK_SIZE }> for $name {
+        impl $crate::traits::Processor<$type, { $crate::DEFAULT_BLOCK_SIZE }> for $name
+        where
+            $type: $crate::math::AudioNum + Send + Sync,
+        {
             fn process(
                 &mut self,
-                inputs: &[&[f32; { $crate::DEFAULT_BLOCK_SIZE }]],
-                outputs: &mut [&mut [f32; { $crate::DEFAULT_BLOCK_SIZE }]],
-                control: &[f32],
+                inputs: &[&[$type; { $crate::DEFAULT_BLOCK_SIZE }]],
+                outputs: &mut [&mut [$type; { $crate::DEFAULT_BLOCK_SIZE }]],
+                control: &[$type],
             ) -> $crate::ProcessResult<()> {
                 let num_in = inputs.len().min($num_inputs);
                 let num_out = outputs.len().min($num_outputs);
@@ -147,9 +159,9 @@ macro_rules! processor_node {
                 let process_fn: fn(
                     &mut Self,
                     usize,
-                    &[f32; { $crate::DEFAULT_BLOCK_SIZE }],
-                    &mut [f32; { $crate::DEFAULT_BLOCK_SIZE }],
-                    &[f32]
+                    &[$type; { $crate::DEFAULT_BLOCK_SIZE }],
+                    &mut [$type; { $crate::DEFAULT_BLOCK_SIZE }],
+                    &[$type]
                 ) = $process;
 
                 for ch in 0..num_out.min(num_in) {
@@ -193,6 +205,7 @@ macro_rules! processor_node {
                     $(
                         (stringify!($param_name), $crate::traits::ParamValue::Float(v)) => {
                             self.$param_name = v;
+                            (self.after_param_change_closure)(self, stringify!($param_name), v);
                             Ok(())
                         }
                     )*
@@ -202,7 +215,7 @@ macro_rules! processor_node {
                 }
             }
 
-            fn init(&mut self, sample_rate: f32) {
+            fn init(&mut self, sample_rate: $type) {
                 self.sample_rate = sample_rate;
             }
 
@@ -211,10 +224,33 @@ macro_rules! processor_node {
                     self.$state_name = $state_default;
                 )*
                 for val in &mut self.control_values {
-                    *val = 0.0;
+                    *val = <$type as $crate::math::AudioNum>::ZERO;
                 }
             }
         }
+    };
+    // Backward-compatible version (defaults to f32)
+    (
+        $(#[$struct_meta:meta])*
+        $vis:vis struct $name:ident {
+            $($rest:tt)*
+        }
+    ) => {
+        $crate::processor_node! {
+            <f32>
+            $(#[$struct_meta])*
+            $vis struct $name {
+                $($rest)*
+            }
+        }
+    };
+
+    // Internal rule to generate default after_param_change closure
+    (@after_param_change_inner) => {
+        |_this: &mut Self, _param: &str, _value: _| {}
+    };
+    (@after_param_change_inner $expr:expr) => {
+        $expr
     };
 }
 

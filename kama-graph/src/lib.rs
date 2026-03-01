@@ -83,7 +83,7 @@ pub const MIN_BLOCK_SIZE: usize = 16;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kama_core::traits::processor::{Processor, ProcessResult};
+    use kama_core::traits::{Processor, ProcessResult};
 
     // Test processor for module-level tests
     struct TestProcessor<const BUF_SIZE: usize> {

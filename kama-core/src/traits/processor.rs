@@ -1,5 +1,5 @@
 // kama-core/src/traits/processor.rs
-use crate::traits::{AudioError, ParameterId, PortId, ParamValue};
+use crate::{ProcessError as AudioError, traits::{ParameterId, PortId, ParamValue, PortType}};
 
 /// Пассивный процессор аудио.
 /// Получает входные буферы и заполняет выходные.

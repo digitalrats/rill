@@ -161,6 +161,13 @@ macro_rules! filter_algorithm {
                 process_fn(self, input)
             }
             
+            fn process_block(&mut self, input: &[T], output: &mut [T]) {
+                let len = input.len().min(output.len());
+                for i in 0..len {
+                    output[i] = self.process_sample(input[i]);
+                }
+            }
+            
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {
                 $crate::algorithm::AlgorithmMetadata {
                     name: stringify!($name),

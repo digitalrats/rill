@@ -1,5 +1,5 @@
 // kama-core/src/traits/sink.rs
-use crate::traits::AudioError;
+use crate::ProcessError as AudioError;
 
 /// Активный приемник аудиоданных.
 /// Запрашивает данные у подключенного к нему процессора или графа.

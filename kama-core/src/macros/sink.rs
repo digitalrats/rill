@@ -34,7 +34,9 @@
 //! ```
 #[macro_export]
 macro_rules! sink_node {
+    // Generic version with explicit audio type
     (
+        <$type:ty>
         $(#[$struct_meta:meta])*
         $vis:vis struct $name:ident {
             params: {
@@ -124,10 +126,13 @@ macro_rules! sink_node {
             }
         }
 
-        impl $crate::traits::Sink<f32, { $crate::DEFAULT_BLOCK_SIZE }> for $name {
+        impl $crate::traits::Sink<$type, { $crate::DEFAULT_BLOCK_SIZE }> for $name
+        where
+            $type: $crate::math::AudioNum + Send + Sync,
+        {
             fn process(
                 &mut self,
-                inputs: &[&[f32; { $crate::DEFAULT_BLOCK_SIZE }]],
+                inputs: &[&[$type; { $crate::DEFAULT_BLOCK_SIZE }]],
                 control: &[f32],
             ) -> $crate::ProcessResult<()> {
                 let num_in = inputs.len().min($num_inputs);
@@ -139,7 +144,7 @@ macro_rules! sink_node {
                 let sink_fn: fn(
                     &mut Self,
                     usize,
-                    &[f32; { $crate::DEFAULT_BLOCK_SIZE }],
+                    &[$type; { $crate::DEFAULT_BLOCK_SIZE }],
                     &[f32]
                 ) = $sink;
 
@@ -200,6 +205,21 @@ macro_rules! sink_node {
                 for val in &mut self.control_values {
                     *val = 0.0;
                 }
+            }
+        }
+    };
+    // Backward-compatible version (defaults to f32)
+    (
+        $(#[$struct_meta:meta])*
+        $vis:vis struct $name:ident {
+            $($rest:tt)*
+        }
+    ) => {
+        $crate::sink_node! {
+            <f32>
+            $(#[$struct_meta])*
+            $vis struct $name {
+                $($rest)*
             }
         }
     };

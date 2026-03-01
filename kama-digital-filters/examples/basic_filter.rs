@@ -2,15 +2,21 @@
 //!
 //! Run with: cargo run --example basic_filter
 
-use kama_core::traits::AudioNode; // для init, reset, process
+use kama_core_dsp::Algorithm; // для init, reset, process_block
 use kama_digital_filters::{BiquadFilter, FilterType};
-use kama_dsp_common::filter::Filter; // для cutoff, q, gain_db
+use kama_core_dsp::filters::FilterParams;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Basic Filter Example ===\n");
 
     // Create a low-pass filter at 1000 Hz with Q=0.707
-    let mut filter = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
+    let params = FilterParams {
+        filter_type: FilterType::LowPass,
+        cutoff: 1000.0,
+        q: 0.707,
+        gain_db: 0.0,
+    };
+    let mut filter = BiquadFilter::new(params);
     filter.init(44100.0);
 
     println!("Filter type: LowPass");
@@ -32,9 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Process 440 Hz (should pass through)
     let mut output_440 = vec![0.0; num_samples];
-    let inputs = [input_440.as_slice()];
-    let mut outputs = [output_440.as_mut_slice()];
-    filter.process(&inputs, &mut outputs)?;
+    filter.process_block(&input_440, &mut output_440);
 
     let max_440: f32 = output_440
         .iter()
@@ -47,9 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Process 2000 Hz (should be attenuated)
     let mut output_2000 = vec![0.0; num_samples];
-    let inputs = [input_2000.as_slice()];
-    let mut outputs = [output_2000.as_mut_slice()];
-    filter.process(&inputs, &mut outputs)?;
+    filter.process_block(&input_2000, &mut output_2000);
 
     let max_2000: f32 = output_2000
         .iter()
