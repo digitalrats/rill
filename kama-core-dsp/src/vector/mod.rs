@@ -43,6 +43,7 @@ pub mod ops;
 pub mod math;
 // pub mod expr;  // временно отключено из-за ошибок компиляции
 pub mod scalar;
+pub mod macros;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod simd;
@@ -59,6 +60,7 @@ pub use ops::*;
 pub use math::*;
 // pub use expr::*;  // временно отключено
 pub use scalar::*;
+pub use macros::*;
 
 /// Prelude для удобного импорта
 pub mod prelude {
@@ -67,6 +69,7 @@ pub mod prelude {
     pub use crate::vector::math::*;
     // pub use crate::vector::expr::*;  // временно отключено
     pub use crate::vector::scalar::*;
+    pub use crate::vector::macros::*;
     
     // Типы векторов
     #[cfg(feature = "simd")]

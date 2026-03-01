@@ -498,6 +498,90 @@ impl<T: AudioNum> Neg for ScalarVector2<T> {
 }
 
 // -----------------------------------------------------------------------------
+// Операции со скалярами
+// -----------------------------------------------------------------------------
+
+impl<T: AudioNum> Mul<T> for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn mul(self, rhs: T) -> Self {
+        self * Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Div<T> for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn div(self, rhs: T) -> Self {
+        self / Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Add<T> for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn add(self, rhs: T) -> Self {
+        self + Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Sub<T> for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn sub(self, rhs: T) -> Self {
+        self - Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Rem<T> for ScalarVector4<T> {
+    type Output = Self;
+    
+    fn rem(self, rhs: T) -> Self {
+        self % Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Mul<T> for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn mul(self, rhs: T) -> Self {
+        self * Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Div<T> for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn div(self, rhs: T) -> Self {
+        self / Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Add<T> for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn add(self, rhs: T) -> Self {
+        self + Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Sub<T> for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn sub(self, rhs: T) -> Self {
+        self - Self::splat(rhs)
+    }
+}
+
+impl<T: AudioNum> Rem<T> for ScalarVector2<T> {
+    type Output = Self;
+    
+    fn rem(self, rhs: T) -> Self {
+        self % Self::splat(rhs)
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Тесты
 // -----------------------------------------------------------------------------
 
