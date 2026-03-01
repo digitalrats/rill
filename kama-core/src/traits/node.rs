@@ -52,15 +52,6 @@ pub enum NodeCategory {
     
     /// Sink nodes (outputs)
     Sink,
-    
-    /// Utility nodes (routing, mixing)
-    Utility,
-    
-    /// Analyzer nodes (meters, scopes)
-    Analyzer,
-    
-    /// Control nodes (MIDI, CV)
-    Control,
 }
 
 impl NodeCategory {
@@ -70,9 +61,6 @@ impl NodeCategory {
             Self::Source => "source",
             Self::Processor => "processor",
             Self::Sink => "sink",
-            Self::Utility => "utility",
-            Self::Analyzer => "analyzer",
-            Self::Control => "control",
         }
     }
 }

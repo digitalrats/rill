@@ -7,7 +7,8 @@
 //! Запуск: cargo run --example mapping_node
 
 use kama_core::prelude::*;
-use kama_core::queues::{Command, SetParameter, SignalSource, Telemetry};
+use kama_core::macros::processor_node;
+use kama_core::queues::{CommandEnum, SetParameter, SignalSource, Telemetry};
 use kama_graph::prelude::*;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -33,114 +34,83 @@ processor_node! {
     /// Этот узел создан в примере, но может быть использован
     /// в любом проекте, так как использует только публичные API.
     pub struct MyMappingNode {
-        // Параметры узла
-        params {
+        params: {
             /// Коэффициент сглаживания
             smoothing: f32 = 0.1,
             
             /// Порог для гейта
             threshold: f32 = 0.5,
-        }
-        
-        // Внутреннее состояние
-        state {
+        },
+        control_inputs: {},
+        state: {
             /// Состояние для каждого канала
             channel_states: Vec<ChannelState> = Vec::new(),
             
             /// Отправитель команд (в мир автоматов)
-            command_tx: Option<crossbeam_channel::Sender<Command>> = None,
+            command_tx: Option<crossbeam_channel::Sender<CommandEnum>> = None,
             
             /// Отправитель телеметрии (для отладки)
             telemetry_tx: Option<crossbeam_channel::Sender<Telemetry>> = None,
-        }
-    }
-    
-    ports {
-        audio_in: 2,    // 2 входных канала
-        audio_out: 0,   // не выдает аудио
-        control: 0,
-    }
-    
-    params {
-        node {
-            "smoothing" => Float(0.1) {
-                doc: "Smoothing coefficient",
-                min: 0.0,
-                max: 1.0,
-                step: 0.01,
-                unit: "coeff",
+        },
+        inputs: 2,
+        outputs: 0,
+        process: |this, channel, input, _output, _control| {
+            // Инициализируем состояние если нужно
+            if this.channel_states.len() <= channel {
+                this.channel_states.resize(channel + 1, ChannelState::default());
             }
-            "threshold" => Float(0.5) {
-                doc: "Gate threshold",
-                min: 0.0,
-                max: 1.0,
-                step: 0.01,
-                unit: "level",
-            }
-        }
-    }
-    
-    // Функция обработки
-    process_fn = |this, channel, input, _output, _control| {
-        // Инициализируем состояние если нужно
-        if this.channel_states.len() <= channel {
-            this.channel_states.resize(channel + 1, ChannelState::default());
-        }
-        
-        let state = &mut this.channel_states[channel];
-        
-        // Простой RMS детектор
-        for &sample in input {
-            state.rms_buffer.push_back(sample * sample);
-            if state.rms_buffer.len() > 256 {
-                state.rms_buffer.pop_front();
-            }
-        }
-        
-        let sum: f32 = state.rms_buffer.iter().sum();
-        let rms = (sum / state.rms_buffer.len() as f32).sqrt();
-        
-        // Сглаживание
-        let smoothed = if this.smoothing > 0.0 {
-            state.last_value = state.last_value * (1.0 - this.smoothing) + rms * this.smoothing;
-            state.last_value
-        } else {
-            rms
-        };
-        
-        // Масштабируем в 0..1
-        let output_val = smoothed.clamp(0.0, 1.0);
-        
-        // Отправляем команду в мир автоматов
-        if let Some(tx) = &this.command_tx {
-            let cmd = SetParameter::new(
-                PortId::control_in(NodeId(0), channel as u16),  // куда отправляем
-                ParameterId::new("amplitude").unwrap(),       // какой параметр
-                output_val,
-                SignalSource::Automaton(format!("mapping/ch_{}", channel)),
-            );
             
-            let _ = tx.send(CommandEnum::SetParameter(cmd));
+            let state = &mut this.channel_states[channel];
+            
+            // Простой RMS детектор
+            for &sample in input {
+                state.rms_buffer.push_back(sample * sample);
+                if state.rms_buffer.len() > 256 {
+                    state.rms_buffer.pop_front();
+                }
+            }
+            
+            let sum: f32 = state.rms_buffer.iter().sum();
+            let rms = (sum / state.rms_buffer.len() as f32).sqrt();
+            
+            // Сглаживание
+            let smoothed = if this.smoothing > 0.0 {
+                state.last_value = state.last_value * (1.0 - this.smoothing) + rms * this.smoothing;
+                state.last_value
+            } else {
+                rms
+            };
+            
+            // Масштабируем в 0..1
+            let output_val = smoothed.clamp(0.0, 1.0);
+            
+            // Отправляем команду в мир автоматов
+            if let Some(tx) = &this.command_tx {
+                let cmd = SetParameter::new(
+                    PortId::control_in(NodeId(0), channel as u16),  // куда отправляем
+                    ParameterId::new("amplitude").unwrap(),       // какой параметр
+                    output_val,
+                    SignalSource::Automaton(format!("mapping/ch_{}", channel)),
+                );
+                
+                let _ = tx.send(CommandEnum::SetParameter(cmd));
+            }
+            
+            // Отправляем телеметрию
+            if let Some(tx) = &this.telemetry_tx {
+                let _ = tx.send(Telemetry::event(
+                    format!("mapping_ch_{}", channel),
+                    "rms",
+                    vec![output_val],
+                ));
+            }
         }
-        
-        // Отправляем телеметрию
-        if let Some(tx) = &this.telemetry_tx {
-            let _ = tx.send(Telemetry::event(
-                format!("mapping_ch_{}", channel),
-                "rms",
-                vec![output_val],
-            ));
-        }
-    }
-    
-    reset_fn = |this| {
-        this.channel_states.clear();
     }
 }
 
 // Дополнительные методы для удобства
 impl MyMappingNode {
-    pub fn with_command_queue(mut self, tx: crossbeam_channel::Sender<Command>) -> Self {
+    pub fn with_command_queue(mut self, tx: crossbeam_channel::Sender<CommandEnum>) -> Self {
         self.command_tx = Some(tx);
         self
     }

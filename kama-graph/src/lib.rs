@@ -17,31 +17,97 @@
 //!
 //! ```rust
 //! use kama_graph::prelude::*;
-//! use kama_core::traits::{NodeId, PortId};
+//! use kama_core::traits::{Processor, Source, Sink, ParameterId, ParamValue};
+//! use kama_core::ProcessResult;
 //!
 //! const BLOCK_SIZE: usize = 64;
 //!
-//! // Create graph with fixed block size
+//! // Simple gain processor
+//! struct GainProcessor {
+//!     gain: f32,
+//! }
+//!
+//! impl Processor<f32, BLOCK_SIZE> for GainProcessor {
+//!     fn process(
+//!         &mut self,
+//!         inputs: &[&[f32; BLOCK_SIZE]],
+//!         outputs: &mut [&mut [f32; BLOCK_SIZE]],
+//!         _control: &[f32],
+//!     ) -> ProcessResult<()> {
+//!         for (input, output) in inputs.iter().zip(outputs.iter_mut()) {
+//!             for i in 0..BLOCK_SIZE {
+//!                 output[i] = input[i] * self.gain;
+//!             }
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     fn num_audio_inputs(&self) -> usize { 1 }
+//!     fn num_audio_outputs(&self) -> usize { 1 }
+//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
+//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
+//!     fn init(&mut self, _sample_rate: f32) {}
+//!     fn reset(&mut self) {}
+//! }
+//!
+//! // Simple source generating silence
+//! struct SilenceSource;
+//!
+//! impl Source<f32, BLOCK_SIZE> for SilenceSource {
+//!     fn generate(&mut self, outputs: &mut [&mut [f32; BLOCK_SIZE]], _control: &[f32]) -> ProcessResult<()> {
+//!         for channel in outputs.iter_mut() {
+//!             for sample in channel.iter_mut() {
+//!                 *sample = 0.0;
+//!             }
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     fn num_audio_outputs(&self) -> usize { 1 }
+//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
+//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
+//!     fn init(&mut self, _sample_rate: f32) {}
+//!     fn reset(&mut self) {}
+//! }
+//!
+//! // Simple sink that discards audio
+//! struct DiscardSink;
+//!
+//! impl Sink<f32, BLOCK_SIZE> for DiscardSink {
+//!     fn process(&mut self, _inputs: &[&[f32; BLOCK_SIZE]], _control: &[f32]) -> ProcessResult<()> {
+//!         Ok(())
+//!     }
+//!
+//!     fn num_audio_inputs(&self) -> usize { 1 }
+//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
+//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
+//!     fn init(&mut self, _sample_rate: f32) {}
+//!     fn reset(&mut self) {}
+//! }
+//!
+//! // Now build the graph
 //! let mut graph = AudioGraph::<BLOCK_SIZE>::new(44100.0);
 //!
-//! // Add processors
-//! let osc_id = graph.add_processor(Box::new(MyOscillator::new(440.0)));
-//! let filter_id = graph.add_processor(Box::new(MyFilter::lowpass(1000.0)));
+//! let source_id = graph.add_source(Box::new(SilenceSource));
+//! let gain_id = graph.add_processor(Box::new(GainProcessor { gain: 0.5 }));
+//! let sink_id = graph.add_sink(Box::new(DiscardSink));
 //!
-//! // Connect them
-//! graph.connect(
-//!     PortId::audio_out(osc_id, 0),
-//!     PortId::audio_in(filter_id, 0),
+//! // Connect source to gain
+//! graph.connect_audio(
+//!     PortId::audio_out(source_id, 0),
+//!     PortId::audio_in(gain_id, 0),
 //! )?;
 //!
-//! // Configure as Producer (for playback)
-//! let output_port = PortId::audio_out(filter_id, 0);
-//! graph.configure_as_producer(vec![output_port])?;
-//! graph.start()?;
+//! // Connect gain to sink
+//! graph.connect_audio(
+//!     PortId::audio_out(gain_id, 0),
+//!     PortId::audio_in(sink_id, 0),
+//! )?;
 //!
-//! // In audio thread:
-//! let output = graph.produce_next(output_port)?;
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! // Process one block (push model)
+//! graph.push_block()?;
+//!
+//! # Ok::<(), GraphError>(())
 //! ```
 
 #![warn(missing_docs)]
@@ -83,7 +149,9 @@ pub const MIN_BLOCK_SIZE: usize = 16;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kama_core::traits::{Processor, ProcessResult};
+    use kama_core::traits::{Processor, Source, Sink};
+    use kama_core::ProcessResult;
+    use kama_digital_filters::BiquadProcessor;
 
     // Test processor for module-level tests
     struct TestProcessor<const BUF_SIZE: usize> {
@@ -97,11 +165,12 @@ mod tests {
         }
     }
 
-    impl<const BUF_SIZE: usize> Processor<BUF_SIZE> for TestProcessor<BUF_SIZE> {
+    impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for TestProcessor<BUF_SIZE> {
         fn process(
             &mut self,
             inputs: &[&[f32; BUF_SIZE]],
             outputs: &mut [&mut [f32; BUF_SIZE]],
+            _control: &[f32],
         ) -> ProcessResult<()> {
             if inputs.is_empty() || outputs.is_empty() {
                 return Ok(());
@@ -113,8 +182,60 @@ mod tests {
             Ok(())
         }
 
-        fn num_inputs(&self) -> usize { 1 }
-        fn num_outputs(&self) -> usize { 1 }
+        fn num_audio_inputs(&self) -> usize { 1 }
+        fn num_audio_outputs(&self) -> usize { 1 }
+        fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
+        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
+        fn init(&mut self, _sample_rate: f32) {}
+        fn reset(&mut self) {}
+    }
+
+    // Test source for module-level tests
+    struct TestSource<const BUF_SIZE: usize> {
+        id: u32,
+    }
+
+    impl<const BUF_SIZE: usize> TestSource<BUF_SIZE> {
+        fn new(id: u32) -> Self {
+            Self { id }
+        }
+    }
+
+    impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for TestSource<BUF_SIZE> {
+        fn generate(&mut self, outputs: &mut [&mut [f32; BUF_SIZE]], _control: &[f32]) -> ProcessResult<()> {
+            for channel in outputs.iter_mut() {
+                for sample in channel.iter_mut() {
+                    *sample = 0.0;
+                }
+            }
+            Ok(())
+        }
+
+        fn num_audio_outputs(&self) -> usize { 1 }
+        fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
+        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
+        fn init(&mut self, _sample_rate: f32) {}
+        fn reset(&mut self) {}
+    }
+
+    // Test sink for module-level tests
+    struct TestSink<const BUF_SIZE: usize> {
+        id: u32,
+    }
+
+    impl<const BUF_SIZE: usize> TestSink<BUF_SIZE> {
+        fn new(id: u32) -> Self {
+            Self { id }
+        }
+    }
+
+    impl<const BUF_SIZE: usize> Sink<f32, BUF_SIZE> for TestSink<BUF_SIZE> {
+        fn process(&mut self, inputs: &[&[f32; BUF_SIZE]], _control: &[f32]) -> ProcessResult<()> {
+            // Do nothing, just consume
+            Ok(())
+        }
+
+        fn num_audio_inputs(&self) -> usize { 1 }
         fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
         fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
         fn init(&mut self, _sample_rate: f32) {}
@@ -149,5 +270,33 @@ mod tests {
         assert!(VERSION.len() > 0);
         assert_eq!(DEFAULT_BLOCK_SIZE, 64);
         assert!(MAX_BLOCK_SIZE > MIN_BLOCK_SIZE);
+    }
+
+    #[test]
+    fn test_graph_with_biquad_filter() {
+        let mut graph = AudioGraph::<64>::new(44100.0);
+
+        // Add nodes
+        let source_id = graph.add_source(Box::new(TestSource::<64>::new(1)));
+        let biquad = BiquadProcessor::new(1000.0, 0.707, 0.0);
+        let biquad_id = graph.add_processor(Box::new(biquad));
+        let sink_id = graph.add_sink(Box::new(TestSink::<64>::new(2)));
+
+        // Connect source output to biquad input
+        graph.connect_audio(
+            PortId::audio_out(source_id, 0),
+            PortId::audio_in(biquad_id, 0),
+        ).unwrap();
+
+        // Connect biquad output to sink input
+        graph.connect_audio(
+            PortId::audio_out(biquad_id, 0),
+            PortId::audio_in(sink_id, 0),
+        ).unwrap();
+
+        // Process one block (push model)
+        graph.push_block().unwrap();
+
+        // If no panic, test passes
     }
 }

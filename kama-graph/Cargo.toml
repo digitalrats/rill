@@ -6,6 +6,10 @@ description = "Real-time audio graph with block processing"
 
 [dependencies]
 kama-core = { path = "../kama-core" }
+crossbeam-channel = "0.5"
 parking_lot = "0.12"
 thiserror = "1.0"
 log = "0.4"
+
+[dev-dependencies]
+kama-digital-filters = { path = "../kama-digital-filters" }
