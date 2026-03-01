@@ -1,7 +1,7 @@
 //! Noise generators
 
-use kama_core::traits::processor::{Processor, ProcessResult};
-use kama_core::traits::{ParameterId, ParamValue};
+use kama_core::traits::{Processor, ParameterId, ParamValue};
+use kama_core::{ProcessResult, ProcessError};
 use rand::Rng;
 
 /// Types of noise

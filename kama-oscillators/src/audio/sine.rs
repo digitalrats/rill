@@ -1,7 +1,7 @@
 //! Sine wave oscillator using kama-core-dsp with AudioNum
 
-use kama_core::traits::processor::{Processor, ProcessResult};
-use kama_core::traits::{ParameterId, ParamValue};
+use kama_core::traits::{Processor, ParameterId, ParamValue};
+use kama_core::{ProcessResult, ProcessError};
 use kama_core_dsp::generators::basic::{BasicOscillator, Waveform};
 use kama_core::AudioNum;
 use kama_core_dsp::algorithm::Algorithm;
