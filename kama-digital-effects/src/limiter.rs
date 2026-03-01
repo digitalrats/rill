@@ -1,18 +1,29 @@
 // kama-digital-effects/src/limiter.rs
 
-use crate::delay::Delay;
-use kama_buffers::RingBuffer;
+use kama_core::buffer::DelayLine;
 use kama_core::traits::{
-    ParamMetadata, ParamType,
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+    ParamMetadata, ParamRange, ParamType, NodeCategory, NodeMetadata, NodeTypeId,
+    ParameterId, ParamValue, Processor,
 };
+use kama_core::{ProcessResult, ProcessError};
+use kama_core::math::AudioNum;
+use crate::delay::Delay;
+
+/// Maximum lookahead time in seconds (10 ms)
+const MAX_LOOKAHEAD_TIME: f32 = 0.01;
+/// Maximum sample rate we support (192 kHz)
+const MAX_SAMPLE_RATE: f32 = 192_000.0;
+/// Maximum lookahead samples at max sample rate
+const MAX_LOOKAHEAD_SAMPLES: usize = (MAX_LOOKAHEAD_TIME * MAX_SAMPLE_RATE) as usize;
+/// Size of analysis buffer (double the max lookahead)
+const ANALYSIS_BUF_SIZE: usize = MAX_LOOKAHEAD_SAMPLES * 2;
 
 /// Limiter with lookahead using Delay + envelope detection
-pub struct Limiter {
+pub struct Limiter<const BUF_SIZE: usize> {
     /// Delay line for lookahead
-    delay: Delay,
+    delay: Delay<BUF_SIZE>,
     /// Buffer for envelope detection
-    analysis_buffer: RingBuffer,
+    analysis_buffer: DelayLine<f32, ANALYSIS_BUF_SIZE>,
     /// Threshold in dB
     threshold_db: f32,
     /// Threshold in linear scale
@@ -45,7 +56,7 @@ pub struct Limiter {
     warming_up: bool,
 }
 
-impl Limiter {
+impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
     /// Create a new limiter
     pub fn new(threshold_db: f32, attack: f32, release: f32, output_gain: f32) -> Self {
         let threshold_db = threshold_db.clamp(-60.0, 0.0);
@@ -61,13 +72,13 @@ impl Limiter {
         let lookahead = 0.005; // 5ms default
         let lookahead_samples = (lookahead * sample_rate) as usize;
 
-        // Delay с нужной задержкой, feedback=0, mix=1.0 (100% wet)
-        let delay = Delay::new(lookahead, 0.0, 1.0);
+        // Delay with needed delay, feedback=0, mix=1.0 (100% wet)
+        let delay = Delay::with_params(lookahead, 0.0, 1.0);
 
-        // Буфер для анализа
-        let analysis_buffer = RingBuffer::new(lookahead_samples * 2);
+        // Buffer for analysis
+        let analysis_buffer = DelayLine::new(sample_rate);
 
-        // Буфер для временного хранения входных семплов во время инициализации
+        // Buffer for temporary storage during initialization
         let init_buffer = Vec::with_capacity(lookahead_samples);
 
         Self {
@@ -95,37 +106,29 @@ impl Limiter {
     pub fn process_sample(&mut self, input: f32) -> f32 {
         self.position += 1;
 
-        // 1. Записываем вход в analysis_buffer
-        self.analysis_buffer.write(&[input]);
+        // 1. Write input to analysis_buffer
+        self.analysis_buffer.write(input);
 
-        // 2. Получаем задержанный сигнал из Delay
-        let mut delayed = 0.0;
-        let input_slice = [input];
-        let mut output_slice = [delayed];
-        let inputs = [&input_slice[..]];
-        let mut outputs = [&mut output_slice[..]];
+        // 2. Get delayed signal from Delay
+        let delayed = self.delay.process_sample(input);
 
-        if self.delay.process(&inputs, &mut outputs).is_ok() {
-            delayed = output_slice[0];
-        }
-
-        // 3. На этапе инициализации
+        // 3. During initialization phase
         if self.initializing {
-            // Сохраняем вход в init_buffer
+            // Save input to init_buffer
             self.init_buffer.push(input);
 
-            // Проверяем, закончилась ли инициализация
+            // Check if initialization is complete
             if self.position >= self.lookahead_samples {
                 self.initializing = false;
                 self.warming_up = true;
 
-                // Очищаем Delay
+                // Clear Delay
                 self.delay.reset();
 
                 println!("Initialization complete, starting warmup...");
             }
 
-            // Во время инициализации выход = вход
+            // During initialization output = input
             if self.position <= 5 {
                 println!("Init {}: in={:.3}, out={:.3}", self.position, input, input);
             }
@@ -133,28 +136,24 @@ impl Limiter {
             return input;
         }
 
-        // 4. На этапе прогрева (первые lookahead_samples после инициализации)
+        // 4. During warmup phase (first lookahead_samples after initialization)
         if self.warming_up {
-            // Всё ещё используем вход как выход, пока Delay не заполнится реальными данными
+            // Still use input as output while Delay fills with real data
             if self.position < self.lookahead_samples * 2 {
                 if self.position == self.lookahead_samples + 1 {
                     println!("Warmup started at pos {}", self.position);
                 }
 
-                // Заполняем Delay реальными значениями
+                // Fill Delay with real values
                 if self.position - self.lookahead_samples <= self.init_buffer.len() {
                     let idx = self.position - self.lookahead_samples - 1;
                     if idx < self.init_buffer.len() {
                         let sample = self.init_buffer[idx];
-                        let s = [sample];
-                        let mut dummy = [0.0];
-                        let ins = [&s[..]];
-                        let mut outs = [&mut dummy[..]];
-                        let _ = self.delay.process(&ins, &mut outs);
+                        let _ = self.delay.process_sample(sample);
                     }
                 }
 
-                // Проверяем, закончился ли прогрев
+                // Check if warmup is complete
                 if self.position >= self.lookahead_samples * 2 - 1 {
                     self.warming_up = false;
                     println!("Warmup complete at pos {}", self.position);
@@ -164,24 +163,22 @@ impl Limiter {
             }
         }
 
-        // 5. Анализируем сигнал в analysis_buffer
-        let view = self.analysis_buffer.view();
-
-        // Смотрим на максимальную амплитуду в окне lookahead_samples
+        // 5. Analyze signal in analysis_buffer
+        // Look for maximum amplitude within lookahead window
         let mut max_amp = 0.0f32;
         for offset in 0..self.lookahead_samples {
-            let sample = view.read_delayed(offset, 0);
+            let sample = self.analysis_buffer.read_delayed(offset);
             max_amp = max_amp.max(sample.abs());
         }
 
-        // 6. Вычисляем target gain
+        // 6. Compute target gain
         let target_gain = if max_amp > self.threshold_linear {
             self.threshold_linear / max_amp
         } else {
             1.0
         };
 
-        // 7. Сглаживаем gain
+        // 7. Smooth gain
         if target_gain < self.current_gain {
             self.current_gain =
                 self.current_gain * self.attack_coeff + target_gain * (1.0 - self.attack_coeff);
@@ -190,10 +187,10 @@ impl Limiter {
                 self.current_gain * self.release_coeff + target_gain * (1.0 - self.release_coeff);
         }
 
-        // 8. Применяем gain к задержанному сигналу
+        // 8. Apply gain to delayed signal
         let output = delayed * self.current_gain * self.output_gain;
 
-        // Отладка для высокого сигнала
+        // Debug for high signal
         if input > 1.0 && self.position > self.lookahead_samples * 2 {
             println!("PROC: pos={}, in={:.3}, max={:.3}, target={:.3}, gain={:.3}, delay={:.3}, out={:.3}", 
                      self.position, input, max_amp, target_gain, self.current_gain, delayed, output);
@@ -242,7 +239,7 @@ impl Limiter {
         self.lookahead = lookahead.clamp(0.0, 0.01);
         self.lookahead_samples = (self.lookahead * self.sample_rate) as usize;
         self.delay.set_delay_time(lookahead);
-        self.analysis_buffer = RingBuffer::new(self.lookahead_samples * 2);
+        self.analysis_buffer.clear();
         self.current_gain = 1.0;
         self.position = 0;
         self.init_buffer.clear();
@@ -250,7 +247,7 @@ impl Limiter {
         self.warming_up = false;
     }
 
-    /// Reset internal state - теперь с принудительным заполнением буферов
+    /// Reset internal state - now with forced buffer filling
     pub fn reset(&mut self) {
         self.current_gain = 1.0;
         self.position = 0;
@@ -258,21 +255,17 @@ impl Limiter {
         self.initializing = true;
         self.warming_up = false;
         self.delay.reset();
-        self.analysis_buffer.reset();
+        self.analysis_buffer.clear();
     }
 
-    /// Принудительно завершить инициализацию и прогрев (для тестов)
+    /// Force finish initialization and warmup (for tests)
     pub fn force_ready(&mut self) {
         if self.initializing || self.warming_up {
-            // Заполняем буферы тестовыми значениями
+            // Fill buffers with test values
             for _ in 0..self.lookahead_samples * 2 {
                 let test_val = 0.1;
-                self.analysis_buffer.write(&[test_val]);
-                let s = [test_val];
-                let mut dummy = [0.0];
-                let ins = [&s[..]];
-                let mut outs = [&mut dummy[..]];
-                let _ = self.delay.process(&ins, &mut outs);
+                self.analysis_buffer.write(test_val);
+                let _ = self.delay.process_sample(test_val);
             }
             self.initializing = false;
             self.warming_up = false;
@@ -282,25 +275,34 @@ impl Limiter {
     }
 }
 
-impl AudioNode for Limiter {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        if inputs.is_empty() || outputs.is_empty() {
-            return Ok(());
+impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Limiter<BUF_SIZE> {
+    fn process(
+        &mut self,
+        inputs: &[&[f32; BUF_SIZE]],
+        outputs: &mut [&mut [f32; BUF_SIZE]],
+        _control: &[f32],
+    ) -> ProcessResult<()> {
+        if inputs.len() < 1 || outputs.len() < 1 {
+            return Err(ProcessError::processing("insufficient channels"));
         }
-
         let input = inputs[0];
         let output = &mut outputs[0];
-        let len = input.len().min(output.len());
-
-        for i in 0..len {
+        for i in 0..BUF_SIZE {
             output[i] = self.process_sample(input[i]);
         }
-
         Ok(())
     }
 
-    fn get_param(&self, name: &str) -> Option<ParamValue> {
-        match name {
+    fn num_audio_inputs(&self) -> usize {
+        1
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        match id.as_str() {
             "threshold" => Some(ParamValue::Float(self.threshold_db)),
             "attack" => Some(ParamValue::Float(self.attack)),
             "release" => Some(ParamValue::Float(self.release)),
@@ -311,8 +313,8 @@ impl AudioNode for Limiter {
         }
     }
 
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-        match (name, value) {
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+        match (id.as_str(), value) {
             ("threshold", ParamValue::Float(t)) => {
                 self.set_threshold(t);
                 Ok(())
@@ -333,10 +335,7 @@ impl AudioNode for Limiter {
                 self.set_lookahead(l);
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!(
-                "Unknown parameter: {}",
-                name
-            ))),
+            _ => Err(ProcessError::parameter("unknown parameter")),
         }
     }
 
@@ -346,7 +345,7 @@ impl AudioNode for Limiter {
         self.release_coeff = (-1.0 / (self.release * sample_rate)).exp();
 
         self.lookahead_samples = (self.lookahead * sample_rate) as usize;
-        self.analysis_buffer = RingBuffer::new(self.lookahead_samples * 2);
+        self.analysis_buffer = DelayLine::new(sample_rate);
         self.current_gain = 1.0;
         self.position = 0;
         self.init_buffer.clear();
@@ -358,24 +357,17 @@ impl AudioNode for Limiter {
     }
 
     fn reset(&mut self) {
-        self.reset();
+        Limiter::reset(self);
     }
+}
 
-    fn num_inputs(&self) -> usize {
-        1
-    }
-    fn num_outputs(&self) -> usize {
-        1
-    }
-
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> NodeMetadata {
+// Implement NodeMetadata for compatibility
+impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
+    /// Returns metadata about this node
+    pub fn metadata() -> NodeMetadata {
         NodeMetadata {
             name: "Limiter".to_string(),
-            category: NodeCategory::Effect,
+            category: NodeCategory::Processor,
             description: "Lookahead limiter using Delay".to_string(),
             author: "Kama Digital Effects".to_string(),
             version: "0.2.0".to_string(),
@@ -384,9 +376,10 @@ impl AudioNode for Limiter {
                     name: "threshold".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(0.0),
-                    min: Some(-60.0),
-                    max: Some(0.0),
-                    step: Some(1.0),
+                    range: ParamRange::new()
+                        .with_min(-60.0)
+                        .with_max(0.0)
+                        .with_step(1.0),
                     unit: Some("dB".to_string()),
                     choices: None,
                 },
@@ -394,9 +387,10 @@ impl AudioNode for Limiter {
                     name: "attack".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(0.005),
-                    min: Some(0.001),
-                    max: Some(0.1),
-                    step: Some(0.001),
+                    range: ParamRange::new()
+                        .with_min(0.001)
+                        .with_max(0.1)
+                        .with_step(0.001),
                     unit: Some("s".to_string()),
                     choices: None,
                 },
@@ -404,9 +398,10 @@ impl AudioNode for Limiter {
                     name: "release".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(0.1),
-                    min: Some(0.01),
-                    max: Some(1.0),
-                    step: Some(0.01),
+                    range: ParamRange::new()
+                        .with_min(0.01)
+                        .with_max(1.0)
+                        .with_step(0.01),
                     unit: Some("s".to_string()),
                     choices: None,
                 },
@@ -414,9 +409,10 @@ impl AudioNode for Limiter {
                     name: "output_gain".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(1.0),
-                    min: Some(0.0),
-                    max: Some(2.0),
-                    step: Some(0.1),
+                    range: ParamRange::new()
+                        .with_min(0.0)
+                        .with_max(2.0)
+                        .with_step(0.1),
                     unit: Some("gain".to_string()),
                     choices: None,
                 },
@@ -424,13 +420,19 @@ impl AudioNode for Limiter {
                     name: "lookahead".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(0.005),
-                    min: Some(0.0),
-                    max: Some(0.01),
-                    step: Some(0.0001),
+                    range: ParamRange::new()
+                        .with_min(0.0)
+                        .with_max(0.01)
+                        .with_step(0.0001),
                     unit: Some("s".to_string()),
                     choices: None,
                 },
             ],
         }
+    }
+
+    /// Returns the node type ID
+    pub fn node_type_id() -> NodeTypeId {
+        NodeTypeId::of::<Self>()
     }
 }
