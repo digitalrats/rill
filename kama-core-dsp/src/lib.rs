@@ -27,14 +27,16 @@ pub mod macros;
 
 // Re-exports
 pub use algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
-//pub use filters::{Filter, FilterType, FilterParams};
-//pub use generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
+pub use filters::{Filter, FilterType, FilterParams};
+pub use generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
 pub use context::DspContext;
 
 /// Prelude для удобного импорта
 pub mod prelude {
-    pub use crate::algorithm::Algorithm;
+    pub use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
     pub use crate::context::DspContext;
+    pub use crate::filters::{Filter, FilterType, FilterParams};
+    pub use crate::generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
     pub use crate::math::*;
     pub use crate::vector::prelude::*;
     //pub use crate::macros::prelude::*;

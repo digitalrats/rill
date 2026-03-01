@@ -18,6 +18,10 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+// Кроссплатформенная SIMD реализация через крейт wide (требует фичи simd)
+#[cfg(feature = "simd")]
+pub mod wide;
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod x86;
 
@@ -63,11 +67,15 @@ impl SimdDetector {
 }
 
 // Re-exports
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub use x86::*;
+#[cfg(feature = "simd")]
+pub use wide::*;
 
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
-pub use arm::*;
+// Платформенно-специфичные реэкспорты (пока не реализованы)
+// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+// pub use x86::*;
 
-#[cfg(target_arch = "wasm32")]
-pub use wasm::*;
+// #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+// pub use arm::*;
+
+// #[cfg(target_arch = "wasm32")]
+// pub use wasm::*;

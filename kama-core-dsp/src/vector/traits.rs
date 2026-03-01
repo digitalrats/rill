@@ -115,6 +115,7 @@ pub trait VectorReduce<T: AudioNum, const N: usize> {
 
 /// Трейт для побитовых операций (маски и сравнения)
 pub trait VectorMask<T: AudioNum, const N: usize> {
+    /// Тип маски для сравнения (обычно вектор булевых значений или битовая маска)
     type Mask;
     
     /// Сравнение на равенство
