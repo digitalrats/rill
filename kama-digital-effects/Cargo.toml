@@ -1,6 +1,6 @@
 [package]
 name = "kama-digital-effects"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Digital audio effects for Kama Audio - Delay, Distortion, Chorus, Reverb, etc."
 license = "Apache-2.0"

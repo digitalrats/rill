@@ -1,6 +1,6 @@
 [package]
 name = "kama-eq"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Generic equalizer implementation for Kama Audio - works with any filter implementation"
 license = "Apache-2.0"
