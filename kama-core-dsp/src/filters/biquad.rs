@@ -66,8 +66,113 @@ impl<T: AudioNum> Biquad<T> {
                 );
             }
             
-            // ... остальные типы
-            _ => {}
+            FilterType::BandPass => {
+                // Constant skirt gain (peak gain = Q)
+                let b0 = sin_omega / 2.0;
+                let b1 = 0.0;
+                let b2 = -b0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                
+                self.coeffs = (
+                    T::from_f32(b0 / a0),
+                    T::from_f32(b1 / a0),
+                    T::from_f32(b2 / a0),
+                    T::from_f32(a1 / a0),
+                    T::from_f32(a2 / a0),
+                );
+            }
+            
+            FilterType::Notch => {
+                let b0 = 1.0;
+                let b1 = -2.0 * cos_omega;
+                let b2 = 1.0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                
+                self.coeffs = (
+                    T::from_f32(b0 / a0),
+                    T::from_f32(b1 / a0),
+                    T::from_f32(b2 / a0),
+                    T::from_f32(a1 / a0),
+                    T::from_f32(a2 / a0),
+                );
+            }
+            
+            FilterType::Peak => {
+                let a = 10.0_f32.powf(self.params.gain_db / 40.0);
+                let b0 = 1.0 + alpha * a;
+                let b1 = -2.0 * cos_omega;
+                let b2 = 1.0 - alpha * a;
+                let a0 = 1.0 + alpha / a;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha / a;
+                
+                self.coeffs = (
+                    T::from_f32(b0 / a0),
+                    T::from_f32(b1 / a0),
+                    T::from_f32(b2 / a0),
+                    T::from_f32(a1 / a0),
+                    T::from_f32(a2 / a0),
+                );
+            }
+            
+            FilterType::LowShelf => {
+                let a = 10.0_f32.powf(self.params.gain_db / 40.0);
+                let sqrt_a = a.sqrt();
+                let b0 = a * ((a + 1.0) - (a - 1.0) * cos_omega + 2.0 * sqrt_a * alpha);
+                let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos_omega);
+                let b2 = a * ((a + 1.0) - (a - 1.0) * cos_omega - 2.0 * sqrt_a * alpha);
+                let a0 = (a + 1.0) + (a - 1.0) * cos_omega + 2.0 * sqrt_a * alpha;
+                let a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cos_omega);
+                let a2 = (a + 1.0) + (a - 1.0) * cos_omega - 2.0 * sqrt_a * alpha;
+                
+                self.coeffs = (
+                    T::from_f32(b0 / a0),
+                    T::from_f32(b1 / a0),
+                    T::from_f32(b2 / a0),
+                    T::from_f32(a1 / a0),
+                    T::from_f32(a2 / a0),
+                );
+            }
+            
+            FilterType::HighShelf => {
+                let a = 10.0_f32.powf(self.params.gain_db / 40.0);
+                let sqrt_a = a.sqrt();
+                let b0 = a * ((a + 1.0) + (a - 1.0) * cos_omega + 2.0 * sqrt_a * alpha);
+                let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_omega);
+                let b2 = a * ((a + 1.0) + (a - 1.0) * cos_omega - 2.0 * sqrt_a * alpha);
+                let a0 = (a + 1.0) - (a - 1.0) * cos_omega + 2.0 * sqrt_a * alpha;
+                let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_omega);
+                let a2 = (a + 1.0) - (a - 1.0) * cos_omega - 2.0 * sqrt_a * alpha;
+                
+                self.coeffs = (
+                    T::from_f32(b0 / a0),
+                    T::from_f32(b1 / a0),
+                    T::from_f32(b2 / a0),
+                    T::from_f32(a1 / a0),
+                    T::from_f32(a2 / a0),
+                );
+            }
+            
+            FilterType::AllPass => {
+                let b0 = 1.0 - alpha;
+                let b1 = -2.0 * cos_omega;
+                let b2 = 1.0 + alpha;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                
+                self.coeffs = (
+                    T::from_f32(b0 / a0),
+                    T::from_f32(b1 / a0),
+                    T::from_f32(b2 / a0),
+                    T::from_f32(a1 / a0),
+                    T::from_f32(a2 / a0),
+                );
+            }
         }
     }
 }

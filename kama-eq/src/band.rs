@@ -1,7 +1,7 @@
 //! Equalizer band implementation
 
 use kama_core::traits::{AudioError, ParamValue};
-use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
+use kama_core_dsp::filters::{Filter, FilterParams, FilterType};
 
 /// Type of EQ band
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -65,7 +65,7 @@ impl BandType {
 }
 
 /// A single band of an equalizer
-pub struct EqBand<F: Filter> {
+pub struct EqBand<F: Filter<f32>> {
     /// The filter for this band
     pub(crate) filter: F,
     /// Center/corner frequency in Hz
@@ -80,7 +80,7 @@ pub struct EqBand<F: Filter> {
     pub(crate) band_type: BandType,
 }
 
-impl<F: Filter> EqBand<F> {
+impl<F: Filter<f32>> EqBand<F> {
     /// Create a new EQ band
     pub fn new(filter: F, band_type: BandType, frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
@@ -101,28 +101,23 @@ impl<F: Filter> EqBand<F> {
 
         // Создаём входной буфер как срез
         let input_slice = [input];
-        let inputs = [input_slice.as_slice()];
-
-        // Создаём выходной буфер
         let mut output = [0.0];
-        let mut outputs = [output.as_mut_slice()];
 
-        // Вызываем AudioNode::process для фильтра
-        if self.filter.process(&inputs, &mut outputs).is_ok() {
-            output[0]
-        } else {
-            input
-        }
+        // Вызываем process_block для фильтра
+        self.filter.process_block(&input_slice, &mut output);
+        output[0]
     }
 
     /// Update the filter with current parameters
-    pub fn update_filter<Factory: FilterFactory<F>>(&mut self, factory: &Factory) {
-        self.filter = factory.create_filter(
-            self.band_type.to_filter_type(),
-            self.frequency,
-            self.q,
-            self.gain_db,
-        );
+    pub fn update_filter(&mut self) {
+        let params = FilterParams {
+            filter_type: self.band_type.to_filter_type(),
+            cutoff: self.frequency,
+            q: self.q,
+            gain_db: self.gain_db,
+        };
+        println!("DEBUG update_filter: type={:?}, cutoff={}, q={}, gain_db={}", params.filter_type, params.cutoff, params.q, params.gain_db);
+        self.filter.set_params(params);
     }
 
     /// Set frequency

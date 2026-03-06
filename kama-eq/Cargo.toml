@@ -16,5 +16,5 @@ default = []
 
 [dev-dependencies]
 kama-digital-filters = { path = "../kama-digital-filters" }
-kama-automation = { path = "../kama-automation" }
+# kama-automation = { path = "../kama-automation" }
 float-cmp = "0.9"
