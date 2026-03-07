@@ -21,6 +21,7 @@ float-cmp = "0.9"
 [features]
 default = []
 serde = ["dep:serde"]
+stats = []
 
 [package.metadata.docs.rs]
 all-features = true

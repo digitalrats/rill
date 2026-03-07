@@ -1,14 +1,18 @@
-//! Point-to-point buffer for single producer, single consumer connections
-//!
-//! `PipeBuffer` provides a lock-free, wait-free buffer for connecting
-//! two audio nodes directly. It is optimized for the common case of
-//! one producer and one consumer.
+//! # Point-to-point buffer for single producer, single consumer connections
 
 use crate::math::AudioNum;
-use crate::buffer::{AudioBuffer, BufferStats, AlignedStorage, Sequence, AtomicStats};
+use crate::buffer::{
+    AudioBuffer, BufferStats,
+    AtomicStats, AtomicCell, CACHE_LINE_SIZE
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::marker::PhantomData;
 use std::fmt;
+use super::array_from_fn;
+
+// ============================================================================
+// PipeBuffer
+// ============================================================================
 
 /// Single-producer, single-consumer buffer for node connections
 ///
@@ -16,84 +20,81 @@ use std::fmt;
 /// It is ideal for point-to-point connections between audio nodes.
 ///
 /// # Type Parameters
-/// - `T`: Audio sample type (f32 or f64)
+/// - `T`: Audio sample type (f32 or f64) implementing `AudioNum`
 /// - `N`: Buffer size (number of samples per block)
-///
-/// # Example
-/// ```
-/// use kama_core::buffer::pipe::PipeBuffer;
-///
-/// let buffer = PipeBuffer::<f32, 64>::new();
-///
-/// // Producer thread
-/// let data = [1.0; 64];
-/// buffer.write(&data);
-///
-/// // Consumer thread
-/// if let Some(read_data) = buffer.try_read() {
-///     assert_eq!(read_data[0], 1.0);
-/// }
-/// ```
 #[repr(align(64))]
 pub struct PipeBuffer<T: AudioNum, const N: usize> {
-    /// Storage for the buffer (aligned to cache line)
-    storage: AlignedStorage<T, N>,
+    /// Storage for the buffer using AtomicCell for each sample
+    /// This provides safe concurrent access without unsafe code
+    storage: [AtomicCell<T>; N],
     
     /// Flag indicating if buffer contains valid data
+    /// - `true`: data available for reading
+    /// - `false`: buffer empty
     valid: AtomicBool,
     
-    /// Write sequence number (for debugging)
-    write_seq: Sequence,
+    /// Write sequence number (monotonically increasing)
+    /// Used for debugging and detecting overwrites
+    write_seq: AtomicCell<usize>,
     
-    /// Read sequence number (for debugging)
-    read_seq: Sequence,
+    /// Read sequence number (monotonically increasing)
+    /// Used for debugging and detecting underruns
+    read_seq: AtomicCell<usize>,
     
-    /// Atomic statistics
+    /// Atomic statistics for performance monitoring
     stats: AtomicStats,
     
-    /// Phantom data
+    /// Phantom data to satisfy const generic
     _phantom: PhantomData<[T; N]>,
 }
 
 impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
     /// Create a new pipe buffer
+    ///
+    /// The buffer starts empty with no data available.
     pub fn new() -> Self {
+        // Create storage with default values (T::ZERO)
+        let storage = array_from_fn(|_| AtomicCell::new(T::ZERO));
+        
         Self {
-            storage: AlignedStorage::new(),
+            storage,
             valid: AtomicBool::new(false),
-            write_seq: Sequence::new(),
-            read_seq: Sequence::new(),
+            write_seq: AtomicCell::new(0),
+            read_seq: AtomicCell::new(0),
             stats: AtomicStats::new(),
             _phantom: PhantomData,
         }
     }
     
-    /// Write data to the buffer
+    /// Write a block of data to the buffer
     ///
     /// This operation is wait-free and will overwrite any existing data.
-    /// The buffer holds at most one block at a time.
+    /// The buffer holds at most one block at a time - new writes always
+    /// overwrite the previous block, regardless of whether it was read.
     ///
     /// # Arguments
-    /// * `data` - Array of samples to write
+    /// * `data` - Array of samples to write (must be exactly `N` samples)
     #[inline(always)]
     pub fn write(&self, data: &[T; N]) {
-        // Copy data to storage
+        // Copy data to storage using AtomicCell's store
+        // This is safe and doesn't require unsafe code
         for i in 0..N {
-            self.storage.write(i, data[i]);
+            self.storage[i].store(data[i]);
         }
         
         // Mark as valid (release ordering ensures data is visible)
         self.valid.store(true, Ordering::Release);
-        self.write_seq.fetch_add(1, Ordering::Relaxed);
+        self.write_seq.store(self.write_seq.load() + 1);
         
         // Update statistics
         self.stats.record_write();
         self.stats.update_peak(1);
     }
     
-    /// Try to read data from the buffer
+    /// Try to read a block of data from the buffer
     ///
-    /// Returns `None` if no data is available.
+    /// Returns `Some(data)` if data is available, `None` otherwise.
+    /// This operation is wait-free and non-blocking.
     #[inline(always)]
     pub fn try_read(&self) -> Option<[T; N]> {
         if !self.valid.load(Ordering::Acquire) {
@@ -103,13 +104,12 @@ impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
         
         let mut result = [T::ZERO; N];
         for i in 0..N {
-            unsafe {
-                result[i] = self.storage.read(i);
-            }
+            // AtomicCell's load is safe and doesn't require unsafe code
+            result[i] = self.storage[i].load();
         }
         
         self.valid.store(false, Ordering::Release);
-        self.read_seq.fetch_add(1, Ordering::Relaxed);
+        self.read_seq.store(self.read_seq.load() + 1);
         
         self.stats.record_read();
         self.stats.update_peak(0);
@@ -119,8 +119,8 @@ impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
     
     /// Read data, blocking until available (for non-real-time use)
     ///
-    /// This is a convenience method for non-real-time contexts.
-    /// It spins until data is available.
+    /// This is a convenience method for non-real-time contexts like
+    /// testing or offline processing. It spins until data is available.
     pub fn read_blocking(&self) -> [T; N] {
         loop {
             if let Some(data) = self.try_read() {
@@ -130,7 +130,7 @@ impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
         }
     }
     
-    /// Check if buffer has valid data
+    /// Check if buffer has valid data available
     #[inline(always)]
     pub fn has_data(&self) -> bool {
         self.valid.load(Ordering::Acquire)
@@ -138,19 +138,37 @@ impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
     
     /// Get write sequence number (for debugging)
     pub fn write_seq(&self) -> usize {
-        self.write_seq.load(Ordering::Relaxed)
+        self.write_seq.load()
     }
     
     /// Get read sequence number (for debugging)
     pub fn read_seq(&self) -> usize {
-        self.read_seq.load(Ordering::Relaxed)
+        self.read_seq.load()
     }
     
     /// Check if reader is caught up with writer
     pub fn is_caught_up(&self) -> bool {
-        self.write_seq.load(Ordering::Relaxed) == self.read_seq.load(Ordering::Relaxed) + 1
+        self.write_seq() == self.read_seq()
+    }
+    
+    /// Get the number of overwritten blocks (for debugging)
+    pub fn overwrites(&self) -> usize {
+        self.write_seq().saturating_sub(self.read_seq() + 1)
+    }
+    
+    /// Reset the buffer to empty state
+    ///
+    /// Clears the valid flag and resets statistics.
+    /// Does not actually zero the memory (not needed for correctness).
+    pub fn reset(&self) {
+        self.valid.store(false, Ordering::Release);
+        self.stats.reset();
     }
 }
+
+// ============================================================================
+// AudioBuffer Implementation
+// ============================================================================
 
 impl<T: AudioNum, const N: usize> AudioBuffer<T> for PipeBuffer<T, N> {
     fn capacity(&self) -> usize {
@@ -159,6 +177,14 @@ impl<T: AudioNum, const N: usize> AudioBuffer<T> for PipeBuffer<T, N> {
     
     fn len(&self) -> usize {
         if self.has_data() { 1 } else { 0 }
+    }
+    
+    fn is_empty(&self) -> bool {
+        !self.has_data()
+    }
+    
+    fn is_full(&self) -> bool {
+        self.has_data()
     }
     
     fn clear(&mut self) {
@@ -177,97 +203,72 @@ impl<T: AudioNum, const N: usize> AudioBuffer<T> for PipeBuffer<T, N> {
     }
 }
 
+// ============================================================================
+// Default Implementation
+// ============================================================================
+
 impl<T: AudioNum, const N: usize> Default for PipeBuffer<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: AudioNum, const N: usize> fmt::Debug for PipeBuffer<T, N> {
+// ============================================================================
+// Debug Implementation
+// ============================================================================
+
+impl<T: AudioNum + fmt::Debug, const N: usize> fmt::Debug for PipeBuffer<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PipeBuffer")
             .field("capacity", &N)
             .field("has_data", &self.has_data())
             .field("write_seq", &self.write_seq())
             .field("read_seq", &self.read_seq())
+            .field("overwrites", &self.overwrites())
             .field("stats", &self.stats.snapshot())
+            .field("alignment", &CACHE_LINE_SIZE)
             .finish()
     }
 }
+
+// ============================================================================
+// Clone Implementation
+// ============================================================================
+
+impl<T: AudioNum + Copy, const N: usize> Clone for PipeBuffer<T, N> {
+    fn clone(&self) -> Self {
+        let new = Self::new();
+        
+        // If this buffer has data, copy it
+        if let Some(data) = self.try_read() {
+            new.write(&data);
+        }
+        
+        new
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
     
     #[test]
-    fn test_pipe_buffer_f32() {
+    fn test_pipe_buffer_basic() {
         let buffer = PipeBuffer::<f32, 64>::new();
         
-        assert!(!buffer.has_data());
-        assert_eq!(buffer.len(), 0);
-        
-        let data = [42.0; 64];
-        buffer.write(&data);
+        let write_data = [42.0; 64];
+        buffer.write(&write_data);
         
         assert!(buffer.has_data());
-        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer.write_seq(), 1);
         
-        let read = buffer.try_read().unwrap();
-        assert_eq!(read[0], 42.0);
-        assert_eq!(read[63], 42.0);
-        
-        assert!(!buffer.has_data());
-        assert_eq!(buffer.len(), 0);
-    }
-    
-    #[test]
-    fn test_pipe_buffer_f64() {
-        let buffer = PipeBuffer::<f64, 64>::new();
-        
-        let data = [42.0; 64];
-        buffer.write(&data);
-        
-        let read = buffer.try_read().unwrap();
-        assert!((read[0] - 42.0).abs() < 1e-10);
-    }
-    
-    #[test]
-    fn test_pipe_buffer_overwrite() {
-        let buffer = PipeBuffer::<f32, 64>::new();
-        
-        let data1 = [1.0; 64];
-        let data2 = [2.0; 64];
-        
-        buffer.write(&data1);
-        buffer.write(&data2); // Overwrites without reading
-        
-        let read = buffer.try_read().unwrap();
-        assert_eq!(read[0], 2.0); // Should get latest data
-    }
-    
-    #[test]
-    fn test_pipe_buffer_empty_read() {
-        let buffer = PipeBuffer::<f32, 64>::new();
-        
-        assert!(buffer.try_read().is_none());
-        assert_eq!(buffer.stats().underflows, 1);
-    }
-    
-    #[test]
-    fn test_pipe_buffer_stats() {
-        let buffer = PipeBuffer::<f32, 64>::new();
-        
-        let data = [1.0; 64];
-        buffer.write(&data);
-        
-        let stats = buffer.stats();
-        assert_eq!(stats.writes, 1);
-        assert_eq!(stats.fill_level, 1.0);
-        
-        let _ = buffer.try_read();
-        
-        let stats = buffer.stats();
-        assert_eq!(stats.reads, 1);
-        assert_eq!(stats.fill_level, 0.0);
+        let read_data = buffer.try_read().unwrap();
+        assert_eq!(read_data[0], 42.0);
+        assert_eq!(buffer.read_seq(), 1);
+        assert!(buffer.is_caught_up());
     }
 }

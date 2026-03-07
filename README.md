@@ -139,43 +139,31 @@ graph TD
 ```
 kama-core/
 ├── src/
-│   ├── traits/
-│   │   ├── mod.rs        # реэкспорты
-│   │   ├── error.rs      # AudioError, AudioResult
-│   │   ├── node.rs       # AudioNode, NodeId, NodeCategory, NodeMetadata, NodeTypeId
-│   │   ├── param.rs      # ParamValue, ParamType, ParamMetadata, ParamRange
-│   │   └── port.rs       # PortId (выделен в отдельный модуль)
+│   ├── lib.rs           # Корневой модуль, реэкспорты
+│   ├── math.rs          # Абстракции числовых типов
 │   ├── buffer/
-│   │   ├── mod.rs        # PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer
-│   │   ├── pipe.rs       # PipeBuffer
-│   │   ├── fan.rs        # FanOutBuffer, FanInBuffer
-│   │   ├── ring.rs       # RingBuffer
-│   │   └── delay.rs      # DelayLine
+│   │   ├── mod.rs       # Буферы (AlignedBuffer, PipeBuffer)
+│   │   ├── pipe.rs      # Прямые соединения
+│   │   └── ring.rs      # Кольцевые буферы
+│   ├── queue/
+│   │   ├── mod.rs       # Очереди (RtQueue)
+│   │   ├── spsc.rs      # Single-producer single-consumer
+│   │   ├── mpsc.rs      # Multi-producer single-consumer
+│   │   └── ring.rs      # Кольцевая очередь
+│   ├── port.rs          # Порты и идентификаторы
+│   ├── node.rs          # Узлы (Source/Processor/Sink)
+│   ├── error.rs         # Система ошибок
 │   ├── macros/
-│   │   ├── mod.rs        # реэкспорты
-│   │   ├── processor.rs  # processor! макрос
-│   │   ├── sink.rs       # sink! макрос
-│   │   └── source.rs     # source! макрос
-│   ├── math/
-│   │   ├── mod.rs        # AudioNum, конвертации, математические функции
-│   │   ├── num.rs        # AudioNum trait
-│   │   ├── conversions.rs # конвертации
-│   │   └── functions.rs  # математические функции
-│   ├── queues/
-│   │   ├── mod.rs        # реэкспорты
-│   │   ├── command.rs    # CommandQueue, CommandEnum
-│   │   ├── telemetry.rs  # TelemetryQueue, Telemetry
-│   │   ├── signal.rs     # SignalSource, SignalDispatcher
-│   │   ├── observer.rs   # MicroControlObserver, MicroControlPermit
-│   │   └── error.rs      # QueueError
-│   ├── time/
-│   │   ├── mod.rs        # Clock, TimeProvider, TickInfo
-│   │   ├── clock.rs      # Clock trait
-│   │   ├── provider.rs   # TimeProvider trait
-│   │   ├── system_clock.rs # SystemClock
-│   │   └── tick.rs       # TickInfo
-│   ├── error.rs          # crate-level error types (AudioError, AudioResult)
-│   └── prelude.rs        # Удобный реэкспорт всех основных типов
+│   │   ├── mod.rs       # Макросы
+│   │   ├── source.rs    # source_node!
+│   │   ├── processor.rs # processor_node!
+│   │   ├── sink.rs      # sink_node!
+│   │   ├── params.rs    # Вспомогательные макросы для параметров
+│   │   └── ports.rs     # Вспомогательные макросы для портов
+│   ├── graph.rs         # Базовые типы для графа
+│   ├── event.rs         # События и сигналы
+│   ├── config.rs        # Конфигурация
+│   └── utils.rs         # Утилиты
 ```
 
 ## 🧪 Тестирование
@@ -576,6 +564,293 @@ world.awaken();  // Синтезатор начинает слышать, дум
 [![tests](https://img.shields.io/badge/tests-20%2B-passing)](https://github.com/DigitalRats/kama-audio)
 [![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DigitalRats/kama-audio)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
+
+## Исправленный раздел README.md: kama-graph
+
+## 🔗 kama-graph — аудиограф для реального времени
+
+Библиотека для построения и выполнения гибких аудиографов с поддержкой:
+- **Аудио- и control-сигналов** в единой системе
+- **Фиксированных блоков** для предсказуемой производительности
+- **Топологической сортировки** с обнаружением циклов
+- **Zero-copy соединений** через lock-free буферы
+- **Двухпоточной архитектуры** с неблокирующими очередями
+- **Двунаправленной связи** с миром автоматов (kama-patchbay)
+
+### 🏗️ Основные концепции
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         МИР АВТОМАТОВ                                │
+│                         (kama-patchbay)                               │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  Автоматы (LFO, Env)   Сенсоры (анализаторы)               │    │
+│  │        │                      ▲                             │    │
+│  └────────┼──────────────────────┼─────────────────────────────┘    │
+│           │ Control Queue        │ Telemetry Queue                   │
+│           ▼ (команды)             │ (данные)                          │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                     AUDIOGRAPH                                │    │
+│  │  ┌────────┐    ┌────────────┐    ┌────────┐    ┌────────┐   │    │
+│  │  │ Source │───►│ Processor  │───►│Processor│───►│  Sink  │   │    │
+│  │  └────────┘    └────────────┘    └────────┘    └────────┘   │    │
+│  │       │              │                 │            │        │    │
+│  │       │  Анализ      │  Телеметрия     │  Контроль  │        │    │
+│  │       ▼              ▼                 ▼            ▼        │    │
+│  │  ┌──────────────────────────────────────────────────────┐   │    │
+│  │  │           Очереди (Command/Telemetry)                │   │    │
+│  │  └──────────────────────────────────────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Ключевые компоненты
+
+| Компонент | Назначение |
+|-----------|------------|
+| **`AudioGraph`** | Контейнер для узлов, управление соединениями, топологическая сортировка |
+| **`Processor`** | Пассивный процессор (преобразует входные блоки в выходные) |
+| **`Source`** | Активный источник (генерирует аудио, не имеет входов) |
+| **`Sink`** | Активный приёмник (потребляет аудио, не имеет выходов) |
+| **`PipeBuffer`** | Lock-free соединение между узлами (zero-copy) |
+| **`CommandQueue`** | Очередь для получения команд от мира автоматов |
+| **`TelemetryQueue`** | Очередь для отправки данных в мир автоматов |
+| **`MicroControlObserver`** | Наблюдатель за микро-контролем (нарушения real-time) |
+
+### 🤖 Связь с миром автоматов (kama-patchbay)
+
+Граф и мир автоматов общаются через **две неблокирующие очереди**:
+
+#### 1. **Command Queue** (от автоматов к графу)
+```rust
+// В мире автоматов (kama-patchbay)
+let cmd = SetParameter::new(
+    PortId::control_in(filter_id, 0),
+    ParameterId::new("cutoff")?,
+    1000.0,
+    SignalSource::Automaton("lfo1".into())
+);
+cmd_queue.send(CommandEnum::SetParameter(cmd))?;
+
+// В аудиографе (проверяется перед каждым блоком)
+while let Ok(cmd) = graph.command_queue().try_recv() {
+    match cmd {
+        CommandEnum::SetParameter(sp) => {
+            node.set_parameter(&sp.parameter, ParamValue::Float(sp.value))?;
+        }
+        _ => {} // другие команды игнорируются
+    }
+}
+```
+
+#### 2. **Telemetry Queue** (от графа к автоматам)
+```rust
+// В аудиографе (после обработки блока)
+graph.telemetry_queue().send_parameter(port, param, value)?;
+graph.telemetry_queue().send_peak(port, peak_value)?;
+
+// В мире автоматов (сенсоры слушают)
+while let Ok(telemetry) = telemetry_rx.try_recv() {
+    match telemetry {
+        Telemetry::ParameterValue { port, value, .. } => {
+            sensor.update(value);
+        }
+        Telemetry::Peak { port, value, .. } => {
+            envelope_follower.update(value);
+        }
+        _ => {}
+    }
+}
+```
+
+### 🎯 Микро-контроль и наблюдатель
+
+```rust
+// Создаём наблюдателя
+let observer = MicroControlObserver::with_sender(telemetry_tx);
+
+// Подключаем к графу
+graph.connect_observer(observer);
+
+// Где-то в коде (если очень нужно нарушить законы природы)
+let result = graph.with_parameter_observed(
+    port,
+    &param,
+    "wild_servo",
+    |node, param| {
+        // Прямой доступ к параметру (микро-контроль)
+        node.set_parameter(param, ParamValue::Float(0.5))
+    }
+);
+
+// Наблюдатель зафиксирует нарушение, если время превысило порог
+```
+
+### 🚀 Быстрый старт
+
+```rust
+use kama_graph::prelude::*;
+use kama_core::queues::CommandQueue;
+use kama_oscillators::SineOsc;
+use kama_digital_filters::LowPassFilter;
+
+const BLOCK_SIZE: usize = 64;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Создаём граф
+    let mut graph = AudioGraph::<BLOCK_SIZE>::new(44100.0);
+    
+    // 2. Подключаем очереди для связи с миром автоматов
+    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+    let (tel_tx, tel_rx) = crossbeam_channel::unbounded();
+    
+    graph.connect_command_queue(cmd_rx);
+    graph.connect_telemetry(tel_tx);
+    
+    // 3. Добавляем узлы
+    let osc_id = graph.add_processor(Box::new(SineOsc::new(440.0)))?;
+    let filter_id = graph.add_processor(Box::new(LowPassFilter::new(1000.0)))?;
+    let sink_id = graph.add_sink(Box::new(NullSink::new()))?;
+    
+    // 4. Соединяем
+    graph.connect_audio(osc_id, 0, filter_id, 0)?;
+    graph.connect_audio(filter_id, 0, sink_id, 0)?;
+    
+    // 5. Запускаем обработку (Sink активен)
+    graph.start()?;
+    
+    // 6. Где-то в другом потоке мир автоматов может посылать команды
+    std::thread::spawn(move || {
+        let cmd = SetParameter::new(
+            PortId::control_in(filter_id, 0),
+            ParameterId::new("cutoff").unwrap(),
+            2000.0,
+            SignalSource::Manual,
+        );
+        cmd_tx.send(CommandEnum::SetParameter(cmd)).unwrap();
+    });
+    
+    Ok(())
+}
+```
+
+### 📊 Типы сигналов
+
+Граф поддерживает два типа сигналов:
+
+| Тип | Описание | Примеры |
+|-----|----------|---------|
+| **`Audio`** | Высокочастотные аудио-сигналы (обычно 44.1/48 kHz) | Звук с осциллятора, выход фильтра |
+| **`Control`** | Низкочастотные управляющие сигналы | LFO, огибающие, выходы анализаторов |
+
+```rust
+// Аудио-соединение
+graph.connect_audio(osc_id, 0, filter_id, 0)?;
+
+// Control-соединение (для модуляции)
+graph.connect_control(lfo_id, 0, filter_id, 1)?;
+```
+
+### 🔌 Соединения и буферы
+
+Все соединения между узлами используют **lock-free кольцевые буферы**:
+
+```rust
+// Прямое соединение (точка-точка)
+graph.connect_audio(source_id, 0, processor_id, 0)?;
+
+// Разветвление (один источник — много получателей)
+graph.connect_audio(source_id, 0, processor1_id, 0)?;
+graph.connect_audio(source_id, 0, processor2_id, 0)?;
+
+// Суммирование (много источников — один получатель)
+graph.connect_audio(source1_id, 0, mixer_id, 0)?;
+graph.connect_audio(source2_id, 0, mixer_id, 1)?;
+```
+
+### ⚡ Двухпоточная архитектура
+
+```
+[Аудио-поток (высокий приоритет)]       [Поток автоматов (низкий приоритет)]
+────────────────────────────────────────────────────────────────────────────
+         │                                           │
+    Обработка блоков                           Автоматы (LFO, Env)
+    (pull от Sink)                              │
+         │                                      │
+    Проверка очереди команд ◄───неблокирующая─── Команды
+         │                     очередь
+    Отправка телеметрии ─────неблокирующая─────► Сенсоры
+         │                     очередь
+    Микро-контроль                              │
+    (с наблюдением)                              │
+         │                                           │
+    Статистика и мониторинг                    Обработка сенсоров
+```
+
+### 🧪 Примеры
+
+#### Связь с миром автоматов
+```rust
+// В аудиографе
+let mut graph = AudioGraph::<64>::new(44100.0);
+graph.connect_command_queue(cmd_rx);
+graph.connect_telemetry(tel_tx);
+graph.connect_observer(observer);
+
+// В мире автоматов
+let lfo = LfoAutomaton::new(5.0);
+let servo = Servo::new(
+    "filter_servo",
+    lfo,
+    ParameterTarget::new(filter_port, ParameterId::new("cutoff")?),
+    cmd_tx,
+);
+
+// LFO будет посылать команды, граф их применять,
+// а сенсоры получать телеметрию о результате
+```
+
+#### Простой синтезатор
+```rust
+// Осциллятор → фильтр → усиление
+let osc_id = graph.add_processor(SineOsc::new(440.0))?;
+let filter_id = graph.add_processor(LowPassFilter::new(1000.0))?;
+let gain_id = graph.add_processor(GainNode::new(0.8))?;
+
+graph.connect_audio(osc_id, 0, filter_id, 0)?;
+graph.connect_audio(filter_id, 0, gain_id, 0)?;
+```
+
+### 📈 Производительность
+
+- **Zero-copy** соединения между узлами
+- **Lock-free** операции для real-time безопасности
+- **Фиксированные блоки** для предсказуемого поведения
+- **Минимальные накладные расходы** (< 5% на граф)
+- **Неблокирующие очереди** для межпоточного взаимодействия
+
+### 🔧 Интеграция с другими крейтами
+
+- **`kama-core`** — базовые трейты, буферы, очереди
+- **`kama-patchbay`** — мир автоматов (управление и автоматизация)
+- **`kama-oscillators`** — готовые генераторы для `Source`
+- **`kama-digital-filters`** — фильтры для `Processor`
+- **`kama-digital-effects`** — эффекты для `Processor`
+- **`kama-io`** — аудио-бэкенды для `Sink` (ALSA, CPAL, JACK)
+
+### 📚 Документация
+
+Полная документация: [docs.rs/kama-graph](https://docs.rs/kama-graph)
+
+Примеры: [github.com/DigitalRats/kama-audio/tree/main/kama-graph/examples](https://github.com/DigitalRats/kama-audio/tree/main/kama-graph/examples)
+
+### 🤝 Философия
+
+Граф — это **звуковой мир**, где всё происходит быстро и детерминированно. 
+Мир автоматов — это **мир разума**, где живут LFO, огибающие и сенсоры.
+Они общаются через очереди — **законы природы**, которые нельзя нарушать без последствий.
+
+> "В каждом звуке живёт частичка своего создателя, а в каждом автомате — частичка души" 
 
 
 ## 📄 Лицензия

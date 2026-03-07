@@ -1,20 +1,24 @@
-//! # Error Types for Kama Core
+//! # Error Types for Kama Audio Traits
 //!
 //! This module defines the error types used throughout the Kama Audio ecosystem.
-#![allow(dead_code)]
+//! All errors implement `std::error::Error` and are designed to be:
+//! - Thread-safe (`Send + Sync`)
+//! - Cloneable for passing between threads
+//! - Human-readable with detailed context
+//! - Real-time safe (no allocations in error paths)
 
 use thiserror::Error;
 use std::fmt;
-
-/// Alias for `ProcessError` used in trait definitions.
-pub type AudioError = ProcessError;
 
 // ============================================================================
 // Core Process Error
 // ============================================================================
 
 /// Main error type for audio processing operations
-#[derive(Error, Debug, Clone, PartialEq)]  // Убрали Eq
+///
+/// This error can occur during node processing, parameter changes,
+/// or any other operation in the audio graph.
+#[derive(Error, Debug, Clone, PartialEq)]
 pub enum ProcessError {
     /// Error during audio processing
     #[error("Processing error: {0}")]
@@ -35,6 +39,23 @@ pub enum ProcessError {
     /// Node not found
     #[error("Node {0} not found")]
     NodeNotFound(u32),
+    
+    /// Port not found
+    #[error("Port {0} not found")]
+    PortNotFound(String),
+    
+    /// Connection error
+    #[error("Connection error: {0}")]
+    Connection(String),
+    
+    /// Type mismatch (e.g., trying to connect audio to control)
+    #[error("Type mismatch: expected {expected}, got {got}")]
+    TypeMismatch {
+        /// Expected type
+        expected: &'static str,
+        /// Actual type
+        got: &'static str,
+    },
     
     /// Sample rate mismatch
     #[error("Sample rate mismatch: expected {expected}, got {got}")]
@@ -99,6 +120,21 @@ impl ProcessError {
         Self::NodeNotFound(id)
     }
     
+    /// Create a new port not found error
+    pub fn port_not_found(port: impl fmt::Display) -> Self {
+        Self::PortNotFound(format!("{}", port))
+    }
+    
+    /// Create a new connection error
+    pub fn connection(msg: impl Into<String>) -> Self {
+        Self::Connection(msg.into())
+    }
+    
+    /// Create a new type mismatch error
+    pub fn type_mismatch(expected: &'static str, got: &'static str) -> Self {
+        Self::TypeMismatch { expected, got }
+    }
+    
     /// Create a new sample rate mismatch error
     pub fn sample_rate_mismatch(expected: f32, got: f32) -> Self {
         Self::SampleRateMismatch { expected, got }
@@ -120,6 +156,9 @@ impl ProcessError {
     }
     
     /// Check if this error is recoverable
+    ///
+    /// Recoverable errors are those that don't require stopping the audio thread,
+    /// such as temporary buffer underflows or parameter errors.
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Processing(_) => true,
@@ -127,6 +166,9 @@ impl ProcessError {
             Self::InvalidPort(_) => false,
             Self::Buffer(_) => true,
             Self::NodeNotFound(_) => false,
+            Self::PortNotFound(_) => false,
+            Self::Connection(_) => false,
+            Self::TypeMismatch { .. } => false,
             Self::SampleRateMismatch { .. } => false,
             Self::Config(_) => false,
             Self::NotInitialized => true,
@@ -137,7 +179,7 @@ impl ProcessError {
         }
     }
     
-    /// Get a short error code for this error
+    /// Get a short error code for this error (useful for logging)
     pub fn code(&self) -> &'static str {
         match self {
             Self::Processing(_) => "ERR_PROCESSING",
@@ -145,6 +187,9 @@ impl ProcessError {
             Self::InvalidPort(_) => "ERR_INVALID_PORT",
             Self::Buffer(_) => "ERR_BUFFER",
             Self::NodeNotFound(_) => "ERR_NODE_NOT_FOUND",
+            Self::PortNotFound(_) => "ERR_PORT_NOT_FOUND",
+            Self::Connection(_) => "ERR_CONNECTION",
+            Self::TypeMismatch { .. } => "ERR_TYPE_MISMATCH",
             Self::SampleRateMismatch { .. } => "ERR_SAMPLE_RATE",
             Self::Config(_) => "ERR_CONFIG",
             Self::NotInitialized => "ERR_NOT_INIT",
@@ -157,83 +202,11 @@ impl ProcessError {
 }
 
 // ============================================================================
-// Buffer Error
-// ============================================================================
-
-/// Errors that can occur during buffer operations
-#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]  // BufferError может быть Eq
-pub enum BufferError {
-    /// Buffer is empty (tried to read when no data available)
-    #[error("Buffer is empty")]
-    Empty,
-    
-    /// Buffer is full (tried to write when no space available)
-    #[error("Buffer is full")]
-    Full,
-    
-    /// Invalid index access
-    #[error("Invalid index: {0}")]
-    InvalidIndex(usize),
-    
-    /// Buffer is disconnected (other end is gone)
-    #[error("Buffer is disconnected")]
-    Disconnected,
-    
-    /// Operation would block (for non-blocking operations)
-    #[error("Operation would block")]
-    WouldBlock,
-    
-    /// Buffer overflow (data was lost)
-    #[error("Buffer overflow")]
-    Overflow,
-    
-    /// Buffer underflow (no data available)
-    #[error("Buffer underflow")]
-    Underflow,
-    
-    /// Invalid buffer size
-    #[error("Invalid buffer size: {0}")]
-    InvalidSize(usize),
-    
-    /// Misaligned access
-    #[error("Misaligned access")]
-    Misaligned,
-}
-
-/// Result type for buffer operations
-pub type BufferResult<T> = Result<T, BufferError>;
-
-impl BufferError {
-    /// Check if this error is recoverable
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::Empty | Self::Full | Self::WouldBlock | Self::Overflow | Self::Underflow => true,
-            Self::InvalidIndex(_) | Self::Disconnected | Self::InvalidSize(_) | Self::Misaligned => false,
-        }
-    }
-    
-    /// Get a short error code
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Empty => "ERR_BUF_EMPTY",
-            Self::Full => "ERR_BUF_FULL",
-            Self::InvalidIndex(_) => "ERR_BUF_INVALID_INDEX",
-            Self::Disconnected => "ERR_BUF_DISCONNECTED",
-            Self::WouldBlock => "ERR_BUF_WOULD_BLOCK",
-            Self::Overflow => "ERR_BUF_OVERFLOW",
-            Self::Underflow => "ERR_BUF_UNDERFLOW",
-            Self::InvalidSize(_) => "ERR_BUF_INVALID_SIZE",
-            Self::Misaligned => "ERR_BUF_MISALIGNED",
-        }
-    }
-}
-
-// ============================================================================
 // Parameter Error
 // ============================================================================
 
 /// Errors that can occur during parameter operations
-#[derive(Error, Debug, Clone, PartialEq)]  // Убрали Eq
+#[derive(Error, Debug, Clone, PartialEq)]
 pub enum ParameterError {
     /// Parameter name is empty
     #[error("Parameter name cannot be empty")]
@@ -285,6 +258,10 @@ pub enum ParameterError {
     /// Duplicate parameter
     #[error("Parameter '{0}' already exists")]
     Duplicate(String),
+    
+    /// Parameter is read-only
+    #[error("Parameter '{0}' is read-only")]
+    ReadOnly(String),
 }
 
 /// Result type for parameter operations
@@ -297,7 +274,10 @@ impl ParameterError {
     }
     
     /// Create a new type mismatch error
-    pub fn type_mismatch(expected: crate::traits::ParamType, got: crate::traits::ParamType) -> Self {
+    pub fn type_mismatch(
+        expected: crate::traits::ParamType,
+        got: crate::traits::ParamType,
+    ) -> Self {
         Self::TypeMismatch { expected, got }
     }
     
@@ -315,127 +295,156 @@ impl ParameterError {
     pub fn duplicate(name: impl Into<String>) -> Self {
         Self::Duplicate(name.into())
     }
-}
-
-// ============================================================================
-// Queue Error
-// ============================================================================
-
-/// Errors that can occur during queue operations
-#[derive(Error, Debug, Clone, PartialEq, Eq)]  // QueueError может быть Eq
-pub enum QueueError {
-    /// Queue is full
-    #[error("Queue is full")]
-    QueueFull,
     
-    /// Queue is empty
-    #[error("Queue is empty")]
-    QueueEmpty,
-    
-    /// Channel is disconnected (all senders/receivers dropped)
-    #[error("Channel disconnected")]
-    ChannelDisconnected,
-    
-    /// Operation timed out
-    #[error("Operation timed out")]
-    Timeout,
-    
-    /// Operation not supported for this queue type
-    #[error("Operation not supported: {0}")]
-    Unsupported(String),
-    
-    /// Send failed with data loss
-    #[error("Send failed: {0}")]
-    SendFailed(String),
-    
-    /// Receive failed
-    #[error("Receive failed: {0}")]
-    ReceiveFailed(String),
-    
-    /// Invalid queue configuration
-    #[error("Invalid queue configuration: {0}")]
-    InvalidConfig(String),
-}
-
-/// Result type for queue operations
-pub type QueueResult<T> = Result<T, QueueError>;
-
-impl QueueError {
-    /// Create a new unsupported error
-    pub fn unsupported(msg: impl Into<String>) -> Self {
-        Self::Unsupported(msg.into())
-    }
-    
-    /// Create a new send failed error
-    pub fn send_failed(msg: impl Into<String>) -> Self {
-        Self::SendFailed(msg.into())
-    }
-    
-    /// Create a new receive failed error
-    pub fn receive_failed(msg: impl Into<String>) -> Self {
-        Self::ReceiveFailed(msg.into())
-    }
-    
-    /// Create a new invalid config error
-    pub fn invalid_config(msg: impl Into<String>) -> Self {
-        Self::InvalidConfig(msg.into())
+    /// Create a new read-only error
+    pub fn read_only(name: impl Into<String>) -> Self {
+        Self::ReadOnly(name.into())
     }
 }
 
 // ============================================================================
-// Conversion Implementations
+// Port Error
 // ============================================================================
 
-impl From<BufferError> for ProcessError {
-    fn from(err: BufferError) -> Self {
-        Self::Buffer(err.to_string())
+/// Errors that can occur during port operations
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum PortError {
+    /// Port not found
+    #[error("Port {0} not found")]
+    NotFound(String),
+    
+    /// Port direction mismatch (e.g., trying to connect output to output)
+    #[error("Port direction mismatch: expected {expected}, got {got}")]
+    DirectionMismatch {
+        /// Expected direction
+        expected: crate::traits::PortDirection,
+        /// Actual direction
+        got: crate::traits::PortDirection,
+    },
+    
+    /// Port type mismatch (e.g., trying to connect audio to control)
+    #[error("Port type mismatch: expected {expected:?}, got {got:?}")]
+    TypeMismatch {
+        /// Expected port type
+        expected: crate::traits::PortType,
+        /// Actual port type
+        got: crate::traits::PortType,
+    },
+    
+    /// Port already connected
+    #[error("Port {0} is already connected")]
+    AlreadyConnected(String),
+    
+    /// Maximum connections reached
+    #[error("Maximum connections reached for port {0}")]
+    MaxConnectionsReached(String),
+    
+    /// Invalid port index
+    #[error("Invalid port index: {0}")]
+    InvalidIndex(usize),
+}
+
+/// Result type for port operations
+pub type PortResult<T> = Result<T, PortError>;
+
+impl PortError {
+    /// Create a new not found error
+    pub fn not_found(port: impl fmt::Display) -> Self {
+        Self::NotFound(format!("{}", port))
+    }
+    
+    /// Create a new direction mismatch error
+    pub fn direction_mismatch(
+        expected: crate::traits::PortDirection,
+        got: crate::traits::PortDirection,
+    ) -> Self {
+        Self::DirectionMismatch { expected, got }
+    }
+    
+    /// Create a new type mismatch error
+    pub fn type_mismatch(
+        expected: crate::traits::PortType,
+        got: crate::traits::PortType,
+    ) -> Self {
+        Self::TypeMismatch { expected, got }
+    }
+    
+    /// Create a new already connected error
+    pub fn already_connected(port: impl fmt::Display) -> Self {
+        Self::AlreadyConnected(format!("{}", port))
     }
 }
 
-impl From<ParameterError> for ProcessError {
-    fn from(err: ParameterError) -> Self {
-        match err {
-            ParameterError::NotFound(name) => Self::parameter(format!("Parameter not found: {}", name)),
-            ParameterError::TypeMismatch { expected, got } => {
-                Self::parameter(format!("Type mismatch: expected {:?}, got {:?}", expected, got))
-            }
-            ParameterError::OutOfRange { value, min, max } => {
-                Self::parameter(format!("Value {} out of range [{}, {}]", value, min, max))
-            }
-            _ => Self::parameter(err.to_string()),
-        }
-    }
+// ============================================================================
+// Clock Error
+// ============================================================================
+
+/// Errors that can occur during clock operations
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum ClockError {
+    /// Hardware error (ALSA, JACK, etc.)
+    #[error("Hardware error: {0}")]
+    Hardware(String),
+    
+    /// Invalid sample rate
+    #[error("Invalid sample rate: {0}")]
+    InvalidSampleRate(f32),
+    
+    /// Clock not started
+    #[error("Clock not started")]
+    NotStarted,
+    
+    /// Clock already started
+    #[error("Clock already started")]
+    AlreadyStarted,
+    
+    /// Clock underflow
+    #[error("Clock underflow")]
+    Underflow,
+    
+    /// Clock overflow
+    #[error("Clock overflow")]
+    Overflow,
 }
 
-impl From<std::io::Error> for ProcessError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Processing(format!("IO error: {}", err))
-    }
+/// Result type for clock operations
+pub type ClockResult<T> = Result<T, ClockError>;
+
+// ============================================================================
+// Connection Error
+// ============================================================================
+
+/// Errors that can occur during graph connections
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionError {
+    /// Cannot connect node to itself
+    #[error("Cannot connect node to itself")]
+    SelfConnection,
+    
+    /// Cycle detected in graph
+    #[error("Cycle detected in graph")]
+    CycleDetected,
+    
+    /// Connection would create a cycle
+    #[error("Connection would create a cycle")]
+    WouldCreateCycle,
+    
+    /// Invalid connection
+    #[error("Invalid connection: {0}")]
+    Invalid(String),
 }
 
-impl<T> From<crossbeam_channel::TrySendError<T>> for QueueError {
-    fn from(err: crossbeam_channel::TrySendError<T>) -> Self {
-        match err {
-            crossbeam_channel::TrySendError::Full(_) => QueueError::QueueFull,
-            crossbeam_channel::TrySendError::Disconnected(_) => QueueError::ChannelDisconnected,
-        }
-    }
-}
-
-impl From<crossbeam_channel::TryRecvError> for QueueError {
-    fn from(err: crossbeam_channel::TryRecvError) -> Self {
-        match err {
-            crossbeam_channel::TryRecvError::Empty => QueueError::QueueEmpty,
-            crossbeam_channel::TryRecvError::Disconnected => QueueError::ChannelDisconnected,
-        }
-    }
-}
+/// Result type for connection operations
+pub type ConnectionResult<T> = Result<T, ConnectionError>;
 
 // ============================================================================
 // Error Context (for adding extra information)
 // ============================================================================
 
 /// Additional context for errors
+///
+/// This can be attached to errors to provide more information
+/// about where and why they occurred.
 #[derive(Debug, Clone)]
 pub struct ErrorContext {
     /// Source location (file:line)
@@ -447,6 +456,15 @@ pub struct ErrorContext {
     /// Timestamp when error occurred
     pub timestamp: std::time::SystemTime,
     
+    /// Node ID (if applicable)
+    pub node_id: Option<crate::traits::NodeId>,
+    
+    /// Port ID (if applicable)
+    pub port_id: Option<String>,
+    
+    /// Parameter ID (if applicable)
+    pub parameter_id: Option<String>,
+    
     /// Additional key-value pairs
     pub extras: Vec<(String, String)>,
 }
@@ -457,6 +475,9 @@ impl Default for ErrorContext {
             location: None,
             thread_id: Some(std::thread::current().id()),
             timestamp: std::time::SystemTime::now(),
+            node_id: None,
+            port_id: None,
+            parameter_id: None,
             extras: Vec::new(),
         }
     }
@@ -471,6 +492,24 @@ impl ErrorContext {
     /// Add source location
     pub fn with_location(mut self, file: &str, line: u32) -> Self {
         self.location = Some(format!("{}:{}", file, line));
+        self
+    }
+    
+    /// Add node ID
+    pub fn with_node(mut self, node_id: crate::traits::NodeId) -> Self {
+        self.node_id = Some(node_id);
+        self
+    }
+    
+    /// Add port ID
+    pub fn with_port(mut self, port_id: impl fmt::Display) -> Self {
+        self.port_id = Some(format!("{}", port_id));
+        self
+    }
+    
+    /// Add parameter ID
+    pub fn with_parameter(mut self, param_id: impl AsRef<str>) -> Self {
+        self.parameter_id = Some(param_id.as_ref().to_string());
         self
     }
     
@@ -492,11 +531,112 @@ impl ErrorContext {
             msg.push_str(&format!("\n  thread: {:?}", id));
         }
         
+        if let Some(node) = self.node_id {
+            msg.push_str(&format!("\n  node: {}", node));
+        }
+        
+        if let Some(port) = &self.port_id {
+            msg.push_str(&format!("\n  port: {}", port));
+        }
+        
+        if let Some(param) = &self.parameter_id {
+            msg.push_str(&format!("\n  parameter: {}", param));
+        }
+        
         for (key, value) in &self.extras {
             msg.push_str(&format!("\n  {}: {}", key, value));
         }
         
         msg
+    }
+}
+
+// ============================================================================
+// Conversion Implementations
+// ============================================================================
+
+impl From<ParameterError> for ProcessError {
+    fn from(err: ParameterError) -> Self {
+        match err {
+            ParameterError::NotFound(name) => {
+                Self::parameter(format!("Parameter not found: {}", name))
+            }
+            ParameterError::TypeMismatch { expected, got } => {
+                Self::type_mismatch(expected.name(), got.name())
+            }
+            ParameterError::OutOfRange { value, min, max } => {
+                Self::parameter(format!("Value {} out of range [{}, {}]", value, min, max))
+            }
+            ParameterError::InvalidChoice(choice) => {
+                Self::parameter(format!("Invalid choice: {}", choice))
+            }
+            ParameterError::Duplicate(name) => {
+                Self::parameter(format!("Duplicate parameter: {}", name))
+            }
+            ParameterError::ReadOnly(name) => {
+                Self::parameter(format!("Parameter is read-only: {}", name))
+            }
+            _ => Self::parameter(err.to_string()),
+        }
+    }
+}
+
+impl From<PortError> for ProcessError {
+    fn from(err: PortError) -> Self {
+        match err {
+            PortError::NotFound(port) => Self::port_not_found(port),
+            PortError::DirectionMismatch { expected, got } => {
+                Self::type_mismatch(expected.name(), got.name())
+            }
+            PortError::TypeMismatch { expected, got } => {
+                Self::type_mismatch(expected.name(), got.name())
+            }
+            PortError::AlreadyConnected(port) => {
+                Self::connection(format!("Port already connected: {}", port))
+            }
+            PortError::MaxConnectionsReached(port) => {
+                Self::connection(format!("Max connections reached for port: {}", port))
+            }
+            PortError::InvalidIndex(idx) => {
+                Self::invalid_port(format!("Invalid port index: {}", idx))
+            }
+        }
+    }
+}
+
+impl From<ClockError> for ProcessError {
+    fn from(err: ClockError) -> Self {
+        match err {
+            ClockError::Hardware(msg) => Self::processing(format!("Hardware error: {}", msg)),
+            ClockError::InvalidSampleRate(sr) => {
+                Self::config(format!("Invalid sample rate: {}", sr))
+            }
+            ClockError::NotStarted => Self::processing("Clock not started"),
+            ClockError::AlreadyStarted => Self::processing("Clock already started"),
+            ClockError::Underflow => Self::buffer("Clock underflow"),
+            ClockError::Overflow => Self::buffer("Clock overflow"),
+        }
+    }
+}
+
+impl From<ConnectionError> for ProcessError {
+    fn from(err: ConnectionError) -> Self {
+        match err {
+            ConnectionError::SelfConnection => {
+                Self::connection("Cannot connect node to itself")
+            }
+            ConnectionError::CycleDetected => Self::connection("Cycle detected in graph"),
+            ConnectionError::WouldCreateCycle => {
+                Self::connection("Connection would create a cycle")
+            }
+            ConnectionError::Invalid(msg) => Self::connection(msg),
+        }
+    }
+}
+
+impl From<std::io::Error> for ProcessError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Processing(format!("IO error: {}", err))
     }
 }
 
@@ -507,6 +647,7 @@ impl ErrorContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::{PortDirection, PortType};
     
     #[test]
     fn test_process_error_creation() {
@@ -522,19 +663,6 @@ mod tests {
     }
     
     #[test]
-    fn test_buffer_error_creation() {
-        let err = BufferError::Empty;
-        assert!(matches!(err, BufferError::Empty));
-        assert_eq!(err.code(), "ERR_BUF_EMPTY");
-        assert!(err.is_recoverable());
-        
-        let err = BufferError::InvalidIndex(5);
-        assert!(matches!(err, BufferError::InvalidIndex(5)));
-        assert_eq!(err.code(), "ERR_BUF_INVALID_INDEX");
-        assert!(!err.is_recoverable());
-    }
-    
-    #[test]
     fn test_parameter_error_creation() {
         let err = ParameterError::not_found("gain");
         assert!(matches!(err, ParameterError::NotFound(_)));
@@ -544,9 +672,69 @@ mod tests {
     }
     
     #[test]
+    fn test_port_error_creation() {
+        let err = PortError::direction_mismatch(PortDirection::Input, PortDirection::Output);
+        assert!(matches!(err, PortError::DirectionMismatch { .. }));
+        
+        let err = PortError::type_mismatch(PortType::Audio, PortType::Control);
+        assert!(matches!(err, PortError::TypeMismatch { .. }));
+    }
+    
+    #[test]
     fn test_error_conversions() {
-        let buf_err = BufferError::Empty;
-        let proc_err: ProcessError = buf_err.into();
+        let param_err = ParameterError::not_found("test");
+        let proc_err: ProcessError = param_err.into();
+        assert!(matches!(proc_err, ProcessError::Parameter(_)));
+        
+        let port_err = PortError::not_found("port");
+        let proc_err: ProcessError = port_err.into();
+        assert!(matches!(proc_err, ProcessError::PortNotFound(_)));
+        
+        let clock_err = ClockError::Underflow;
+        let proc_err: ProcessError = clock_err.into();
         assert!(matches!(proc_err, ProcessError::Buffer(_)));
+    }
+    
+    #[test]
+    fn test_error_context() {
+        let ctx = ErrorContext::new()
+            .with_location("test.rs", 42)
+            .with_node(crate::traits::NodeId(1))
+            .with_extra("sample_rate", "44100");
+        
+        let err = ProcessError::processing("test");
+        let formatted = ctx.format(&err);
+        
+        assert!(formatted.contains("test.rs:42"));
+        assert!(formatted.contains("node: Node(1)"));
+        assert!(formatted.contains("sample_rate: 44100"));
+    }
+    
+    #[test]
+    fn test_recoverable_flags() {
+        assert!(ProcessError::processing("test").is_recoverable());
+        assert!(ProcessError::parameter("test").is_recoverable());
+        assert!(ProcessError::buffer("test").is_recoverable());
+        assert!(!ProcessError::node_not_found(42).is_recoverable());
+        assert!(!ProcessError::port_not_found("port").is_recoverable());
+    }
+    
+    #[test]
+    fn test_error_codes() {
+        assert_eq!(ProcessError::processing("").code(), "ERR_PROCESSING");
+        assert_eq!(ProcessError::node_not_found(0).code(), "ERR_NODE_NOT_FOUND");
+    }
+    
+    #[test]
+    fn test_parameter_error_details() {
+        let err = ParameterError::out_of_range(1.5, 0.0, 1.0);
+        match err {
+            ParameterError::OutOfRange { value, min, max } => {
+                assert_eq!(value, 1.5);
+                assert_eq!(min, 0.0);
+                assert_eq!(max, 1.0);
+            }
+            _ => panic!("Wrong error type"),
+        }
     }
 }

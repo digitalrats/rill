@@ -3,14 +3,14 @@
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::time::{Clock, TickInfo, TimeProvider};
+use crate::traits::time::{Clock, TickInfo, TimeProvider};
 
 /// Системные часы – эталонная реализация `TimeProvider`.
 ///
 /// Потокобезопасны (lock-free), могут использоваться в аудиопотоке.
 #[derive(Default)]
 pub struct SystemClock {
-    sample_rate: f64,
+    pub sample_rate: f64,
     position: AtomicU64,
     bpm: AtomicU64, // храним биты f64 для атомарности
 }
@@ -34,6 +34,11 @@ impl SystemClock {
     pub fn position_seconds(&self) -> f64 {
         self.position_samples() as f64 / self.sample_rate()
     }
+
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+
 }
 
 impl Clock for SystemClock {

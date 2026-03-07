@@ -1,14 +1,14 @@
 [workspace]
 members = [
     "kama-core",
-    "kama-core-dsp",
-    "kama-graph",
-    "kama-patchbay",
-    "kama-oscillators",
-    "kama-digital-filters",
-    "kama-digital-effects",
-    "kama-eq",
-    "kama-mixer",
+    #"kama-core-dsp",
+    #"kama-graph",
+    #"kama-patchbay",
+    #"kama-oscillators",
+    #"kama-digital-filters",
+    #"kama-digital-effects",
+    #"kama-eq",
+    #"kama-mixer",
     #"kama-lofi", # Временно отключен
     #"kama-io", # Временно отключен
 ]
