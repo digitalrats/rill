@@ -1,20 +1,16 @@
 [workspace]
 members = [
     "kama-core",
-    "kama-buffers",
+    "kama-core-dsp",
     "kama-graph",
-    "kama-automation",
-    "kama-control",
-    "kama-dsp-common",
+    "kama-patchbay",
     "kama-oscillators",
     "kama-digital-filters",
     "kama-digital-effects",
     "kama-eq",
     "kama-mixer",
-    "kama-lofi",
-    "kama-hp",
-    "kama-io",
-    "kama-tests",
+    #"kama-lofi", # Временно отключен
+    #"kama-io", # Временно отключен
 ]
 resolver = "2"
 

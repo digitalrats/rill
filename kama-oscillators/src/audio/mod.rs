@@ -1,33 +1,18 @@
-//! Audio frequency oscillators (20Hz - 20kHz)
+//! Audio-rate oscillators (20Hz - 20kHz) with AudioNum support
 
-mod fm;
-mod noise;
-mod saw;
 mod sine;
-mod square;
-mod triangle;
+mod saw;
+// mod square;
+// mod triangle;
+mod noise;
+// mod fm;
 
-pub use fm::FmOsc;
-pub use noise::NoiseOsc;
-pub use saw::SawOsc;
 pub use sine::SineOsc;
-pub use square::SquareOsc;
-pub use triangle::TriangleOsc;
+pub use saw::SawOsc;
+// pub use square::SquareOsc;
+// pub use triangle::TriangleOsc;
+pub use noise::{NoiseOsc, NoiseType};
+// pub use fm::FmOsc;
 
-/// Common trait for all audio oscillators
-pub trait AudioOscillator: kama_core::traits::AudioNode {
-    /// Set oscillator frequency in Hz
-    fn set_frequency(&mut self, freq: f32);
-
-    /// Get current frequency
-    fn frequency(&self) -> f32;
-
-    /// Set output amplitude (0.0 - 1.0)
-    fn set_amplitude(&mut self, amp: f32);
-
-    /// Get current amplitude
-    fn amplitude(&self) -> f32;
-
-    /// Reset phase to zero
-    fn reset_phase(&mut self);
-}
+// Re-export core types
+pub use kama_core::AudioNum;

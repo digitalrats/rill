@@ -10,8 +10,7 @@ homepage = "https://github.com/DigitalRats/kama-audio"
 readme = "README.md"
 
 [dependencies]
-kama-core = { path = "../kama-core", version = "0.2.0" }
-kama-buffers = { path = "../kama-buffers", version = "0.2.0" }
+kama-core = { path = "../kama-core", version = "0.3.0" }
 kama-graph = { path = "../kama-graph", optional = true }
 kama-oscillators = { path = "../kama-oscillators", optional = true }
 kama-digital-effects = { path = "../kama-digital-effects", optional = true }

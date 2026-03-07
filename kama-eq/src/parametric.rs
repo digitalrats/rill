@@ -2,11 +2,13 @@
 
 use crate::band::{BandType, EqBand};
 use crate::utils::parse_band_param;
+use crate::FilterFactory;
 use kama_core::traits::{
-    ParamMetadata, ParamType,
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+    ParamMetadata, ParamType, ParamRange, AudioError, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+    ParameterId, DynProcessor, Processor,
 };
-use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
+use kama_core::{ProcessResult, ProcessError, DEFAULT_BLOCK_SIZE};
+use kama_core_dsp::filters::{Filter, FilterType};
 use std::sync::Arc;
 
 #[cfg(feature = "automation")]
@@ -16,7 +18,7 @@ use kama_core::signal::{ParameterChanged, SignalBus, SignalSource};
 ///
 /// Uses a filter factory to create filters for each band.
 /// Can work with any filter implementation (digital, analog, etc.)
-pub struct ParametricEq<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> {
+pub struct ParametricEq<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> {
     /// Filter factory
     factory: Factory,
     /// EQ bands
@@ -33,7 +35,7 @@ pub struct ParametricEq<F: Filter + 'static, Factory: FilterFactory<F> + Send + 
     signal_bus: Option<SignalBus<ParameterChanged>>,
 }
 
-impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
+impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
     ParametricEq<F, Factory>
 {
     /// Create a new parametric equalizer with specified number of bands
@@ -85,11 +87,13 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
             )));
         }
 
+        println!("DEBUG set_band: idx={}, freq={}, q={}, gain_db={}", index, frequency, q, gain_db);
+
         let band = &mut self.bands[index];
         band.set_frequency(frequency);
         band.set_q(q);
         band.set_gain_db(gain_db);
-        band.update_filter(&self.factory);
+        band.update_filter();
 
         #[cfg(feature = "automation")]
         self.send_band_update(index);
@@ -108,7 +112,7 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
 
         let band = &mut self.bands[index];
         band.band_type = band_type;
-        band.update_filter(&self.factory);
+        band.update_filter();
 
         #[cfg(feature = "automation")]
         self.send_band_update(index);
@@ -219,40 +223,53 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
     }
 }
 
-impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> AudioNode
+impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Processor<f32, DEFAULT_BLOCK_SIZE>
     for ParametricEq<F, Factory>
 {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+    fn process(
+        &mut self,
+        inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        outputs: &mut [&mut [f32; DEFAULT_BLOCK_SIZE]],
+        _control: &[f32],
+    ) -> ProcessResult<()> {
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
 
         let input = inputs[0];
         let output = &mut outputs[0];
-        let buffer_size = input.len().min(output.len());
 
-        // Process through all bands sequentially
-        for i in 0..buffer_size {
+        for i in 0..DEFAULT_BLOCK_SIZE {
             let mut sample = input[i];
-
             for band in &mut self.bands {
                 if band.is_enabled() {
                     sample = band.process(sample);
                 }
             }
-
             output[i] = sample * self.output_gain;
         }
 
         Ok(())
     }
 
-    fn get_param(&self, name: &str) -> Option<ParamValue> {
-        match name {
+    fn num_audio_inputs(&self) -> usize {
+        1
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+
+    fn num_control_inputs(&self) -> usize {
+        0
+    }
+
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        match id.as_str() {
             "num_bands" => Some(ParamValue::Int(self.bands.len() as i32)),
             "output_gain" => Some(ParamValue::Float(self.output_gain)),
             _ => {
-                if let Some((index, param)) = parse_band_param(name) {
+                if let Some((index, param)) = parse_band_param(id.as_str()) {
                     if let Some(band) = self.bands.get(index) {
                         match param {
                             "freq" | "frequency" => Some(ParamValue::Float(band.frequency())),
@@ -274,103 +291,93 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
         }
     }
 
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-        match (name, value.clone()) {
-            // <-- клонируем для проверки
+    fn set_parameter(
+        &mut self,
+        id: &ParameterId,
+        value: ParamValue,
+    ) -> ProcessResult<()> {
+        match (id.as_str(), value) {
             ("output_gain", ParamValue::Float(g)) => {
                 self.set_output_gain(g);
                 Ok(())
             }
-            _ => {
+            (name, val) => {
                 if let Some((index, param)) = parse_band_param(name) {
                     if index >= self.bands.len() {
-                        return Err(AudioError::Parameter(format!(
+                        return Err(kama_core::ProcessError::Parameter(format!(
                             "Band index {} out of range",
                             index
                         )));
                     }
-
                     match param {
                         "freq" | "frequency" => {
-                            if let ParamValue::Float(f) = value {
-                                // используем оригинальный value
+                            if let ParamValue::Float(f) = val {
                                 self.bands[index].set_frequency(f);
-                                self.bands[index].update_filter(&self.factory);
-
+                                self.bands[index].update_filter();
                                 #[cfg(feature = "automation")]
                                 self.send_band_update(index);
-
                                 Ok(())
                             } else {
-                                Err(AudioError::Parameter("Expected float".into()))
+                                Err(kama_core::ProcessError::Parameter("Expected float".into()))
                             }
                         }
                         "q" => {
-                            if let ParamValue::Float(q) = value {
+                            if let ParamValue::Float(q) = val {
                                 self.bands[index].set_q(q);
-                                self.bands[index].update_filter(&self.factory);
-
+                                self.bands[index].update_filter();
                                 #[cfg(feature = "automation")]
                                 self.send_band_update(index);
-
                                 Ok(())
                             } else {
-                                Err(AudioError::Parameter("Expected float".into()))
+                                Err(kama_core::ProcessError::Parameter("Expected float".into()))
                             }
                         }
                         "gain" => {
-                            if let ParamValue::Float(g) = value {
+                            if let ParamValue::Float(g) = val {
                                 self.bands[index].set_gain_db(g);
-                                self.bands[index].update_filter(&self.factory);
-
+                                self.bands[index].update_filter();
                                 #[cfg(feature = "automation")]
                                 self.send_band_update(index);
-
                                 Ok(())
                             } else {
-                                Err(AudioError::Parameter("Expected float".into()))
+                                Err(kama_core::ProcessError::Parameter("Expected float".into()))
                             }
                         }
                         "enabled" => {
-                            if let ParamValue::Bool(e) = value {
+                            if let ParamValue::Bool(e) = val {
                                 self.bands[index].set_enabled(e);
-
                                 #[cfg(feature = "automation")]
                                 self.send_band_update(index);
-
                                 Ok(())
                             } else {
-                                Err(AudioError::Parameter("Expected bool".into()))
+                                Err(kama_core::ProcessError::Parameter("Expected bool".into()))
                             }
                         }
                         "type" => {
-                            // Используем клонированное значение для проверки типа
-                            if let ParamValue::Choice(type_str) = value.clone() {
+                            if let ParamValue::Choice(type_str) = val {
                                 if let Some(band_type) = BandType::from_str(&type_str) {
                                     self.bands[index].band_type = band_type;
-                                    self.bands[index].update_filter(&self.factory);
-
+                                    self.bands[index].update_filter();
                                     #[cfg(feature = "automation")]
                                     self.send_band_update(index);
-
                                     Ok(())
                                 } else {
-                                    Err(AudioError::Parameter(format!(
+                                    Err(kama_core::ProcessError::Parameter(format!(
                                         "Unknown band type: {}",
                                         type_str
                                     )))
                                 }
                             } else {
-                                Err(AudioError::Parameter("Expected choice".into()))
+                                Err(kama_core::ProcessError::Parameter("Expected choice".into()))
                             }
                         }
-                        _ => Err(AudioError::Parameter(format!(
+                        _ => Err(kama_core::ProcessError::Parameter(format!(
                             "Unknown band parameter: {}",
                             param
                         ))),
                     }
                 } else {
-                    Err(AudioError::Parameter(format!(
+                    Err(kama_core::ProcessError::Parameter(format!(
                         "Unknown parameter: {}",
                         name
                     )))
@@ -389,120 +396,6 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
     fn reset(&mut self) {
         for band in &mut self.bands {
             band.filter.reset();
-        }
-    }
-
-    fn num_inputs(&self) -> usize {
-        1
-    }
-    fn num_outputs(&self) -> usize {
-        1
-    }
-
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> NodeMetadata {
-        let mut params = vec![
-            ParamMetadata {
-                name: "num_bands".to_string(),
-                typ: ParamType::Int,
-                default: ParamValue::Int(self.bands.len() as i32),
-                min: Some(1.0),
-                max: Some(32.0),
-                step: Some(1.0),
-                unit: None,
-                choices: None,
-            },
-            ParamMetadata {
-                name: "output_gain".to_string(),
-                typ: ParamType::Float,
-                default: ParamValue::Float(1.0),
-                min: Some(0.0),
-                max: Some(4.0),
-                step: Some(0.1),
-                unit: Some("gain".to_string()),
-                choices: None,
-            },
-        ];
-
-        // Add band parameters to metadata
-        for i in 0..self.bands.len() {
-            params.push(ParamMetadata {
-                name: format!("band_{}_freq", i),
-                typ: ParamType::Float,
-                default: ParamValue::Float(self.bands[i].frequency()),
-                min: Some(20.0),
-                max: Some(20000.0),
-                step: Some(1.0),
-                unit: Some("Hz".to_string()),
-                choices: None,
-            });
-
-            params.push(ParamMetadata {
-                name: format!("band_{}_gain", i),
-                typ: ParamType::Float,
-                default: ParamValue::Float(self.bands[i].gain_db()),
-                min: Some(-24.0),
-                max: Some(24.0),
-                step: Some(0.5),
-                unit: Some("dB".to_string()),
-                choices: None,
-            });
-
-            params.push(ParamMetadata {
-                name: format!("band_{}_q", i),
-                typ: ParamType::Float,
-                default: ParamValue::Float(self.bands[i].q()),
-                min: Some(0.1),
-                max: Some(20.0),
-                step: Some(0.1),
-                unit: Some("Q".to_string()),
-                choices: None,
-            });
-
-            params.push(ParamMetadata {
-                name: format!("band_{}_enabled", i),
-                typ: ParamType::Bool,
-                default: ParamValue::Bool(true),
-                min: None,
-                max: None,
-                step: None,
-                unit: None,
-                choices: None,
-            });
-
-            params.push(ParamMetadata {
-                name: format!("band_{}_type", i),
-                typ: ParamType::Choice,
-                default: ParamValue::Choice("peak".to_string()),
-                min: None,
-                max: None,
-                step: None,
-                unit: None,
-                choices: Some(vec![
-                    ("peak".to_string(), 0.0),
-                    ("low_shelf".to_string(), 1.0),
-                    ("high_shelf".to_string(), 2.0),
-                    ("low_pass".to_string(), 3.0),
-                    ("high_pass".to_string(), 4.0),
-                    ("band_pass".to_string(), 5.0),
-                    ("notch".to_string(), 6.0),
-                ]),
-            });
-        }
-
-        NodeMetadata {
-            name: format!("Parametric EQ ({} bands)", self.bands.len()),
-            category: NodeCategory::Filter,
-            description: format!(
-                "Parametric equalizer using {} filters",
-                self.factory.factory_name()
-            ),
-            author: "Kama EQ".to_string(),
-            version: "0.2.0".to_string(),
-            parameters: params,
         }
     }
 }

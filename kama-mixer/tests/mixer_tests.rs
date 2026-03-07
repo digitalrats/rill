@@ -1,5 +1,6 @@
 use float_cmp::approx_eq;
-use kama_core::traits::{AudioNode, ParamValue};
+use kama_core::traits::{Processor, ParamValue};
+use kama_core::DEFAULT_BLOCK_SIZE;
 use kama_mixer::{ChannelConfig, ChannelMode, MixerNode, SendConfig, SendType};
 
 #[test]
@@ -14,20 +15,20 @@ fn test_mixer_basic_processing() {
     let mut mixer = MixerNode::new(2, 0);
     mixer.init(44100.0);
 
-    let input1 = vec![0.5; 100];
-    let input2 = vec![0.3; 100];
-    let mut output_left = vec![0.0; 100];
-    let mut output_right = vec![0.0; 100];
+    let input1 = [0.5; DEFAULT_BLOCK_SIZE];
+    let input2 = [0.3; DEFAULT_BLOCK_SIZE];
+    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
+    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [input1.as_slice(), input2.as_slice()];
-    let mut outputs = [output_left.as_mut_slice(), output_right.as_mut_slice()];
+    let inputs = [&input1, &input2];
+    let mut outputs = [&mut output_left, &mut output_right];
 
-    mixer.process(&inputs, &mut outputs).unwrap();
+    mixer.process(&inputs, &mut outputs, &[]).unwrap();
 
     // Both channels are mono, so they are summed to both left and right outputs
     let expected = input1[0] + input2[0];
 
-    for i in 0..100 {
+    for i in 0..DEFAULT_BLOCK_SIZE {
         assert!(
             approx_eq!(f32, output_left[i], expected, epsilon = 0.001),
             "left[{}]: {} vs {}",
@@ -51,27 +52,20 @@ fn test_mixer_pan() {
     mixer.set_channel_pan(0, -0.5).unwrap();
     mixer.init(44100.0);
 
-    let input = vec![1.0; 100];
-    let mut output_left = vec![0.0; 100];
-    let mut output_right = vec![0.0; 100];
+    let input = [1.0; DEFAULT_BLOCK_SIZE];
+    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
+    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [input.as_slice()];
-    let mut outputs = [output_left.as_mut_slice(), output_right.as_mut_slice()];
+    let inputs = [&input];
+    let mut outputs = [&mut output_left, &mut output_right];
 
-    mixer.process(&inputs, &mut outputs).unwrap();
+    mixer.process(&inputs, &mut outputs, &[]).unwrap();
 
     // For pan -0.5: left gain 1.0, right gain 0.5
     // Then summed to both outputs (mono channel summed to stereo)
-    let expected_left = 1.0;
-    let expected_right = 1.0; // Wait, this is wrong! Let's check the mixer logic.
-
     // Actually, in our mixer, process_mono returns the channel output (already panned),
     // then it's added to both left and right masters. So for pan -0.5:
     // channel_out = input * volume * left_gain? No, process_mono doesn't apply pan.
-
-    // We need to fix the test - let's print values to debug
-    println!("First few left samples: {:?}", &output_left[..5]);
-    println!("First few right samples: {:?}", &output_right[..5]);
 
     // For now, let's just check that left and right are different
     assert!(
@@ -86,16 +80,16 @@ fn test_mixer_mute() {
     mixer.set_channel_mute(0, true).unwrap();
     mixer.init(44100.0);
 
-    let input = vec![1.0; 100];
-    let mut output_left = vec![0.0; 100];
-    let mut output_right = vec![0.0; 100];
+    let input = [1.0; DEFAULT_BLOCK_SIZE];
+    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
+    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [input.as_slice()];
-    let mut outputs = [output_left.as_mut_slice(), output_right.as_mut_slice()];
+    let inputs = [&input];
+    let mut outputs = [&mut output_left, &mut output_right];
 
-    mixer.process(&inputs, &mut outputs).unwrap();
+    mixer.process(&inputs, &mut outputs, &[]).unwrap();
 
-    for i in 0..100 {
+    for i in 0..DEFAULT_BLOCK_SIZE {
         assert_eq!(output_left[i], 0.0);
         assert_eq!(output_right[i], 0.0);
     }
@@ -136,26 +130,26 @@ fn test_mixer_sends() {
 
     mixer.init(44100.0);
 
-    let input = vec![1.0; 100];
-    let mut output_left = vec![0.0; 100];
-    let mut output_right = vec![0.0; 100];
-    let mut bus0_out = vec![0.0; 100];
-    let mut bus1_out = vec![0.0; 100];
+    let input = [1.0; DEFAULT_BLOCK_SIZE];
+    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
+    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
+    let mut bus0_out = [0.0; DEFAULT_BLOCK_SIZE];
+    let mut bus1_out = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [input.as_slice()];
+    let inputs = [&input];
     let mut outputs = [
-        output_left.as_mut_slice(),
-        output_right.as_mut_slice(),
-        bus0_out.as_mut_slice(),
-        bus1_out.as_mut_slice(),
+        &mut output_left,
+        &mut output_right,
+        &mut bus0_out,
+        &mut bus1_out,
     ];
 
-    mixer.process(&inputs, &mut outputs).unwrap();
+    mixer.process(&inputs, &mut outputs, &[]).unwrap();
 
     // Пропускаем первые несколько семплов из-за сглаживания
     let start = 10;
 
-    for i in start..100 {
+    for i in start..DEFAULT_BLOCK_SIZE {
         assert!(
             approx_eq!(f32, output_left[i], 0.8, epsilon = 0.01),
             "left[{}]: {} vs 0.8",

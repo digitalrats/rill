@@ -1,47 +1,43 @@
 //! Noise generators
 
-use super::AudioOscillator;
-use kama_core::traits::{
-    ParamMetadata, ParamType,
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
-};
+use kama_core::traits::{Processor, ParameterId, ParamValue};
+use kama_core::{ProcessResult, ProcessError};
 use rand::Rng;
 
 /// Types of noise
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NoiseType {
+    /// White noise (uniform spectrum)
     White,
+    
+    /// Pink noise (1/f spectrum)
     Pink,
+    
+    /// Brown noise (1/f² spectrum)
     Brown,
 }
 
-impl NoiseType {
-    /// Get all available types as strings
-    pub fn names() -> Vec<&'static str> {
-        vec!["white", "pink", "brown"]
-    }
-
-    /// Get type from string
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "white" => Some(NoiseType::White),
-            "pink" => Some(NoiseType::Pink),
-            "brown" => Some(NoiseType::Brown),
-            _ => None,
-        }
-    }
-}
-
-/// Noise generator
-pub struct NoiseOsc {
+/// Noise oscillator
+///
+/// Generates various types of noise.
+///
+/// # Parameters
+/// - `type`: Noise type (white/pink/brown)
+/// - `amplitude`: Output amplitude (0.0 to 1.0)
+///
+/// # Outputs
+/// - Port 0: Noise output
+pub struct NoiseOsc<const BUF_SIZE: usize> {
     /// Noise type
     noise_type: NoiseType,
-    /// Output amplitude (0.0 - 1.0)
+    
+    /// Output amplitude
     amplitude: f32,
+    
     /// Sample rate
     sample_rate: f32,
-
-    // State for colored noise
+    
+    // State for pink noise (Paul Kellett's method)
     pink_b0: f32,
     pink_b1: f32,
     pink_b2: f32,
@@ -49,16 +45,17 @@ pub struct NoiseOsc {
     pink_b4: f32,
     pink_b5: f32,
     pink_b6: f32,
-
+    
+    // State for brown noise
     brown_value: f32,
 }
 
-impl NoiseOsc {
-    /// Create a new noise generator
+impl<const BUF_SIZE: usize> NoiseOsc<BUF_SIZE> {
+    /// Create new noise oscillator
     pub fn new() -> Self {
         Self {
             noise_type: NoiseType::White,
-            amplitude: 1.0,
+            amplitude: 0.5,
             sample_rate: 44100.0,
             pink_b0: 0.0,
             pink_b1: 0.0,
@@ -83,24 +80,13 @@ impl NoiseOsc {
         self
     }
 
-    /// Generate next sample
-    pub fn generate(&mut self) -> f32 {
-        let sample = match self.noise_type {
-            NoiseType::White => self.generate_white(),
-            NoiseType::Pink => self.generate_pink(),
-            NoiseType::Brown => self.generate_brown(),
-        };
-
-        sample * self.amplitude
-    }
-
     /// Generate white noise
     fn generate_white(&mut self) -> f32 {
         let mut rng = rand::thread_rng();
-        rng.gen::<f32>() * 2.0 - 1.0
+        (rng.gen::<f32>() * 2.0 - 1.0) * self.amplitude
     }
 
-    /// Generate pink noise (1/f noise) using Paul Kellett's method
+    /// Generate pink noise (1/f)
     fn generate_pink(&mut self) -> f32 {
         let mut rng = rand::thread_rng();
         let white = rng.gen::<f32>() * 2.0 - 1.0;
@@ -120,92 +106,74 @@ impl NoiseOsc {
             + self.pink_b5
             + self.pink_b6
             + white * 0.5362;
+        
         self.pink_b6 = white * 0.115926;
-
-        pink * 0.11 // Scale to approximately [-1.0, 1.0]
+        
+        (pink * 0.11) * self.amplitude // Scale to approx [-1,1]
     }
 
-    /// Generate Brownian noise (1/f^2 noise)
+    /// Generate brown noise (1/f²)
     fn generate_brown(&mut self) -> f32 {
         let mut rng = rand::thread_rng();
         let white = rng.gen::<f32>() * 2.0 - 1.0;
 
         self.brown_value = 0.997 * self.brown_value + white * 0.03;
-        self.brown_value.clamp(-1.0, 1.0)
+        self.brown_value.clamp(-1.0, 1.0) * self.amplitude
     }
 
     /// Generate a block of samples
-    pub fn generate_block(&mut self, output: &mut [f32]) {
-        for out in output.iter_mut() {
-            *out = self.generate();
+    fn generate_block(&mut self, output: &mut [f32; BUF_SIZE]) {
+        match self.noise_type {
+            NoiseType::White => {
+                for sample in output.iter_mut() {
+                    *sample = self.generate_white();
+                }
+            }
+            NoiseType::Pink => {
+                for sample in output.iter_mut() {
+                    *sample = self.generate_pink();
+                }
+            }
+            NoiseType::Brown => {
+                for sample in output.iter_mut() {
+                    *sample = self.generate_brown();
+                }
+            }
         }
-    }
-
-    /// Set noise type
-    pub fn set_noise_type(&mut self, noise_type: NoiseType) {
-        self.noise_type = noise_type;
-        self.reset();
-    }
-
-    /// Reset internal state
-    pub fn reset(&mut self) {
-        self.pink_b0 = 0.0;
-        self.pink_b1 = 0.0;
-        self.pink_b2 = 0.0;
-        self.pink_b3 = 0.0;
-        self.pink_b4 = 0.0;
-        self.pink_b5 = 0.0;
-        self.pink_b6 = 0.0;
-        self.brown_value = 0.0;
     }
 }
 
-impl Default for NoiseOsc {
+impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AudioOscillator for NoiseOsc {
-    fn set_frequency(&mut self, _freq: f32) {
-        // Noise doesn't have frequency
-    }
-
-    fn frequency(&self) -> f32 {
-        0.0
-    }
-
-    fn set_amplitude(&mut self, amp: f32) {
-        self.amplitude = amp.clamp(0.0, 1.0);
-    }
-
-    fn amplitude(&self) -> f32 {
-        self.amplitude
-    }
-
-    fn reset_phase(&mut self) {
-        self.reset();
-    }
-}
-
-impl AudioNode for NoiseOsc {
+impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn process(
         &mut self,
-        _inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
-    ) -> Result<(), AudioError> {
+        _inputs: &[&[f32; BUF_SIZE]],
+        outputs: &mut [&mut [f32; BUF_SIZE]],
+        _control: &[f32],
+    ) -> ProcessResult<()> {
         if outputs.is_empty() {
             return Ok(());
         }
 
-        let output = &mut outputs[0];
-        self.generate_block(output);
-
+        self.generate_block(outputs[0]);
         Ok(())
     }
 
-    fn get_param(&self, name: &str) -> Option<ParamValue> {
-        match name {
+    fn num_audio_inputs(&self) -> usize {
+        0
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        match id.as_str() {
             "type" => {
                 let type_str = match self.noise_type {
                     NoiseType::White => "white",
@@ -219,80 +187,40 @@ impl AudioNode for NoiseOsc {
         }
     }
 
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-        match (name, value) {
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+        match (id.as_str(), value) {
             ("type", ParamValue::Choice(t)) => {
-                self.noise_type = NoiseType::from_str(&t)
-                    .ok_or_else(|| AudioError::Parameter(format!("Unknown noise type: {}", t)))?;
+                self.noise_type = match t.as_str() {
+                    "white" => NoiseType::White,
+                    "pink" => NoiseType::Pink,
+                    "brown" => NoiseType::Brown,
+                    _ => return Err(ProcessError::Parameter(format!("Unknown noise type: {}", t))),
+                };
                 self.reset();
                 Ok(())
             }
             ("amplitude", ParamValue::Float(a)) => {
-                self.set_amplitude(a);
+                self.amplitude = a.clamp(0.0, 1.0);
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!(
-                "Unknown parameter: {}",
-                name
-            ))),
+            _ => Err(ProcessError::Parameter(format!("Unknown parameter: {}", id))),
         }
     }
 
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
+        self.reset();
     }
 
     fn reset(&mut self) {
-        self.reset_phase();
-    }
-
-    fn num_inputs(&self) -> usize {
-        0
-    }
-    fn num_outputs(&self) -> usize {
-        1
-    }
-
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "Noise Generator".to_string(),
-            category: NodeCategory::Generator,
-            description: "White, pink, and brown noise generator".to_string(),
-            author: "Kama Oscillators".to_string(),
-            version: "0.2.0".to_string(),
-            parameters: vec![
-                ParamMetadata {
-                    name: "type".to_string(),
-                    typ: ParamType::Choice,
-                    default: ParamValue::Choice("white".to_string()),
-                    min: None,
-                    max: None,
-                    step: None,
-                    unit: None,
-                    choices: Some(
-                        NoiseType::names()
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &name)| (name.to_string(), i as f32))
-                            .collect(),
-                    ),
-                },
-                ParamMetadata {
-                    name: "amplitude".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(1.0),
-                    min: Some(0.0),
-                    max: Some(1.0),
-                    step: Some(0.01),
-                    unit: Some("gain".to_string()),
-                    choices: None,
-                },
-            ],
-        }
+        self.pink_b0 = 0.0;
+        self.pink_b1 = 0.0;
+        self.pink_b2 = 0.0;
+        self.pink_b3 = 0.0;
+        self.pink_b4 = 0.0;
+        self.pink_b5 = 0.0;
+        self.pink_b6 = 0.0;
+        self.brown_value = 0.0;
     }
 }
 
@@ -301,35 +229,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_noise_generate() {
-        let mut noise = NoiseOsc::new().with_amplitude(0.5);
-        noise.init(44100.0);
-
-        let sample = noise.generate();
-        assert!(sample >= -0.5 && sample <= 0.5);
+    fn test_noise_creation() {
+        let noise = NoiseOsc::<64>::new()
+            .with_type(NoiseType::Pink)
+            .with_amplitude(0.3);
+        
+        assert!(matches!(noise.noise_type, NoiseType::Pink));
+        assert_eq!(noise.amplitude, 0.3);
     }
 
     #[test]
-    fn test_noise_types() {
-        let types = [NoiseType::White, NoiseType::Pink, NoiseType::Brown];
-
-        for &t in &types {
-            let mut noise = NoiseOsc::new().with_type(t);
-            noise.init(44100.0);
-
-            let sample = noise.generate();
+    fn test_noise_generation() {
+        let mut noise = NoiseOsc::<64>::new();
+        noise.init(44100.0);
+        
+        let mut output = [0.0; 64];
+        let mut outputs = [&mut output];
+        
+        noise.process(&[], &mut outputs, &[]).unwrap();
+        
+        // Should have some non-zero samples
+        assert!(output.iter().any(|&x| x != 0.0));
+        
+        // All samples should be within amplitude range
+        for &sample in &output {
             assert!(sample >= -1.0 && sample <= 1.0);
         }
     }
 
     #[test]
-    fn test_noise_block() {
-        let mut noise = NoiseOsc::new();
-        noise.init(44100.0);
-
-        let mut output = vec![0.0; 1024];
-        noise.generate_block(&mut output);
-
-        assert!(output.iter().any(|&x| x != 0.0));
+    fn test_noise_types() {
+        let types = [NoiseType::White, NoiseType::Pink, NoiseType::Brown];
+        
+        for &noise_type in &types {
+            let mut noise = NoiseOsc::<64>::new()
+                .with_type(noise_type);
+            
+            noise.init(44100.0);
+            
+            let mut output = [0.0; 64];
+            let mut outputs = [&mut output];
+            
+            noise.process(&[], &mut outputs, &[]).unwrap();
+            
+            // All types should produce valid output
+            assert!(output.iter().any(|&x| x != 0.0));
+        }
     }
 }

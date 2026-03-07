@@ -2,7 +2,7 @@
 
 pub use kama_digital_filters::{BiquadFilter, FilterType};
 pub use kama_core::traits::AudioNode;  // для init, reset, process
-pub use kama_dsp_common::filter::Filter;  // для cutoff, q, gain_db
+pub use kama_core_dsp::filters::Filter;  // для cutoff, q, gain_db
 pub use float_cmp::approx_eq;
 
 // Helper function to generate sine wave

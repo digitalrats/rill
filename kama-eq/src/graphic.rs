@@ -1,18 +1,21 @@
 //! Graphic equalizer implementation
 
 use crate::band::{BandType, EqBand};
+use crate::FilterFactory;
 use kama_core::traits::{
-    ParamMetadata, ParamType,
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+    ParamMetadata, ParamType, ParamRange,
+    AudioError, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+    Processor, ParameterId,
 };
-use kama_dsp_common::filter::{Filter, FilterFactory, FilterType};
+use kama_core_dsp::filters::{Filter, FilterType};
+use kama_core::{ProcessResult, DEFAULT_BLOCK_SIZE};
 
 /// Graphic equalizer with fixed frequency bands
 ///
 /// Common configurations:
 /// - 10-band (31.25, 62.5, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz)
 /// - 31-band (1/3 octave)
-pub struct GraphicEq<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> {
+pub struct GraphicEq<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> {
     /// Filter factory
     factory: Factory,
     /// EQ bands
@@ -25,7 +28,7 @@ pub struct GraphicEq<F: Filter + 'static, Factory: FilterFactory<F> + Send + Syn
     output_gain: f32,
 }
 
-impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> GraphicEq<F, Factory> {
+impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> GraphicEq<F, Factory> {
     /// Create a new graphic equalizer with ISO 1/3 octave frequencies
     pub fn new_third_octave(factory: Factory, sample_rate: f32) -> Self {
         let frequencies = vec![
@@ -72,7 +75,7 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Gra
 
         let band = &mut self.bands[index];
         band.set_gain_db(gain_db);
-        band.update_filter(&self.factory);
+        band.update_filter();
 
         Ok(())
     }
@@ -93,39 +96,51 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Gra
     }
 }
 
-impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> AudioNode
+impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Processor<f32, DEFAULT_BLOCK_SIZE>
     for GraphicEq<F, Factory>
 {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+    fn process(
+        &mut self,
+        inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        outputs: &mut [&mut [f32; DEFAULT_BLOCK_SIZE]],
+        _control: &[f32],
+    ) -> ProcessResult<()> {
         if inputs.is_empty() || outputs.is_empty() {
             return Ok(());
         }
 
         let input = inputs[0];
         let output = &mut outputs[0];
-        let buffer_size = input.len().min(output.len());
 
-        // Process through all bands in parallel (for graphic EQ, bands are in parallel)
-        // This is a simplification - real graphic EQ needs proper parallel processing
-        for i in 0..buffer_size {
+        for i in 0..DEFAULT_BLOCK_SIZE {
             let mut sample = 0.0;
-
             for band in &mut self.bands {
                 sample += band.process(input[i]);
             }
-
             output[i] = (sample / self.bands.len() as f32) * self.output_gain;
         }
 
         Ok(())
     }
 
-    fn get_param(&self, name: &str) -> Option<ParamValue> {
-        match name {
+    fn num_audio_inputs(&self) -> usize {
+        1
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+
+    fn num_control_inputs(&self) -> usize {
+        0
+    }
+
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        match id.as_str() {
             "num_bands" => Some(ParamValue::Int(self.bands.len() as i32)),
             "output_gain" => Some(ParamValue::Float(self.output_gain)),
             _ => {
-                if let Some(band_idx) = name
+                if let Some(band_idx) = id.as_str()
                     .strip_prefix("band_")
                     .and_then(|s| s.parse::<usize>().ok())
                 {
@@ -138,31 +153,27 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
         }
     }
 
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-        match (name, value.clone()) {
-            // <-- клонируем для проверки
+    fn set_parameter(
+        &mut self,
+        id: &ParameterId,
+        value: ParamValue,
+    ) -> ProcessResult<()> {
+        match (id.as_str(), value) {
             ("output_gain", ParamValue::Float(g)) => {
                 self.set_output_gain(g);
                 Ok(())
             }
-            _ => {
+            (name, ParamValue::Float(gain)) => {
                 if let Some(band_idx) = name
                     .strip_prefix("band_")
                     .and_then(|s| s.parse::<usize>().ok())
                 {
-                    // Используем оригинальное значение для извлечения gain
-                    if let ParamValue::Float(gain) = value {
-                        self.set_band_gain(band_idx, gain)
-                    } else {
-                        Err(AudioError::Parameter("Expected float".into()))
-                    }
+                    self.set_band_gain(band_idx, gain).map_err(|e| kama_core::ProcessError::Parameter(e.to_string()))
                 } else {
-                    Err(AudioError::Parameter(format!(
-                        "Unknown parameter: {}",
-                        name
-                    )))
+                    Err(kama_core::ProcessError::Parameter(format!("Unknown parameter: {}", name)))
                 }
             }
+            _ => Err(kama_core::ProcessError::Parameter("Expected float".into())),
         }
     }
 
@@ -176,68 +187,6 @@ impl<F: Filter + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Aud
     fn reset(&mut self) {
         for band in &mut self.bands {
             band.filter.reset();
-        }
-    }
-
-    fn num_inputs(&self) -> usize {
-        1
-    }
-    fn num_outputs(&self) -> usize {
-        1
-    }
-
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> NodeMetadata {
-        let mut params = vec![
-            ParamMetadata {
-                name: "num_bands".to_string(),
-                typ: ParamType::Int,
-                default: ParamValue::Int(self.bands.len() as i32),
-                min: Some(1.0),
-                max: Some(31.0),
-                step: Some(1.0),
-                unit: None,
-                choices: None,
-            },
-            ParamMetadata {
-                name: "output_gain".to_string(),
-                typ: ParamType::Float,
-                default: ParamValue::Float(1.0),
-                min: Some(0.0),
-                max: Some(4.0),
-                step: Some(0.1),
-                unit: Some("gain".to_string()),
-                choices: None,
-            },
-        ];
-
-        // Add band gain parameters
-        for (i, &freq) in self.frequencies.iter().enumerate() {
-            params.push(ParamMetadata {
-                name: format!("band_{}", i),
-                typ: ParamType::Float,
-                default: ParamValue::Float(0.0),
-                min: Some(-24.0),
-                max: Some(24.0),
-                step: Some(0.5),
-                unit: Some("dB".to_string()),
-                choices: None,
-            });
-        }
-
-        NodeMetadata {
-            name: format!("Graphic EQ ({} bands)", self.bands.len()),
-            category: NodeCategory::Filter,
-            description: format!(
-                "Graphic equalizer using {} filters",
-                self.factory.factory_name()
-            ),
-            author: "Kama EQ".to_string(),
-            version: "0.2.0".to_string(),
-            parameters: params,
         }
     }
 }

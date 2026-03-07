@@ -1,9 +1,10 @@
 //! Distortion effect with waveshaping
 
 use kama_core::traits::{
-    ParamMetadata, ParamType,
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
+    ParamMetadata, ParamRange, ParamType, NodeCategory, NodeMetadata, NodeTypeId,
+    ParameterId, ParamValue, Processor,
 };
+use kama_core::{ProcessResult, ProcessError};
 
 /// Distortion type
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,22 +43,35 @@ impl DistortionType {
 /// - drive: input gain (1.0 - 100.0)
 /// - type: distortion type
 /// - output_gain: output level (0.0 - 2.0)
-pub struct Distortion {
+pub struct Distortion<const BUF_SIZE: usize> {
     /// Distortion type
     distortion_type: DistortionType,
     /// Drive (input gain)
     drive: f32,
     /// Output gain
     output_gain: f32,
+    /// Sample rate (unused but required for Processor)
+    sample_rate: f32,
 }
 
-impl Distortion {
-    /// Create a new distortion effect
-    pub fn new(distortion_type: DistortionType, drive: f32, output_gain: f32) -> Self {
+impl<const BUF_SIZE: usize> Distortion<BUF_SIZE> {
+    /// Create a new distortion effect with default parameters
+    pub fn new() -> Self {
+        Self {
+            distortion_type: DistortionType::SoftClip,
+            drive: 1.0,
+            output_gain: 1.0,
+            sample_rate: 44100.0,
+        }
+    }
+
+    /// Create a new distortion effect with custom parameters
+    pub fn with_params(distortion_type: DistortionType, drive: f32, output_gain: f32) -> Self {
         Self {
             distortion_type,
             drive: drive.max(1.0).min(100.0),
             output_gain: output_gain.clamp(0.0, 2.0),
+            sample_rate: 44100.0,
         }
     }
 
@@ -103,27 +117,45 @@ impl Distortion {
     pub fn set_output_gain(&mut self, gain: f32) {
         self.output_gain = gain.clamp(0.0, 2.0);
     }
-}
 
-impl AudioNode for Distortion {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
-        if inputs.is_empty() || outputs.is_empty() {
-            return Ok(());
-        }
-
+    /// Process a block of samples (internal helper)
+    fn process_block(&self, inputs: &[&[f32; BUF_SIZE]], outputs: &mut [&mut [f32; BUF_SIZE]]) {
         let input = inputs[0];
         let output = &mut outputs[0];
-        let len = input.len().min(output.len());
-
-        for i in 0..len {
+        for i in 0..BUF_SIZE {
             output[i] = self.process_sample(input[i]);
         }
+    }
+}
 
+impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Distortion<BUF_SIZE> {
+    fn process(
+        &mut self,
+        inputs: &[&[f32; BUF_SIZE]],
+        outputs: &mut [&mut [f32; BUF_SIZE]],
+        _control: &[f32],
+    ) -> ProcessResult<()> {
+        if inputs.len() < 1 || outputs.len() < 1 {
+            return Err(ProcessError::processing("insufficient channels"));
+        }
+        self.process_block(inputs, outputs);
         Ok(())
     }
 
-    fn get_param(&self, name: &str) -> Option<ParamValue> {
-        match name {
+    fn num_audio_inputs(&self) -> usize {
+        1
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+
+    fn num_control_inputs(&self) -> usize {
+        0
+    }
+
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        match id.as_str() {
             "type" => {
                 let type_str = match self.distortion_type {
                     DistortionType::HardClip => "hard_clip",
@@ -139,17 +171,14 @@ impl AudioNode for Distortion {
         }
     }
 
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-        match (name, value) {
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+        match (id.as_str(), value) {
             ("type", ParamValue::Choice(t)) => {
                 if let Some(dt) = DistortionType::from_str(&t) {
                     self.set_type(dt);
                     Ok(())
                 } else {
-                    Err(AudioError::Parameter(format!(
-                        "Unknown distortion type: {}",
-                        t
-                    )))
+                    Err(ProcessError::parameter("unknown distortion type"))
                 }
             }
             ("drive", ParamValue::Float(d)) => {
@@ -160,47 +189,36 @@ impl AudioNode for Distortion {
                 self.set_output_gain(g);
                 Ok(())
             }
-            _ => Err(AudioError::Parameter(format!(
-                "Unknown parameter: {}",
-                name
-            ))),
+            _ => Err(ProcessError::parameter("unknown parameter")),
         }
     }
 
-    fn init(&mut self, _sample_rate: f32) {
-        // Nothing to initialize
+    fn init(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+        // Nothing else to initialize
     }
 
     fn reset(&mut self) {
         // Nothing to reset
     }
+}
 
-    fn num_inputs(&self) -> usize {
-        1
-    }
-    fn num_outputs(&self) -> usize {
-        1
-    }
-
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> NodeMetadata {
+// Implement NodeMetadata for compatibility
+impl<const BUF_SIZE: usize> Distortion<BUF_SIZE> {
+    /// Returns metadata about this node
+    pub fn metadata() -> NodeMetadata {
         NodeMetadata {
             name: "Distortion".to_string(),
-            category: NodeCategory::Effect,
+            category: NodeCategory::Processor,
             description: "Distortion with multiple waveshaping types".to_string(),
             author: "Kama Digital Effects".to_string(),
-            version: "0.2.0".to_string(),
+            version: "0.3.0".to_string(),
             parameters: vec![
                 ParamMetadata {
                     name: "type".to_string(),
                     typ: ParamType::Choice,
                     default: ParamValue::Choice("soft_clip".to_string()),
-                    min: None,
-                    max: None,
-                    step: None,
+                    range: ParamRange::new(),
                     unit: None,
                     choices: Some(
                         DistortionType::names()
@@ -214,9 +232,10 @@ impl AudioNode for Distortion {
                     name: "drive".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(1.0),
-                    min: Some(1.0),
-                    max: Some(100.0),
-                    step: Some(1.0),
+                    range: ParamRange::new()
+                        .with_min(1.0)
+                        .with_max(100.0)
+                        .with_step(1.0),
                     unit: Some("gain".to_string()),
                     choices: None,
                 },
@@ -224,13 +243,19 @@ impl AudioNode for Distortion {
                     name: "output_gain".to_string(),
                     typ: ParamType::Float,
                     default: ParamValue::Float(1.0),
-                    min: Some(0.0),
-                    max: Some(2.0),
-                    step: Some(0.1),
+                    range: ParamRange::new()
+                        .with_min(0.0)
+                        .with_max(2.0)
+                        .with_step(0.1),
                     unit: Some("gain".to_string()),
                     choices: None,
                 },
             ],
         }
+    }
+
+    /// Returns the node type ID
+    pub fn node_type_id() -> NodeTypeId {
+        NodeTypeId::of::<Self>()
     }
 }
