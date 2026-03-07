@@ -1,145 +1,202 @@
 //! # Функциональные автоматы
 //!
-//! Универсальные автоматы, построенные на Rust-замыканиях.
-//! Это самый гибкий способ создания автоматов — вы можете использовать любую
-//! математическую функцию или алгоритм.
-//!
-//! ## Два варианта
-//!
-//! 1. [`FunctionAutomaton`] — без сохранения состояния (stateless).
-//!    Подходит для чистых функций времени: `f(t) -> значение`.
-//!
-//! 2. [`StatefulFunctionAutomaton`] — с пользовательским состоянием.
-//!    Позволяет создавать генераторы, которым нужно помнить информацию
-//!    между вызовами: счётчики, интеграторы, генераторы случайных блужданий.
-//!
-//! ## Состояние
-//!
-//! [`FunctionState`] хранит текущее значение, время последнего обновления и,
-//! опционально, пользовательские данные любого типа (через `Arc<dyn Any>`).
-//!
-//! ## Примеры
-//!
-//! ### Stateless: генератор синуса
-//! ```
-//! use kama_automation::automaton::FunctionAutomaton;
-//!
-//! let sine = FunctionAutomaton::new(
-//!     "Sine",
-//!     |t| (t * 2.0 * std::f64::consts::PI).sin(),
-//!     "osc",
-//!     "fm_input"
-//! );
-//! ```
-//!
-//! ### Stateful: счётчик
-//! ```
-//! use kama_automation::automaton::StatefulFunctionAutomaton;
-//!
-//! let counter = StatefulFunctionAutomaton::new(
-//!     "Counter",
-//!     |_time, count: &mut u32| {
-//!         *count += 1;
-//!         *count as f64
-//!     },
-//!     0,
-//!     "seq",
-//!     "step"
-//! );
-//! ```
+//! Автоматы, построенные на произвольных функциях времени.
+//! Позволяют реализовать любую математическую зависимость.
 
-use crate::automaton::Automaton;
-use crate::context::AutomationContext;
-use crate::signal::SignalSender;
-use kama_core::traits::ParameterId;
-use std::fmt;
+use super::{Automaton, Time, Range, NoAction};
 use std::sync::Arc;
 
 /// Состояние функционального автомата
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct FunctionState {
-    /// Текущее значение
+    /// Последнее вычисленное значение
     pub value: f64,
     /// Время последнего обновления
-    pub last_time: f64,
+    pub last_time: Time,
     /// Пользовательское состояние (для stateful функций)
     pub user_state: Arc<dyn std::any::Any + Send + Sync>,
 }
 
-impl FunctionState {
-    pub fn new(value: f64, time: f64) -> Self {
-        Self {
-            value,
-            last_time: time,
-            user_state: Arc::new(()),
-        }
-    }
-
-    pub fn with_user_state<T: Send + Sync + 'static>(value: f64, time: f64, state: T) -> Self {
-        Self {
-            value,
-            last_time: time,
-            user_state: Arc::new(state),
-        }
-    }
-
-    pub fn get_user_state<T: 'static>(&self) -> Option<&T> {
-        self.user_state.downcast_ref::<T>()
-    }
-}
-
-/// Обобщённый автомат на основе функции (stateless)
+/// Функциональный автомат (stateless)
+#[derive(Debug, Clone)]
 pub struct FunctionAutomaton {
     /// Имя автомата
-    pub(crate) name: String,
-    /// Генерирующая функция
-    pub(crate) generator: Arc<std::sync::Mutex<Box<dyn FnMut(f64) -> f64 + Send + Sync>>>,
-    /// Целевой параметр
-    target_parameter: ParameterId,
-    /// Отправитель сигналов
-    signal_sender: Option<Arc<dyn SignalSender>>,
-    /// Порог для отправки сигналов
-    threshold: f64,
+    name: String,
+    /// Функция-генератор
+    generator: Arc<dyn Fn(Time) -> f64 + Send + Sync>,
+    /// Диапазон выходных значений
+    range: Range,
 }
 
 impl FunctionAutomaton {
     /// Создать новый функциональный автомат
-    pub fn new<F>(name: &str, mut generator: F, target_parameter: ParameterId) -> Self
+    pub fn new<F>(name: &str, generator: F) -> Self
     where
-        F: FnMut(f64) -> f64 + Send + Sync + 'static,
+        F: Fn(Time) -> f64 + Send + Sync + 'static,
     {
         Self {
             name: name.to_string(),
-            generator: Arc::new(std::sync::Mutex::new(Box::new(generator))),
-            target_parameter,
-            signal_sender: None,
-            threshold: 1e-6,
+            generator: Arc::new(generator),
+            range: Range::bipolar(),
         }
     }
-
-    /// Установить отправитель сигналов
-    pub fn with_signal_sender(mut self, sender: Arc<dyn SignalSender>) -> Self {
-        self.signal_sender = Some(sender);
+    
+    /// Установить диапазон
+    pub fn with_range(mut self, range: Range) -> Self {
+        self.range = range;
         self
     }
+}
 
-    /// Установить порог для отправки сигналов
-    pub fn with_threshold(mut self, threshold: f64) -> Self {
-        self.threshold = threshold;
-        self
+impl Automaton for FunctionAutomaton {
+    type State = FunctionState;
+    type Action = NoAction;
+    
+    fn step(
+        &self,
+        time: Time,
+        _action: Self::Action,
+        state: &Self::State,
+    ) -> (Self::State, Option<f64>, Option<Self::Action>) {
+        let value = (self.generator)(time);
+        let clamped = self.range.clamp(value);
+        
+        let new_state = FunctionState {
+            value: clamped,
+            last_time: time,
+            user_state: state.user_state.clone(),
+        };
+        
+        (new_state, Some(clamped), None)
     }
-
-    /// Отправить сигнал об изменении параметра
-    fn send_signal(&self, value: f64) {
-        if let Some(sender) = &self.signal_sender {
-            // Временно используем заглушку для порта
-            // В реальном использовании порт будет передан через контекст
-            let dummy_port = PortId::node(0.into()); // Временное решение
-            sender.send_parameter_changed(
-                dummy_port,
-                self.target_parameter.clone(),
-                value as f32
-            );
+    
+    fn initial_state(&self) -> Self::State {
+        FunctionState {
+            value: 0.0,
+            last_time: 0.0,
+            user_state: Arc::new(()),
         }
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+    
+    fn extract_value(&self, state: &Self::State) -> f64 {
+        state.value
+    }
+}
+
+/// Функциональный автомат с состоянием
+#[derive(Debug, Clone)]
+pub struct StatefulFunctionAutomaton<S> {
+    /// Имя автомата
+    name: String,
+    /// Функция-генератор с состоянием
+    generator: Arc<dyn Fn(Time, &mut S) -> f64 + Send + Sync>,
+    /// Начальное состояние
+    initial_state: S,
+    /// Диапазон выходных значений
+    range: Range,
+}
+
+impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
+    /// Создать новый автомат с состоянием
+    pub fn new<F>(name: &str, generator: F, initial_state: S) -> Self
+    where
+        F: Fn(Time, &mut S) -> f64 + Send + Sync + 'static,
+    {
+        Self {
+            name: name.to_string(),
+            generator: Arc::new(generator),
+            initial_state,
+            range: Range::bipolar(),
+        }
+    }
+    
+    /// Установить диапазон
+    pub fn with_range(mut self, range: Range) -> Self {
+        self.range = range;
+        self
+    }
+}
+
+impl<S: Send + Sync + Clone + 'static> Automaton for StatefulFunctionAutomaton<S> {
+    type State = (f64, S);  // (значение, пользовательское состояние)
+    type Action = NoAction;
+    
+    fn step(
+        &self,
+        time: Time,
+        _action: Self::Action,
+        state: &Self::State,
+    ) -> (Self::State, Option<f64>, Option<Self::Action>) {
+        let mut user_state = state.1.clone();
+        let value = (self.generator)(time, &mut user_state);
+        let clamped = self.range.clamp(value);
+        
+        ((clamped, user_state), Some(clamped), None)
+    }
+    
+    fn initial_state(&self) -> Self::State {
+        let value = (self.generator)(0.0, &mut self.initial_state.clone());
+        (self.range.clamp(value), self.initial_state.clone())
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+    
+    fn extract_value(&self, state: &Self::State) -> f64 {
+        state.0
+    }
+}
+
+/// Функция-генератор для LFO (удобная обёртка)
+pub fn lfo_function(
+    freq: f64,
+    phase: f64,
+    waveform: &'static str,
+) -> impl Fn(Time) -> f64 {
+    move |t| {
+        let p = (t * freq + phase).fract();
+        match waveform {
+            "sine" => (p * 2.0 * std::f64::consts::PI).sin(),
+            "saw" => 2.0 * p - 1.0,
+            "square" => if p < 0.5 { 1.0 } else { -1.0 },
+            _ => 0.0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_function_automaton() {
+        let automaton = FunctionAutomaton::new("Test", |t| (t * 2.0).sin());
+        let state = automaton.initial_state();
+        
+        let (state, value, _) = automaton.step(1.0, NoAction, &state);
+        assert!(value.is_some());
+    }
+    
+    #[test]
+    fn test_stateful_automaton() {
+        let automaton = StatefulFunctionAutomaton::new(
+            "Counter",
+            |_t, counter: &mut i32| {
+                *counter += 1;
+                *counter as f64
+            },
+            0,
+        );
+        
+        let state = automaton.initial_state();
+        assert_eq!(state.0, 1.0);
+        
+        let (state, _, _) = automaton.step(1.0, NoAction, &state);
+        assert_eq!(state.0, 2.0);
     }
 }

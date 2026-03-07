@@ -3,7 +3,7 @@ members = [
     "kama-core",
     "kama-core-dsp",
     "kama-graph",
-    #"kama-patchbay", # Временно отключен
+    "kama-patchbay",
     "kama-oscillators",
     "kama-digital-filters",
     "kama-digital-effects",

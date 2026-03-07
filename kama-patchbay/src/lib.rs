@@ -1,30 +1,117 @@
-// kama-automation/src/lib.rs
-//! Kama Automation - продвинутая система автоматизации
+//! # Kama Patchbay — Маршрутизация событий и автоматизация
+//!
+//! `kama-patchbay` является эволюцией `kama-automation` из версии 0.2.0,
+//! объединённой с функциональностью маппинга из `kama-control`.
+//!
+//! ## Основные компоненты
+//!
+//! - **Автоматы** — генеративные источники сигналов (LFO, огибающие, секвенсоры)
+//! - **Сервоприводы** — связь автоматов с параметрами узлов
+//! - **Маппинги** — связь внешних событий (MIDI/OSC) с параметрами
+//! - **Сенсоры** — источники событий из внешнего мира
+//! - **Менеджер** — центральный координатор для двухпоточной архитектуры
+//!
+//! ## Архитектура
+//!
+//! ```
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                     ПОТОК УПРАВЛЕНИЯ                         │
+//! │                                                              │
+//! │  ┌─────────────────────────────────────────────────────┐   │
+//! │  │               PatchbayManager                         │   │
+//! │  │  ┌────────────┐  ┌────────────┐  ┌────────────┐     │   │
+//! │  │  │  Automata  │  │  Servos    │  │  Mappings  │     │   │
+//! │  │  └────────────┘  └────────────┘  └────────────┘     │   │
+//! │  │                    │                │                │   │
+//! │  │                    ▼                ▼                │   │
+//! │  │              ┌──────────────────────────┐           │   │
+//! │  │              │   RtQueue<ParameterCommand>│         │   │
+//! │  │              └──────────────────────────┘           │   │
+//! │  └─────────────────────────────────────────────────────┘   │
+//! │                              │                               │
+//! │                              │ неблокирующая очередь         │
+//! │                              ▼                               │
+//! │  ┌─────────────────────────────────────────────────────┐   │
+//! │  │                  АУДИОПОТОК                          │   │
+//! │  │              (kama-graph / kama-io)                  │   │
+//! │  └─────────────────────────────────────────────────────┘   │
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
 
 #![warn(missing_docs)]
+#![deny(unsafe_code)]
 
+// =============================================================================
+// Внешние зависимости
+// =============================================================================
+
+use std::sync::Arc;
+
+// Реэкспорты из kama-core
+pub use kama_core::prelude::*;
+pub use kama_core::queue::RtQueue;
+pub use kama_core::param::{ParameterId, ParameterValue, NodeId, PortId};
+
+// =============================================================================
+// Публичные модули
+// =============================================================================
+
+/// Автоматы — генеративные источники управления
 pub mod automaton;
-pub mod context;
-pub mod error;
-pub mod manager;
-pub mod parameter;
-pub mod parameter_auto;
-pub mod servo;
-pub mod signal;
 
-// Реэкспорт основных типов
-pub use automaton::{
-    Automaton,
-    FunctionAutomaton,
-    LfoAutomaton,
-    LfoWithEnvelopeAutomaton, // Эти типы теперь доступны
-    StatefulFunctionAutomaton,
-    Waveform,
-};
-pub use context::AutomationContext;
-pub use error::{AutomationError, AutomationResult};
-pub use manager::{AutomationManager, DefaultAutomationManager};
-pub use parameter::{ParameterData, ParameterMap};
-pub use parameter_auto::AutomatedParameter;
-pub use servo::{AnyServo, ParameterMapping, Servo};
-pub use signal::{SignalSender, TestSignalSender};
+/// Управление и маппинг событий
+pub mod control;
+
+/// Менеджер патчбэя — центральный координатор
+pub mod manager;
+
+/// Сенсоры — источники событий из внешнего мира
+pub mod sensor;
+
+/// Утилиты и вспомогательные функции
+pub mod utils;
+
+// =============================================================================
+// Реэкспорты для удобства
+// =============================================================================
+
+pub use automaton::*;
+pub use control::*;
+pub use manager::*;
+pub use sensor::*;
+
+// =============================================================================
+// Прелюдия для удобного импорта
+// =============================================================================
+
+/// Прелюдия для удобного импорта основных типов
+pub mod prelude {
+    // Основные типы
+    pub use crate::automaton::*;
+    pub use crate::control::*;
+    pub use crate::manager::*;
+    pub use crate::sensor::*;
+    pub use crate::utils::*;
+    
+    // Реэкспорты из kama-core
+    pub use kama_core::prelude::*;
+    pub use kama_core::queue::RtQueue;
+    pub use kama_core::param::{ParameterId, NodeId, PortId};
+}
+
+// =============================================================================
+// Тесты
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_basic_imports() {
+        // Просто проверяем, что всё импортируется
+        let _ = automaton::LfoWaveform::Sine;
+        let _ = control::Transform::Linear;
+        let _ = manager::PatchbayConfig::default();
+    }
+}
