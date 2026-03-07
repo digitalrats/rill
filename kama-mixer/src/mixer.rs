@@ -1,33 +1,38 @@
 //! Mixer node implementation
 
-use crate::channel::{ChannelConfig, ChannelMode, ChannelState};
+use crate::channel::{ChannelConfig, ChannelState};
 use crate::send::{SendConfig, SendType};
-use kama_core::traits::{
-    ParamMetadata, ParamType,
-    AudioError, AudioNode, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
-};
+use kama_core::traits::{ParamMetadata, ParamRange, ParamType, AudioError, NodeCategory, NodeMetadata, ParamValue, ParameterId};
+use kama_core::{ProcessResult, DEFAULT_BLOCK_SIZE};
 use std::collections::HashMap;
 
 /// Mixer node with multiple channels and aux sends
+/// Mixer node with multiple channels and aux sends
 pub struct MixerNode {
+    /// Master volume (0.0 - 2.0)
+    pub master_volume: f32,
+    /// Smoothing factor (0.0 - 1.0)
+    pub smoothing: f32,
     /// Channels
-    channels: Vec<ChannelState>,
+    pub channels: Vec<ChannelState>,
     /// Channel names for parameter lookup
-    channel_names: HashMap<String, usize>,
+    pub channel_names: HashMap<String, usize>,
     /// Aux buses (each bus accumulates signals from sends)
-    buses: Vec<Vec<f32>>,
+    pub buses: Vec<Vec<f32>>,
     /// Send configurations per channel
-    sends: Vec<Vec<SendConfig>>,
-    /// Master volume
-    master_volume: f32,
+    pub sends: Vec<Vec<SendConfig>>,
     /// Current master volume with smoothing
-    current_master_volume: f32,
-    /// Smoothing factor
-    smoothing: f32,
+    pub current_master_volume: f32,
+    /// Buffer size for buses (updated each block)
+    pub buffer_size: usize,
     /// Sample rate
-    sample_rate: f32,
-    /// Buffer size for buses
-    buffer_size: usize,
+    pub sample_rate: f32,
+    /// Control input values (updated from graph)
+    pub control_values: Vec<f32>,
+    /// Parameter IDs for automation
+    pub param_ids: HashMap<String, ParameterId>,
+    /// Optional hook called after a parameter changes
+    pub after_param_change_closure: fn(&mut Self, &str, f32),
 }
 
 impl MixerNode {
@@ -48,16 +53,42 @@ impl MixerNode {
         }
 
         Self {
+            master_volume: 1.0,
+            smoothing: 0.1,
             channels,
             channel_names,
             buses: vec![Vec::new(); num_buses],
             sends,
-            master_volume: 1.0,
             current_master_volume: 1.0,
-            smoothing: 0.1,
-            sample_rate: 44100.0,
             buffer_size: 0,
+            sample_rate: 44100.0,
+            control_values: Vec::new(),
+            param_ids: HashMap::new(),
+            after_param_change_closure: |_, _, _| {},
         }
+    }
+
+    /// Number of audio inputs (channels)
+    pub fn num_inputs(&self) -> usize {
+        <Self as kama_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE>>::num_audio_inputs(self)
+    }
+
+    /// Number of audio outputs (master L/R + buses)
+    pub fn num_outputs(&self) -> usize {
+        <Self as kama_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE>>::num_audio_outputs(self)
+    }
+
+    /// Get parameter value by name (convenience wrapper)
+    pub fn get_param(&self, name: &str) -> Option<ParamValue> {
+        let id = ParameterId::new(name).ok()?;
+        <Self as kama_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE>>::get_parameter(self, &id)
+    }
+
+    /// Set parameter value by name (convenience wrapper)
+    pub fn set_param(&mut self, name: &str, value: ParamValue) -> ProcessResult<()> {
+        let id = ParameterId::new(name)
+            .map_err(|e| kama_core::ProcessError::Parameter(e.to_string()))?;
+        <Self as kama_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE>>::set_parameter(self, &id, value)
     }
 
     /// Add a channel
@@ -153,8 +184,108 @@ impl MixerNode {
     }
 }
 
-impl AudioNode for MixerNode {
-    fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<(), AudioError> {
+// Override Processor trait methods for dynamic I/O and custom parameters
+impl kama_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
+    fn num_audio_inputs(&self) -> usize {
+        self.channels.len()
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        2 + self.buses.len() // master L/R + buses
+    }
+
+    fn num_control_inputs(&self) -> usize {
+        0
+    }
+
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        let name = id.as_str();
+        // Parse parameter names like "ch_1_volume", "ch_1_pan", "ch_1_mute", "master_volume"
+        if name == "master_volume" {
+            return Some(ParamValue::Float(self.master_volume));
+        }
+        if name.starts_with("ch_") {
+            let parts: Vec<&str> = name.split('_').collect();
+            if parts.len() >= 3 {
+                if let Ok(idx) = parts[1].parse::<usize>() {
+                    if idx > 0 && idx <= self.channels.len() {
+                        let channel = &self.channels[idx - 1];
+                        match parts[2] {
+                            "volume" => return Some(ParamValue::Float(channel.config().volume)),
+                            "pan" => return Some(ParamValue::Float(channel.config().pan)),
+                            "mute" => return Some(ParamValue::Bool(channel.config().muted)),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        // If not a custom parameter, delegate to macro-generated implementation
+        // (which only handles master_volume and smoothing)
+        // Since we already handled master_volume, we can fall back to smoothing
+        if name == "smoothing" {
+            return Some(ParamValue::Float(self.smoothing));
+        }
+        None
+    }
+
+    fn set_parameter(
+        &mut self,
+        id: &ParameterId,
+        value: ParamValue,
+    ) -> ProcessResult<()> {
+        let name = id.as_str();
+        if name == "master_volume" {
+            if let ParamValue::Float(v) = value {
+                self.set_master_volume(v);
+                return Ok(());
+            }
+        }
+        if name == "smoothing" {
+            if let ParamValue::Float(v) = value {
+                self.set_smoothing(v);
+                return Ok(());
+            }
+        }
+        if name.starts_with("ch_") {
+            let parts: Vec<&str> = name.split('_').collect();
+            if parts.len() >= 3 {
+                if let Ok(idx) = parts[1].parse::<usize>() {
+                    if idx > 0 && idx <= self.channels.len() {
+                        match parts[2] {
+                            "volume" => {
+                                if let ParamValue::Float(v) = value {
+                                    return self.set_channel_volume(idx - 1, v).map_err(|e| kama_core::ProcessError::Parameter(e.to_string()));
+                                }
+                            }
+                            "pan" => {
+                                if let ParamValue::Float(v) = value {
+                                    return self.set_channel_pan(idx - 1, v).map_err(|e| kama_core::ProcessError::Parameter(e.to_string()));
+                                }
+                            }
+                            "mute" => {
+                                if let ParamValue::Bool(v) = value {
+                                    return self.set_channel_mute(idx - 1, v).map_err(|e| kama_core::ProcessError::Parameter(e.to_string()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Err(kama_core::ProcessError::Parameter(format!(
+            "Unknown parameter: {}",
+            name
+        )))
+    }
+
+    fn process(
+        &mut self,
+        inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        outputs: &mut [&mut [f32; DEFAULT_BLOCK_SIZE]],
+        _control: &[f32],
+    ) -> ProcessResult<()> {
         // We expect inputs in interleaved format: for each channel, we have a buffer.
         // If there are more inputs than channels, extra inputs are ignored.
         // Outputs: first two are master left/right, then buses (if any)
@@ -163,8 +294,8 @@ impl AudioNode for MixerNode {
             return Ok(());
         }
 
-        let num_channels = self.channels.len();
-        let num_buses = self.buses.len();
+        let _num_channels = self.channels.len();
+        let _num_buses = self.buses.len();
         let buffer_size = outputs[0].len();
 
         // Ensure bus buffers are sized correctly
@@ -251,74 +382,6 @@ impl AudioNode for MixerNode {
         Ok(())
     }
 
-    fn get_param(&self, name: &str) -> Option<ParamValue> {
-        // Parse parameter names like "ch_1_volume", "ch_1_pan", "ch_1_mute", "master_volume"
-        if name == "master_volume" {
-            return Some(ParamValue::Float(self.master_volume));
-        }
-
-        if name.starts_with("ch_") {
-            let parts: Vec<&str> = name.split('_').collect();
-            if parts.len() >= 3 {
-                if let Ok(idx) = parts[1].parse::<usize>() {
-                    if idx > 0 && idx <= self.channels.len() {
-                        let channel = &self.channels[idx - 1];
-                        match parts[2] {
-                            "volume" => return Some(ParamValue::Float(channel.config().volume)),
-                            "pan" => return Some(ParamValue::Float(channel.config().pan)),
-                            "mute" => return Some(ParamValue::Bool(channel.config().muted)),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn set_param(&mut self, name: &str, value: ParamValue) -> Result<(), AudioError> {
-        if name == "master_volume" {
-            if let ParamValue::Float(v) = value {
-                self.set_master_volume(v);
-                return Ok(());
-            }
-        }
-
-        if name.starts_with("ch_") {
-            let parts: Vec<&str> = name.split('_').collect();
-            if parts.len() >= 3 {
-                if let Ok(idx) = parts[1].parse::<usize>() {
-                    if idx > 0 && idx <= self.channels.len() {
-                        match parts[2] {
-                            "volume" => {
-                                if let ParamValue::Float(v) = value {
-                                    return self.set_channel_volume(idx - 1, v);
-                                }
-                            }
-                            "pan" => {
-                                if let ParamValue::Float(v) = value {
-                                    return self.set_channel_pan(idx - 1, v);
-                                }
-                            }
-                            "mute" => {
-                                if let ParamValue::Bool(v) = value {
-                                    return self.set_channel_mute(idx - 1, v);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(AudioError::Parameter(format!(
-            "Unknown parameter: {}",
-            name
-        )))
-    }
-
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         // Nothing else to init
@@ -330,27 +393,21 @@ impl AudioNode for MixerNode {
             channel.set_smoothing(self.smoothing); // reset smoothing? maybe just keep
         }
     }
+}
 
-    fn num_inputs(&self) -> usize {
-        self.channels.len()
-    }
 
-    fn num_outputs(&self) -> usize {
-        2 + self.buses.len() // master L/R + buses
-    }
-
-    fn node_type_id(&self) -> NodeTypeId {
-        NodeTypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> NodeMetadata {
+// Node metadata for UI (optional)
+impl MixerNode {
+    pub fn metadata(&self) -> NodeMetadata {
         let mut params = vec![ParamMetadata {
             name: "master_volume".to_string(),
             typ: ParamType::Float,
             default: ParamValue::Float(1.0),
-            min: Some(0.0),
-            max: Some(2.0),
-            step: Some(0.01),
+            range: ParamRange {
+                min: Some(0.0),
+                max: Some(2.0),
+                step: Some(0.01),
+            },
             unit: Some("gain".to_string()),
             choices: None,
         }];
@@ -362,9 +419,11 @@ impl AudioNode for MixerNode {
                 name: format!("ch_{}_volume", ch_num),
                 typ: ParamType::Float,
                 default: ParamValue::Float(1.0),
-                min: Some(0.0),
-                max: Some(1.0),
-                step: Some(0.01),
+                range: ParamRange {
+                    min: Some(0.0),
+                    max: Some(1.0),
+                    step: Some(0.01),
+                },
                 unit: Some("gain".to_string()),
                 choices: None,
             });
@@ -372,9 +431,11 @@ impl AudioNode for MixerNode {
                 name: format!("ch_{}_pan", ch_num),
                 typ: ParamType::Float,
                 default: ParamValue::Float(0.0),
-                min: Some(-1.0),
-                max: Some(1.0),
-                step: Some(0.01),
+                range: ParamRange {
+                    min: Some(-1.0),
+                    max: Some(1.0),
+                    step: Some(0.01),
+                },
                 unit: Some("pan".to_string()),
                 choices: None,
             });
@@ -382,9 +443,11 @@ impl AudioNode for MixerNode {
                 name: format!("ch_{}_mute", ch_num),
                 typ: ParamType::Bool,
                 default: ParamValue::Bool(false),
-                min: None,
-                max: None,
-                step: None,
+                range: ParamRange {
+                    min: None,
+                    max: None,
+                    step: None,
+                },
                 unit: None,
                 choices: None,
             });
@@ -392,7 +455,7 @@ impl AudioNode for MixerNode {
 
         NodeMetadata {
             name: "Mixer".to_string(),
-            category: NodeCategory::Mixer,
+            category: NodeCategory::Processor,
             description: format!(
                 "Mixer with {} channels and {} buses",
                 self.channels.len(),

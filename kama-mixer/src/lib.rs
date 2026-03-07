@@ -17,4 +17,4 @@ pub use mixer::MixerNode;
 pub use send::{SendConfig, SendType};
 
 // Re-export common types
-pub use kama_core::traits::{AudioNode, ParamValue};
+pub use kama_core::traits::ParamValue;
