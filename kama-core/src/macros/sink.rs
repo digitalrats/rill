@@ -1,240 +1,181 @@
-//! Macro for creating Sink nodes (audio outputs)
-//!
-//! # Examples
-//! ```
-//! use kama_core::prelude::*;
-//! use kama_core::macros::sink_node;
-//! use kama_core::DEFAULT_BLOCK_SIZE;
-//!
-//! sink_node! {
-//!     /// File writer with gain control
-//!     #[derive(Debug)]
-//!     pub struct FileSink {
-//!         params: {
-//!             /// Output gain
-//!             gain: f32 = 1.0,
-//!         },
-//!         control_inputs: {
-//!             /// Volume automation (0.0 to 1.0)
-//!             volume: f32 = 1.0,
-//!         },
-//!         state: {
-//!             samples_written: u64 = 0,
-//!         },
-//!         inputs: 1,
-//!         sink: |this, _channel, input, control| {
-//!             let volume = control[0];
-//!             for &sample in input {
-//!                 let _ = sample * this.gain * volume;
-//!                 this.samples_written += 1;
-//!             }
-//!         }
-//!     }
-//! }
-//! ```
+//! # Макрос для создания активных приёмников (Sink)
+
+/// Создаёт активный приёмник сигнала
 #[macro_export]
 macro_rules! sink_node {
-    // Generic version with explicit audio type
     (
-        <$type:ty>
-        $(#[$struct_meta:meta])*
-        $vis:vis struct $name:ident {
-            params: {
-                $(
-                    $(#[$param_meta:meta])*
-                    $param_name:ident : $param_type:ty = $param_default:expr
-                ),* $(,)?
-            },
-            $(control_inputs: {
-                $(
-                    $(#[$control_meta:meta])*
-                    $control_name:ident : $control_type:ty = $control_default:expr
-                ),* $(,)?
-            },)?
-            state: {
-                $(
-                    $(#[$state_meta:meta])*
-                    $state_name:ident : $state_type:ty = $state_default:expr
-                ),* $(,)?
-            },
-            inputs: $num_inputs:expr,
-            sink: $sink:expr
+        $(#[$meta:meta])*
+        $vis:vis $struct_name:ident<$T:ident: $audio_num:path, const $BUF:ident: usize>
+        $(where $($bounds:tt)*)?
+        {
+            params { $($param_name:ident: $param_ty:ty = $param_default:expr),* $(,)? }
+            $(ports { $($ports:tt)* } )?
+            consume: $consume:expr
         }
     ) => {
-        $(#[$struct_meta])*
-        $vis struct $name {
-            $(
-                $(#[$param_meta])*
-                pub $param_name: $param_type,
-            )*
-            
-            $(
-                $(
-                    $(#[$control_meta])*
-                    pub $control_name: $control_type,
-                )*
-            )?
-            
-            $(
-                $(#[$state_meta])*
-                pub $state_name: $state_type,
-            )*
-            
-            /// Sample rate
-            pub sample_rate: f32,
-            
-            /// Control input values (updated from graph)
-            pub control_values: Vec<f32>,
-            
-            /// Parameter IDs for automation
-            pub param_ids: std::collections::HashMap<String, $crate::traits::ParameterId>,
-        }
-
-        impl $name {
-            /// Create a new instance
-            pub fn new($($param_name: $param_type),* $(, $($control_name: $control_type),*)?) -> Self {
-                let mut param_ids = std::collections::HashMap::new();
-                $(
-                    if let Ok(id) = $crate::traits::ParameterId::new(stringify!($param_name)) {
-                        param_ids.insert(stringify!($param_name).to_string(), id);
-                    }
-                )*
-                
-                // Count control inputs using array length - simpler and works
-                let control_count = 0 $(+ { let _ = ($($control_name,)*); 1 })?;
-                
-                Self {
-                    $($param_name),*,
-                    $($($control_name: $control_default),*)?,
-                    $($state_name: $state_default),*,
-                    sample_rate: 44100.0,
-                    control_values: vec![0.0; control_count],
-                    param_ids,
-                }
-            }
-            
-            /// Get parameter ID by name
-            pub fn param_id(&self, name: &str) -> Option<&$crate::traits::ParameterId> {
-                self.param_ids.get(name)
-            }
-            
-            /// Update control input value
-            pub fn set_control(&mut self, index: usize, value: f32) {
-                if index < self.control_values.len() {
-                    self.control_values[index] = value;
-                }
-            }
-        }
-
-        impl $crate::traits::Sink<$type, { $crate::DEFAULT_BLOCK_SIZE }> for $name
-        where
-            $type: $crate::math::AudioNum + Send + Sync,
+        #[derive(Debug, Clone)]
+        $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
+        $(where $($bounds)*)?
         {
-            fn process(
-                &mut self,
-                inputs: &[&[$type; { $crate::DEFAULT_BLOCK_SIZE }]],
-                control: &[f32],
-            ) -> $crate::ProcessResult<()> {
-                let num_in = inputs.len().min($num_inputs);
+            state: $crate::traits::node::NodeState<T,$BUF>,
+            id: $crate::NodeId,
+            metadata: $crate::NodeMetadata,
+            inputs: Vec<$crate::Port<$T, $BUF>>,
+            $(
+                pub $param_name: $param_ty,
+            )*
+        }
+        
+        impl<$T: $audio_num, const $BUF: usize>
+            $struct_name<$T, $BUF>
+        $(where $($bounds)*)?
+        {
+            pub fn new(sample_rate: f32) -> Self {
+                let metadata = $crate::NodeMetadata::new(
+                    stringify!($struct_name),
+                    $crate::NodeCategory::Sink,
+                );
                 
-                if num_in == 0 {
-                    return Ok(());
-                }
-
-                let sink_fn: fn(
-                    &mut Self,
-                    usize,
-                    &[$type; { $crate::DEFAULT_BLOCK_SIZE }],
-                    &[f32]
-                ) = $sink;
-
-                for ch in 0..num_in {
-                    sink_fn(self, ch, inputs[ch], control);
-                }
-
-                Ok(())
-            }
-
-            fn num_audio_inputs(&self) -> usize {
-                $num_inputs
-            }
-
-            fn num_control_inputs(&self) -> usize {
-                self.control_values.len()
-            }
-
-            fn get_parameter(&self, id: &$crate::traits::ParameterId) -> Option<$crate::traits::ParamValue> {
-                match id.as_str() {
+                let mut node = Self {
+                    state: $crate::traits::node::NodeState::new(sample_rate),
+                    id: $crate::NodeId(0),
+                    metadata,
+                    inputs: Vec::new(),
                     $(
-                        stringify!($param_name) => {
-                            Some($crate::traits::ParamValue::Float(
-                                self.$param_name
-                            ))
-                        }
+                        $param_name: $param_default,
+                    )*
+                };
+                
+                $(
+                    __init_ports!(ports { $($ports)* }, node, inputs)
+                )?;
+                
+                node
+            }
+            
+            pub fn sample_rate(&self) -> f32 {
+                self.state.sample_rate
+            }
+        }
+        
+        impl<$T: $audio_num, const $BUF: usize>
+            $crate::AudioNode<$T, $BUF> for $struct_name<$T, $BUF>
+        $(where $($bounds)*)?
+        {
+            fn node_type_id(&self) -> $crate::NodeTypeId 
+            where 
+                Self: 'static + Sized 
+            {
+                $crate::NodeTypeId::of::<Self>()
+            }
+            
+            fn id(&self) -> $crate::NodeId {
+                self.id
+            }
+            
+            fn set_id(&mut self, id: $crate::NodeId) {
+                self.id = id;
+            }
+            
+            fn metadata(&self) -> $crate::NodeMetadata {
+                self.metadata.clone()
+            }
+            
+            fn init(&mut self, sample_rate: f32) {
+                self.state.sample_rate = sample_rate;
+            }
+            
+            fn reset(&mut self) {
+                self.state.sample_pos = 0;
+                self.state.blocks_processed = 0;
+            }
+            
+            fn get_parameter(&self, id: &$crate::ParameterId) -> Option<$crate::ParamValue> {
+                let name = id.as_str();
+                match name {
+                    $(
+                        stringify!($param_name) => Some($crate::ParamValue::Float(
+                            <_ as $crate::math::AudioNum>::to_f32(self.$param_name)
+                        )),
                     )*
                     _ => None,
                 }
             }
-
-            fn set_parameter(
+            
+            fn set_parameter(&mut self, id: &$crate::ParameterId, value: $crate::ParamValue) -> $crate::ProcessResult<()> {
+                let name = id.as_str();
+                if let Some(v) = value.as_f32() {
+                    match name {
+                        $(
+                            stringify!($param_name) => {
+                                self.$param_name = $crate::math::AudioNum::from_f32(v);
+                                Ok(())
+                            },
+                        )*
+                        _ => Err($crate::ProcessError::parameter(format!("Unknown parameter: {}", name))),
+                    }
+                } else {
+                    Err($crate::ProcessError::parameter("Expected float value"))
+                }
+            }
+            
+            fn input_port(&self, index: usize) -> Option<&$crate::Port<$T, $BUF>> {
+                self.inputs.get(index)
+            }
+            
+            fn input_port_mut(&mut self, index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
+                self.inputs.get_mut(index)
+            }
+            
+            fn output_port(&self, _index: usize) -> Option<&$crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn output_port_mut(&mut self, _index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn control_port(&self, _index: usize) -> Option<&$crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn control_port_mut(&mut self, _index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn num_inputs(&self) -> usize {
+                self.inputs.len()
+            }
+            
+            fn num_outputs(&self) -> usize { 0 }
+            
+            fn state(&self) -> &$crate::traits::node::NodeState<T,$BUF> {
+                &self.state
+            }
+            
+            fn state_mut(&mut self) -> &mut $crate::traits::node::NodeState<T,$BUF> {
+                &mut self.state
+            }
+        }
+        
+        impl<$T: $audio_num, const $BUF: usize>
+            $crate::Sink<$T, $BUF> for $struct_name<$T, $BUF>
+        $(where $($bounds)*)?
+        {
+            fn consume(
                 &mut self,
-                id: &$crate::traits::ParameterId,
-                value: $crate::traits::ParamValue,
+                clock: &$crate::ClockTick,
+                audio_inputs: &[&[$T; $BUF]],
+                control_inputs: &[$T],
+                clock_inputs: &[$crate::ClockTick],
+                feedback_inputs: &[&[$T; $BUF]],
+                control_outputs: &mut [$T],
+                clock_outputs: &mut [$crate::ClockTick],
             ) -> $crate::ProcessResult<()> {
-                match (id.as_str(), value) {
-                    $(
-                        (stringify!($param_name), $crate::traits::ParamValue::Float(v)) => {
-                            self.$param_name = v;
-                            Ok(())
-                        }
-                    )*
-                    _ => Err($crate::ProcessError::Parameter(
-                        format!("Unknown parameter: {}", id.as_str())
-                    )),
-                }
+                // Передаем только self, внутри замыкания обращаемся к его полям
+                ($consume)(self)?;
+                Ok(())
             }
-
-            fn init(&mut self, sample_rate: f32) {
-                self.sample_rate = sample_rate;
-            }
-
-            fn reset(&mut self) {
-                $(
-                    self.$state_name = $state_default;
-                )*
-                for val in &mut self.control_values {
-                    *val = 0.0;
-                }
-            }
-        }
-    };
-    // Backward-compatible version (defaults to f32)
-    (
-        $(#[$struct_meta:meta])*
-        $vis:vis struct $name:ident {
-            $($rest:tt)*
-        }
-    ) => {
-        $crate::sink_node! {
-            <f32>
-            $(#[$struct_meta])*
-            $vis struct $name {
-                $($rest)*
-            }
-        }
-    };
-}
-
-/// Simplified version for f32 sinks
-#[macro_export]
-macro_rules! sink_node_f32 {
-    (
-        $(#[$struct_meta:meta])*
-        $vis:vis struct $name:ident $($rest:tt)*
-    ) => {
-        $crate::sink_node! {
-            $(#[$struct_meta])*
-            $vis struct $name $($rest)*
         }
     };
 }

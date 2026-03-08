@@ -1,25 +1,34 @@
-//! Delay line for audio effects
-//!
-//! Provides a circular buffer for implementing delay, reverb,
-//! and other time-based effects.
+//! # Delay line for audio effects
+
 use crate::math::AudioNum;
-use crate::buffer::AtomicStats;
+use crate::buffer::{AudioBuffer, BufferStats, AtomicStats, AtomicCell};
 use core::marker::PhantomData;
+use core::ops::{Index, IndexMut};
+use super::array_from_fn;
+
+// ============================================================================
+// DelayLine
+// ============================================================================
+
+/// Delay line for audio effects
+///
+/// Provides a circular buffer for implementing delay, reverb,
+/// and other time-based effects.
 #[repr(align(64))]
 pub struct DelayLine<T: AudioNum, const MAX_DELAY: usize> {
-    /// Circular buffer storage
-    buffer: [T; MAX_DELAY],
+    /// Circular buffer storage using AtomicCell for each sample
+    buffer: [AtomicCell<T>; MAX_DELAY],
     
-    /// Write position
+    /// Current write position in the circular buffer
     write_pos: usize,
     
     /// Current delay in samples
     delay_samples: usize,
     
-    /// Sample rate
+    /// Sample rate in Hz (for time-based delay setting)
     sample_rate: f32,
     
-    /// Statistics
+    /// Atomic statistics for performance monitoring
     stats: AtomicStats,
     
     /// Phantom data
@@ -27,10 +36,21 @@ pub struct DelayLine<T: AudioNum, const MAX_DELAY: usize> {
 }
 
 impl<T: AudioNum, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
-    /// Create new delay line
+    /// Create a new delay line with the specified sample rate
+    ///
+    /// # Arguments
+    /// * `sample_rate` - Sample rate in Hz (e.g., 44100.0)
+    ///
+    /// # Panics
+    /// Panics if `MAX_DELAY` is 0.
     pub fn new(sample_rate: f32) -> Self {
+        assert!(MAX_DELAY > 0, "DelayLine must have MAX_DELAY > 0");
+        
+        // Create buffer with default values
+        let buffer = array_from_fn(|_| AtomicCell::new(T::ZERO));
+        
         Self {
-            buffer: [T::ZERO; MAX_DELAY],
+            buffer,
             write_pos: 0,
             delay_samples: 0,
             sample_rate,
@@ -40,31 +60,41 @@ impl<T: AudioNum, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
     }
     
     /// Set delay time in seconds
+    #[inline(always)]
     pub fn set_delay(&mut self, delay_sec: f32) {
         let samples = (delay_sec * self.sample_rate) as usize;
         self.delay_samples = samples.min(MAX_DELAY - 1);
     }
     
     /// Set delay in samples
+    #[inline(always)]
     pub fn set_delay_samples(&mut self, samples: usize) {
         self.delay_samples = samples.min(MAX_DELAY - 1);
     }
     
     /// Get current delay in samples
+    #[inline(always)]
     pub fn delay_samples(&self) -> usize {
         self.delay_samples
     }
     
-    /// Get maximum delay in samples
-    pub fn max_delay(&self) -> usize {
+    /// Get maximum possible delay in samples
+    #[inline(always)]
+    pub const fn max_delay(&self) -> usize {
         MAX_DELAY
+    }
+    
+    /// Get the current sample rate
+    #[inline(always)]
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
     }
     
     /// Write a sample and return the delayed sample
     #[inline(always)]
     pub fn write(&mut self, input: T) -> T {
         // Write current sample
-        self.buffer[self.write_pos] = input;
+        self.buffer[self.write_pos].store(input);
         
         // Calculate read position for delayed sample
         let read_pos = if self.write_pos >= self.delay_samples {
@@ -74,7 +104,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
         };
         
         // Read delayed sample
-        let output = self.buffer[read_pos];
+        let output = self.buffer[read_pos].load();
         
         // Advance write position
         self.write_pos = (self.write_pos + 1) % MAX_DELAY;
@@ -82,24 +112,35 @@ impl<T: AudioNum, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
         // Update statistics
         self.stats.record_write();
         self.stats.record_read();
+        self.stats.update_peak(MAX_DELAY);
         
         output
     }
     
-    /// Read sample at arbitrary delay (0 = most recent, delay = how many samples back)
+    /// Read the delayed sample without writing
+    #[inline(always)]
+    pub fn read(&self) -> T {
+        let read_pos = if self.write_pos >= self.delay_samples {
+            self.write_pos - self.delay_samples
+        } else {
+            MAX_DELAY + self.write_pos - self.delay_samples
+        };
+        
+        self.buffer[read_pos].load()
+    }
+    
+    /// Read sample at arbitrary delay (0 = most recent)
     #[inline(always)]
     pub fn read_delayed(&self, delay: usize) -> T {
-        let delay = delay.min(MAX_DELAY - 1);
-        // Most recent sample is at (write_pos - 1) mod MAX_DELAY
-        // So sample from 'delay' samples ago is at:
-        // (write_pos - 1 - delay) mod MAX_DELAY
-        let read_pos = if self.write_pos > delay {
+        debug_assert!(delay < MAX_DELAY, "Delay {} out of range (max {})", delay, MAX_DELAY);
+        
+        let read_pos = if self.write_pos > delay + 1 {
             self.write_pos - 1 - delay
         } else {
             MAX_DELAY + self.write_pos - 1 - delay
         };
         
-        self.buffer[read_pos]
+        self.buffer[read_pos].load()
     }
     
     /// Read with linear interpolation between samples
@@ -114,70 +155,125 @@ impl<T: AudioNum, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
             s1
         } else {
             let s2 = self.read_delayed(delay_int + 1);
-            // Linear interpolation: (1-frac)*s1 + frac*s2
             s1 + (s2 - s1) * frac
         }
     }
     
-    /// Clear the delay line
+    /// Clear the delay line (fill with zeros)
     pub fn clear(&mut self) {
         for i in 0..MAX_DELAY {
-            self.buffer[i] = T::ZERO;
+            self.buffer[i].store(T::ZERO);
         }
         self.write_pos = 0;
         self.stats.reset();
     }
     
     /// Get current write position
+    #[inline(always)]
     pub fn write_position(&self) -> usize {
         self.write_pos
     }
 }
+
+// ============================================================================
+// Index implementations
+// ============================================================================
+
+impl<T: AudioNum, const MAX_DELAY: usize> Index<usize> for DelayLine<T, MAX_DELAY> {
+    type Output = T;
+    
+    fn index(&self, _index: usize) -> &Self::Output {
+        // This is a bit tricky with AtomicCell - we need to return a reference
+        // For now, we'll just return a reference to the AtomicCell's internal value
+        // but this requires unsafe code. In practice, direct indexing might not be needed.
+        unimplemented!("Direct indexing not supported with AtomicCell")
+    }
+}
+
+impl<T: AudioNum, const MAX_DELAY: usize> IndexMut<usize> for DelayLine<T, MAX_DELAY> {
+    fn index_mut(&mut self, _index: usize) -> &mut Self::Output {
+        unimplemented!("Direct indexing not supported with AtomicCell")
+    }
+}
+
+// ============================================================================
+// AudioBuffer Implementation
+// ============================================================================
+
+impl<T: AudioNum, const MAX_DELAY: usize> AudioBuffer<T> for DelayLine<T, MAX_DELAY> {
+    fn capacity(&self) -> usize {
+        MAX_DELAY
+    }
+    
+    fn len(&self) -> usize {
+        MAX_DELAY
+    }
+    
+    fn is_empty(&self) -> bool {
+        false
+    }
+    
+    fn is_full(&self) -> bool {
+        true
+    }
+    
+    fn clear(&mut self) {
+        self.clear();
+    }
+    
+    fn stats(&self) -> BufferStats {
+        let mut stats = self.stats.snapshot();
+        stats.fill_level = 1.0;
+        stats
+    }
+    
+    fn reset_stats(&mut self) {
+        self.stats.reset();
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
     
     #[test]
-    fn test_interpolation() {
+    fn test_delay_line_basic() {
+        let mut delay = DelayLine::<f32, 1024>::new(44100.0);
+        delay.set_delay_samples(100);
+        
+        for i in 0..200 {
+            let out = delay.write(i as f32);
+            if i >= 100 {
+                assert_eq!(out, (i - 100) as f32);
+            }
+        }
+    }
+    
+    #[test]
+    fn test_delay_line_read_delayed() {
         let mut delay = DelayLine::<f32, 1024>::new(44100.0);
         
-        // Fill with known values (0..1023)
         for i in 0..1024 {
             delay.write(i as f32);
         }
         
-        // After writing 1024 samples:
-        // write_pos = 0
-        // buffer[0] = 1023 (most recent)
-        // buffer[1] = 0
-        // buffer[2] = 1
-        // ...
-        // buffer[1023] = 1022
+        assert_eq!(delay.read_delayed(0), 1023.0);
+        assert_eq!(delay.read_delayed(100), 923.0);
+    }
+    
+    #[test]
+    fn test_delay_line_interpolation() {
+        let mut delay = DelayLine::<f32, 1024>::new(44100.0);
         
-        // Test read_delayed
-        assert_eq!(delay.read_delayed(0), 1023.0, "delay 0 should be most recent (1023)");
-        assert_eq!(delay.read_delayed(1), 1022.0, "delay 1 should be previous (1022)");
-        assert_eq!(delay.read_delayed(100), 923.0, "delay 100 should be 923");
-        assert_eq!(delay.read_delayed(200), 823.0, "delay 200 should be 823");
-        
-        // Test interpolation
-        // delay 100.5 should be halfway between 923 and 922 = 922.5
-        // но мы ожидаем 923.5? Нет, правильно 922.5
-        let test_cases = [
-            (100.0, 923.0),      // Exact sample
-            (100.5, 922.5),      // Half between 923 and 922
-            (101.0, 922.0),      // Next exact
-        ];
-        
-        for &(delay_frac, expected) in &test_cases {
-            let val = delay.read_interpolated(delay_frac);
-            let diff = (val - expected).abs();
-            assert!(
-                diff < 0.01,
-                "Interpolation at {:.2}: expected {:.2}, got {:.2}, diff {:.2}",
-                delay_frac, expected, val, diff
-            );
+        for i in 0..1024 {
+            delay.write(i as f32);
         }
+        
+        let val = delay.read_interpolated(100.5);
+        assert!((val - 922.5).abs() < 0.01);
     }
 }

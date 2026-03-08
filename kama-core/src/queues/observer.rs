@@ -276,7 +276,7 @@ impl OperationGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queues::TelemetryQueue;
+    use crate::queue::TelemetryQueue;
 
     #[test]
     fn test_observer_creation() {

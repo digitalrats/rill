@@ -1,548 +1,705 @@
-//! # Error Types for Kama Core
+//! # Система ошибок Kama Core
 //!
-//! This module defines the error types used throughout the Kama Audio ecosystem.
+//! Централизованная система обработки ошибок для всей экосистемы Kama Audio.
+//! Предоставляет иерархию типов ошибок с контекстом и возможностью
+//! преобразования между различными уровнями.
 
-use thiserror::Error;
 use std::fmt;
+use std::error::Error as StdError;
 
-// ============================================================================
-// Core Process Error
-// ============================================================================
+// =============================================================================
+// Основные типы ошибок
+// =============================================================================
 
-/// Main error type for audio processing operations
-#[derive(Error, Debug, Clone, PartialEq)]  // Убрали Eq
-pub enum ProcessError {
-    /// Error during audio processing
-    #[error("Processing error: {0}")]
-    Processing(String),
-    
-    /// Error with a parameter (invalid value, out of range, etc.)
-    #[error("Parameter error: {0}")]
-    Parameter(String),
-    
-    /// Invalid port access
-    #[error("Invalid port: {0}")]
-    InvalidPort(String),
-    
-    /// Buffer operation failed
-    #[error("Buffer error: {0}")]
-    Buffer(String),
-    
-    /// Node not found
-    #[error("Node {0} not found")]
-    NodeNotFound(u32),
-    
-    /// Sample rate mismatch
-    #[error("Sample rate mismatch: expected {expected}, got {got}")]
-    SampleRateMismatch {
-        /// Expected sample rate
-        expected: f32,
-        /// Actual sample rate
-        got: f32,
-    },
-    
-    /// Configuration error
-    #[error("Configuration error: {0}")]
-    Config(String),
-    
-    /// Not initialized
-    #[error("Not initialized")]
-    NotInitialized,
-    
-    /// Already initialized
-    #[error("Already initialized")]
-    AlreadyInitialized,
-    
-    /// Unsupported operation
-    #[error("Unsupported operation: {0}")]
-    Unsupported(String),
-    
-    /// Timeout occurred
-    #[error("Operation timed out")]
-    Timeout,
-    
-    /// Internal error (for implementation-specific errors)
-    #[error("Internal error: {0}")]
-    Internal(String),
-}
-
-/// Result type for audio processing operations
-pub type ProcessResult<T> = Result<T, ProcessError>;
-
-impl ProcessError {
-    /// Create a new processing error with a formatted message
-    pub fn processing(msg: impl Into<String>) -> Self {
-        Self::Processing(msg.into())
-    }
-    
-    /// Create a new parameter error with a formatted message
-    pub fn parameter(msg: impl Into<String>) -> Self {
-        Self::Parameter(msg.into())
-    }
-    
-    /// Create a new invalid port error
-    pub fn invalid_port(port: impl fmt::Display) -> Self {
-        Self::InvalidPort(format!("Invalid port: {}", port))
-    }
-    
-    /// Create a new buffer error
-    pub fn buffer(msg: impl Into<String>) -> Self {
-        Self::Buffer(msg.into())
-    }
-    
-    /// Create a new node not found error
-    pub fn node_not_found(id: u32) -> Self {
-        Self::NodeNotFound(id)
-    }
-    
-    /// Create a new sample rate mismatch error
-    pub fn sample_rate_mismatch(expected: f32, got: f32) -> Self {
-        Self::SampleRateMismatch { expected, got }
-    }
-    
-    /// Create a new configuration error
-    pub fn config(msg: impl Into<String>) -> Self {
-        Self::Config(msg.into())
-    }
-    
-    /// Create a new unsupported operation error
-    pub fn unsupported(msg: impl Into<String>) -> Self {
-        Self::Unsupported(msg.into())
-    }
-    
-    /// Create a new internal error
-    pub fn internal(msg: impl Into<String>) -> Self {
-        Self::Internal(msg.into())
-    }
-    
-    /// Check if this error is recoverable
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::Processing(_) => true,
-            Self::Parameter(_) => true,
-            Self::InvalidPort(_) => false,
-            Self::Buffer(_) => true,
-            Self::NodeNotFound(_) => false,
-            Self::SampleRateMismatch { .. } => false,
-            Self::Config(_) => false,
-            Self::NotInitialized => true,
-            Self::AlreadyInitialized => true,
-            Self::Unsupported(_) => false,
-            Self::Timeout => true,
-            Self::Internal(_) => false,
-        }
-    }
-    
-    /// Get a short error code for this error
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Processing(_) => "ERR_PROCESSING",
-            Self::Parameter(_) => "ERR_PARAMETER",
-            Self::InvalidPort(_) => "ERR_INVALID_PORT",
-            Self::Buffer(_) => "ERR_BUFFER",
-            Self::NodeNotFound(_) => "ERR_NODE_NOT_FOUND",
-            Self::SampleRateMismatch { .. } => "ERR_SAMPLE_RATE",
-            Self::Config(_) => "ERR_CONFIG",
-            Self::NotInitialized => "ERR_NOT_INIT",
-            Self::AlreadyInitialized => "ERR_ALREADY_INIT",
-            Self::Unsupported(_) => "ERR_UNSUPPORTED",
-            Self::Timeout => "ERR_TIMEOUT",
-            Self::Internal(_) => "ERR_INTERNAL",
-        }
-    }
-}
-
-// ============================================================================
-// Buffer Error
-// ============================================================================
-
-/// Errors that can occur during buffer operations
-#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]  // BufferError может быть Eq
-pub enum BufferError {
-    /// Buffer is empty (tried to read when no data available)
-    #[error("Buffer is empty")]
-    Empty,
-    
-    /// Buffer is full (tried to write when no space available)
-    #[error("Buffer is full")]
-    Full,
-    
-    /// Invalid index access
-    #[error("Invalid index: {0}")]
-    InvalidIndex(usize),
-    
-    /// Buffer is disconnected (other end is gone)
-    #[error("Buffer is disconnected")]
-    Disconnected,
-    
-    /// Operation would block (for non-blocking operations)
-    #[error("Operation would block")]
-    WouldBlock,
-    
-    /// Buffer overflow (data was lost)
-    #[error("Buffer overflow")]
-    Overflow,
-    
-    /// Buffer underflow (no data available)
-    #[error("Buffer underflow")]
-    Underflow,
-    
-    /// Invalid buffer size
-    #[error("Invalid buffer size: {0}")]
-    InvalidSize(usize),
-    
-    /// Misaligned access
-    #[error("Misaligned access")]
-    Misaligned,
-}
-
-/// Result type for buffer operations
-pub type BufferResult<T> = Result<T, BufferError>;
-
-impl BufferError {
-    /// Check if this error is recoverable
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::Empty | Self::Full | Self::WouldBlock | Self::Overflow | Self::Underflow => true,
-            Self::InvalidIndex(_) | Self::Disconnected | Self::InvalidSize(_) | Self::Misaligned => false,
-        }
-    }
-    
-    /// Get a short error code
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Empty => "ERR_BUF_EMPTY",
-            Self::Full => "ERR_BUF_FULL",
-            Self::InvalidIndex(_) => "ERR_BUF_INVALID_INDEX",
-            Self::Disconnected => "ERR_BUF_DISCONNECTED",
-            Self::WouldBlock => "ERR_BUF_WOULD_BLOCK",
-            Self::Overflow => "ERR_BUF_OVERFLOW",
-            Self::Underflow => "ERR_BUF_UNDERFLOW",
-            Self::InvalidSize(_) => "ERR_BUF_INVALID_SIZE",
-            Self::Misaligned => "ERR_BUF_MISALIGNED",
-        }
-    }
-}
-
-// ============================================================================
-// Parameter Error
-// ============================================================================
-
-/// Errors that can occur during parameter operations
-#[derive(Error, Debug, Clone, PartialEq)]  // Убрали Eq
-pub enum ParameterError {
-    /// Parameter name is empty
-    #[error("Parameter name cannot be empty")]
-    Empty,
-    
-    /// Parameter name contains invalid character
-    #[error("Parameter name cannot contain '{0}'")]
-    InvalidCharacter(char),
-    
-    /// Parameter name is too long
-    #[error("Parameter name too long (max {max} characters)")]
-    TooLong {
-        /// Maximum allowed length
-        max: usize,
-    },
-    
-    /// Parameter name must start with a letter
-    #[error("Parameter name must start with a letter")]
-    MustStartWithLetter,
-    
-    /// Parameter not found
-    #[error("Parameter '{0}' not found")]
-    NotFound(String),
-    
-    /// Parameter type mismatch
-    #[error("Parameter type mismatch: expected {expected:?}, got {got:?}")]
-    TypeMismatch {
-        /// Expected parameter type
-        expected: super::traits::ParamType,
-        /// Actual parameter type
-        got: super::traits::ParamType,
-    },
-    
-    /// Value out of range
-    #[error("Value {value} out of range [{min}, {max}]")]
-    OutOfRange {
-        /// The value that was out of range
-        value: f32,
-        /// Minimum allowed value
-        min: f32,
-        /// Maximum allowed value
-        max: f32,
-    },
-    
-    /// Invalid choice (for Choice parameters)
-    #[error("Invalid choice '{0}'")]
-    InvalidChoice(String),
-    
-    /// Duplicate parameter
-    #[error("Parameter '{0}' already exists")]
-    Duplicate(String),
-}
-
-/// Result type for parameter operations
-pub type ParameterResult<T> = Result<T, ParameterError>;
-
-impl ParameterError {
-    /// Create a new not found error
-    pub fn not_found(name: impl Into<String>) -> Self {
-        Self::NotFound(name.into())
-    }
-    
-    /// Create a new type mismatch error
-    pub fn type_mismatch(expected: super::traits::ParamType, got: super::traits::ParamType) -> Self {
-        Self::TypeMismatch { expected, got }
-    }
-    
-    /// Create a new out of range error
-    pub fn out_of_range(value: f32, min: f32, max: f32) -> Self {
-        Self::OutOfRange { value, min, max }
-    }
-    
-    /// Create a new invalid choice error
-    pub fn invalid_choice(choice: impl Into<String>) -> Self {
-        Self::InvalidChoice(choice.into())
-    }
-    
-    /// Create a new duplicate parameter error
-    pub fn duplicate(name: impl Into<String>) -> Self {
-        Self::Duplicate(name.into())
-    }
-}
-
-// ============================================================================
-// Queue Error
-// ============================================================================
-
-/// Errors that can occur during queue operations
-#[derive(Error, Debug, Clone, PartialEq, Eq)]  // QueueError может быть Eq
-pub enum QueueError {
-    /// Queue is full
-    #[error("Queue is full")]
-    QueueFull,
-    
-    /// Queue is empty
-    #[error("Queue is empty")]
-    QueueEmpty,
-    
-    /// Channel is disconnected (all senders/receivers dropped)
-    #[error("Channel disconnected")]
-    ChannelDisconnected,
-    
-    /// Operation timed out
-    #[error("Operation timed out")]
-    Timeout,
-    
-    /// Operation not supported for this queue type
-    #[error("Operation not supported: {0}")]
-    Unsupported(String),
-    
-    /// Send failed with data loss
-    #[error("Send failed: {0}")]
-    SendFailed(String),
-    
-    /// Receive failed
-    #[error("Receive failed: {0}")]
-    ReceiveFailed(String),
-    
-    /// Invalid queue configuration
-    #[error("Invalid queue configuration: {0}")]
-    InvalidConfig(String),
-}
-
-/// Result type for queue operations
-pub type QueueResult<T> = Result<T, QueueError>;
-
-impl QueueError {
-    /// Create a new unsupported error
-    pub fn unsupported(msg: impl Into<String>) -> Self {
-        Self::Unsupported(msg.into())
-    }
-    
-    /// Create a new send failed error
-    pub fn send_failed(msg: impl Into<String>) -> Self {
-        Self::SendFailed(msg.into())
-    }
-    
-    /// Create a new receive failed error
-    pub fn receive_failed(msg: impl Into<String>) -> Self {
-        Self::ReceiveFailed(msg.into())
-    }
-    
-    /// Create a new invalid config error
-    pub fn invalid_config(msg: impl Into<String>) -> Self {
-        Self::InvalidConfig(msg.into())
-    }
-}
-
-// ============================================================================
-// Conversion Implementations
-// ============================================================================
-
-impl From<BufferError> for ProcessError {
-    fn from(err: BufferError) -> Self {
-        Self::Buffer(err.to_string())
-    }
-}
-
-impl From<ParameterError> for ProcessError {
-    fn from(err: ParameterError) -> Self {
-        match err {
-            ParameterError::NotFound(name) => Self::parameter(format!("Parameter not found: {}", name)),
-            ParameterError::TypeMismatch { expected, got } => {
-                Self::parameter(format!("Type mismatch: expected {:?}, got {:?}", expected, got))
-            }
-            ParameterError::OutOfRange { value, min, max } => {
-                Self::parameter(format!("Value {} out of range [{}, {}]", value, min, max))
-            }
-            _ => Self::parameter(err.to_string()),
-        }
-    }
-}
-
-impl From<std::io::Error> for ProcessError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Processing(format!("IO error: {}", err))
-    }
-}
-
-impl<T> From<crossbeam_channel::TrySendError<T>> for QueueError {
-    fn from(err: crossbeam_channel::TrySendError<T>) -> Self {
-        match err {
-            crossbeam_channel::TrySendError::Full(_) => QueueError::QueueFull,
-            crossbeam_channel::TrySendError::Disconnected(_) => QueueError::ChannelDisconnected,
-        }
-    }
-}
-
-impl From<crossbeam_channel::TryRecvError> for QueueError {
-    fn from(err: crossbeam_channel::TryRecvError) -> Self {
-        match err {
-            crossbeam_channel::TryRecvError::Empty => QueueError::QueueEmpty,
-            crossbeam_channel::TryRecvError::Disconnected => QueueError::ChannelDisconnected,
-        }
-    }
-}
-
-// ============================================================================
-// Error Context (for adding extra information)
-// ============================================================================
-
-/// Additional context for errors
+/// Основной тип ошибки для всей экосистемы Kama Audio
 #[derive(Debug, Clone)]
-pub struct ErrorContext {
-    /// Source location (file:line)
-    pub location: Option<String>,
-    
-    /// Thread ID where error occurred
-    pub thread_id: Option<std::thread::ThreadId>,
-    
-    /// Timestamp when error occurred
-    pub timestamp: std::time::SystemTime,
-    
-    /// Additional key-value pairs
-    pub extras: Vec<(String, String)>,
+pub struct Error {
+    /// Категория ошибки
+    pub category: ErrorCategory,
+    /// Код ошибки (для машинной обработки)
+    pub code: ErrorCode,
+    /// Человекочитаемое сообщение
+    pub message: String,
+    /// Причина (опционально)
+    pub cause: Option<Box<Error>>,
+    /// Место возникновения (файл, строка)
+    pub location: Option<ErrorLocation>,
 }
 
-impl Default for ErrorContext {
-    fn default() -> Self {
+/// Категория ошибки
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCategory {
+    /// Ошибки ядра (буферы, очереди, базовые типы)
+    Core,
+    /// Ошибки DSP (фильтры, эффекты, генераторы)
+    Dsp,
+    /// Ошибки графа (соединения, топология)
+    Graph,
+    /// Ошибки ввода-вывода (ALSA, JACK, PipeWire)
+    Io,
+    /// Ошибки управления (MIDI, OSC, автоматизация)
+    Control,
+    /// Ошибки конфигурации
+    Config,
+    /// Ошибки времени выполнения
+    Runtime,
+    /// Внутренние ошибки (не должны возникать)
+    Internal,
+}
+
+impl ErrorCategory {
+    /// Получить строковое представление
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ErrorCategory::Core => "core",
+            ErrorCategory::Dsp => "dsp",
+            ErrorCategory::Graph => "graph",
+            ErrorCategory::Io => "io",
+            ErrorCategory::Control => "control",
+            ErrorCategory::Config => "config",
+            ErrorCategory::Runtime => "runtime",
+            ErrorCategory::Internal => "internal",
+        }
+    }
+}
+
+impl fmt::Display for ErrorCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Код ошибки (для машинной обработки)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
+    // =======================================================================
+    // Core errors (0-99)
+    // =======================================================================
+    /// Неизвестная ошибка
+    Unknown = 0,
+    /// Неверный параметр
+    InvalidParameter = 1,
+    /// Неверное состояние
+    InvalidState = 2,
+    /// Неподдерживаемая операция
+    Unsupported = 3,
+    /// Не реализовано
+    NotImplemented = 4,
+    /// Таймаут
+    Timeout = 5,
+    
+    // =======================================================================
+    // Buffer errors (100-119)
+    // =======================================================================
+    /// Переполнение буфера
+    BufferFull = 100,
+    /// Буфер пуст
+    BufferEmpty = 101,
+    /// Неверный размер буфера
+    InvalidBufferSize = 102,
+    /// Неверное выравнивание буфера
+    BufferMisaligned = 103,
+    /// Буфер не инициализирован
+    BufferNotInitialized = 104,
+    
+    // =======================================================================
+    // Queue errors (120-139)
+    // =======================================================================
+    /// Очередь переполнена
+    QueueFull = 120,
+    /// Очередь пуста
+    QueueEmpty = 121,
+    /// Очередь закрыта
+    QueueClosed = 122,
+    /// Неверный индекс очереди
+    InvalidQueueIndex = 123,
+    
+    // =======================================================================
+    // Graph errors (200-299)
+    // =======================================================================
+    /// Узел не найден
+    NodeNotFound = 200,
+    /// Порт не найден
+    PortNotFound = 201,
+    /// Неверное соединение
+    InvalidConnection = 202,
+    /// Цикл в графе
+    CycleDetected = 203,
+    /// Узел уже существует
+    NodeAlreadyExists = 204,
+    /// Порт уже подключён
+    PortAlreadyConnected = 205,
+    
+    // =======================================================================
+    // IO errors (300-399)
+    // =======================================================================
+    /// Устройство не найдено
+    DeviceNotFound = 300,
+    /// Устройство занято
+    DeviceBusy = 301,
+    /// Ошибка ALSA
+    AlsaError = 310,
+    /// Ошибка JACK
+    JackError = 311,
+    /// Ошибка PipeWire
+    PipeWireError = 312,
+    /// XRun (переполнение/опустошение буфера)
+    XRun = 320,
+    
+    // =======================================================================
+    // Control errors (400-499)
+    // =======================================================================
+    /// MIDI ошибка
+    MidiError = 400,
+    /// OSC ошибка
+    OscError = 401,
+    /// Маппинг не найден
+    MappingNotFound = 402,
+    /// Автомат не найден
+    AutomatonNotFound = 403,
+    /// Неверное значение параметра
+    InvalidParameterValue = 404,
+    
+    // =======================================================================
+    // Config errors (500-599)
+    // =======================================================================
+    /// Конфигурация не найдена
+    ConfigNotFound = 500,
+    /// Неверный формат конфигурации
+    InvalidConfigFormat = 501,
+    /// Отсутствует обязательное поле
+    MissingField = 502,
+    
+    // =======================================================================
+    // Runtime errors (600-699)
+    // =======================================================================
+    /// Ошибка в real-time потоке
+    RealtimeViolation = 600,
+    /// Приоритет потока не может быть установлен
+    PriorityError = 601,
+    /// Поток уже запущен
+    AlreadyRunning = 602,
+    /// Поток не запущен
+    NotRunning = 603,
+}
+
+impl ErrorCode {
+    /// Получить категорию ошибки
+    pub fn category(&self) -> ErrorCategory {
+        match *self {
+            ErrorCode::Unknown | ErrorCode::InvalidParameter | ErrorCode::InvalidState
+            | ErrorCode::Unsupported | ErrorCode::NotImplemented | ErrorCode::Timeout
+            | ErrorCode::BufferFull | ErrorCode::BufferEmpty | ErrorCode::InvalidBufferSize
+            | ErrorCode::BufferMisaligned | ErrorCode::BufferNotInitialized
+            | ErrorCode::QueueFull | ErrorCode::QueueEmpty | ErrorCode::QueueClosed
+            | ErrorCode::InvalidQueueIndex => ErrorCategory::Core,
+            
+            ErrorCode::NodeNotFound | ErrorCode::PortNotFound | ErrorCode::InvalidConnection
+            | ErrorCode::CycleDetected | ErrorCode::NodeAlreadyExists
+            | ErrorCode::PortAlreadyConnected => ErrorCategory::Graph,
+            
+            ErrorCode::DeviceNotFound | ErrorCode::DeviceBusy | ErrorCode::AlsaError
+            | ErrorCode::JackError | ErrorCode::PipeWireError | ErrorCode::XRun => ErrorCategory::Io,
+            
+            ErrorCode::MidiError | ErrorCode::OscError | ErrorCode::MappingNotFound
+            | ErrorCode::AutomatonNotFound | ErrorCode::InvalidParameterValue => ErrorCategory::Control,
+            
+            ErrorCode::ConfigNotFound | ErrorCode::InvalidConfigFormat
+            | ErrorCode::MissingField => ErrorCategory::Config,
+            
+            ErrorCode::RealtimeViolation | ErrorCode::PriorityError
+            | ErrorCode::AlreadyRunning | ErrorCode::NotRunning => ErrorCategory::Runtime,
+        }
+    }
+    
+    /// Получить описание ошибки
+    pub fn description(&self) -> &'static str {
+        match self {
+            ErrorCode::Unknown => "Unknown error",
+            ErrorCode::InvalidParameter => "Invalid parameter",
+            ErrorCode::InvalidState => "Invalid state",
+            ErrorCode::Unsupported => "Unsupported operation",
+            ErrorCode::NotImplemented => "Not implemented",
+            ErrorCode::Timeout => "Operation timed out",
+            
+            ErrorCode::BufferFull => "Buffer is full",
+            ErrorCode::BufferEmpty => "Buffer is empty",
+            ErrorCode::InvalidBufferSize => "Invalid buffer size",
+            ErrorCode::BufferMisaligned => "Buffer is misaligned for SIMD operations",
+            ErrorCode::BufferNotInitialized => "Buffer not initialized",
+            
+            ErrorCode::QueueFull => "Queue is full",
+            ErrorCode::QueueEmpty => "Queue is empty",
+            ErrorCode::QueueClosed => "Queue is closed",
+            ErrorCode::InvalidQueueIndex => "Invalid queue index",
+            
+            ErrorCode::NodeNotFound => "Node not found",
+            ErrorCode::PortNotFound => "Port not found",
+            ErrorCode::InvalidConnection => "Invalid connection",
+            ErrorCode::CycleDetected => "Cycle detected in graph",
+            ErrorCode::NodeAlreadyExists => "Node already exists",
+            ErrorCode::PortAlreadyConnected => "Port already connected",
+            
+            ErrorCode::DeviceNotFound => "Device not found",
+            ErrorCode::DeviceBusy => "Device is busy",
+            ErrorCode::AlsaError => "ALSA error",
+            ErrorCode::JackError => "JACK error",
+            ErrorCode::PipeWireError => "PipeWire error",
+            ErrorCode::XRun => "Buffer underrun/overrun detected",
+            
+            ErrorCode::MidiError => "MIDI error",
+            ErrorCode::OscError => "OSC error",
+            ErrorCode::MappingNotFound => "Mapping not found",
+            ErrorCode::AutomatonNotFound => "Automaton not found",
+            ErrorCode::InvalidParameterValue => "Invalid parameter value",
+            
+            ErrorCode::ConfigNotFound => "Configuration not found",
+            ErrorCode::InvalidConfigFormat => "Invalid configuration format",
+            ErrorCode::MissingField => "Missing required field",
+            
+            ErrorCode::RealtimeViolation => "Real-time violation detected",
+            ErrorCode::PriorityError => "Failed to set thread priority",
+            ErrorCode::AlreadyRunning => "Already running",
+            ErrorCode::NotRunning => "Not running",
+        }
+    }
+}
+
+/// Место возникновения ошибки
+#[derive(Debug, Clone)]
+pub struct ErrorLocation {
+    /// Файл
+    pub file: &'static str,
+    /// Строка
+    pub line: u32,
+    /// Колонка
+    pub column: u32,
+}
+
+impl fmt::Display for ErrorLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}", self.file, self.line, self.column)
+    }
+}
+
+// =============================================================================
+// Реализация Error
+// =============================================================================
+
+impl Error {
+    /// Создать новую ошибку
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
+            category: code.category(),
+            code,
+            message: message.into(),
+            cause: None,
             location: None,
-            thread_id: Some(std::thread::current().id()),
-            timestamp: std::time::SystemTime::now(),
-            extras: Vec::new(),
         }
+    }
+    
+    /// Создать ошибку с причиной
+    pub fn with_cause(mut self, cause: Error) -> Self {
+        self.cause = Some(Box::new(cause));
+        self
+    }
+    
+    /// Добавить информацию о месте возникновения
+    pub fn at(mut self, file: &'static str, line: u32, column: u32) -> Self {
+        self.location = Some(ErrorLocation { file, line, column });
+        self
+    }
+    
+    /// Получить корневую причину
+    pub fn root_cause(&self) -> &Error {
+        let mut current = self;
+        while let Some(cause) = &current.cause {
+            current = cause;
+        }
+        current
+    }
+    
+    /// Проверить, является ли ошибка фатальной для RT-потока
+    pub fn is_realtime_critical(&self) -> bool {
+        matches!(self.code, 
+            ErrorCode::RealtimeViolation 
+            | ErrorCode::PriorityError
+            | ErrorCode::BufferFull
+            | ErrorCode::XRun
+        )
+    }
+    
+    /// Проверить, является ли ошибка recoverable
+    pub fn is_recoverable(&self) -> bool {
+        !self.is_realtime_critical()
     }
 }
 
-impl ErrorContext {
-    /// Create new error context
-    pub fn new() -> Self {
-        Self::default()
-    }
-    
-    /// Add source location
-    pub fn with_location(mut self, file: &str, line: u32) -> Self {
-        self.location = Some(format!("{}:{}", file, line));
-        self
-    }
-    
-    /// Add extra key-value pair
-    pub fn with_extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.extras.push((key.into(), value.into()));
-        self
-    }
-    
-    /// Format error with context
-    pub fn format(&self, error: &impl std::error::Error) -> String {
-        let mut msg = format!("{}", error);
-        
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(loc) = &self.location {
-            msg.push_str(&format!("\n  at {}", loc));
+            write!(f, "[{}] at {}: {} ({})", 
+                self.category, loc, self.message, self.code.description())?;
+        } else {
+            write!(f, "[{}]: {} ({})", 
+                self.category, self.message, self.code.description())?;
         }
         
-        if let Some(id) = self.thread_id {
-            msg.push_str(&format!("\n  thread: {:?}", id));
+        if let Some(cause) = &self.cause {
+            write!(f, "\n  caused by: {}", cause)?;
         }
         
-        for (key, value) in &self.extras {
-            msg.push_str(&format!("\n  {}: {}", key, value));
-        }
-        
-        msg
+        Ok(())
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.cause.as_ref().map(|c| c as &dyn StdError)
+    }
+}
+
+// =============================================================================
+// Результат операций
+// =============================================================================
+
+/// Результат операций в Kama Core
+pub type Result<T> = std::result::Result<T, Error>;
+
+// =============================================================================
+// Конвертация из стандартных ошибок
+// =============================================================================
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::new(ErrorCode::Unknown, err.to_string())
+    }
+}
+
+impl From<std::num::ParseIntError> for Error {
+    fn from(err: std::num::ParseIntError) -> Self {
+        Error::new(ErrorCode::InvalidParameter, err.to_string())
+    }
+}
+
+impl From<std::num::ParseFloatError> for Error {
+    fn from(err: std::num::ParseFloatError) -> Self {
+        Error::new(ErrorCode::InvalidParameter, err.to_string())
+    }
+}
+
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Self {
+        Error::new(ErrorCode::InvalidParameter, err.to_string())
+    }
+}
+
+// =============================================================================
+// Макросы для удобного создания ошибок
+// =============================================================================
+
+/// Создать ошибку с кодом и сообщением
+#[macro_export]
+macro_rules! error {
+    ($code:expr, $msg:expr) => {
+        $crate::error::Error::new($code, $msg)
+    };
+    ($code:expr, $fmt:expr, $($arg:tt)*) => {
+        $crate::error::Error::new($code, format!($fmt, $($arg)*))
+    };
+}
+
+/// Создать ошибку с местом возникновения
+#[macro_export]
+macro_rules! error_at {
+    ($code:expr, $msg:expr) => {
+        $crate::error::Error::new($code, $msg).at(file!(), line!(), column!())
+    };
+    ($code:expr, $fmt:expr, $($arg:tt)*) => {
+        $crate::error::Error::new($code, format!($fmt, $($arg)*))
+            .at(file!(), line!(), column!())
+    };
+}
+
+/// Возврат ошибки с контекстом
+#[macro_export]
+macro_rules! bail {
+    ($code:expr, $msg:expr) => {
+        return Err($crate::error::Error::new($code, $msg))
+    };
+    ($code:expr, $fmt:expr, $($arg:tt)*) => {
+        return Err($crate::error::Error::new($code, format!($fmt, $($arg)*)))
+    };
+}
+
+/// Преобразование Result с добавлением контекста
+#[macro_export]
+macro_rules! context {
+    ($expr:expr, $code:expr, $msg:expr) => {
+        $expr.map_err(|e| $crate::error::Error::new($code, $msg).with_cause(e))
+    };
+    ($expr:expr, $code:expr, $fmt:expr, $($arg:tt)*) => {
+        $expr.map_err(|e| $crate::error::Error::new($code, format!($fmt, $($arg)*)).with_cause(e))
+    };
+}
+
+// =============================================================================
+// Специализированные типы ошибок для разных компонентов
+// =============================================================================
+
+/// Ошибки буферов
+pub mod buffer {
+    use super::*;
+    #[allow(dead_code)]
+    pub fn full() -> Error {
+        Error::new(ErrorCode::BufferFull, "Buffer is full")
+    }
+    #[allow(dead_code)]
+    pub fn empty() -> Error {
+        Error::new(ErrorCode::BufferEmpty, "Buffer is empty")
+    }
+    #[allow(dead_code)]
+    pub fn invalid_size(expected: usize, got: usize) -> Error {
+        error!(
+            ErrorCode::InvalidBufferSize,
+            "Invalid buffer size: expected {}, got {}", expected, got
+        )
+    }
+    #[allow(dead_code)]
+    pub fn misaligned(required: usize, actual: usize) -> Error {
+        error!(
+            ErrorCode::BufferMisaligned,
+            "Buffer misaligned: required {} byte alignment, actual {}",
+            required, actual
+        )
+    }
+    #[allow(dead_code)]
+    pub fn not_initialized() -> Error {
+        Error::new(ErrorCode::BufferNotInitialized, "Buffer not initialized")
+    }
+}
+
+/// Ошибки очередей
+pub mod queue {
+    use super::*;
+    
+    pub fn full() -> Error {
+        Error::new(ErrorCode::QueueFull, "Queue is full")
+    }
+    
+    pub fn empty() -> Error {
+        Error::new(ErrorCode::QueueEmpty, "Queue is empty")
+    }
+    
+    pub fn closed() -> Error {
+        Error::new(ErrorCode::QueueClosed, "Queue is closed")
+    }
+    
+    pub fn invalid_index(idx: usize, max: usize) -> Error {
+        error!(
+            ErrorCode::InvalidQueueIndex,
+            "Invalid queue index: {} (max {})", idx, max
+        )
+    }
+}
+
+/// Ошибки графа
+pub mod graph {
+    use super::*;
+    use crate::traits::NodeId;
+    use crate::traits::PortId;
+    
+    pub fn node_not_found(id: NodeId) -> Error {
+        error!(ErrorCode::NodeNotFound, "Node not found: {}", id)
+    }
+    
+    pub fn port_not_found(id: PortId) -> Error {
+        error!(ErrorCode::PortNotFound, "Port not found: {}", id)
+    }
+    
+    pub fn invalid_connection(from: PortId, to: PortId) -> Error {
+        error!(
+            ErrorCode::InvalidConnection,
+            "Invalid connection: {} -> {}", from, to
+        )
+    }
+    
+    pub fn cycle_detected() -> Error {
+        Error::new(ErrorCode::CycleDetected, "Cycle detected in graph")
+    }
+    
+    pub fn node_already_exists(id: NodeId) -> Error {
+        error!(ErrorCode::NodeAlreadyExists, "Node already exists: {}", id)
+    }
+    
+    pub fn port_already_connected(port: PortId) -> Error {
+        error!(ErrorCode::PortAlreadyConnected, "Port already connected: {}", port)
+    }
+}
+
+/// Ошибки ввода-вывода
+pub mod io {
+    use super::*;
+    
+    pub fn device_not_found(name: &str) -> Error {
+        error!(ErrorCode::DeviceNotFound, "Device not found: {}", name)
+    }
+    
+    pub fn device_busy(name: &str) -> Error {
+        error!(ErrorCode::DeviceBusy, "Device is busy: {}", name)
+    }
+    
+    pub fn alsa_error(desc: &str) -> Error {
+        error!(ErrorCode::AlsaError, "ALSA error: {}", desc)
+    }
+    
+    pub fn jack_error(desc: &str) -> Error {
+        error!(ErrorCode::JackError, "JACK error: {}", desc)
+    }
+    
+    pub fn pipewire_error(desc: &str) -> Error {
+        error!(ErrorCode::PipeWireError, "PipeWire error: {}", desc)
+    }
+    
+    pub fn xrun() -> Error {
+        Error::new(ErrorCode::XRun, "Buffer underrun/overrun detected")
+    }
+}
+
+/// Ошибки управления
+pub mod control {
+    use super::*;
+    
+    pub fn midi_error(desc: &str) -> Error {
+        error!(ErrorCode::MidiError, "MIDI error: {}", desc)
+    }
+    
+    pub fn osc_error(desc: &str) -> Error {
+        error!(ErrorCode::OscError, "OSC error: {}", desc)
+    }
+    
+    pub fn mapping_not_found(id: &str) -> Error {
+        error!(ErrorCode::MappingNotFound, "Mapping not found: {}", id)
+    }
+    
+    pub fn automaton_not_found(id: &str) -> Error {
+        error!(ErrorCode::AutomatonNotFound, "Automaton not found: {}", id)
+    }
+    
+    pub fn invalid_parameter_value(param: &str, value: f64, min: f64, max: f64) -> Error {
+        error!(
+            ErrorCode::InvalidParameterValue,
+            "Invalid value for parameter {}: {} (allowed range: {} - {})",
+            param, value, min, max
+        )
+    }
+}
+
+/// Ошибки конфигурации
+pub mod config {
+    use super::*;
+    
+    pub fn not_found(path: &str) -> Error {
+        error!(ErrorCode::ConfigNotFound, "Configuration not found: {}", path)
+    }
+    
+    pub fn invalid_format(details: &str) -> Error {
+        error!(ErrorCode::InvalidConfigFormat, "Invalid configuration format: {}", details)
+    }
+    
+    pub fn missing_field(field: &str) -> Error {
+        error!(ErrorCode::MissingField, "Missing required field: {}", field)
+    }
+}
+
+/// Ошибки времени выполнения
+pub mod runtime {
+    use super::*;
+    
+    pub fn realtime_violation(details: &str) -> Error {
+        error!(ErrorCode::RealtimeViolation, "Real-time violation: {}", details)
+    }
+    
+    pub fn priority_error(details: &str) -> Error {
+        error!(ErrorCode::PriorityError, "Failed to set thread priority: {}", details)
+    }
+    
+    pub fn already_running() -> Error {
+        Error::new(ErrorCode::AlreadyRunning, "Already running")
+    }
+    
+    pub fn not_running() -> Error {
+        Error::new(ErrorCode::NotRunning, "Not running")
+    }
+}
+
+// =============================================================================
+// Тесты
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prelude::NodeId;
     
     #[test]
-    fn test_process_error_creation() {
-        let err = ProcessError::processing("test error");
-        assert!(matches!(err, ProcessError::Processing(_)));
-        assert_eq!(err.code(), "ERR_PROCESSING");
-        assert!(err.is_recoverable());
-        
-        let err = ProcessError::node_not_found(42);
-        assert!(matches!(err, ProcessError::NodeNotFound(42)));
-        assert_eq!(err.code(), "ERR_NODE_NOT_FOUND");
-        assert!(!err.is_recoverable());
+    fn test_error_creation() {
+        let err = Error::new(ErrorCode::BufferFull, "Test error");
+        assert_eq!(err.code, ErrorCode::BufferFull);
+        assert_eq!(err.message, "Test error");
+        assert_eq!(err.category, ErrorCategory::Core);
     }
     
     #[test]
-    fn test_buffer_error_creation() {
-        let err = BufferError::Empty;
-        assert!(matches!(err, BufferError::Empty));
-        assert_eq!(err.code(), "ERR_BUF_EMPTY");
-        assert!(err.is_recoverable());
+    fn test_error_with_cause() {
+        let cause = Error::new(ErrorCode::BufferEmpty, "Cause");
+        let err = Error::new(ErrorCode::BufferFull, "Main error")
+            .with_cause(cause);
         
-        let err = BufferError::InvalidIndex(5);
-        assert!(matches!(err, BufferError::InvalidIndex(5)));
-        assert_eq!(err.code(), "ERR_BUF_INVALID_INDEX");
-        assert!(!err.is_recoverable());
+        assert!(err.cause.is_some());
+        assert_eq!(err.root_cause().code, ErrorCode::BufferEmpty);
     }
     
     #[test]
-    fn test_parameter_error_creation() {
-        let err = ParameterError::not_found("gain");
-        assert!(matches!(err, ParameterError::NotFound(_)));
+    fn test_error_macros() {
+        let err = error!(ErrorCode::BufferFull, "Buffer is full");
+        assert_eq!(err.code, ErrorCode::BufferFull);
         
-        let err = ParameterError::out_of_range(2.0, 0.0, 1.0);
-        assert!(matches!(err, ParameterError::OutOfRange { value: 2.0, .. }));
+        let err = error!(ErrorCode::BufferFull, "Buffer {} is full", "test");
+        assert_eq!(err.message, "Buffer test is full");
     }
     
     #[test]
-    fn test_error_conversions() {
-        let buf_err = BufferError::Empty;
-        let proc_err: ProcessError = buf_err.into();
-        assert!(matches!(proc_err, ProcessError::Buffer(_)));
+    fn test_specialized_errors() {
+        let err = buffer::full();
+        assert_eq!(err.code, ErrorCode::BufferFull);
+        
+        let err = graph::node_not_found(NodeId(42));
+        assert_eq!(err.code, ErrorCode::NodeNotFound);
+        assert!(err.message.contains("42"));
+        
+        let err = io::device_not_found("hw:0");
+        assert_eq!(err.code, ErrorCode::DeviceNotFound);
+        assert!(err.message.contains("hw:0"));
+    }
+    
+    #[test]
+    fn test_error_category() {
+        assert_eq!(ErrorCode::BufferFull.category(), ErrorCategory::Core);
+        assert_eq!(ErrorCode::NodeNotFound.category(), ErrorCategory::Graph);
+        assert_eq!(ErrorCode::AlsaError.category(), ErrorCategory::Io);
+        assert_eq!(ErrorCode::MidiError.category(), ErrorCategory::Control);
+        assert_eq!(ErrorCode::ConfigNotFound.category(), ErrorCategory::Config);
+        assert_eq!(ErrorCode::RealtimeViolation.category(), ErrorCategory::Runtime);
+    }
+    
+    #[test]
+    fn test_realtime_critical() {
+        assert!(buffer::full().is_realtime_critical());
+        assert!(io::xrun().is_realtime_critical());
+        assert!(runtime::realtime_violation("test").is_realtime_critical());
+        
+        assert!(!graph::node_not_found(NodeId(1)).is_realtime_critical());
+        assert!(!config::not_found("test").is_realtime_critical());
     }
 }

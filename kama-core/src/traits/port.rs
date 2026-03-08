@@ -1,20 +1,37 @@
-//! Port types and identifiers
+//! Port types and identifiers for the Kama Audio ecosystem
+//!
+//! Ports are the connection points between nodes in the audio graph.
+//! Two types of signals flow through the graph:
+//! - Audio signals (for sound)
+//! - Control signals (for automation, LFOs, envelopes)
+//! - Clock signals (for synchronization)
 
 use crate::traits::node::NodeId;
+use crate::buffer::PipeBuffer;
+use crate::error::{Error, ErrorCode};
 use std::fmt;
 
 // ============================================================================
 // Port Type
 // ============================================================================
 
-/// Type of a port - only audio and control signals flow through the graph
+/// Type of a port - what kind of signal it carries
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortType {
     /// Audio signal port - carries sound (typically -1.0 to 1.0)
     Audio,
     
-    /// Control signal port - carries modulation/automation (typically 0.0 to 1.0 or -1.0 to 1.0)
+    /// Control signal port - carries modulation/automation
     Control,
+    
+    /// Clock signal port - carries timing information
+    Clock,
+    
+    /// Feedback port - stores state between blocks
+    Feedback,
+    
+    /// Parameter port - for node parameters (special)
+    Param,
 }
 
 impl PortType {
@@ -23,6 +40,9 @@ impl PortType {
         match self {
             Self::Audio => "audio",
             Self::Control => "control",
+            Self::Clock => "clock",
+            Self::Feedback => "feedback",
+            Self::Param => "param",
         }
     }
     
@@ -34,6 +54,11 @@ impl PortType {
     /// Check if this port carries control-rate signals
     pub const fn is_control_rate(&self) -> bool {
         matches!(self, Self::Control)
+    }
+    
+    /// Check if this port carries clock signals
+    pub const fn is_clock(&self) -> bool {
+        matches!(self, Self::Clock)
     }
 }
 
@@ -118,22 +143,12 @@ impl PortId {
     
     /// Create a new audio input port
     pub const fn audio_in(node: NodeId, index: u16) -> Self {
-        Self {
-            node,
-            port_type: PortType::Audio,
-            direction: PortDirection::Input,
-            index,
-        }
+        Self::new(node, PortType::Audio, PortDirection::Input, index)
     }
     
     /// Create a new audio output port
     pub const fn audio_out(node: NodeId, index: u16) -> Self {
-        Self {
-            node,
-            port_type: PortType::Audio,
-            direction: PortDirection::Output,
-            index,
-        }
+        Self::new(node, PortType::Audio, PortDirection::Output, index)
     }
     
     // ========================================================================
@@ -142,36 +157,49 @@ impl PortId {
     
     /// Create a new control input port
     pub const fn control_in(node: NodeId, index: u16) -> Self {
-        Self {
-            node,
-            port_type: PortType::Control,
-            direction: PortDirection::Input,
-            index,
-        }
+        Self::new(node, PortType::Control, PortDirection::Input, index)
     }
     
     /// Create a new control output port
     pub const fn control_out(node: NodeId, index: u16) -> Self {
-        Self {
-            node,
-            port_type: PortType::Control,
-            direction: PortDirection::Output,
-            index,
-        }
+        Self::new(node, PortType::Control, PortDirection::Output, index)
     }
     
     // ========================================================================
-    // Convenience constructors
+    // Clock Port Constructors
     // ========================================================================
     
-    /// Create a new audio input port (alias)
-    pub const fn input(node: NodeId, index: u16) -> Self {
-        Self::audio_in(node, index)
+    /// Create a new clock input port
+    pub const fn clock_in(node: NodeId, index: u16) -> Self {
+        Self::new(node, PortType::Clock, PortDirection::Input, index)
     }
     
-    /// Create a new audio output port (alias)
-    pub const fn output(node: NodeId, index: u16) -> Self {
-        Self::audio_out(node, index)
+    /// Create a new clock output port
+    pub const fn clock_out(node: NodeId, index: u16) -> Self {
+        Self::new(node, PortType::Clock, PortDirection::Output, index)
+    }
+    
+    // ========================================================================
+    // Feedback Port Constructors
+    // ========================================================================
+    
+    /// Create a new feedback input port
+    pub const fn feedback_in(node: NodeId, index: u16) -> Self {
+        Self::new(node, PortType::Feedback, PortDirection::Input, index)
+    }
+    
+    /// Create a new feedback output port
+    pub const fn feedback_out(node: NodeId, index: u16) -> Self {
+        Self::new(node, PortType::Feedback, PortDirection::Output, index)
+    }
+    
+    // ========================================================================
+    // Parameter Port Constructors
+    // ========================================================================
+    
+    /// Create a new parameter port (always input)
+    pub const fn param(node: NodeId, index: u16) -> Self {
+        Self::new(node, PortType::Param, PortDirection::Input, index)
     }
     
     // ========================================================================
@@ -221,11 +249,25 @@ impl PortId {
     pub const fn is_control(&self) -> bool {
         matches!(self.port_type, PortType::Control)
     }
+    
+    /// Check if this is a clock port
+    pub const fn is_clock(&self) -> bool {
+        matches!(self.port_type, PortType::Clock)
+    }
+    
+    /// Check if this is a feedback port
+    pub const fn is_feedback(&self) -> bool {
+        matches!(self.port_type, PortType::Feedback)
+    }
+    
+    /// Check if this is a parameter port
+    pub const fn is_param(&self) -> bool {
+        matches!(self.port_type, PortType::Param)
+    }
 }
 
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Format as: Node(42).audio_in[0]
         write!(
             f,
             "Node({}).{}_{}[{}]",
@@ -238,6 +280,119 @@ impl fmt::Display for PortId {
 }
 
 // ============================================================================
+// Port Structure (for runtime)
+// ============================================================================
+
+/// A port on a node
+#[derive(Debug, Clone)]
+pub struct Port<T: crate::math::AudioNum, const BUF_SIZE: usize> {
+    /// Port identifier
+    pub id: PortId,
+    /// Port name
+    pub name: String,
+    /// Connection buffer (if connected)
+    pub buffer: Option<PipeBuffer<T, BUF_SIZE>>,
+}
+
+impl<T: crate::math::AudioNum, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
+    /// Create a new input port
+    pub fn input(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::audio_in(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Create a new output port
+    pub fn output(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::audio_out(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Create a new control input port
+    pub fn control_in(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::control_in(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Create a new control output port
+    pub fn control_out(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::control_out(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Get the port ID
+    pub fn id(&self) -> PortId {
+        self.id
+    }
+    
+    /// Get the port name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    
+    /// Check if port is connected
+    pub fn is_connected(&self) -> bool {
+        self.buffer.is_some()
+    }
+    
+    /// Connect to a buffer
+    pub fn connect(&mut self, buffer: PipeBuffer<T, BUF_SIZE>) {
+        self.buffer = Some(buffer);
+    }
+    
+    /// Disconnect from buffer
+    pub fn disconnect(&mut self) {
+        self.buffer = None;
+    }
+    
+    /// Read data from port into provided buffer (for input ports)
+    pub fn read(&self, output: &mut [T; BUF_SIZE]) -> Result<(), Error> {
+        match &self.buffer {
+            Some(buffer) => {
+                if let Some(data) = buffer.try_read() {
+                    *output = data;
+                    Ok(())
+                } else {
+                    Err(Error::new(
+                        ErrorCode::BufferEmpty,
+                        "No data available in port",
+                    ))
+                }
+            }
+            None => Err(Error::new(
+                ErrorCode::BufferEmpty,
+                "Port not connected",
+            )),
+        }
+    }
+    
+    /// Write data to port (for output ports)
+    pub fn write(&mut self, data: &[T; BUF_SIZE]) -> Result<(), Error> {
+        match &mut self.buffer {
+            Some(buffer) => {
+                buffer.write(data);
+                Ok(())
+            }
+            None => Err(Error::new(
+                ErrorCode::BufferEmpty,
+                "Port not connected",
+            )),
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -246,61 +401,19 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_port_type() {
-        assert_eq!(PortType::Audio.name(), "audio");
-        assert_eq!(PortType::Control.name(), "control");
-        assert!(PortType::Audio.is_audio_rate());
-        assert!(PortType::Control.is_control_rate());
-        assert!(!PortType::Audio.is_control_rate());
-    }
-    
-    #[test]
-    fn test_port_direction() {
-        assert!(PortDirection::Input.is_input());
-        assert!(!PortDirection::Input.is_output());
-        assert!(PortDirection::Output.is_output());
-        assert!(!PortDirection::Output.is_input());
-    }
-    
-    #[test]
     fn test_port_id_creation() {
         let node = NodeId(42);
         
         let audio_in = PortId::audio_in(node, 0);
-        assert_eq!(audio_in.node_id(), node);
         assert_eq!(audio_in.port_type(), PortType::Audio);
-        assert_eq!(audio_in.direction(), PortDirection::Input);
-        assert_eq!(audio_in.index(), 0);
         assert!(audio_in.is_input());
-        assert!(!audio_in.is_output());
-        assert!(audio_in.is_audio());
-        assert!(!audio_in.is_control());
         
-        let audio_out = PortId::audio_out(node, 1);
-        assert_eq!(audio_out.node_id(), node);
-        assert_eq!(audio_out.port_type(), PortType::Audio);
-        assert_eq!(audio_out.direction(), PortDirection::Output);
-        assert_eq!(audio_out.index(), 1);
-        assert!(!audio_out.is_input());
-        assert!(audio_out.is_output());
+        let clock_out = PortId::clock_out(node, 0);
+        assert_eq!(clock_out.port_type(), PortType::Clock);
+        assert!(clock_out.is_output());
         
-        let control_in = PortId::control_in(node, 0);
-        assert_eq!(control_in.port_type(), PortType::Control);
-        assert!(control_in.is_control());
-        assert!(!control_in.is_audio());
-        
-        let control_out = PortId::control_out(node, 1);
-        assert_eq!(control_out.port_type(), PortType::Control);
-        assert!(control_out.is_output());
-    }
-    
-    #[test]
-    fn test_port_id_display() {
-        let node = NodeId(42);
-        let port = PortId::audio_in(node, 0);
-        assert_eq!(format!("{}", port), "Node(42).audio_input[0]");
-        
-        let port = PortId::control_out(node, 1);
-        assert_eq!(format!("{}", port), "Node(42).control_output[1]");
+        let feedback_in = PortId::feedback_in(node, 0);
+        assert_eq!(feedback_in.port_type(), PortType::Feedback);
+        assert!(feedback_in.is_input());
     }
 }

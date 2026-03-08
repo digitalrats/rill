@@ -1,11 +1,12 @@
-//! Macros for creating audio nodes
+//! # Макросы для создания узлов и работы с ядром
 //!
-//! This module provides macros for easily creating Source, Processor, and Sink nodes
-//! with proper support for:
-//! - Audio inputs/outputs
-//! - Control inputs (from LFOs, envelopes)
-//! - Parameters (automation)
-//! - Internal state
+//! Этот модуль предоставляет макросы для упрощения создания
+//! различных типов узлов в Kama Audio.
+
+#[macro_use]
+mod params;
+#[macro_use]
+mod ports;
 
 #[macro_use]
 mod source;
@@ -14,18 +15,25 @@ mod processor;
 #[macro_use]
 mod sink;
 
-// Re-export macros
+
+mod tests;
+
+// Реэкспорт макросов с верхнего уровня
 pub use crate::{
-    source_node, source_node_f32,
-    processor_node, processor_node_f32,
-    sink_node, sink_node_f32,
+    source_node,
+    processor_node,
+    sink_node,
+    audio_node,
+    with_parameters,
 };
 
-/// Prelude for macros
+/// Прелюдия для удобного импорта всех макросов
 pub mod prelude {
     pub use crate::{
-        source_node, source_node_f32,
-        processor_node, processor_node_f32,
-        sink_node, sink_node_f32,
+        source_node,
+        processor_node,
+        sink_node,
+        audio_node,
+        with_parameters,
     };
 }

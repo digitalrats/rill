@@ -8,7 +8,7 @@
 
 use kama_core::prelude::*;
 use kama_core::macros::processor_node;
-use kama_core::queues::{CommandEnum, SetParameter, SignalSource, Telemetry};
+use kama_core::queue::{CommandEnum, SetParameter, SignalSource, Telemetry};
 use kama_graph::prelude::*;
 use std::collections::VecDeque;
 use std::sync::Arc;

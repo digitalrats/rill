@@ -1,248 +1,206 @@
-//! Macro for creating Source nodes (generators)
-//!
-//! # Examples
-//! ```
-//! use kama_core::prelude::*;
-//! use kama_core::macros::source_node;
-//! use kama_core::DEFAULT_BLOCK_SIZE;
-//!
-//! source_node! {
-//!     /// Simple sine oscillator with control input
-//!     #[derive(Debug)]
-//!     pub struct SineOsc {
-//!         params: {
-//!             /// Base frequency in Hz
-//!             frequency: f32 = 440.0,
-//!             
-//!             /// Output amplitude
-//!             amplitude: f32 = 0.5,
-//!         },
-//!         control_inputs: {
-//!             /// Frequency modulation input (0.0 to 1.0 normalized)
-//!             fm: f32 = 0.0,
-//!         },
-//!         state: {
-//!             phase: f32 = 0.0,
-//!         },
-//!         outputs: 1,
-//!         generate: |this, _channel, output, control| {
-//!             let base_freq = this.frequency;
-//!             let fm_amount = control[0] * 200.0;
-//!             let effective_freq = base_freq + fm_amount;
-//!             
-//!             let phase_inc = effective_freq / this.sample_rate;
-//!             
-//!             for i in 0..DEFAULT_BLOCK_SIZE {
-//!                 output[i] = (this.phase * 2.0 * std::f32::consts::PI).sin() * this.amplitude;
-//!                 this.phase = (this.phase + phase_inc) % 1.0;
-//!             }
-//!         }
-//!     }
-//! }
-//! ```
+//! # Макрос для создания активных источников (Source)
+
+/// Создаёт активный источник сигнала
 #[macro_export]
 macro_rules! source_node {
-    // Generic version with explicit audio type
     (
-        <$type:ty>
-        $(#[$struct_meta:meta])*
-        $vis:vis struct $name:ident {
-            params: {
-                $(
-                    $(#[$param_meta:meta])*
-                    $param_name:ident : $param_type:ty = $param_default:expr
-                ),* $(,)?
-            },
-            $(control_inputs: {
-                $(
-                    $(#[$control_meta:meta])*
-                    $control_name:ident : $control_type:ty = $control_default:expr
-                ),* $(,)?
-            },)?
-            state: {
-                $(
-                    $(#[$state_meta:meta])*
-                    $state_name:ident : $state_type:ty = $state_default:expr
-                ),* $(,)?
-            },
-            outputs: $num_outputs:expr,
+        $(#[$meta:meta])*
+        $vis:vis $struct_name:ident<$T:ident: $audio_num:path, const $BUF:ident: usize>
+        $(where $($bounds:tt)*)?
+        {
+            params { $($param_name:ident: $param_ty:ty = $param_default:expr),* $(,)? }
+            $(ports { $($ports:tt)* } )?
             generate: $generate:expr
         }
     ) => {
-        $(#[$struct_meta])*
-        $vis struct $name {
-            $(
-                $(#[$param_meta])*
-                pub $param_name: $param_type,
-            )*
-            
-            $(
-                $(
-                    $(#[$control_meta])*
-                    pub $control_name: $control_type,
-                )*
-            )?
-            
-            $(
-                $(#[$state_meta])*
-                pub $state_name: $state_type,
-            )*
-            
-            /// Sample rate
-            pub sample_rate: f32,
-            
-            /// Control input values (updated from graph)
-            pub control_values: Vec<f32>,
-            
-            /// Parameter IDs for automation
-            pub param_ids: std::collections::HashMap<String, $crate::traits::ParameterId>,
-        }
-
-        impl $name {
-            /// Create a new instance
-            pub fn new($($param_name: $param_type),* $(, $($control_name: $control_type),*)?) -> Self {
-                let mut param_ids = std::collections::HashMap::new();
-                $(
-                    if let Ok(id) = $crate::traits::ParameterId::new(stringify!($param_name)) {
-                        param_ids.insert(stringify!($param_name).to_string(), id);
-                    }
-                )*
-                
-                // Count control inputs using array length - simpler and works
-                let control_count = 0 $(+ { let _ = ($($control_name,)*); 1 })?;
-                
-                Self {
-                    $($param_name),*,
-                    $($($control_name: $control_default),*)?,
-                    $($state_name: $state_default),*,
-                    sample_rate: 44100.0,
-                    control_values: vec![0.0; control_count],
-                    param_ids,
-                }
-            }
-            
-            /// Get parameter ID by name
-            pub fn param_id(&self, name: &str) -> Option<&$crate::traits::ParameterId> {
-                self.param_ids.get(name)
-            }
-            
-            /// Update control input value
-            pub fn set_control(&mut self, index: usize, value: f32) {
-                if index < self.control_values.len() {
-                    self.control_values[index] = value;
-                }
-            }
-        }
-
-        impl $crate::traits::Source<$type, { $crate::DEFAULT_BLOCK_SIZE }> for $name
-        where
-            $type: $crate::math::AudioNum + Send + Sync,
+        #[derive(Debug, Clone)]
+        $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
+        $(where $($bounds)*)?
         {
-            fn generate(
-                &mut self,
-                outputs: &mut [&mut [$type; { $crate::DEFAULT_BLOCK_SIZE }]],
-                control: &[f32],
-            ) -> $crate::ProcessResult<()> {
-                if outputs.is_empty() {
-                    return Ok(());
-                }
-
-                let generate_fn: fn(
-                    &mut Self,
-                    usize,
-                    &mut [$type; { $crate::DEFAULT_BLOCK_SIZE }],
-                    &[f32]
-                ) = $generate;
-
-                for (channel, output) in outputs.iter_mut().enumerate() {
-                    if channel < $num_outputs {
-                        generate_fn(self, channel, output, control);
-                    }
-                }
-
-                Ok(())
-            }
-
-            fn num_audio_outputs(&self) -> usize {
-                $num_outputs
-            }
-
-            fn num_control_inputs(&self) -> usize {
-                self.control_values.len()
-            }
-
-            fn get_parameter(&self, id: &$crate::traits::ParameterId) -> Option<$crate::traits::ParamValue> {
-                match id.as_str() {
+            /// Внутреннее состояние
+            state: $crate::traits::node::NodeState<T,$BUF>,
+            
+            /// Идентификатор узла
+            id: $crate::NodeId,
+            
+            /// Метаданные
+            metadata: $crate::NodeMetadata,
+            
+            /// Выходные порты
+            outputs: Vec<$crate::Port<$T, $BUF>>,
+            
+            $(
+                pub $param_name: $param_ty,
+            )*
+        }
+        
+        impl<$T: $audio_num, const $BUF: usize>
+            $struct_name<$T, $BUF>
+        $(where $($bounds)*)?
+        {
+            /// Создать новый источник
+            pub fn new(sample_rate: f32) -> Self {
+                let metadata = $crate::NodeMetadata::new(
+                    stringify!($struct_name),
+                    $crate::NodeCategory::Source,
+                );
+                
+                let mut node = Self {
+                    state: $crate::traits::node::NodeState::new(sample_rate),
+                    id: $crate::NodeId(0),
+                    metadata,
+                    outputs: Vec::new(),
                     $(
-                        stringify!($param_name) => {
-                            Some($crate::traits::ParamValue::Float(
-                                self.$param_name
-                            ))
-                        }
+                        $param_name: $param_default,
+                    )*
+                };
+                
+                $(
+                    __init_ports!(ports { $($ports)* }, node, outputs)
+                )?;
+                
+                node
+            }
+            
+            /// Получить частоту дискретизации
+            pub fn sample_rate(&self) -> f32 {
+                self.state.sample_rate
+            }
+            
+            /// Получить состояние узла
+            pub fn state(&self) -> &$crate::traits::node::NodeState<T,$BUF> {
+                &self.state
+            }
+            
+            /// Получить мутабельное состояние
+            pub fn state_mut(&mut self) -> &mut $crate::traits::node::NodeState<T,$BUF> {
+                &mut self.state
+            }
+        }
+        
+        impl<$T: $audio_num, const $BUF: usize>
+            $crate::AudioNode<$T, $BUF> for $struct_name<$T, $BUF>
+        $(where $($bounds)*)?
+        {
+            fn node_type_id(&self) -> $crate::NodeTypeId 
+            where 
+                Self: 'static + Sized 
+            {
+                $crate::NodeTypeId::of::<Self>()
+            }
+            
+            fn id(&self) -> $crate::NodeId {
+                self.id
+            }
+            
+            fn set_id(&mut self, id: $crate::NodeId) {
+                self.id = id;
+            }
+            
+            fn metadata(&self) -> $crate::NodeMetadata {
+                self.metadata.clone()
+            }
+            
+            fn init(&mut self, sample_rate: f32) {
+                self.state.sample_rate = sample_rate;
+            }
+            
+            fn reset(&mut self) {
+                self.state.sample_pos = 0;
+                self.state.blocks_processed = 0;
+            }
+            
+            fn get_parameter(&self, id: &$crate::ParameterId) -> Option<$crate::ParamValue> {
+                let name = id.as_str();
+                match name {
+                    $(
+                        stringify!($param_name) => Some($crate::ParamValue::Float(
+                            <_ as $crate::math::AudioNum>::to_f32(self.$param_name)
+                        )),
                     )*
                     _ => None,
                 }
             }
-
-            fn set_parameter(
+            
+            fn set_parameter(&mut self, id: &$crate::ParameterId, value: $crate::ParamValue) -> $crate::ProcessResult<()> {
+                let name = id.as_str();
+                if let Some(v) = value.as_f32() {
+                    match name {
+                        $(
+                            stringify!($param_name) => {
+                                self.$param_name = $crate::math::AudioNum::from_f32(v);
+                                Ok(())
+                            },
+                        )*
+                        _ => Err($crate::ProcessError::parameter(format!("Unknown parameter: {}", name))),
+                    }
+                } else {
+                    Err($crate::ProcessError::parameter("Expected float value"))
+                }
+            }
+            
+            fn input_port(&self, _index: usize) -> Option<&$crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn input_port_mut(&mut self, _index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn output_port(&self, index: usize) -> Option<&$crate::Port<$T, $BUF>> {
+                self.outputs.get(index)
+            }
+            
+            fn output_port_mut(&mut self, index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
+                self.outputs.get_mut(index)
+            }
+            
+            fn control_port(&self, _index: usize) -> Option<&$crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn control_port_mut(&mut self, _index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
+                None
+            }
+            
+            fn num_inputs(&self) -> usize { 0 }
+            
+            fn num_outputs(&self) -> usize {
+                self.outputs.len()
+            }
+            
+            fn state(&self) -> &$crate::traits::node::NodeState<T,$BUF> {
+                &self.state
+            }
+            
+            fn state_mut(&mut self) -> &mut $crate::traits::node::NodeState<T,$BUF> {
+                &mut self.state
+            }
+        }
+        
+        impl<$T: $crate::math::AudioNum, const $BUF: usize>
+            $crate::Source<$T, $BUF> for $struct_name<$T, $BUF>
+        $(where $($bounds)*)?
+        {
+            fn generate(
                 &mut self,
-                id: &$crate::traits::ParameterId,
-                value: $crate::traits::ParamValue,
+                clock: &$crate::ClockTick,
+                control_inputs: &[$T],
+                clock_inputs: &[$crate::ClockTick],
+                outputs: &mut [&mut [$T; $BUF]],
             ) -> $crate::ProcessResult<()> {
-                match (id.as_str(), value) {
-                    $(
-                        (stringify!($param_name), $crate::traits::ParamValue::Float(v)) => {
-                            self.$param_name = v;
-                            Ok(())
-                        }
-                    )*
-                    _ => Err($crate::ProcessError::Parameter(
-                        format!("Unknown parameter: {}", id.as_str())
-                    )),
+                if outputs.is_empty() {
+                    return Ok(());
                 }
+                
+                ($generate)(self, outputs[0])?;
+                
+                Ok(())
             }
-
-            fn init(&mut self, sample_rate: f32) {
-                self.sample_rate = sample_rate;
-            }
-
-            fn reset(&mut self) {
-                $(
-                    self.$state_name = $state_default;
-                )*
-                for val in &mut self.control_values {
-                    *val = 0.0;
-                }
-            }
-        }
-    };
-    // Backward-compatible version (defaults to f32)
-    (
-        $(#[$struct_meta:meta])*
-        $vis:vis struct $name:ident {
-            $($rest:tt)*
-        }
-    ) => {
-        $crate::source_node! {
-            <f32>
-            $(#[$struct_meta])*
-            $vis struct $name {
-                $($rest)*
-            }
-        }
-    };
-}
-
-/// Simplified version for f32 sources
-#[macro_export]
-macro_rules! source_node_f32 {
-    (
-        $(#[$struct_meta:meta])*
-        $vis:vis struct $name:ident $($rest:tt)*
-    ) => {
-        $crate::source_node! {
-            $(#[$struct_meta])*
-            $vis struct $name $($rest)*
+            
+            fn num_audio_outputs(&self) -> usize { 1 }
+            fn num_control_inputs(&self) -> usize { 0 }
+            fn num_clock_inputs(&self) -> usize { 0 }
         }
     };
 }

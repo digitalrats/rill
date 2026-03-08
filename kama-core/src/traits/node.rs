@@ -1,7 +1,14 @@
-//! Node traits for the Kama Audio ecosystem
+//! Core node traits for the Kama Audio ecosystem
+//!
+//! Defines the fundamental building blocks of the audio graph:
+//! - `AudioNode`: Base trait for all nodes
+//! - `Source`: Active generator (has no inputs)
+//! - `Processor`: Passive processor (has inputs and outputs)
+//! - `Sink`: Active consumer (has no outputs)
 
 use crate::traits::param::{ParameterId, ParamValue, ParamMetadata};
-use crate::ProcessResult;
+use crate::time::ClockTick;
+use crate::traits::ProcessResult;
 use std::any::TypeId;
 use std::fmt;
 
@@ -52,6 +59,15 @@ pub enum NodeCategory {
     
     /// Sink nodes (outputs)
     Sink,
+    
+    /// Utility nodes (routing, mixing)
+    Utility,
+    
+    /// Analyzer nodes (meters, scopes)
+    Analyzer,
+    
+    /// Sequencer nodes (pattern generators)
+    Sequencer,
 }
 
 impl NodeCategory {
@@ -61,6 +77,9 @@ impl NodeCategory {
             Self::Source => "source",
             Self::Processor => "processor",
             Self::Sink => "sink",
+            Self::Utility => "utility",
+            Self::Analyzer => "analyzer",
+            Self::Sequencer => "sequencer",
         }
     }
 }
@@ -81,7 +100,7 @@ pub struct NodeTypeId(TypeId);
 
 impl NodeTypeId {
     /// Create a new node type ID from a type
-    pub fn of<T: 'static>() -> Self {
+    pub fn of<T: 'static + ?Sized>() -> Self {
         Self(TypeId::of::<T>())
     }
     
@@ -113,211 +132,314 @@ pub struct NodeMetadata {
     /// Version of the node
     pub version: String,
     
+    /// Number of audio input ports
+    pub audio_inputs: usize,
+    
+    /// Number of audio output ports
+    pub audio_outputs: usize,
+    
+    /// Number of control input ports
+    pub control_inputs: usize,
+    
+    /// Number of control output ports
+    pub control_outputs: usize,
+    
+    /// Number of clock input ports
+    pub clock_inputs: usize,
+    
+    /// Number of clock output ports
+    pub clock_outputs: usize,
+    
+    /// Number of feedback ports
+    pub feedback_ports: usize,
+    
     /// Parameters exposed by the node
     pub parameters: Vec<ParamMetadata>,
 }
 
+impl NodeMetadata {
+    /// Create new node metadata with minimal info
+    pub fn new(name: &str, category: NodeCategory) -> Self {
+        Self {
+            name: name.to_string(),
+            category,
+            description: String::new(),
+            author: String::new(),
+            version: String::new(),
+            audio_inputs: 0,
+            audio_outputs: 0,
+            control_inputs: 0,
+            control_outputs: 0,
+            clock_inputs: 0,
+            clock_outputs: 0,
+            feedback_ports: 0,
+            parameters: Vec::new(),
+        }
+    }
+}
+
 // ============================================================================
-// Source Trait
+// Node State
+// ============================================================================
+
+/// State of a node during processing
+/// State of a node during processing
+#[derive(Debug, Clone)]
+pub struct NodeState<T: crate::math::AudioNum, const BUF_SIZE: usize> {
+    /// Current sample position
+    pub sample_pos: u64,
+    
+    /// Number of processed blocks
+    pub blocks_processed: u64,
+    
+    /// Sample rate
+    pub sample_rate: f32,
+    
+    /// Whether the node is active
+    pub active: bool,
+    
+    /// Internal phase (for generators)
+    pub phase: T,
+}
+
+impl<T: crate::math::AudioNum, const BUF_SIZE: usize> NodeState<T, BUF_SIZE> {
+    /// Create new node state
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_pos: 0,
+            blocks_processed: 0,
+            sample_rate,
+            active: true,
+            phase: T::ZERO,
+        }
+    }
+    
+    /// Advance state by one block
+    pub fn advance(&mut self) {
+        self.sample_pos += BUF_SIZE as u64;
+        self.blocks_processed += 1;
+    }
+    
+    /// Get current time in seconds
+    pub fn current_time_seconds(&self) -> f64 {
+        self.sample_pos as f64 / self.sample_rate as f64
+    }
+    
+    /// Reset state
+    pub fn reset(&mut self) {
+        self.sample_pos = 0;
+        self.blocks_processed = 0;
+        self.phase = T::ZERO;
+    }
+}
+
+// ============================================================================
+// AudioNode Trait (Base for all nodes)
+// ============================================================================
+
+/// Base trait for all audio nodes
+///
+/// This trait provides the fundamental operations that every node must implement:
+/// - Port counting
+/// - Parameter access
+/// - Initialization and reset
+///
+/// The actual processing is split into specialized traits:
+/// - `Source` for generators
+/// - `Processor` for processors with inputs/outputs
+/// - `Sink` for consumers
+pub trait AudioNode<T: crate::math::AudioNum, const BUF_SIZE: usize>: Send + Sync {
+    /// Get node metadata
+    fn metadata(&self) -> NodeMetadata;
+    
+    /// Get the node's type ID
+    fn node_type_id(&self) -> NodeTypeId 
+    where 
+        Self: 'static + Sized 
+    {
+        NodeTypeId::of::<Self>()
+    }
+    
+    /// Initialize the node with a sample rate
+    fn init(&mut self, sample_rate: f32);
+    
+    /// Reset the node to its initial state
+    fn reset(&mut self);
+    
+    /// Get the value of a parameter
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
+    
+    /// Set the value of a parameter
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
+    
+    /// Get node ID
+    fn id(&self) -> NodeId;
+    
+    /// Set node ID
+    fn set_id(&mut self, id: NodeId);
+    
+    /// Get input port by index
+    fn input_port(&self, index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>>;
+    
+    /// Get mutable input port by index
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>>;
+    
+    /// Get output port by index
+    fn output_port(&self, index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>>;
+    
+    /// Get mutable output port by index
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>>;
+    
+    /// Get control port by index
+    fn control_port(&self, index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>>;
+    
+    /// Get mutable control port by index
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>>;
+    
+    /// Get node state
+    fn state(&self) -> &NodeState<T,BUF_SIZE>;
+    
+    /// Get mutable node state
+    fn state_mut(&mut self) -> &mut NodeState<T,BUF_SIZE>;
+    
+    // ========================================================================
+    // Port Counting (with defaults)
+    // ========================================================================
+    
+    /// Number of audio input ports
+    fn num_audio_inputs(&self) -> usize { 0 }
+    
+    /// Number of audio output ports
+    fn num_audio_outputs(&self) -> usize { 0 }
+    
+    /// Number of control input ports
+    fn num_control_inputs(&self) -> usize { 0 }
+    
+    /// Number of control output ports
+    fn num_control_outputs(&self) -> usize { 0 }
+    
+    /// Number of clock input ports
+    fn num_clock_inputs(&self) -> usize { 0 }
+    
+    /// Number of clock output ports
+    fn num_clock_outputs(&self) -> usize { 0 }
+    
+    /// Number of feedback ports
+    fn num_feedback_ports(&self) -> usize { 0 }
+    
+    /// Total number of input ports
+    fn num_inputs(&self) -> usize {
+        self.num_audio_inputs() + self.num_control_inputs() + 
+        self.num_clock_inputs() + self.num_feedback_ports()
+    }
+    
+    /// Total number of output ports
+    fn num_outputs(&self) -> usize {
+        self.num_audio_outputs() + self.num_control_outputs() + self.num_clock_outputs()
+    }
+}
+
+// ============================================================================
+// Source Trait (Active generators)
 // ============================================================================
 
 /// Active source of audio signals
 ///
-/// Sources generate audio from internal state or external input.
-/// They have no audio inputs, only audio outputs, but can have control inputs.
-pub trait Source<T, const BUF_SIZE: usize>: Send + Sync
-where
-    T: crate::math::AudioNum + Send + Sync,
-{
+/// Sources generate audio from internal state. They have no audio inputs,
+/// but may have control and clock inputs for modulation.
+pub trait Source<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
     /// Generate the next block of audio
     ///
     /// # Arguments
-    /// * `outputs` - Array of output buffers to fill (one per channel)
-    /// * `control` - Array of control input values (updated by graph)
+    /// * `clock` - Current clock tick
+    /// * `control_inputs` - Control signal values (one per control input)
+    /// * `clock_inputs` - Clock signal values (one per clock input)
+    /// * `outputs` - Audio output buffers to fill
     fn generate(
         &mut self,
+        clock: &ClockTick,
+        control_inputs: &[T],
+        clock_inputs: &[ClockTick],
         outputs: &mut [&mut [T; BUF_SIZE]],
-        control: &[f32],
     ) -> ProcessResult<()>;
-
-    /// Number of audio output channels
-    fn num_audio_outputs(&self) -> usize;
-
-    /// Number of control inputs
-    fn num_control_inputs(&self) -> usize {
-        0
-    }
-
-    /// Get the current value of a parameter
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
-
-    /// Set a parameter value
-    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-
-    /// Initialize the source with a sample rate
-    fn init(&mut self, sample_rate: f32);
-
-    /// Reset the source to its initial state
-    fn reset(&mut self);
+    
+    /// Number of audio outputs (default 1)
+    fn num_audio_outputs(&self) -> usize { 1 }
+    
+    /// Number of control inputs (default 0)
+    fn num_control_inputs(&self) -> usize { 0 }
+    
+    /// Number of clock inputs (default 0)
+    fn num_clock_inputs(&self) -> usize { 0 }
 }
 
 // ============================================================================
-// Processor Trait
+// Processor Trait (Passive processors)
 // ============================================================================
 
 /// Passive processor of audio signals
 ///
 /// Processors transform input signals into output signals.
-/// They have both audio inputs and outputs, and can have control inputs.
-pub trait Processor<T, const BUF_SIZE: usize>: Send + Sync
-where
-    T: crate::math::AudioNum + Send + Sync,
-{
+/// They have audio inputs and outputs, and may have control and clock ports.
+pub trait Processor<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
     /// Process a block of audio
     ///
     /// # Arguments
-    /// * `inputs` - Array of input buffers (one per channel)
-    /// * `outputs` - Array of output buffers to fill (one per channel)
-    /// * `control` - Array of control input values (updated by graph)
+    /// * `clock` - Current clock tick
+    /// * `audio_inputs` - Audio input buffers (one per audio input)
+    /// * `control_inputs` - Control signal values (one per control input)
+    /// * `clock_inputs` - Clock signal values (one per clock input)
+    /// * `feedback_inputs` - Feedback values from previous blocks (one per feedback port)
+    /// * `audio_outputs` - Audio output buffers to fill
+    /// * `control_outputs` - Control output values to send (one per control output)
+    /// * `clock_outputs` - Clock output values to send (one per clock output)
+    /// * `feedback_outputs` - Feedback values to store for next block
     fn process(
         &mut self,
-        inputs: &[&[T; BUF_SIZE]],
-        outputs: &mut [&mut [T; BUF_SIZE]],
-        control: &[f32],
+        clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        control_inputs: &[T],
+        clock_inputs: &[ClockTick],
+        feedback_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        control_outputs: &mut [T],
+        clock_outputs: &mut [ClockTick],
+        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()>;
-
-    /// Number of audio input channels
-    fn num_audio_inputs(&self) -> usize;
-
-    /// Number of audio output channels
-    fn num_audio_outputs(&self) -> usize;
-
-    /// Number of control inputs
-    fn num_control_inputs(&self) -> usize {
-        0
-    }
-
-    /// Get the current value of a parameter
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
-
-    /// Set a parameter value
-    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-
-    /// Initialize the processor with a sample rate
-    fn init(&mut self, sample_rate: f32);
-
-    /// Reset the processor to its initial state
-    fn reset(&mut self);
+    
+    /// Latency in samples (for delay compensation)
+    fn latency(&self) -> usize { 0 }
 }
 
 // ============================================================================
-// Sink Trait
+// Sink Trait (Active consumers)
 // ============================================================================
 
 /// Active sink of audio signals
 ///
-/// Sinks consume audio signals and send them to external destinations
-/// (sound cards, files, network). They have only audio inputs, and can have control inputs.
-pub trait Sink<T, const BUF_SIZE: usize>: Send + Sync
-where
-    T: crate::math::AudioNum + Send + Sync,
-{
-    /// Process a block of audio (consumes it)
+/// Sinks consume audio and send it to external destinations.
+/// They have no audio outputs, but may have control and clock ports.
+pub trait Sink<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
+    /// Consume a block of audio
     ///
     /// # Arguments
-    /// * `inputs` - Array of input buffers to consume (one per channel)
-    /// * `control` - Array of control input values (updated by graph)
-    fn process(
+    /// * `clock` - Current clock tick
+    /// * `audio_inputs` - Audio input buffers (one per audio input)
+    /// * `control_inputs` - Control signal values (one per control input)
+    /// * `clock_inputs` - Clock signal values (one per clock input)
+    /// * `feedback_inputs` - Feedback values from previous blocks
+    /// * `control_outputs` - Control output values to send
+    /// * `clock_outputs` - Clock output values to send
+    fn consume(
         &mut self,
-        inputs: &[&[T; BUF_SIZE]],
-        control: &[f32],
+        clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        control_inputs: &[T],
+        clock_inputs: &[ClockTick],
+        feedback_inputs: &[&[T; BUF_SIZE]],
+        control_outputs: &mut [T],
+        clock_outputs: &mut [ClockTick],
     ) -> ProcessResult<()>;
-
-    /// Number of audio input channels
-    fn num_audio_inputs(&self) -> usize;
-
-    /// Number of control inputs
-    fn num_control_inputs(&self) -> usize {
-        0
-    }
-
-    /// Get the current value of a parameter
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
-
-    /// Set a parameter value
-    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-
-    /// Initialize the sink with a sample rate
-    fn init(&mut self, sample_rate: f32);
-
-    /// Reset the sink to its initial state
-    fn reset(&mut self);
-}
-
-// ============================================================================
-// Type Erasure Helpers (для использования в графе)
-// ============================================================================
-
-/// Type-erased source for storage in collections
-pub struct BoxedSource(pub Box<dyn DynSource>);
-
-/// Type-erased processor for storage in collections
-pub struct BoxedProcessor(pub Box<dyn DynProcessor>);
-
-/// Type-erased sink for storage in collections
-pub struct BoxedSink(pub Box<dyn DynSink>);
-
-/// Dynamic dispatch trait for Source
-pub trait DynSource: Send + Sync {
-    /// Generate with dynamic dispatch
-    fn dyn_generate(
-        &mut self,
-        outputs: &mut [&mut [f32]],
-        control: &[f32],
-    ) -> ProcessResult<()>;
-    
-    fn dyn_num_audio_outputs(&self) -> usize;
-    fn dyn_num_control_inputs(&self) -> usize;
-    fn dyn_get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
-    fn dyn_set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-    fn dyn_init(&mut self, sample_rate: f32);
-    fn dyn_reset(&mut self);
-}
-
-/// Dynamic dispatch trait for Processor
-pub trait DynProcessor: Send + Sync {
-    /// Process with dynamic dispatch
-    fn dyn_process(
-        &mut self,
-        inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
-        control: &[f32],
-    ) -> ProcessResult<()>;
-    
-    fn dyn_num_audio_inputs(&self) -> usize;
-    fn dyn_num_audio_outputs(&self) -> usize;
-    fn dyn_num_control_inputs(&self) -> usize;
-    fn dyn_get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
-    fn dyn_set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-    fn dyn_init(&mut self, sample_rate: f32);
-    fn dyn_reset(&mut self);
-}
-
-/// Dynamic dispatch trait for Sink
-pub trait DynSink: Send + Sync {
-    /// Process with dynamic dispatch
-    fn dyn_process(
-        &mut self,
-        inputs: &[&[f32]],
-        control: &[f32],
-    ) -> ProcessResult<()>;
-    
-    fn dyn_num_audio_inputs(&self) -> usize;
-    fn dyn_num_control_inputs(&self) -> usize;
-    fn dyn_get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
-    fn dyn_set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-    fn dyn_init(&mut self, sample_rate: f32);
-    fn dyn_reset(&mut self);
 }
 
 // ============================================================================
@@ -327,28 +449,51 @@ pub trait DynSink: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::AudioNum;
     
-    struct TestSource;
+    struct TestNode;
     
-    impl<T: crate::math::AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE> for TestSource {
-        fn generate(
-            &mut self,
-            outputs: &mut [&mut [T; BUF_SIZE]],
-            _control: &[f32],
-        ) -> ProcessResult<()> {
-            for output in outputs {
-                for i in 0..BUF_SIZE {
-                    output[i] = T::ZERO;
-                }
+    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for TestNode {
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                name: "Test".to_string(),
+                category: NodeCategory::Utility,
+                description: "Test node".to_string(),
+                author: "Kama".to_string(),
+                version: "1.0".to_string(),
+                audio_inputs: 0,
+                audio_outputs: 0,
+                control_inputs: 0,
+                control_outputs: 0,
+                clock_inputs: 0,
+                clock_outputs: 0,
+                feedback_ports: 0,
+                parameters: vec![],
             }
-            Ok(())
         }
         
-        fn num_audio_outputs(&self) -> usize { 1 }
-        fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
-        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
         fn init(&mut self, _sample_rate: f32) {}
         fn reset(&mut self) {}
+        fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
+        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
+        
+        fn id(&self) -> NodeId { NodeId(0) }
+        fn set_id(&mut self, _id: NodeId) {}
+        
+        fn input_port(&self, _index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>> { None }
+        fn input_port_mut(&mut self, _index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> { None }
+        fn output_port(&self, _index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>> { None }
+        fn output_port_mut(&mut self, _index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> { None }
+        fn control_port(&self, _index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>> { None }
+        fn control_port_mut(&mut self, _index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> { None }
+        
+        fn state(&self) -> &NodeState<T,BUF_SIZE> {
+            unimplemented!()
+        }
+        
+        fn state_mut(&mut self) -> &mut NodeState<T,BUF_SIZE> {
+            unimplemented!()
+        }
     }
     
     #[test]
@@ -363,5 +508,28 @@ mod tests {
         assert_eq!(NodeCategory::Source.name(), "source");
         assert_eq!(NodeCategory::Processor.name(), "processor");
         assert_eq!(NodeCategory::Sink.name(), "sink");
+        assert_eq!(NodeCategory::Utility.name(), "utility");
+    }
+    
+    #[test]
+    fn test_node_metadata_new() {
+        let metadata = NodeMetadata::new("Test", NodeCategory::Source);
+        assert_eq!(metadata.name, "Test");
+        assert_eq!(metadata.category, NodeCategory::Source);
+    }
+    
+    #[test]
+    fn test_node_state() {
+        let mut state = NodeState::<f32,64>::new(44100.0);
+        assert_eq!(state.sample_pos, 0);
+        assert_eq!(state.sample_rate, 44100.0);
+        
+        state.advance();
+        assert_eq!(state.sample_pos, 64);
+        assert_eq!(state.blocks_processed, 1);
+        
+        state.reset();
+        assert_eq!(state.sample_pos, 0);
+        assert_eq!(state.blocks_processed, 0);
     }
 }
