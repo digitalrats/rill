@@ -345,6 +345,259 @@ test(eq): add frequency response tests
 
 Все крейты в workspace версионируются синхронно (одинаковая версия).
 
+## 🔗 Аудио-граф: математически строгая модель обработки
+
+Граф Kama Audio построен на строгой математической основе — **теории категорий**, что обеспечивает типобезопасность, композиционность и предсказуемость поведения.
+
+### 📐 Математическая модель
+
+В нашей модели:
+- **Объекты** — это блоки семплов фиксированного размера (`[T; BUF_SIZE]`)
+- **Стрелки (морфизмы)** — это процессоры, преобразующие блоки
+- **Композиция** — последовательное соединение узлов
+- **Произведение** — параллельная обработка нескольких сигналов
+
+```
+Объекты:    A (аудио блок)    C (control значение)    Clock (тактовый сигнал)
+             │                  │                       │
+Стрелки:    Source: 1 → A      Processor: A → A        Sink: A → 1
+```
+
+### 🎯 Типы портов
+
+Каждый порт имеет три характеристики: **тип сигнала**, **направление** и **индекс**.
+
+| Тип порта | Описание | Примеры |
+|-----------|----------|---------|
+| **`Audio`** | Аудио-сигналы (высокая частота, блоки семплов) | Звук с осциллятора, выход фильтра |
+| **`Control`** | Управляющие сигналы (одно значение на блок) | LFO, огибающие, выходы анализаторов |
+| **`Clock`** | Тактовые сигналы для синхронизации | Синхроимпульсы от ALSA, внутренний таймер |
+| **`Feedback`** | Хранилище состояния между блоками | Линии задержки, состояния фильтров |
+| **`Param`** | Параметры узла (не сигналы, а настройки) | Частота среза, коэффициент усиления |
+
+### 🔄 Направление потока: активные и пассивные узлы
+
+В Kama Audio реализована **симметричная модель**, где любой узел может быть активным в зависимости от того, кто инициирует обработку.
+
+#### Сценарий 1: Активный Source, пассивный Sink (воспроизведение)
+
+```
+[Активный Source] --(audio)--> [Processor] --(audio)--> [Пассивный Sink]
+     │                                                           
+     └── (clock) ────────────────────────────────────────────────┘
+```
+
+В этом сценарии:
+- **Source** (например, осциллятор) содержит цикл обработки
+- Он генерирует блок семплов и передаёт его следующему узлу
+- Процессоры пассивно обрабатывают данные
+- Sink только принимает финальный блок и отправляет его на устройство вывода
+
+```rust
+// Пример: активный Source (осциллятор)
+impl<T: AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+    fn generate(
+        &mut self,
+        clock: &ClockTick,
+        _control_inputs: &[T],
+        _clock_inputs: &[ClockTick],
+        outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        // Генерируем блок семплов
+        for i in 0..BUF_SIZE {
+            outputs[0][i] = (self.phase * T::from_f32(2.0 * PI)).sin() * self.amplitude;
+            self.phase = (self.phase + self.frequency / T::from_f32(clock.sample_rate)) % T::ONE;
+        }
+        Ok(())
+    }
+}
+
+// Запуск обработки (source.run() содержит цикл)
+source.run(&mut processor, &mut sink);
+```
+
+#### Сценарий 2: Активный Sink, пассивный Source (захват)
+
+```
+[Пассивный Source] --(audio)--> [Processor] --(audio)--> [Активный Sink]
+     │                                                           
+     └── (clock) ────────────────────────────────────────────────┘
+```
+
+В этом сценарии:
+- **Sink** (например, ALSA выход) получает тактовый сигнал от железа
+- Он запрашивает данные у предыдущего узла
+- Процессоры обрабатывают данные в обратном направлении
+- Source предоставляет данные (с микрофона или из файла)
+
+```rust
+// Пример: активный Sink (ALSA выход)
+impl<T: AudioNum, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for AlsaSink<T, BUF_SIZE> {
+    fn consume(
+        &mut self,
+        clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        _control_inputs: &[T],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
+        _control_outputs: &mut [T],
+        _clock_outputs: &mut [ClockTick],
+    ) -> ProcessResult<()> {
+        // Отправляем блок в ALSA
+        self.write_buffer(audio_inputs[0])
+    }
+}
+
+// ALSA callback запускает обработку
+fn alsa_callback() {
+    let clock = get_current_clock();
+    source.acquire(&mut buffer);  // Пассивный Source заполняет буфер
+    processor.process(&buffer, &mut buffer);  // Обработка
+    sink.consume(&buffer);  // Активный Sink отправляет в ALSA
+}
+```
+
+### 🔄 Симметрия: один механизм для всех сценариев
+
+Благодаря тактовой синхронизации, оба сценария используют **один и тот же механизм**:
+
+```rust
+// Единый интерфейс для всех узлов
+trait AudioNode<T: AudioNum, const BUF_SIZE: usize> {
+    fn on_clock(
+        &mut self,
+        clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        control_inputs: &[T],
+        control_outputs: &mut [T],
+        clock_inputs: &[ClockTick],
+        clock_outputs: &mut [ClockTick],
+        feedback_inputs: &[&[T; BUF_SIZE]],
+        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()>;
+}
+```
+
+Разница только в том, **кто инициирует первый тактовый импульс**:
+- Воспроизведение: Source получает импульс от внутреннего таймера
+- Захват: Sink получает импульс от внешнего железа
+
+### 🧩 Композиция стрелок
+
+В терминах теории категорий, каждый узел — это стрелка. Композиция стрелок даёт цепочку обработки:
+
+```rust
+// Композиция: Source ∘ Processor ∘ Sink
+let chain = source.then(processor).then(sink);
+
+// Запуск одним вызовом
+chain.process(clock);
+```
+
+Это математически строго и позволяет строить сложные графы из простых компонентов.
+
+### 🔁 Обратная связь (Feedback)
+
+Реальные аудиосистемы требуют обратной связи (реверберация, резонансные фильтры). В нашей модели это реализуется через **feedback-порты**:
+
+```rust
+struct ResonantFilter<T: AudioNum, const BUF_SIZE: usize> {
+    // feedback-порты хранят состояние
+    feedback: [T; 2],  // y[n-1] и y[n-2]
+}
+
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for ResonantFilter<T, BUF_SIZE> {
+    fn process(
+        &mut self,
+        clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        _control_inputs: &[T],
+        _control_outputs: &mut [T],
+        _clock_inputs: &[ClockTick],
+        _clock_outputs: &mut [ClockTick],
+        feedback_inputs: &[&[T; BUF_SIZE]],
+        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        // feedback_inputs[0] = y[n-1], feedback_inputs[1] = y[n-2]
+        // feedback_outputs будут сохранены для следующего блока
+        Ok(())
+    }
+}
+```
+
+### 📊 Типовые конфигурации графа
+
+#### Линейная цепочка (самая частая)
+```
+[Source] → [Processor] → [Processor] → [Sink]
+```
+
+#### Параллельная обработка (сплиттинг)
+```
+        ┌→ [Processor A] ─┐
+[Source]┤                 ├→ [Mixer] → [Sink]
+        └→ [Processor B] ─┘
+```
+
+#### Обратная связь (feedback)
+```
+[Source] → [Processor] → [Delay] → [Sink]
+    ↑                        │
+    └────────[feedback]──────┘
+```
+
+#### Мульти-сценарий (запись и воспроизведение)
+```
+[Microphone] → [Preamp] → [Splitter] ─┬→ [Reverb] → [Speakers]
+                                      └→ [Compressor] → [Recorder]
+```
+
+### 🚀 Преимущества такого подхода
+
+1. **Математическая строгость** — каждый узел ведёт себя предсказуемо
+2. **Типобезопасность** — компилятор проверяет совместимость портов
+3. **Симметрия** — единый механизм для записи и воспроизведения
+4. **Композиционность** — сложные системы строятся из простых компонентов
+5. **Производительность** — zero-cost abstractions, прямая компиляция
+6. **Расширяемость** — новые типы узлов естественно вписываются в модель
+
+### 📚 Примеры использования
+
+#### Простой синтезатор
+```rust
+let mut graph = AudioGraph::with_sample_rate(44100.0);
+
+let osc = graph.add_source(SineOsc::new(440.0))?;
+let filter = graph.add_processor(LowPassFilter::new(1000.0))?;
+let gain = graph.add_processor(GainNode::new(0.8))?;
+let dac = graph.add_sink(AlsaSink::new("hw:0")?)?;
+
+graph.connect_audio(osc, 0, filter, 0)?;
+graph.connect_audio(filter, 0, gain, 0)?;
+graph.connect_audio(gain, 0, dac, 0)?;
+
+// Source активен, запускает обработку
+graph.run()?;
+```
+
+#### Запись с микрофона с обработкой
+```rust
+let mic = graph.add_source(AlsaSource::new("hw:0")?)?;
+let gate = graph.add_processor(NoiseGate::new(-40.0))?;
+let compressor = graph.add_processor(Compressor::new(2.0, 10.0))?;
+let recorder = graph.add_sink(WavFileSink::new("recording.wav")?)?;
+
+graph.connect_audio(mic, 0, gate, 0)?;
+graph.connect_audio(gate, 0, compressor, 0)?;
+graph.connect_audio(compressor, 0, recorder, 0)?;
+
+// Sink активен, запускается по сигналу от ALSA
+graph.run_capture()?;
+```
+
+
 ## 🤖 Мир автоматов (The World of Automata)
 
 **Kama Patchbay** — это не просто система управления. Это **мир**, в котором живут **автоматы** — загадочные существа, которые чувствуют окружающую среду и влияют на неё. Они общаются на языке сигналов, слышат звук через сенсоры и через серво воздействуют на AudioGraph.
