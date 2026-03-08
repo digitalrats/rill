@@ -96,7 +96,7 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 | **kama-core** | 0.3.0 | ✅ **Единое ядро** (трейты + сигналы) |
 | kama-core-dsp | 0.3.0 | ✅ DSP инфраструктура, функциональные узлы |
 | kama-graph | 0.3.0 | ✅ Аудиограф с топологической сортировкой |
-| kama-patchbay | временно отключен | ✅ Автоматизация (LFO, огибающие, сервоприводы) |
+| kama-patchbay | 0.3.0 | ✅ Автоматизация (LFO, огибающие, сервоприводы) |
 | kama-oscillators | 0.3.0 | ✅ Осцилляторы (синус, пила, шум, LFO, огибающие) |
 | kama-digital-filters | 0.3.0 | ✅ Биквадратные фильтры (LP, HP, BP, Notch, Peak) |
 | kama-digital-effects | 0.3.0 | ✅ Эффекты (Delay, Distortion, Limiter) |

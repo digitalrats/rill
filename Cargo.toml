@@ -10,7 +10,10 @@ members = [
     "kama-eq",
     "kama-mixer",
     #"kama-lofi", # Временно отключен
-    #"kama-io", # Временно отключен
+    #"kama-io", # Временно отключен 
+    #"kama-server" # В разработке
+    #"kama-wdf" # Планируется
+    #"kama-sequenser # Планируется
 ]
 resolver = "2"
 
