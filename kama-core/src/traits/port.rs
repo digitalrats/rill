@@ -7,6 +7,8 @@
 //! - Clock signals (for synchronization)
 
 use crate::traits::node::NodeId;
+use crate::buffer::PipeBuffer;
+use crate::error::{Error, ErrorCode};
 use std::fmt;
 
 // ============================================================================
@@ -274,6 +276,119 @@ impl fmt::Display for PortId {
             self.direction.name(),
             self.index
         )
+    }
+}
+
+// ============================================================================
+// Port Structure (for runtime)
+// ============================================================================
+
+/// A port on a node
+#[derive(Debug, Clone)]
+pub struct Port<T: crate::math::AudioNum, const BUF_SIZE: usize> {
+    /// Port identifier
+    pub id: PortId,
+    /// Port name
+    pub name: String,
+    /// Connection buffer (if connected)
+    pub buffer: Option<PipeBuffer<T, BUF_SIZE>>,
+}
+
+impl<T: crate::math::AudioNum, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
+    /// Create a new input port
+    pub fn input(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::audio_in(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Create a new output port
+    pub fn output(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::audio_out(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Create a new control input port
+    pub fn control_in(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::control_in(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Create a new control output port
+    pub fn control_out(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::control_out(node_id, index),
+            name: name.to_string(),
+            buffer: None,
+        }
+    }
+    
+    /// Get the port ID
+    pub fn id(&self) -> PortId {
+        self.id
+    }
+    
+    /// Get the port name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    
+    /// Check if port is connected
+    pub fn is_connected(&self) -> bool {
+        self.buffer.is_some()
+    }
+    
+    /// Connect to a buffer
+    pub fn connect(&mut self, buffer: PipeBuffer<T, BUF_SIZE>) {
+        self.buffer = Some(buffer);
+    }
+    
+    /// Disconnect from buffer
+    pub fn disconnect(&mut self) {
+        self.buffer = None;
+    }
+    
+    /// Read data from port into provided buffer (for input ports)
+    pub fn read(&self, output: &mut [T; BUF_SIZE]) -> Result<(), Error> {
+        match &self.buffer {
+            Some(buffer) => {
+                if let Some(data) = buffer.try_read() {
+                    *output = data;
+                    Ok(())
+                } else {
+                    Err(Error::new(
+                        ErrorCode::BufferEmpty,
+                        "No data available in port",
+                    ))
+                }
+            }
+            None => Err(Error::new(
+                ErrorCode::BufferEmpty,
+                "Port not connected",
+            )),
+        }
+    }
+    
+    /// Write data to port (for output ports)
+    pub fn write(&mut self, data: &[T; BUF_SIZE]) -> Result<(), Error> {
+        match &mut self.buffer {
+            Some(buffer) => {
+                buffer.write(data);
+                Ok(())
+            }
+            None => Err(Error::new(
+                ErrorCode::BufferEmpty,
+                "Port not connected",
+            )),
+        }
     }
 }
 

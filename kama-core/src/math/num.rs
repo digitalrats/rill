@@ -3,7 +3,7 @@
 //! Этот модуль предоставляет унифицированный интерфейс для работы с числами
 //! с плавающей точкой (f32 и f64) в реальном времени.
 
-use core::ops::{Add, Sub, Mul, Div, Rem, Neg};
+use core::ops::*;
 use core::fmt;
 
 /// Числовой тип для аудио с полной поддержкой арифметических операций
@@ -15,6 +15,10 @@ pub trait AudioNum:
     Div<Output = Self> +
     Rem<Output = Self> +
     Neg<Output = Self> +
+    AddAssign +
+    SubAssign +
+    MulAssign +
+    DivAssign +
     fmt::Debug
 {
     /// Нулевое значение

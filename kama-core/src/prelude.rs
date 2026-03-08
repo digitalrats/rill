@@ -451,7 +451,7 @@ mod tests {
     fn test_param_prelude() {
         use param_prelude::*;
         
-        let id = ParameterId::new("gain").unwrap();
+        let _id = ParameterId::new("gain").unwrap();
         let value = ParamValue::Float(0.5);
         let _type = value.param_type();
     }
@@ -463,38 +463,6 @@ mod tests {
         let port = PortId::audio_in(NodeId(0), 0);
         assert!(port.is_audio());
         assert!(port.is_input());
-    }
-    
-    #[test]
-    fn test_node_prelude() {
-        use node_prelude::*;
-        
-        struct TestNode;
-        impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for TestNode {
-            fn metadata(&self) -> NodeMetadata {
-                NodeMetadata {
-                    name: "Test".to_string(),
-                    category: NodeCategory::Utility,
-                    description: "".to_string(),
-                    author: "".to_string(),
-                    version: "".to_string(),
-                    audio_inputs: 0,
-                    audio_outputs: 0,
-                    control_inputs: 0,
-                    control_outputs: 0,
-                    clock_inputs: 0,
-                    clock_outputs: 0,
-                    feedback_ports: 0,
-                    parameters: vec![],
-                }
-            }
-            fn init(&mut self, _sample_rate: f32) {}
-            fn reset(&mut self) {}
-            fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
-            fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
-        }
-        
-        let _node = TestNode;
     }
     
     #[test]

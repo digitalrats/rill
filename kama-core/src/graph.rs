@@ -61,7 +61,7 @@ pub struct NodeInfo {
     /// Имя узла
     pub name: String,
     /// Тип узла
-    pub node_type: crate::node::NodeType,
+    pub node_type: crate::node::NodeCategory,
     /// Количество входных портов
     pub num_inputs: usize,
     /// Количество выходных портов
@@ -100,7 +100,7 @@ pub trait AudioGraph<T: AudioNum, const BUF_SIZE: usize>: Send + Sync {
     fn process(&mut self) -> Result<()>;
     
     /// Получить состояние узла
-    fn node_state(&self, id: NodeId) -> Option<NodeState<BUF_SIZE>>;
+    fn node_state(&self, id: NodeId) -> Option<NodeState<T,BUF_SIZE>>;
     
     /// Установить параметр узла
     fn set_parameter(&self, node_id: NodeId, name: &str, value: T) -> Result<()>;
@@ -129,7 +129,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphHandle<T, BUF_SIZE> {
     }
     
     /// Получить состояние узла
-    pub fn node_state(&self, id: NodeId) -> Option<NodeState<BUF_SIZE>> {
+    pub fn node_state(&self, id: NodeId) -> Option<NodeState<T,BUF_SIZE>> {
         self.inner.node_state(id)
     }
 }

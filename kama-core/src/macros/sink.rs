@@ -1,78 +1,54 @@
 //! # Макрос для создания активных приёмников (Sink)
-//!
-//! Позволяет быстро создавать узлы-приёмники для вывода звука.
 
 /// Создаёт активный приёмник сигнала
-///
-/// # Пример
-/// ```
-/// use kama_core::macros::sink_node;
-/// use kama_core::math::AudioNum;
-///
-/// sink_node! {
-///     /// Простой выходной узел (заглушка)
-///     pub NullSink<T: AudioNum, const BUF_SIZE: usize>
-///     {
-///         // Параметры (опционально)
-///         params {
-///             volume: T = T::from_f32(1.0),
-///         }
-///         
-///         // Порты (только входные для приёмника)
-///         ports {
-///             audio_in: 1,
-///         }
-///         
-///         // Функция потребления
-///         consume: |this, inputs| {
-///             // Просто игнорируем входные данные
-///             Ok(())
-///         }
-///     }
-/// }
-/// ```
 #[macro_export]
 macro_rules! sink_node {
     (
         $(#[$meta:meta])*
-        $vis:vis $name:ident<$T:ident: $audio_num:path, const $BUF:ident: usize>
+        $vis:vis $struct_name:ident<$T:ident: $audio_num:path, const $BUF:ident: usize>
         $(where $($bounds:tt)*)?
         {
-            $(params $params:tt)?
-            $(ports $ports:tt)?
+            params { $($param_name:ident: $param_ty:ty = $param_default:expr),* $(,)? }
+            $(ports { $($ports:tt)* } )?
             consume: $consume:expr
         }
     ) => {
         #[derive(Debug, Clone)]
-        $vis struct $name<$T: $audio_num, const $BUF: usize>
+        $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
         $(where $($bounds)*)?
         {
-            state: $crate::node::NodeState<$BUF>,
-            id: $crate::node::NodeId,
-            metadata: $crate::node::NodeMetadata,
-            inputs: Vec<$crate::port::Port<$T, $BUF>>,
-            $( $crate::__parse_params!(params $params) )?
+            state: $crate::traits::node::NodeState<T,$BUF>,
+            id: $crate::NodeId,
+            metadata: $crate::NodeMetadata,
+            inputs: Vec<$crate::Port<$T, $BUF>>,
+            $(
+                pub $param_name: $param_ty,
+            )*
         }
         
         impl<$T: $audio_num, const $BUF: usize>
-            $name<$T, $BUF>
+            $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
             pub fn new(sample_rate: f32) -> Self {
-                let metadata = $crate::node::NodeMetadata::new(
-                    stringify!($name),
-                    $crate::node::NodeCategory::Output,
+                let metadata = $crate::NodeMetadata::new(
+                    stringify!($struct_name),
+                    $crate::NodeCategory::Sink,
                 );
                 
                 let mut node = Self {
-                    state: $crate::node::NodeState::new(sample_rate),
-                    id: $crate::node::NodeId(0),
+                    state: $crate::traits::node::NodeState::new(sample_rate),
+                    id: $crate::NodeId(0),
                     metadata,
                     inputs: Vec::new(),
-                    $( $crate::__parse_params_defaults!(params $params) )?
+                    $(
+                        $param_name: $param_default,
+                    )*
                 };
                 
-                $( $crate::__init_ports!(ports $ports, node, inputs) )?;
+                $(
+                    __init_ports!(ports { $($ports)* }, node, inputs)
+                )?;
                 
                 node
             }
@@ -83,68 +59,87 @@ macro_rules! sink_node {
         }
         
         impl<$T: $audio_num, const $BUF: usize>
-            $crate::node::AudioNode<$T, $BUF> for $name<$T, $BUF>
+            $crate::AudioNode<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
-            fn node_type(&self) -> $crate::node::NodeType {
-                $crate::node::NodeType::Sink
+            fn node_type_id(&self) -> $crate::NodeTypeId 
+            where 
+                Self: 'static + Sized 
+            {
+                $crate::NodeTypeId::of::<Self>()
             }
             
-            fn id(&self) -> $crate::node::NodeId {
+            fn id(&self) -> $crate::NodeId {
                 self.id
             }
             
-            fn set_id(&mut self, id: $crate::node::NodeId) {
+            fn set_id(&mut self, id: $crate::NodeId) {
                 self.id = id;
             }
             
-            fn metadata(&self) -> $crate::node::NodeMetadata {
+            fn metadata(&self) -> $crate::NodeMetadata {
                 self.metadata.clone()
             }
             
-            fn init(&mut self, sample_rate: f32) -> $crate::error::Result<()> {
+            fn init(&mut self, sample_rate: f32) {
                 self.state.sample_rate = sample_rate;
-                Ok(())
             }
             
-            fn reset(&mut self) -> $crate::error::Result<()> {
+            fn reset(&mut self) {
                 self.state.sample_pos = 0;
                 self.state.blocks_processed = 0;
-                Ok(())
             }
             
-            fn process(&mut self) -> $crate::error::Result<()> {
-                if !self.state.active {
-                    return Ok(());
+            fn get_parameter(&self, id: &$crate::ParameterId) -> Option<$crate::ParamValue> {
+                let name = id.as_str();
+                match name {
+                    $(
+                        stringify!($param_name) => Some($crate::ParamValue::Float(
+                            <_ as $crate::math::AudioNum>::to_f32(self.$param_name)
+                        )),
+                    )*
+                    _ => None,
                 }
-                
-                ($consume)(self, &self.inputs)?;
-                
-                self.state.advance();
-                Ok(())
             }
             
-            fn input_port(&self, index: usize) -> Option<&$crate::port::Port<$T, $BUF>> {
+            fn set_parameter(&mut self, id: &$crate::ParameterId, value: $crate::ParamValue) -> $crate::ProcessResult<()> {
+                let name = id.as_str();
+                if let Some(v) = value.as_f32() {
+                    match name {
+                        $(
+                            stringify!($param_name) => {
+                                self.$param_name = $crate::math::AudioNum::from_f32(v);
+                                Ok(())
+                            },
+                        )*
+                        _ => Err($crate::ProcessError::parameter(format!("Unknown parameter: {}", name))),
+                    }
+                } else {
+                    Err($crate::ProcessError::parameter("Expected float value"))
+                }
+            }
+            
+            fn input_port(&self, index: usize) -> Option<&$crate::Port<$T, $BUF>> {
                 self.inputs.get(index)
             }
             
-            fn input_port_mut(&mut self, index: usize) -> Option<&mut $crate::port::Port<$T, $BUF>> {
+            fn input_port_mut(&mut self, index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
                 self.inputs.get_mut(index)
             }
             
-            fn output_port(&self, _index: usize) -> Option<&$crate::port::Port<$T, $BUF>> {
+            fn output_port(&self, _index: usize) -> Option<&$crate::Port<$T, $BUF>> {
                 None
             }
             
-            fn output_port_mut(&mut self, _index: usize) -> Option<&mut $crate::port::Port<$T, $BUF>> {
+            fn output_port_mut(&mut self, _index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
                 None
             }
             
-            fn control_port(&self, _index: usize) -> Option<&$crate::port::Port<$T, $BUF>> {
+            fn control_port(&self, _index: usize) -> Option<&$crate::Port<$T, $BUF>> {
                 None
             }
             
-            fn control_port_mut(&mut self, _index: usize) -> Option<&mut $crate::port::Port<$T, $BUF>> {
+            fn control_port_mut(&mut self, _index: usize) -> Option<&mut $crate::Port<$T, $BUF>> {
                 None
             }
             
@@ -154,51 +149,32 @@ macro_rules! sink_node {
             
             fn num_outputs(&self) -> usize { 0 }
             
-            fn num_controls(&self) -> usize { 0 }
-            
-            fn set_parameter(&mut self, name: &str, value: $T) -> $crate::error::Result<()> {
-                $crate::__set_param!($($params)?, self, name, value)
-            }
-            
-            fn get_parameter(&self, name: &str) -> Option<$T> {
-                $crate::__get_param!($($params)?, self, name)
-            }
-            
-            fn parameter_names(&self) -> Vec<&str> {
-                $crate::__param_names!($($params)?)
-            }
-            
-            fn state(&self) -> &$crate::node::NodeState<$BUF> {
+            fn state(&self) -> &$crate::traits::node::NodeState<T,$BUF> {
                 &self.state
             }
             
-            fn state_mut(&mut self) -> &mut $crate::node::NodeState<$BUF> {
+            fn state_mut(&mut self) -> &mut $crate::traits::node::NodeState<T,$BUF> {
                 &mut self.state
             }
         }
         
         impl<$T: $audio_num, const $BUF: usize>
-            $crate::node::Sink<$T, $BUF> for $name<$T, $BUF>
+            $crate::Sink<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
-            fn start(&self, _graph: std::sync::Arc<dyn $crate::graph::AudioGraph<$T, $BUF>>) -> $crate::error::Result<()> {
+            fn consume(
+                &mut self,
+                clock: &$crate::ClockTick,
+                audio_inputs: &[&[$T; $BUF]],
+                control_inputs: &[$T],
+                clock_inputs: &[$crate::ClockTick],
+                feedback_inputs: &[&[$T; $BUF]],
+                control_outputs: &mut [$T],
+                clock_outputs: &mut [$crate::ClockTick],
+            ) -> $crate::ProcessResult<()> {
+                // Передаем только self, внутри замыкания обращаемся к его полям
+                ($consume)(self)?;
                 Ok(())
-            }
-            
-            fn stop(&self) -> $crate::error::Result<()> {
-                Ok(())
-            }
-            
-            fn is_running(&self) -> bool {
-                true
-            }
-            
-            fn sample_rate(&self) -> f32 {
-                self.state.sample_rate
-            }
-            
-            fn sink_name(&self) -> &str {
-                self.metadata.name.as_str()
             }
         }
     };

@@ -640,6 +640,13 @@ impl From<std::io::Error> for ProcessError {
     }
 }
 
+impl From<crate::error::Error> for ProcessError {
+    fn from(err: crate::error::Error) -> Self {
+        Self::Processing(err.to_string())
+    }
+}
+
+
 // ============================================================================
 // Tests
 // ============================================================================

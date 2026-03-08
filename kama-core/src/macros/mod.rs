@@ -3,17 +3,18 @@
 //! Этот модуль предоставляет макросы для упрощения создания
 //! различных типов узлов в Kama Audio.
 
-// Макросы экспортируются на верхний уровень crate
+#[macro_use]
+mod params;
+#[macro_use]
+mod ports;
+
 #[macro_use]
 mod source;
 #[macro_use]
 mod processor;
 #[macro_use]
 mod sink;
-#[macro_use]
-mod params;
-#[macro_use]
-mod ports;
+
 
 mod tests;
 
@@ -24,7 +25,6 @@ pub use crate::{
     sink_node,
     audio_node,
     with_parameters,
-    with_ports,
 };
 
 /// Прелюдия для удобного импорта всех макросов
@@ -35,6 +35,5 @@ pub mod prelude {
         sink_node,
         audio_node,
         with_parameters,
-        with_ports,
     };
 }

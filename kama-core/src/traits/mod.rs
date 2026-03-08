@@ -1,33 +1,12 @@
 //! # Core Traits for Kama Audio
 //!
 //! This module defines the fundamental traits that form the backbone
-//! of the Kama Audio ecosystem. These traits provide a common interface
-//! for all audio nodes, parameters, ports, and time handling.
-//!
-//! ## Architecture
-//!
-//! ```text
-//!                      AudioNode (base trait)
-//!                      /        |        \
-//!                     /         |         \
-//!               Source     Processor     Sink
-//!           (generators)  (processors)  (consumers)
-//! ```
-//!
-//! ## Key Concepts
-//!
-//! - **AudioNode**: Base trait for all nodes in the graph
-//! - **Source**: Active generator (has outputs, no inputs)
-//! - **Processor**: Passive processor (has both inputs and outputs)
-//! - **Sink**: Active consumer (has inputs, no outputs)
-//! - **PortId**: Unique identifier for ports with type and direction
-//! - **ParameterId**: Type-safe parameter identifier
-//! - **Clock**: Time source for synchronization
+//! of the Kama Audio ecosystem.
 
 mod error;
-mod node;
-mod param;
-mod port;
+pub mod node;
+pub mod param;
+pub mod port;
 
 // Re-export all public items
 pub use error::*;
@@ -56,49 +35,6 @@ pub type ControlValue<T> = T;
 // ============================================================================
 
 /// Prelude module for convenient importing of common traits and types
-///
-/// ## Example
-///
-/// ```
-/// use kama_core::traits::prelude::*;
-/// use kama_core::ClockTick;
-///
-/// fn process<T: AudioNum, const BUF_SIZE: usize>(
-///     source: &mut dyn Source<T, BUF_SIZE>,
-///     processor: &mut dyn Processor<T, BUF_SIZE>,
-///     sink: &mut dyn Sink<T, BUF_SIZE>
-/// ) -> ProcessResult<()> {
-///     let clock = ClockTick::default();
-///     
-///     // Создаем отдельные буферы для каждого этапа
-///     let mut source_output = [T::ZERO; BUF_SIZE];
-///     let mut processor_output = [T::ZERO; BUF_SIZE];
-///     
-///     // Source генерирует в source_output
-///     let mut source_outputs = [&mut source_output];
-///     source.generate(&clock, &[], &[], &mut source_outputs)?;
-///     
-///     // Processor читает из source_output и пишет в processor_output
-///     let mut processor_outputs = [&mut processor_output];
-///     processor.process(
-///         &clock,
-///         &[&source_output],  // неизменяемая ссылка на source_output
-///         &[], &[], &[],
-///         &mut processor_outputs,
-///         &mut [], &mut [], &mut []
-///     )?;
-///     
-///     // Sink читает из processor_output
-///     sink.consume(
-///         &clock,
-///         &[&processor_output],  // неизменяемая ссылка на processor_output
-///         &[], &[], &[],
-///         &mut [], &mut []
-///     )?;
-///     
-///     Ok(())
-/// }
-/// ```
 pub mod prelude {
     // Re-export from parent modules
     pub use super::{
@@ -110,13 +46,13 @@ pub mod prelude {
         ParameterResult, ParameterError,
         
         // Node types
-        NodeId, NodeMetadata, NodeCategory, NodeTypeId,
+        NodeId, NodeMetadata, NodeCategory, NodeTypeId, NodeState,
         
         // Parameter handling
         ParameterId, ParamValue, ParamType, ParamRange, ParamMetadata,
         
         // Ports
-        PortId, PortType, PortDirection,
+        PortId, PortType, PortDirection, Port,
         
         // Constants
         DEFAULT_BLOCK_SIZE,
@@ -131,8 +67,6 @@ pub mod prelude {
 // ============================================================================
 
 /// Trait for types that can be converted to/from `ParamValue`
-///
-/// This is useful for automatic parameter conversion in nodes.
 pub trait IntoParamValue: Sized {
     /// Convert this value into a `ParamValue`
     fn into_param_value(self) -> ParamValue;
@@ -188,9 +122,6 @@ impl IntoParamValue for String {
 // ============================================================================
 // Blanket Implementations
 // ============================================================================
-
-// All types that implement AudioNode also implement the base traits
-// This allows for polymorphism in the graph
 
 /// Helper trait for downcasting to concrete types
 pub trait AsAny: 'static {

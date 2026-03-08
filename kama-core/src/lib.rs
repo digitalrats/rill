@@ -30,6 +30,8 @@
 //!
 //! ```rust
 //! use kama_core::prelude::*;
+//! use kama_core::Port;
+//! use kama_core::traits::node;
 //!
 //! // Create a simple sine source
 //! struct MySine<T: AudioNum, const BUF_SIZE: usize> {
@@ -39,7 +41,6 @@
 //!     sample_rate: T,
 //! }
 //!
-//! // 1. Сначала реализуем базовый трейт AudioNode
 //! impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn metadata(&self) -> NodeMetadata {
 //!         NodeMetadata {
@@ -74,9 +75,26 @@
 //!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { 
 //!         Ok(()) 
 //!     }
+//!     
+//!     fn id(&self) -> NodeId { NodeId(0) }
+//!     fn set_id(&mut self, _id: NodeId) {}
+//!     
+//!     fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
+//!     fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
+//!     fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
+//!     fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
+//!     fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
+//!     fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
+//!     
+//!     fn state(&self) -> &node::NodeState<T,BUF_SIZE> {
+//!         unimplemented!()
+//!     }
+//!     
+//!     fn state_mut(&mut self) -> &mut node::NodeState<T,BUF_SIZE> {
+//!         unimplemented!()
+//!     }
 //! }
 //!
-//! // 2. Затем реализуем специализированный трейт Source
 //! impl<T: AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn generate(
 //!         &mut self,
@@ -98,6 +116,10 @@
 //!         }
 //!         Ok(())
 //!     }
+//!     
+//!     fn num_audio_outputs(&self) -> usize { 1 }
+//!     fn num_control_inputs(&self) -> usize { 0 }
+//!     fn num_clock_inputs(&self) -> usize { 1 }
 //! }
 //! ```
 
@@ -105,6 +127,7 @@
 #![deny(unsafe_code)]
 #![cfg_attr(not(test), deny(unused))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(deprecated)]
 
 // ============================================================================
 // Core Modules
@@ -147,9 +170,9 @@ pub use error::*;
 // Re-export core traits
 pub use traits::{
     AudioNode, Source, Processor, Sink,
-    NodeId, NodeMetadata, NodeCategory, NodeTypeId,
+    NodeId, NodeMetadata, NodeCategory, NodeTypeId, NodeState,
     ParameterId, ParamValue, ParamType, ParamRange, ParamMetadata,
-    PortId, PortType, PortDirection,
+    PortId, PortType, PortDirection, Port,
     ProcessResult, ProcessError,
     ParameterResult, ParameterError,
     PortResult, PortError,

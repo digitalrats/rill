@@ -66,7 +66,6 @@ pub trait ClockSource: Send + Sync + fmt::Debug {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::time::SystemClock;
     
     #[test]
