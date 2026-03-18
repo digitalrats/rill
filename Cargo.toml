@@ -2,13 +2,13 @@
 members = [
     "kama-core",
     "kama-core-dsp",
-    "kama-graph",
-    "kama-patchbay",
-    "kama-oscillators",
-    "kama-digital-filters",
-    "kama-digital-effects",
-    "kama-eq",
-    "kama-mixer",
+    #"kama-graph", # Временно отключен
+    #"kama-patchbay", # Временно отключен
+    #"kama-oscillators", # Временно отключен
+    #"kama-digital-filters", # Временно отключен
+    #"kama-digital-effects", # Временно отключен
+    #"kama-eq", # Временно отключен
+    #"kama-mixer", # Временно отключен
     #"kama-lofi", # Временно отключен
     #"kama-io", # Временно отключен 
     #"kama-server" # В разработке
