@@ -140,7 +140,7 @@ queue.send(CommandEnum::SetParameter(SetParameter {
 
 #### time (время)
 
-Абстракции времени и темпа: трейты `Clock` и `TimeProvider`, структуры `SystemClock`, `TickInfo`. Позволяют узлам синхронизироваться с системным временем или внешним темпом.
+Абстракции времени и темпа: трейты `Clock` и `ClockSource`, структуры `SystemClock`, `ClockTick`. Позволяют узлам синхронизироваться с системным временем или внешним темпом.
 
 ```rust
 use kama_core::time::{Clock, SystemClock};

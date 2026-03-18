@@ -41,17 +41,12 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-mod error;
-mod connection;
 mod graph;
 
-pub use error::{GraphError, GraphResult};
-pub use connection::Connection;
 pub use graph::{AudioGraph, GraphStats};
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use crate::{AudioGraph, GraphError, GraphResult};
+    pub use crate::{AudioGraph};
     pub use kama_core::prelude::*;
-    pub use kama_core::queues::{CommandQueue, TelemetryQueue, MicroControlObserver};
 }
