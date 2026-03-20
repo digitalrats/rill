@@ -7,12 +7,14 @@ mod error;
 pub mod node;
 pub mod param;
 pub mod port;
+pub mod processable;
 
 // Re-export all public items
 pub use error::*;
 pub use node::*;
 pub use param::*;
 pub use port::*;
+pub use processable::*;
 
 // ============================================================================
 // Common Type Aliases

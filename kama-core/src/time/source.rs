@@ -5,6 +5,7 @@
 
 use super::tick::ClockTick;
 use super::error::TimeError;
+use crate::time::SystemClock;
 use std::fmt;
 
 /// A source of clock ticks for audio processing
@@ -61,6 +62,16 @@ pub trait ClockSource: Send + Sync + fmt::Debug {
     /// but hardware clocks may provide more accurate information.
     fn current_position(&self) -> u64 {
         0
+    }
+}
+
+impl ClockSource for SystemClock {
+    fn next_tick(&mut self, block_size: usize) -> ClockTick {
+        self.next_tick(block_size)
+    }
+
+    fn sample_rate(&self) -> f32 {
+        self.sample_rate
     }
 }
 

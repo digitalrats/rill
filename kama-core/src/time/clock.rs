@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use super::tick;
 
 // ============================================================================
 // Clock Tick
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Sent to nodes on every audio block to provide timing information
 /// and synchronize processing.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct ClockTick {
     /// Absolute sample position since start
     pub sample_pos: u64,
@@ -32,6 +34,7 @@ pub struct ClockTick {
     pub tempo: Option<f64>,
 }
 
+#[allow(dead_code)]
 impl ClockTick {
     /// Create a new clock tick
     pub fn new(sample_pos: u64, samples_since_last: u32, sample_rate: f32) -> Self {
@@ -114,16 +117,16 @@ impl SystemClock {
     }
     
     /// Get the next tick
-    pub fn next_tick(&mut self, block_size: usize) -> ClockTick {
+    pub fn next_tick(&mut self, block_size: usize) -> tick::ClockTick {
         let samples = block_size as u32;
         let pos = self.position.fetch_add(samples as u64, Ordering::Relaxed);
         
-        ClockTick {
+        tick::ClockTick {
             sample_pos: pos,
             samples_since_last: samples,
             is_new_block: true,
             sample_rate: self.sample_rate,
-            tempo: Some(self.bpm()),
+            tempo: Some(self.bpm() as f32),
         }
     }
     

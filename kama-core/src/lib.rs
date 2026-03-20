@@ -155,6 +155,9 @@ pub mod macros;
 /// Convenience prelude for importing common types
 pub mod prelude;
 
+/// Graph executor for driving audio processing
+pub mod executor;
+
 // ============================================================================
 // Error Types
 // ============================================================================

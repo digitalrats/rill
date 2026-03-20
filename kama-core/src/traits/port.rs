@@ -9,6 +9,8 @@
 use crate::traits::node::NodeId;
 use crate::buffer::PipeBuffer;
 use crate::error::{Error, ErrorCode};
+use crate::traits::error::PortError;
+use crate::time::ClockTick;
 use std::fmt;
 
 // ============================================================================
@@ -389,6 +391,61 @@ impl<T: crate::math::AudioNum, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
                 "Port not connected",
             )),
         }
+    }
+}
+
+// ============================================================================
+// Active Port Trait
+// ============================================================================
+
+/// Trait for ports that can actively pull/push data.
+pub trait ActivePort<T: crate::math::AudioNum, const BUF_SIZE: usize> {
+    /// Pull data from the port (for input ports).
+    ///
+    /// Returns `Some` if data is available, `None` if port is disconnected
+    /// or buffer empty.
+    fn pull(&mut self) -> Option<[T; BUF_SIZE]>;
+
+    /// Push data into the port (for output ports).
+    ///
+    /// Returns `Ok(())` on success, `Err(PortError)` if port is disconnected
+    /// or buffer full.
+    fn push(&mut self, data: [T; BUF_SIZE]) -> Result<(), PortError>;
+
+    /// Check if the port is connected (has a buffer).
+    fn is_connected(&self) -> bool;
+
+    /// Called on each clock tick (optional).
+    fn on_tick(&mut self, _tick: &ClockTick) {
+        // Default implementation does nothing
+    }
+}
+
+impl<T: crate::math::AudioNum, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<T, BUF_SIZE> {
+    #[inline]
+    fn pull(&mut self) -> Option<[T; BUF_SIZE]> {
+        self.buffer.as_ref()?.try_read()
+    }
+
+    #[inline]
+    fn push(&mut self, data: [T; BUF_SIZE]) -> Result<(), PortError> {
+        match &mut self.buffer {
+            Some(buffer) => {
+                buffer.write(&data);
+                Ok(())
+            }
+            None => Err(PortError::NotFound(self.id.to_string())),
+        }
+    }
+
+    #[inline]
+    fn is_connected(&self) -> bool {
+        self.buffer.is_some()
+    }
+
+    #[inline]
+    fn on_tick(&mut self, _tick: &ClockTick) {
+        // Default does nothing
     }
 }
 
