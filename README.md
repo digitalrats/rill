@@ -18,6 +18,7 @@ kama-lofi              # Lo-Fi эмуляция
 kama-io                # аудио ввод-вывод, MIDI
 kama-wdf               # Wave Digital Filters (в разработке)
 kama-server            # OSC-сервер (в разработке)
+kama-sequencer         # секвенсеры (в разработке)
 ```
 
 ## 🎯 Зачем это нужно?
