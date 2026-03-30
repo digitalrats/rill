@@ -28,7 +28,9 @@
 //! fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
 //!     filter.set_cutoff(1000.0);
 //!     filter.set_q(0.707);
-//!     filter.process_sample(input)
+//!     let mut output = [T::ZERO];
+//!     filter.process_block(&[input], &mut output);
+//!     output[0]
 //! }
 //! ```
 //!
@@ -47,7 +49,9 @@
 //! });
 //! lowpass.init(44100.0);
 //!
-//! let output = lowpass.process_sample(0.5);
+//! let mut output = [0.0_f32];
+//! lowpass.process_block(&[0.5], &mut output);
+//! let output = output[0];
 //! ```
 //!
 //! ### Создание параметрического эквалайзера
@@ -74,21 +78,21 @@
 //! ```
 
 mod biquad;
-mod one_pole;
-mod svf;
 mod butterworth;
 mod chebyshev;
 mod comb;
+mod one_pole;
+mod svf;
 
 pub use biquad::Biquad;
-pub use one_pole::OnePole;
-pub use svf::StateVariableFilter;
 pub use butterworth::Butterworth;
 pub use chebyshev::{ChebyshevI, ChebyshevII, ChebyshevParams};
 pub use comb::CombFilter;
+pub use one_pole::OnePole;
+pub use svf::StateVariableFilter;
 
+use crate::algorithm::{Algorithm, AlgorithmMetadata, ParameterizedAlgorithm};
 use kama_core::AudioNum;
-use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata};
 
 /// Общий тип параметров для всех фильтров
 ///
@@ -101,20 +105,20 @@ use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata};
 pub struct FilterParams {
     /// Тип фильтра
     pub filter_type: FilterType,
-    
+
     /// Частота среза/центральная частота (Hz)
     ///
     /// Для LowPass/HighPass: частота среза -3dB
     /// Для BandPass/Notch: центральная частота
     /// Для Peak/Shelf: центральная частота
     pub cutoff: f32,
-    
+
     /// Добротность (0.1 - 20.0)
     ///
     /// Определяет ширину полосы фильтра. Большие значения = более узкая полоса.
     /// Для LowPass/HighPass влияет на резонанс на частоте среза.
     pub q: f32,
-    
+
     /// Усиление в dB (для peak/shelving фильтров)
     ///
     /// Положительные значения = усиление, отрицательные = ослабление.
@@ -133,46 +137,46 @@ pub enum FilterType {
     /// Используется для сглаживания, удаления высокочастотного шума,
     /// в субтрактивном синтезе (VCF).
     LowPass,
-    
+
     /// Фильтр верхних частот (High-Pass)
     ///
     /// Пропускает частоты выше частоты среза, ослабляет ниже.
     /// Используется для удаления постоянной составляющей, рокот-фильтр,
     /// выделения верхних гармоник.
     HighPass,
-    
+
     /// Полосовой фильтр (Band-Pass)
     ///
     /// Пропускает только полосу вокруг центральной частоты.
     /// Используется для выделения полосы частот, формантных фильтров,
     /// анализа сигналов.
     BandPass,
-    
+
     /// Режекторный фильтр (Notch)
     ///
     /// Подавляет узкую полосу вокруг центральной частоты.
     /// Используется для удаления сетевой помехи 50/60Hz,
     /// подавления обратной связи, создания эффекта флэнджер.
     Notch,
-    
+
     /// Пиковый фильтр (Peak)
     ///
     /// Усиливает или ослабляет полосу вокруг центральной частоты.
     /// Основной элемент параметрического эквалайзера.
     Peak,
-    
+
     /// Полочный фильтр низких частот (Low-Shelf)
     ///
     /// Усиливает или ослабляет все частоты ниже частоты среза.
     /// Используется для тонального контроля (басы), коррекции АЧХ.
     LowShelf,
-    
+
     /// Полочный фильтр высоких частот (High-Shelf)
     ///
     /// Усиливает или ослабляет все частоты выше частоты среза.
     /// Используется для тонального контроля (высокие), уменьшения шипения.
     HighShelf,
-    
+
     /// Всепропускающий фильтр (All-Pass)
     ///
     /// Меняет фазу сигнала, не меняя амплитуду.
@@ -202,7 +206,7 @@ impl FilterType {
             FilterType::AllPass => "allpass",
         }
     }
-    
+
     /// Получить человеко-читаемое описание типа фильтра
     pub const fn description(&self) -> &'static str {
         match self {
@@ -216,57 +220,65 @@ impl FilterType {
             FilterType::AllPass => "Всепропускающий фильтр",
         }
     }
-    
+
     /// Получить рекомендации по применению
     pub const fn usage(&self) -> &'static str {
         match self {
-            FilterType::LowPass => 
+            FilterType::LowPass => {
                 "• Субтрактивный синтез (VCF)\n\
                  • Сглаживание сигналов\n\
                  • Anti-aliasing перед децимацией\n\
-                 • Удаление высокочастотного шума",
-            
-            FilterType::HighPass => 
+                 • Удаление высокочастотного шума"
+            }
+
+            FilterType::HighPass => {
                 "• Удаление постоянной составляющей (DC)\n\
                  • Фильтрация рокот (rumble filter)\n\
                  • Выделение верхних гармоник\n\
-                 • Side-chain компрессия",
-            
-            FilterType::BandPass => 
+                 • Side-chain компрессия"
+            }
+
+            FilterType::BandPass => {
                 "• Выделение полосы частот\n\
                  • Формантные фильтры (вокал)\n\
                  • Анализ сигналов (спектр)\n\
-                 • Эффект \"телефонного\" звука",
-            
-            FilterType::Notch => 
+                 • Эффект \"телефонного\" звука"
+            }
+
+            FilterType::Notch => {
                 "• Удаление сетевой помехи 50/60Hz\n\
                  • Подавление обратной связи (feedback)\n\
                  • Удаление резонансных частот\n\
-                 • Создание эффекта \"флэнджер\"",
-            
-            FilterType::Peak => 
+                 • Создание эффекта \"флэнджер\""
+            }
+
+            FilterType::Peak => {
                 "• Параметрический эквалайзер\n\
                  • Коррекция частотных характеристик\n\
                  • Выделение/подавление инструментов\n\
-                 • Мастеринг",
-            
-            FilterType::LowShelf => 
+                 • Мастеринг"
+            }
+
+            FilterType::LowShelf => {
                 "• Тональный контроль (bass)\n\
                  • Коррекция АЧХ наушников\n\
                  • Усиление низких частот\n\
-                 • RIAA коррекция",
-            
-            FilterType::HighShelf => 
+                 • RIAA коррекция"
+            }
+
+            FilterType::HighShelf => {
                 "• Тональный контроль (treble)\n\
                  • Коррекция высоких частот\n\
                  • Уменьшение шипения\n\
-                 • Компенсация потерь в кабелях",
-            
-            FilterType::AllPass => 
+                 • Компенсация потерь в кабелях"
+            }
+
+            FilterType::AllPass => {
                 "• Фазовращатели (phaser)\n\
                  • Выравнивание групповой задержки\n\
                  • Создание эффектов (flanger)\n\
-                 • Коррекция фазы в кроссоверах",
+                 • Коррекция фазы в кроссоверах"
+            }
         }
     }
 }
@@ -285,7 +297,9 @@ impl FilterType {
 /// fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
 ///     filter.set_cutoff(1000.0);
 ///     filter.set_q(0.707);
-///     filter.process_sample(input)
+///     let mut output = [T::ZERO];
+///     filter.process_block(&[input], &mut output);
+///     output[0]
 /// }
 /// ```
 pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> {
@@ -298,12 +312,12 @@ pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> 
         params.cutoff = cutoff;
         self.set_params(params);
     }
-    
+
     /// Получить текущую частоту среза
     fn cutoff(&self) -> f32 {
         self.params().cutoff
     }
-    
+
     /// Установить добротность (Q-фактор)
     ///
     /// # Arguments
@@ -313,12 +327,12 @@ pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> 
         params.q = q;
         self.set_params(params);
     }
-    
+
     /// Получить текущую добротность
     fn q(&self) -> f32 {
         self.params().q
     }
-    
+
     /// Установить усиление (для peak/shelving фильтров)
     ///
     /// # Arguments
@@ -328,12 +342,12 @@ pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> 
         params.gain_db = gain;
         self.set_params(params);
     }
-    
+
     /// Получить текущее усиление в dB
     fn gain_db(&self) -> f32 {
         self.params().gain_db
     }
-    
+
     /// Получить тип фильтра
     fn filter_type(&self) -> FilterType {
         self.params().filter_type
@@ -373,7 +387,7 @@ impl FilterComparison {
          └────────────────┴────────────┴──────────────┘\n\
          * Biquad может быть каскадирован для более высоких порядков"
     }
-    
+
     /// Рекомендации по выбору фильтра
     pub fn selection_guide() -> &'static str {
         "Как выбрать фильтр:\n\n\
@@ -392,7 +406,7 @@ impl FilterComparison {
          → CombFilter - гребенчатые структуры\n\
          → AllPass - диффузия"
     }
-    
+
     /// Характеристики вычислительной сложности
     pub fn performance_guide() -> &'static str {
         "Производительность (относительная):\n\
@@ -408,7 +422,6 @@ impl FilterComparison {
 // =============================================================================
 // Примеры использования (doctests) с правильными импортами
 // =============================================================================
-
 
 #[cfg(doctest)]
 mod examples {
@@ -430,7 +443,9 @@ mod examples {
     /// // Сглаживаем резкие изменения
     /// let mut smoothed = 0.0;
     /// for _ in 0..1000 {
-    ///     smoothed = smooth.process_sample(1.0);
+    ///     let mut out = [0.0_f32];
+    ///     smooth.process_block(&[1.0], &mut out);
+    ///     smoothed = out[0];
     /// }
     /// // После 1000 итераций значение должно быть близко к 1.0
     /// # assert!((smoothed - 1.0).abs() < 0.1);
@@ -446,7 +461,8 @@ mod examples {
     ///
     /// // Прогреваем фильтр
     /// for _ in 0..1000 {
-    ///     let _ = peq.process_sample(0.0);
+    ///     let mut out = [0.0_f32];
+    ///     peq.process_block(&[0.0], &mut out);
     /// }
     ///
     /// // Генерируем синусоиду на частоте фильтра
@@ -459,7 +475,9 @@ mod examples {
     /// let mut max_output = 0.0;
     /// for _ in 0..1000 {
     ///     let input = amplitude * phase.sin();
-    ///     let output = peq.process_sample(input);
+    ///     let mut out = [0.0_f32];
+    ///     peq.process_block(&[input], &mut out);
+    ///     let output = out[0];
     ///     max_output = max_output.max(output.abs());
     ///     phase += phase_inc;
     ///     if phase > 2.0 * PI {
@@ -470,8 +488,8 @@ mod examples {
     /// // Пиковый фильтр с +6dB должен усиливать сигнал на частоте фильтра
     /// // Используем допуск из-за численных ошибок
     /// let epsilon = 1e-4;
-    /// # assert!(max_output + epsilon > amplitude, 
-    /// #     "Max output ({:.6}) should be greater than or close to input amplitude ({:.6})", 
+    /// # assert!(max_output + epsilon > amplitude,
+    /// #     "Max output ({:.6}) should be greater than or close to input amplitude ({:.6})",
     /// #     max_output, amplitude);
     /// # assert!(max_output < 1.0, "Max output ({}) should be less than 1.0", max_output);
     ///
@@ -485,7 +503,9 @@ mod examples {
     /// svf.init(44100.0);
     ///
     /// let input = 0.5;
-    /// let lp = svf.process_sample(input);
+    /// let mut out = [0.0_f32];
+    /// svf.process_block(&[input], &mut out);
+    /// let lp = out[0];
     /// let hp = svf.highpass();
     /// let bp = svf.bandpass();
     /// ```
@@ -521,21 +541,21 @@ mod examples {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_filter_type_descriptions() {
         assert_eq!(FilterType::LowPass.as_str(), "lowpass");
         assert!(!FilterType::LowPass.description().is_empty());
         assert!(!FilterType::LowPass.usage().is_empty());
     }
-    
+
     #[test]
     fn test_comparison_guide() {
         assert!(!FilterComparison::rolloff_comparison().is_empty());
         assert!(!FilterComparison::selection_guide().is_empty());
         assert!(!FilterComparison::performance_guide().is_empty());
     }
-    
+
     #[test]
     fn test_filter_params_clone() {
         let params = FilterParams {

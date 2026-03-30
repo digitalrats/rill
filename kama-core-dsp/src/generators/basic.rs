@@ -171,9 +171,9 @@ impl<T: AudioNum> BasicOscillator<T> {
     }
 
     /// Основной метод генерации семпла
-    fn generate(&mut self) -> T {
+    pub(crate) fn generate(&mut self) -> ScalarVector1<T> {
         // Применяем FM модуляцию если есть
-        let effective_inc = self.phase_inc.add(&self.fm_amount);
+        let effective_inc = self.phase_inc + self.fm_amount;
 
         // Генерируем семпл в зависимости от формы волны
         let output_vec = match self.waveform {
@@ -185,14 +185,14 @@ impl<T: AudioNum> BasicOscillator<T> {
         };
 
         // Обновляем фазу
-        self.phase = self.phase.add(&effective_inc);
-        let one_vec = ScalarVector1::splat(T::from_f32(1.0));
-        if self.phase.extract(0) >= one_vec.extract(0) {
-            self.phase = self.phase.sub(&one_vec);
+        self.phase = self.phase + effective_inc;
+        let one = ScalarVector1::splat(T::from_f32(1.0));
+        if self.phase.extract(0) >= one.extract(0) {
+            self.phase = self.phase - one;
             self.periods += 1;
         }
 
-        output_vec.extract(0)
+        output_vec
     }
 
     /// Сбросить фазу в 0
@@ -235,8 +235,10 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
         self.fm_amount = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_sample(&mut self, _input: T) -> T {
-        self.generate()
+    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+        for out in output.iter_mut() {
+            *out = self.generate().extract(0);
+        }
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -352,11 +354,14 @@ mod tests {
         osc.init(44100.0);
 
         // Первый семпл должен быть 0
-        let sample1 = osc.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        osc.process_block(&[], &mut output);
+        let sample1 = output[0];
         assert!(approx_eq!(f32, sample1, 0.0, epsilon = 1e-6));
 
         // Второй семпл должен быть не 0
-        let sample2 = osc.process_sample(0.0);
+        osc.process_block(&[], &mut output);
+        let sample2 = output[0];
         assert!(sample2 != 0.0);
         assert!(sample2 >= -0.5 && sample2 <= 0.5);
     }
@@ -366,7 +371,9 @@ mod tests {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Saw, 440.0, 0.5);
         osc.init(44100.0);
 
-        let sample = osc.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        osc.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -0.5 && sample <= 0.5);
     }
 
@@ -375,7 +382,9 @@ mod tests {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Square, 440.0, 0.5);
         osc.init(44100.0);
 
-        let sample = osc.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        osc.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample == 0.5 || sample == -0.5);
     }
 
@@ -384,7 +393,9 @@ mod tests {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Triangle, 440.0, 0.5);
         osc.init(44100.0);
 
-        let sample = osc.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        osc.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -0.5 && sample <= 0.5);
     }
 
@@ -393,7 +404,9 @@ mod tests {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Pulse(0.25), 440.0, 0.5);
         osc.init(44100.0);
 
-        let sample = osc.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        osc.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample == 0.5); // При фазе 0 должен быть положительный импульс
     }
 
@@ -425,7 +438,9 @@ mod tests {
         osc.init(44100.0);
 
         osc.set_phase(0.25); // π/2
-        let sample = osc.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        osc.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(approx_eq!(f32, sample, 1.0, epsilon = 1e-4)); // sin(π/2) = 1
     }
 
@@ -438,7 +453,9 @@ mod tests {
         assert_eq!(osc.modulation_index(), 0.5);
 
         // Проверяем, что модуляция применяется
-        let sample = osc.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        osc.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
 

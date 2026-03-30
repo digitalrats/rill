@@ -38,7 +38,9 @@ use kama_core::AudioNum;
 /// fm.init(44100.0);
 ///
 /// // Генерируем семпл
-/// let sample = fm.process_sample(0.0);
+/// let mut output = [0.0_f32];
+/// fm.process_block(&[0.0], &mut output);
+/// let sample = output[0];
 /// ```
 #[derive(Clone, Copy)]
 pub struct SimpleFmSynth<T: AudioNum> {
@@ -134,16 +136,18 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
         self.modulator.reset();
     }
 
-    fn process_sample(&mut self, _input: T) -> T {
-        // Получаем модулирующий сигнал
-        let mod_signal = self.modulator.process_sample(T::ZERO);
+    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+        for out in output.iter_mut() {
+            // Получаем модулирующий сигнал
+            let mod_signal = self.modulator.generate().extract(0);
 
-        // Модулируем частоту несущей
-        self.carrier
-            .modulate_frequency(mod_signal.mul(self.modulation_index.extract(0)));
+            // Модулируем частоту несущей
+            self.carrier
+                .modulate_frequency(mod_signal * self.modulation_index.extract(0));
 
-        // Возвращаем сигнал несущей
-        self.carrier.process_sample(T::ZERO)
+            // Возвращаем сигнал несущей
+            *out = self.carrier.generate().extract(0);
+        }
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -342,33 +346,35 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
         self.reset_all();
     }
 
-    fn process_sample(&mut self, _input: T) -> T {
-        // Сохраняем текущие значения всех операторов
-        let mut values = [T::ZERO; N];
-        for i in 0..N {
-            values[i] = self.operators[i].process_sample(T::ZERO);
-        }
+    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+        for out in output.iter_mut() {
+            // Сохраняем текущие значения всех операторов
+            let mut values = [T::ZERO; N];
+            for i in 0..N {
+                values[i] = self.operators[i].generate().extract(0);
+            }
 
-        // Применяем модуляцию согласно алгоритму
-        for i in 0..N {
-            let mut mod_sum = T::ZERO;
+            // Применяем модуляцию согласно алгоритму
+            for i in 0..N {
+                let mut mod_sum = T::ZERO;
 
-            // Суммируем все модуляции для этого оператора
-            for j in 0..N {
-                if self.algorithm[i][j] {
-                    mod_sum = mod_sum.add(values[j].mul(self.modulation_indices[j].extract(0)));
+                // Суммируем все модуляции для этого оператора
+                for j in 0..N {
+                    if self.algorithm[i][j] {
+                        mod_sum = mod_sum + values[j] * self.modulation_indices[j].extract(0);
+                    }
+                }
+
+                // Применяем модуляцию, если есть
+                if mod_sum != T::ZERO {
+                    self.operators[i].modulate_frequency(mod_sum);
                 }
             }
 
-            // Применяем модуляцию, если есть
-            if mod_sum != T::ZERO {
-                self.operators[i].modulate_frequency(mod_sum);
-            }
+            // Последний оператор даёт выходной сигнал
+            // (в классической FM архитектуре)
+            *out = values[N - 1];
         }
-
-        // Последний оператор даёт выходной сигнал
-        // (в классической FM архитектуре)
-        values[N - 1]
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -511,7 +517,9 @@ mod tests {
         let mut fm = SimpleFmSynth::<f32>::new(440.0, 2.0, 1.5);
         fm.init(44100.0);
 
-        let sample = fm.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        fm.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
 
@@ -522,7 +530,9 @@ mod tests {
             .with_modulator_waveform(Waveform::Square);
         fm.init(44100.0);
 
-        let sample = fm.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        fm.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
 
@@ -551,7 +561,9 @@ mod tests {
         let mut fm = FmSynth::<f32, 4>::new(frequencies, algorithms_4op::ALGORITHM_1);
         fm.init(44100.0);
 
-        let sample = fm.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        fm.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
 
@@ -561,7 +573,9 @@ mod tests {
         let mut fm = FmSynth::<f32, 6>::new(frequencies, algorithms_6op::ALGORITHM_1);
         fm.init(44100.0);
 
-        let sample = fm.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        fm.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
 
@@ -576,7 +590,9 @@ mod tests {
         fm.set_waveform(0, Waveform::Saw);
         fm.set_waveform(1, Waveform::Square);
 
-        let sample = fm.process_sample(0.0);
+        let mut output = [0.0f32; 1];
+        fm.process_block(&[], &mut output);
+        let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
 

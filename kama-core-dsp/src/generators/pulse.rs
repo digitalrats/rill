@@ -1,23 +1,24 @@
 //! Pulse wave генератор с PWM (Pulse Width Modulation)
 
-use kama_core::AudioNum;
-use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
 use super::Generator;
+use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use crate::vector::{ScalarVector1, Vector};
+use kama_core::AudioNum;
 
 /// Pulse wave генератор с PWM
 pub struct PulseOscillator<T: AudioNum> {
     /// Базовая частота
     frequency: f32,
     /// Амплитуда
-    amplitude: T,
+    amplitude: ScalarVector1<T>,
     /// Ширина импульса (0..1)
-    pulse_width: T,
+    pulse_width: ScalarVector1<T>,
     /// Модуляция ширины (PWM)
-    pwm_amount: T,
+    pwm_amount: ScalarVector1<T>,
     /// Текущая фаза
-    phase: T,
+    phase: ScalarVector1<T>,
     /// Инкремент фазы
-    phase_inc: T,
+    phase_inc: ScalarVector1<T>,
     /// Частота дискретизации
     sample_rate: f32,
 }
@@ -27,64 +28,67 @@ impl<T: AudioNum> PulseOscillator<T> {
     pub fn new(frequency: f32, pulse_width: T) -> Self {
         let mut osc = Self {
             frequency,
-            amplitude: T::from_f32(1.0),
-            pulse_width: pulse_width.clamp(T::ZERO, T::from_f32(1.0)),
-            pwm_amount: T::ZERO,
-            phase: T::ZERO,
-            phase_inc: T::ZERO,
+            amplitude: ScalarVector1::splat(T::from_f32(1.0)),
+            pulse_width: ScalarVector1::splat(pulse_width.clamp(T::ZERO, T::from_f32(1.0))),
+            pwm_amount: ScalarVector1::splat(T::ZERO),
+            phase: ScalarVector1::splat(T::ZERO),
+            phase_inc: ScalarVector1::splat(T::ZERO),
             sample_rate: 44100.0,
         };
         osc.update_phase_inc();
         osc
     }
-    
+
     fn update_phase_inc(&mut self) {
-        self.phase_inc = T::from_f32(self.frequency / self.sample_rate);
+        self.phase_inc = ScalarVector1::splat(T::from_f32(self.frequency / self.sample_rate));
     }
-    
+
     /// Установить ширину импульса
     pub fn set_pulse_width(&mut self, width: T) {
-        self.pulse_width = width.clamp(T::from_f32(0.01), T::from_f32(0.99));
+        self.pulse_width = ScalarVector1::splat(width.clamp(T::from_f32(0.01), T::from_f32(0.99)));
     }
-    
+
     /// Установить глубину PWM
     pub fn set_pwm_amount(&mut self, amount: T) {
         self.pwm_amount = amount.clamp(T::ZERO, T::from_f32(1.0));
     }
-    
+
     /// Применить внешнюю модуляцию к ширине импульса
     pub fn modulate_pulse_width(&mut self, modulation: T) -> T {
-        let modulated = self.pulse_width.add(modulation.mul(self.pwm_amount));
+        let modulated = self.pulse_width.extract(0) + modulation * self.pwm_amount.extract(0);
         modulated.clamp(T::from_f32(0.01), T::from_f32(0.99))
     }
-    
+
     /// Anti-aliased pulse wave
     fn generate_pulse(&mut self, width: T) -> T {
-        let raw = if self.phase.to_f32() < width.to_f32() {
-            self.amplitude
+        let phase = self.phase.extract(0);
+        let amplitude = self.amplitude.extract(0);
+        let inc = self.phase_inc.extract(0);
+
+        let raw = if phase.to_f32() < width.to_f32() {
+            amplitude
         } else {
-            self.amplitude.neg()
+            amplitude.neg()
         };
-        
+
         // Blep коррекция для обоих фронтов
-        let inc = self.phase_inc;
-        let next_phase = self.phase.add(inc);
-        
+        let next_phase = phase + inc;
+
         let mut blep = T::ZERO;
-        
+
         // Восходящий фронт
-        if self.phase < width && next_phase >= width {
-            let t = width.sub(self.phase).div(inc);
-            blep = blep.add(T::from_f32(2.0).mul(t).sub(T::from_f32(1.0)));
+        if phase < width && next_phase >= width {
+            let t = (width - phase) / inc;
+            blep = blep + T::from_f32(2.0) * t - T::from_f32(1.0);
         }
-        
+
         // Нисходящий фронт (при переполнении фазы)
         if next_phase.to_f32() >= 1.0 {
-            let t = T::from_f32(1.0).sub(self.phase).div(inc);
-            blep = blep.sub(T::from_f32(2.0).mul(t).sub(T::from_f32(1.0)));
+            let t = (T::from_f32(1.0) - phase) / inc;
+            blep = blep - (T::from_f32(2.0) * t - T::from_f32(1.0));
         }
-        
-        raw.add(blep.mul(self.amplitude))
+
+        raw + blep * amplitude
     }
 }
 
@@ -92,25 +96,31 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_phase_inc();
-        self.phase = T::ZERO;
+        self.phase = ScalarVector1::splat(T::ZERO);
     }
-    
+
     fn reset(&mut self) {
-        self.phase = T::ZERO;
+        self.phase = ScalarVector1::splat(T::ZERO);
     }
-    
-    fn process_sample(&mut self, modulation: T) -> T {
-        let width = self.modulate_pulse_width(modulation);
-        let output = self.generate_pulse(width);
-        
-        self.phase = self.phase.add(self.phase_inc);
-        if self.phase.to_f32() >= 1.0 {
-            self.phase = self.phase.sub(T::from_f32(1.0));
+
+    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+        let len = input.len().min(output.len());
+
+        for i in 0..len {
+            let modulation = input[i];
+            let width = self.modulate_pulse_width(modulation);
+            let sample = self.generate_pulse(width);
+
+            output[i] = sample;
+
+            // Обновляем фазу
+            self.phase = self.phase + self.phase_inc;
+            if self.phase.extract(0).to_f32() >= 1.0 {
+                self.phase = self.phase - ScalarVector1::splat(T::from_f32(1.0));
+            }
         }
-        
-        output
     }
-    
+
     fn metadata(&self) -> AlgorithmMetadata {
         AlgorithmMetadata {
             name: "Pulse Oscillator",
@@ -123,13 +133,23 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
 }
 
 impl<T: AudioNum> Generator<T> for PulseOscillator<T> {
-    fn phase(&self) -> T { self.phase }
-    fn set_phase(&mut self, phase: T) { self.phase = phase; }
-    fn frequency(&self) -> f32 { self.frequency }
-    fn set_frequency(&mut self, freq: f32) { 
+    fn phase(&self) -> T {
+        self.phase.extract(0)
+    }
+    fn set_phase(&mut self, phase: T) {
+        self.phase = ScalarVector1::splat(phase);
+    }
+    fn frequency(&self) -> f32 {
+        self.frequency
+    }
+    fn set_frequency(&mut self, freq: f32) {
         self.frequency = freq;
         self.update_phase_inc();
     }
-    fn amplitude(&self) -> T { self.amplitude }
-    fn set_amplitude(&mut self, amp: T) { self.amplitude = amp; }
+    fn amplitude(&self) -> T {
+        self.amplitude.extract(0)
+    }
+    fn set_amplitude(&mut self, amp: T) {
+        self.amplitude = ScalarVector1::splat(amp);
+    }
 }

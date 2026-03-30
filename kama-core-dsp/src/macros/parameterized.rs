@@ -90,12 +90,12 @@ macro_rules! parameterized_algorithm {
                 $(#[$param_meta])*
                 pub $param_name: $param_type,
             )*
-            
+
             $(
                 $(#[$state_meta])*
                 pub $state_name: $state_type,
             )*
-            
+
             /// Частота дискретизации
             pub sample_rate: f32,
         }
@@ -109,7 +109,7 @@ macro_rules! parameterized_algorithm {
                     sample_rate: 44100.0,
                 }
             }
-            
+
             /// Обновить внутренние коэффициенты
             pub fn update_coeffs(&mut self) {
                 let update_fn: fn(&mut Self) = $update;
@@ -125,18 +125,21 @@ macro_rules! parameterized_algorithm {
                 self.sample_rate = sample_rate;
                 self.update_coeffs();
             }
-            
+
             fn reset(&mut self) {
                 $(
                     self.$state_name = $state_default;
                 )*
             }
-            
-            fn process_sample(&mut self, input: T) -> T {
+
+            fn process_block(&mut self, input: &[T], output: &mut [T]) {
+                let len = input.len().min(output.len());
                 let process_fn: fn(&mut Self, T) -> T = $process;
-                process_fn(self, input)
+                for i in 0..len {
+                    output[i] = process_fn(self, input[i]);
+                }
             }
-            
+
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {
                 $crate::algorithm::AlgorithmMetadata {
                     name: stringify!($name),

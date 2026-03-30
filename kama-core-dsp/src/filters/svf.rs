@@ -5,10 +5,11 @@
 //! - Стабилен при высоких резонансах
 //! - Идеален для аналоговой эмуляции
 
-use kama_core::AudioNum;
 use super::{Filter, FilterParams, FilterType};
-use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
+use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::vector::{ScalarVector1, Vector};
 use core::f32::consts::PI;
+use kama_core::AudioNum;
 
 /// Фильтр переменных состояния
 ///
@@ -20,14 +21,14 @@ pub struct StateVariableFilter<T: AudioNum> {
     /// Параметры фильтра
     params: FilterParams,
     /// Коэффициенты
-    f: T,      // частота
-    q: T,      // резонанс
+    f: ScalarVector1<T>, // частота
+    q: ScalarVector1<T>, // резонанс
     /// Состояние
-    lp: T,     // low-pass выход
-    hp: T,     // high-pass выход
-    bp: T,     // band-pass выход
+    lp: ScalarVector1<T>, // low-pass выход
+    hp: ScalarVector1<T>, // high-pass выход
+    bp: ScalarVector1<T>, // band-pass выход
     /// Предыдущий вход (для задержки)
-    x1: T,
+    x1: ScalarVector1<T>,
     /// Частота дискретизации
     sample_rate: f32,
 }
@@ -37,38 +38,40 @@ impl<T: AudioNum> StateVariableFilter<T> {
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
             params,
-            f: T::ZERO,
-            q: T::ZERO,
-            lp: T::ZERO,
-            hp: T::ZERO,
-            bp: T::ZERO,
-            x1: T::ZERO,
+            f: ScalarVector1::splat(T::ZERO),
+            q: ScalarVector1::splat(T::ZERO),
+            lp: ScalarVector1::splat(T::ZERO),
+            hp: ScalarVector1::splat(T::ZERO),
+            bp: ScalarVector1::splat(T::ZERO),
+            x1: ScalarVector1::splat(T::ZERO),
             sample_rate: 44100.0,
         };
         filter.update_coeffs();
         filter
     }
-    
+
     /// Обновить коэффициенты
     fn update_coeffs(&mut self) {
         // f = 2 * sin(π * cutoff / sample_rate)
-        self.f = T::from_f32(2.0 * (PI * self.params.cutoff / self.sample_rate).sin());
-        self.q = T::from_f32(self.params.q);
+        self.f = ScalarVector1::splat(T::from_f32(
+            2.0 * (PI * self.params.cutoff / self.sample_rate).sin(),
+        ));
+        self.q = ScalarVector1::splat(T::from_f32(self.params.q));
     }
-    
+
     /// Получить low-pass выход
     pub fn lowpass(&self) -> T {
-        self.lp
+        self.lp.extract(0)
     }
-    
+
     /// Получить high-pass выход
     pub fn highpass(&self) -> T {
-        self.hp
+        self.hp.extract(0)
     }
-    
+
     /// Получить band-pass выход
     pub fn bandpass(&self) -> T {
-        self.bp
+        self.bp.extract(0)
     }
 }
 
@@ -78,32 +81,32 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
         self.update_coeffs();
         self.reset();
     }
-    
+
     fn reset(&mut self) {
-        self.lp = T::ZERO;
-        self.hp = T::ZERO;
-        self.bp = T::ZERO;
-        self.x1 = T::ZERO;
+        self.lp = ScalarVector1::splat(T::ZERO);
+        self.hp = ScalarVector1::splat(T::ZERO);
+        self.bp = ScalarVector1::splat(T::ZERO);
+        self.x1 = ScalarVector1::splat(T::ZERO);
     }
-    
-    fn process_sample(&mut self, input: T) -> T {
-        // SVF алгоритм (Chamberlin)
-        // lp = lp + f * bp
-        // hp = input - lp - q * bp
-        // bp = f * hp + bp
-        
-        self.lp = self.lp.add(self.f.mul(self.bp));
-        self.hp = input.sub(self.lp).sub(self.q.mul(self.bp));
-        self.bp = self.f.mul(self.hp).add(self.bp);
-        
-        match self.params.filter_type {
-            FilterType::LowPass => self.lp,
-            FilterType::HighPass => self.hp,
-            FilterType::BandPass => self.bp,
-            _ => self.lp, // по умолчанию low-pass
+
+    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+        let len = input.len().min(output.len());
+
+        for i in 0..len {
+            let input_vec = ScalarVector1::splat(input[i]);
+            self.lp = self.lp + self.f * self.bp;
+            self.hp = input_vec - self.lp - self.q * self.bp;
+            self.bp = self.f * self.hp + self.bp;
+
+            output[i] = match self.params.filter_type {
+                FilterType::LowPass => self.lp.extract(0),
+                FilterType::HighPass => self.hp.extract(0),
+                FilterType::BandPass => self.bp.extract(0),
+                _ => self.lp.extract(0), // по умолчанию low-pass
+            };
         }
     }
-    
+
     fn metadata(&self) -> AlgorithmMetadata {
         AlgorithmMetadata {
             name: "State Variable Filter",
@@ -117,11 +120,11 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
 
 impl<T: AudioNum> ParameterizedAlgorithm<T> for StateVariableFilter<T> {
     type Params = FilterParams;
-    
+
     fn params(&self) -> &Self::Params {
         &self.params
     }
-    
+
     fn set_params(&mut self, params: Self::Params) {
         self.params = params;
         self.update_coeffs();

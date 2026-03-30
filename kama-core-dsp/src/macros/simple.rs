@@ -79,7 +79,7 @@ macro_rules! simple_algorithm {
                 $(#[$param_meta])*
                 pub $param_name: $param_type,
             )*
-            
+
             $(
                 $(#[$state_meta])*
                 pub $state_name: $state_type,
@@ -101,25 +101,21 @@ macro_rules! simple_algorithm {
             T: kama_core::math::AudioNum,
         {
             fn init(&mut self, _sample_rate: f32) {}
-            
+
             fn reset(&mut self) {
                 $(
                     self.$state_name = $state_default;
                 )*
             }
-            
-            fn process_sample(&mut self, input: T) -> T {
-                let process_fn: fn(&mut Self, T) -> T = $process;
-                process_fn(self, input)
-            }
-            
+
             fn process_block(&mut self, input: &[T], output: &mut [T]) {
                 let len = input.len().min(output.len());
+                let process_fn: fn(&mut Self, T) -> T = $process;
                 for i in 0..len {
-                    output[i] = self.process_sample(input[i]);
+                    output[i] = process_fn(self, input[i]);
                 }
             }
-            
+
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {
                 $crate::algorithm::AlgorithmMetadata {
                     name: stringify!($name),

@@ -34,7 +34,9 @@ use kama_core::AudioNum;
 /// lfo.init(44100.0);
 ///
 /// // Генерируем модуляционный сигнал
-/// let modulation = lfo.process_sample(0.0);
+/// let mut output = [0.0_f32];
+/// lfo.process_block(&[0.0], &mut output);
+/// let modulation = output[0];
 /// ```
 #[derive(Clone, Copy)]
 pub struct LFO<T: AudioNum> {
@@ -115,7 +117,7 @@ impl<T: AudioNum> LFO<T> {
 
     /// Получить значение для модуляции (текущий семпл)
     pub fn modulate(&mut self) -> T {
-        let raw = self.osc.process_sample(T::ZERO);
+        let raw = self.osc.generate().extract(0);
 
         if self.bipolar {
             raw // уже -1..1
@@ -145,8 +147,10 @@ impl<T: AudioNum> Algorithm<T> for LFO<T> {
         self.osc.set_phase(self.phase_offset.extract(0));
     }
 
-    fn process_sample(&mut self, _input: T) -> T {
-        self.modulate()
+    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+        for out in output.iter_mut() {
+            *out = self.modulate();
+        }
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -248,8 +252,10 @@ mod tests {
         lfo.init(44100.0);
 
         // В биполярном режиме значения должны быть в [-1, 1]
+        let mut output = [0.0f32; 1];
         for _ in 0..100 {
-            let val = lfo.process_sample(0.0);
+            lfo.process_block(&[], &mut output);
+            let val = output[0];
             assert!(
                 val >= -1.0 && val <= 1.0,
                 "Value {} out of range [-1,1]",
@@ -264,8 +270,10 @@ mod tests {
         lfo.init(44100.0);
 
         // В униполярном режиме значения должны быть в [0, 1]
+        let mut output = [0.0f32; 1];
         for _ in 0..100 {
-            let val = lfo.process_sample(0.0);
+            lfo.process_block(&[], &mut output);
+            let val = output[0];
             assert!(val >= 0.0 && val <= 1.0, "Value {} out of range [0,1]", val);
         }
     }
@@ -287,8 +295,9 @@ mod tests {
         lfo.init(44100.0);
 
         // Продвигаем фазу
+        let mut output = [0.0f32; 1];
         for _ in 0..10 {
-            lfo.process_sample(0.0);
+            lfo.process_block(&[], &mut output);
         }
 
         // Синхронизируем со сбросом
@@ -309,7 +318,9 @@ mod tests {
             let mut lfo = LFO::<f32>::new(5.0, wav, true);
             lfo.init(44100.0);
 
-            let val = lfo.process_sample(0.0);
+            let mut output = [0.0f32; 1];
+            lfo.process_block(&[], &mut output);
+            let val = output[0];
             assert!(
                 val >= -1.0 && val <= 1.0,
                 "Waveform {:?} produced {}",
@@ -352,12 +363,13 @@ mod tests {
         // Записываем начальную фазу
         let initial_phase = lfo.phase();
         println!("Initial phase: {}", initial_phase.to_f32());
+        let mut output = [0.0f32; 1];
 
         // Продвигаем фазу на несколько периодов
         for i in 0..samples_per_period * 3 {
             // 3 полных периода
             let before_phase = lfo.phase();
-            lfo.process_sample(0.0);
+            lfo.process_block(&[], &mut output);
             let after_phase = lfo.phase();
 
             // Проверяем, не произошёл ли сброс фазы

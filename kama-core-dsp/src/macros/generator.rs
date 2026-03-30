@@ -75,12 +75,12 @@ macro_rules! generator_algorithm {
                 $(#[$param_meta])*
                 pub $param_name: $param_type,
             )*
-            
+
             $(
                 $(#[$state_meta])*
                 pub $state_name: $state_type,
             )*
-            
+
             /// Частота дискретизации
             pub sample_rate: f32,
         }
@@ -103,18 +103,20 @@ macro_rules! generator_algorithm {
             fn init(&mut self, sample_rate: f32) {
                 self.sample_rate = sample_rate;
             }
-            
+
             fn reset(&mut self) {
                 $(
                     self.$state_name = $state_default;
                 )*
             }
-            
-            fn process_sample(&mut self, _input: T) -> T {
+
+            fn process_block(&mut self, _input: &[T], output: &mut [T]) {
                 let generate_fn: fn(&mut Self) -> T = $generate;
-                generate_fn(self)
+                for out in output.iter_mut() {
+                    *out = generate_fn(self);
+                }
             }
-            
+
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {
                 $crate::algorithm::AlgorithmMetadata {
                     name: stringify!($name),

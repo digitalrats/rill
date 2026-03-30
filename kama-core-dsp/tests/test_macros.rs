@@ -8,11 +8,8 @@ use kama_core_dsp::algorithm::Algorithm;
 
 // Макросы доступны напрямую из корня крейта благодаря #[macro_export]
 use kama_core_dsp::{
+    effect_algorithm, filter_algorithm, generator_algorithm, parameterized_algorithm,
     simple_algorithm,
-    parameterized_algorithm,
-    filter_algorithm,
-    effect_algorithm,
-    generator_algorithm,
 };
 
 #[test]
@@ -36,7 +33,9 @@ fn test_simple_algorithm_f32() {
     }
 
     let mut gain = TestGain::<f32>::new(2.0);
-    assert_eq!(gain.process_sample(1.0), 2.0);
+    let mut output = [0.0f32; 1];
+    gain.process_block(&[1.0], &mut output);
+    assert_eq!(output[0], 2.0);
     assert_eq!(gain.last, 2.0);
 }
 
@@ -61,7 +60,9 @@ fn test_simple_algorithm_f64() {
     }
 
     let mut gain = TestGain::<f64>::new(2.0);
-    assert_eq!(gain.process_sample(1.0), 2.0);
+    let mut output = [0.0f64; 1];
+    gain.process_block(&[1.0], &mut output);
+    assert_eq!(output[0], 2.0);
     assert!((gain.last - 2.0).abs() < 1e-10);
 }
 
@@ -89,7 +90,9 @@ fn test_parameterized_algorithm() {
     }
 
     let mut algo = TestParam::<f32>::new(2.0);
-    assert_eq!(algo.process_sample(1.0), 2.0);
+    let mut output = [0.0f32; 1];
+    algo.process_block(&[1.0], &mut output);
+    assert_eq!(output[0], 2.0);
 }
 
 #[test]
@@ -132,7 +135,9 @@ fn test_filter_algorithm() {
 
     let mut filter = TestFilter::<f32>::new(1000.0, 0.707);
     filter.init(44100.0);
-    assert_eq!(filter.process_sample(1.0), 1.0);
+    let mut output = [0.0f32; 1];
+    filter.process_block(&[1.0], &mut output);
+    assert_eq!(output[0], 1.0);
 }
 
 #[test]
@@ -158,9 +163,10 @@ fn test_effect_algorithm_f32() {
 
     let mut effect = TestEffect::<f32>::new(0.5);
     effect.set_wet(0.7);
-    let result = effect.process_sample(1.0);
+    let mut output = [0.0f32; 1];
+    effect.process_block(&[1.0], &mut output);
     let expected = 0.5 * 1.0 * 0.7 + 1.0 * 0.3;
-    assert!((result - expected).abs() < 1e-6);
+    assert!((output[0] - expected).abs() < 1e-6);
 }
 
 #[test]
@@ -186,9 +192,10 @@ fn test_effect_algorithm_f64() {
 
     let mut effect = TestEffect::<f64>::new(0.5);
     effect.set_wet(0.7);
-    let result = effect.process_sample(1.0);
+    let mut output = [0.0f64; 1];
+    effect.process_block(&[1.0], &mut output);
     let expected = 0.5 * 1.0 * 0.7 + 1.0 * 0.3;
-    assert!((result - expected).abs() < 1e-10);
+    assert!((output[0] - expected).abs() < 1e-10);
 }
 
 #[test]
@@ -211,7 +218,9 @@ fn test_generator_algorithm_f32() {
     }
 
     let mut gen = TestGen::<f32>::new(1.0);
-    assert_eq!(gen.process_sample(0.0), 1.0);
+    let mut output = [0.0f32; 1];
+    gen.process_block(&[], &mut output);
+    assert_eq!(output[0], 1.0);
     assert_eq!(gen.counter, 1);
 }
 
@@ -235,6 +244,8 @@ fn test_generator_algorithm_f64() {
     }
 
     let mut gen = TestGen::<f64>::new(1.0);
-    assert_eq!(gen.process_sample(0.0), 1.0);
+    let mut output = [0.0f64; 1];
+    gen.process_block(&[], &mut output);
+    assert_eq!(output[0], 1.0);
     assert_eq!(gen.counter, 1);
 }

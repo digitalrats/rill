@@ -80,15 +80,15 @@ macro_rules! effect_algorithm {
                 $(#[$param_meta])*
                 pub $param_name: $param_type,
             )*
-            
+
             $(
                 $(#[$state_meta])*
                 pub $state_name: $state_type,
             )*
-            
+
             /// Коэффициент dry/wet (0.0 = только dry, 1.0 = только wet)
             pub wet: T,
-            
+
             /// Частота дискретизации
             pub sample_rate: f32,
         }
@@ -103,7 +103,7 @@ macro_rules! effect_algorithm {
                     sample_rate: 44100.0,
                 }
             }
-            
+
             /// Установить соотношение dry/wet
             pub fn set_wet(&mut self, wet: T) {
                 self.wet = wet.clamp(T::ZERO, T::ONE);
@@ -117,25 +117,26 @@ macro_rules! effect_algorithm {
             fn init(&mut self, sample_rate: f32) {
                 self.sample_rate = sample_rate;
             }
-            
+
             fn reset(&mut self) {
                 $(
                     self.$state_name = $state_default;
                 )*
             }
-            
-            fn process_sample(&mut self, input: T) -> T {
+
+            fn process_block(&mut self, input: &[T], output: &mut [T]) {
+                let len = input.len().min(output.len());
                 let process_fn: fn(&mut Self, T) -> T = $process;
-                let wet = process_fn(self, input);
-                
-                // Dry/wet mix
+                let wet = self.wet;
                 let one = T::ONE;
-                let dry = input * (one - self.wet);
-                let wet = wet * self.wet;
-                
-                dry + wet
+                for i in 0..len {
+                    let wet_signal = process_fn(self, input[i]);
+                    let dry = input[i] * (one - wet);
+                    let wet_mixed = wet_signal * wet;
+                    output[i] = dry + wet_mixed;
+                }
             }
-            
+
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {
                 $crate::algorithm::AlgorithmMetadata {
                     name: stringify!($name),

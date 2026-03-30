@@ -170,73 +170,75 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
         self.smoother.set_current(T::ZERO);
     }
 
-    fn process_sample(&mut self, gate_signal: T) -> T {
-        // Обновляем gate из входного сигнала если есть
-        if gate_signal.to_f32() > 0.5 && !self.gate {
-            self.trigger();
-        } else if gate_signal.to_f32() <= 0.5 && self.gate {
-            self.release();
-        }
+    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+        let len = input.len().min(output.len());
+        for i in 0..len {
+            let gate_signal = input[i];
+            // Обновляем gate из входного сигнала если есть
+            if gate_signal.to_f32() > 0.5 && !self.gate {
+                self.trigger();
+            } else if gate_signal.to_f32() <= 0.5 && self.gate {
+                self.release();
+            }
 
-        // Генерация огибающей
-        match self.stage {
-            EnvelopeStage::Attack => {
-                let target = ScalarVector1::splat(T::from_f32(1.0));
-                self.level = self.level
-                    + (target - self.level)
-                        * ScalarVector1::splat(T::from_f32(1.0 / self.attack_samples as f32));
-                self.position += 1;
+            // Генерация огибающей
+            match self.stage {
+                EnvelopeStage::Attack => {
+                    let target = ScalarVector1::splat(T::from_f32(1.0));
+                    self.level = self.level
+                        + (target - self.level)
+                            * ScalarVector1::splat(T::from_f32(1.0 / self.attack_samples as f32));
+                    self.position += 1;
 
-                if self.position >= self.attack_samples {
-                    match self.env_type {
-                        EnvelopeType::ADSR => self.stage = EnvelopeStage::Decay,
-                        EnvelopeType::AR => self.stage = EnvelopeStage::Release,
-                        EnvelopeType::ASR => self.stage = EnvelopeStage::Sustain,
+                    if self.position >= self.attack_samples {
+                        match self.env_type {
+                            EnvelopeType::ADSR => self.stage = EnvelopeStage::Decay,
+                            EnvelopeType::AR => self.stage = EnvelopeStage::Release,
+                            EnvelopeType::ASR => self.stage = EnvelopeStage::Sustain,
+                        }
+                        self.position = 0;
                     }
-                    self.position = 0;
                 }
-            }
 
-            EnvelopeStage::Decay => {
-                let target = self.sustain;
-                self.level = self.level
-                    + (target - self.level)
-                        * ScalarVector1::splat(T::from_f32(1.0 / self.decay_samples as f32));
-                self.position += 1;
+                EnvelopeStage::Decay => {
+                    let target = self.sustain;
+                    self.level = self.level
+                        + (target - self.level)
+                            * ScalarVector1::splat(T::from_f32(1.0 / self.decay_samples as f32));
+                    self.position += 1;
 
-                if self.position >= self.decay_samples {
-                    self.stage = EnvelopeStage::Sustain;
+                    if self.position >= self.decay_samples {
+                        self.stage = EnvelopeStage::Sustain;
+                        self.position = 0;
+                    }
+                }
+
+                EnvelopeStage::Sustain => {
+                    // Просто держим уровень
                     self.level = self.sustain;
-                    self.position = 0;
                 }
-            }
 
-            EnvelopeStage::Sustain => {
-                self.level = self.sustain;
-            }
+                EnvelopeStage::Release => {
+                    let target = ScalarVector1::splat(T::ZERO);
+                    self.level = self.level
+                        + (target - self.level)
+                            * ScalarVector1::splat(T::from_f32(1.0 / self.release_samples as f32));
+                    self.position += 1;
 
-            EnvelopeStage::Release => {
-                let target = ScalarVector1::splat(T::ZERO);
-                self.level = self.level
-                    + (target - self.level)
-                        * ScalarVector1::splat(T::from_f32(1.0 / self.release_samples as f32));
-                self.position += 1;
+                    if self.position >= self.release_samples {
+                        self.stage = EnvelopeStage::Off;
+                        self.position = 0;
+                    }
+                }
 
-                if self.position >= self.release_samples {
-                    self.stage = EnvelopeStage::Off;
+                EnvelopeStage::Off => {
                     self.level = ScalarVector1::splat(T::ZERO);
-                    self.position = 0;
                 }
             }
 
-            EnvelopeStage::Off => {
-                self.level = ScalarVector1::splat(T::ZERO);
-            }
+            // Применяем сглаживание
+            output[i] = self.smoother.process_sample(self.level.extract(0));
         }
-
-        // Сглаживание для устранения щелчков
-        self.smoother.set_target(self.level.extract(0));
-        self.smoother.next()
     }
 
     fn metadata(&self) -> AlgorithmMetadata {

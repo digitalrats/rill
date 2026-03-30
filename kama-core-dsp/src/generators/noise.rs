@@ -196,13 +196,15 @@ impl<T: AudioNum> Algorithm<T> for NoiseGenerator<T> {
         }
     }
 
-    fn process_sample(&mut self, _input: T) -> T {
-        match self.noise_type {
-            NoiseType::White => self.generate_white().extract(0),
-            NoiseType::Pink => self.generate_pink().extract(0),
-            NoiseType::Brown => self.generate_brown().extract(0),
-            NoiseType::Blue => self.generate_blue().extract(0),
-            NoiseType::Violet => self.generate_violet().extract(0),
+    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+        for out in output.iter_mut() {
+            *out = match self.noise_type {
+                NoiseType::White => self.generate_white().extract(0),
+                NoiseType::Pink => self.generate_pink().extract(0),
+                NoiseType::Brown => self.generate_brown().extract(0),
+                NoiseType::Blue => self.generate_blue().extract(0),
+                NoiseType::Violet => self.generate_violet().extract(0),
+            };
         }
     }
 
