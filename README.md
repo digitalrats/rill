@@ -37,49 +37,56 @@ kama-server            # OSC-сервер (в разработке)
 
 ## 🚀 Быстрый старт
 
-Добавьте нужные крейты в `Cargo.toml`:
+Добавьте крейт `kama-core-dsp` в `Cargo.toml` (он автоматически подтянет `kama-core`):
 
 ```toml
 [dependencies]
-kama-core = "0.3"
-kama-graph = "0.3"
-kama-oscillators = "0.3"
-kama-digital-effects = "0.3"
+kama-core-dsp = "0.3"
 ```
 
-Создайте простой эффект (синус + задержка):
+Создайте простой DSP pipeline (синус → задержка):
 
 ```rust
-use kama_core::traits::*;
-use kama_core::prelude::*;
-use kama_graph::AudioGraph;
-use kama_oscillators::audio::SineOsc;
-use kama_digital_effects::Delay;
+use kama_core::math::AudioNum;
+use kama_core_dsp::generators::basic::SineOsc;
+use kama_core_dsp::delay::Delay;
+use kama_core_dsp::algorithm::Algorithm;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut graph = AudioGraph::new(44100.0);
+    let sample_rate = 44100.0;
+    let block_size = 64;
     
-    // Генератор синуса 440Hz
-    let sine = SineOsc::new(440.0).with_amplitude(0.5);
-    let sine_id = graph.add_node(Box::new(sine));
+    // Генератор синуса 440 Hz
+    let mut osc = SineOsc::<f32>::new(440.0, sample_rate);
+    osc.set_amplitude(0.5);
     
     // Задержка 0.3 сек с обратной связью
-    let delay = Delay::new(0.3, 0.4, 0.7);
-    let delay_id = graph.add_node(Box::new(delay));
+    let mut delay = Delay::<f32>::new(0.3, sample_rate);
+    delay.set_feedback(0.4);
+    delay.set_mix(0.7);
     
-    // Соединяем
-    graph.connect(
-        PortId::output(sine_id, 0),
-        PortId::input(delay_id, 0),
-        1.0,
-    )?;
+    // Буферы для обработки
+    let mut input_block = vec![0.0f32; block_size];
+    let mut output_block = vec![0.0f32; block_size];
     
-    // Обрабатываем 1 секунду
-    let mut output = vec![0.0; 44100];
-    let mut outputs = [output.as_mut_slice()];
-    graph.process(&[], &mut outputs)?;
+    // Обрабатываем 1 секунду (несколько блоков)
+    let total_samples = sample_rate as usize;
+    let mut processed = Vec::with_capacity(total_samples);
     
-    println!("Готово! RMS: {:.6}", calculate_rms(&output));
+    for _ in 0..(total_samples / block_size) {
+        // Генерируем блок синуса
+        osc.process_block(&[], &mut input_block);
+        
+        // Применяем задержку
+        delay.process_block(&input_block, &mut output_block);
+        
+        // Сохраняем результат
+        processed.extend_from_slice(&output_block);
+    }
+    
+    // Вычисляем RMS
+    let rms = calculate_rms(&processed);
+    println!("Готово! Обработано {} семплов, RMS: {:.6}", processed.len(), rms);
     Ok(())
 }
 
@@ -89,30 +96,32 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 }
 ```
 
+Этот пример демонстрирует блочную обработку с использованием алгоритмов из `kama-core-dsp`. Все операции используют векторные абстракции `ScalarVector1<T>` для обеспечения переносимости и производительности.
+
 ## 📦 Состояние крейтов
 
 | Крейт | Версия | Описание |
 |-------|--------|----------|
-| **kama-core** | 0.3.0 | ✅ **Единое ядро** (трейты + сигналы) |
-| kama-core-dsp | 0.3.0 | ✅ DSP инфраструктура, функциональные узлы |
-| kama-graph | 0.3.0 | ✅ Аудиограф с топологической сортировкой |
-| kama-patchbay | 0.3.0 | ✅ Автоматизация (LFO, огибающие, сервоприводы) |
-| kama-oscillators | 0.3.0 | ✅ Осцилляторы (синус, пила, шум, LFO, огибающие) |
-| kama-digital-filters | 0.3.0 | ✅ Биквадратные фильтры (LP, HP, BP, Notch, Peak) |
-| kama-digital-effects | 0.3.0 | ✅ Эффекты (Delay, Distortion, Limiter) |
-| kama-eq | 0.3.0 | ✅ Параметрический и графический эквалайзеры |
-| kama-mixer | временно отключен | 🔊 Микшер с каналами, панорамой и aux шинами |
-| kama-lofi | временно отключен | ✅ Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
-| kama-io | временно отключен | ✅ Аудио ввод-вывод (ALSA, CPAL), MIDI |
+| **kama-core** | 0.3.0 | ✅ **Единое ядро** (трейты, сигналы, буферы, очереди, математика) |
+| **kama-core-dsp** | 0.3.0 | ✅ **DSP инфраструктура** (векторные операции, алгоритмы, макросы) |
+| kama-graph | 0.3.0 | ⏸️ Аудиограф с топологической сортировкой (временно отключен) |
+| kama-patchbay | 0.3.0 | ⏸️ Автоматизация (LFO, огибающие, сервоприводы) (временно отключен) |
+| kama-oscillators | 0.3.0 | ⏸️ Осцилляторы (синус, пила, шум, LFO, огибающие) (временно отключен) |
+| kama-digital-filters | 0.3.0 | ⏸️ Биквадратные фильтры (LP, HP, BP, Notch, Peak) (временно отключен) |
+| kama-digital-effects | 0.3.0 | ⏸️ Эффекты (Delay, Distortion, Limiter) (временно отключен) |
+| kama-eq | 0.3.0 | ⏸️ Параметрический и графический эквалайзеры (временно отключен) |
+| kama-mixer | временно отключен | ⏸️ Микшер с каналами, панорамой и aux шинами |
+| kama-lofi | временно отключен | ⏸️ Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
+| kama-io | временно отключен | ⏸️ Аудио ввод-вывод (ALSA, CPAL), MIDI |
 | kama-wdf | в разработке | 🔌 Wave Digital Filters (моделирование аналоговых цепей) |
 | kama-server | в разработке | 🔌 OSC - сервер |
 | kama-tests | планируется | 🧪 Интеграционные тесты |
 
-*Примечание:* Крейт `kama-buffers` интегрирован в `kama-core`.
+*Примечание:* Крейт `kama-buffers` интегрирован в `kama-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `kama-oscillators`, `kama-digital-filters`, `kama-digital-effects`) теперь являются частью `kama-core-dsp` и используют единую векторную инфраструктуру.
 
 ## 📈 Состояние проекта
 
-Проект находится в стадии активной разработки. Некоторые крейты уже стабильны (например, `kama-core`, `kama-graph`, `kama-patchbay`), другие ещё развиваются. Крейт `kama-wdf` находится в разработке, а `kama-tests` запланирован к реализации. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
+Проект находится в стадии активной разработки. Активны крейты `kama-core` (единое ядро) и `kama-core-dsp` (DSP инфраструктура с векторными операциями). Остальные крейты временно отключены, их функциональность интегрируется в `kama-core-dsp`. Крейт `kama-wdf` находится в разработке, а `kama-tests` запланирован к реализации. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
 
 ## 📊 Зависимости крейтов
 
@@ -121,17 +130,37 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 ```mermaid
 graph TD
     CORE[kama-core] --> CORE_DSP[kama-core-dsp]
-    CORE --> GRAPH[kama-graph]
-    CORE --> PATCHBAY[kama-patchbay]
-    CORE --> IO[kama-io]
-    CORE --> LOFI[kama-lofi]
-    CORE_DSP --> OSC[kama-oscillators]
-    CORE_DSP --> FILTERS[kama-digital-filters]
-    CORE_DSP --> EFFECTS[kama-digital-effects]
-    CORE_DSP --> EQ[kama-eq]
-    OSC -.-> EFFECTS
-    GRAPH -.-> IO
-    EFFECTS -.-> IO
+    
+    style CORE fill:#90ee90
+    style CORE_DSP fill:#90ee90
+    
+    %% Временно отключенные крейты
+    GRAPH[kama-graph<br/>(отключен)]
+    PATCHBAY[kama-patchbay<br/>(отключен)]
+    IO[kama-io<br/>(отключен)]
+    LOFI[kama-lofi<br/>(отключен)]
+    OSC[kama-oscillators<br/>(отключен)]
+    FILTERS[kama-digital-filters<br/>(отключен)]
+    EFFECTS[kama-digital-effects<br/>(отключен)]
+    EQ[kama-eq<br/>(отключен)]
+    
+    CORE -.-> GRAPH
+    CORE -.-> PATCHBAY
+    CORE -.-> IO
+    CORE -.-> LOFI
+    CORE_DSP -.-> OSC
+    CORE_DSP -.-> FILTERS
+    CORE_DSP -.-> EFFECTS
+    CORE_DSP -.-> EQ
+    
+    style GRAPH fill:#cccccc
+    style PATCHBAY fill:#cccccc
+    style IO fill:#cccccc
+    style LOFI fill:#cccccc
+    style OSC fill:#cccccc
+    style FILTERS fill:#cccccc
+    style EFFECTS fill:#cccccc
+    style EQ fill:#cccccc
 ```
 
 ## 🏗️ Архитектура ядра
