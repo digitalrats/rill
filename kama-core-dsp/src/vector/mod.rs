@@ -76,5 +76,5 @@ pub mod prelude {
     pub use crate::vector::simd::*;
     
     // Скалярные типы
-    pub use crate::vector::scalar::{ScalarVector2, ScalarVector4, ScalarVector8};
+    pub use crate::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
 }

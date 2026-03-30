@@ -1,8 +1,9 @@
 //! Базовые осцилляторы (Sine, Saw, Square, Triangle)
 
+use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use crate::generators::{Generator, ModulatableGenerator, SyncableGenerator};
+use crate::vector::prelude::*;
 use kama_core::AudioNum;
-use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
-use crate::generators::{Generator, SyncableGenerator, ModulatableGenerator};
 use std::f32::consts::PI;
 
 /// Тип волны
@@ -31,7 +32,7 @@ impl Waveform {
             Waveform::Pulse(_) => "Pulse",
         }
     }
-    
+
     /// Получить описание формы волны
     pub fn description(&self) -> &'static str {
         match self {
@@ -58,17 +59,17 @@ pub struct BasicOscillator<T: AudioNum> {
     /// Частота (Hz)
     frequency: f32,
     /// Амплитуда (0.0 - 1.0)
-    amplitude: T,
+    amplitude: ScalarVector1<T>,
     /// Текущая фаза (0..1)
-    phase: T,
+    phase: ScalarVector1<T>,
     /// Инкремент фазы за семпл
-    phase_inc: T,
+    phase_inc: ScalarVector1<T>,
     /// Частота дискретизации
     sample_rate: f32,
     /// Количество завершённых периодов
     periods: u32,
     /// Модуляция частоты (FM)
-    fm_amount: T,
+    fm_amount: ScalarVector1<T>,
 }
 
 impl<T: AudioNum> BasicOscillator<T> {
@@ -82,133 +83,134 @@ impl<T: AudioNum> BasicOscillator<T> {
         let mut osc = Self {
             waveform,
             frequency,
-            amplitude,
-            phase: T::ZERO,
-            phase_inc: T::ZERO,
+            amplitude: ScalarVector1::splat(amplitude),
+            phase: ScalarVector1::splat(T::ZERO),
+            phase_inc: ScalarVector1::splat(T::ZERO),
             sample_rate: 44100.0,
             periods: 0,
-            fm_amount: T::ZERO,
+            fm_amount: ScalarVector1::splat(T::ZERO),
         };
         osc.update_phase_inc();
         osc
     }
-    
+
     /// Обновить инкремент фазы на основе текущей частоты
     #[inline(always)]
     fn update_phase_inc(&mut self) {
-        self.phase_inc = T::from_f32(self.frequency / self.sample_rate);
+        self.phase_inc = ScalarVector1::splat(T::from_f32(self.frequency / self.sample_rate));
     }
-    
+
     /// Генерировать синусоиду
     #[inline(always)]
-    fn generate_sine(&self) -> T {
-        let phase_rad = self.phase.mul(T::from_f32(2.0 * PI));
-        phase_rad.sin().mul(self.amplitude)
+    fn generate_sine(&self) -> ScalarVector1<T> {
+        let phase_rad = self.phase.mul(&ScalarVector1::splat(T::from_f32(2.0 * PI)));
+        phase_rad.sin().mul(&self.amplitude)
     }
-    
+
     /// Генерировать пилообразную волну (без анти-алиасинга)
     #[inline(always)]
-    fn generate_saw_raw(&self) -> T {
+    fn generate_saw_raw(&self) -> ScalarVector1<T> {
         // 2 * phase - 1
-        self.phase.mul(T::from_f32(2.0))
-            .sub(T::from_f32(1.0))
-            .mul(self.amplitude)
+        self.phase
+            .mul(&ScalarVector1::splat(T::from_f32(2.0)))
+            .sub(&ScalarVector1::splat(T::from_f32(1.0)))
+            .mul(&self.amplitude)
     }
-    
+
     /// Генерировать пилообразную волну с анти-алиасингом
     #[inline(always)]
-    fn generate_saw_bandlimited(&mut self) -> T {
+    fn generate_saw_bandlimited(&mut self) -> ScalarVector1<T> {
         let raw = self.generate_saw_raw();
-        let inc = self.phase_inc;
-        
         // Проверка на переход через 0 (discontinuity)
-        let next_phase = self.phase.add(inc);
+        let next_phase = self.phase.add(&self.phase_inc).extract(0);
         let one = T::from_f32(1.0);
-        
+
         if next_phase >= one {
             // Вычисляем позицию discontinuity
-            let t = one.sub(self.phase).div(inc);
+            let one_vec = ScalarVector1::splat(one);
+            let t = (one_vec - self.phase) / self.phase_inc;
             // Простая Blep коррекция
-            let blep = t.mul(T::from_f32(2.0)).sub(T::from_f32(1.0));
-            raw.sub(blep.mul(self.amplitude))
+            let blep =
+                t * ScalarVector1::splat(T::from_f32(2.0)) - ScalarVector1::splat(T::from_f32(1.0));
+            raw - blep * self.amplitude
         } else {
             raw
         }
     }
-    
+
     /// Генерировать квадратную волну
     #[inline(always)]
-    fn generate_square(&self) -> T {
+    fn generate_square(&self) -> ScalarVector1<T> {
         let half = T::from_f32(0.5);
-        if self.phase < half {
+        if self.phase.extract(0) < half {
             self.amplitude
         } else {
-            self.amplitude.neg()
+            -self.amplitude
         }
     }
-    
+
     /// Генерировать треугольную волну
     #[inline(always)]
-    fn generate_triangle(&self) -> T {
+    fn generate_triangle(&self) -> ScalarVector1<T> {
         // 4 * |phase - 0.5| - 1
-        let p = self.phase.sub(T::from_f32(0.5));
-        p.abs().mul(T::from_f32(4.0))
-            .sub(T::from_f32(1.0))
-            .mul(self.amplitude)
+        let half = ScalarVector1::splat(T::from_f32(0.5));
+        let p = self.phase - half;
+        (p.abs() * ScalarVector1::splat(T::from_f32(4.0)) - ScalarVector1::splat(T::from_f32(1.0)))
+            * self.amplitude
     }
-    
+
     /// Генерировать прямоугольную волну с переменной скважностью
     #[inline(always)]
-    fn generate_pulse(&self, width: f32) -> T {
+    fn generate_pulse(&self, width: f32) -> ScalarVector1<T> {
         let width_t = T::from_f32(width.clamp(0.01, 0.99));
-        if self.phase < width_t {
+        if self.phase.extract(0) < width_t {
             self.amplitude
         } else {
-            self.amplitude.neg()
+            -self.amplitude
         }
     }
-    
+
     /// Основной метод генерации семпла
     fn generate(&mut self) -> T {
         // Применяем FM модуляцию если есть
-        let effective_inc = self.phase_inc.add(self.fm_amount);
-        
+        let effective_inc = self.phase_inc.add(&self.fm_amount);
+
         // Генерируем семпл в зависимости от формы волны
-        let output = match self.waveform {
+        let output_vec = match self.waveform {
             Waveform::Sine => self.generate_sine(),
             Waveform::Saw => self.generate_saw_bandlimited(),
             Waveform::Square => self.generate_square(),
             Waveform::Triangle => self.generate_triangle(),
             Waveform::Pulse(width) => self.generate_pulse(width),
         };
-        
+
         // Обновляем фазу
-        self.phase = self.phase.add(effective_inc);
-        let one = T::from_f32(1.0);
-        if self.phase >= one {
-            self.phase = self.phase.sub(one);
+        self.phase = self.phase.add(&effective_inc);
+        let one_vec = ScalarVector1::splat(T::from_f32(1.0));
+        if self.phase.extract(0) >= one_vec.extract(0) {
+            self.phase = self.phase.sub(&one_vec);
             self.periods += 1;
         }
-  
-        output
+
+        output_vec.extract(0)
     }
-    
+
     /// Сбросить фазу в 0
     pub fn reset_phase(&mut self) {
-        self.phase = T::ZERO;
+        self.phase = ScalarVector1::splat(T::ZERO);
         self.periods = 0;
     }
-    
+
     /// Получить текущую фазу (0..1)
     pub fn current_phase(&self) -> T {
-        self.phase
+        self.phase.extract(0)
     }
-    
+
     /// Получить количество завершённых периодов
     pub fn period_count(&self) -> u32 {
         self.periods
     }
-    
+
     /// Установить ширину импульса (для Pulse волны)
     pub fn set_pulse_width(&mut self, width: f32) {
         if let Waveform::Pulse(_) = self.waveform {
@@ -223,20 +225,20 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_phase_inc();
-        self.phase = T::ZERO;
+        self.phase = ScalarVector1::splat(T::ZERO);
         self.periods = 0;
     }
-    
+
     fn reset(&mut self) {
-        self.phase = T::ZERO;
+        self.phase = ScalarVector1::splat(T::ZERO);
         self.periods = 0;
-        self.fm_amount = T::ZERO;
+        self.fm_amount = ScalarVector1::splat(T::ZERO);
     }
-    
+
     fn process_sample(&mut self, _input: T) -> T {
         self.generate()
     }
-    
+
     fn metadata(&self) -> AlgorithmMetadata {
         AlgorithmMetadata {
             name: self.waveform.name(),
@@ -246,15 +248,15 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
             version: env!("CARGO_PKG_VERSION"),
         }
     }
-    
-    fn as_any(&self) -> &dyn std::any::Any 
+
+    fn as_any(&self) -> &dyn std::any::Any
     where
         Self: 'static,
     {
         self
     }
-    
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any 
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
     where
         Self: 'static,
     {
@@ -266,32 +268,44 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
 
 impl<T: AudioNum> Generator<T> for BasicOscillator<T> {
     fn phase(&self) -> T {
-        self.phase
+        self.phase.extract(0)
     }
-    
+
     fn set_phase(&mut self, phase: T) {
         let one = T::from_f32(1.0);
         let zero = T::ZERO;
-        self.phase = if phase > one { one } else if phase < zero { zero } else { phase };
+        self.phase = ScalarVector1::splat(if phase > one {
+            one
+        } else if phase < zero {
+            zero
+        } else {
+            phase
+        });
     }
-    
+
     fn frequency(&self) -> f32 {
         self.frequency
     }
-    
+
     fn set_frequency(&mut self, freq: f32) {
         self.frequency = freq.max(0.1).min(20000.0);
         self.update_phase_inc();
     }
-    
+
     fn amplitude(&self) -> T {
-        self.amplitude
+        self.amplitude.extract(0)
     }
-    
+
     fn set_amplitude(&mut self, amp: T) {
         let one = T::from_f32(1.0);
         let zero = T::ZERO;
-        self.amplitude = if amp > one { one } else if amp < zero { zero } else { amp };
+        self.amplitude = ScalarVector1::splat(if amp > one {
+            one
+        } else if amp < zero {
+            zero
+        } else {
+            amp
+        });
     }
 }
 
@@ -300,10 +314,10 @@ impl<T: AudioNum> Generator<T> for BasicOscillator<T> {
 impl<T: AudioNum> SyncableGenerator<T> for BasicOscillator<T> {
     fn sync(&mut self, reset: bool) {
         if reset {
-            self.phase = T::ZERO;
+            self.phase = ScalarVector1::splat(T::ZERO);
         }
     }
-    
+
     fn periods(&self) -> u32 {
         self.periods
     }
@@ -313,15 +327,15 @@ impl<T: AudioNum> SyncableGenerator<T> for BasicOscillator<T> {
 
 impl<T: AudioNum> ModulatableGenerator<T> for BasicOscillator<T> {
     fn modulate_frequency(&mut self, amount: T) {
-        self.fm_amount = amount;
+        self.fm_amount = ScalarVector1::splat(amount);
     }
-    
+
     fn modulation_index(&self) -> T {
-        self.fm_amount
+        self.fm_amount.extract(0)
     }
-    
+
     fn set_modulation_index(&mut self, index: T) {
-        self.fm_amount = index;
+        self.fm_amount = ScalarVector1::splat(index);
     }
 }
 
@@ -331,109 +345,109 @@ impl<T: AudioNum> ModulatableGenerator<T> for BasicOscillator<T> {
 mod tests {
     use super::*;
     use float_cmp::approx_eq;
-    
+
     #[test]
     fn test_sine_oscillator() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
         osc.init(44100.0);
-        
+
         // Первый семпл должен быть 0
         let sample1 = osc.process_sample(0.0);
         assert!(approx_eq!(f32, sample1, 0.0, epsilon = 1e-6));
-        
+
         // Второй семпл должен быть не 0
         let sample2 = osc.process_sample(0.0);
         assert!(sample2 != 0.0);
         assert!(sample2 >= -0.5 && sample2 <= 0.5);
     }
-    
+
     #[test]
     fn test_saw_oscillator() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Saw, 440.0, 0.5);
         osc.init(44100.0);
-        
+
         let sample = osc.process_sample(0.0);
         assert!(sample >= -0.5 && sample <= 0.5);
     }
-    
+
     #[test]
     fn test_square_oscillator() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Square, 440.0, 0.5);
         osc.init(44100.0);
-        
+
         let sample = osc.process_sample(0.0);
         assert!(sample == 0.5 || sample == -0.5);
     }
-    
+
     #[test]
     fn test_triangle_oscillator() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Triangle, 440.0, 0.5);
         osc.init(44100.0);
-        
+
         let sample = osc.process_sample(0.0);
         assert!(sample >= -0.5 && sample <= 0.5);
     }
-    
+
     #[test]
     fn test_pulse_oscillator() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Pulse(0.25), 440.0, 0.5);
         osc.init(44100.0);
-        
+
         let sample = osc.process_sample(0.0);
         assert!(sample == 0.5); // При фазе 0 должен быть положительный импульс
     }
-    
+
     #[test]
     fn test_frequency_change() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
         osc.init(44100.0);
-        
+
         assert_eq!(osc.frequency(), 440.0);
-        
+
         osc.set_frequency(880.0);
         assert_eq!(osc.frequency(), 880.0);
     }
-    
+
     #[test]
     fn test_amplitude_change() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
         osc.init(44100.0);
-        
+
         assert_eq!(osc.amplitude(), 0.5);
-        
+
         osc.set_amplitude(0.8);
         assert_eq!(osc.amplitude(), 0.8);
     }
-    
+
     #[test]
     fn test_phase_manipulation() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 1.0);
         osc.init(44100.0);
-        
+
         osc.set_phase(0.25); // π/2
         let sample = osc.process_sample(0.0);
         assert!(approx_eq!(f32, sample, 1.0, epsilon = 1e-4)); // sin(π/2) = 1
     }
-    
+
     #[test]
     fn test_fm_modulation() {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 1.0);
         osc.init(44100.0);
-        
+
         osc.modulate_frequency(0.5);
         assert_eq!(osc.modulation_index(), 0.5);
-        
+
         // Проверяем, что модуляция применяется
         let sample = osc.process_sample(0.0);
         assert!(sample >= -1.0 && sample <= 1.0);
     }
-    
+
     #[test]
     fn test_clone_copy() {
         let osc1 = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
         let osc2 = osc1; // Копирование благодаря Copy
         let osc3 = osc1.clone(); // Явное клонирование
-        
+
         assert_eq!(osc1.frequency(), osc2.frequency());
         assert_eq!(osc1.frequency(), osc3.frequency());
     }
