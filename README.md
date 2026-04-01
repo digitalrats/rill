@@ -16,9 +16,9 @@ kama-eq                # эквалайзеры (временно отключе
 kama-mixer             # микшер (временно отключен)
 kama-lofi              # Lo-Fi эмуляция (временно отключен)
 kama-io                # аудио ввод-вывод, MIDI (в разработке)
-kama-wdf               # Wave Digital Filters (в разработке)
+kama-wdf               # Wave Digital Filters (планируется)
 kama-server            # OSC-сервер (в разработке)
-kama-sequencer         # секвенсеры (в разработке)
+kama-sequencer         # секвенсеры (планируется)
 ```
 
 ## 🎯 Зачем это нужно?

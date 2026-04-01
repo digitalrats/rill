@@ -1,10 +1,14 @@
 //! Sawtooth wave oscillator using kama-core-dsp with AudioNum
 
-use kama_core::traits::{Processor, ParameterId, ParamValue};
-use kama_core::{ProcessResult, ProcessError};
-use kama_core_dsp::generators::{BasicOscillator, Waveform, Generator};
+use kama_core::time::ClockTick;
+use kama_core::traits::{
+    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    Processor,
+};
 use kama_core::AudioNum;
+use kama_core::{ProcessError, ProcessResult};
 use kama_core_dsp::algorithm::Algorithm;
+use kama_core_dsp::generators::{BasicOscillator, Generator, Waveform};
 use std::marker::PhantomData;
 
 /// Sawtooth wave oscillator generic over floating point type
@@ -14,16 +18,16 @@ use std::marker::PhantomData;
 pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
     /// Core DSP oscillator
     osc: BasicOscillator<T>,
-    
+
     /// Base frequency
     frequency: T,
-    
+
     /// Output amplitude
     amplitude: T,
-    
-    /// Sample rate
-    sample_rate: T,
-    
+
+    /// Node state
+    state: Option<NodeState<T, BUF_SIZE>>,
+
     /// Phantom data
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
@@ -31,18 +35,13 @@ pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
 impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
     /// Create new sawtooth oscillator
     pub fn new() -> Self {
-        let sample_rate = T::from_f32(44100.0);
-        let osc = BasicOscillator::new(
-            Waveform::Saw,
-            440.0,
-            T::from_f32(1.0)
-        );
-        
+        let osc = BasicOscillator::new(Waveform::Saw, 440.0, T::from_f32(1.0));
+
         Self {
             osc,
             frequency: T::from_f32(440.0),
             amplitude: T::from_f32(0.5),
-            sample_rate,
+            state: None,
             _phantom: PhantomData,
         }
     }
@@ -77,9 +76,9 @@ impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
     /// Generate a block of samples
     fn generate_block(&mut self, output: &mut [T; BUF_SIZE]) {
         self.osc.set_frequency(self.frequency.to_f32());
-        
+        self.osc.process_block(&[], &mut output[..]);
         for i in 0..BUF_SIZE {
-            output[i] = T::from_f32(self.osc.process_sample(T::ZERO).to_f32()) * self.amplitude;
+            output[i] = output[i] * self.amplitude;
         }
     }
 }
@@ -90,27 +89,36 @@ impl<T: AudioNum, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
-    fn process(
-        &mut self,
-        _inputs: &[&[T; BUF_SIZE]],
-        outputs: &mut [&mut [T; BUF_SIZE]],
-        _control: &[f32],
-    ) -> ProcessResult<()> {
-        if outputs.is_empty() {
-            return Ok(());
+impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+    fn metadata(&self) -> NodeMetadata {
+        NodeMetadata {
+            name: "SawOsc".to_string(),
+            category: NodeCategory::Source,
+            description: "Sawtooth wave oscillator".to_string(),
+            author: "Kama Audio".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            audio_inputs: 0,
+            audio_outputs: 1,
+            control_inputs: 0,
+            control_outputs: 0,
+            clock_inputs: 0,
+            clock_outputs: 0,
+            feedback_ports: 0,
+            parameters: vec![],
         }
-
-        self.generate_block(outputs[0]);
-        Ok(())
     }
 
-    fn num_audio_inputs(&self) -> usize {
-        0
+    fn init(&mut self, sample_rate: f32) {
+        self.osc.init(sample_rate);
+        self.osc.set_frequency(self.frequency.to_f32());
+        self.state = Some(NodeState::new(sample_rate));
     }
 
-    fn num_audio_outputs(&self) -> usize {
-        1
+    fn reset(&mut self) {
+        self.osc.reset();
+        if let Some(state) = &mut self.state {
+            state.reset();
+        }
     }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
@@ -140,17 +148,93 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BU
                     Err(ProcessError::Parameter("Expected float".into()))
                 }
             }
-            _ => Err(ProcessError::Parameter(format!("Unknown parameter: {}", id))),
+            _ => Err(ProcessError::Parameter(format!(
+                "Unknown parameter: {}",
+                id
+            ))),
         }
     }
 
-    fn init(&mut self, sample_rate: f32) {
-        self.sample_rate = T::from_f32(sample_rate);
-        self.osc.init(sample_rate);
-        self.osc.set_frequency(self.frequency.to_f32());
+    fn id(&self) -> NodeId {
+        NodeId(0)
     }
 
-    fn reset(&mut self) {
-        self.osc.reset();
+    fn set_id(&mut self, _id: NodeId) {}
+
+    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        self.state.as_ref().unwrap()
+    }
+
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        self.state.as_mut().unwrap()
+    }
+
+    fn num_audio_inputs(&self) -> usize {
+        0
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+}
+
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+    fn process(
+        &mut self,
+        clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        control_inputs: &[T],
+        clock_inputs: &[ClockTick],
+        feedback_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        control_outputs: &mut [T],
+        clock_outputs: &mut [ClockTick],
+        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        let _ = (
+            clock,
+            audio_inputs,
+            control_inputs,
+            clock_inputs,
+            feedback_inputs,
+            control_outputs,
+            clock_outputs,
+            feedback_outputs,
+        );
+
+        if audio_outputs.is_empty() {
+            return Ok(());
+        }
+
+        self.generate_block(audio_outputs[0]);
+        Ok(())
+    }
+
+    fn latency(&self) -> usize {
+        0
     }
 }

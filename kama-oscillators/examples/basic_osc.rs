@@ -1,6 +1,7 @@
 //! Basic oscillator example
 use kama_core::traits::Processor;
-use kama_oscillators::{SineOsc, SawOsc, NoiseOsc, NoiseType};
+use kama_core::{AudioNode, ClockTick};
+use kama_oscillators::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
 const BLOCK_SIZE: usize = 64;
 
@@ -27,6 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     saw.init(sample_rate);
     noise.init(sample_rate);
 
+    let clock = ClockTick::new(0, BLOCK_SIZE as u32, sample_rate);
+
     // Prepare buffers
     let mut sine_output = [0.0; BLOCK_SIZE];
     let mut saw_output = [0.0; BLOCK_SIZE];
@@ -37,9 +40,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut noise_outputs = [&mut noise_output];
 
     // Process one block each
-    sine.process(&[], &mut sine_outputs, &[])?;
-    saw.process(&[], &mut saw_outputs, &[])?;
-    noise.process(&[], &mut noise_outputs, &[])?;
+    sine.process(
+        &clock,
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut sine_outputs,
+        &mut [],
+        &mut [],
+        &mut [],
+    )?;
+    saw.process(
+        &clock,
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut saw_outputs,
+        &mut [],
+        &mut [],
+        &mut [],
+    )?;
+    noise.process(
+        &clock,
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut noise_outputs,
+        &mut [],
+        &mut [],
+        &mut [],
+    )?;
 
     // Print first few samples
     println!("Sine first 5 samples: {:?}", &sine_output[..5]);

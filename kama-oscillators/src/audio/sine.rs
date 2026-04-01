@@ -1,10 +1,14 @@
 //! Sine wave oscillator using kama-core-dsp with AudioNum
 
-use kama_core::traits::{Processor, ParameterId, ParamValue};
-use kama_core::{ProcessResult, ProcessError};
-use kama_core_dsp::generators::{BasicOscillator, Waveform, Generator};
+use kama_core::time::ClockTick;
+use kama_core::traits::{
+    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    Processor,
+};
 use kama_core::AudioNum;
+use kama_core::{ProcessError, ProcessResult};
 use kama_core_dsp::algorithm::Algorithm;
+use kama_core_dsp::generators::{BasicOscillator, Generator, Waveform};
 use std::marker::PhantomData;
 
 /// Sine wave oscillator generic over floating point type
@@ -30,25 +34,25 @@ use std::marker::PhantomData;
 pub struct SineOsc<T: AudioNum, const BUF_SIZE: usize> {
     /// Core DSP oscillator
     osc: BasicOscillator<T>,
-    
+
     /// Base frequency in Hz
     frequency: T,
-    
+
     /// Output amplitude (0.0 to 1.0)
     amplitude: T,
-    
+
     /// Phase offset (0.0 to 1.0)
     phase_offset: T,
-    
+
     /// FM amount in Hz (max deviation)
     fm_amount: T,
-    
+
     /// Whether FM is enabled
     use_fm: bool,
-    
-    /// Sample rate
-    sample_rate: T,
-    
+
+    /// Node state
+    state: Option<NodeState<T, BUF_SIZE>>,
+
     /// Phantom data to satisfy const generic
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
@@ -56,13 +60,8 @@ pub struct SineOsc<T: AudioNum, const BUF_SIZE: usize> {
 impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
     /// Create new sine oscillator with default settings
     pub fn new() -> Self {
-        let sample_rate = T::from_f32(44100.0);
-        let osc = BasicOscillator::new(
-            Waveform::Sine,
-            440.0,
-            T::from_f32(1.0)
-        );
-        
+        let osc = BasicOscillator::new(Waveform::Sine, 440.0, T::from_f32(1.0));
+
         Self {
             osc,
             frequency: T::from_f32(440.0),
@@ -70,7 +69,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
             phase_offset: T::ZERO,
             fm_amount: T::ZERO,
             use_fm: false,
-            sample_rate,
+            state: None,
             _phantom: PhantomData,
         }
     }
@@ -116,38 +115,33 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
         ParamValue::Float(value.to_f32())
     }
 
-    /// Generate a block of samples with FM
+    /// Generate a block of samples with FM (sample-by-sample)
     fn generate_block_with_fm(&mut self, output: &mut [T; BUF_SIZE], fm_input: &[T; BUF_SIZE]) {
         let one = T::from_f32(1.0);
         let two = T::from_f32(2.0);
         let min_freq = T::from_f32(0.1);
         let max_freq = T::from_f32(20000.0);
-        
+
         for i in 0..BUF_SIZE {
-            // Calculate modulated frequency: fm_input is 0..1, convert to -1..1
             let mod_normalized = fm_input[i] * two - one;
             let modulation = mod_normalized * self.fm_amount;
-            let modulated_freq = (self.frequency + modulation)
-                .max(min_freq)
-                .min(max_freq);
-            
-            // Update oscillator frequency for this sample
+            let modulated_freq = (self.frequency + modulation).max(min_freq).min(max_freq);
+
             self.osc.set_frequency(modulated_freq.to_f32());
-            
-            // Generate sample
-            output[i] = T::from_f32(self.osc.process_sample(T::ZERO).to_f32()) * self.amplitude;
+            let mut sample_buf = [T::ZERO; 1];
+            self.osc.process_block(&[], &mut sample_buf);
+            output[i] = sample_buf[0] * self.amplitude;
         }
-        
-        // Restore base frequency
+
         self.osc.set_frequency(self.frequency.to_f32());
     }
 
-    /// Generate a block of samples without FM
+    /// Generate a block of samples without FM (efficient block processing)
     fn generate_block_no_fm(&mut self, output: &mut [T; BUF_SIZE]) {
         self.osc.set_frequency(self.frequency.to_f32());
-        
+        self.osc.process_block(&[], &mut output[..]);
         for i in 0..BUF_SIZE {
-            output[i] = T::from_f32(self.osc.process_sample(T::ZERO).to_f32()) * self.amplitude;
+            output[i] = output[i] * self.amplitude;
         }
     }
 }
@@ -158,32 +152,38 @@ impl<T: AudioNum, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
-    fn process(
-        &mut self,
-        inputs: &[&[T; BUF_SIZE]],
-        outputs: &mut [&mut [T; BUF_SIZE]],
-        _control: &[f32],
-    ) -> ProcessResult<()> {
-        if outputs.is_empty() {
-            return Ok(());
+impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+    fn metadata(&self) -> NodeMetadata {
+        NodeMetadata {
+            name: "SineOsc".to_string(),
+            category: NodeCategory::Source,
+            description: "Sine wave oscillator with FM".to_string(),
+            author: "Kama Audio".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            audio_inputs: if self.use_fm { 1 } else { 0 },
+            audio_outputs: 1,
+            control_inputs: 0,
+            control_outputs: 0,
+            clock_inputs: 0,
+            clock_outputs: 0,
+            feedback_ports: 0,
+            parameters: vec![],
         }
-
-        if self.use_fm && !inputs.is_empty() {
-            self.generate_block_with_fm(outputs[0], inputs[0]);
-        } else {
-            self.generate_block_no_fm(outputs[0]);
-        }
-
-        Ok(())
     }
 
-    fn num_audio_inputs(&self) -> usize {
-        if self.use_fm { 1 } else { 0 }
+    fn init(&mut self, sample_rate: f32) {
+        self.osc.init(sample_rate);
+        self.osc.set_frequency(self.frequency.to_f32());
+        self.osc.set_phase(self.phase_offset);
+        self.state = Some(NodeState::new(sample_rate));
     }
 
-    fn num_audio_outputs(&self) -> usize {
-        1
+    fn reset(&mut self) {
+        self.osc.reset();
+        self.osc.set_phase(self.phase_offset);
+        if let Some(state) = &mut self.state {
+            state.reset();
+        }
     }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
@@ -241,20 +241,103 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, B
                     Err(ProcessError::Parameter("Expected bool".into()))
                 }
             }
-            _ => Err(ProcessError::Parameter(format!("Unknown parameter: {}", id))),
+            _ => Err(ProcessError::Parameter(format!(
+                "Unknown parameter: {}",
+                id
+            ))),
         }
     }
 
-    fn init(&mut self, sample_rate: f32) {
-        self.sample_rate = T::from_f32(sample_rate);
-        self.osc.init(sample_rate);
-        self.osc.set_frequency(self.frequency.to_f32());
-        self.osc.set_phase(self.phase_offset);
+    fn id(&self) -> NodeId {
+        NodeId(0)
     }
 
-    fn reset(&mut self) {
-        self.osc.reset();
-        self.osc.set_phase(self.phase_offset);
+    fn set_id(&mut self, _id: NodeId) {}
+
+    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        self.state.as_ref().unwrap()
+    }
+
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        self.state.as_mut().unwrap()
+    }
+
+    fn num_audio_inputs(&self) -> usize {
+        if self.use_fm {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+}
+
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+    fn process(
+        &mut self,
+        clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        control_inputs: &[T],
+        clock_inputs: &[ClockTick],
+        feedback_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        control_outputs: &mut [T],
+        clock_outputs: &mut [ClockTick],
+        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        // Ignore unused inputs/outputs for now
+        let _ = (
+            clock,
+            control_inputs,
+            clock_inputs,
+            feedback_inputs,
+            control_outputs,
+            clock_outputs,
+            feedback_outputs,
+        );
+
+        if audio_outputs.is_empty() {
+            return Ok(());
+        }
+
+        if self.use_fm && !audio_inputs.is_empty() {
+            self.generate_block_with_fm(audio_outputs[0], audio_inputs[0]);
+        } else {
+            self.generate_block_no_fm(audio_outputs[0]);
+        }
+
+        Ok(())
+    }
+
+    fn latency(&self) -> usize {
+        0
     }
 }
 
@@ -269,7 +352,7 @@ mod tests {
             .with_frequency(440.0)
             .with_amplitude(0.7)
             .with_phase(0.25);
-        
+
         assert!(approx_eq!(f32, osc.frequency, 440.0));
         assert!(approx_eq!(f32, osc.amplitude, 0.7));
         assert!(approx_eq!(f32, osc.phase_offset, 0.25));
@@ -281,7 +364,7 @@ mod tests {
             .with_frequency(440.0)
             .with_amplitude(0.7)
             .with_phase(0.25);
-        
+
         assert!((osc.frequency - 440.0).abs() < 1e-10);
         assert!((osc.amplitude - 0.7).abs() < 1e-10);
         assert!((osc.phase_offset - 0.25).abs() < 1e-10);
@@ -292,17 +375,28 @@ mod tests {
         let mut osc = SineOsc::<f32, 64>::new()
             .with_frequency(440.0)
             .with_amplitude(0.5);
-        
+
         osc.init(44100.0);
-        
+
         let mut output = [0.0; 64];
         let mut outputs = [&mut output];
-        
-        osc.process(&[], &mut outputs, &[]).unwrap();
-        
+        let clock = ClockTick::new(0, 64, 44100.0);
+        osc.process(
+            &clock,
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut outputs,
+            &mut [],
+            &mut [],
+            &mut [],
+        )
+        .unwrap();
+
         // First sample should be near 0 (sine with phase 0)
         assert!(approx_eq!(f32, output[0], 0.0, epsilon = 1e-4));
-        
+
         // All samples should be within amplitude range
         for &sample in &output {
             assert!(sample >= -0.5 && sample <= 0.5);
@@ -314,17 +408,28 @@ mod tests {
         let mut osc = SineOsc::<f64, 64>::new()
             .with_frequency(440.0)
             .with_amplitude(0.5);
-        
+
         osc.init(44100.0);
-        
+
         let mut output = [0.0; 64];
         let mut outputs = [&mut output];
-        
-        osc.process(&[], &mut outputs, &[]).unwrap();
-        
+        let clock = ClockTick::new(0, 64, 44100.0);
+        osc.process(
+            &clock,
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut outputs,
+            &mut [],
+            &mut [],
+            &mut [],
+        )
+        .unwrap();
+
         // First sample should be near 0
         assert!((output[0]).abs() < 1e-10);
-        
+
         // All samples should be within amplitude range
         for &sample in &output {
             assert!(sample >= -0.5 && sample <= 0.5);
@@ -333,19 +438,28 @@ mod tests {
 
     #[test]
     fn test_sine_with_fm() {
-        let mut osc = SineOsc::<f32, 64>::new()
-            .with_frequency(440.0)
-            .with_fm(2.0);
-        
+        let mut osc = SineOsc::<f32, 64>::new().with_frequency(440.0).with_fm(2.0);
+
         osc.init(44100.0);
-        
+
         let mut output = [0.0; 64];
         let fm_input = [0.5; 64];
         let inputs = [&fm_input];
         let mut outputs = [&mut output];
-        
-        osc.process(&inputs, &mut outputs, &[]).unwrap();
-        
+        let clock = ClockTick::new(0, 64, 44100.0);
+        osc.process(
+            &clock,
+            &inputs,
+            &[],
+            &[],
+            &[],
+            &mut outputs,
+            &mut [],
+            &mut [],
+            &mut [],
+        )
+        .unwrap();
+
         // Should produce valid output
         assert!(output.iter().any(|&x| x != 0.0));
     }
@@ -353,17 +467,19 @@ mod tests {
     #[test]
     fn test_parameter_handling() {
         let mut osc = SineOsc::<f32, 64>::new();
-        
+
         let freq_id = ParameterId::new("frequency").unwrap();
-        osc.set_parameter(&freq_id, ParamValue::Float(880.0)).unwrap();
+        osc.set_parameter(&freq_id, ParamValue::Float(880.0))
+            .unwrap();
         assert!(approx_eq!(f32, osc.frequency, 880.0));
-        
+
         let amp_id = ParameterId::new("amplitude").unwrap();
         osc.set_parameter(&amp_id, ParamValue::Float(0.3)).unwrap();
         assert!(approx_eq!(f32, osc.amplitude, 0.3));
-        
+
         let phase_id = ParameterId::new("phase").unwrap();
-        osc.set_parameter(&phase_id, ParamValue::Float(0.75)).unwrap();
+        osc.set_parameter(&phase_id, ParamValue::Float(0.75))
+            .unwrap();
         assert!(approx_eq!(f32, osc.phase_offset, 0.75));
     }
 }

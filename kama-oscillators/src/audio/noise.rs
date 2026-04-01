@@ -1,7 +1,11 @@
 //! Noise generators
 
-use kama_core::traits::{Processor, ParameterId, ParamValue};
-use kama_core::{ProcessResult, ProcessError};
+use kama_core::time::ClockTick;
+use kama_core::traits::{
+    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    Processor,
+};
+use kama_core::{ProcessError, ProcessResult};
 use rand::Rng;
 
 /// Types of noise
@@ -9,10 +13,10 @@ use rand::Rng;
 pub enum NoiseType {
     /// White noise (uniform spectrum)
     White,
-    
+
     /// Pink noise (1/f spectrum)
     Pink,
-    
+
     /// Brown noise (1/f² spectrum)
     Brown,
 }
@@ -30,13 +34,13 @@ pub enum NoiseType {
 pub struct NoiseOsc<const BUF_SIZE: usize> {
     /// Noise type
     noise_type: NoiseType,
-    
+
     /// Output amplitude
     amplitude: f32,
-    
-    /// Sample rate
-    sample_rate: f32,
-    
+
+    /// Node state
+    state: Option<NodeState<f32, BUF_SIZE>>,
+
     // State for pink noise (Paul Kellett's method)
     pink_b0: f32,
     pink_b1: f32,
@@ -45,7 +49,7 @@ pub struct NoiseOsc<const BUF_SIZE: usize> {
     pink_b4: f32,
     pink_b5: f32,
     pink_b6: f32,
-    
+
     // State for brown noise
     brown_value: f32,
 }
@@ -56,7 +60,7 @@ impl<const BUF_SIZE: usize> NoiseOsc<BUF_SIZE> {
         Self {
             noise_type: NoiseType::White,
             amplitude: 0.5,
-            sample_rate: 44100.0,
+            state: None,
             pink_b0: 0.0,
             pink_b1: 0.0,
             pink_b2: 0.0,
@@ -106,9 +110,9 @@ impl<const BUF_SIZE: usize> NoiseOsc<BUF_SIZE> {
             + self.pink_b5
             + self.pink_b6
             + white * 0.5362;
-        
+
         self.pink_b6 = white * 0.115926;
-        
+
         (pink * 0.11) * self.amplitude // Scale to approx [-1,1]
     }
 
@@ -149,27 +153,42 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
-    fn process(
-        &mut self,
-        _inputs: &[&[f32; BUF_SIZE]],
-        outputs: &mut [&mut [f32; BUF_SIZE]],
-        _control: &[f32],
-    ) -> ProcessResult<()> {
-        if outputs.is_empty() {
-            return Ok(());
+impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
+    fn metadata(&self) -> NodeMetadata {
+        NodeMetadata {
+            name: "NoiseOsc".to_string(),
+            category: NodeCategory::Source,
+            description: "Noise generator (white, pink, brown)".to_string(),
+            author: "Kama Audio".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            audio_inputs: 0,
+            audio_outputs: 1,
+            control_inputs: 0,
+            control_outputs: 0,
+            clock_inputs: 0,
+            clock_outputs: 0,
+            feedback_ports: 0,
+            parameters: vec![],
         }
-
-        self.generate_block(outputs[0]);
-        Ok(())
     }
 
-    fn num_audio_inputs(&self) -> usize {
-        0
+    fn init(&mut self, sample_rate: f32) {
+        self.state = Some(NodeState::new(sample_rate));
+        self.reset();
     }
 
-    fn num_audio_outputs(&self) -> usize {
-        1
+    fn reset(&mut self) {
+        self.pink_b0 = 0.0;
+        self.pink_b1 = 0.0;
+        self.pink_b2 = 0.0;
+        self.pink_b3 = 0.0;
+        self.pink_b4 = 0.0;
+        self.pink_b5 = 0.0;
+        self.pink_b6 = 0.0;
+        self.brown_value = 0.0;
+        if let Some(state) = &mut self.state {
+            state.reset();
+        }
     }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
@@ -194,7 +213,12 @@ impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
                     "white" => NoiseType::White,
                     "pink" => NoiseType::Pink,
                     "brown" => NoiseType::Brown,
-                    _ => return Err(ProcessError::Parameter(format!("Unknown noise type: {}", t))),
+                    _ => {
+                        return Err(ProcessError::Parameter(format!(
+                            "Unknown noise type: {}",
+                            t
+                        )))
+                    }
                 };
                 self.reset();
                 Ok(())
@@ -203,24 +227,94 @@ impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
                 self.amplitude = a.clamp(0.0, 1.0);
                 Ok(())
             }
-            _ => Err(ProcessError::Parameter(format!("Unknown parameter: {}", id))),
+            _ => Err(ProcessError::Parameter(format!(
+                "Unknown parameter: {}",
+                id
+            ))),
         }
     }
 
-    fn init(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-        self.reset();
+    fn id(&self) -> NodeId {
+        NodeId(0)
     }
 
-    fn reset(&mut self) {
-        self.pink_b0 = 0.0;
-        self.pink_b1 = 0.0;
-        self.pink_b2 = 0.0;
-        self.pink_b3 = 0.0;
-        self.pink_b4 = 0.0;
-        self.pink_b5 = 0.0;
-        self.pink_b6 = 0.0;
-        self.brown_value = 0.0;
+    fn set_id(&mut self, _id: NodeId) {}
+
+    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
+
+    fn output_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+
+    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
+
+    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
+
+    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
+        self.state.as_ref().unwrap()
+    }
+
+    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
+        self.state.as_mut().unwrap()
+    }
+
+    fn num_audio_inputs(&self) -> usize {
+        0
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
+}
+
+impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
+    fn process(
+        &mut self,
+        clock: &ClockTick,
+        audio_inputs: &[&[f32; BUF_SIZE]],
+        control_inputs: &[f32],
+        clock_inputs: &[ClockTick],
+        feedback_inputs: &[&[f32; BUF_SIZE]],
+        audio_outputs: &mut [&mut [f32; BUF_SIZE]],
+        control_outputs: &mut [f32],
+        clock_outputs: &mut [ClockTick],
+        feedback_outputs: &mut [&mut [f32; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        let _ = (
+            clock,
+            audio_inputs,
+            control_inputs,
+            clock_inputs,
+            feedback_inputs,
+            control_outputs,
+            clock_outputs,
+            feedback_outputs,
+        );
+
+        if audio_outputs.is_empty() {
+            return Ok(());
+        }
+
+        self.generate_block(audio_outputs[0]);
+        Ok(())
+    }
+
+    fn latency(&self) -> usize {
+        0
     }
 }
 
@@ -233,7 +327,7 @@ mod tests {
         let noise = NoiseOsc::<64>::new()
             .with_type(NoiseType::Pink)
             .with_amplitude(0.3);
-        
+
         assert!(matches!(noise.noise_type, NoiseType::Pink));
         assert_eq!(noise.amplitude, 0.3);
     }
@@ -242,15 +336,28 @@ mod tests {
     fn test_noise_generation() {
         let mut noise = NoiseOsc::<64>::new();
         noise.init(44100.0);
-        
+
         let mut output = [0.0; 64];
         let mut outputs = [&mut output];
-        
-        noise.process(&[], &mut outputs, &[]).unwrap();
-        
+        let clock = ClockTick::new(0, 64, 44100.0);
+
+        noise
+            .process(
+                &clock,
+                &[],
+                &[],
+                &[],
+                &[],
+                &mut outputs,
+                &mut [],
+                &mut [],
+                &mut [],
+            )
+            .unwrap();
+
         // Should have some non-zero samples
         assert!(output.iter().any(|&x| x != 0.0));
-        
+
         // All samples should be within amplitude range
         for &sample in &output {
             assert!(sample >= -1.0 && sample <= 1.0);
@@ -260,18 +367,30 @@ mod tests {
     #[test]
     fn test_noise_types() {
         let types = [NoiseType::White, NoiseType::Pink, NoiseType::Brown];
-        
+
         for &noise_type in &types {
-            let mut noise = NoiseOsc::<64>::new()
-                .with_type(noise_type);
-            
+            let mut noise = NoiseOsc::<64>::new().with_type(noise_type);
+
             noise.init(44100.0);
-            
+
             let mut output = [0.0; 64];
             let mut outputs = [&mut output];
-            
-            noise.process(&[], &mut outputs, &[]).unwrap();
-            
+            let clock = ClockTick::new(0, 64, 44100.0);
+
+            noise
+                .process(
+                    &clock,
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    &mut outputs,
+                    &mut [],
+                    &mut [],
+                    &mut [],
+                )
+                .unwrap();
+
             // All types should produce valid output
             assert!(output.iter().any(|&x| x != 0.0));
         }
