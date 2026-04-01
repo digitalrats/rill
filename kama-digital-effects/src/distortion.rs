@@ -1,10 +1,10 @@
 //! Distortion effect with waveshaping
 
-use kama_core::traits::{
-    ParamMetadata, ParamRange, ParamType, NodeCategory, NodeMetadata, NodeTypeId,
-    ParameterId, ParamValue, Processor,
+use kama_core::{
+    math::AudioNum,
+    traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
-use kama_core::{ProcessResult, ProcessError};
 
 /// Distortion type
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,6 +35,16 @@ impl DistortionType {
             _ => None,
         }
     }
+
+    /// Convert to string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DistortionType::HardClip => "hard_clip",
+            DistortionType::SoftClip => "soft_clip",
+            DistortionType::Tube => "tube",
+            DistortionType::Fuzz => "fuzz",
+        }
+    }
 }
 
 /// Distortion effect
@@ -43,64 +53,67 @@ impl DistortionType {
 /// - drive: input gain (1.0 - 100.0)
 /// - type: distortion type
 /// - output_gain: output level (0.0 - 2.0)
-pub struct Distortion<const BUF_SIZE: usize> {
+pub struct Distortion<T: AudioNum, const BUF_SIZE: usize> {
+    /// Node identifier
+    id: NodeId,
+    /// Node metadata
+    metadata: NodeMetadata,
+    /// Input ports
+    inputs: Vec<Port<T, BUF_SIZE>>,
+    /// Output ports
+    outputs: Vec<Port<T, BUF_SIZE>>,
+    /// Control ports
+    controls: Vec<Port<T, BUF_SIZE>>,
+    /// Node state
+    state: NodeState<T, BUF_SIZE>,
     /// Distortion type
-    distortion_type: DistortionType,
+    pub distortion_type: DistortionType,
     /// Drive (input gain)
-    drive: f32,
+    pub drive: f32,
     /// Output gain
-    output_gain: f32,
+    pub output_gain: f32,
     /// Sample rate (unused but required for Processor)
     sample_rate: f32,
 }
 
-impl<const BUF_SIZE: usize> Distortion<BUF_SIZE> {
+impl<T: AudioNum, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
     /// Create a new distortion effect with default parameters
-    pub fn new() -> Self {
+    pub fn new(sample_rate: f32) -> Self {
+        let metadata = NodeMetadata::new("Distortion", NodeCategory::Processor);
+
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+
+        // Create one audio input and one audio output
+        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
+        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+
         Self {
+            id: NodeId(0),
+            metadata,
+            inputs,
+            outputs,
+            controls: Vec::new(),
+            state: NodeState::new(sample_rate),
             distortion_type: DistortionType::SoftClip,
             drive: 1.0,
             output_gain: 1.0,
-            sample_rate: 44100.0,
+            sample_rate,
         }
     }
 
     /// Create a new distortion effect with custom parameters
-    pub fn with_params(distortion_type: DistortionType, drive: f32, output_gain: f32) -> Self {
-        Self {
-            distortion_type,
-            drive: drive.max(1.0).min(100.0),
-            output_gain: output_gain.clamp(0.0, 2.0),
-            sample_rate: 44100.0,
-        }
-    }
-
-    /// Process a single sample
-    pub fn process_sample(&self, input: f32) -> f32 {
-        let driven = input * self.drive;
-
-        let distorted = match self.distortion_type {
-            DistortionType::HardClip => driven.clamp(-1.0, 1.0),
-            DistortionType::SoftClip => driven.tanh(),
-            DistortionType::Tube => {
-                // Tube-like saturation
-                if driven > 0.0 {
-                    1.0 - (-driven).exp()
-                } else {
-                    -1.0 + driven.exp()
-                }
-            }
-            DistortionType::Fuzz => {
-                // Asymmetric fuzz
-                if driven > 0.0 {
-                    1.0 - 1.0 / (1.0 + driven)
-                } else {
-                    driven
-                }
-            }
-        };
-
-        distorted * self.output_gain
+    pub fn with_params(
+        sample_rate: f32,
+        distortion_type: DistortionType,
+        drive: f32,
+        output_gain: f32,
+    ) -> Self {
+        let mut instance = Self::new(sample_rate);
+        instance.set_type(distortion_type);
+        instance.set_drive(drive);
+        instance.set_output_gain(output_gain);
+        instance
     }
 
     /// Set distortion type
@@ -118,53 +131,70 @@ impl<const BUF_SIZE: usize> Distortion<BUF_SIZE> {
         self.output_gain = gain.clamp(0.0, 2.0);
     }
 
-    /// Process a block of samples (internal helper)
-    fn process_block(&self, inputs: &[&[f32; BUF_SIZE]], outputs: &mut [&mut [f32; BUF_SIZE]]) {
-        let input = inputs[0];
-        let output = &mut outputs[0];
-        for i in 0..BUF_SIZE {
-            output[i] = self.process_sample(input[i]);
-        }
+    /// Process a single sample
+    pub fn process_sample(&self, input: T) -> T {
+        let driven = input.mul(T::from_f32(self.drive));
+
+        let distorted = match self.distortion_type {
+            DistortionType::HardClip => driven.clamp(T::MIN, T::MAX),
+            DistortionType::SoftClip => T::from_f32(driven.to_f32().tanh()),
+            DistortionType::Tube => {
+                // Tube-like saturation
+                if driven > T::ZERO {
+                    T::ONE - (-driven).exp()
+                } else {
+                    -T::ONE + driven.exp()
+                }
+            }
+            DistortionType::Fuzz => {
+                // Asymmetric fuzz
+                if driven > T::ZERO {
+                    T::ONE - T::ONE.div(T::ONE + driven)
+                } else {
+                    driven
+                }
+            }
+        };
+
+        distorted.mul(T::from_f32(self.output_gain))
     }
 }
 
-impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Distortion<BUF_SIZE> {
-    fn process(
-        &mut self,
-        inputs: &[&[f32; BUF_SIZE]],
-        outputs: &mut [&mut [f32; BUF_SIZE]],
-        _control: &[f32],
-    ) -> ProcessResult<()> {
-        if inputs.len() < 1 || outputs.len() < 1 {
-            return Err(ProcessError::processing("insufficient channels"));
-        }
-        self.process_block(inputs, outputs);
-        Ok(())
+impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
+    fn node_type_id(&self) -> kama_core::NodeTypeId
+    where
+        Self: 'static + Sized,
+    {
+        kama_core::NodeTypeId::of::<Self>()
     }
 
-    fn num_audio_inputs(&self) -> usize {
-        1
+    fn id(&self) -> NodeId {
+        self.id
     }
 
-    fn num_audio_outputs(&self) -> usize {
-        1
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
     }
 
-    fn num_control_inputs(&self) -> usize {
-        0
+    fn metadata(&self) -> NodeMetadata {
+        self.metadata.clone()
+    }
+
+    fn init(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+    }
+
+    fn reset(&mut self) {
+        self.state.sample_pos = 0;
+        self.state.blocks_processed = 0;
     }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
-        match id.as_str() {
-            "type" => {
-                let type_str = match self.distortion_type {
-                    DistortionType::HardClip => "hard_clip",
-                    DistortionType::SoftClip => "soft_clip",
-                    DistortionType::Tube => "tube",
-                    DistortionType::Fuzz => "fuzz",
-                };
-                Some(ParamValue::Choice(type_str.to_string()))
-            }
+        let name = id.as_str();
+        match name {
+            "type" => Some(ParamValue::Choice(
+                self.distortion_type.as_str().to_string(),
+            )),
             "drive" => Some(ParamValue::Float(self.drive)),
             "output_gain" => Some(ParamValue::Float(self.output_gain)),
             _ => None,
@@ -172,90 +202,110 @@ impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Distortion<BUF_SIZE> {
     }
 
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
-        match (id.as_str(), value) {
-            ("type", ParamValue::Choice(t)) => {
-                if let Some(dt) = DistortionType::from_str(&t) {
-                    self.set_type(dt);
-                    Ok(())
+        let name = id.as_str();
+        match name {
+            "type" => {
+                if let ParamValue::Choice(t) = value {
+                    if let Some(dt) = DistortionType::from_str(&t) {
+                        self.set_type(dt);
+                        Ok(())
+                    } else {
+                        Err(ProcessError::parameter("unknown distortion type"))
+                    }
                 } else {
-                    Err(ProcessError::parameter("unknown distortion type"))
+                    Err(ProcessError::parameter("expected Choice value"))
                 }
             }
-            ("drive", ParamValue::Float(d)) => {
-                self.set_drive(d);
-                Ok(())
+            "drive" => {
+                if let Some(v) = value.as_f32() {
+                    self.set_drive(v);
+                    Ok(())
+                } else {
+                    Err(ProcessError::parameter("expected float value"))
+                }
             }
-            ("output_gain", ParamValue::Float(g)) => {
-                self.set_output_gain(g);
-                Ok(())
+            "output_gain" => {
+                if let Some(v) = value.as_f32() {
+                    self.set_output_gain(v);
+                    Ok(())
+                } else {
+                    Err(ProcessError::parameter("expected float value"))
+                }
             }
             _ => Err(ProcessError::parameter("unknown parameter")),
         }
     }
 
-    fn init(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-        // Nothing else to initialize
+    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.inputs.get(index)
     }
 
-    fn reset(&mut self) {
-        // Nothing to reset
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.inputs.get_mut(index)
+    }
+
+    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.outputs.get(index)
+    }
+
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.outputs.get_mut(index)
+    }
+
+    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.controls.get(index)
+    }
+
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.controls.get_mut(index)
+    }
+
+    fn num_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
     }
 }
 
-// Implement NodeMetadata for compatibility
-impl<const BUF_SIZE: usize> Distortion<BUF_SIZE> {
-    /// Returns metadata about this node
-    pub fn metadata() -> NodeMetadata {
-        NodeMetadata {
-            name: "Distortion".to_string(),
-            category: NodeCategory::Processor,
-            description: "Distortion with multiple waveshaping types".to_string(),
-            author: "Kama Digital Effects".to_string(),
-            version: "0.3.0".to_string(),
-            parameters: vec![
-                ParamMetadata {
-                    name: "type".to_string(),
-                    typ: ParamType::Choice,
-                    default: ParamValue::Choice("soft_clip".to_string()),
-                    range: ParamRange::new(),
-                    unit: None,
-                    choices: Some(
-                        DistortionType::names()
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &name)| (name.to_string(), i as f32))
-                            .collect(),
-                    ),
-                },
-                ParamMetadata {
-                    name: "drive".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(1.0),
-                    range: ParamRange::new()
-                        .with_min(1.0)
-                        .with_max(100.0)
-                        .with_step(1.0),
-                    unit: Some("gain".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "output_gain".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(1.0),
-                    range: ParamRange::new()
-                        .with_min(0.0)
-                        .with_max(2.0)
-                        .with_step(0.1),
-                    unit: Some("gain".to_string()),
-                    choices: None,
-                },
-            ],
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
+    fn process(
+        &mut self,
+        _clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        _control_inputs: &[T],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        _control_outputs: &mut [T],
+        _clock_outputs: &mut [ClockTick],
+        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        if audio_outputs.is_empty() {
+            return Ok(());
         }
+
+        if let (Some(input_buffer), Some(output_buffer)) =
+            (audio_inputs.first(), audio_outputs.first_mut())
+        {
+            for i in 0..BUF_SIZE {
+                output_buffer[i] = self.process_sample(input_buffer[i]);
+            }
+        }
+
+        Ok(())
     }
 
-    /// Returns the node type ID
-    pub fn node_type_id() -> NodeTypeId {
-        NodeTypeId::of::<Self>()
+    fn latency(&self) -> usize {
+        0
     }
 }

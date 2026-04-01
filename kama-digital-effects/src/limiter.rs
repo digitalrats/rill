@@ -1,13 +1,12 @@
-// kama-digital-effects/src/limiter.rs
+//! Limiter with lookahead using Delay + envelope detection
 
-use kama_core::buffer::DelayLine;
-use kama_core::traits::{
-    ParamMetadata, ParamRange, ParamType, NodeCategory, NodeMetadata, NodeTypeId,
-    ParameterId, ParamValue, Processor,
-};
-use kama_core::{ProcessResult, ProcessError};
-use kama_core::math::AudioNum;
 use crate::delay::Delay;
+use kama_core::{
+    buffer::DelayLine,
+    math::AudioNum,
+    traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
+};
 
 /// Maximum lookahead time in seconds (10 ms)
 const MAX_LOOKAHEAD_TIME: f32 = 0.01;
@@ -19,15 +18,27 @@ const MAX_LOOKAHEAD_SAMPLES: usize = (MAX_LOOKAHEAD_TIME * MAX_SAMPLE_RATE) as u
 const ANALYSIS_BUF_SIZE: usize = MAX_LOOKAHEAD_SAMPLES * 2;
 
 /// Limiter with lookahead using Delay + envelope detection
-pub struct Limiter<const BUF_SIZE: usize> {
+pub struct Limiter<T: AudioNum, const BUF_SIZE: usize> {
+    /// Node identifier
+    id: NodeId,
+    /// Node metadata
+    metadata: NodeMetadata,
+    /// Input ports
+    inputs: Vec<Port<T, BUF_SIZE>>,
+    /// Output ports
+    outputs: Vec<Port<T, BUF_SIZE>>,
+    /// Control ports
+    controls: Vec<Port<T, BUF_SIZE>>,
+    /// Node state
+    state: NodeState<T, BUF_SIZE>,
     /// Delay line for lookahead
-    delay: Delay<BUF_SIZE>,
+    delay: Delay<T, BUF_SIZE>,
     /// Buffer for envelope detection
-    analysis_buffer: DelayLine<f32, ANALYSIS_BUF_SIZE>,
+    analysis_buffer: DelayLine<T, ANALYSIS_BUF_SIZE>,
     /// Threshold in dB
     threshold_db: f32,
     /// Threshold in linear scale
-    threshold_linear: f32,
+    threshold_linear: T,
     /// Output gain after limiting
     output_gain: f32,
     /// Attack time in seconds
@@ -49,20 +60,25 @@ pub struct Limiter<const BUF_SIZE: usize> {
     /// Current write position
     position: usize,
     /// Buffer for direct passthrough during initialization
-    init_buffer: Vec<f32>,
+    init_buffer: Vec<T>,
     /// Whether we're in initialization phase
     initializing: bool,
     /// Whether we're in warmup phase after initialization
     warming_up: bool,
 }
 
-impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
+impl<T: AudioNum, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
     /// Create a new limiter
-    pub fn new(threshold_db: f32, attack: f32, release: f32, output_gain: f32) -> Self {
+    pub fn new(
+        sample_rate: f32,
+        threshold_db: f32,
+        attack: f32,
+        release: f32,
+        output_gain: f32,
+    ) -> Self {
         let threshold_db = threshold_db.clamp(-60.0, 0.0);
-        let threshold_linear = 10.0_f32.powf(threshold_db / 20.0);
+        let threshold_linear = T::from_f32(10.0_f32.powf(threshold_db / 20.0));
 
-        let sample_rate = 44100.0;
         let attack = attack.clamp(0.001, 0.1);
         let release = release.clamp(0.01, 1.0);
 
@@ -73,7 +89,7 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
         let lookahead_samples = (lookahead * sample_rate) as usize;
 
         // Delay with needed delay, feedback=0, mix=1.0 (100% wet)
-        let delay = Delay::with_params(lookahead, 0.0, 1.0);
+        let delay = Delay::with_params(sample_rate, lookahead, 0.0, 1.0);
 
         // Buffer for analysis
         let analysis_buffer = DelayLine::new(sample_rate);
@@ -81,7 +97,19 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
         // Buffer for temporary storage during initialization
         let init_buffer = Vec::with_capacity(lookahead_samples);
 
+        let metadata = NodeMetadata::new("Limiter", NodeCategory::Processor);
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
+        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+
         Self {
+            id: NodeId(0),
+            metadata,
+            inputs,
+            outputs,
+            controls: Vec::new(),
+            state: NodeState::new(sample_rate),
             delay,
             analysis_buffer,
             threshold_db,
@@ -103,7 +131,7 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
     }
 
     /// Process a single sample
-    pub fn process_sample(&mut self, input: f32) -> f32 {
+    pub fn process_sample(&mut self, input: T) -> T {
         self.position += 1;
 
         // 1. Write input to analysis_buffer
@@ -125,14 +153,11 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
                 // Clear Delay
                 self.delay.reset();
 
-                println!("Initialization complete, starting warmup...");
+                // Debug
+                // println!("Initialization complete, starting warmup...");
             }
 
             // During initialization output = input
-            if self.position <= 5 {
-                println!("Init {}: in={:.3}, out={:.3}", self.position, input, input);
-            }
-
             return input;
         }
 
@@ -140,10 +165,6 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
         if self.warming_up {
             // Still use input as output while Delay fills with real data
             if self.position < self.lookahead_samples * 2 {
-                if self.position == self.lookahead_samples + 1 {
-                    println!("Warmup started at pos {}", self.position);
-                }
-
                 // Fill Delay with real values
                 if self.position - self.lookahead_samples <= self.init_buffer.len() {
                     let idx = self.position - self.lookahead_samples - 1;
@@ -156,7 +177,7 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
                 // Check if warmup is complete
                 if self.position >= self.lookahead_samples * 2 - 1 {
                     self.warming_up = false;
-                    println!("Warmup complete at pos {}", self.position);
+                    // println!("Warmup complete at pos {}", self.position);
                 }
 
                 return input;
@@ -165,15 +186,18 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
 
         // 5. Analyze signal in analysis_buffer
         // Look for maximum amplitude within lookahead window
-        let mut max_amp = 0.0f32;
+        let mut max_amp = T::ZERO;
         for offset in 0..self.lookahead_samples {
             let sample = self.analysis_buffer.read_delayed(offset);
-            max_amp = max_amp.max(sample.abs());
+            let abs_sample = sample.abs();
+            if abs_sample > max_amp {
+                max_amp = abs_sample;
+            }
         }
 
         // 6. Compute target gain
         let target_gain = if max_amp > self.threshold_linear {
-            self.threshold_linear / max_amp
+            self.threshold_linear.div(max_amp).to_f32()
         } else {
             1.0
         };
@@ -188,19 +212,19 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
         }
 
         // 8. Apply gain to delayed signal
-        let output = delayed * self.current_gain * self.output_gain;
+        let output = delayed.mul(T::from_f32(self.current_gain * self.output_gain));
 
         // Debug for high signal
-        if input > 1.0 && self.position > self.lookahead_samples * 2 {
-            println!("PROC: pos={}, in={:.3}, max={:.3}, target={:.3}, gain={:.3}, delay={:.3}, out={:.3}", 
-                     self.position, input, max_amp, target_gain, self.current_gain, delayed, output);
-        }
+        // if input > T::ONE && self.position > self.lookahead_samples * 2 {
+        //     println!("PROC: pos={}, in={:.3}, max={:.3}, target={:.3}, gain={:.3}, delay={:.3}, out={:.3}",
+        //              self.position, input.to_f32(), max_amp.to_f32(), target_gain, self.current_gain, delayed.to_f32(), output.to_f32());
+        // }
 
-        output.clamp(-2.0, 2.0)
+        output.clamp(T::from_f32(-2.0), T::from_f32(2.0))
     }
 
     /// Process a block of samples
-    pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
+    pub fn process_block(&mut self, input: &[T], output: &mut [T]) {
         for i in 0..input.len().min(output.len()) {
             output[i] = self.process_sample(input[i]);
         }
@@ -219,7 +243,7 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
     /// Set threshold in dB
     pub fn set_threshold(&mut self, db: f32) {
         self.threshold_db = db.clamp(-60.0, 0.0);
-        self.threshold_linear = 10.0_f32.powf(self.threshold_db / 20.0);
+        self.threshold_linear = T::from_f32(10.0_f32.powf(self.threshold_db / 20.0));
     }
 
     /// Set attack time
@@ -263,80 +287,36 @@ impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
         if self.initializing || self.warming_up {
             // Fill buffers with test values
             for _ in 0..self.lookahead_samples * 2 {
-                let test_val = 0.1;
+                let test_val = T::from_f32(0.1);
                 self.analysis_buffer.write(test_val);
                 let _ = self.delay.process_sample(test_val);
             }
             self.initializing = false;
             self.warming_up = false;
             self.position = self.lookahead_samples * 2;
-            println!("Force ready completed");
+            // println!("Force ready completed");
         }
     }
 }
 
-impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Limiter<BUF_SIZE> {
-    fn process(
-        &mut self,
-        inputs: &[&[f32; BUF_SIZE]],
-        outputs: &mut [&mut [f32; BUF_SIZE]],
-        _control: &[f32],
-    ) -> ProcessResult<()> {
-        if inputs.len() < 1 || outputs.len() < 1 {
-            return Err(ProcessError::processing("insufficient channels"));
-        }
-        let input = inputs[0];
-        let output = &mut outputs[0];
-        for i in 0..BUF_SIZE {
-            output[i] = self.process_sample(input[i]);
-        }
-        Ok(())
+impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
+    fn node_type_id(&self) -> kama_core::NodeTypeId
+    where
+        Self: 'static + Sized,
+    {
+        kama_core::NodeTypeId::of::<Self>()
     }
 
-    fn num_audio_inputs(&self) -> usize {
-        1
+    fn id(&self) -> NodeId {
+        self.id
     }
 
-    fn num_audio_outputs(&self) -> usize {
-        1
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
     }
 
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
-        match id.as_str() {
-            "threshold" => Some(ParamValue::Float(self.threshold_db)),
-            "attack" => Some(ParamValue::Float(self.attack)),
-            "release" => Some(ParamValue::Float(self.release)),
-            "output_gain" => Some(ParamValue::Float(self.output_gain)),
-            "lookahead" => Some(ParamValue::Float(self.lookahead)),
-            "current_gain" => Some(ParamValue::Float(self.current_gain)),
-            _ => None,
-        }
-    }
-
-    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
-        match (id.as_str(), value) {
-            ("threshold", ParamValue::Float(t)) => {
-                self.set_threshold(t);
-                Ok(())
-            }
-            ("attack", ParamValue::Float(a)) => {
-                self.set_attack(a);
-                Ok(())
-            }
-            ("release", ParamValue::Float(r)) => {
-                self.set_release(r);
-                Ok(())
-            }
-            ("output_gain", ParamValue::Float(g)) => {
-                self.output_gain = g.clamp(0.0, 2.0);
-                Ok(())
-            }
-            ("lookahead", ParamValue::Float(l)) => {
-                self.set_lookahead(l);
-                Ok(())
-            }
-            _ => Err(ProcessError::parameter("unknown parameter")),
-        }
+    fn metadata(&self) -> NodeMetadata {
+        self.metadata.clone()
     }
 
     fn init(&mut self, sample_rate: f32) {
@@ -357,82 +337,128 @@ impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Limiter<BUF_SIZE> {
     }
 
     fn reset(&mut self) {
+        self.state.sample_pos = 0;
+        self.state.blocks_processed = 0;
         Limiter::reset(self);
     }
-}
 
-// Implement NodeMetadata for compatibility
-impl<const BUF_SIZE: usize> Limiter<BUF_SIZE> {
-    /// Returns metadata about this node
-    pub fn metadata() -> NodeMetadata {
-        NodeMetadata {
-            name: "Limiter".to_string(),
-            category: NodeCategory::Processor,
-            description: "Lookahead limiter using Delay".to_string(),
-            author: "Kama Digital Effects".to_string(),
-            version: "0.2.0".to_string(),
-            parameters: vec![
-                ParamMetadata {
-                    name: "threshold".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(0.0),
-                    range: ParamRange::new()
-                        .with_min(-60.0)
-                        .with_max(0.0)
-                        .with_step(1.0),
-                    unit: Some("dB".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "attack".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(0.005),
-                    range: ParamRange::new()
-                        .with_min(0.001)
-                        .with_max(0.1)
-                        .with_step(0.001),
-                    unit: Some("s".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "release".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(0.1),
-                    range: ParamRange::new()
-                        .with_min(0.01)
-                        .with_max(1.0)
-                        .with_step(0.01),
-                    unit: Some("s".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "output_gain".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(1.0),
-                    range: ParamRange::new()
-                        .with_min(0.0)
-                        .with_max(2.0)
-                        .with_step(0.1),
-                    unit: Some("gain".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "lookahead".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(0.005),
-                    range: ParamRange::new()
-                        .with_min(0.0)
-                        .with_max(0.01)
-                        .with_step(0.0001),
-                    unit: Some("s".to_string()),
-                    choices: None,
-                },
-            ],
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        let name = id.as_str();
+        match name {
+            "threshold" => Some(ParamValue::Float(self.threshold_db)),
+            "attack" => Some(ParamValue::Float(self.attack)),
+            "release" => Some(ParamValue::Float(self.release)),
+            "output_gain" => Some(ParamValue::Float(self.output_gain)),
+            "lookahead" => Some(ParamValue::Float(self.lookahead)),
+            "current_gain" => Some(ParamValue::Float(self.current_gain)),
+            _ => None,
         }
     }
 
-    /// Returns the node type ID
-    pub fn node_type_id() -> NodeTypeId {
-        NodeTypeId::of::<Self>()
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+        let name = id.as_str();
+        if let Some(v) = value.as_f32() {
+            match name {
+                "threshold" => {
+                    self.set_threshold(v);
+                    Ok(())
+                }
+                "attack" => {
+                    self.set_attack(v);
+                    Ok(())
+                }
+                "release" => {
+                    self.set_release(v);
+                    Ok(())
+                }
+                "output_gain" => {
+                    self.output_gain = v.clamp(0.0, 2.0);
+                    Ok(())
+                }
+                "lookahead" => {
+                    self.set_lookahead(v);
+                    Ok(())
+                }
+                _ => Err(ProcessError::parameter(format!(
+                    "Unknown parameter: {}",
+                    name
+                ))),
+            }
+        } else {
+            Err(ProcessError::parameter("Expected float value"))
+        }
+    }
+
+    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.inputs.get(index)
+    }
+
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.inputs.get_mut(index)
+    }
+
+    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.outputs.get(index)
+    }
+
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.outputs.get_mut(index)
+    }
+
+    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.controls.get(index)
+    }
+
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.controls.get_mut(index)
+    }
+
+    fn num_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
+    }
+}
+
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
+    fn process(
+        &mut self,
+        _clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        _control_inputs: &[T],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        _control_outputs: &mut [T],
+        _clock_outputs: &mut [ClockTick],
+        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        if audio_outputs.is_empty() {
+            return Ok(());
+        }
+
+        if let (Some(input_buffer), Some(output_buffer)) =
+            (audio_inputs.first(), audio_outputs.first_mut())
+        {
+            for i in 0..BUF_SIZE {
+                output_buffer[i] = self.process_sample(input_buffer[i]);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn latency(&self) -> usize {
+        0
     }
 }

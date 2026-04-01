@@ -1,12 +1,12 @@
 use float_cmp::approx_eq;
-use kama_core::traits::{Processor, ParameterId, ParamValue};
+use kama_core::traits::{AudioNode, ParamValue, ParameterId, Processor};
 use kama_digital_effects::{Delay, Distortion, DistortionType, Limiter};
 
 const BUF_SIZE: usize = 1024;
 
-type TestDelay = Delay<BUF_SIZE>;
-type TestDistortion = Distortion<BUF_SIZE>;
-type TestLimiter = Limiter<BUF_SIZE>;
+type TestDelay = Delay<f32, BUF_SIZE>;
+type TestDistortion = Distortion<f32, BUF_SIZE>;
+type TestLimiter = Limiter<f32, BUF_SIZE>;
 
 ///--------------------------------------------------------------------------------------------------------------------
 ///  Delay tests
@@ -14,8 +14,8 @@ type TestLimiter = Limiter<BUF_SIZE>;
 
 #[test]
 fn test_delay_basic() {
-    let mut delay = TestDelay::with_params(0.1, 0.5, 0.5);
-    Processor::init(&mut delay, 44100.0);
+    let mut delay = TestDelay::with_params(44100.0, 0.1, 0.5, 0.5);
+    delay.init(44100.0);
 
     let input = vec![1.0; 100];
     let mut output = vec![0.0; 100];
@@ -37,7 +37,7 @@ fn test_delay_basic() {
 
 #[test]
 fn test_delay_parameters() {
-    let mut delay = TestDelay::with_params(0.2, 0.3, 0.7);
+    let mut delay = TestDelay::with_params(44100.0, 0.2, 0.3, 0.7);
 
     // Note: get_parameter returns Option<ParamValue>; we'll just check that it returns something
     // but we cannot directly compare because parameter names differ.
@@ -48,17 +48,35 @@ fn test_delay_parameters() {
     let feedback_id = ParameterId::new("feedback").unwrap();
     let mix_id = ParameterId::new("mix").unwrap();
 
-    assert_eq!(delay.get_parameter(&delay_time_id), Some(ParamValue::Float(0.2)));
-    assert_eq!(delay.get_parameter(&feedback_id), Some(ParamValue::Float(0.3)));
-    assert_eq!(delay.get_parameter(&mix_id), Some(ParamValue::Float(0.7)));
+    assert_eq!(
+        AudioNode::get_parameter(&delay, &delay_time_id),
+        Some(ParamValue::Float(0.2))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&delay, &feedback_id),
+        Some(ParamValue::Float(0.3))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&delay, &mix_id),
+        Some(ParamValue::Float(0.7))
+    );
 
-    delay.set_parameter(&delay_time_id, ParamValue::Float(0.5)).unwrap();
-    delay.set_parameter(&feedback_id, ParamValue::Float(0.8)).unwrap();
-    delay.set_parameter(&mix_id, ParamValue::Float(0.4)).unwrap();
+    AudioNode::set_parameter(&mut delay, &delay_time_id, ParamValue::Float(0.5)).unwrap();
+    AudioNode::set_parameter(&mut delay, &feedback_id, ParamValue::Float(0.8)).unwrap();
+    AudioNode::set_parameter(&mut delay, &mix_id, ParamValue::Float(0.4)).unwrap();
 
-    assert_eq!(delay.get_parameter(&delay_time_id), Some(ParamValue::Float(0.5)));
-    assert_eq!(delay.get_parameter(&feedback_id), Some(ParamValue::Float(0.8)));
-    assert_eq!(delay.get_parameter(&mix_id), Some(ParamValue::Float(0.4)));
+    assert_eq!(
+        delay.get_parameter(&delay_time_id),
+        Some(ParamValue::Float(0.5))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&delay, &feedback_id),
+        Some(ParamValue::Float(0.8))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&delay, &mix_id),
+        Some(ParamValue::Float(0.4))
+    );
 }
 
 ///--------------------------------------------------------------------------------------------------------------------
@@ -67,7 +85,7 @@ fn test_delay_parameters() {
 
 #[test]
 fn test_distortion_hard_clip() {
-    let mut dist = TestDistortion::with_params(DistortionType::HardClip, 10.0, 1.0);
+    let mut dist = TestDistortion::with_params(44100.0, DistortionType::HardClip, 10.0, 1.0);
 
     assert_eq!(dist.process_sample(0.1), 1.0); // driven to 1.0, clipped to 1.0
     assert_eq!(dist.process_sample(-0.05), -0.5); // driven to -0.5, no clip
@@ -75,7 +93,7 @@ fn test_distortion_hard_clip() {
 
 #[test]
 fn test_distortion_soft_clip() {
-    let mut dist = TestDistortion::with_params(DistortionType::SoftClip, 5.0, 1.0);
+    let mut dist = TestDistortion::with_params(44100.0, DistortionType::SoftClip, 5.0, 1.0);
 
     let out = dist.process_sample(1.0);
     assert!(out < 1.0 && out > 0.9); // tanh(5) ~ 0.9999
@@ -83,21 +101,38 @@ fn test_distortion_soft_clip() {
 
 #[test]
 fn test_distortion_parameters() {
-    let mut dist = TestDistortion::with_params(DistortionType::SoftClip, 2.0, 0.8);
+    let mut dist = TestDistortion::with_params(44100.0, DistortionType::SoftClip, 2.0, 0.8);
 
     let drive_id = ParameterId::new("drive").unwrap();
     let output_gain_id = ParameterId::new("output_gain").unwrap();
     let type_id = ParameterId::new("type").unwrap();
 
-    assert_eq!(dist.get_parameter(&drive_id), Some(ParamValue::Float(2.0)));
-    assert_eq!(dist.get_parameter(&output_gain_id), Some(ParamValue::Float(0.8)));
+    assert_eq!(
+        AudioNode::get_parameter(&dist, &drive_id),
+        Some(ParamValue::Float(2.0))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&dist, &output_gain_id),
+        Some(ParamValue::Float(0.8))
+    );
 
-    dist.set_parameter(&drive_id, ParamValue::Float(5.0)).unwrap();
-    dist.set_parameter(&output_gain_id, ParamValue::Float(1.2)).unwrap();
-    dist.set_parameter(&type_id, ParamValue::Choice("hard_clip".to_string())).unwrap();
+    AudioNode::set_parameter(&mut dist, &drive_id, ParamValue::Float(5.0)).unwrap();
+    AudioNode::set_parameter(&mut dist, &output_gain_id, ParamValue::Float(1.2)).unwrap();
+    AudioNode::set_parameter(
+        &mut dist,
+        &type_id,
+        ParamValue::Choice("hard_clip".to_string()),
+    )
+    .unwrap();
 
-    assert_eq!(dist.get_parameter(&drive_id), Some(ParamValue::Float(5.0)));
-    assert_eq!(dist.get_parameter(&output_gain_id), Some(ParamValue::Float(1.2)));
+    assert_eq!(
+        AudioNode::get_parameter(&dist, &drive_id),
+        Some(ParamValue::Float(5.0))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&dist, &output_gain_id),
+        Some(ParamValue::Float(1.2))
+    );
 }
 
 #[test]
@@ -110,7 +145,7 @@ fn test_distortion_types() {
         DistortionType::Tube,
         DistortionType::Fuzz,
     ] {
-        let mut dist = TestDistortion::with_params(dist_type, 2.0, 1.0);
+        let mut dist = TestDistortion::with_params(44100.0, dist_type, 2.0, 1.0);
 
         for &input in &test_inputs {
             let output = dist.process_sample(input);
@@ -131,8 +166,8 @@ fn test_distortion_types() {
 fn test_limiter_basic() {
     println!("\n=== Test: Limiter Basic ===");
 
-    let mut limiter = TestLimiter::new(-6.0, 0.005, 0.1, 1.0);
-    Processor::init(&mut limiter, 44100.0);
+    let mut limiter = TestLimiter::new(44100.0, -6.0, 0.005, 0.1, 1.0);
+    limiter.init(44100.0);
 
     let lookahead_samples = limiter.lookahead_samples();
     println!("Lookahead samples: {}, initializing...", lookahead_samples);
@@ -181,8 +216,8 @@ fn test_limiter_basic() {
     // Последние сэмплы должны быть стабильными и ограниченными
     let last_few = &outputs[1800..];
     let avg = last_few.iter().sum::<f32>() / last_few.len() as f32;
-    let max_val = last_few.iter().fold(0.0f32, |a, &b| a.max(b));
-    let min_val = last_few.iter().fold(0.0f32, |a, &b| a.min(b));
+    let max_val = last_few.iter().fold(0.0f32, |a: f32, &b| a.max(b));
+    let min_val = last_few.iter().fold(0.0f32, |a: f32, &b| a.min(b));
 
     println!("\nLast 200 samples statistics:");
     println!("  Average: {:.3}", avg);
@@ -212,9 +247,9 @@ fn test_limiter_basic() {
 fn test_limiter_envelope() {
     println!("\n=== Test: Limiter Envelope ===");
 
-    let mut limiter = TestLimiter::new(-6.0, 0.01, 0.1, 1.0);
+    let mut limiter = TestLimiter::new(44100.0, -6.0, 0.01, 0.1, 1.0);
     limiter.set_lookahead(0.01);
-    Processor::init(&mut limiter, 44100.0);
+    limiter.init(44100.0);
 
     let lookahead_samples = limiter.lookahead_samples();
     println!("Lookahead samples: {}, initializing...", lookahead_samples);
@@ -246,11 +281,11 @@ fn test_limiter_envelope() {
     }
 
     // Находим максимум выходного сигнала
-    let max_output = outputs.iter().fold(0.0f32, |a, &b| a.max(b));
+    let max_output = outputs.iter().fold(0.0f32, |a: f32, &b| a.max(b));
     let max_idx = outputs
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .max_by(|(_, a): &(usize, &f32), (_, b): &(usize, &f32)| a.partial_cmp(b).unwrap())
         .map(|(i, _)| i)
         .unwrap_or(0);
 
@@ -290,7 +325,7 @@ fn test_limiter_envelope() {
 fn test_limiter_parameters() {
     println!("\n=== Test: Limiter Parameters ===");
 
-    let mut limiter = TestLimiter::new(-3.0, 0.01, 0.2, 1.5);
+    let mut limiter = TestLimiter::new(44100.0, -3.0, 0.01, 0.2, 1.5);
 
     let threshold_id = ParameterId::new("threshold").unwrap();
     let attack_id = ParameterId::new("attack").unwrap();
@@ -298,37 +333,41 @@ fn test_limiter_parameters() {
     let output_gain_id = ParameterId::new("output_gain").unwrap();
 
     assert_eq!(
-        limiter.get_parameter(&threshold_id),
+        AudioNode::get_parameter(&limiter, &threshold_id),
         Some(ParamValue::Float(-3.0))
     );
-    assert_eq!(limiter.get_parameter(&attack_id), Some(ParamValue::Float(0.01)));
-    assert_eq!(limiter.get_parameter(&release_id), Some(ParamValue::Float(0.2)));
     assert_eq!(
-        limiter.get_parameter(&output_gain_id),
+        AudioNode::get_parameter(&limiter, &attack_id),
+        Some(ParamValue::Float(0.01))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&limiter, &release_id),
+        Some(ParamValue::Float(0.2))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&limiter, &output_gain_id),
         Some(ParamValue::Float(1.5))
     );
 
-    limiter
-        .set_parameter(&threshold_id, ParamValue::Float(-10.0))
-        .unwrap();
-    limiter
-        .set_parameter(&attack_id, ParamValue::Float(0.02))
-        .unwrap();
-    limiter
-        .set_parameter(&release_id, ParamValue::Float(0.3))
-        .unwrap();
-    limiter
-        .set_parameter(&output_gain_id, ParamValue::Float(0.8))
-        .unwrap();
+    AudioNode::set_parameter(&mut limiter, &threshold_id, ParamValue::Float(-10.0)).unwrap();
+    AudioNode::set_parameter(&mut limiter, &attack_id, ParamValue::Float(0.02)).unwrap();
+    AudioNode::set_parameter(&mut limiter, &release_id, ParamValue::Float(0.3)).unwrap();
+    AudioNode::set_parameter(&mut limiter, &output_gain_id, ParamValue::Float(0.8)).unwrap();
 
     assert_eq!(
-        limiter.get_parameter(&threshold_id),
+        AudioNode::get_parameter(&limiter, &threshold_id),
         Some(ParamValue::Float(-10.0))
     );
-    assert_eq!(limiter.get_parameter(&attack_id), Some(ParamValue::Float(0.02)));
-    assert_eq!(limiter.get_parameter(&release_id), Some(ParamValue::Float(0.3)));
     assert_eq!(
-        limiter.get_parameter(&output_gain_id),
+        AudioNode::get_parameter(&limiter, &attack_id),
+        Some(ParamValue::Float(0.02))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&limiter, &release_id),
+        Some(ParamValue::Float(0.3))
+    );
+    assert_eq!(
+        AudioNode::get_parameter(&limiter, &output_gain_id),
         Some(ParamValue::Float(0.8))
     );
 
@@ -339,8 +378,8 @@ fn test_limiter_parameters() {
 fn test_limiter_reset() {
     println!("\n=== Test: Limiter Reset ===");
 
-    let mut limiter = TestLimiter::new(-6.0, 0.01, 0.1, 1.0);
-    Processor::init(&mut limiter, 44100.0);
+    let mut limiter = TestLimiter::new(44100.0, -6.0, 0.01, 0.1, 1.0);
+    limiter.init(44100.0);
 
     // Инициализация
     let lookahead_samples = limiter.lookahead_samples();

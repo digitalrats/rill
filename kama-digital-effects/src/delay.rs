@@ -1,12 +1,11 @@
 //! Delay effect with feedback
 
-use kama_core::buffer::DelayLine;
-use kama_core::traits::{
-    ParamMetadata, ParamRange, ParamType, NodeCategory, NodeMetadata, NodeTypeId,
-    ParameterId, ParamValue, Processor,
+use kama_core::{
+    buffer::DelayLine,
+    math::AudioNum,
+    traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
-use kama_core::{ProcessResult, ProcessError};
-use kama_core::math::AudioNum;
 
 /// Maximum delay time in seconds
 const MAX_DELAY_SECONDS: f32 = 0.5;
@@ -21,62 +20,79 @@ const MAX_DELAY_SAMPLES: usize = (MAX_DELAY_SECONDS * MAX_SAMPLE_RATE) as usize;
 /// - delay_time: delay time in seconds (0.01 - 2.0)
 /// - feedback: feedback amount (0.0 - 0.99)
 /// - mix: dry/wet mix (0.0 - 1.0)
-pub struct Delay<const BUF_SIZE: usize> {
-    /// Delay line
-    delay_line: DelayLine<f32, MAX_DELAY_SAMPLES>,
+pub struct Delay<T: AudioNum, const BUF_SIZE: usize> {
+    /// Node identifier
+    id: NodeId,
+    /// Node metadata
+    metadata: NodeMetadata,
+    /// Input ports
+    inputs: Vec<Port<T, BUF_SIZE>>,
+    /// Output ports
+    outputs: Vec<Port<T, BUF_SIZE>>,
+    /// Control ports
+    controls: Vec<Port<T, BUF_SIZE>>,
+    /// Node state
+    state: NodeState<T, BUF_SIZE>,
     /// Delay time in seconds
-    delay_time: f32,
+    pub delay_time: f32,
     /// Delay time in samples
     delay_samples: usize,
     /// Feedback amount (0.0 - 0.99)
-    feedback: f32,
+    pub feedback: f32,
     /// Dry/wet mix (0.0 = dry, 1.0 = wet)
-    mix: f32,
-    /// Sample rate
+    pub mix: f32,
+    /// Delay line
+    delay_line: DelayLine<T, MAX_DELAY_SAMPLES>,
+    /// Sample rate (cached)
     sample_rate: f32,
 }
 
-impl<const BUF_SIZE: usize> Delay<BUF_SIZE> {
+impl<T: AudioNum, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
     /// Create a new delay effect with default parameters
-    pub fn new() -> Self {
-        let sample_rate = 44100.0;
+    pub fn new(sample_rate: f32) -> Self {
+        let metadata = NodeMetadata::new("Delay", NodeCategory::Processor);
+
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+
+        // Create one audio input and one audio output
+        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
+        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+
         let delay_time = 0.5;
         let delay_samples = (delay_time * sample_rate) as usize;
         let mut delay_line = DelayLine::new(sample_rate);
         delay_line.set_delay_samples(delay_samples);
 
         Self {
-            delay_line,
+            id: NodeId(0),
+            metadata,
+            inputs,
+            outputs,
+            controls: Vec::new(),
+            state: NodeState::new(sample_rate),
             delay_time,
             delay_samples,
             feedback: 0.3,
             mix: 0.5,
+            delay_line,
             sample_rate,
         }
     }
 
     /// Create a new delay effect with custom parameters
-    pub fn with_params(delay_time: f32, feedback: f32, mix: f32) -> Self {
-        let sample_rate = 44100.0;
-        let delay_samples = (delay_time.clamp(0.01, MAX_DELAY_SECONDS) * sample_rate) as usize;
-        let mut delay_line = DelayLine::new(sample_rate);
-        delay_line.set_delay_samples(delay_samples);
-
-        Self {
-            delay_line,
-            delay_time,
-            delay_samples,
-            feedback: feedback.clamp(0.0, 0.99),
-            mix: mix.clamp(0.0, 1.0),
-            sample_rate,
-        }
+    pub fn with_params(sample_rate: f32, delay_time: f32, feedback: f32, mix: f32) -> Self {
+        let mut instance = Self::new(sample_rate);
+        instance.set_delay_time(delay_time);
+        instance.set_feedback(feedback);
+        instance.set_mix(mix);
+        instance
     }
 
     /// Set delay time in seconds
     pub fn set_delay_time(&mut self, time: f32) {
         self.delay_time = time.clamp(0.01, MAX_DELAY_SECONDS);
-        self.delay_samples = (self.delay_time * self.sample_rate) as usize;
-        self.delay_line.set_delay_samples(self.delay_samples);
+        self.update_delay_samples();
     }
 
     /// Set feedback amount
@@ -89,56 +105,69 @@ impl<const BUF_SIZE: usize> Delay<BUF_SIZE> {
         self.mix = mix.clamp(0.0, 1.0);
     }
 
-    /// Process a single sample
-    pub fn process_sample(&mut self, input: f32) -> f32 {
+    /// Update delay samples based on current sample rate
+    fn update_delay_samples(&mut self) {
+        self.delay_samples = (self.delay_time * self.sample_rate) as usize;
+        if self.delay_samples >= MAX_DELAY_SAMPLES {
+            self.delay_samples = MAX_DELAY_SAMPLES - 1;
+        }
+        self.delay_line.set_delay_samples(self.delay_samples);
+    }
+
+    /// Process a single sample (internal helper)
+    pub fn process_sample(&mut self, input: T) -> T {
         // Read delayed sample
         let delayed = self.delay_line.read_delayed(self.delay_samples);
         // Output mix
-        let output = input * (1.0 - self.mix) + delayed * self.mix;
+        let dry = input;
+        let wet = delayed;
+        let mix = T::from_f32(self.mix);
+        let one_minus_mix = T::ONE - mix;
+        let output = dry.mul(one_minus_mix).add(wet.mul(mix));
         // Write input with feedback
-        let write_sample = input + delayed * self.feedback;
+        let feedback = T::from_f32(self.feedback);
+        let write_sample = input.add(delayed.mul(feedback));
         self.delay_line.write(write_sample);
         output
     }
-
-    /// Process a block of samples (internal helper)
-    fn process_block(&mut self, inputs: &[&[f32; BUF_SIZE]], outputs: &mut [&mut [f32; BUF_SIZE]]) {
-        let input = inputs[0];
-        let output = &mut outputs[0];
-        for i in 0..BUF_SIZE {
-            output[i] = self.process_sample(input[i]);
-        }
-    }
 }
 
-impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Delay<BUF_SIZE> {
-    fn process(
-        &mut self,
-        inputs: &[&[f32; BUF_SIZE]],
-        outputs: &mut [&mut [f32; BUF_SIZE]],
-        _control: &[f32],
-    ) -> ProcessResult<()> {
-        if inputs.len() < 1 || outputs.len() < 1 {
-            return Err(ProcessError::processing("insufficient channels"));
-        }
-        self.process_block(inputs, outputs);
-        Ok(())
+impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
+    fn node_type_id(&self) -> kama_core::NodeTypeId
+    where
+        Self: 'static + Sized,
+    {
+        kama_core::NodeTypeId::of::<Self>()
     }
 
-    fn num_audio_inputs(&self) -> usize {
-        1
+    fn id(&self) -> NodeId {
+        self.id
     }
 
-    fn num_audio_outputs(&self) -> usize {
-        1
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+        // Update port IDs? For simplicity, we ignore for now.
     }
 
-    fn num_control_inputs(&self) -> usize {
-        0
+    fn metadata(&self) -> NodeMetadata {
+        self.metadata.clone()
+    }
+
+    fn init(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+        self.update_delay_samples();
+        self.delay_line.clear();
+    }
+
+    fn reset(&mut self) {
+        self.state.sample_pos = 0;
+        self.state.blocks_processed = 0;
+        self.delay_line.clear();
     }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
-        match id.as_str() {
+        let name = id.as_str();
+        match name {
             "delay_time" => Some(ParamValue::Float(self.delay_time)),
             "feedback" => Some(ParamValue::Float(self.feedback)),
             "mix" => Some(ParamValue::Float(self.mix)),
@@ -147,84 +176,102 @@ impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for Delay<BUF_SIZE> {
     }
 
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
-        match (id.as_str(), value) {
-            ("delay_time", ParamValue::Float(t)) => {
-                self.set_delay_time(t);
-                Ok(())
+        let name = id.as_str();
+        if let Some(v) = value.as_f32() {
+            match name {
+                "delay_time" => {
+                    self.set_delay_time(v);
+                    Ok(())
+                }
+                "feedback" => {
+                    self.set_feedback(v);
+                    Ok(())
+                }
+                "mix" => {
+                    self.set_mix(v);
+                    Ok(())
+                }
+                _ => Err(ProcessError::parameter(format!(
+                    "Unknown parameter: {}",
+                    name
+                ))),
             }
-            ("feedback", ParamValue::Float(f)) => {
-                self.set_feedback(f);
-                Ok(())
-            }
-            ("mix", ParamValue::Float(m)) => {
-                self.set_mix(m);
-                Ok(())
-            }
-            _ => Err(ProcessError::parameter("unknown parameter")),
+        } else {
+            Err(ProcessError::parameter("Expected float value"))
         }
     }
 
-    fn init(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-        self.delay_samples = (self.delay_time * sample_rate) as usize;
-        self.delay_line.set_delay_samples(self.delay_samples);
+    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.inputs.get(index)
     }
 
-    fn reset(&mut self) {
-        self.delay_line.clear();
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.inputs.get_mut(index)
+    }
+
+    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.outputs.get(index)
+    }
+
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.outputs.get_mut(index)
+    }
+
+    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.controls.get(index)
+    }
+
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.controls.get_mut(index)
+    }
+
+    fn num_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
     }
 }
 
-// Implement NodeMetadata for compatibility
-impl<const BUF_SIZE: usize> Delay<BUF_SIZE> {
-    /// Returns metadata about this node
-    pub fn metadata() -> NodeMetadata {
-        NodeMetadata {
-            name: "Delay".to_string(),
-            category: NodeCategory::Processor,
-            description: "Digital delay with feedback".to_string(),
-            author: "Kama Digital Effects".to_string(),
-            version: "0.3.0".to_string(),
-            parameters: vec![
-                ParamMetadata {
-                    name: "delay_time".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(0.5),
-                    range: ParamRange::new()
-                        .with_min(0.01)
-                        .with_max(MAX_DELAY_SECONDS)
-                        .with_step(0.01),
-                    unit: Some("s".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "feedback".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(0.3),
-                    range: ParamRange::new()
-                        .with_min(0.0)
-                        .with_max(0.99)
-                        .with_step(0.01),
-                    unit: Some("gain".to_string()),
-                    choices: None,
-                },
-                ParamMetadata {
-                    name: "mix".to_string(),
-                    typ: ParamType::Float,
-                    default: ParamValue::Float(0.5),
-                    range: ParamRange::new()
-                        .with_min(0.0)
-                        .with_max(1.0)
-                        .with_step(0.01),
-                    unit: Some("mix".to_string()),
-                    choices: None,
-                },
-            ],
+impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
+    fn process(
+        &mut self,
+        _clock: &ClockTick,
+        audio_inputs: &[&[T; BUF_SIZE]],
+        _control_inputs: &[T],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
+        audio_outputs: &mut [&mut [T; BUF_SIZE]],
+        _control_outputs: &mut [T],
+        _clock_outputs: &mut [ClockTick],
+        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+    ) -> ProcessResult<()> {
+        if audio_outputs.is_empty() {
+            return Ok(());
         }
+
+        // We have exactly one audio input and one audio output (as per construction)
+        if let (Some(input_buffer), Some(output_buffer)) =
+            (audio_inputs.first(), audio_outputs.first_mut())
+        {
+            for i in 0..BUF_SIZE {
+                output_buffer[i] = self.process_sample(input_buffer[i]);
+            }
+        }
+
+        Ok(())
     }
 
-    /// Returns the node type ID
-    pub fn node_type_id() -> NodeTypeId {
-        NodeTypeId::of::<Self>()
+    fn latency(&self) -> usize {
+        0
     }
 }
