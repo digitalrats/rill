@@ -13,11 +13,13 @@
 
 mod band;
 mod graphic;
+mod node;
 mod parametric;
 mod utils;
 
 pub use band::{BandType, EqBand};
 pub use graphic::GraphicEq;
+pub use node::{BiquadFactory, GraphicEqProcessor, ParametricEqProcessor};
 pub use parametric::ParametricEq;
 pub use utils::log_spaced_frequencies;
 

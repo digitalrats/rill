@@ -1,6 +1,5 @@
 //! Equalizer band implementation
 
-use kama_core::traits::{AudioError, ParamValue};
 use kama_core_dsp::filters::{Filter, FilterParams, FilterType};
 
 /// Type of EQ band
@@ -116,7 +115,6 @@ impl<F: Filter<f32>> EqBand<F> {
             q: self.q,
             gain_db: self.gain_db,
         };
-        println!("DEBUG update_filter: type={:?}, cutoff={}, q={}, gain_db={}", params.filter_type, params.cutoff, params.q, params.gain_db);
         self.filter.set_params(params);
     }
 
@@ -163,5 +161,15 @@ impl<F: Filter<f32>> EqBand<F> {
     /// Get band type
     pub fn band_type(&self) -> BandType {
         self.band_type
+    }
+
+    /// Initialize filter with sample rate
+    pub fn init(&mut self, sample_rate: f32) {
+        self.filter.init(sample_rate);
+    }
+
+    /// Reset filter state
+    pub fn reset(&mut self) {
+        self.filter.reset();
     }
 }

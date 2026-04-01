@@ -2,13 +2,8 @@
 
 use crate::band::{BandType, EqBand};
 use crate::FilterFactory;
-use kama_core::traits::{
-    ParamMetadata, ParamType, ParamRange,
-    AudioError, NodeCategory, NodeMetadata, NodeTypeId, ParamValue,
-    Processor, ParameterId,
-};
+use kama_core::{Error, ErrorCode};
 use kama_core_dsp::filters::{Filter, FilterType};
-use kama_core::{ProcessResult, DEFAULT_BLOCK_SIZE};
 
 /// Graphic equalizer with fixed frequency bands
 ///
@@ -28,7 +23,9 @@ pub struct GraphicEq<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send 
     output_gain: f32,
 }
 
-impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> GraphicEq<F, Factory> {
+impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
+    GraphicEq<F, Factory>
+{
     /// Create a new graphic equalizer with ISO 1/3 octave frequencies
     pub fn new_third_octave(factory: Factory, sample_rate: f32) -> Self {
         let frequencies = vec![
@@ -65,18 +62,35 @@ impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static
     }
 
     /// Set gain for a specific band (in dB)
-    pub fn set_band_gain(&mut self, index: usize, gain_db: f32) -> Result<(), AudioError> {
+    pub fn set_band_gain(&mut self, index: usize, gain_db: f32) -> Result<(), kama_core::Error> {
         if index >= self.bands.len() {
-            return Err(AudioError::Parameter(format!(
-                "Band index {} out of range",
-                index
-            )));
+            return Err(Error::new(
+                ErrorCode::InvalidParameter,
+                format!("Band index {} out of range", index),
+            ));
         }
 
         let band = &mut self.bands[index];
         band.set_gain_db(gain_db);
         band.update_filter();
 
+        Ok(())
+    }
+
+    /// Enable/disable band
+    pub fn set_band_enabled(
+        &mut self,
+        index: usize,
+        enabled: bool,
+    ) -> Result<(), kama_core::Error> {
+        if index >= self.bands.len() {
+            return Err(Error::new(
+                ErrorCode::InvalidParameter,
+                format!("Band index {} out of range", index),
+            ));
+        }
+
+        self.bands[index].set_enabled(enabled);
         Ok(())
     }
 
@@ -90,103 +104,45 @@ impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static
         self.frequencies.get(index).copied()
     }
 
+    /// Get band gain (dB)
+    pub fn get_band_gain(&self, index: usize) -> Option<f32> {
+        self.bands.get(index).map(|b| b.gain_db())
+    }
+
+    /// Get band enabled state
+    pub fn get_band_enabled(&self, index: usize) -> Option<bool> {
+        self.bands.get(index).map(|b| b.is_enabled())
+    }
+
     /// Number of bands
     pub fn num_bands(&self) -> usize {
         self.bands.len()
     }
-}
 
-impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> Processor<f32, DEFAULT_BLOCK_SIZE>
-    for GraphicEq<F, Factory>
-{
-    fn process(
-        &mut self,
-        inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
-        outputs: &mut [&mut [f32; DEFAULT_BLOCK_SIZE]],
-        _control: &[f32],
-    ) -> ProcessResult<()> {
-        if inputs.is_empty() || outputs.is_empty() {
-            return Ok(());
+    /// Initialize all bands with sample rate
+    pub fn init(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+        for band in &mut self.bands {
+            band.init(sample_rate);
         }
+    }
 
-        let input = inputs[0];
-        let output = &mut outputs[0];
+    /// Reset all bands
+    pub fn reset(&mut self) {
+        for band in &mut self.bands {
+            band.reset();
+        }
+    }
 
-        for i in 0..DEFAULT_BLOCK_SIZE {
+    /// Process a block of samples
+    pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
+        assert_eq!(input.len(), output.len());
+        for i in 0..input.len() {
             let mut sample = 0.0;
             for band in &mut self.bands {
                 sample += band.process(input[i]);
             }
             output[i] = (sample / self.bands.len() as f32) * self.output_gain;
-        }
-
-        Ok(())
-    }
-
-    fn num_audio_inputs(&self) -> usize {
-        1
-    }
-
-    fn num_audio_outputs(&self) -> usize {
-        1
-    }
-
-    fn num_control_inputs(&self) -> usize {
-        0
-    }
-
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
-        match id.as_str() {
-            "num_bands" => Some(ParamValue::Int(self.bands.len() as i32)),
-            "output_gain" => Some(ParamValue::Float(self.output_gain)),
-            _ => {
-                if let Some(band_idx) = id.as_str()
-                    .strip_prefix("band_")
-                    .and_then(|s| s.parse::<usize>().ok())
-                {
-                    if let Some(band) = self.bands.get(band_idx) {
-                        return Some(ParamValue::Float(band.gain_db()));
-                    }
-                }
-                None
-            }
-        }
-    }
-
-    fn set_parameter(
-        &mut self,
-        id: &ParameterId,
-        value: ParamValue,
-    ) -> ProcessResult<()> {
-        match (id.as_str(), value) {
-            ("output_gain", ParamValue::Float(g)) => {
-                self.set_output_gain(g);
-                Ok(())
-            }
-            (name, ParamValue::Float(gain)) => {
-                if let Some(band_idx) = name
-                    .strip_prefix("band_")
-                    .and_then(|s| s.parse::<usize>().ok())
-                {
-                    self.set_band_gain(band_idx, gain).map_err(|e| kama_core::ProcessError::Parameter(e.to_string()))
-                } else {
-                    Err(kama_core::ProcessError::Parameter(format!("Unknown parameter: {}", name)))
-                }
-            }
-            _ => Err(kama_core::ProcessError::Parameter("Expected float".into())),
-        }
-    }
-
-    fn init(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-        for band in &mut self.bands {
-            band.filter.init(sample_rate);
-        }
-    }
-
-    fn reset(&mut self) {
-        for band in &mut self.bands {
-            band.filter.reset();
         }
     }
 }
