@@ -299,13 +299,16 @@ filter.process_block(&input, &mut output);
 
 Эффекты задержки теперь используют векторные абстракции и единый интерфейс `Algorithm`.
 
-### `kama-eq` (0.3.0, временно отключен)
-Функциональность эквалайзеров пока не интегрирована в `kama-core-dsp`. Остаётся отдельным крейтом, но временно отключен.
-
-### `kama-mixer` (0.2.0, временно отключен)
-Микшер с каналами и aux шинами.
+### `kama-router` (0.4.0)
+Роутер, объединяющий функциональность эквалайзеров (`kama-eq`) и микшера (`kama-mixer`) с возможностью матричной маршрутизации. Включает модули `eq` (графический и параметрический эквалайзеры) и `mixer` (микшер с каналами, посылами, мастером). Планируется добавление модуля `matrix` для гибкой маршрутизации сигналов.
 
 ```rust
+use kama_router::eq::{GraphicEq, ParametricEq};
+use kama_router::mixer::{MixerNode, ChannelConfig};
+
+let mut eq = GraphicEq::new(44100.0);
+eq.set_band_gain(0, 3.0)?;
+
 let mut mixer = MixerNode::new(4, 2);
 mixer.set_channel_pan(0, -0.5)?;
 mixer.set_channel_volume(1, 0.8)?;
@@ -356,44 +359,42 @@ pub struct AudioEngine<B: AudioBackend, P: AudioProcessor> {
 5. **Производительность** — zero-cost abstractions, real-time safety
 6. **Тестируемость** — все компоненты тестируются изолированно
 
-## Зависимости между крейтами (версия 0.3.0)
+## Зависимости между крейтами (версия 0.4.0)
 
 Диаграмма зависимостей между крейтами (сплошные стрелки — обязательные зависимости, пунктирные — опциональные):
 
 ```mermaid
 graph TD
     CORE[kama-core] --> CORE_DSP[kama-core-dsp]
+    CORE_DSP --> GRAPH[kama-graph]
+    CORE_DSP --> OSC[kama-oscillators]
+    CORE_DSP --> FILTERS[kama-digital-filters]
+    CORE_DSP --> EFFECTS[kama-digital-effects]
+    CORE_DSP --> ROUTER[kama-router]
     
     style CORE fill:#90ee90
     style CORE_DSP fill:#90ee90
+    style GRAPH fill:#90ee90
+    style OSC fill:#90ee90
+    style FILTERS fill:#90ee90
+    style EFFECTS fill:#90ee90
+    style ROUTER fill:#90ee90
     
     %% Временно отключенные крейты
-    GRAPH[kama-graph<br/>(отключен)]
     PATCHBAY[kama-patchbay<br/>(отключен)]
     IO[kama-io<br/>(отключен)]
     LOFI[kama-lofi<br/>(отключен)]
-    OSC[kama-oscillators<br/>(отключен)]
-    FILTERS[kama-digital-filters<br/>(отключен)]
-    EFFECTS[kama-digital-effects<br/>(отключен)]
-    EQ[kama-eq<br/>(отключен)]
     
-    CORE -.-> GRAPH
     CORE -.-> PATCHBAY
     CORE -.-> IO
     CORE -.-> LOFI
-    CORE_DSP -.-> OSC
-    CORE_DSP -.-> FILTERS
-    CORE_DSP -.-> EFFECTS
-    CORE_DSP -.-> EQ
     
-    style GRAPH fill:#cccccc
     style PATCHBAY fill:#cccccc
     style IO fill:#cccccc
     style LOFI fill:#cccccc
-    style OSC fill:#cccccc
-    style FILTERS fill:#cccccc
-    style EFFECTS fill:#cccccc
-    style EQ fill:#cccccc
+    
+    %% Объединенные крейты
+    %% kama-eq и kama-mixer объединены в kama-router
 ```
 
 ## Мир автоматов
@@ -572,10 +573,11 @@ world.awaken();  // Автоматы начинают жить своей жиз
 
 ## Планы на будущие версии
 
-- ⚡ **Активация отключенных крейтов** — постепенное включение `kama-graph`, `kama-patchbay`, `kama-io` после интеграции с новой векторной инфраструктурой
+- ⚡ **Активация отключенных крейтов** — постепенное включение `kama-patchbay`, `kama-io` после интеграции с новой векторной инфраструктурой
 - 🔌 **Развитие kama-core-dsp** — добавление новых алгоритмов, оптимизация векторных операций, поддержка SIMD
 - 🌐 **kama-server** — выделение OSC в отдельный крейт (в разработке)
 - 🧩 **kama-wdf** — Wave Digital Filters для моделирования аналоговых цепей (в разработке)
+- 🚦 **Развитие kama-router** — добавление матричной маршрутизации, расширение модуля `mixer`, интеграция с аудиографом
 
 ### 🧪 Тестирование
 
@@ -615,7 +617,7 @@ cargo test -p kama-digital-effects
 
 ## Заключение
 
-Архитектура Kama Audio версии 0.3.0 обеспечивает:
+Архитектура Kama Audio версии 0.4.0 обеспечивает:
 
 - ✅ **Стабильное ядро** — единый крейт `kama-core` с чётким API
 - ✅ **Единая DSP инфраструктура** — `kama-core-dsp` объединяет генераторы, фильтры, эффекты и векторные операции
@@ -625,5 +627,6 @@ cargo test -p kama-digital-effects
 - ✅ **Надёжность** — все компоненты тщательно протестированы (58 unit-тестов, 24 документационных теста)
 - ✅ **Расширяемость** — легко добавлять новые алгоритмы через макросы и трейт `Algorithm`
 - ✅ **Согласованность** — все крейты используют одну версию ядра
+- ✅ **Объединение функциональности** — крейты `kama-eq` и `kama-mixer` объединены в `kama-router` (0.4.0) с модулями эквалайзеров и микшера
 
-Рефакторинг 0.3.0 завершён: генераторы и фильтры адаптированы под новое ядро, используется только блочная обработка. Ядро стабилизировано и готово к следующему этапу развития.
+Рефакторинг 0.3.0 завершён: генераторы и фильтры адаптированы под новое ядро, используется только блочная обработка. Крейт `kama-router` добавлен как единая точка входа для маршрутизации, микширования и эквализации аудиосигналов. Ядро стабилизировано и готово к следующему этапу развития.

@@ -1,7 +1,7 @@
-//! Basic tests for kama-eq
+//! Basic tests for kama-router EQ module
 use kama_core::{AudioNode, ParamValue, ParameterId};
 use kama_core_dsp::filters::{Biquad, FilterParams, FilterType};
-use kama_eq::{
+use kama_router::{
     BandType, FilterFactory, GraphicEq, GraphicEqProcessor, ParametricEq, ParametricEqProcessor,
 };
 

@@ -12,8 +12,7 @@ kama-patchbay          # автоматизация параметров (вре
 kama-oscillators       # осцилляторы (аудио и LFO)
 kama-digital-filters   # цифровые фильтры
 kama-digital-effects   # цифровые эффекты
-kama-eq                # эквалайзеры (временно отключен)
-kama-mixer             # микшер (временно отключен)
+kama-router            # роутер (эквалайзеры + микшер)
 kama-lofi              # Lo-Fi эмуляция (временно отключен)
 kama-io                # аудио ввод-вывод, MIDI (в разработке)
 kama-wdf               # Wave Digital Filters (планируется)
@@ -105,24 +104,23 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 |-------|--------|----------|
 | **kama-core** | 0.3.0 | ✅ **Единое ядро** (трейты, сигналы, буферы, очереди, математика) |
 | **kama-core-dsp** | 0.3.0 | ✅ **DSP инфраструктура** (векторные операции, алгоритмы, макросы) |
-| kama-graph | 0.3.0 | ⏸️ Аудиограф с топологической сортировкой (временно отключен) |
+| **kama-graph** | 0.3.0 | ✅ **Аудиограф** с топологической сортировкой |
+| **kama-oscillators** | 0.3.0 | ✅ **Осцилляторы** (синус, пила, шум, LFO, огибающие) |
+| **kama-digital-filters** | 0.3.0 | ✅ **Цифровые фильтры** (биквадратные, SVF, гребенчатые) |
+| **kama-digital-effects** | 0.3.0 | ✅ **Цифровые эффекты** (Delay, Distortion, Limiter) |
+| **kama-router** | 0.4.0 | ✅ **Роутер** (эквалайзеры + микшер + матричная маршрутизация) |
 | kama-patchbay | 0.3.0 | ⏸️ Автоматизация (LFO, огибающие, сервоприводы) (временно отключен) |
-| kama-oscillators | 0.3.0 | ⏸️ Осцилляторы (синус, пила, шум, LFO, огибающие) (временно отключен) |
-| kama-digital-filters | 0.3.0 | ⏸️ Биквадратные фильтры (LP, HP, BP, Notch, Peak) (временно отключен) |
-| kama-digital-effects | 0.3.0 | ⏸️ Эффекты (Delay, Distortion, Limiter) (временно отключен) |
-| kama-eq | 0.3.0 | ⏸️ Параметрический и графический эквалайзеры (временно отключен) |
-| kama-mixer | временно отключен | ⏸️ Микшер с каналами, панорамой и aux шинами |
 | kama-lofi | временно отключен | ⏸️ Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
 | kama-io | временно отключен | ⏸️ Аудио ввод-вывод (ALSA, CPAL), MIDI |
 | kama-wdf | в разработке | 🔌 Wave Digital Filters (моделирование аналоговых цепей) |
-| kama-server | в разработке | 🔌 OSC - сервер |
+| kama-server | в разработке | 🔌 OSC-сервер |
 | kama-tests | планируется | 🧪 Интеграционные тесты |
 
-*Примечание:* Крейт `kama-buffers` интегрирован в `kama-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `kama-oscillators`, `kama-digital-filters`, `kama-digital-effects`) теперь являются частью `kama-core-dsp` и используют единую векторную инфраструктуру.
+*Примечание:* Крейт `kama-buffers` интегрирован в `kama-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `kama-oscillators`, `kama-digital-filters`, `kama-digital-effects`) теперь являются частью `kama-core-dsp` и используют единую векторную инфраструктуру. Крейты `kama-eq` и `kama-mixer` объединены в `kama-router` (версия 0.4.0).
 
 ## 📈 Состояние проекта
 
-Проект находится в стадии активной разработки. Активны крейты `kama-core` (единое ядро) и `kama-core-dsp` (DSP инфраструктура с векторными операциями). Остальные крейты временно отключены, их функциональность интегрируется в `kama-core-dsp`. Крейт `kama-wdf` находится в разработке, а `kama-tests` запланирован к реализации. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
+Проект находится в стадии активной разработки. Активны крейты `kama-core` (единое ядро), `kama-core-dsp` (DSP инфраструктура с векторными операциями), `kama-graph` (аудиограф), `kama-oscillators` (осцилляторы), `kama-digital-filters` (цифровые фильтры), `kama-digital-effects` (цифровые эффекты) и `kama-router` (роутер). Крейты `kama-patchbay`, `kama-lofi`, `kama-io` временно отключены. Крейты `kama-wdf` и `kama-server` находятся в разработке, а `kama-tests` запланирован к реализации. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
 
 ## 📊 Зависимости крейтов
 
@@ -131,37 +129,35 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 ```mermaid
 graph TD
     CORE[kama-core] --> CORE_DSP[kama-core-dsp]
+    CORE_DSP --> GRAPH[kama-graph]
+    CORE_DSP --> OSC[kama-oscillators]
+    CORE_DSP --> FILTERS[kama-digital-filters]
+    CORE_DSP --> EFFECTS[kama-digital-effects]
+    CORE_DSP --> ROUTER[kama-router]
     
     style CORE fill:#90ee90
     style CORE_DSP fill:#90ee90
+    style GRAPH fill:#90ee90
+    style OSC fill:#90ee90
+    style FILTERS fill:#90ee90
+    style EFFECTS fill:#90ee90
+    style ROUTER fill:#90ee90
     
     %% Временно отключенные крейты
-    GRAPH[kama-graph<br/>(отключен)]
     PATCHBAY[kama-patchbay<br/>(отключен)]
     IO[kama-io<br/>(отключен)]
     LOFI[kama-lofi<br/>(отключен)]
-    OSC[kama-oscillators<br/>(отключен)]
-    FILTERS[kama-digital-filters<br/>(отключен)]
-    EFFECTS[kama-digital-effects<br/>(отключен)]
-    EQ[kama-eq<br/>(отключен)]
     
-    CORE -.-> GRAPH
     CORE -.-> PATCHBAY
     CORE -.-> IO
     CORE -.-> LOFI
-    CORE_DSP -.-> OSC
-    CORE_DSP -.-> FILTERS
-    CORE_DSP -.-> EFFECTS
-    CORE_DSP -.-> EQ
     
-    style GRAPH fill:#cccccc
     style PATCHBAY fill:#cccccc
     style IO fill:#cccccc
     style LOFI fill:#cccccc
-    style OSC fill:#cccccc
-    style FILTERS fill:#cccccc
-    style EFFECTS fill:#cccccc
-    style EQ fill:#cccccc
+    
+    %% Объединенные крейты
+    %% kama-eq и kama-mixer объединены в kama-router
 ```
 
 ## 🏗️ Архитектура ядра

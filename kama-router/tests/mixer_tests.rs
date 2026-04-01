@@ -1,7 +1,7 @@
 use float_cmp::approx_eq;
 use kama_core::traits::{AudioNode, ParamValue, Processor};
 use kama_core::{ClockTick, DEFAULT_BLOCK_SIZE};
-use kama_mixer::{ChannelConfig, ChannelMode, MixerNode, SendConfig, SendType};
+use kama_router::{ChannelConfig, ChannelMode, MixerNode, SendConfig, SendType};
 
 #[test]
 fn test_mixer_creation() {

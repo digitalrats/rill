@@ -1,8 +1,8 @@
 [package]
-name = "kama-eq"
-version = "0.3.0"
+name = "kama-router"
+version = "0.4.0"
 edition = "2021"
-description = "Generic equalizer implementation for Kama Audio - works with any filter implementation"
+description = "Audio routing, mixing, and equalization for Kama Audio"
 license = "Apache-2.0"
 authors = ["Digital Rats / Kama Audio Team"]
 
@@ -15,6 +15,5 @@ thiserror = "1.0"
 default = []
 
 [dev-dependencies]
-kama-digital-filters = { path = "../kama-digital-filters" }
-# kama-automation = { path = "../kama-automation" }
 float-cmp = "0.9"
+kama-digital-filters = { path = "../kama-digital-filters" }

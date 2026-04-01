@@ -1,9 +1,9 @@
 //! Graphic equalizer implementation
 
-use crate::band::{BandType, EqBand};
-use crate::FilterFactory;
+use super::band::{BandType, EqBand};
+use super::FilterFactory;
+use crate::{Filter, FilterType};
 use kama_core::{Error, ErrorCode};
-use kama_core_dsp::filters::{Filter, FilterType};
 
 /// Graphic equalizer with fixed frequency bands
 ///

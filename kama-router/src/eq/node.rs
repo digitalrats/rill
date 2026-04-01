@@ -6,7 +6,7 @@ use kama_core::{
 };
 use kama_core_dsp::filters::{Biquad, Filter, FilterParams, FilterType};
 
-use crate::{BandType, FilterFactory, GraphicEq, ParametricEq};
+use super::{BandType, FilterFactory, GraphicEq, ParametricEq};
 
 /// Default factory that creates Biquad<f32> filters.
 #[derive(Debug, Clone, Default)]

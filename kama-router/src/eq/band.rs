@@ -1,6 +1,7 @@
 //! Equalizer band implementation
 
-use kama_core_dsp::filters::{Filter, FilterParams, FilterType};
+use crate::{Filter, FilterType};
+use kama_core_dsp::filters::FilterParams;
 
 /// Type of EQ band
 #[derive(Debug, Clone, Copy, PartialEq)]

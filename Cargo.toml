@@ -7,8 +7,7 @@ members = [
     "kama-oscillators",
     "kama-digital-filters",
     "kama-digital-effects",
-    "kama-eq",
-    "kama-mixer",
+    "kama-router",
     #"kama-lofi", # Временно отключен
     #"kama-io", # Временно отключен 
     #"kama-server" # В разработке

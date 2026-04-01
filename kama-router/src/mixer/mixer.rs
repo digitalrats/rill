@@ -1,7 +1,7 @@
 //! Mixer node implementation
 
-use crate::channel::{ChannelConfig, ChannelState};
-use crate::send::{SendConfig, SendType};
+use super::channel::{ChannelConfig, ChannelState};
+use super::send::{SendConfig, SendType};
 use kama_core::traits::{
     AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
     ParamRange, ParamType, ParamValue, ParameterId, Port, Processor,
