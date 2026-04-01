@@ -1,6 +1,6 @@
 use float_cmp::approx_eq;
-use kama_core::traits::{Processor, ParamValue};
-use kama_core::DEFAULT_BLOCK_SIZE;
+use kama_core::traits::{AudioNode, ParamValue, Processor};
+use kama_core::{ClockTick, DEFAULT_BLOCK_SIZE};
 use kama_mixer::{ChannelConfig, ChannelMode, MixerNode, SendConfig, SendType};
 
 #[test]
@@ -23,7 +23,27 @@ fn test_mixer_basic_processing() {
     let inputs = [&input1, &input2];
     let mut outputs = [&mut output_left, &mut output_right];
 
-    mixer.process(&inputs, &mut outputs, &[]).unwrap();
+    let clock = ClockTick::default();
+    let control_inputs: &[f32] = &[];
+    let clock_inputs: &[ClockTick] = &[];
+    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
+    let mut control_outputs: [f32; 0] = [];
+    let mut clock_outputs: [ClockTick; 0] = [];
+    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
+
+    mixer
+        .process(
+            &clock,
+            &inputs,
+            control_inputs,
+            clock_inputs,
+            feedback_inputs,
+            &mut outputs,
+            &mut control_outputs,
+            &mut clock_outputs,
+            &mut feedback_outputs,
+        )
+        .unwrap();
 
     // Both channels are mono, so they are summed to both left and right outputs
     let expected = input1[0] + input2[0];
@@ -59,7 +79,27 @@ fn test_mixer_pan() {
     let inputs = [&input];
     let mut outputs = [&mut output_left, &mut output_right];
 
-    mixer.process(&inputs, &mut outputs, &[]).unwrap();
+    let clock = ClockTick::default();
+    let control_inputs: &[f32] = &[];
+    let clock_inputs: &[ClockTick] = &[];
+    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
+    let mut control_outputs: [f32; 0] = [];
+    let mut clock_outputs: [ClockTick; 0] = [];
+    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
+
+    mixer
+        .process(
+            &clock,
+            &inputs,
+            control_inputs,
+            clock_inputs,
+            feedback_inputs,
+            &mut outputs,
+            &mut control_outputs,
+            &mut clock_outputs,
+            &mut feedback_outputs,
+        )
+        .unwrap();
 
     // For pan -0.5: left gain 1.0, right gain 0.5
     // Then summed to both outputs (mono channel summed to stereo)
@@ -87,7 +127,27 @@ fn test_mixer_mute() {
     let inputs = [&input];
     let mut outputs = [&mut output_left, &mut output_right];
 
-    mixer.process(&inputs, &mut outputs, &[]).unwrap();
+    let clock = ClockTick::default();
+    let control_inputs: &[f32] = &[];
+    let clock_inputs: &[ClockTick] = &[];
+    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
+    let mut control_outputs: [f32; 0] = [];
+    let mut clock_outputs: [ClockTick; 0] = [];
+    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
+
+    mixer
+        .process(
+            &clock,
+            &inputs,
+            control_inputs,
+            clock_inputs,
+            feedback_inputs,
+            &mut outputs,
+            &mut control_outputs,
+            &mut clock_outputs,
+            &mut feedback_outputs,
+        )
+        .unwrap();
 
     for i in 0..DEFAULT_BLOCK_SIZE {
         assert_eq!(output_left[i], 0.0);
@@ -144,7 +204,27 @@ fn test_mixer_sends() {
         &mut bus1_out,
     ];
 
-    mixer.process(&inputs, &mut outputs, &[]).unwrap();
+    let clock = ClockTick::default();
+    let control_inputs: &[f32] = &[];
+    let clock_inputs: &[ClockTick] = &[];
+    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
+    let mut control_outputs: [f32; 0] = [];
+    let mut clock_outputs: [ClockTick; 0] = [];
+    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
+
+    mixer
+        .process(
+            &clock,
+            &inputs,
+            control_inputs,
+            clock_inputs,
+            feedback_inputs,
+            &mut outputs,
+            &mut control_outputs,
+            &mut clock_outputs,
+            &mut feedback_outputs,
+        )
+        .unwrap();
 
     // Пропускаем первые несколько семплов из-за сглаживания
     let start = 10;

@@ -1,6 +1,7 @@
 //! Mixer channel implementation
 
-use kama_core::traits::{AudioError, ParamValue};
+use kama_core::traits::ParamValue;
+use kama_core::ProcessError;
 
 /// Channel mode (mono or stereo)
 #[derive(Debug, Clone, Copy, PartialEq)]
