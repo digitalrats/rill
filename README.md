@@ -1,5 +1,10 @@
 # Rill 🎵
 
+[![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
+[![tests](https://img.shields.io/badge/tests-20%2B-passing)](https://github.com/DigitalRats/rill)
+[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DigitalRats/rill)
+[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
+
 **Модульная экосистема для создания аудиоприложений на Rust.**
 
 Rill — это не монолит, а набор специализированных крейтов, каждый из которых решает свою задачу. Вы можете использовать только то, что нужно для вашего проекта.
@@ -838,11 +843,6 @@ world.awaken();  // Синтезатор начинает слышать, дум
 ---
 
 *"В каждом автомате живет частичка души своего создателя"*
-
-[![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests](https://img.shields.io/badge/tests-20%2B-passing)](https://github.com/DigitalRats/rill)
-[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DigitalRats/rill)
-[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 ## 🔗 rill-graph — аудиограф для реального времени
 
