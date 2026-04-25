@@ -149,9 +149,9 @@ graph TD
     style ROUTER fill:#90ee90
     
     %% Временно отключенные крейты
-    PATCHBAY[rill-patchbay<br/>(отключен)]
-    IO[rill-io<br/>(отключен)]
-    LOFI[rill-lofi<br/>(отключен)]
+    PATCHBAY["rill-patchbay(отключен)"]
+    IO["rill-io(отключен)"]
+    LOFI["rill-lofi(отключен)"]
     
     CORE -.-> PATCHBAY
     CORE -.-> IO
