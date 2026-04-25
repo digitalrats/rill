@@ -17,13 +17,13 @@ echo "🔄 Bumping all crates to version $NEW_VERSION"
 sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" Cargo.toml
 
 # Обновляем версии во всех крейтах
-for crate in kama-*/Cargo.toml; do
+for crate in rill-*/Cargo.toml; do
     if [ -f "$crate" ]; then
         echo "  📦 $crate"
         sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" "$crate"
         
-        # Обновляем зависимости на другие kama-крейты
-        sed -i "s/\(kama-[a-z-]* = .* version = \"\)[0-9]*\.[0-9]*\.[0-9]*\(\".*\)/\1$NEW_VERSION\2/" "$crate"
+        # Обновляем зависимости на другие rill-крейты
+        sed -i "s/\(rill-[a-z-]* = .* version = \"\)[0-9]*\.[0-9]*\.[0-9]*\(\".*\)/\1$NEW_VERSION\2/" "$crate"
     fi
 done
 

@@ -1,9 +1,9 @@
 //! Пример использования сигнальной системы
 
-use kama_core::signal::{SignalDispatcher, ParameterChanged, SignalSource};
+use rill_core::signal::{SignalDispatcher, ParameterChanged, SignalSource};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Kama Core Signal Example ===");
+    println!("=== Rill Core Signal Example ===");
     
     let dispatcher = SignalDispatcher::new();
     

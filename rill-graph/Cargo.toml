@@ -1,0 +1,12 @@
+[package]
+name = "rill-graph"
+version = "0.3.0"
+edition = "2021"
+description = "Real-time audio graph with block processing"
+
+[dependencies]
+rill-core = { path = "../rill-core" }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+thiserror = "1.0"
+log = "0.4"

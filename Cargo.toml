@@ -1,26 +1,24 @@
 [workspace]
 members = [
-    "kama-core",
-    "kama-buffers",
-    "kama-graph",
-    "kama-automation",
-    "kama-control",
-    "kama-dsp-common",
-    "kama-oscillators",
-    "kama-digital-filters",
-    "kama-digital-effects",
-    "kama-eq",
-    "kama-mixer",
-    "kama-lofi",
-    "kama-hp",
-    "kama-io",
-    "kama-tests",
+    "rill-core",
+    "rill-core-dsp",
+    "rill-graph",
+    #"rill-patchbay", # Временно отключен
+    "rill-oscillators",
+    "rill-digital-filters",
+    "rill-digital-effects",
+    "rill-router",
+    #"rill-lofi", # Временно отключен
+    #"rill-io", # Временно отключен 
+    #"rill-server" # В разработке
+    #"rill-wdf" # Планируется
+    #"rill-sequenser # Планируется
 ]
 resolver = "2"
 
 [workspace.package]
 license = "Apache-2.0"
-authors = ["Digital Rats / Kama Audio Team"]
+authors = ["Digital Rats / Rill Team"]
 edition = "2021"
 
 [workspace.dependencies]
@@ -28,7 +26,7 @@ parking_lot = "0.12"
 num-traits = "0.2"
 thiserror = "1.0"
 async-trait = "0.1"
-serde = "1.0"  # убрали optional
+serde = "1.0"
 rand = "0.8"
 log = "0.4"
 crossbeam-channel = "0.5"

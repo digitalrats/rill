@@ -1,0 +1,14 @@
+[package]
+name = "rill-oscillators"
+version = "0.3.0"
+edition = "2021"
+description = "Oscillators for Rill - using rill-core-dsp algorithms"
+
+[dependencies]
+rill-core = { path = "../rill-core" }
+rill-core-dsp = { path = "../rill-core-dsp" }
+thiserror = "1.0"
+rand = "0.8"
+
+[dev-dependencies]
+float-cmp = "0.9"

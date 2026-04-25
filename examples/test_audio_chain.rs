@@ -1,10 +1,10 @@
 //! Тест аудиоцепочки: Oscillator -> Filter -> Gain
-use kama_core::{AudioGraph, AudioNode};
-use kama_core::dsp::{SineOscillator, BiquadFilter};
-use kama_core::node::GainNode;
+use rill_core::{AudioGraph, AudioNode};
+use rill_core::dsp::{SineOscillator, BiquadFilter};
+use rill_core::node::GainNode;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Тест аудиоцепочки Kama Core ===");
+    println!("=== Тест аудиоцепочки Rill Core ===");
     
     // Создать граф обработки
     let sample_rate = 44100.0;
