@@ -1,6 +1,6 @@
 [package]
 name = "rill-patchbay"
-version = "0.3.0"
+version = "0.2.9"
 edition = "2021"
 description = "The world where Automata live - control system for Rill"
 license = "Apache-2.0"

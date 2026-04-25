@@ -10,19 +10,52 @@
 Rill — это не монолит, а набор специализированных крейтов, каждый из которых решает свою задачу. Вы можете использовать только то, что нужно для вашего проекта.
 
 ```
-rill-core              # единое ядро (трейты + сигналы)
-rill-core-dsp          # DSP инфраструктура
-rill-graph             # аудиограф
-rill-patchbay          # автоматизация параметров (временно отключен)
-rill-oscillators       # осцилляторы (аудио и LFO)
-rill-digital-filters   # цифровые фильтры
-rill-digital-effects   # цифровые эффекты
-rill-router            # роутер (эквалайзеры + микшер)
-rill-lofi              # Lo-Fi эмуляция (временно отключен)
-rill-io                # аудио ввод-вывод, MIDI (в разработке)
-rill-wdf               # Wave Digital Filters (планируется)
-rill-server            # OSC-сервер (в разработке)
-rill-sequencer         # секвенсеры (планируется)
+┌─────────────────────────────────────────────────────────────┐
+│                      Продукты                                │
+│  ┌──────────┐                                                │
+│  │  drift   │  (сервер эффектов для live coding)            │
+│  └──────────┘                                                │
+├─────────────────────────────────────────────────────────────┤
+│                      Инфраструктура                           │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
+│  │rill-server │  │rill-graph  │  │rill-patchbay│             │
+│  │(в разработке)│ │(аудиограф) │ │(автоматизация)│            │
+│  └────────────┘  └────────────┘  └────────────┘             │
+├─────────────────────────────────────────────────────────────┤
+│                      Обработка звука                          │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │    rill-core-dsp (алгоритмы + векторные операции)  │    │
+│  │   Algorithm trait, генераторы, фильтры, задержки     │    │
+│  └─────────────────────────────────────────────────────┘    │
+│  ┌──────────┐ ┌───────────────┐ ┌───────────────┐ ┌──────┐ │
+│  │rill-osc  │ │rill-digital-  │ │rill-digital-  │ │rill- │ │
+│  │(узлы     │ │filters        │ │effects        │ │router│ │
+│  │осциллят.)│ │(узлы фильтров)│ │(узлы эффектов)│ │роутер│ │
+│  │ активен  │ │ активен       │ │ активен       │ │актив │ │
+│  └──────────┘ └───────────────┘ └───────────────┘ └──────┘ │
+│  ┌─────────────┐ ┌──────────┐                               │
+│  │  rill-lofi  │ │rill-wdf  │                               │
+│  │  (lo-fi)    │ │(WDF)     │                               │
+│  │  отключен   │ │в разработке│                              │
+│  └─────────────┘ └──────────┘                               │
+├─────────────────────────────────────────────────────────────┤
+│                      Ввод-вывод                              │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐      │
+│  │  ALSA    │ │  CPAL    │ │ PipeWire │ │   JACK   │      │
+│  │(rill-io) │ │(rill-io) │ │(rill-io) │ │(rill-io) │      │
+│  │ временно │ │ временно │ │ временно │ │ временно │      │
+│  │ отключен │ │ отключен │ │ отключен │ │ отключен │      │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘      │
+├─────────────────────────────────────────────────────────────┤
+│                          Ядро                                │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │                   rill-core                          │    │
+│  │  ┌─────────────┐  ┌─────────────┐                  │    │
+│  │  │   traits    │  │   queues    │                  │    │
+│  │  │ (трейты)    │  │  (очереди)  │                  │    │
+│  │  └─────────────┘  └─────────────┘                  │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## 🎯 Зачем это нужно?
@@ -113,7 +146,7 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 | **rill-oscillators** | 0.3.0 | ✅ **Осцилляторы** (синус, пила, шум, LFO, огибающие) |
 | **rill-digital-filters** | 0.3.0 | ✅ **Цифровые фильтры** (биквадратные, SVF, гребенчатые) |
 | **rill-digital-effects** | 0.3.0 | ✅ **Цифровые эффекты** (Delay, Distortion, Limiter) |
-| **rill-router** | 0.4.0 | ✅ **Роутер** (эквалайзеры + микшер + матричная маршрутизация) |
+| **rill-router** | 0.3.0 | ✅ **Роутер** (эквалайзеры + микшер + матричная маршрутизация) |
 | rill-patchbay | 0.3.0 | ⏸️ Автоматизация (LFO, огибающие, сервоприводы) (временно отключен) |
 | rill-lofi | временно отключен | ⏸️ Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
 | rill-io | временно отключен | ⏸️ Аудио ввод-вывод (ALSA, CPAL), MIDI |
@@ -121,11 +154,13 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 | rill-server | в разработке | 🔌 OSC-сервер |
 | rill-tests | планируется | 🧪 Интеграционные тесты |
 
-*Примечание:* Крейт `rill-buffers` интегрирован в `rill-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) теперь являются частью `rill-core-dsp` и используют единую векторную инфраструктуру. Крейты `rill-eq` и `rill-mixer` объединены в `rill-router` (версия 0.4.0).
+*Примечание:* Крейт `rill-buffers` интегрирован в `rill-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) теперь являются частью `rill-core-dsp` и используют единую векторную инфраструктуру. Крейты `rill-eq` и `rill-mixer` объединены в `rill-router` (версия 0.3.0).
 
 ## 📈 Состояние проекта
 
 Проект находится в стадии активной разработки. Активны крейты `rill-core` (единое ядро), `rill-core-dsp` (DSP инфраструктура с векторными операциями), `rill-graph` (аудиограф), `rill-oscillators` (осцилляторы), `rill-digital-filters` (цифровые фильтры), `rill-digital-effects` (цифровые эффекты) и `rill-router` (роутер). Крейты `rill-patchbay`, `rill-lofi`, `rill-io` временно отключены. Крейты `rill-wdf` и `rill-server` находятся в разработке, а `rill-tests` запланирован к реализации. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
+
+Рефакторинг 0.3.0 завершён: все крейты переведены на единое ядро `rill-core` и блочную обработку. DSP-алгоритмы собраны в `rill-core-dsp` (трейт `Algorithm`, генераторы, фильтры, задержки, векторные операции). Специализированные крейты (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) предоставляют узлы графа (`AudioNode`), использующие эти алгоритмы. `rill-router` добавлен как единая точка входа для маршрутизации, микширования и эквализации аудиосигналов.
 
 ## 📊 Зависимости крейтов
 
@@ -134,7 +169,7 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 ```mermaid
 graph TD
     CORE[rill-core] --> CORE_DSP[rill-core-dsp]
-    CORE_DSP --> GRAPH[rill-graph]
+    CORE --> GRAPH[rill-graph]
     CORE_DSP --> OSC[rill-oscillators]
     CORE_DSP --> FILTERS[rill-digital-filters]
     CORE_DSP --> EFFECTS[rill-digital-effects]
@@ -148,18 +183,26 @@ graph TD
     style EFFECTS fill:#90ee90
     style ROUTER fill:#90ee90
     
-    %% Временно отключенные крейты
-    PATCHBAY["rill-patchbay(отключен)"]
-    IO["rill-io(отключен)"]
-    LOFI["rill-lofi(отключен)"]
+    %% Временно отключенные / разрабатываемые / планируемые
+    PATCHBAY[rill-patchbay<br/>(отключен)]
+    IO[rill-io<br/>(отключен)]
+    LOFI[rill-lofi<br/>(отключен)]
+    WDF[rill-wdf<br/>(в разработке)]
+    SERVER[rill-server<br/>(в разработке)]
+    TESTS[rill-tests<br/>(планируется)]
     
     CORE -.-> PATCHBAY
     CORE -.-> IO
     CORE -.-> LOFI
+    CORE -.-> WDF
+    CORE -.-> SERVER
     
     style PATCHBAY fill:#cccccc
     style IO fill:#cccccc
     style LOFI fill:#cccccc
+    style WDF fill:#cccccc
+    style SERVER fill:#cccccc
+    style TESTS fill:#cccccc
     
     %% Объединенные крейты
     %% rill-eq и rill-mixer объединены в rill-router
@@ -170,31 +213,146 @@ graph TD
 ```
 rill-core/
 ├── src/
-│   ├── lib.rs           # Корневой модуль, реэкспорты
-│   ├── math.rs          # Абстракции числовых типов
+│   ├── lib.rs                 # Корневой модуль, реэкспорты
+│   ├── prelude.rs             # Прелюдия для удобного импорта
+│   ├── config.rs              # Конфигурация
+│   ├── error.rs               # Система ошибок
+│   ├── event.rs               # События и сигналы
+│   ├── graph.rs               # Базовые типы для графа
+│   ├── utils.rs               # Утилиты
+│   ├── traits/
+│   │   ├── mod.rs             # Трейты узлов (AudioNode, Source, Processor, Sink)
+│   │   ├── node.rs            # Узлы и идентификаторы
+│   │   ├── port.rs            # Порты
+│   │   ├── param.rs           # Параметры
+│   │   ├── processable.rs     # Интерфейс обработки
+│   │   └── error.rs           # Ошибки трейтов
+│   ├── math/
+│   │   ├── mod.rs             # Абстракции числовых типов
+│   │   ├── num.rs             # AudioNum трейт
+│   │   ├── conversions.rs     # Преобразования
+│   │   └── functions.rs       # Функции
 │   ├── buffer/
-│   │   ├── mod.rs       # Буферы (AlignedBuffer, PipeBuffer)
-│   │   ├── pipe.rs      # Прямые соединения
-│   │   └── ring.rs      # Кольцевые буферы
-│   ├── queue/
-│   │   ├── mod.rs       # Очереди (RtQueue)
-│   │   ├── spsc.rs      # Single-producer single-consumer
-│   │   ├── mpsc.rs      # Multi-producer single-consumer
-│   │   └── ring.rs      # Кольцевая очередь
-│   ├── port.rs          # Порты и идентификаторы
-│   ├── node.rs          # Узлы (Source/Processor/Sink)
-│   ├── error.rs         # Система ошибок
+│   │   ├── mod.rs             # Буферы (PipeBuffer, FanOutBuffer и др.)
+│   │   ├── pipe.rs            # Прямые соединения
+│   │   ├── fan.rs             # Разветвление и суммирование
+│   │   ├── delay.rs           # Линия задержки
+│   │   ├── ring.rs            # Кольцевой буфер
+│   │   ├── storage.rs         # AtomicCell
+│   │   └── pool.rs            # Пул буферов
+│   ├── queues/
+│   │   ├── mod.rs             # Очереди команд и телеметрии
+│   │   ├── rt_queue.rs        # Real-time очередь
+│   │   ├── spsc.rs            # Single-producer single-consumer
+│   │   ├── mpsc.rs            # Multi-producer single-consumer
+│   │   ├── ring.rs            # Кольцевая очередь
+│   │   ├── command.rs         # Команды
+│   │   ├── telemetry.rs       # Телеметрия
+│   │   ├── signal.rs          # Сигналы
+│   │   ├── observer.rs        # Наблюдатели
+│   │   ├── atomic.rs          # Атомарные операции
+│   │   └── error.rs           # Ошибки очередей
+│   ├── time/
+│   │   ├── mod.rs             # Время и тактовые сигналы
+│   │   ├── clock.rs           # Трейты Clock и ClockSource
+│   │   ├── source.rs          # Реализации источников времени
+│   │   ├── tick.rs            # ClockTick
+│   │   └── error.rs           # Ошибки времени
 │   ├── macros/
-│   │   ├── mod.rs       # Макросы
-│   │   ├── source.rs    # source_node!
-│   │   ├── processor.rs # processor_node!
-│   │   ├── sink.rs      # sink_node!
-│   │   ├── params.rs    # Вспомогательные макросы для параметров
-│   │   └── ports.rs     # Вспомогательные макросы для портов
-│   ├── graph.rs         # Базовые типы для графа
-│   ├── event.rs         # События и сигналы
-│   ├── config.rs        # Конфигурация
-│   └── utils.rs         # Утилиты
+│   │   ├── mod.rs             # Макросы
+│   │   ├── source.rs          # source_node!
+│   │   ├── processor.rs       # processor_node!
+│   │   ├── sink.rs            # sink_node!
+│   │   ├── params.rs          # Параметры
+│   │   ├── ports.rs           # Порты
+│   │   └── tests.rs           # Тесты макросов
+│   └── executor/
+│       └── mod.rs             # Исполнитель графа
+```
+
+### Ключевые компоненты ядра
+
+#### buffer (буферы)
+
+Предоставляет типы буферов для передачи аудиоданных между узлами: `PipeBuffer` (однопоточный канал), `FanOutBuffer` (разветвление), `FanInBuffer` (суммирование), `DelayLine` (линия задержки), `RingBuffer` (кольцевой буфер). Все буферы реализуют трейт `AudioBuffer` и поддерживают статистику использования.
+
+```rust
+use rill_core::buffer::{PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer};
+
+let mut pipe = PipeBuffer::new(1024);
+pipe.write(&[1.0, 2.0, 3.0]);
+let read = pipe.read(3);
+```
+
+#### macros (макросы)
+
+Содержит макросы для удобного создания узлов: `processor!`, `sink!`, `source!`. Упрощают написание пользовательских процессоров, источников и приёмников без boilerplate кода.
+
+```rust
+use rill_core::macros::{processor, sink, source};
+
+processor!(Gain, |sample, _| sample * 0.5);
+sink!(Logger, |sample, _| println!("{}", sample));
+source!(Silence, || 0.0);
+```
+
+#### math (математика)
+
+Определяет трейт `AudioNum` для аудио‑специфичных числовых операций (преобразование дБ, обёртка фазы), а также функции конвертации и утилиты.
+
+```rust
+use rill_core::math::AudioNum;
+
+let db = (-6.0).db_to_linear(); // ≈ 0.501
+let phase = 3.0.wrap_phase();   // в диапазоне [0, 2π)
+```
+
+#### queues (очереди)
+
+Реализует неблокирующие очереди команд и телеметрии для связи между аудио‑графом и внешним миром. Содержит `CommandQueue`, `TelemetryQueue`, `SignalSource`, `MicroControlObserver` и другие компоненты для управления параметрами в реальном времени.
+
+```rust
+use rill_core::queues::{CommandQueue, CommandEnum, SetParameter};
+
+let mut queue = CommandQueue::new();
+queue.send(CommandEnum::SetParameter(SetParameter {
+    node_id: 1,
+    param_id: "cutoff".to_string(),
+    value: 1000.0,
+}));
+```
+
+#### time (время)
+
+Абстракции времени и темпа: трейты `Clock` и `ClockSource`, структуры `SystemClock`, `ClockTick`. Позволяют узлам синхронизироваться с системным временем или внешним темпом.
+
+```rust
+use rill_core::time::{Clock, SystemClock};
+
+let clock = SystemClock::new(44100.0);
+let pos = clock.position_samples();
+clock.advance(64);
+```
+
+#### error (ошибки)
+
+Крейт‑уровневые типы ошибок `AudioError` и `AudioResult`. Отделены от `traits/error.rs` (который содержит ошибки трейтов) и используются во всех публичных API ядра.
+
+```rust
+use rill_core::{AudioError, AudioResult};
+
+fn safe_process() -> AudioResult<()> {
+    Ok(())
+}
+```
+
+#### prelude (прелюдия)
+
+Удобный реэкспорт наиболее часто используемых типов из всех модулей ядра. Рекомендуется импортировать `use rill_core::prelude::*;` в пользовательском коде.
+
+```rust
+use rill_core::prelude::*;
+// Теперь доступны AudioNode, AudioNum, PipeBuffer, CommandQueue, Clock и др.
 ```
 
 ## 🧪 Тестирование
@@ -234,9 +392,11 @@ cargo run --example simple_midi
 
 ## 🔮 Планы на будущие версии
 
-- ⚡ **Двухпоточная автоматизация** — разделение на control-поток и audio-поток
-- 🌐 **rill-server** — выделение OSC в отдельный крейт
-- 🔌 **Унификация IO** — объединение audio/MIDI/CV в rill-io
+- ⚡ **Активация отключенных крейтов** — постепенное включение `rill-patchbay`, `rill-io`, `rill-lofi` после интеграции с новой векторной инфраструктурой
+- 🔌 **Развитие rill-core-dsp** — добавление новых алгоритмов, оптимизация векторных операций, поддержка SIMD
+- 🌐 **rill-server** — выделение OSC в отдельный крейт (в разработке)
+- 🧩 **rill-wdf** — Wave Digital Filters для моделирования аналоговых цепей (в разработке)
+- 🚦 **Развитие rill-router** — добавление матричной маршрутизации, расширение модуля `mixer`, интеграция с аудиографом
 
 ## 🤝 Участие в разработке
 

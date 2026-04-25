@@ -8,10 +8,9 @@ authors = ["Digital Rats / Rill Team"]
 
 [dependencies]
 rill-core = { path = "../rill-core", version = "0.3.0" }
-rill-buffers = { path = "../rill-buffers", version = "0.2.0" }
 rand = "0.8"
 thiserror = "1.0"
-serde = { version = "1.0", features = ["derive"] }  # <-- убираем optional
+serde = { version = "1.0", features = ["derive"] }
 
 [features]
 default = []
