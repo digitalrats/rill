@@ -1,23 +1,23 @@
-# Kama Audio 🎵
+# Rill 🎵
 
 **Модульная экосистема для создания аудиоприложений на Rust.**
 
-Kama Audio — это не монолит, а набор специализированных крейтов, каждый из которых решает свою задачу. Вы можете использовать только то, что нужно для вашего проекта.
+Rill — это не монолит, а набор специализированных крейтов, каждый из которых решает свою задачу. Вы можете использовать только то, что нужно для вашего проекта.
 
 ```
-kama-core              # единое ядро (трейты + сигналы)
-kama-core-dsp          # DSP инфраструктура
-kama-graph             # аудиограф
-kama-patchbay          # автоматизация параметров (временно отключен)
-kama-oscillators       # осцилляторы (аудио и LFO)
-kama-digital-filters   # цифровые фильтры
-kama-digital-effects   # цифровые эффекты
-kama-router            # роутер (эквалайзеры + микшер)
-kama-lofi              # Lo-Fi эмуляция (временно отключен)
-kama-io                # аудио ввод-вывод, MIDI (в разработке)
-kama-wdf               # Wave Digital Filters (планируется)
-kama-server            # OSC-сервер (в разработке)
-kama-sequencer         # секвенсеры (планируется)
+rill-core              # единое ядро (трейты + сигналы)
+rill-core-dsp          # DSP инфраструктура
+rill-graph             # аудиограф
+rill-patchbay          # автоматизация параметров (временно отключен)
+rill-oscillators       # осцилляторы (аудио и LFO)
+rill-digital-filters   # цифровые фильтры
+rill-digital-effects   # цифровые эффекты
+rill-router            # роутер (эквалайзеры + микшер)
+rill-lofi              # Lo-Fi эмуляция (временно отключен)
+rill-io                # аудио ввод-вывод, MIDI (в разработке)
+rill-wdf               # Wave Digital Filters (планируется)
+rill-server            # OSC-сервер (в разработке)
+rill-sequencer         # секвенсеры (планируется)
 ```
 
 ## 🎯 Зачем это нужно?
@@ -28,7 +28,7 @@ kama-sequencer         # секвенсеры (планируется)
 
 ## ✨ Особенности
 
-- **Единое ядро** — `kama-core` объединяет все базовые трейты и сигнальную систему
+- **Единое ядро** — `rill-core` объединяет все базовые трейты и сигнальную систему
 - **Минимальные зависимости** — каждый крейт зависит только от того, что реально использует
 - **Модульность** — берите только то, что нужно
 - **Производительность** — zero-cost abstractions, real-time безопасность
@@ -37,20 +37,20 @@ kama-sequencer         # секвенсеры (планируется)
 
 ## 🚀 Быстрый старт
 
-Добавьте крейт `kama-core-dsp` в `Cargo.toml` (он автоматически подтянет `kama-core`):
+Добавьте крейт `rill-core-dsp` в `Cargo.toml` (он автоматически подтянет `rill-core`):
 
 ```toml
 [dependencies]
-kama-core-dsp = "0.3"
+rill-core-dsp = "0.3"
 ```
 
 Создайте простой DSP pipeline (синус → задержка):
 
 ```rust
-use kama_core::math::AudioNum;
-use kama_core_dsp::generators::basic::SineOsc;
-use kama_core_dsp::delay::Delay;
-use kama_core_dsp::algorithm::Algorithm;
+use rill_core::math::AudioNum;
+use rill_core_dsp::generators::basic::SineOsc;
+use rill_core_dsp::delay::Delay;
+use rill_core_dsp::algorithm::Algorithm;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sample_rate = 44100.0;
@@ -96,31 +96,31 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 }
 ```
 
-Этот пример демонстрирует блочную обработку с использованием алгоритмов из `kama-core-dsp`. Все операции используют векторные абстракции `ScalarVector1<T>` для обеспечения переносимости и производительности.
+Этот пример демонстрирует блочную обработку с использованием алгоритмов из `rill-core-dsp`. Все операции используют векторные абстракции `ScalarVector1<T>` для обеспечения переносимости и производительности.
 
 ## 📦 Состояние крейтов
 
 | Крейт | Версия | Описание |
 |-------|--------|----------|
-| **kama-core** | 0.3.0 | ✅ **Единое ядро** (трейты, сигналы, буферы, очереди, математика) |
-| **kama-core-dsp** | 0.3.0 | ✅ **DSP инфраструктура** (векторные операции, алгоритмы, макросы) |
-| **kama-graph** | 0.3.0 | ✅ **Аудиограф** с топологической сортировкой |
-| **kama-oscillators** | 0.3.0 | ✅ **Осцилляторы** (синус, пила, шум, LFO, огибающие) |
-| **kama-digital-filters** | 0.3.0 | ✅ **Цифровые фильтры** (биквадратные, SVF, гребенчатые) |
-| **kama-digital-effects** | 0.3.0 | ✅ **Цифровые эффекты** (Delay, Distortion, Limiter) |
-| **kama-router** | 0.4.0 | ✅ **Роутер** (эквалайзеры + микшер + матричная маршрутизация) |
-| kama-patchbay | 0.3.0 | ⏸️ Автоматизация (LFO, огибающие, сервоприводы) (временно отключен) |
-| kama-lofi | временно отключен | ⏸️ Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
-| kama-io | временно отключен | ⏸️ Аудио ввод-вывод (ALSA, CPAL), MIDI |
-| kama-wdf | в разработке | 🔌 Wave Digital Filters (моделирование аналоговых цепей) |
-| kama-server | в разработке | 🔌 OSC-сервер |
-| kama-tests | планируется | 🧪 Интеграционные тесты |
+| **rill-core** | 0.3.0 | ✅ **Единое ядро** (трейты, сигналы, буферы, очереди, математика) |
+| **rill-core-dsp** | 0.3.0 | ✅ **DSP инфраструктура** (векторные операции, алгоритмы, макросы) |
+| **rill-graph** | 0.3.0 | ✅ **Аудиограф** с топологической сортировкой |
+| **rill-oscillators** | 0.3.0 | ✅ **Осцилляторы** (синус, пила, шум, LFO, огибающие) |
+| **rill-digital-filters** | 0.3.0 | ✅ **Цифровые фильтры** (биквадратные, SVF, гребенчатые) |
+| **rill-digital-effects** | 0.3.0 | ✅ **Цифровые эффекты** (Delay, Distortion, Limiter) |
+| **rill-router** | 0.4.0 | ✅ **Роутер** (эквалайзеры + микшер + матричная маршрутизация) |
+| rill-patchbay | 0.3.0 | ⏸️ Автоматизация (LFO, огибающие, сервоприводы) (временно отключен) |
+| rill-lofi | временно отключен | ⏸️ Lo-Fi эмуляция (NES, AY-3-8910, Akai S900) |
+| rill-io | временно отключен | ⏸️ Аудио ввод-вывод (ALSA, CPAL), MIDI |
+| rill-wdf | в разработке | 🔌 Wave Digital Filters (моделирование аналоговых цепей) |
+| rill-server | в разработке | 🔌 OSC-сервер |
+| rill-tests | планируется | 🧪 Интеграционные тесты |
 
-*Примечание:* Крейт `kama-buffers` интегрирован в `kama-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `kama-oscillators`, `kama-digital-filters`, `kama-digital-effects`) теперь являются частью `kama-core-dsp` и используют единую векторную инфраструктуру. Крейты `kama-eq` и `kama-mixer` объединены в `kama-router` (версия 0.4.0).
+*Примечание:* Крейт `rill-buffers` интегрирован в `rill-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) теперь являются частью `rill-core-dsp` и используют единую векторную инфраструктуру. Крейты `rill-eq` и `rill-mixer` объединены в `rill-router` (версия 0.4.0).
 
 ## 📈 Состояние проекта
 
-Проект находится в стадии активной разработки. Активны крейты `kama-core` (единое ядро), `kama-core-dsp` (DSP инфраструктура с векторными операциями), `kama-graph` (аудиограф), `kama-oscillators` (осцилляторы), `kama-digital-filters` (цифровые фильтры), `kama-digital-effects` (цифровые эффекты) и `kama-router` (роутер). Крейты `kama-patchbay`, `kama-lofi`, `kama-io` временно отключены. Крейты `kama-wdf` и `kama-server` находятся в разработке, а `kama-tests` запланирован к реализации. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
+Проект находится в стадии активной разработки. Активны крейты `rill-core` (единое ядро), `rill-core-dsp` (DSP инфраструктура с векторными операциями), `rill-graph` (аудиограф), `rill-oscillators` (осцилляторы), `rill-digital-filters` (цифровые фильтры), `rill-digital-effects` (цифровые эффекты) и `rill-router` (роутер). Крейты `rill-patchbay`, `rill-lofi`, `rill-io` временно отключены. Крейты `rill-wdf` и `rill-server` находятся в разработке, а `rill-tests` запланирован к реализации. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
 
 ## 📊 Зависимости крейтов
 
@@ -128,12 +128,12 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 
 ```mermaid
 graph TD
-    CORE[kama-core] --> CORE_DSP[kama-core-dsp]
-    CORE_DSP --> GRAPH[kama-graph]
-    CORE_DSP --> OSC[kama-oscillators]
-    CORE_DSP --> FILTERS[kama-digital-filters]
-    CORE_DSP --> EFFECTS[kama-digital-effects]
-    CORE_DSP --> ROUTER[kama-router]
+    CORE[rill-core] --> CORE_DSP[rill-core-dsp]
+    CORE_DSP --> GRAPH[rill-graph]
+    CORE_DSP --> OSC[rill-oscillators]
+    CORE_DSP --> FILTERS[rill-digital-filters]
+    CORE_DSP --> EFFECTS[rill-digital-effects]
+    CORE_DSP --> ROUTER[rill-router]
     
     style CORE fill:#90ee90
     style CORE_DSP fill:#90ee90
@@ -144,9 +144,9 @@ graph TD
     style ROUTER fill:#90ee90
     
     %% Временно отключенные крейты
-    PATCHBAY[kama-patchbay<br/>(отключен)]
-    IO[kama-io<br/>(отключен)]
-    LOFI[kama-lofi<br/>(отключен)]
+    PATCHBAY[rill-patchbay<br/>(отключен)]
+    IO[rill-io<br/>(отключен)]
+    LOFI[rill-lofi<br/>(отключен)]
     
     CORE -.-> PATCHBAY
     CORE -.-> IO
@@ -157,13 +157,13 @@ graph TD
     style LOFI fill:#cccccc
     
     %% Объединенные крейты
-    %% kama-eq и kama-mixer объединены в kama-router
+    %% rill-eq и rill-mixer объединены в rill-router
 ```
 
 ## 🏗️ Архитектура ядра
 
 ```
-kama-core/
+rill-core/
 ├── src/
 │   ├── lib.rs           # Корневой модуль, реэкспорты
 │   ├── math.rs          # Абстракции числовых типов
@@ -199,10 +199,10 @@ kama-core/
 cargo test --workspace
 
 # Интеграционные тесты
-cargo test -p kama-tests -- --nocapture
+cargo test -p rill-tests -- --nocapture
 
 # Тесты конкретного крейта
-cargo test -p kama-digital-effects
+cargo test -p rill-digital-effects
 ```
 
 ## 📚 Документация
@@ -230,8 +230,8 @@ cargo run --example simple_midi
 ## 🔮 Планы на будущие версии
 
 - ⚡ **Двухпоточная автоматизация** — разделение на control-поток и audio-поток
-- 🌐 **kama-server** — выделение OSC в отдельный крейт
-- 🔌 **Унификация IO** — объединение audio/MIDI/CV в kama-io
+- 🌐 **rill-server** — выделение OSC в отдельный крейт
+- 🔌 **Унификация IO** — объединение audio/MIDI/CV в rill-io
 
 ## 🤝 Участие в разработке
 
@@ -251,7 +251,7 @@ cargo run --example simple_midi
 
 ## 🔄 Процесс разработки (Git Flow)
 
-Kama Audio использует [Git Flow](https://www.atlassian.com/git/tutorials/comparing-workflows/gitflow-workflow) для управления разработкой и релизами.
+Rill использует [Git Flow](https://www.atlassian.com/git/tutorials/comparing-workflows/gitflow-workflow) для управления разработкой и релизами.
 
 ### Структура веток
 
@@ -265,8 +265,8 @@ Kama Audio использует [Git Flow](https://www.atlassian.com/git/tutoria
 
 ```bash
 # Клонируем репозиторий
-git clone https://github.com/DigitalRats/kama-audio
-cd kama-audio
+git clone https://github.com/DigitalRats/rill
+cd rill
 
 # Инициализируем git-flow (один раз)
 git flow init -d
@@ -373,7 +373,7 @@ test(eq): add frequency response tests
 
 ## 🔗 Аудио-граф: математически строгая модель обработки
 
-Граф Kama Audio построен на строгой математической основе — **теории категорий**, что обеспечивает типобезопасность, композиционность и предсказуемость поведения.
+Граф Rill построен на строгой математической основе — **теории категорий**, что обеспечивает типобезопасность, композиционность и предсказуемость поведения.
 
 ### 📐 Математическая модель
 
@@ -403,7 +403,7 @@ test(eq): add frequency response tests
 
 ### 🔄 Направление потока: активные и пассивные узлы
 
-В Kama Audio реализована **симметричная модель**, где любой узел может быть активным в зависимости от того, кто инициирует обработку.
+В Rill реализована **симметричная модель**, где любой узел может быть активным в зависимости от того, кто инициирует обработку.
 
 #### Сценарий 1: Активный Source, пассивный Sink (воспроизведение)
 
@@ -626,14 +626,14 @@ graph.run_capture()?;
 
 ## 🤖 Мир автоматов (The World of Automata)
 
-**Kama Patchbay** — это не просто система управления. Это **мир**, в котором живут **автоматы** — загадочные существа, которые чувствуют окружающую среду и влияют на неё. Они общаются на языке сигналов, слышат звук через сенсоры и через серво воздействуют на AudioGraph.
+**Rill Patchbay** — это не просто система управления. Это **мир**, в котором живут **автоматы** — загадочные существа, которые чувствуют окружающую среду и влияют на неё. Они общаются на языке сигналов, слышат звук через сенсоры и через серво воздействуют на AudioGraph.
 
 ### 🧠 Архитектура мира
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                 МИР АВТОМАТОВ                         │
-│  (ваше приложение на Kama Audio)                      │
+│  (ваше приложение на Rill)                      │
 │                                                       │
 │  ┌─────────────────────────────────────────────────┐ │
 │  │                    PATCHBAY                       │ │
@@ -839,14 +839,14 @@ world.awaken();  // Синтезатор начинает слышать, дум
 
 *"В каждом автомате живет частичка души своего создателя"*
 
-[![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/kama-audio)
-[![tests](https://img.shields.io/badge/tests-20%2B-passing)](https://github.com/DigitalRats/kama-audio)
-[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DigitalRats/kama-audio)
+[![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
+[![tests](https://img.shields.io/badge/tests-20%2B-passing)](https://github.com/DigitalRats/rill)
+[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
-## Исправленный раздел README.md: kama-graph
+## Исправленный раздел README.md: rill-graph
 
-## 🔗 kama-graph — аудиограф для реального времени
+## 🔗 rill-graph — аудиограф для реального времени
 
 Библиотека для построения и выполнения гибких аудиографов с поддержкой:
 - **Аудио- и control-сигналов** в единой системе
@@ -854,14 +854,14 @@ world.awaken();  // Синтезатор начинает слышать, дум
 - **Топологической сортировки** с обнаружением циклов
 - **Zero-copy соединений** через lock-free буферы
 - **Двухпоточной архитектуры** с неблокирующими очередями
-- **Двунаправленной связи** с миром автоматов (kama-patchbay)
+- **Двунаправленной связи** с миром автоматов (rill-patchbay)
 
 ### 🏗️ Основные концепции
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         МИР АВТОМАТОВ                                │
-│                         (kama-patchbay)                               │
+│                         (rill-patchbay)                               │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │  Автоматы (LFO, Env)   Сенсоры (анализаторы)               │    │
 │  │        │                      ▲                             │    │
@@ -896,13 +896,13 @@ world.awaken();  // Синтезатор начинает слышать, дум
 | **`TelemetryQueue`** | Очередь для отправки данных в мир автоматов |
 | **`MicroControlObserver`** | Наблюдатель за микро-контролем (нарушения real-time) |
 
-### 🤖 Связь с миром автоматов (kama-patchbay)
+### 🤖 Связь с миром автоматов (rill-patchbay)
 
 Граф и мир автоматов общаются через **две неблокирующие очереди**:
 
 #### 1. **Command Queue** (от автоматов к графу)
 ```rust
-// В мире автоматов (kama-patchbay)
+// В мире автоматов (rill-patchbay)
 let cmd = SetParameter::new(
     PortId::control_in(filter_id, 0),
     ParameterId::new("cutoff")?,
@@ -968,10 +968,10 @@ let result = graph.with_parameter_observed(
 ### 🚀 Быстрый старт
 
 ```rust
-use kama_graph::prelude::*;
-use kama_core::queues::CommandQueue;
-use kama_oscillators::SineOsc;
-use kama_digital_filters::LowPassFilter;
+use rill_graph::prelude::*;
+use rill_core::queues::CommandQueue;
+use rill_oscillators::SineOsc;
+use rill_digital_filters::LowPassFilter;
 
 const BLOCK_SIZE: usize = 64;
 
@@ -1110,18 +1110,18 @@ graph.connect_audio(filter_id, 0, gain_id, 0)?;
 
 ### 🔧 Интеграция с другими крейтами
 
-- **`kama-core`** — базовые трейты, буферы, очереди
-- **`kama-patchbay`** — мир автоматов (управление и автоматизация)
-- **`kama-oscillators`** — готовые генераторы для `Source`
-- **`kama-digital-filters`** — фильтры для `Processor`
-- **`kama-digital-effects`** — эффекты для `Processor`
-- **`kama-io`** — аудио-бэкенды для `Sink` (ALSA, CPAL, JACK)
+- **`rill-core`** — базовые трейты, буферы, очереди
+- **`rill-patchbay`** — мир автоматов (управление и автоматизация)
+- **`rill-oscillators`** — готовые генераторы для `Source`
+- **`rill-digital-filters`** — фильтры для `Processor`
+- **`rill-digital-effects`** — эффекты для `Processor`
+- **`rill-io`** — аудио-бэкенды для `Sink` (ALSA, CPAL, JACK)
 
 ### 📚 Документация
 
-Полная документация: [docs.rs/kama-graph](https://docs.rs/kama-graph)
+Полная документация: [docs.rs/rill-graph](https://docs.rs/rill-graph)
 
-Примеры: [github.com/DigitalRats/kama-audio/tree/main/kama-graph/examples](https://github.com/DigitalRats/kama-audio/tree/main/kama-graph/examples)
+Примеры: [github.com/DigitalRats/rill/tree/main/rill-graph/examples](https://github.com/DigitalRats/rill/tree/main/rill-graph/examples)
 
 ### 🤝 Философия
 
@@ -1144,7 +1144,7 @@ graph.connect_audio(filter_id, 0, gain_id, 0)?;
 
 Полный текст лицензии: [LICENSE-APACHE](LICENSE-APACHE)
 
-Примечание: kama-tests лицензирован под MIT. Полный текст лицензии: [LICENSE-MIT](LICENSE-MIT)
+Примечание: rill-tests лицензирован под MIT. Полный текст лицензии: [LICENSE-MIT](LICENSE-MIT)
 
 ## 🌟 Благодарности
 
@@ -1155,4 +1155,4 @@ graph.connect_audio(filter_id, 0, gain_id, 0)?;
 
 ---
 
-**Kama Audio 0.3.0** — стабильное ядро, чистая архитектура, готовность к следующему этапу. 🚀
+**Rill 0.3.0** — стабильное ядро, чистая архитектура, готовность к следующему этапу. 🚀

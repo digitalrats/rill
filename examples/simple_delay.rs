@@ -1,10 +1,10 @@
-//! Простой пример использования Kamadelay
+//! Простой пример использования Rilldelay
 
-use kama_core::{AudioGraph, node::GainNode};
-use kamadelay::TapeDelayNode;
+use rill_core::{AudioGraph, node::GainNode};
+use rilldelay::TapeDelayNode;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Kamadelay Simple Example ===");
+    println!("=== Rilldelay Simple Example ===");
     
     // Создаём граф обработки
     let mut graph = AudioGraph::new(44100.0);

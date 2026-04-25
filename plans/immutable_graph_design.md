@@ -13,7 +13,7 @@ This document outlines the design for an immutable audio graph that replaces `Dy
 
 ## ActivePort-Based Connection Model
 
-The existing `ActivePort` trait (defined in `kama-core/src/traits/port.rs`) provides a uniform interface for ports that can `pull` and `push` blocks of audio data. Each port is associated with a `PipeBuffer` that acts as a single‑producer, single‑consumer lock‑free ring buffer.
+The existing `ActivePort` trait (defined in `rill-core/src/traits/port.rs`) provides a uniform interface for ports that can `pull` and `push` blocks of audio data. Each port is associated with a `PipeBuffer` that acts as a single‑producer, single‑consumer lock‑free ring buffer.
 
 In the immutable graph, connections are represented as `PipeBuffer` instances that are shared between an output port and an input port. During graph construction, the builder creates a `PipeBuffer` for each connection and attaches it to both ports. Once built, the connections are fixed; no new buffers can be added or removed.
 
@@ -349,8 +349,8 @@ Despite using `PipeBuffer` indirection, the immutable graph still enables severa
 
 ## Next Steps
 
-1. **Implement `AudioNode::process_block` default implementation** in `kama-core`.
-2. **Extend `GraphBuilder` and `AudioGraph`** in `kama‑graph` to use `ActivePort` and `PipeBuffer` connections.
+1. **Implement `AudioNode::process_block` default implementation** in `rill-core`.
+2. **Extend `GraphBuilder` and `AudioGraph`** in `rill‑graph` to use `ActivePort` and `PipeBuffer` connections.
 3. **Update existing graph tests** to verify immutability and correct processing.
 4. **Benchmark** the new graph against the old `DynProcessor`‑based implementation.
 

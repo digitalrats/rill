@@ -2,23 +2,23 @@
 
 ## Версия 0.2.0 (2026-02-23)
 
-### 🎉 Крупнейший рефакторинг: Единое ядро kama-core
+### 🎉 Крупнейший рефакторинг: Единое ядро rill-core
 
-Этот релиз знаменует завершение фундаментального рефакторинга архитектуры Kama Audio. Мы объединили разрозненные крейты в единое, чистое ядро и привели всю экосистему к согласованным версиям.
+Этот релиз знаменует завершение фундаментального рефакторинга архитектуры Rill. Мы объединили разрозненные крейты в единое, чистое ядро и привели всю экосистему к согласованным версиям.
 
 ### ✅ Ключевые изменения
 
-#### 🏗️ **Создание единого ядра kama-core**
-- **Объединены** `kama-core-traits` и `kama-signal` в единый крейт `kama-core`
+#### 🏗️ **Создание единого ядра rill-core**
+- **Объединены** `rill-core-traits` и `rill-signal` в единый крейт `rill-core`
 - **Новая структура:**
-  - `kama_core::traits` — базовые трейты (`AudioNode`, `ParamValue`, `Clock`, ...)
-  - `kama_core::signal` — сигнальная система (`SignalBus`, `ParameterChanged`, ...)
-  - `kama_core::prelude` — удобный реэкспорт для быстрого импорта
-- **Все крейты** теперь зависят только от `kama-core`
+  - `rill_core::traits` — базовые трейты (`AudioNode`, `ParamValue`, `Clock`, ...)
+  - `rill_core::signal` — сигнальная система (`SignalBus`, `ParameterChanged`, ...)
+  - `rill_core::prelude` — удобный реэкспорт для быстрого импорта
+- **Все крейты** теперь зависят только от `rill-core`
 
 #### 📦 **Чистая модульная структура traits**
 ```rust
-kama_core::traits
+rill_core::traits
 ├── node.rs       // AudioNode, NodeId, NodeCategory, NodeMetadata, NodeTypeId
 ├── param.rs      // ParamValue, ParamType, ParamMetadata, ParamRange
 ├── port.rs       // PortId (выделен в отдельный модуль!)
@@ -34,10 +34,10 @@ kama_core::traits
 
 #### 🧹 **Очистка архитектуры**
 - **Удалены** старые крейты:
-  - `kama-core-traits` (заменён на `kama-core`)
-  - `kama-signal` (заменён на `kama-core::signal`)
+  - `rill-core-traits` (заменён на `rill-core`)
+  - `rill-signal` (заменён на `rill-core::signal`)
 - **Все крейты обновлены** до версии 0.2.0
-- **Все импорты** исправлены на использование `kama_core`
+- **Все импорты** исправлены на использование `rill_core`
 - **Все тесты** проходят успешно
 
 #### 🎯 **Новые возможности**
@@ -72,56 +72,56 @@ pub struct PortId {
 
 | Крейт | Версия | Статус |
 |-------|--------|--------|
-| kama-core | 0.2.0 | ✅ **НОВЫЙ** |
-| kama-buffers | 0.2.0 | ✅ обновлён |
-| kama-graph | 0.2.0 | ✅ обновлён |
-| kama-automation | 0.2.0 | ✅ обновлён |
-| kama-control | 0.2.0 | ✅ обновлён |
-| kama-dsp-common | 0.2.0 | ✅ обновлён |
-| kama-oscillators | 0.2.0 | ✅ обновлён |
-| kama-digital-filters | 0.2.0 | ✅ обновлён |
-| kama-digital-effects | 0.2.0 | ✅ обновлён |
-| kama-eq | 0.2.0 | ✅ обновлён |
-| kama-mixer | 0.2.0 | ✅ обновлён |
-| kama-lofi | 0.2.0 | ✅ обновлён |
-| kama-hp | 0.2.0 | ✅ обновлён |
-| kama-io | 0.2.0 | ✅ обновлён |
-| kama-tests | 0.2.0 | ✅ обновлён |
+| rill-core | 0.2.0 | ✅ **НОВЫЙ** |
+| rill-buffers | 0.2.0 | ✅ обновлён |
+| rill-graph | 0.2.0 | ✅ обновлён |
+| rill-automation | 0.2.0 | ✅ обновлён |
+| rill-control | 0.2.0 | ✅ обновлён |
+| rill-dsp-common | 0.2.0 | ✅ обновлён |
+| rill-oscillators | 0.2.0 | ✅ обновлён |
+| rill-digital-filters | 0.2.0 | ✅ обновлён |
+| rill-digital-effects | 0.2.0 | ✅ обновлён |
+| rill-eq | 0.2.0 | ✅ обновлён |
+| rill-mixer | 0.2.0 | ✅ обновлён |
+| rill-lofi | 0.2.0 | ✅ обновлён |
+| rill-hp | 0.2.0 | ✅ обновлён |
+| rill-io | 0.2.0 | ✅ обновлён |
+| rill-tests | 0.2.0 | ✅ обновлён |
 
 ### ⚠️ Миграция с 0.1.0
 
 **В Cargo.toml:**
 ```toml
 # Было (0.1.0)
-kama-core-traits = "0.1.0"
-kama-signal = "0.1.0"
+rill-core-traits = "0.1.0"
+rill-signal = "0.1.0"
 
 # Стало (0.2.0)
-kama-core = "0.2.0"
+rill-core = "0.2.0"
 ```
 
 **В коде:**
 ```rust
 // Было
-use kama_core_traits::*;
-use kama_signal::*;
+use rill_core_traits::*;
+use rill_signal::*;
 
 // Стало
-use kama_core::traits::*;
-use kama_core::signal::*;
+use rill_core::traits::*;
+use rill_core::signal::*;
 
 // Или через prelude
-use kama_core::prelude::*;
+use rill_core::prelude::*;
 ```
 
 ### 🔮 Планы на 0.3.0
 
 В следующей версии планируется:
 - 🔄 Вернуть `ParameterId` (замена `String` для параметров)
-- 📐 Создать `kama-core-math` с обобщёнными математическими абстракциями
+- 📐 Создать `rill-core-math` с обобщёнными математическими абстракциями
 - 🎛️ Добавить трейты `Source`/`Processor`/`Sync`
 - ⚡ Двухпоточная архитектура автоматизации
-- 🌐 Выделить `kama-osc` в отдельный крейт
+- 🌐 Выделить `rill-osc` в отдельный крейт
 
 ### 🙏 Благодарности
 
@@ -129,7 +129,7 @@ use kama_core::prelude::*;
 
 ---
 
-**Полный список изменений:** [GitHub Releases](https://github.com/DigitalRats/kama-audio/releases/tag/v0.2.0)
+**Полный список изменений:** [GitHub Releases](https://github.com/DigitalRats/rill/releases/tag/v0.2.0)
 
 ## [Unreleased] - 0.3.0 (в разработке)
 
@@ -148,7 +148,7 @@ use kama_core::prelude::*;
 - **Скрипт обновления версий** — `scripts/bump-version.sh`
 
 ### 🔜 В разработке
-- kama-core-math — обобщённые математические абстракции
+- rill-core-math — обобщённые математические абстракции
 - Source/Processor/Sync трейты — типизация узлов по ролям
 - Двухпоточная автоматизация
 - Унификация IO (MIDI, OSC, CV)
@@ -187,15 +187,15 @@ use kama_core::prelude::*;
 - **PortId** теперь включает тип порта (AudioIn, AudioOut, Control, CV, и т.д.)
 
 #### DSP инфраструктура
-- **kama-core-dsp** стал единым хранилищем DSP функциональности
+- **rill-core-dsp** стал единым хранилищем DSP функциональности
   - `buffer.rs` — lock-free кольцевые буферы, линии задержки
   - `math.rs` — обобщенные математические абстракции (f32/f64)
   - `macros/` — макросы для генерации DSP узлов
-- **kama-buffers** исключен (функциональность перенесена в core-dsp)
-- **kama-hp** исключен (f64 поддержка в core-dsp)
+- **rill-buffers** исключен (функциональность перенесена в core-dsp)
+- **rill-hp** исключен (f64 поддержка в core-dsp)
 
 #### Система управления (новая концепция)
-- Создан крейт **kama-patchbay** (заменит kama-automation и kama-control)
+- Создан крейт **rill-patchbay** (заменит rill-automation и rill-control)
   - **Automaton** — сущности, генерирующие сигналы (LFO, envelope, random)
   - **Sensor** — органы чувств (слышат звук, чувствуют ручки, принимают MIDI)
   - **Servo** — исполнители, применяющие сигналы к AudioGraph
@@ -233,31 +233,31 @@ use kama_core::prelude::*;
 
 | Крейт | Версия | Статус |
 |-------|--------|--------|
-| kama-core | 0.3.0 | ✅ **обновлен** (ParameterId, новый AudioNode) |
-| kama-core-dsp | 0.3.0 | ✅ **реорганизован** (буферы, математика) |
-| kama-patchbay | 0.3.0 | 🚧 **в разработке** (новая система управления) |
-| kama-graph | 0.3.0 | ✅ **адаптирован** под новый AudioNode |
-| kama-automation | 0.3.0 | 🚧 **будет заменен** на kama-patchbay |
-| kama-control | 0.3.0 | 🚧 **будет заменен** на kama-patchbay |
+| rill-core | 0.3.0 | ✅ **обновлен** (ParameterId, новый AudioNode) |
+| rill-core-dsp | 0.3.0 | ✅ **реорганизован** (буферы, математика) |
+| rill-patchbay | 0.3.0 | 🚧 **в разработке** (новая система управления) |
+| rill-graph | 0.3.0 | ✅ **адаптирован** под новый AudioNode |
+| rill-automation | 0.3.0 | 🚧 **будет заменен** на rill-patchbay |
+| rill-control | 0.3.0 | 🚧 **будет заменен** на rill-patchbay |
 
 ### 🗑️ Устаревшие крейты (будут удалены)
 
-- **kama-buffers** — заменен на `kama-core-dsp::buffer`
-- **kama-hp** — заменен на `kama-core-dsp` с поддержкой f64
-- **kama-automation** — заменен на `kama-patchbay`
-- **kama-control** — заменен на `kama-patchbay`
+- **rill-buffers** — заменен на `rill-core-dsp::buffer`
+- **rill-hp** — заменен на `rill-core-dsp` с поддержкой f64
+- **rill-automation** — заменен на `rill-patchbay`
+- **rill-control** — заменен на `rill-patchbay`
 
 ### 🔧 Технический долг (требует внимания)
 
 - [ ] Перевести существующие DSP узлы на новый `ParameterId`
-  - kama-oscillators
-  - kama-digital-filters
-  - kama-digital-effects
-  - kama-eq
-  - kama-mixer
-  - kama-lofi
-- [ ] Адаптировать kama-io для работы с новой системой
-- [ ] Написать интеграционные тесты для kama-patchbay
+  - rill-oscillators
+  - rill-digital-filters
+  - rill-digital-effects
+  - rill-eq
+  - rill-mixer
+  - rill-lofi
+- [ ] Адаптировать rill-io для работы с новой системой
+- [ ] Написать интеграционные тесты для rill-patchbay
 - [ ] Обновить примеры для демонстрации новой концепции
 
 ### 📚 Документация
@@ -269,7 +269,7 @@ use kama_core::prelude::*;
 
 ### 🎯 Ближайшие шаги
 
-1. Завершить базовую реализацию kama-patchbay
+1. Завершить базовую реализацию rill-patchbay
 2. Перевести существующие узлы на ParameterId
 3. Написать пример с акустическими сенсорами
 4. Интегрировать patchbay с AudioGraph
@@ -310,8 +310,8 @@ use kama_core::prelude::*;
 
 ### 🆕 **Новые компоненты**
 
-#### `kama-core` (0.3.0)
-- **queues/** — фундаментальные очереди (ранее `kama-signal`)
+#### `rill-core` (0.3.0)
+- **queues/** — фундаментальные очереди (ранее `rill-signal`)
   - `CommandQueue<T>` — неблокирующая MPMC очередь
   - `TelemetryQueue` — очередь телеметрии
   - `MicroControlObserver` — наблюдатель за микро-контролем
@@ -321,8 +321,8 @@ use kama_core::prelude::*;
   - `AudioNode` — новый чистый API без устаревших методов
   - `MicroControlPermit` — разрешение на прямой доступ (осторожно!)
 
-#### `kama-patchbay` (0.3.0) — **НОВЫЙ КРЕЙТ**
-Заменяет `kama-automation` и `kama-control`.
+#### `rill-patchbay` (0.3.0) — **НОВЫЙ КРЕЙТ**
+Заменяет `rill-automation` и `rill-control`.
 
 **Автоматы (Automaton):**
 - `LfoAutomaton` — LFO с разными формами волны
@@ -344,7 +344,7 @@ use kama_core::prelude::*;
 - `ParameterTarget` — целевой параметр с диапазоном
 - `ServoBuilder` — удобное создание серво
 
-#### `kama-graph` (0.3.0)
+#### `rill-graph` (0.3.0)
 - **`AudioMappingNode`** — процессор маппинга в аудиографе
   - Преобразует аудио в управление (RMS, peak, envelope, pitch)
   - Динамическая коммутация (gate, selector, crossfade, mixer)
@@ -353,7 +353,7 @@ use kama_core::prelude::*;
 - Интеграция с очередями через `with_queues`
 - Поддержка `ParameterId` во всех узлах
 
-#### `kama-server` (0.3.0) — **НОВЫЙ КРЕЙТ**
+#### `rill-server` (0.3.0) — **НОВЫЙ КРЕЙТ**
 - OSC сервер для удаленного управления
 - HTTP API (опционально)
 - Мост между сетью и очередями
@@ -362,11 +362,11 @@ use kama_core::prelude::*;
 
 | Крейт | Причина | Замена |
 |-------|---------|--------|
-| `kama-buffers` | Дублирование | `kama-core-dsp::buffer` |
-| `kama-hp` | Дублирование | `kama-core-dsp` (f64) |
-| `kama-automation` | Переосмысление | `kama-patchbay::automaton` |
-| `kama-control` | Переосмысление | `kama-patchbay::sensor` + `kama-patchbay::mapping` |
-| `kama-signal` | Заменен очередями | `kama-core::queues` |
+| `rill-buffers` | Дублирование | `rill-core-dsp::buffer` |
+| `rill-hp` | Дублирование | `rill-core-dsp` (f64) |
+| `rill-automation` | Переосмысление | `rill-patchbay::automaton` |
+| `rill-control` | Переосмысление | `rill-patchbay::sensor` + `rill-patchbay::mapping` |
+| `rill-signal` | Заменен очередями | `rill-core::queues` |
 
 ### ✨ **Новые возможности**
 
@@ -424,13 +424,13 @@ println!("Нарушений: {}", stats.total_violations);
 
 ### 🔧 **Макросы**
 
-#### В `kama-core`:
+#### В `rill-core`:
 - `processor_node!` — обновлен для работы с очередями
 - `source_node!` — обновлен
 - `sink_node!` — обновлен
 - `with_parameters!` — автоматическая генерация ParameterId
 
-#### В `kama-core-dsp`:
+#### В `rill-core-dsp`:
 - Все макросы обновлены для работы с `ParameterId`
 - Добавлена поддержка телеметрии
 
@@ -461,41 +461,41 @@ cargo run --example ui_as_sensor      # Интеграция с egui
 
 ## Миграция с 0.2.0
 
-### Если вы использовали `kama-automation`:
+### Если вы использовали `rill-automation`:
 ```toml
 # Было
-kama-automation = "0.2.0"
+rill-automation = "0.2.0"
 
 # Стало
-kama-patchbay = "0.3.0"
+rill-patchbay = "0.3.0"
 ```
 
-### Если вы использовали `kama-control`:
+### Если вы использовали `rill-control`:
 ```toml
 # Было
-kama-control = "0.2.0"
+rill-control = "0.2.0"
 
 # Стало
-kama-patchbay = "0.3.0"  # используйте Sensor + MappingAutomaton
+rill-patchbay = "0.3.0"  # используйте Sensor + MappingAutomaton
 ```
 
-### Если вы использовали `kama-signal`:
+### Если вы использовали `rill-signal`:
 ```rust
 // Было
-use kama_signal::SignalBus;
+use rill_signal::SignalBus;
 
 // Стало
-use kama_core::queues::CommandQueue;
+use rill_core::queues::CommandQueue;
 let queue: CommandQueue<SetParameter> = CommandQueue::new("name");
 ```
 
-### Если вы использовали `kama-buffers`:
+### Если вы использовали `rill-buffers`:
 ```rust
 // Было
-use kama_buffers::RingBuffer;
+use rill_buffers::RingBuffer;
 
 // Стало
-use kama_core_dsp::buffer::RingBuffer;
+use rill_core_dsp::buffer::RingBuffer;
 ```
 
 
@@ -506,14 +506,14 @@ use kama_core_dsp::buffer::RingBuffer;
 
 ## [0.3.0] - 2026-02-25 (в разработке)
 
-### ✅ **Стабильное ядро (kama-core)**
+### ✅ **Стабильное ядро (rill-core)**
 
-После масштабного рефакторинга ядро Kama Audio полностью стабильно. Все 31 тест проходят успешно, документационные тесты работают.
+После масштабного рефакторинга ядро Rill полностью стабильно. Все 31 тест проходят успешно, документационные тесты работают.
 
 #### 🏗️ **Новая архитектура ядра**
 
 ```
-kama-core/
+rill-core/
 ├── traits/           # Базовые трейты (AudioNode, ParameterId, PortId, Clock)
 ├── queues/           # Законы природы (CommandQueue, TelemetryQueue, Observer)
 ├── macros/           # Макросы для генерации узлов
@@ -555,9 +555,9 @@ kama-core/
 | Типов команд | 5 |
 | Политик переполнения | 3 |
 
-### 🎛️ **Рефакторинг DSP (kama-core-dsp)**
+### 🎛️ **Рефакторинг DSP (rill-core-dsp)**
 
-Переписаны реализации фильтров в `kama-core-dsp/filters` и генераторов в `kama-core-dsp/generators`, используя только абстракции из `kama-core/math` и `kama-core-dsp/vector`. Все алгоритмы теперь работают только с блоками семплов (ScalarVector), используя векторный eDSL для обобщённой математики над `AudioNum`.
+Переписаны реализации фильтров в `rill-core-dsp/filters` и генераторов в `rill-core-dsp/generators`, используя только абстракции из `rill-core/math` и `rill-core-dsp/vector`. Все алгоритмы теперь работают только с блоками семплов (ScalarVector), используя векторный eDSL для обобщённой математики над `AudioNum`.
 
 #### 🏗️ **Архитектурные изменения**
 
@@ -596,13 +596,13 @@ kama-core/
 
 #### 🔄 **Обновление зависимых крейтов**
 
-- [x] `kama-core-dsp` — адаптация под новое ядро ✅ **ВЫПОЛНЕНО**
+- [x] `rill-core-dsp` — адаптация под новое ядро ✅ **ВЫПОЛНЕНО**
 
 #### ✨ **Пример использования нового ядра**
 
 ```rust
-use kama_core::prelude::*;
-use kama_core::queues::*;
+use rill_core::prelude::*;
+use rill_core::queues::*;
 
 // Создаем узел с помощью макроса
 processor_node_f32! {
@@ -656,7 +656,7 @@ let mut processor = MyProcessor::new(1.0)
 
 | Компонент | Причина | Замена |
 |-----------|---------|--------|
-| `kama_core::signal` | Заменен очередями | `kama_core::queues` |
+| `rill_core::signal` | Заменен очередями | `rill_core::queues` |
 | Старые версии макросов | Устарели | Новые макросы с ParameterId |
 | Прямая работа со строками | Небезопасно | `ParameterId` |
 
@@ -670,11 +670,11 @@ let mut processor = MyProcessor::new(1.0)
 ### 🔮 **Следующие шаги**
 
 1. **Обновление зависимых крейтов:**
-   - [x] `kama-core-dsp` — адаптация под новое ядро ✅ **ВЫПОЛНЕНО** (рефакторинг фильтров и генераторов)
-   - [ ] `kama-graph` — интеграция с очередями
-   - [ ] `kama-patchbay` — создание мира автоматов
-   - [ ] `kama-digital-effects` — обновление узлов
-   - [ ] `kama-oscillators` — обновление генераторов
+   - [x] `rill-core-dsp` — адаптация под новое ядро ✅ **ВЫПОЛНЕНО** (рефакторинг фильтров и генераторов)
+   - [ ] `rill-graph` — интеграция с очередями
+   - [ ] `rill-patchbay` — создание мира автоматов
+   - [ ] `rill-digital-effects` — обновление узлов
+   - [ ] `rill-oscillators` — обновление генераторов
 
 2. **Новые возможности:**
    - [ ] Примеры использования новой архитектуры
@@ -691,69 +691,69 @@ let mut processor = MyProcessor::new(1.0)
 ## [0.4.0] - 2026-04-01
 ### 🚀 Объединение крейтов и активация модулей
 
-#### 🏗️ **Объединение kama-eq и kama-mixer в kama-router**
-- Создан новый крейт `kama-router` (версия 0.4.0), объединяющий функциональность эквалайзеров (`kama-eq`) и микшера (`kama-mixer`)
+#### 🏗️ **Объединение rill-eq и rill-mixer в rill-router**
+- Создан новый крейт `rill-router` (версия 0.4.0), объединяющий функциональность эквалайзеров (`rill-eq`) и микшера (`rill-mixer`)
 - Сохранена обратная совместимость через реэкспорт API в новом крейте
 - Структура крейта:
   - Модуль `eq` — графический и параметрический эквалайзеры
   - Модуль `mixer` — микшер с каналами, посылами, мастером
   - Планируется добавление модуля `matrix` для матричной маршрутизации
-- Крейты `kama-eq` и `kama-mixer` исключены из workspace (функциональность перенесена в `kama-router`)
+- Крейты `rill-eq` и `rill-mixer` исключены из workspace (функциональность перенесена в `rill-router`)
 
 #### ✅ **Активация отключенных крейтов**
 Следующие крейты переведены из статуса "временно отключен" в активные:
-- **`kama-graph` (0.3.0)** — аудиограф с топологической сортировкой
-- **`kama-oscillators` (0.3.0)** — осцилляторы (синус, пила, шум, LFO, огибающие)
-- **`kama-digital-filters` (0.3.0)** — цифровые фильтры (биквадратные, SVF, гребенчатые)
-- **`kama-digital-effects` (0.3.0)** — цифровые эффекты (Delay, Distortion, Limiter)
+- **`rill-graph` (0.3.0)** — аудиограф с топологической сортировкой
+- **`rill-oscillators` (0.3.0)** — осцилляторы (синус, пила, шум, LFO, огибающие)
+- **`rill-digital-filters` (0.3.0)** — цифровые фильтры (биквадратные, SVF, гребенчатые)
+- **`rill-digital-effects` (0.3.0)** — цифровые эффекты (Delay, Distortion, Limiter)
 
 #### 📦 **Обновленная структура workspace**
 ```toml
 [workspace]
 members = [
-    "kama-core",              # ✅ Активно (0.3.0)
-    "kama-core-dsp",          # ✅ Активно (0.3.0)
-    "kama-graph",             # ✅ Активно (0.3.0)
-    "kama-oscillators",       # ✅ Активно (0.3.0)
-    "kama-digital-filters",   # ✅ Активно (0.3.0)
-    "kama-digital-effects",   # ✅ Активно (0.3.0)
-    "kama-router",            # ✅ Активно (0.4.0)
-    #"kama-patchbay",         # ⏸️ Временно отключен (0.3.0)
-    #"kama-lofi",             # ⏸️ Временно отключен (0.2.0)
-    #"kama-io",               # ⏸️ Временно отключен (0.2.0)
-    #"kama-server",           # 🔌 В разработке
-    #"kama-wdf",              # 🔌 В разработке
+    "rill-core",              # ✅ Активно (0.3.0)
+    "rill-core-dsp",          # ✅ Активно (0.3.0)
+    "rill-graph",             # ✅ Активно (0.3.0)
+    "rill-oscillators",       # ✅ Активно (0.3.0)
+    "rill-digital-filters",   # ✅ Активно (0.3.0)
+    "rill-digital-effects",   # ✅ Активно (0.3.0)
+    "rill-router",            # ✅ Активно (0.4.0)
+    #"rill-patchbay",         # ⏸️ Временно отключен (0.3.0)
+    #"rill-lofi",             # ⏸️ Временно отключен (0.2.0)
+    #"rill-io",               # ⏸️ Временно отключен (0.2.0)
+    #"rill-server",           # 🔌 В разработке
+    #"rill-wdf",              # 🔌 В разработке
 ]
 ```
 
 #### 📚 **Обновление документации**
 - **README.md** — обновлен список крейтов, таблица состояния, диаграмма зависимостей
-- **architecture.md** — добавлен раздел о `kama-router`, обновлена диаграмма зависимостей
+- **architecture.md** — добавлен раздел о `rill-router`, обновлена диаграмма зависимостей
 - Состояние проекта отражает текущую активизацию модулей
 
 #### 🧪 **Тестирование**
-- Все тесты `kama-router` проходят успешно (14 тестов: 8 для eq, 6 для mixer)
+- Все тесты `rill-router` проходят успешно (14 тестов: 8 для eq, 6 для mixer)
 - Код компилируется без ошибок (предупреждения только о missing docs)
 - Обратная совместимость обеспечена через реэкспорт типов
 
 #### 🔄 **Миграция с 0.3.0**
 ```toml
 # Было (0.3.0)
-kama-eq = "0.3.0"
-kama-mixer = "0.3.0"
+rill-eq = "0.3.0"
+rill-mixer = "0.3.0"
 
 # Стало (0.4.0)
-kama-router = "0.4.0"
+rill-router = "0.4.0"
 
 # В коде
-use kama_router::eq::{GraphicEq, ParametricEq};
-use kama_router::mixer::{MixerNode, ChannelConfig};
+use rill_router::eq::{GraphicEq, ParametricEq};
+use rill_router::mixer::{MixerNode, ChannelConfig};
 ```
 
-#### 🎯 **Пример использования kama-router**
+#### 🎯 **Пример использования rill-router**
 ```rust
-use kama_router::eq::{GraphicEq, ParametricEq};
-use kama_router::mixer::{MixerNode, ChannelConfig};
+use rill_router::eq::{GraphicEq, ParametricEq};
+use rill_router::mixer::{MixerNode, ChannelConfig};
 
 let mut eq = GraphicEq::new(44100.0);
 eq.set_band_gain(0, 3.0)?;
@@ -768,17 +768,17 @@ mixer.set_channel_volume(1, 0.8)?;
 |---------|----------|
 | Новых файлов создано | 12+ |
 | Тестов перенесено | 14 |
-| Строк кода в kama-router | ~2000 |
+| Строк кода в rill-router | ~2000 |
 | Крейтов активировано | 4 |
 | Крейтов объединено | 2 → 1 |
 
 ---
 
 ## [0.2.0] - 2026-02-23
-### Крупнейший рефакторинг: Единое ядро kama-core
+### Крупнейший рефакторинг: Единое ядро rill-core
 ... (предыдущая версия)
 
 ---
 
-**Статус:** Ядро стабилизировано, основные DSP модули активны. Крейты `kama-eq` и `kama-mixer` объединены в `kama-router`. Продолжаем развитие инфраструктуры и подготовку к интеграции с аудиографом.
+**Статус:** Ядро стабилизировано, основные DSP модули активны. Крейты `rill-eq` и `rill-mixer` объединены в `rill-router`. Продолжаем развитие инфраструктуры и подготовку к интеграции с аудиографом.
 ```

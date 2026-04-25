@@ -1,24 +1,24 @@
 [workspace]
 members = [
-    "kama-core",
-    "kama-core-dsp",
-    "kama-graph",
-    #"kama-patchbay", # Временно отключен
-    "kama-oscillators",
-    "kama-digital-filters",
-    "kama-digital-effects",
-    "kama-router",
-    #"kama-lofi", # Временно отключен
-    #"kama-io", # Временно отключен 
-    #"kama-server" # В разработке
-    #"kama-wdf" # Планируется
-    #"kama-sequenser # Планируется
+    "rill-core",
+    "rill-core-dsp",
+    "rill-graph",
+    #"rill-patchbay", # Временно отключен
+    "rill-oscillators",
+    "rill-digital-filters",
+    "rill-digital-effects",
+    "rill-router",
+    #"rill-lofi", # Временно отключен
+    #"rill-io", # Временно отключен 
+    #"rill-server" # В разработке
+    #"rill-wdf" # Планируется
+    #"rill-sequenser # Планируется
 ]
 resolver = "2"
 
 [workspace.package]
 license = "Apache-2.0"
-authors = ["Digital Rats / Kama Audio Team"]
+authors = ["Digital Rats / Rill Team"]
 edition = "2021"
 
 [workspace.dependencies]

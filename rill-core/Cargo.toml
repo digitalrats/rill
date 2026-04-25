@@ -1,0 +1,28 @@
+[package]
+name = "rill-core"
+version = "0.3.0"
+edition = "2021"
+description = "Ядро экосистемы Rill: базовые трейты и сигнальная система"
+license = "Apache-2.0"
+authors = ["Digital Rats / Rill Team"]
+repository = "https://github.com/DigitalRats/rill"
+documentation = "https://docs.rs/rill-core"
+
+[dependencies]
+parking_lot = "0.12"
+thiserror = "1.0"
+crossbeam-channel = "0.5"
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+float-cmp = "0.9"
+
+[features]
+default = []
+serde = ["dep:serde"]
+stats = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

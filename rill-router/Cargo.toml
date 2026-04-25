@@ -1,0 +1,19 @@
+[package]
+name = "rill-router"
+version = "0.4.0"
+edition = "2021"
+description = "Audio routing, mixing, and equalization for Rill"
+license = "Apache-2.0"
+authors = ["Digital Rats / Rill Team"]
+
+[dependencies]
+rill-core = { path = "../rill-core", version = "0.3.0" }
+rill-core-dsp = { path = "../rill-core-dsp", version = "0.3.0" }
+thiserror = "1.0"
+
+[features]
+default = []
+
+[dev-dependencies]
+float-cmp = "0.9"
+rill-digital-filters = { path = "../rill-digital-filters" }

@@ -1,0 +1,18 @@
+[package]
+name = "rill-digital-filters"
+version = "0.3.0"
+edition = "2021"
+description = "Digital filters for Rill - Biquad, OnePole, StateVariable, etc."
+license = "Apache-2.0"
+authors = ["Digital Rats / Rill Team"]
+
+[dependencies]
+rill-core = { path = "../rill-core", version = "0.3.0" }
+rill-core-dsp = { path = "../rill-core-dsp" }
+thiserror = "1.0"
+
+[features]
+default = []
+
+[dev-dependencies]
+float-cmp = "0.9"

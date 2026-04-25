@@ -1,0 +1,20 @@
+[package]
+name = "rill-digital-effects"
+version = "0.3.0"
+edition = "2021"
+description = "Digital audio effects for Rill - Delay, Distortion, Chorus, Reverb, etc."
+license = "Apache-2.0"
+authors = ["Digital Rats / Rill Team"]
+
+[dependencies]
+rill-core = { path = "../rill-core", version = "0.3.0" }
+rill-core-dsp = { path = "../rill-core-dsp" }
+rill-oscillators = { path = "../rill-oscillators", optional = true }
+thiserror = "1.0"
+
+[features]
+default = []
+modulation = ["rill-oscillators"]  # для LFO в модуляционных эффектах
+
+[dev-dependencies]
+float-cmp = "0.9"
