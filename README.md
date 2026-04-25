@@ -844,8 +844,6 @@ world.awaken();  // Синтезатор начинает слышать, дум
 [![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
-## Исправленный раздел README.md: rill-graph
-
 ## 🔗 rill-graph — аудиограф для реального времени
 
 Библиотека для построения и выполнения гибких аудиографов с поддержкой:
