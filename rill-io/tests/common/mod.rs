@@ -31,7 +31,7 @@ where
 
 /// Проверяет, нужно ли запускать живые тесты
 pub fn should_run_live_tests() -> bool {
-    std::env::var("KAMA_TEST_LIVE_AUDIO").is_ok()
+    std::env::var("RILL_TEST_LIVE_AUDIO").is_ok()
 }
 
 /// Создаёт конфигурацию для тестов
