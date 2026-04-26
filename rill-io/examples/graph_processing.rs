@@ -1,18 +1,20 @@
-//! Пример использования GraphProcessor
+//! Пример использования GraphProcessor с новым rill-graph API
+//!
+//! Граф строится через GraphBuilder, затем оборачивается в GraphProcessor
+//! для использования в AudioEngine.
 
-use rill_core::traits::{AudioNode, NodeId, ParamValue, PortId};
-use rill_digital_effects::Delay;
-use rill_digital_filters::{BiquadFilter, FilterType};
-use rill_graph::AudioGraph;
+use rill_core::time::{ClockSource, SystemClock};
+use rill_graph::GraphBuilder;
 use rill_io::{
     backends::{CpalBackend, NullBackend},
     processor::GraphProcessor,
-    AudioConfig, AudioEngine, BackendType,
+    AudioBackend, AudioConfig, AudioEngine,
 };
-use rill_oscillators::audio::SineOsc;
 
 #[cfg(feature = "alsa")]
 use rill_io::backends::AlsaBackend;
+
+const BUF_SIZE: usize = 256;
 
 fn create_backend(
     config: AudioConfig,
@@ -32,42 +34,26 @@ fn create_backend(
     Ok(Box::new(NullBackend::new(config)))
 }
 
-fn create_audio_graph(sample_rate: f32) -> (AudioGraph, NodeId, NodeId) {
-    let mut graph = AudioGraph::new(sample_rate);
+fn build_graph() -> GraphProcessor<f32, BUF_SIZE> {
+    let builder = GraphBuilder::<f32, BUF_SIZE>::new();
 
-    // Создаём узлы
-    let osc = SineOsc::new(440.0).with_amplitude(0.5);
-    let osc_id = graph.add_node(Box::new(osc));
+    // В реальном проекте здесь добавляются узлы и соединения:
+    //   let osc = builder.add_source(Box::new(my_oscillator));
+    //   let filter = builder.add_processor(Box::new(my_filter));
+    //   builder.connect_audio(osc, 0, filter, 0);
+    //
+    // Пока граф пустой — полная интеграция с GraphExecutor будет добавлена позже.
 
-    let filter = BiquadFilter::new(FilterType::LowPass, 1000.0, 0.707, 0.0);
-    let filter_id = graph.add_node(Box::new(filter));
-
-    let delay = Delay::new(0.3, 0.4, 0.7);
-    let delay_id = graph.add_node(Box::new(delay));
-
-    // Соединяем
-    graph
-        .connect(PortId::output(osc_id, 0), PortId::input(filter_id, 0), 1.0)
-        .unwrap();
-
-    graph
-        .connect(
-            PortId::output(filter_id, 0),
-            PortId::input(delay_id, 0),
-            1.0,
-        )
-        .unwrap();
-
-    (graph, osc_id, delay_id)
+    let clock: Box<dyn ClockSource> = Box::new(SystemClock::with_sample_rate(44100.0));
+    GraphProcessor::from_builder(builder, clock).expect("failed to build graph")
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Rill IO Graph Processing Demo ===\n");
 
     let config = AudioConfig::default()
         .with_sample_rate(44100)
-        .with_buffer_size(256)
+        .with_buffer_size(BUF_SIZE as u32)
         .with_channels(2);
 
     println!(
@@ -75,23 +61,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.sample_rate, config.buffer_size
     );
 
-    // Создаём граф
-    let (graph, input_id, output_id) = create_audio_graph(config.sample_rate as f32);
+    let graph_processor = build_graph();
+    println!("Graph has {} node(s)", graph_processor.node_count());
+    println!("Topo order: {:?}", graph_processor.topo_order());
 
-    // Создаём процессор
-    let processor = GraphProcessor::new(graph, Some(input_id), Some(output_id));
-
-    // Создаём бэкенд
     let backend = create_backend(config.clone())?;
     println!("Using backend: {}", backend.backend_type().name());
 
-    // Создаём движок
-    let mut engine = AudioEngine::new(backend, processor);
+    let mut engine = AudioEngine::new(backend, graph_processor);
 
     println!("\nStarting audio engine...");
     engine.start()?;
 
-    println!("Playing processed sine wave for 3 seconds...");
+    println!("Playing for 3 seconds...");
     std::thread::sleep(std::time::Duration::from_secs(3));
 
     println!("Stopping...");

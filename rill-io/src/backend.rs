@@ -84,6 +84,57 @@ pub trait AudioBackend: Send + Sync + Debug {
     fn list_output_devices(&self) -> Vec<String>;
 }
 
+// Blanket impl so that `Box<dyn AudioBackend>` satisfies `B: AudioBackend`.
+impl<T: AudioBackend + ?Sized> AudioBackend for Box<T> {
+    fn backend_type(&self) -> BackendType {
+        (**self).backend_type()
+    }
+
+    fn config(&self) -> &AudioConfig {
+        (**self).config()
+    }
+
+    fn config_mut(&mut self) -> &mut AudioConfig {
+        (**self).config_mut()
+    }
+
+    fn init(&mut self) -> IoResult<()> {
+        (**self).init()
+    }
+
+    fn start(&mut self) -> IoResult<()> {
+        (**self).start()
+    }
+
+    fn stop(&mut self) -> IoResult<()> {
+        (**self).stop()
+    }
+
+    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
+        (**self).read(buffer)
+    }
+
+    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
+        (**self).write(buffer)
+    }
+
+    fn xruns(&self) -> u32 {
+        (**self).xruns()
+    }
+
+    fn latency(&self) -> Duration {
+        (**self).latency()
+    }
+
+    fn list_input_devices(&self) -> Vec<String> {
+        (**self).list_input_devices()
+    }
+
+    fn list_output_devices(&self) -> Vec<String> {
+        (**self).list_output_devices()
+    }
+}
+
 /// Информация об устройстве
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {

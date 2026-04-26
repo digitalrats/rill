@@ -9,10 +9,9 @@ members = [
     "rill-digital-effects",
     "rill-router",
     "rill-lofi",
-    #"rill-io", # Временно отключен 
+    "rill-io",
     #"rill-server" # В разработке
     #"rill-wdf" # Планируется
-    #"rill-sequenser # Планируется
 ]
 resolver = "2"
 

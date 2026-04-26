@@ -9,7 +9,7 @@ use crossbeam_channel::{unbounded, Sender, Receiver};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use rill_buffers::RingBuffer;
+use crate::buffer::IoRingBuffer;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
@@ -42,8 +42,8 @@ pub struct CpalBackend {
     command_tx: Sender<Command>,
     status_rx: Receiver<Status>,
     xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<RingBuffer>>,
-    output_buffer: Arc<RwLock<RingBuffer>>,
+    input_buffer: Arc<RwLock<IoRingBuffer>>,
+    output_buffer: Arc<RwLock<IoRingBuffer>>,
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -67,8 +67,8 @@ impl CpalBackend {
         let (status_tx, status_rx) = unbounded();
         
         let xruns = Arc::new(RwLock::new(0));
-        let input_buffer = Arc::new(RwLock::new(RingBuffer::new(buffer_size)));
-        let output_buffer = Arc::new(RwLock::new(RingBuffer::new(buffer_size)));
+        let input_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
+        let output_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
         
         let thread_host = host.clone();
         let thread_input = input_buffer.clone();
@@ -119,8 +119,8 @@ fn run_cpal_thread(
     status_tx: Sender<Status>,
     host: Arc<cpal::Host>,
     config: AudioConfig,
-    input_buffer: Arc<RwLock<RingBuffer>>,
-    output_buffer: Arc<RwLock<RingBuffer>>,
+    input_buffer: Arc<RwLock<IoRingBuffer>>,
+    output_buffer: Arc<RwLock<IoRingBuffer>>,
     xruns: Arc<RwLock<u32>>,
 ) {
     let mut _input_device: Option<cpal::Device> = None;
@@ -134,7 +134,8 @@ fn run_cpal_thread(
                 output_device = find_device(&host, out_name.as_deref(), false).ok().flatten();
                 
                 // Очищаем буферы
-                let zeros = vec![0.0f32; input_buffer.read().size()];
+                let cap = input_buffer.read().capacity();
+                let zeros = vec![0.0f32; cap];
                 input_buffer.write().write(&zeros);
                 output_buffer.write().write(&zeros);
                 
@@ -155,9 +156,9 @@ fn run_cpal_thread(
                     match dev.build_output_stream(
                         &stream_config,
                         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            let out_buf_lock = out_buf.read();
+                            let mut out_buf_lock = out_buf.write();
                             let mut temp = vec![0.0f32; data.len()];
-                            out_buf_lock.read(0, &mut temp);
+                            out_buf_lock.read(&mut temp);
                             data.copy_from_slice(&temp[..data.len()]);
                         },
                         move |err| {
@@ -251,8 +252,8 @@ impl AudioBackend for CpalBackend {
     }
     
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let input_buf = self.input_buffer.read();
-        input_buf.read(0, buffer);
+        let mut input_buf = self.input_buffer.write();
+        input_buf.read(buffer);
         Ok(buffer.len())
     }
     

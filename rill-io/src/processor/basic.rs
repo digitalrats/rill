@@ -76,13 +76,13 @@ impl AudioProcessor for MonoMixerProcessor {
 }
 
 /// Процессор, записывающий входной сигнал в кольцевой буфер (для отладки)
-#[cfg(feature = "debug")]
+#[cfg(feature = "examples")]
 pub struct CaptureProcessor {
     buffer: Vec<f32>,
     position: usize,
 }
 
-#[cfg(feature = "debug")]
+#[cfg(feature = "examples")]
 impl CaptureProcessor {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -96,7 +96,7 @@ impl CaptureProcessor {
     }
 }
 
-#[cfg(feature = "debug")]
+#[cfg(feature = "examples")]
 impl AudioProcessor for CaptureProcessor {
     fn process(&mut self, input: &[f32], output: &mut [f32]) {
         // Просто копируем вход в выход

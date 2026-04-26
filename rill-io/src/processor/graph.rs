@@ -1,165 +1,93 @@
-//! Интеграция с AudioGraph
+//! Integration with `rill_graph::AudioGraph`
+//!
+//! The `GraphProcessor` bridges the real-time I/O callback world
+//! (`&[f32]` slices) with the graph-based processing model of `rill_graph`.
+//! Since the graph's audio processing is driven externally (via the
+//! `GraphExecutor` in `rill_core`), this processor exposes the graph for
+//! inspection, parameter dispatch, and access to output buffers.
+//! Actual audio processing through the graph will be enabled once the
+//! `GraphExecutor` is fully integrated.
 
-use std::sync::Arc;
-use parking_lot::RwLock;
+use std::marker::PhantomData;
 
-use rill_graph::{AudioGraph, AudioNode};
-use rill_core::traits::ParamValue;
-use rill_core::traits::NodeId;  // <-- Добавляем явный импорт
+use rill_core::math::AudioNum;
+use rill_core::time::ClockSource;
+use rill_graph::{AudioGraph, GraphBuilder};
 
 use crate::engine::AudioProcessor;
-use crate::error::{IoResult, IoError};
 
-/// Процессор, который обрабатывает аудио через AudioGraph
-pub struct GraphProcessor {
-    graph: Arc<RwLock<AudioGraph>>,
-    input_node_id: Option<NodeId>,
-    output_node_id: Option<NodeId>,
-    temp_input: Vec<f32>,
-    temp_output: Vec<f32>,
-    sample_rate: f32,
+const DEFAULT_BUF_SIZE: usize = 256;
+
+/// Processor that wraps a `rill_graph::AudioGraph`.
+///
+/// `BUF_SIZE` must match the block size used when building the graph
+/// (defaults to 256).
+pub struct GraphProcessor<T: AudioNum = f32, const BUF_SIZE: usize = DEFAULT_BUF_SIZE> {
+    graph: AudioGraph<T, BUF_SIZE>,
+    _marker: PhantomData<T>,
 }
 
-impl GraphProcessor {
-    /// Создать новый процессор на основе графа
-    pub fn new(
-        graph: AudioGraph,
-        input_node_id: Option<NodeId>,
-        output_node_id: Option<NodeId>,
-    ) -> Self {
-        let sample_rate = graph.sample_rate();
-        
+impl<T: AudioNum, const BUF_SIZE: usize> GraphProcessor<T, BUF_SIZE> {
+    /// Build a graph from a `GraphBuilder`, then wrap it.
+    ///
+    /// The builder is consumed and the graph is validated internally.
+    pub fn from_builder(
+        builder: GraphBuilder<T, BUF_SIZE>,
+        clock: Box<dyn ClockSource>,
+    ) -> Result<Self, rill_graph::BuildError> {
+        let graph = builder.build(clock)?;
+        Ok(Self {
+            graph,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Wrap an already-built `AudioGraph`.
+    pub fn from_graph(graph: AudioGraph<T, BUF_SIZE>) -> Self {
         Self {
-            graph: Arc::new(RwLock::new(graph)),
-            input_node_id,
-            output_node_id,
-            temp_input: Vec::new(),
-            temp_output: Vec::new(),
-            sample_rate,
+            graph,
+            _marker: PhantomData,
         }
     }
-    
-    /// Получить доступ к графу для изменений
-    pub fn with_graph<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut AudioGraph) -> R,
-    {
-        let mut graph = self.graph.write();
-        f(&mut graph)
+
+    /// Access the inner graph for reading.
+    pub fn graph(&self) -> &AudioGraph<T, BUF_SIZE> {
+        &self.graph
     }
-    
-    /// Получить доступ к графу для чтения
-    pub fn with_graph_read<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&AudioGraph) -> R,
-    {
-        let graph = self.graph.read();
-        f(&graph)
+
+    /// Access the inner graph for mutation (only safe when not running).
+    pub fn graph_mut(&mut self) -> &mut AudioGraph<T, BUF_SIZE> {
+        &mut self.graph
     }
-    
-    /// Изменить входной узел
-    pub fn set_input_node(&mut self, node_id: Option<NodeId>) {
-        self.input_node_id = node_id;
+
+    /// Number of nodes in the graph.
+    pub fn node_count(&self) -> usize {
+        self.graph.node_count()
     }
-    
-    /// Изменить выходной узел
-    pub fn set_output_node(&mut self, node_id: Option<NodeId>) {
-        self.output_node_id = node_id;
+
+    /// Topological processing order (indices into the node list).
+    pub fn topo_order(&self) -> &[usize] {
+        self.graph.topo_order()
     }
-    
-    /// Получить частоту дискретизации
-    pub fn sample_rate(&self) -> f32 {
-        self.sample_rate
-    }
-    
-    /// Найти узел по типу
-    pub fn find_node_by_type<T: AudioNode + 'static>(&self) -> Option<NodeId> {
-        self.with_graph_read(|graph: &AudioGraph| {  // <-- Явный тип
-            for &node_id in graph.get_processing_order() {
-                if let Some(node) = graph.get_node(node_id) {
-                    if node.type_id() == std::any::TypeId::of::<T>() {
-                        return Some(node_id);
-                    }
-                }
-            }
-            None
-        })
-    }
-    
-    /// Изменить параметр узла
-    pub fn set_node_param(
-        &self,
-        node_id: NodeId,
-        param_name: &str,
-        value: ParamValue,
-    ) -> Result<(), rill_core::traits::AudioError> {
-        self.with_graph(|graph: &mut AudioGraph| {  // <-- Явный тип
-            if let Some(node) = graph.get_node_mut(node_id) {
-                node.set_param(param_name, value)
-            } else {
-                Ok(())
-            }
-        })
-    }
-    
-    /// Сбросить граф
-    pub fn reset_graph(&self) {
-        self.with_graph(|graph: &mut AudioGraph| graph.reset());  // <-- Явный тип
+
+    /// Get an output buffer from a node port, if available.
+    pub fn output_buffer(&self, node_idx: usize, port_idx: usize) -> Option<&[T; BUF_SIZE]> {
+        self.graph.output_buffer(node_idx, port_idx)
     }
 }
 
-impl AudioProcessor for GraphProcessor {
+impl<T: AudioNum, const BUF_SIZE: usize> AudioProcessor for GraphProcessor<T, BUF_SIZE> {
     fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        let num_samples = input.len();
-        
-        // Подготавливаем временные буферы
-        if self.temp_input.len() != num_samples {
-            self.temp_input.resize(num_samples, 0.0);
-            self.temp_output.resize(num_samples, 0.0);
-        }
-        
-        // Копируем входной сигнал
-        self.temp_input.copy_from_slice(input);
-        
-        let mut graph = self.graph.write();
-        
-        // Если есть входной узел, передаем ему сигнал
-        if let Some(input_id) = self.input_node_id {
-            if let Some(node) = graph.get_node_mut(input_id) {
-                let input_slices = [self.temp_input.as_slice()];
-                let mut output_slices = [self.temp_output.as_mut_slice()];
-                let _ = node.process(&input_slices, &mut output_slices);
-            }
-        }
-        
-        // Обрабатываем весь граф
-        let graph_input = [self.temp_output.as_slice()];
-        let mut graph_output = [output];
-        
-        let _ = graph.process(&graph_input, &mut graph_output);
+        self.graph.dispatch_set_parameters(&[]);
+        let n = output.len().min(input.len());
+        output[..n].copy_from_slice(&input[..n]);
     }
-    
-    fn reset(&mut self) {
-        self.with_graph(|graph: &mut AudioGraph| graph.reset());  // <-- Явный тип
-        self.temp_input.clear();
-        self.temp_output.clear();
-    }
-    
-    fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate;
-        self.with_graph(|graph: &mut AudioGraph| graph.init_all(sample_rate));  // <-- Явный тип
-    }
-}
 
-impl Clone for GraphProcessor {
-    fn clone(&self) -> Self {
-        Self {
-            graph: self.graph.clone(),
-            input_node_id: self.input_node_id,
-            output_node_id: self.output_node_id,
-            temp_input: Vec::new(),
-            temp_output: Vec::new(),
-            sample_rate: self.sample_rate,
-        }
+    fn reset(&mut self) {
+        // Graph state will be reset when executor is integrated.
+    }
+
+    fn set_sample_rate(&mut self, _sample_rate: f32) {
+        // Sample rate is set during graph construction.
     }
 }

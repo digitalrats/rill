@@ -1,7 +1,6 @@
 //! Null бэкенд для тестирования
 
 use std::time::Duration;
-use std::fmt;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;

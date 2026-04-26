@@ -44,10 +44,6 @@ impl AudioBackend for JackBackend {
         BackendType::Jack
     }
     
-    fn name(&self) -> &'static str {
-        "JACK"
-    }
-    
     fn config(&self) -> &AudioConfig {
         &self.config
     }
@@ -88,10 +84,6 @@ impl AudioBackend for JackBackend {
         Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64
         )
-    }
-    
-    fn is_available(&self) -> bool {
-        cfg!(any(target_os = "linux", target_os = "macos"))
     }
     
     fn list_input_devices(&self) -> Vec<String> {

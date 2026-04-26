@@ -8,9 +8,9 @@ use parking_lot::RwLock;
 use crossbeam_channel::{unbounded, Sender, Receiver};
 
 use alsa::{PCM, Direction, ValueOr};
-use alsa::pcm::{HwParams, Access, Format, State};
+use alsa::pcm::{HwParams, Access, Format};
 
-use rill_buffers::RingBuffer;
+use crate::buffer::IoRingBuffer;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
@@ -25,7 +25,7 @@ enum AlsaCommand {
 
 /// Состояние ALSA потока
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum AlsaState {
+pub(crate) enum AlsaState {
     Stopped,
     Running,
     Error,
@@ -36,8 +36,8 @@ pub struct AlsaBackend {
     config: AudioConfig,
     command_tx: Sender<AlsaCommand>,
     xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<RingBuffer>>,
-    output_buffer: Arc<RwLock<RingBuffer>>,
+    input_buffer: Arc<RwLock<IoRingBuffer>>,
+    output_buffer: Arc<RwLock<IoRingBuffer>>,
     thread_handle: Option<thread::JoinHandle<()>>,
     state: Arc<RwLock<AlsaState>>,
     device_name: Arc<RwLock<String>>,
@@ -62,8 +62,8 @@ impl AlsaBackend {
         let (command_tx, command_rx) = unbounded();
         
         let xruns = Arc::new(RwLock::new(0));
-        let input_buffer = Arc::new(RwLock::new(RingBuffer::new(buffer_size)));
-        let output_buffer = Arc::new(RwLock::new(RingBuffer::new(buffer_size)));
+        let input_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
+        let output_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
         let state = Arc::new(RwLock::new(AlsaState::Stopped));
         let device_name = Arc::new(RwLock::new(
             config.output_device.clone().unwrap_or_else(|| "default".to_string())
@@ -102,13 +102,14 @@ impl AlsaBackend {
     }
     
     /// Установить имя устройства
-    pub fn with_device(mut self, device: &str) -> Self {
+    pub fn with_device(self, device: &str) -> Self {
         *self.device_name.write() = device.to_string();
         self
     }
     
     /// Получить состояние
-    pub fn state(&self) -> AlsaState {
+    #[allow(dead_code)]
+    pub(crate) fn state(&self) -> AlsaState {
         *self.state.read()
     }
 }
@@ -117,15 +118,14 @@ impl AlsaBackend {
 fn run_alsa_thread(
     command_rx: Receiver<AlsaCommand>,
     xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<RingBuffer>>,
-    output_buffer: Arc<RwLock<RingBuffer>>,
+    _input_buffer: Arc<RwLock<IoRingBuffer>>,
+    output_buffer: Arc<RwLock<IoRingBuffer>>,
     state: Arc<RwLock<AlsaState>>,
     config: AudioConfig,
     device_name: Arc<RwLock<String>>,
 ) {
     let mut pcm_handle: Option<PCM> = None;
-    let mut running = false;
-    
+
     while let Ok(cmd) = command_rx.recv() {
         match cmd {
             AlsaCommand::Start => {
@@ -161,7 +161,7 @@ fn run_alsa_thread(
                         continue;
                     }
                     
-                    running = true;
+                    let mut running = true;
                     *state.write() = AlsaState::Running;
                     
                     // Запускаем цикл обработки
@@ -170,9 +170,9 @@ fn run_alsa_thread(
                     
                     while running {
                         // Читаем из выходного буфера
-                        let output = output_buffer.read();
+                        let mut output = output_buffer.write();
                         let mut temp = vec![0.0f32; buffer_size];
-                        output.read(0, &mut temp);
+                        output.read(&mut temp);
                         drop(output); // Освобождаем блокировку
                         
                         // Конвертируем f32 в i16 для ALSA
@@ -221,7 +221,6 @@ fn run_alsa_thread(
             }
             
             AlsaCommand::Stop => {
-                running = false;
                 if let Some(pcm) = &mut pcm_handle {
                     let _ = pcm.drain();
                 }
@@ -264,10 +263,6 @@ impl AudioBackend for AlsaBackend {
         BackendType::Alsa
     }
     
-    fn name(&self) -> &'static str {
-        "ALSA"
-    }
-    
     fn config(&self) -> &AudioConfig {
         &self.config
     }
@@ -278,7 +273,8 @@ impl AudioBackend for AlsaBackend {
     
     fn init(&mut self) -> IoResult<()> {
         // Очищаем буферы
-        let zeros = vec![0.0f32; self.input_buffer.read().size()];
+        let cap = self.input_buffer.read().capacity();
+        let zeros = vec![0.0f32; cap];
         self.input_buffer.write().write(&zeros);
         self.output_buffer.write().write(&zeros);
         
@@ -302,8 +298,8 @@ impl AudioBackend for AlsaBackend {
     }
     
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let input_buf = self.input_buffer.read();
-        input_buf.read(0, buffer);
+        let mut input_buf = self.input_buffer.write();
+        input_buf.read(buffer);
         Ok(buffer.len())
     }
     
@@ -321,10 +317,6 @@ impl AudioBackend for AlsaBackend {
         Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64
         )
-    }
-    
-    fn is_available(&self) -> bool {
-        cfg!(target_os = "linux")
     }
     
     fn list_input_devices(&self) -> Vec<String> {

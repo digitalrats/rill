@@ -1,7 +1,7 @@
-//! Процессоры для AudioEngine
+//! Processors for AudioEngine
 //!
-//! Этот модуль содержит различные реализации трейта `AudioProcessor`
-//! для обработки аудио в реальном времени.
+//! This module contains various implementations of the `AudioProcessor` trait
+//! for real-time audio processing.
 
 mod basic;
 
@@ -11,16 +11,15 @@ mod graph;
 #[cfg(feature = "examples")]
 mod sine;
 
-#[cfg(feature = "examples")]
-mod granular;
-
-// Реэкспорты из basic
 pub use basic::{
-    PassThroughProcessor,
-    SilenceProcessor,
     GainProcessor,
     MonoMixerProcessor,
+    PassThroughProcessor,
+    SilenceProcessor,
 };
+
+#[cfg(feature = "examples")]
+pub use basic::CaptureProcessor;
 
 #[cfg(feature = "graph")]
 pub use graph::GraphProcessor;
@@ -28,11 +27,4 @@ pub use graph::GraphProcessor;
 #[cfg(feature = "examples")]
 pub use sine::SineProcessor;
 
-#[cfg(feature = "examples")]
-pub use granular::GranularProcessor;
-
-#[cfg(feature = "examples")]
-pub use basic::CaptureProcessor;
-
-/// Трейт для процессоров аудио (реэкспорт из engine для удобства)
 pub use crate::engine::AudioProcessor;

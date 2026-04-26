@@ -2,10 +2,9 @@
 //!
 //! Запуск: cargo run --example alsa_demo --features "alsa,examples"
 
-use rill_io::{backends::AlsaBackend, processor::SineProcessor, AudioConfig, AudioEngine};
+use rill_io::{backends::AlsaBackend, processor::SineProcessor, AudioBackend, AudioConfig, AudioEngine};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Rill IO ALSA Demo ===\n");
 
     // Создаём конфигурацию

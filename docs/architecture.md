@@ -380,7 +380,7 @@ let mut akai = LofiProcessor::new(akai_config);
 
 
 
-### `rill-io` (0.2.0, временно отключен)
+### `rill-io` (0.3.0, активен)
 Аудио ввод-вывод.
 
 ```rust
@@ -433,18 +433,18 @@ graph TD
     style PATCHBAY fill:#90ee90
     
     %% Разрабатываемые / планируемые / отключенные
-    IO[rill-io<br/>(отключен)]
+    IO[rill-io]
     LOFI[rill-lofi]
     WDF[rill-wdf<br/>(в разработке)]
     SERVER[rill-server<br/>(в разработке)]
     TESTS[rill-tests<br/>(планируется)]
     
-    CORE -.-> IO
+    CORE --> IO
     CORE --> LOFI
     CORE -.-> WDF
     CORE -.-> SERVER
     
-    style IO fill:#cccccc
+    style IO fill:#90ee90
     style LOFI fill:#90ee90
     style WDF fill:#cccccc
     style SERVER fill:#cccccc
@@ -644,7 +644,7 @@ manager.start()?;  // Автоматы начинают жить своей жи
 
 ## Планы на будущие версии
 
-- ⚡ **Активация отключенных крейтов** — постепенное включение `rill-io` после интеграции с новой векторной инфраструктурой
+- ⚡ **Активация отключенных крейтов** — `rill-io` снова активен (ALSA, CPAL, PipeWire, JACK)
 - 🔌 **Развитие rill-core-dsp** — добавление новых алгоритмов, оптимизация векторных операций, поддержка SIMD
 - 🌐 **rill-server** — выделение OSC в отдельный крейт (в разработке)
 - 🧩 **rill-wdf** — Wave Digital Filters для моделирования аналоговых цепей (в разработке)

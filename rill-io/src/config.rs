@@ -1,6 +1,5 @@
 //! Конфигурация аудиоустройства
 
-use std::time::Duration;
 use crate::backend::BackendType;
 
 /// Конфигурация аудиоустройства
