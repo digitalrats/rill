@@ -4,6 +4,7 @@ use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::math::Smoother;
 use crate::vector::prelude::*;
+use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::AudioNum;
 
 /// Стадия огибающей
@@ -170,7 +171,8 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
         self.smoother.set_current(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             let gate_signal = input[i];
@@ -239,6 +241,7 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
             // Применяем сглаживание
             output[i] = self.smoother.process_sample(self.level.extract(0));
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {

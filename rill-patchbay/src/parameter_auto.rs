@@ -23,14 +23,13 @@
 // rill-automation/src/parameter_auto.rs
 //! Автоматизированный параметр
 
-use crate::automaton::Automaton;
-use crate::context::AutomationContext;
+use crate::control::Automaton;
 use std::fmt;
 use std::marker::PhantomData;
 use std::time::Instant;
 
 /// Параметр с автоматизацией (обобщённая версия)
-pub struct AutomatedParameter<A: Automaton<Time = f64, Context = AutomationContext>> {
+pub struct AutomatedParameter<A: Automaton> {
     value: f32,
     default: f32,
     min: Option<f32>,
@@ -42,44 +41,7 @@ pub struct AutomatedParameter<A: Automaton<Time = f64, Context = AutomationConte
     _phantom: PhantomData<A>,
 }
 
-// Вспомогательная структура для тестового TimeProvider
-struct DummyTimeProvider;
-
-impl fmt::Debug for DummyTimeProvider {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DummyTimeProvider").finish()
-    }
-}
-
-impl rill_core::time::Clock for DummyTimeProvider {
-    fn sample_rate(&self) -> f64 {
-        44100.0
-    }
-    fn position_samples(&self) -> u64 {
-        0
-    }
-    fn advance(&self, _samples: u64) -> u64 {
-        0
-    }
-    fn reset(&self) {}
-}
-
-impl rill_core::time::TimeProvider for DummyTimeProvider {
-    fn bpm(&self) -> f64 {
-        120.0
-    }
-    fn set_bpm(&self, _bpm: f64) {}
-    fn tick_info(&self) -> rill_core::time::TickInfo {
-        rill_core::time::TickInfo {
-            bar: 0,
-            beat: 0,
-            sixteenth: 0,
-            sample_pos: 0,
-        }
-    }
-}
-
-impl<A: Automaton<Time = f64, Context = AutomationContext>> AutomatedParameter<A> {
+impl<A: Automaton> AutomatedParameter<A> {
     /// Создать новый автоматизированный параметр.
     ///
     /// # Аргументы
@@ -114,7 +76,7 @@ impl<A: Automaton<Time = f64, Context = AutomationContext>> AutomatedParameter<A
 
                 let context = AutomationContext::new(Arc::new(DummyTimeProvider));
                 let (new_state, _) =
-                    automaton.step(time, &context, A::Action::default(), &self.state);
+                    automaton.step(time, &A::Action::default(), &self.state);
                 self.state = new_state;
                 self.value = automaton.extract_value(&self.state) as f32;
 

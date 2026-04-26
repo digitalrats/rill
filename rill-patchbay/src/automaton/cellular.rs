@@ -3,8 +3,7 @@
 //! Генерация сигналов на основе клеточных автоматов.
 //! Поддерживаются 1D и 2D клеточные автоматы с различными правилами.
 
-use super::{Automaton, Time, Range, NoAction};
-use std::collections::VecDeque;
+use crate::control::{Automaton, NoAction, Time, Range};
 
 /// Тип клеточного автомата
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -106,7 +105,7 @@ impl CellularAutomaton {
     }
     
     /// Инициализировать случайное состояние
-    fn random_initial(&self, width: usize, height: usize, rng: &mut u64) -> Vec<u8> {
+    fn random_initial(&self, _width: usize, _height: usize, rng: &mut u64) -> Vec<u8> {
         let mut gen = Vec::with_capacity(self.size);
         for _ in 0..self.size {
             gen.push(if self.random_bit(rng) { 1 } else { 0 });
@@ -179,7 +178,7 @@ impl CellularAutomaton {
     }
     
     /// Вычислить выходное значение
-    fn compute_output(&self, generation: &[u8], state: &CellularState) -> f64 {
+    fn compute_output(&self, generation: &[u8], _state: &CellularState) -> f64 {
         match self.output_mode {
             OutputMode::Center => {
                 let idx = self.size / 2;
@@ -210,16 +209,15 @@ impl CellularAutomaton {
 impl Automaton for CellularAutomaton {
     type State = CellularState;
     type Action = NoAction;
-    
+
     fn step(
         &self,
         _time: Time,
-        _action: Self::Action,
+        _action: &Self::Action,
         state: &Self::State,
-    ) -> (Self::State, Option<f64>, Option<Self::Action>) {
+    ) -> (Self::State, Option<f64>) {
         let mut new_state = state.clone();
-        
-        // Вычисляем следующее поколение
+
         new_state.next_generation = match self.cell_type {
             CellularType::OneDimensional => {
                 self.apply_rule_1d(&state.generation)
@@ -228,25 +226,23 @@ impl Automaton for CellularAutomaton {
                 self.apply_rule_gol(&state.generation, state.width, state.height)
             }
             CellularType::Cyclic => {
-                // Пока просто копируем
                 state.generation.clone()
             }
         };
-        
+
         std::mem::swap(&mut new_state.generation, &mut new_state.next_generation);
         new_state.step += 1;
-        
-        // Вычисляем выходное значение
+
         let raw = self.compute_output(&new_state.generation, &new_state);
         let value = self.range.clamp(raw);
-        
-        (new_state, Some(value), None)
+
+        (new_state, Some(value))
     }
-    
+
     fn initial_state(&self) -> Self::State {
         let mut rng = self.rng_state;
         let generation = self.random_initial(self.size, 1, &mut rng);
-        
+
         CellularState {
             generation,
             next_generation: vec![0; self.size],
@@ -256,11 +252,11 @@ impl Automaton for CellularAutomaton {
             step: 0,
         }
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn extract_value(&self, state: &Self::State) -> f64 {
         self.compute_output(&state.generation, state)
     }
@@ -286,8 +282,8 @@ mod tests {
     fn test_rule_30() {
         let ca = CellularAutomaton::one_dimensional("Rule 30", rules::RULE_30, 31);
         let state = ca.initial_state();
-        
-        let (state, value, _) = ca.step(0.0, NoAction, &state);
+
+        let (_state, value) = ca.step(0.0, &NoAction, &state);
         assert!(value.is_some());
     }
 }

@@ -3,6 +3,7 @@
 use super::{Filter, FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
+use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::AudioNum;
 use num_complex::Complex64;
 use std::f64::consts::PI as PI64;
@@ -284,7 +285,8 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX
         }
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             let mut x = input[i].mul(self.gain.extract(0));
@@ -294,6 +296,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX
             }
             output[i] = x;
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -304,20 +307,6 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
     }
 }
 

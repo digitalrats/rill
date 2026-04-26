@@ -9,6 +9,7 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, Paramete
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::buffer::DelayLine;
 use rill_core::math::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
 
 /// Гребенчатый фильтр
 pub struct CombFilter<T: AudioNum, const MAX_DELAY: usize> {
@@ -55,7 +56,8 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DEL
         self.delay.clear();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             // Читаем задержанный сигнал
@@ -68,6 +70,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DEL
             let write_signal = input[i] + delayed * self.feedback.extract(0);
             let _ = self.delay.write(write_signal);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {

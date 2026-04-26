@@ -110,11 +110,17 @@ macro_rules! generator_algorithm {
                 )*
             }
 
-            fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+            fn process(
+                &mut self,
+                _input: Option<&[T]>,
+                output: &mut [T],
+                _ctx: &$crate::algorithm::ActionContext,
+            ) -> $crate::algorithm::ProcessResult<()> {
                 let generate_fn: fn(&mut Self) -> T = $generate;
                 for out in output.iter_mut() {
                     *out = generate_fn(self);
                 }
+                Ok(())
             }
 
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {

@@ -39,6 +39,7 @@ mod pipe;
 mod fan;
 mod delay;
 mod ring;
+mod port_buffer;
 
 // ============================================================================
 // Re-exports
@@ -49,6 +50,7 @@ pub use pipe::PipeBuffer;
 pub use fan::{FanOutBuffer, FanInBuffer};
 pub use delay::DelayLine;
 pub use ring::RingBuffer;
+pub use port_buffer::Buffer;
 
 // ============================================================================
 // Constants

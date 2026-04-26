@@ -39,6 +39,12 @@ pub struct MixerNode {
     pub after_param_change_closure: fn(&mut Self, &str, f32),
     /// Node ID
     pub id: NodeId,
+    /// Audio input ports
+    pub input_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    /// Audio output ports
+    pub output_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    /// Control ports
+    pub control_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
     /// Node state
     pub state: NodeState<f32, DEFAULT_BLOCK_SIZE>,
 }
@@ -60,6 +66,22 @@ impl MixerNode {
             sends.push(Vec::new()); // no sends initially
         }
 
+        let mut input_ports = Vec::with_capacity(num_channels);
+        for i in 0..num_channels {
+            input_ports.push(Port::input(NodeId::new(0), i as u16, &format!("ch{}_in", i + 1)));
+        }
+
+        let mut output_ports = Vec::with_capacity(2 + num_buses);
+        output_ports.push(Port::output(NodeId::new(0), 0, "master_left"));
+        output_ports.push(Port::output(NodeId::new(0), 1, "master_right"));
+        for bus_idx in 0..num_buses {
+            output_ports.push(Port::output(
+                NodeId::new(0),
+                (2 + bus_idx) as u16,
+                &format!("bus{}_out", bus_idx + 1),
+            ));
+        }
+
         Self {
             master_volume: 1.0,
             smoothing: 0.1,
@@ -74,6 +96,9 @@ impl MixerNode {
             param_ids: HashMap::new(),
             after_param_change_closure: |_, _, _| {},
             id: NodeId::new(0),
+            input_ports,
+            output_ports,
+            control_ports: Vec::new(),
             state: NodeState::new(44100.0),
         }
     }
@@ -107,6 +132,8 @@ impl MixerNode {
         self.channel_names.insert(config.name.clone(), index);
         self.channels.push(ChannelState::new(config));
         self.sends.push(Vec::new());
+        self.input_ports
+            .push(Port::input(NodeId::new(0), index as u16, &format!("ch{}_in", index + 1)));
         index
     }
 
@@ -119,6 +146,7 @@ impl MixerNode {
         self.channel_names.remove(&name);
         self.channels.remove(index);
         self.sends.remove(index);
+        self.input_ports.remove(index);
         Ok(())
     }
 
@@ -387,28 +415,28 @@ impl rill_core::traits::AudioNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
         self.id = id;
     }
 
-    fn input_port(&self, _index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
-        None
+    fn input_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+        self.input_ports.get(index)
     }
 
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
-        None
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+        self.input_ports.get_mut(index)
     }
 
-    fn output_port(&self, _index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
-        None
+    fn output_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+        self.output_ports.get(index)
     }
 
-    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
-        None
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+        self.output_ports.get_mut(index)
     }
 
-    fn control_port(&self, _index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
-        None
+    fn control_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+        self.control_ports.get(index)
     }
 
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
-        None
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+        self.control_ports.get_mut(index)
     }
 
     fn state(&self) -> &NodeState<f32, DEFAULT_BLOCK_SIZE> {
@@ -453,32 +481,19 @@ impl rill_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
     fn process(
         &mut self,
         clock: &ClockTick,
-        audio_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
-        control_inputs: &[f32],
-        clock_inputs: &[ClockTick],
-        feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
-        audio_outputs: &mut [&mut [f32; DEFAULT_BLOCK_SIZE]],
-        control_outputs: &mut [f32],
-        clock_outputs: &mut [ClockTick],
-        feedback_outputs: &mut [&mut [f32; DEFAULT_BLOCK_SIZE]],
+        _audio_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        _control_inputs: &[f32],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
     ) -> ProcessResult<()> {
-        // We expect inputs in interleaved format: for each channel, we have a buffer.
-        // If there are more inputs than channels, extra inputs are ignored.
-        // Outputs: first two are master left/right, then buses (if any)
+        let num_buses = self.buses.len();
+        let buffer_size = DEFAULT_BLOCK_SIZE;
 
         // Update state with clock
         self.state.sample_pos = clock.sample_pos;
-        self.state.blocks_processed = clock.sample_pos / audio_outputs[0].len() as u64;
+        self.state.blocks_processed = clock.sample_pos / buffer_size as u64;
 
-        if audio_outputs.is_empty() {
-            return Ok(());
-        }
-
-        let _num_channels = self.channels.len();
-        let _num_buses = self.buses.len();
-        let buffer_size = audio_outputs[0].len();
-
-        // Ensure bus buffers are sized correctly
+        // Ensure bus buffers are sized correctly and zeroed
         for bus in &mut self.buses {
             if bus.len() != buffer_size {
                 bus.resize(buffer_size, 0.0);
@@ -493,31 +508,22 @@ impl rill_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
 
         // Process each channel
         for (ch_idx, channel) in self.channels.iter_mut().enumerate() {
-            if ch_idx >= audio_inputs.len() {
-                // No input for this channel
+            if ch_idx >= self.input_ports.len() {
                 continue;
             }
-            let input_buf = audio_inputs[ch_idx];
-            if input_buf.len() < buffer_size {
-                // Not enough samples, skip (should not happen in real use)
-                continue;
-            }
+            let input_buf = self.input_ports[ch_idx].buffer.as_array();
 
-            // Сохраняем текущую громкость для send'ов (до обработки)
             let channel_volume = channel.config().volume;
 
             // Process per sample
             for i in 0..buffer_size {
                 let sample = input_buf[i];
 
-                // Channel processing (mono input, stereo output with pan)
                 let (left_out, right_out) = channel.process_mono(sample);
 
-                // Add to master
                 master_left[i] += left_out;
                 master_right[i] += right_out;
 
-                // Process sends
                 for send in &self.sends[ch_idx] {
                     if send.bus_index < self.buses.len() {
                         let bus = &mut self.buses[send.bus_index];
@@ -539,36 +545,23 @@ impl rill_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
         let master_gain = self.current_master_volume;
 
         // Output master
-        if audio_outputs.len() >= 2 {
+        if self.output_ports.len() >= 2 {
+            let (first, rest) = self.output_ports.split_at_mut(1);
+            let out_l = first[0].buffer.as_mut_array();
+            let out_r = rest[0].buffer.as_mut_array();
             for i in 0..buffer_size {
-                audio_outputs[0][i] = master_left[i] * master_gain;
-                audio_outputs[1][i] = master_right[i] * master_gain;
-            }
-        } else if audio_outputs.len() == 1 {
-            let mono_out = &mut audio_outputs[0];
-            for i in 0..buffer_size {
-                mono_out[i] = (master_left[i] + master_right[i]) * 0.5 * master_gain;
+                out_l[i] = master_left[i] * master_gain;
+                out_r[i] = master_right[i] * master_gain;
             }
         }
 
         // Output buses (starting from output index 2)
         for (bus_idx, bus) in self.buses.iter().enumerate() {
             let out_idx = 2 + bus_idx;
-            if out_idx < audio_outputs.len() {
-                audio_outputs[out_idx].copy_from_slice(&bus[..buffer_size]);
+            if out_idx < self.output_ports.len() {
+                let out_buf = self.output_ports[out_idx].buffer.as_mut_array();
+                out_buf.copy_from_slice(&bus[..buffer_size]);
             }
-        }
-
-        // Control outputs, clock outputs, feedback outputs are not used
-        // Clear them to avoid leaving stale data
-        for out in control_outputs.iter_mut() {
-            *out = 0.0;
-        }
-        for out in clock_outputs.iter_mut() {
-            *out = ClockTick::default();
-        }
-        for out in feedback_outputs.iter_mut() {
-            out.fill(0.0);
         }
 
         Ok(())

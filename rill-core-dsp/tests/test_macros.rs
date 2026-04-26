@@ -4,6 +4,8 @@
 //! с экспортом макросов и проблем видимости.
 
 use rill_core::math::AudioNum;
+use rill_core::time::ClockTick;
+use rill_core::traits::ActionContext;
 use rill_core_dsp::algorithm::Algorithm;
 
 // Макросы доступны напрямую из корня крейта благодаря #[macro_export]
@@ -34,7 +36,9 @@ fn test_simple_algorithm_f32() {
 
     let mut gain = TestGain::<f32>::new(2.0);
     let mut output = [0.0f32; 1];
-    gain.process_block(&[1.0], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    gain.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
     assert_eq!(output[0], 2.0);
     assert_eq!(gain.last, 2.0);
 }
@@ -61,7 +65,9 @@ fn test_simple_algorithm_f64() {
 
     let mut gain = TestGain::<f64>::new(2.0);
     let mut output = [0.0f64; 1];
-    gain.process_block(&[1.0], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    gain.process(Some(&[1.0] as &[_]), &mut output, &ctx).unwrap();
     assert_eq!(output[0], 2.0);
     assert!((gain.last - 2.0).abs() < 1e-10);
 }
@@ -91,7 +97,9 @@ fn test_parameterized_algorithm() {
 
     let mut algo = TestParam::<f32>::new(2.0);
     let mut output = [0.0f32; 1];
-    algo.process_block(&[1.0], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    algo.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
     assert_eq!(output[0], 2.0);
 }
 
@@ -136,7 +144,9 @@ fn test_filter_algorithm() {
     let mut filter = TestFilter::<f32>::new(1000.0, 0.707);
     filter.init(44100.0);
     let mut output = [0.0f32; 1];
-    filter.process_block(&[1.0], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    filter.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
     assert_eq!(output[0], 1.0);
 }
 
@@ -164,7 +174,9 @@ fn test_effect_algorithm_f32() {
     let mut effect = TestEffect::<f32>::new(0.5);
     effect.set_wet(0.7);
     let mut output = [0.0f32; 1];
-    effect.process_block(&[1.0], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    effect.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
     let expected = 0.5 * 1.0 * 0.7 + 1.0 * 0.3;
     assert!((output[0] - expected).abs() < 1e-6);
 }
@@ -193,7 +205,9 @@ fn test_effect_algorithm_f64() {
     let mut effect = TestEffect::<f64>::new(0.5);
     effect.set_wet(0.7);
     let mut output = [0.0f64; 1];
-    effect.process_block(&[1.0], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    effect.process(Some(&[1.0] as &[_]), &mut output, &ctx).unwrap();
     let expected = 0.5 * 1.0 * 0.7 + 1.0 * 0.3;
     assert!((output[0] - expected).abs() < 1e-10);
 }
@@ -219,7 +233,9 @@ fn test_generator_algorithm_f32() {
 
     let mut gen = TestGen::<f32>::new(1.0);
     let mut output = [0.0f32; 1];
-    gen.process_block(&[], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    gen.process(None, &mut output, &ctx).unwrap();
     assert_eq!(output[0], 1.0);
     assert_eq!(gen.counter, 1);
 }
@@ -245,7 +261,9 @@ fn test_generator_algorithm_f64() {
 
     let mut gen = TestGen::<f64>::new(1.0);
     let mut output = [0.0f64; 1];
-    gen.process_block(&[], &mut output);
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+    gen.process(None, &mut output, &ctx).unwrap();
     assert_eq!(output[0], 1.0);
     assert_eq!(gen.counter, 1);
 }

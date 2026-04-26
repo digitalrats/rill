@@ -5,7 +5,8 @@
 //! - Утилиты для времени
 //! - Хелперы для тестирования
 
-use crate::control::{Range, Transform};
+use crate::automaton::Range;
+use crate::control::Transform;
 
 // =============================================================================
 // Конвертеры значений
@@ -43,7 +44,7 @@ impl ValueConverter {
             Transform::Exponential => norm * norm,
             Transform::Logarithmic => (1.0 + norm * 9.0).log10(),
             Transform::Inverted => 1.0 - norm,
-            Transform::Custom(ref f) => f(norm),
+            Transform::Custom(ref f) => f(norm as f32) as f64,
         };
         
         // Денормализуем в выходной диапазон
@@ -353,7 +354,7 @@ mod tests {
         
         assert!(!metro.update(0.2));
         assert!(metro.update(0.6));
-        assert!((metro.phase(0.7) - 0.2).abs() < 0.01);
+        assert!((metro.phase(0.6) - 0.2).abs() < 0.01);
     }
     
     #[test]

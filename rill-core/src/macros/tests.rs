@@ -29,13 +29,17 @@ source_node! {
             audio_out: 1,
         }
         
-        generate: |this: &mut TestSine<T, BUF_SIZE>, output: &mut [T; BUF_SIZE]| -> crate::ProcessResult<()> {
-            let phase_inc = T::from_f32(this.frequency) / T::from_f32(this.sample_rate());
+        generate: |this: &mut TestSine<T, BUF_SIZE>| -> crate::ProcessResult<()> {
+            let freq = this.frequency;
+            let amp = this.amplitude;
+            let sr = this.sample_rate();
+            let phase_inc = T::from_f32(freq) / T::from_f32(sr);
             
-            for i in 0..output.len() {
+            let mut temp = [T::ZERO; BUF_SIZE];
+            for i in 0..BUF_SIZE {
                 let phase_rad = this.state().phase * T::from_f32(2.0 * PI);
                 let sample = phase_rad.sin();
-                output[i] = sample * this.amplitude;
+                temp[i] = sample * amp;
                 
                 let new_phase = this.state().phase + phase_inc;
                 if new_phase >= T::from_f32(1.0) {
@@ -44,7 +48,7 @@ source_node! {
                     this.state_mut().phase = new_phase;
                 }
             }
-            
+            *this.outputs[0].buffer.as_mut_array() = temp;
             Ok(())
         }
     }
@@ -66,14 +70,12 @@ processor_node! {
         
         process: |this: &mut TestGain<T, BUF_SIZE>| -> crate::ProcessResult<()> {
             if let (Some(input), Some(output)) = (this.inputs.first_mut(), this.outputs.first_mut()) {
-                let mut input_buf = [T::ZERO; BUF_SIZE];
-                input.read(&mut input_buf)?;
-                
+                let input_buf = *input.buffer.as_array();
                 let mut output_buf = [T::ZERO; BUF_SIZE];
                 for i in 0..BUF_SIZE {
                     output_buf[i] = input_buf[i] * this.gain;
                 }
-                output.write(&output_buf)?;
+                output.buffer.copy_from(&output_buf);
             }
             Ok(())
         }

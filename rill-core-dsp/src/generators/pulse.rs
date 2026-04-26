@@ -3,6 +3,7 @@
 use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::vector::{ScalarVector1, Vector};
+use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::AudioNum;
 
 /// Pulse wave генератор с PWM
@@ -103,7 +104,8 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
         self.phase = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 
         for i in 0..len {
@@ -119,6 +121,7 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
                 self.phase = self.phase - ScalarVector1::splat(T::from_f32(1.0));
             }
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {

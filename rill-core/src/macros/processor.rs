@@ -13,7 +13,7 @@ macro_rules! processor_node {
             process: $process:expr
         }
     ) => {
-        #[derive(Debug, Clone)]
+        #[derive(Debug)]
         $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
         $(where $($bounds)*)?
         {
@@ -176,27 +176,17 @@ macro_rules! processor_node {
             $crate::Processor<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
-  fn process(
-    &mut self,
-    clock: &$crate::ClockTick,
-    audio_inputs: &[&[$T; $BUF]],
-    control_inputs: &[$T],
-    clock_inputs: &[$crate::ClockTick],
-    feedback_inputs: &[&[$T; $BUF]],
-    audio_outputs: &mut [&mut [$T; $BUF]],
-    control_outputs: &mut [$T],
-    clock_outputs: &mut [$crate::ClockTick],
-    feedback_outputs: &mut [&mut [$T; $BUF]],
-) -> $crate::ProcessResult<()> {
-    if audio_outputs.is_empty() {
-        return Ok(());
-    }
-    
-    // Передаем только self, внутри замыкания уже обращаемся к его полям
-    ($process)(self)?;
-    
-    Ok(())
-}
+            fn process(
+                &mut self,
+                clock: &$crate::ClockTick,
+                audio_inputs: &[&[$T; $BUF]],
+                control_inputs: &[$T],
+                clock_inputs: &[$crate::ClockTick],
+                feedback_inputs: &[&[$T; $BUF]],
+            ) -> $crate::ProcessResult<()> {
+                ($process)(self)?;
+                Ok(())
+            }
             
             fn latency(&self) -> usize {
                 0

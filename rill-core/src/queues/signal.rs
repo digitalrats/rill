@@ -17,10 +17,9 @@
 //! ```rust
 //! use rill_core::queues::*;
 //! use rill_core::traits::*;
-//! # use crossbeam_channel::unbounded;
 //! #
 //! // Создаем очередь команд
-//! let queue: CommandQueue<CommandEnum> = CommandQueue::new("audio-control");
+//! let queue: CommandQueue<CommandEnum> = CommandQueue::new("audio-control", 1024);
 //! 
 //! // Создаем идентификаторы
 //! let node = NodeId(1);

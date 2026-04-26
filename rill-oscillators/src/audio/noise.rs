@@ -38,6 +38,15 @@ pub struct NoiseOsc<const BUF_SIZE: usize> {
     /// Output amplitude
     amplitude: f32,
 
+    /// Audio input ports
+    inputs: Vec<Port<f32, BUF_SIZE>>,
+
+    /// Audio output ports
+    outputs: Vec<Port<f32, BUF_SIZE>>,
+
+    /// Control ports
+    controls: Vec<Port<f32, BUF_SIZE>>,
+
     /// Node state
     state: Option<NodeState<f32, BUF_SIZE>>,
 
@@ -60,6 +69,9 @@ impl<const BUF_SIZE: usize> NoiseOsc<BUF_SIZE> {
         Self {
             noise_type: NoiseType::White,
             amplitude: 0.5,
+            inputs: Vec::new(),
+            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            controls: Vec::new(),
             state: None,
             pink_b0: 0.0,
             pink_b1: 0.0,
@@ -240,28 +252,28 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
 
     fn set_id(&mut self, _id: NodeId) {}
 
-    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
-        None
+    fn input_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        self.inputs.get(index)
     }
 
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
-        None
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        self.inputs.get_mut(index)
     }
 
-    fn output_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
-        None
+    fn output_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        self.outputs.get(index)
     }
 
-    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
-        None
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
-        None
+    fn control_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        self.controls.get(index)
     }
 
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
-        None
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        self.controls.get_mut(index)
     }
 
     fn state(&self) -> &NodeState<f32, BUF_SIZE> {
@@ -284,32 +296,15 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
 impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn process(
         &mut self,
-        clock: &ClockTick,
-        audio_inputs: &[&[f32; BUF_SIZE]],
-        control_inputs: &[f32],
-        clock_inputs: &[ClockTick],
-        feedback_inputs: &[&[f32; BUF_SIZE]],
-        audio_outputs: &mut [&mut [f32; BUF_SIZE]],
-        control_outputs: &mut [f32],
-        clock_outputs: &mut [ClockTick],
-        feedback_outputs: &mut [&mut [f32; BUF_SIZE]],
+        _clock: &ClockTick,
+        _audio_inputs: &[&[f32; BUF_SIZE]],
+        _control_inputs: &[f32],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let _ = (
-            clock,
-            audio_inputs,
-            control_inputs,
-            clock_inputs,
-            feedback_inputs,
-            control_outputs,
-            clock_outputs,
-            feedback_outputs,
-        );
-
-        if audio_outputs.is_empty() {
-            return Ok(());
-        }
-
-        self.generate_block(audio_outputs[0]);
+        let mut temp = [0.0f32; BUF_SIZE];
+        self.generate_block(&mut temp);
+        *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
     }
 
@@ -337,29 +332,19 @@ mod tests {
         let mut noise = NoiseOsc::<64>::new();
         noise.init(44100.0);
 
-        let mut output = [0.0; 64];
-        let mut outputs = [&mut output];
         let clock = ClockTick::new(0, 64, 44100.0);
 
         noise
-            .process(
-                &clock,
-                &[],
-                &[],
-                &[],
-                &[],
-                &mut outputs,
-                &mut [],
-                &mut [],
-                &mut [],
-            )
+            .process(&clock, &[], &[], &[], &[])
             .unwrap();
+
+        let output = noise.outputs[0].buffer.as_array();
 
         // Should have some non-zero samples
         assert!(output.iter().any(|&x| x != 0.0));
 
         // All samples should be within amplitude range
-        for &sample in &output {
+        for &sample in output.iter() {
             assert!(sample >= -1.0 && sample <= 1.0);
         }
     }
@@ -373,23 +358,13 @@ mod tests {
 
             noise.init(44100.0);
 
-            let mut output = [0.0; 64];
-            let mut outputs = [&mut output];
             let clock = ClockTick::new(0, 64, 44100.0);
 
             noise
-                .process(
-                    &clock,
-                    &[],
-                    &[],
-                    &[],
-                    &[],
-                    &mut outputs,
-                    &mut [],
-                    &mut [],
-                    &mut [],
-                )
+                .process(&clock, &[], &[], &[], &[])
                 .unwrap();
+
+            let output = noise.outputs[0].buffer.as_array();
 
             // All types should produce valid output
             assert!(output.iter().any(|&x| x != 0.0));

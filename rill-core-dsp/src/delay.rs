@@ -6,7 +6,7 @@
 //! - Многоголовая задержка (Multi-tap Delay)
 //! - Диффузионная задержка (для реверберации)
 
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm, ProcessResult};
 use crate::buffer::{DelayLine, RingBuffer};
 use rill_core::AudioNum;
 
@@ -134,7 +134,15 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for Delay<T, MAX_DELAY> {
         self.delay_line.reset();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
+        let len = input.len().min(output.len());
+        for i in 0..len {
         let len = input.len().min(output.len());
         for i in 0..len {
             // Читаем задержанный сигнал
@@ -159,6 +167,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for Delay<T, MAX_DELAY> {
             // Записываем в линию задержки
             let _ = self.delay_line.write(write_signal);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -291,7 +300,13 @@ impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize> Algorithm<T>
         self.delay_line.reset();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             // Записываем вход в линию задержки
@@ -317,6 +332,7 @@ impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize> Algorithm<T>
             }
             output[i] = out;
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -410,11 +426,18 @@ impl<T: AudioNum, const STAGES: usize, const MAX_DELAY: usize> Algorithm<T>
         }
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             output[i] = self.process_diffusion(input[i]);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -489,7 +512,13 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX
         self.delay_line.reset();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             // Обновляем фазу LFO
@@ -520,6 +549,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX
 
             output[i] = dry.mul(one_minus_mix).add(wet.mul(mix));
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -540,6 +570,8 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::time::ClockTick;
+    use rill_core::traits::ActionContext;
 
     #[test]
     fn test_delay_basic() {
@@ -548,11 +580,13 @@ mod tests {
 
         // Первый семпл - задержки ещё нет
         let mut output = [0.0];
-        delay.process_block(&[1.0], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        delay.process(Some(&[1.0]), &mut output, &ctx).unwrap();
         assert_eq!(output[0], 0.5);
 
         // Второй семпл - задержка ещё не появилась
-        delay.process_block(&[1.0], &mut output);
+        delay.process(Some(&[1.0]), &mut output, &ctx).unwrap();
         assert_eq!(output[0], 0.5);
     }
 
@@ -563,9 +597,11 @@ mod tests {
 
         // Проверяем, что обратная связь работает
         let mut output = [0.0];
-        delay.process_block(&[1.0], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        delay.process(Some(&[1.0]), &mut output, &ctx).unwrap();
         let out1 = output[0];
-        delay.process_block(&[0.0], &mut output);
+        delay.process(Some(&[0.0]), &mut output, &ctx).unwrap();
         let out2 = output[0];
 
         assert!(out2 > 0.0); // Должен быть сигнал от обратной связи

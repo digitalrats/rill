@@ -91,10 +91,29 @@ impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
         self.stats.update_peak(1);
     }
     
+    /// Read a block without consuming (multiple consumers can read the same data)
+    ///
+    /// Unlike `try_read`, this does not mark the buffer as empty.
+    /// Multiple callers can read the same data before the next write.
+    #[inline(always)]
+    pub fn read(&self) -> Option<[T; N]> {
+        if !self.valid.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut result = [T::ZERO; N];
+        for i in 0..N {
+            result[i] = self.storage[i].load();
+        }
+        self.read_seq.store(self.read_seq.load() + 1);
+        self.stats.record_read();
+        Some(result)
+    }
+
     /// Try to read a block of data from the buffer
     ///
     /// Returns `Some(data)` if data is available, `None` otherwise.
-    /// This operation is wait-free and non-blocking.
+    /// This operation is wait-free and non-blocking. This call consumes
+    /// the data — subsequent readers will get `None` until the next write.
     #[inline(always)]
     pub fn try_read(&self) -> Option<[T; N]> {
         if !self.valid.load(Ordering::Acquire) {

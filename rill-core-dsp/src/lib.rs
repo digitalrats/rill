@@ -20,6 +20,8 @@ pub mod filters;
 pub mod context;
 pub mod generators;
 pub mod math;
+pub mod mapping;
+pub mod smoothing;
 pub mod vector;
 
 #[macro_use]
@@ -37,7 +39,9 @@ pub mod prelude {
     pub use crate::context::DspContext;
     pub use crate::filters::{Filter, FilterType, FilterParams};
     pub use crate::generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
+    pub use crate::mapping::{ControlMapper, MappingStrategy};
     pub use crate::math::*;
+    pub use crate::smoothing::ParamSmoother;
     pub use crate::vector::prelude::*;
     pub use crate::macros::prelude::*;
 }

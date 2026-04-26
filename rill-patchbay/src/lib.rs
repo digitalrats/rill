@@ -13,7 +13,7 @@
 //!
 //! ## Архитектура
 //!
-//! ```
+//! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                     ПОТОК УПРАВЛЕНИЯ                         │
 //! │                                                              │
@@ -45,12 +45,10 @@
 // Внешние зависимости
 // =============================================================================
 
-use std::sync::Arc;
-
 // Реэкспорты из rill-core
 pub use rill_core::prelude::*;
-pub use rill_core::queue::RtQueue;
-pub use rill_core::param::{ParameterId, ParameterValue, NodeId, PortId};
+pub use rill_core::queues::RtQueue;
+pub use rill_core::{ParameterId, ParamValue, NodeId, PortId};
 
 // =============================================================================
 // Публичные модули
@@ -75,10 +73,22 @@ pub mod utils;
 // Реэкспорты для удобства
 // =============================================================================
 
-pub use automaton::*;
-pub use control::*;
-pub use manager::*;
-pub use sensor::*;
+// Selective re-exports
+pub use automaton::{
+    LfoWaveform, LfoAutomaton,
+    EnvelopeAutomaton, EnvelopeStage, EnvelopeType,
+    FunctionAutomaton, StatefulFunctionAutomaton,
+    SequencerAutomaton, Step, PlayMode,
+    Range, SyncMode,
+};
+pub use control::{
+    Automaton, NoAction,
+    BoxedServo, AnyServo, Servo, ParameterMapping, ParameterCommand,
+    Mapping, EventPattern, Target, Transform, ControlEvent,
+    PatchbayControl,
+    midi_cc, osc_address,
+};
+pub use manager::PatchbayManager;
 
 // =============================================================================
 // Прелюдия для удобного импорта
@@ -90,13 +100,12 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::control::*;
     pub use crate::manager::*;
-    pub use crate::sensor::*;
     pub use crate::utils::*;
     
     // Реэкспорты из rill-core
     pub use rill_core::prelude::*;
-    pub use rill_core::queue::RtQueue;
-    pub use rill_core::param::{ParameterId, NodeId, PortId};
+    pub use rill_core::queues::RtQueue;
+    pub use rill_core::{ParameterId, NodeId, PortId};
 }
 
 // =============================================================================

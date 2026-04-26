@@ -1,6 +1,6 @@
 //! Patchbay — мир, где живут автоматы
 
-use crate::automaton::Automaton;
+use crate::control::Automaton;
 use crate::core::{WorldSignal, WorldTime};
 use crate::sensor::Sensor;
 use crate::servo::{SafeServo, WildServo};

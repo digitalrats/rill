@@ -3,6 +3,7 @@
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
+use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::AudioNum;
 use std::f32::consts::PI;
 
@@ -216,7 +217,8 @@ impl<T: AudioNum> Algorithm<T> for Biquad<T> {
         );
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         let (b0, b1, b2, a1, a2) = self.coeffs;
         let (mut x1, mut x2, mut y1, mut y2) = self.state;
@@ -235,6 +237,7 @@ impl<T: AudioNum> Algorithm<T> for Biquad<T> {
         }
 
         self.state = (x1, x2, y1, y2);
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -245,20 +248,6 @@ impl<T: AudioNum> Algorithm<T> for Biquad<T> {
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
     }
 }
 

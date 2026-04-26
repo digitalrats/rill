@@ -6,7 +6,7 @@ use thiserror::Error;
 pub type QueueResult<T> = Result<T, QueueError>;
 
 /// Ошибки очередей
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum QueueError {
     /// Очередь переполнена (при попытке отправить в ограниченную очередь)
     #[error("Queue is full")]

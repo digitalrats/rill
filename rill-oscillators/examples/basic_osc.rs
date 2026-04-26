@@ -1,6 +1,6 @@
 //! Basic oscillator example
-use rill_core::traits::Processor;
-use rill_core::{AudioNode, ClockTick};
+use rill_core::traits::{AudioNode, Processor};
+use rill_core::{ClockTick};
 use rill_oscillators::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
 const BLOCK_SIZE: usize = 64;
@@ -30,49 +30,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let clock = ClockTick::new(0, BLOCK_SIZE as u32, sample_rate);
 
-    // Prepare buffers
-    let mut sine_output = [0.0; BLOCK_SIZE];
-    let mut saw_output = [0.0; BLOCK_SIZE];
-    let mut noise_output = [0.0; BLOCK_SIZE];
-
-    let mut sine_outputs = [&mut sine_output];
-    let mut saw_outputs = [&mut saw_output];
-    let mut noise_outputs = [&mut noise_output];
-
     // Process one block each
-    sine.process(
-        &clock,
-        &[],
-        &[],
-        &[],
-        &[],
-        &mut sine_outputs,
-        &mut [],
-        &mut [],
-        &mut [],
-    )?;
-    saw.process(
-        &clock,
-        &[],
-        &[],
-        &[],
-        &[],
-        &mut saw_outputs,
-        &mut [],
-        &mut [],
-        &mut [],
-    )?;
-    noise.process(
-        &clock,
-        &[],
-        &[],
-        &[],
-        &[],
-        &mut noise_outputs,
-        &mut [],
-        &mut [],
-        &mut [],
-    )?;
+    sine.process(&clock, &[], &[], &[], &[])?;
+    saw.process(&clock, &[], &[], &[], &[])?;
+    noise.process(&clock, &[], &[], &[], &[])?;
+
+    // Read from output ports
+    let sine_output = sine.output_port(0).unwrap().buffer.as_array();
+    let saw_output = saw.output_port(0).unwrap().buffer.as_array();
+    let noise_output = noise.output_port(0).unwrap().buffer.as_array();
 
     // Print first few samples
     println!("Sine first 5 samples: {:?}", &sine_output[..5]);

@@ -1,6 +1,8 @@
 //! Трейты для генераторов (источников сигнала)
 
 use crate::algorithm::Algorithm;
+use rill_core::time::ClockTick;
+use rill_core::traits::ActionContext;
 use rill_core::AudioNum;
 
 /// Базовый трейт для генераторов
@@ -8,13 +10,17 @@ pub trait Generator<T: AudioNum>: Algorithm<T> {
     /// Генерировать следующий семпл
     fn generate(&mut self) -> T {
         let mut output = [T::ZERO];
-        self.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        let _ = self.process(None, &mut output, &ctx);
         output[0]
     }
 
-    /// Генерировать блок семплов (по умолчанию использует process_block)
+    /// Генерировать блок семплов (по умолчанию использует process)
     fn generate_block(&mut self, output: &mut [T]) {
-        self.process_block(&[], output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        let _ = self.process(None, output, &ctx);
     }
 
     /// Генерировать блок с использованием векторного eDSL (опционально)

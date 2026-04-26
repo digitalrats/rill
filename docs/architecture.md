@@ -241,28 +241,56 @@ for &node_id in graph.processing_order() {
 
 **Блочная обработка:** данные передаются блоками фиксированного размера, что улучшает производительность за счёт локальности кэша и позволяет использовать SIMD‑оптимизации.
 
-### `rill-patchbay` (0.3.0, временно отключен)
-Автоматизация параметров — унификация крейтов `rill-automation` и `rill-control`. Представляет собой центральный фреймворк автоматов (LFO, огибающие, случайные блуждания, логика, математика), сенсоров (акустические, физические, MIDI/CV) и сервоприводов, связанных неблокирующими очередями команд и телеметрии. Подробности см. в разделе «Мир автоматов».
+### `rill-patchbay` (0.3.0, ✅ активен)
+Автоматизация параметров AudioGraph — унификация крейтов `rill-automation` и `rill-control`. Представляет собой центральный фреймворк автоматов (LFO, огибающие, случайные блуждания, секвенсоры), сенсоров (акустические, физические) и сервоприводов, связанных неблокирующими очередями команд и телеметрии. Подробности см. в разделе «Мир автоматов».
 
 ```rust
-let mut patchbay = Patchbay::new("Моя Студия");
-patchbay.create_lfo("vibrato");
-patchbay.create_envelope("amp");
+use rill_patchbay::prelude::*;
+use rill_core::queues::MpscQueue;
+use std::sync::Arc;
 
-// Добавление сенсора
-patchbay.add_sensor(Box::new(
-    AcousticSensor::new("pitch", Box::new(PitchDetector::new(44100.0)))
-        .listening_to("osc_out")
-));
+// Создаем очередь команд и PatchbayControl
+let cmd_queue = Arc::new(MpscQueue::new(1024));
+let mut control = PatchbayControl::new(cmd_queue);
 
-// Добавление сервопривода
-patchbay.add_servo(Box::new(
-    Servo::new("vibrato_servo", 
-        patchbay.get_automaton("vibrato")?,
-        ParameterTarget::new(osc_port, ParameterId::new("frequency")?, 400.0, 480.0))
-));
+// Добавляем LFO-серво
+control.add_lfo(
+    "vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine,
+    osc_node_id, "frequency", 400.0, 480.0,
+);
 
-patchbay.awaken();  // Автоматы начинают жить своей жизнью
+// Добавляем ADSR-серво
+control.add_envelope(
+    "amp", 0.01, 0.1, 0.7, 0.2,
+    vca_node_id, "gain", 0.0, 1.0,
+);
+
+// Маппинг внешних событий (MIDI, OSC)
+control.add_mapping_str(
+    "midi:7:1",
+    filter_node_id, "cutoff",
+    20.0, 20000.0, Transform::Logarithmic,
+);
+
+// Обновляем автоматы в цикле
+control.update(1.0 / 60.0);
+```
+
+Либо через `PatchbayManager` с отдельным потоком обновления:
+
+```rust
+let mut manager = PatchbayManager::new(
+    PatchbayConfig::default(),
+    Arc::new(MpscQueue::new(1024)),
+);
+
+manager.add_lfo_servo(
+    "vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine,
+    osc_node_id, "frequency",
+    ParameterMapping::Linear, 400.0, 480.0,
+)?;
+
+manager.start()?;  // Автоматы начинают жить своей жизнью
 ```
 
 
@@ -393,6 +421,7 @@ graph TD
     CORE_DSP --> FILTERS[rill-digital-filters]
     CORE_DSP --> EFFECTS[rill-digital-effects]
     CORE_DSP --> ROUTER[rill-router]
+    CORE --> PATCHBAY[rill-patchbay]
     
     style CORE fill:#90ee90
     style CORE_DSP fill:#90ee90
@@ -401,30 +430,25 @@ graph TD
     style FILTERS fill:#90ee90
     style EFFECTS fill:#90ee90
     style ROUTER fill:#90ee90
+    style PATCHBAY fill:#90ee90
     
     %% Временно отключенные / разрабатываемые / планируемые
-    PATCHBAY[rill-patchbay<br/>(отключен)]
     IO[rill-io<br/>(отключен)]
     LOFI[rill-lofi<br/>(отключен)]
     WDF[rill-wdf<br/>(в разработке)]
     SERVER[rill-server<br/>(в разработке)]
     TESTS[rill-tests<br/>(планируется)]
     
-    CORE -.-> PATCHBAY
     CORE -.-> IO
     CORE -.-> LOFI
     CORE -.-> WDF
     CORE -.-> SERVER
     
-    style PATCHBAY fill:#cccccc
     style IO fill:#cccccc
     style LOFI fill:#cccccc
     style WDF fill:#cccccc
     style SERVER fill:#cccccc
     style TESTS fill:#cccccc
-    
-    %% Объединенные крейты
-    %% rill-eq и rill-mixer объединены в rill-router
 ```
 
 ## Мир автоматов
@@ -480,11 +504,12 @@ graph TD
 
 | Автомат | Описание | Как выглядит в коде |
 |---------|----------|---------------------|
-| **LFO** | Пульсирует с заданной частотой | `LfoAutomaton::new("vibrato").with_frequency(5.0)` |
-| **Envelope** | Реагирует на события (нажатия) | `EnvelopeAutomaton::new("amp").with_adsr(0.01, 0.1, 0.7, 0.2)` |
-| **Random Walk** | Блуждает случайным образом | `RandomWalkAutomaton::new("chaos").with_step(0.1)` |
-| **Logic** | Принимает логические решения | `AndAutomaton::new("gate")` |
-| **Math** | Вычисляет | `SumAutomaton::new("mixer")` |
+| **LFO** | Пульсирует с заданной частотой | `LfoAutomaton::new("vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine)` |
+| **Envelope** | Реагирует на события (нажатия) | `EnvelopeAutomaton::adsr("amp", 0.01, 0.1, 0.7, 0.2)` |
+| **Random Walk** | Блуждает случайным образом | `RandomAutomaton::walk("chaos", 10.0)` |
+| **Sequencer** | Проигрывает последовательность шагов | `SequencerAutomaton::new("seq", steps)` |
+| **Function** | Произвольная функция времени | `FunctionAutomaton::new("math", \|t\| (t * 0.5).sin())` |
+| **Cellular** | Клеточный автомат (Game of Life, Rule 30) | `CellularAutomaton::game_of_life("life", 16, 16)` |
 
 ### 👁️ Сенсоры — чувства (Sensors)
 
@@ -529,14 +554,15 @@ let mode = PhysicalSensor::switch("filter_mode")
 
 #### MIDI/CV сенсоры (видят внешний мир)
 
-```rust
-// MIDI сенсор
-let midi_note = MidiSensor::note("keyboard")
-    .with_channel(1);
+> **API в разработке.** MIDI и CV сенсоры пока не реализованы — в текущей версии внешние события обрабатываются через `PatchbayControl::handle_event()` и `Mapping`.
 
-// CV сенсор (Control Voltage)
-let cv_in = CvSensor::new("expression")
-    .with_range(0.0, 5.0);
+```rust
+// Планируемый API:
+// let midi_note = MidiSensor::note("keyboard")
+//     .with_channel(1);
+// 
+// let cv_in = CvSensor::new("expression")
+//     .with_range(0.0, 5.0);
 ```
 
 ### 🎯 Серво — руки (Servo)
@@ -547,20 +573,12 @@ let cv_in = CvSensor::new("expression")
 // Серво, управляющее частотой фильтра
 let filter_servo = Servo::new(
     "filter_servo",
-    lfo_automaton,  // Какой автомат дает сигнал
-    ParameterTarget::new(
-        filter_port,
-        ParameterId::new("cutoff")?,
-        20.0, 20000.0
-    )
+    lfo_automaton,          // Какой автомат дает сигнал
+    filter_node_id,         // ID узла в AudioGraph
+    "cutoff",               // Имя параметра
+    ParameterMapping::Linear,
+    20.0, 20000.0           // Диапазон значений
 );
-
-// Серво с обратной связью (адаптивное)
-let adaptive_servo = Servo::new(
-    "adaptive_servo",
-    envelope_automaton,
-    ParameterTarget::new(vca_port, ParameterId::new("gain")?, 0.0, 1.0)
-).with_feedback(pitch_sensor);  // Может корректировать поведение на основе услышанного
 ```
 
 ### ⚡ Законы природы (неблокирующие очереди)
@@ -577,33 +595,56 @@ let adaptive_servo = Servo::new(
 **Patchbay** — это место, где живут все ваши автоматы, где расположены их чувства и руки.
 
 ```rust
-// Создаем новое пространство
-let mut world = Patchbay::new("Моя Студия");
+use rill_patchbay::prelude::*;
+use rill_core::queues::MpscQueue;
+use std::sync::Arc;
 
-// Добавляем автоматы (разум)
-world.create_lfo("vibrato");
-world.create_envelope("amp");
+// Создаем очередь команд и PatchbayControl
+let cmd_queue = Arc::new(MpscQueue::new(1024));
+let mut control = PatchbayControl::new(cmd_queue);
 
-// Добавляем сенсоры (чувства)
-world.add_sensor(Box::new(
-    AcousticSensor::new("pitch", Box::new(PitchDetector::new(44100.0)))
-        .listening_to("osc_out")
-));
+// Добавляем LFO-серво (разум + руки)
+control.add_lfo(
+    "vibrato", 5.0, 0.5, 0.0,
+    LfoWaveform::Sine,
+    osc_node_id, "frequency",
+    400.0, 480.0,
+);
 
-// Добавляем серво (руки)
-world.add_servo(Box::new(
-    Servo::new("vibrato_servo", 
-        world.get_automaton("vibrato")?,
-        ParameterTarget::new(osc_port, ParameterId::new("frequency")?, 400.0, 480.0))
-));
+// Добавляем ADSR-серво
+control.add_envelope(
+    "amp", 0.01, 0.1, 0.7, 0.2,
+    vca_node_id, "gain",
+    0.0, 1.0,
+);
 
-// Оживляем мир
-world.awaken();  // Автоматы начинают жить своей жизнью
+// Обновляем автоматы в цикле
+loop {
+    control.update(1.0 / 60.0);
+    std::thread::sleep(std::time::Duration::from_millis(16));
+}
+```
+
+Либо через `PatchbayManager` с отдельным потоком обновления:
+
+```rust
+let mut manager = PatchbayManager::new(
+    PatchbayConfig::default(),
+    Arc::new(MpscQueue::new(1024)),
+);
+
+manager.add_lfo_servo(
+    "vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine,
+    osc_node_id, "frequency",
+    ParameterMapping::Linear, 400.0, 480.0,
+)?;
+
+manager.start()?;  // Автоматы начинают жить своей жизнью
 ```
 
 ## Планы на будущие версии
 
-- ⚡ **Активация отключенных крейтов** — постепенное включение `rill-patchbay`, `rill-io`, `rill-lofi` после интеграции с новой векторной инфраструктурой
+- ⚡ **Активация отключенных крейтов** — постепенное включение `rill-io`, `rill-lofi` после интеграции с новой векторной инфраструктурой
 - 🔌 **Развитие rill-core-dsp** — добавление новых алгоритмов, оптимизация векторных операций, поддержка SIMD
 - 🌐 **rill-server** — выделение OSC в отдельный крейт (в разработке)
 - 🧩 **rill-wdf** — Wave Digital Filters для моделирования аналоговых цепей (в разработке)
@@ -617,10 +658,9 @@ Rill использует комплексную систему тестиров
 # Все тесты
 cargo test --workspace
 
-# Интеграционные тесты
-cargo test -p rill-tests -- --nocapture
-
 # Тесты конкретного крейта
+cargo test -p rill-patchbay
+
 cargo test -p rill-digital-effects
 ```
 
@@ -654,7 +694,7 @@ cargo test -p rill-digital-effects
 - ✅ **Векторные абстракции** — переносимость и производительность через `ScalarVectorN<T>` и трейт `AudioNum`
 - ✅ **Чистую модульность** — каждый крейт имеет свою ответственность (некоторые временно отключены)
 - ✅ **Производительность** — оптимизирована для real-time, блочная обработка
-- ✅ **Надёжность** — все компоненты тщательно протестированы (58 unit-тестов, 24 документационных теста)
+- ✅ **Надёжность** — все компоненты тщательно протестированы (200+ unit-тестов во всём workspace)
 - ✅ **Расширяемость** — легко добавлять новые алгоритмы через макросы и трейт `Algorithm`
 - ✅ **Согласованность** — все крейты используют одну версию ядра
 - ✅ **Объединение функциональности** — крейты `rill-eq` и `rill-mixer` объединены в `rill-router` (0.3.0) с модулями эквалайзеров и микшера

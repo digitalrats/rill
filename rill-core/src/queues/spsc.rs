@@ -64,7 +64,7 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
                 }
                 
                 OverflowPolicy::DropNewest => {
-                    return Err(QueueError::Full);
+                    return Err(QueueError::QueueFull);
                 }
                 
                 OverflowPolicy::Panic => {
@@ -72,7 +72,7 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
                 }
                 
                 OverflowPolicy::Block => {
-                    return Err(QueueError::Full);
+                    return Err(QueueError::QueueFull);
                 }
             }
         }

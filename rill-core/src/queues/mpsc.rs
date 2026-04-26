@@ -3,8 +3,9 @@
 //! Позволяет нескольким производителям отправлять данные
 //! одному потребителю. Использует атомарные операции для
 //! синхронизации производителей.
+#![allow(unsafe_code)]
 
-use super::{QueueError, QueueResult, QueueStats, OverflowPolicy};
+use super::{QueueError, QueueResult, QueueStats};
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
 use std::ptr;
 
@@ -75,7 +76,7 @@ impl<T> MpscQueue<T> {
             let size = self.size.load(Ordering::Relaxed);
             if size >= self.max_capacity {
                 self.stats.record_overflow();
-                return Err(QueueError::Full);
+                return Err(QueueError::QueueFull);
             }
         }
         
@@ -131,18 +132,15 @@ impl<T> MpscQueue<T> {
     
     /// Извлечь элемент (только consumer)
     pub fn pop(&self) -> Option<T> {
-        let mut head = self.head.load(Ordering::Acquire);
-        
         loop {
+            let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);
             let next = unsafe { (*head).next.load(Ordering::Acquire) };
             
             if head == tail {
                 if next.is_null() {
-                    // Очередь пуста
                     return None;
                 }
-                // Tail отстаёт, помогаем продвинуть
                 let _ = self.tail.compare_exchange(
                     tail,
                     next,
@@ -154,17 +152,11 @@ impl<T> MpscQueue<T> {
                     continue;
                 }
                 
-                // Забираем значение
-                let value = unsafe {
-                    let node = Box::from_raw(next);
-                    node.value
-                };
-                
-                // Обновляем head
                 if self.head
                     .compare_exchange(head, next, Ordering::Release, Ordering::Relaxed)
                     .is_ok()
                 {
+                    let value = unsafe { (*next).value.take() };
                     unsafe {
                         drop(Box::from_raw(head));
                     }

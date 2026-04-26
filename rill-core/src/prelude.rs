@@ -32,32 +32,9 @@
 //!     sink: &mut dyn Sink<T, BUF_SIZE>,
 //!     clock: &ClockTick,
 //! ) -> ProcessResult<()> {
-//!     // Создаем отдельные буферы для входа и выхода
-//!     let mut source_output = [T::ZERO; BUF_SIZE];  // Выход source, вход для processor
-//!     let mut processor_output = [T::ZERO; BUF_SIZE];  // Выход processor, вход для sink
-//!     
-//!     // Source генерирует в source_output
-//!     let mut source_outputs = [&mut source_output];
-//!     source.generate(clock, &[], &[], &mut source_outputs)?;
-//!     
-//!     // Processor читает из source_output и пишет в processor_output
-//!     let mut processor_outputs = [&mut processor_output];
-//!     processor.process(
-//!         clock,
-//!         &[&source_output],  // неизменяемая ссылка на source_output
-//!         &[], &[], &[],
-//!         &mut processor_outputs,
-//!         &mut [], &mut [], &mut []
-//!     )?;
-//!     
-//!     // Sink читает из processor_output
-//!     sink.consume(
-//!         clock,
-//!         &[&processor_output],  // неизменяемая ссылка на processor_output
-//!         &[], &[], &[],
-//!         &mut [], &mut []
-//!     )?;
-//!     
+//!     source.generate(clock, &[], &[])?;
+//!     processor.process(clock, &[], &[], &[], &[])?;
+//!     sink.consume(clock, &[], &[], &[], &[])?;
 //!     Ok(())
 //! }
 //! ```
@@ -67,11 +44,15 @@
 // ============================================================================
 
 pub use crate::traits::{
+    // Algorithm / Action
+    Algorithm, AlgorithmCategory, AlgorithmMetadata,
+    Action, ActionContext,
+    
     // Core node traits
     AudioNode, Source, Processor, Sink,
     
     // Node identification
-    NodeId, NodeMetadata, NodeCategory, NodeTypeId,
+    NodeId, NodeMetadata, NodeCategory, NodeTypeId, NodeState,
     
     // Parameter handling
     ParameterId, ParamValue, ParamType, ParamRange, ParamMetadata,
@@ -80,7 +61,7 @@ pub use crate::traits::{
     IntoParamValue,
     
     // Ports
-    PortId, PortType, PortDirection,
+    PortId, PortType, PortDirection, Port,
     
     // Error handling
     ProcessResult, ProcessError,
@@ -111,6 +92,9 @@ pub use crate::math::AudioNum;
 pub use crate::buffer::{
     // Core buffer trait
     AudioBuffer,
+    
+    // Port buffer
+    Buffer,
     
     // Statistics
     BufferStats,

@@ -4,6 +4,7 @@ use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::filters::{FilterParams, FilterType, OnePole};
 use crate::vector::prelude::*;
+use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::AudioNum;
 
 /// Тип шума
@@ -196,7 +197,8 @@ impl<T: AudioNum> Algorithm<T> for NoiseGenerator<T> {
         }
     }
 
-    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             *out = match self.noise_type {
                 NoiseType::White => self.generate_white().extract(0),
@@ -206,6 +208,7 @@ impl<T: AudioNum> Algorithm<T> for NoiseGenerator<T> {
                 NoiseType::Violet => self.generate_violet().extract(0),
             };
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -216,20 +219,6 @@ impl<T: AudioNum> Algorithm<T> for NoiseGenerator<T> {
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
     }
 }
 

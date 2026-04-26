@@ -124,7 +124,13 @@ macro_rules! effect_algorithm {
                 )*
             }
 
-            fn process_block(&mut self, input: &[T], output: &mut [T]) {
+            fn process(
+                &mut self,
+                input: Option<&[T]>,
+                output: &mut [T],
+                _ctx: &$crate::algorithm::ActionContext,
+            ) -> $crate::algorithm::ProcessResult<()> {
+                let input = input.unwrap_or(&[]);
                 let len = input.len().min(output.len());
                 let process_fn: fn(&mut Self, T) -> T = $process;
                 let wet = self.wet;
@@ -135,6 +141,7 @@ macro_rules! effect_algorithm {
                     let wet_mixed = wet_signal * wet;
                     output[i] = dry + wet_mixed;
                 }
+                Ok(())
             }
 
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {

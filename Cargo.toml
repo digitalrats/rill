@@ -3,7 +3,7 @@ members = [
     "rill-core",
     "rill-core-dsp",
     "rill-graph",
-    #"rill-patchbay", # Временно отключен
+    "rill-patchbay",
     "rill-oscillators",
     "rill-digital-filters",
     "rill-digital-effects",

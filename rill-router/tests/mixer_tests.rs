@@ -1,49 +1,33 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{AudioNode, ParamValue, Processor};
+use rill_core::traits::{AudioNode, Processor};
 use rill_core::{ClockTick, DEFAULT_BLOCK_SIZE};
-use rill_router::{ChannelConfig, ChannelMode, MixerNode, SendConfig, SendType};
 
 #[test]
 fn test_mixer_creation() {
-    let mixer = MixerNode::new(4, 2);
+    let mixer = rill_router::MixerNode::new(4, 2);
     assert_eq!(mixer.num_inputs(), 4);
     assert_eq!(mixer.num_outputs(), 4); // 2 master + 2 buses
 }
 
 #[test]
 fn test_mixer_basic_processing() {
-    let mut mixer = MixerNode::new(2, 0);
+    let mut mixer = rill_router::MixerNode::new(2, 0);
     mixer.init(44100.0);
 
     let input1 = [0.5; DEFAULT_BLOCK_SIZE];
     let input2 = [0.3; DEFAULT_BLOCK_SIZE];
-    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
-    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [&input1, &input2];
-    let mut outputs = [&mut output_left, &mut output_right];
+    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input1);
+    mixer.input_port_mut(1).unwrap().buffer.as_mut_array().copy_from_slice(&input2);
 
     let clock = ClockTick::default();
-    let control_inputs: &[f32] = &[];
-    let clock_inputs: &[ClockTick] = &[];
-    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
-    let mut control_outputs: [f32; 0] = [];
-    let mut clock_outputs: [ClockTick; 0] = [];
-    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
 
     mixer
-        .process(
-            &clock,
-            &inputs,
-            control_inputs,
-            clock_inputs,
-            feedback_inputs,
-            &mut outputs,
-            &mut control_outputs,
-            &mut clock_outputs,
-            &mut feedback_outputs,
-        )
+        .process(&clock, &[], &[], &[], &[])
         .unwrap();
+
+    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
+    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
 
     // Both channels are mono, so they are summed to both left and right outputs
     let expected = input1[0] + input2[0];
@@ -68,45 +52,24 @@ fn test_mixer_basic_processing() {
 
 #[test]
 fn test_mixer_pan() {
-    let mut mixer = MixerNode::new(1, 0);
+    let mut mixer = rill_router::MixerNode::new(1, 0);
     mixer.set_channel_pan(0, -0.5).unwrap();
     mixer.init(44100.0);
 
     let input = [1.0; DEFAULT_BLOCK_SIZE];
-    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
-    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [&input];
-    let mut outputs = [&mut output_left, &mut output_right];
+    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input);
 
     let clock = ClockTick::default();
-    let control_inputs: &[f32] = &[];
-    let clock_inputs: &[ClockTick] = &[];
-    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
-    let mut control_outputs: [f32; 0] = [];
-    let mut clock_outputs: [ClockTick; 0] = [];
-    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
 
     mixer
-        .process(
-            &clock,
-            &inputs,
-            control_inputs,
-            clock_inputs,
-            feedback_inputs,
-            &mut outputs,
-            &mut control_outputs,
-            &mut clock_outputs,
-            &mut feedback_outputs,
-        )
+        .process(&clock, &[], &[], &[], &[])
         .unwrap();
 
-    // For pan -0.5: left gain 1.0, right gain 0.5
-    // Then summed to both outputs (mono channel summed to stereo)
-    // Actually, in our mixer, process_mono returns the channel output (already panned),
-    // then it's added to both left and right masters. So for pan -0.5:
-    // channel_out = input * volume * left_gain? No, process_mono doesn't apply pan.
+    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
+    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
 
+    // For pan -0.5: left gain 1.0, right gain 0.5
     // For now, let's just check that left and right are different
     assert!(
         output_left[0] != output_right[0],
@@ -116,38 +79,22 @@ fn test_mixer_pan() {
 
 #[test]
 fn test_mixer_mute() {
-    let mut mixer = MixerNode::new(1, 0);
+    let mut mixer = rill_router::MixerNode::new(1, 0);
     mixer.set_channel_mute(0, true).unwrap();
     mixer.init(44100.0);
 
     let input = [1.0; DEFAULT_BLOCK_SIZE];
-    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
-    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [&input];
-    let mut outputs = [&mut output_left, &mut output_right];
+    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input);
 
     let clock = ClockTick::default();
-    let control_inputs: &[f32] = &[];
-    let clock_inputs: &[ClockTick] = &[];
-    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
-    let mut control_outputs: [f32; 0] = [];
-    let mut clock_outputs: [ClockTick; 0] = [];
-    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
 
     mixer
-        .process(
-            &clock,
-            &inputs,
-            control_inputs,
-            clock_inputs,
-            feedback_inputs,
-            &mut outputs,
-            &mut control_outputs,
-            &mut clock_outputs,
-            &mut feedback_outputs,
-        )
+        .process(&clock, &[], &[], &[], &[])
         .unwrap();
+
+    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
+    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
 
     for i in 0..DEFAULT_BLOCK_SIZE {
         assert_eq!(output_left[i], 0.0);
@@ -157,10 +104,10 @@ fn test_mixer_mute() {
 
 #[test]
 fn test_mixer_sends() {
-    let mut mixer = MixerNode::new(1, 2); // 2 buses for testing
+    let mut mixer = rill_router::MixerNode::new(1, 2); // 2 buses for testing
 
-    // Отключаем сглаживание для точных тестов
-    mixer.set_smoothing(1.0); // 1.0 = моментальное изменение
+    // Disable smoothing for accurate testing
+    mixer.set_smoothing(1.0); // 1.0 = instant change
 
     mixer.set_channel_volume(0, 0.8).unwrap();
 
@@ -168,10 +115,10 @@ fn test_mixer_sends() {
     mixer
         .add_send(
             0,
-            SendConfig {
+            rill_router::SendConfig {
                 bus_index: 0,
                 level: 0.5,
-                send_type: SendType::PostFader,
+                send_type: rill_router::SendType::PostFader,
             },
         )
         .unwrap();
@@ -180,10 +127,10 @@ fn test_mixer_sends() {
     mixer
         .add_send(
             0,
-            SendConfig {
+            rill_router::SendConfig {
                 bus_index: 1,
                 level: 0.3,
-                send_type: SendType::PreFader,
+                send_type: rill_router::SendType::PreFader,
             },
         )
         .unwrap();
@@ -191,42 +138,21 @@ fn test_mixer_sends() {
     mixer.init(44100.0);
 
     let input = [1.0; DEFAULT_BLOCK_SIZE];
-    let mut output_left = [0.0; DEFAULT_BLOCK_SIZE];
-    let mut output_right = [0.0; DEFAULT_BLOCK_SIZE];
-    let mut bus0_out = [0.0; DEFAULT_BLOCK_SIZE];
-    let mut bus1_out = [0.0; DEFAULT_BLOCK_SIZE];
 
-    let inputs = [&input];
-    let mut outputs = [
-        &mut output_left,
-        &mut output_right,
-        &mut bus0_out,
-        &mut bus1_out,
-    ];
+    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input);
 
     let clock = ClockTick::default();
-    let control_inputs: &[f32] = &[];
-    let clock_inputs: &[ClockTick] = &[];
-    let feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]] = &[];
-    let mut control_outputs: [f32; 0] = [];
-    let mut clock_outputs: [ClockTick; 0] = [];
-    let mut feedback_outputs: [&mut [f32; DEFAULT_BLOCK_SIZE]; 0] = [];
 
     mixer
-        .process(
-            &clock,
-            &inputs,
-            control_inputs,
-            clock_inputs,
-            feedback_inputs,
-            &mut outputs,
-            &mut control_outputs,
-            &mut clock_outputs,
-            &mut feedback_outputs,
-        )
+        .process(&clock, &[], &[], &[], &[])
         .unwrap();
 
-    // Пропускаем первые несколько семплов из-за сглаживания
+    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
+    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
+    let bus0_out = mixer.output_port(2).unwrap().buffer.as_array();
+    let bus1_out = mixer.output_port(3).unwrap().buffer.as_array();
+
+    // Skip first few samples due to smoothing
     let start = 10;
 
     for i in start..DEFAULT_BLOCK_SIZE {
@@ -263,7 +189,7 @@ fn test_mixer_sends() {
 
 #[test]
 fn test_mixer_parameters() {
-    let mut mixer = MixerNode::new(2, 0);
+    let mut mixer = rill_router::MixerNode::new(2, 0);
 
     // Test get_param
     assert!(mixer.get_param("master_volume").is_some());
@@ -272,23 +198,23 @@ fn test_mixer_parameters() {
 
     // Test set_param
     mixer
-        .set_param("ch_1_volume", ParamValue::Float(0.5))
+        .set_param("ch_1_volume", rill_core::traits::ParamValue::Float(0.5))
         .unwrap();
-    if let Some(ParamValue::Float(v)) = mixer.get_param("ch_1_volume") {
+    if let Some(rill_core::traits::ParamValue::Float(v)) = mixer.get_param("ch_1_volume") {
         assert!((v - 0.5).abs() < 0.001);
     }
 
     mixer
-        .set_param("ch_2_pan", ParamValue::Float(-0.8))
+        .set_param("ch_2_pan", rill_core::traits::ParamValue::Float(-0.8))
         .unwrap();
-    if let Some(ParamValue::Float(v)) = mixer.get_param("ch_2_pan") {
+    if let Some(rill_core::traits::ParamValue::Float(v)) = mixer.get_param("ch_2_pan") {
         assert!((v + 0.8).abs() < 0.001);
     }
 
     mixer
-        .set_param("ch_1_mute", ParamValue::Bool(true))
+        .set_param("ch_1_mute", rill_core::traits::ParamValue::Bool(true))
         .unwrap();
-    if let Some(ParamValue::Bool(v)) = mixer.get_param("ch_1_mute") {
+    if let Some(rill_core::traits::ParamValue::Bool(v)) = mixer.get_param("ch_1_mute") {
         assert!(v);
     }
 }

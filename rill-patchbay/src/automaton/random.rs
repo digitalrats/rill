@@ -5,7 +5,7 @@
 //! - Chaos (детерминированный хаос)
 //! - Noise (белый, розовый, коричневый шум)
 
-use super::{Automaton, Time, Range, NoAction};
+use crate::control::{Automaton, NoAction, Time, Range};
 
 /// Тип случайного процесса
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -167,16 +167,16 @@ impl RandomAutomaton {
 impl Automaton for RandomAutomaton {
     type State = RandomState;
     type Action = NoAction;
-    
+
     fn step(
         &self,
         time: Time,
-        _action: Self::Action,
+        _action: &Self::Action,
         state: &Self::State,
-    ) -> (Self::State, Option<f64>, Option<Self::Action>) {
+    ) -> (Self::State, Option<f64>) {
         let mut new_state = state.clone();
         let dt = time - state.last_time;
-        
+
         match self.rng_type {
             RandomType::Walk => self.update_walk(&mut new_state, dt),
             RandomType::Logistic => self.update_logistic(&mut new_state, dt),
@@ -184,21 +184,21 @@ impl Automaton for RandomAutomaton {
             RandomType::WhiteNoise => self.update_white_noise(&mut new_state, dt),
             _ => {}
         }
-        
+
         new_state.last_time = time;
         let value = self.range.clamp(new_state.value);
-        
-        (new_state, Some(value), None)
+
+        (new_state, Some(value))
     }
-    
+
     fn initial_state(&self) -> Self::State {
-        let mut rng = 123456789;
+        let rng = 123456789;
         let initial_value = match self.rng_type {
             RandomType::Logistic => 0.5,
             RandomType::Henon => 0.0,
             _ => 0.0,
         };
-        
+
         RandomState {
             value: initial_value,
             rng_state: rng,
@@ -206,11 +206,11 @@ impl Automaton for RandomAutomaton {
             last_time: 0.0,
         }
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn extract_value(&self, state: &Self::State) -> f64 {
         self.range.clamp(state.value)
     }
@@ -224,17 +224,17 @@ mod tests {
     fn test_random_walk() {
         let walk = RandomAutomaton::walk("Walk", 0.1);
         let state = walk.initial_state();
-        
-        let (state, value, _) = walk.step(0.01, NoAction, &state);
+
+        let (_state, value) = walk.step(0.01, &NoAction, &state);
         assert!(value.unwrap() >= -1.0 && value.unwrap() <= 1.0);
     }
-    
+
     #[test]
     fn test_logistic() {
         let logistic = RandomAutomaton::logistic("Logistic", 3.8);
         let state = logistic.initial_state();
-        
-        let (state, value, _) = logistic.step(0.0, NoAction, &state);
+
+        let (_state, value) = logistic.step(0.0, &NoAction, &state);
         assert!(value.unwrap() >= 0.0 && value.unwrap() <= 1.0);
     }
 }

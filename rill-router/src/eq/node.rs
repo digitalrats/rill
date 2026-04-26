@@ -348,37 +348,24 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        _control_outputs: &mut [T],
-        _clock_outputs: &mut [rill_core::ClockTick],
-        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if audio_outputs.is_empty() {
-            return Ok(());
+        let input_buf = *self.inputs[0].buffer.as_array();
+        let output_buf = self.outputs[0].buffer.as_mut_array();
+
+        let mut input_f32 = [0.0f32; BUF_SIZE];
+        for i in 0..BUF_SIZE {
+            input_f32[i] = input_buf[i].to_f32();
         }
 
-        // We have exactly one audio input and one audio output (as per construction)
-        if let (Some(input_buffer), Some(output_buffer)) =
-            (audio_inputs.first(), audio_outputs.first_mut())
-        {
-            // Convert input from T to f32
-            let mut input_f32 = [0.0f32; BUF_SIZE];
-            for i in 0..BUF_SIZE {
-                input_f32[i] = input_buffer[i].to_f32();
-            }
+        let mut output_f32 = [0.0f32; BUF_SIZE];
+        self.eq.process_block(&input_f32, &mut output_f32);
 
-            // Process through equalizer
-            let mut output_f32 = [0.0f32; BUF_SIZE];
-            self.eq.process_block(&input_f32, &mut output_f32);
-
-            // Convert output back to T
-            for i in 0..BUF_SIZE {
-                output_buffer[i] = T::from_f32(output_f32[i]);
-            }
+        for i in 0..BUF_SIZE {
+            output_buf[i] = T::from_f32(output_f32[i]);
         }
 
         Ok(())
@@ -678,36 +665,24 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        _control_outputs: &mut [T],
-        _clock_outputs: &mut [rill_core::ClockTick],
-        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if audio_outputs.is_empty() {
-            return Ok(());
+        let input_buf = *self.inputs[0].buffer.as_array();
+        let output_buf = self.outputs[0].buffer.as_mut_array();
+
+        let mut input_f32 = [0.0f32; BUF_SIZE];
+        for i in 0..BUF_SIZE {
+            input_f32[i] = input_buf[i].to_f32();
         }
 
-        if let (Some(input_buffer), Some(output_buffer)) =
-            (audio_inputs.first(), audio_outputs.first_mut())
-        {
-            // Convert input from T to f32
-            let mut input_f32 = [0.0f32; BUF_SIZE];
-            for i in 0..BUF_SIZE {
-                input_f32[i] = input_buffer[i].to_f32();
-            }
+        let mut output_f32 = [0.0f32; BUF_SIZE];
+        self.eq.process_block(&input_f32, &mut output_f32);
 
-            // Process through equalizer
-            let mut output_f32 = [0.0f32; BUF_SIZE];
-            self.eq.process_block(&input_f32, &mut output_f32);
-
-            // Convert output back to T
-            for i in 0..BUF_SIZE {
-                output_buffer[i] = T::from_f32(output_f32[i]);
-            }
+        for i in 0..BUF_SIZE {
+            output_buf[i] = T::from_f32(output_f32[i]);
         }
 
         Ok(())

@@ -12,10 +12,11 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use parking_lot::RwLock;
 use rill_core::prelude::*;
-use rill_core::queue::RtQueue;
-use rill_core::param::{ParameterId, ParameterValue};
+use rill_core::queues::MpscQueue;
+
+use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
+pub use crate::automaton::Range;
 
 // =============================================================================
 // 1. Паттерны событий (из rill-control)
@@ -288,311 +289,50 @@ impl Mapping {
 /// Тип времени для автоматов
 pub type Time = f64;
 
+/// Маркер "нет действия" (для автоматов без внешнего управления)
+#[derive(Debug, Clone, Default)]
+pub struct NoAction;
+
 /// Базовый трейт для всех автоматов
-pub trait Automaton: Send + Sync {
+///
+/// Автомат — это контейнер/исполнитель для чистой функции (`Action`),
+/// которая применяется к изменяемому состоянию (`State`) на каждом шаге.
+/// Автомат управляет диапазоном значений, интерполяцией и прочими
+/// аспектами выполнения, а `Action` — это чистое вычисление.
+pub trait Automaton: Send + Sync + Debug {
     /// Тип состояния
-    type State: Clone + Send + Sync + 'static;
-    
+    type State: Clone + Send + Sync + 'static + Debug;
+
+    /// Тип действия (чистая функция, применяемая к состоянию)
+    type Action: Debug + Clone + Send + Sync + Default + 'static;
+
     /// Выполнить один шаг автомата
+    ///
+    /// # Arguments
+    /// * `time` — текущее время
+    /// * `action` — действие/функция, применяемая к состоянию
+    /// * `state` — текущее состояние
+    ///
+    /// Возвращает (новое_состояние, опциональное_значение)
     fn step(
         &self,
         time: Time,
+        action: &Self::Action,
         state: &Self::State,
     ) -> (Self::State, Option<f64>);
-    
+
     /// Начальное состояние
     fn initial_state(&self) -> Self::State;
-    
+
     /// Имя автомата
     fn name(&self) -> &str;
-    
+
     /// Извлечь значение из состояния
     fn extract_value(&self, state: &Self::State) -> f64;
-}
 
-/// Функциональный автомат (stateless)
-pub struct FunctionAutomaton {
-    name: String,
-    generator: Box<dyn Fn(Time) -> f64 + Send + Sync>,
-    target_node: NodeId,
-    target_param: String,
-}
-
-impl FunctionAutomaton {
-    pub fn new<F>(
-        name: &str,
-        generator: F,
-        target_node: NodeId,
-        target_param: &str,
-    ) -> Self
-    where
-        F: Fn(Time) -> f64 + Send + Sync + 'static,
-    {
-        Self {
-            name: name.to_string(),
-            generator: Box::new(generator),
-            target_node,
-            target_param: target_param.to_string(),
-        }
-    }
-}
-
-impl Automaton for FunctionAutomaton {
-    type State = f64;
-    
-    fn step(&self, time: Time, state: &Self::State) -> (Self::State, Option<f64>) {
-        let value = (self.generator)(time);
-        (value, Some(value))
-    }
-    
-    fn initial_state(&self) -> Self::State {
-        (self.generator)(0.0)
-    }
-    
-    fn name(&self) -> &str {
-        &self.name
-    }
-    
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        *state
-    }
-}
-
-/// LFO автомат
-pub struct LfoAutomaton {
-    name: String,
-    frequency: f64,
-    amplitude: f64,
-    offset: f64,
-    waveform: LfoWaveform,
-    phase: f64,
-    target_node: NodeId,
-    target_param: String,
-}
-
-/// Форма волны для LFO
-#[derive(Debug, Clone, Copy)]
-pub enum LfoWaveform {
-    Sine,
-    Triangle,
-    Saw,
-    Square,
-    SampleAndHold,
-    RandomWalk,
-}
-
-impl LfoAutomaton {
-    pub fn new(
-        name: &str,
-        frequency: f64,
-        amplitude: f64,
-        offset: f64,
-        waveform: LfoWaveform,
-        target_node: NodeId,
-        target_param: &str,
-    ) -> Self {
-        Self {
-            name: name.to_string(),
-            frequency,
-            amplitude,
-            offset,
-            waveform,
-            phase: 0.0,
-            target_node,
-            target_param: target_param.to_string(),
-        }
-    }
-    
-    fn generate(&mut self, time: Time) -> f64 {
-        let dt = time - self.phase;
-        self.phase = time;
-        
-        // Обновляем фазу
-        let phase_inc = self.frequency * dt;
-        self.phase = (self.phase + phase_inc) % 1.0;
-        
-        // Генерируем значение
-        let raw = match self.waveform {
-            LfoWaveform::Sine => (self.phase * 2.0 * std::f64::consts::PI).sin(),
-            LfoWaveform::Triangle => {
-                if self.phase < 0.5 {
-                    4.0 * self.phase - 1.0
-                } else {
-                    3.0 - 4.0 * self.phase
-                }
-            }
-            LfoWaveform::Saw => 2.0 * self.phase - 1.0,
-            LfoWaveform::Square => {
-                if self.phase < 0.5 { 1.0 } else { -1.0 }
-            }
-            LfoWaveform::SampleAndHold => {
-                // Простейший S&H - обновляем при переходе через 0
-                if self.phase < 0.1 {
-                    rand::random::<f64>() * 2.0 - 1.0
-                } else {
-                    self.phase // Заглушка
-                }
-            }
-            LfoWaveform::RandomWalk => {
-                // Простое случайное блуждание
-                self.phase + (rand::random::<f64>() - 0.5) * 0.1
-            }
-        };
-        
-        raw * self.amplitude + self.offset
-    }
-}
-
-impl Automaton for LfoAutomaton {
-    type State = f64;
-    
-    fn step(&self, time: Time, _state: &Self::State) -> (Self::State, Option<f64>) {
-        let mut me = self.clone();
-        let value = me.generate(time);
-        (value, Some(value))
-    }
-    
-    fn initial_state(&self) -> Self::State {
-        0.0
-    }
-    
-    fn name(&self) -> &str {
-        &self.name
-    }
-    
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        *state
-    }
-}
-
-/// Огибающая ADSR
-pub struct EnvelopeAutomaton {
-    name: String,
-    attack: f64,
-    decay: f64,
-    sustain: f64,
-    release: f64,
-    stage: EnvelopeStage,
-    level: f64,
-    trigger_time: Option<Time>,
-    release_time: Option<Time>,
-    target_node: NodeId,
-    target_param: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EnvelopeStage {
-    Attack,
-    Decay,
-    Sustain,
-    Release,
-    Off,
-}
-
-impl EnvelopeAutomaton {
-    pub fn new(
-        name: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-        target_node: NodeId,
-        target_param: &str,
-    ) -> Self {
-        Self {
-            name: name.to_string(),
-            attack,
-            decay,
-            sustain,
-            release,
-            stage: EnvelopeStage::Off,
-            level: 0.0,
-            trigger_time: None,
-            release_time: None,
-            target_node,
-            target_param: target_param.to_string(),
-        }
-    }
-    
-    pub fn trigger(&mut self, time: Time) {
-        self.stage = EnvelopeStage::Attack;
-        self.trigger_time = Some(time);
-        self.release_time = None;
-    }
-    
-    pub fn release(&mut self, time: Time) {
-        if self.stage != EnvelopeStage::Off {
-            self.stage = EnvelopeStage::Release;
-            self.release_time = Some(time);
-        }
-    }
-}
-
-impl Automaton for EnvelopeAutomaton {
-    type State = (EnvelopeStage, f64, Option<Time>, Option<Time>);
-    
-    fn step(&self, time: Time, state: &Self::State) -> (Self::State, Option<f64>) {
-        let (mut stage, mut level, trigger_time, release_time) = state.clone();
-        
-        match stage {
-            EnvelopeStage::Off => {
-                level = 0.0;
-            }
-            
-            EnvelopeStage::Attack => {
-                if let Some(t) = trigger_time {
-                    let elapsed = time - t;
-                    if elapsed < self.attack {
-                        level = elapsed / self.attack;
-                    } else {
-                        stage = EnvelopeStage::Decay;
-                        level = 1.0;
-                    }
-                }
-            }
-            
-            EnvelopeStage::Decay => {
-                if let Some(t) = trigger_time {
-                    let elapsed = time - t - self.attack;
-                    if elapsed < self.decay {
-                        level = 1.0 - (1.0 - self.sustain) * (elapsed / self.decay);
-                    } else {
-                        stage = EnvelopeStage::Sustain;
-                        level = self.sustain;
-                    }
-                }
-            }
-            
-            EnvelopeStage::Sustain => {
-                level = self.sustain;
-            }
-            
-            EnvelopeStage::Release => {
-                if let Some(t) = release_time {
-                    let elapsed = time - t;
-                    if elapsed < self.release {
-                        level = self.sustain * (1.0 - elapsed / self.release);
-                    } else {
-                        stage = EnvelopeStage::Off;
-                        level = 0.0;
-                    }
-                }
-            }
-        }
-        
-        ( (stage, level, trigger_time, release_time), Some(level) )
-    }
-    
-    fn initial_state(&self) -> Self::State {
-        (EnvelopeStage::Off, 0.0, None, None)
-    }
-    
-    fn name(&self) -> &str {
-        &self.name
-    }
-    
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        state.1
+    /// Сбросить автомат (создать новое начальное состояние)
+    fn reset(&self) -> Self::State {
+        self.initial_state()
     }
 }
 
@@ -600,14 +340,30 @@ impl Automaton for EnvelopeAutomaton {
 // 6. Сервоприводы (связь автоматов с параметрами)
 // =============================================================================
 
+// =============================================================================
+// 6. Сервоприводы (связь автоматов с параметрами)
+// =============================================================================
+
 /// Тип маппинга значений для сервопривода
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ParameterMapping {
     Linear,
     Exponential,
     Logarithmic,
     Inverted,
     Custom(Arc<dyn Fn(f64) -> f64 + Send + Sync>),
+}
+
+impl std::fmt::Debug for ParameterMapping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParameterMapping::Linear => write!(f, "Linear"),
+            ParameterMapping::Exponential => write!(f, "Exponential"),
+            ParameterMapping::Logarithmic => write!(f, "Logarithmic"),
+            ParameterMapping::Inverted => write!(f, "Inverted"),
+            ParameterMapping::Custom(_) => write!(f, "Custom(<fn>)"),
+        }
+    }
 }
 
 impl ParameterMapping {
@@ -680,7 +436,7 @@ impl<A: Automaton> Servo<A> {
             return None;
         }
         
-        let (new_state, value_opt) = self.automaton.step(time, &self.state);
+        let (new_state, value_opt) = self.automaton.step(time, &A::Action::default(), &self.state);
         self.state = new_state;
         
         if let Some(raw_value) = value_opt {
@@ -752,6 +508,17 @@ pub struct ParameterCommand {
     pub value: f32,
 }
 
+impl ParameterCommand {
+    /// Создать новую команду
+    pub fn new(node_id: NodeId, param: impl Into<String>, value: f32) -> Self {
+        Self {
+            node_id,
+            param: param.into(),
+            value,
+        }
+    }
+}
+
 // =============================================================================
 // 8. Главный контроллер (Patchbay Control)
 // =============================================================================
@@ -759,7 +526,7 @@ pub struct ParameterCommand {
 /// Главный контроллер патчбэя
 ///
 /// Работает в **потоке управления** (soft RT) и отправляет команды
-/// в аудиопоток через `RtQueue<ParameterCommand>`.
+/// в аудиопоток через `MpscQueue<ParameterCommand>`.
 pub struct PatchbayControl {
     /// Маппинги событий
     mappings: Vec<Mapping>,
@@ -768,7 +535,7 @@ pub struct PatchbayControl {
     servos: HashMap<String, BoxedServo>,
     
     /// Очередь для отправки команд в аудиопоток
-    command_queue: Arc<RtQueue<ParameterCommand>>,
+    command_queue: Arc<MpscQueue<ParameterCommand>>,
     
     /// Внутреннее время (секунды)
     time: Time,
@@ -776,7 +543,7 @@ pub struct PatchbayControl {
 
 impl PatchbayControl {
     /// Создать новый контроллер
-    pub fn new(command_queue: Arc<RtQueue<ParameterCommand>>) -> Self {
+    pub fn new(command_queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
         Self {
             mappings: Vec::new(),
             servos: HashMap::new(),
@@ -856,26 +623,11 @@ impl PatchbayControl {
         min: f64,
         max: f64,
     ) {
-        let automaton = LfoAutomaton::new(
-            id,
-            frequency,
-            amplitude,
-            offset,
-            waveform,
-            target_node,
-            target_param,
-        );
-        
+        let automaton = LfoAutomaton::new(id, frequency, amplitude, offset, waveform);
         let servo = Servo::new(
-            id,
-            automaton,
-            target_node,
-            target_param,
-            ParameterMapping::Linear,
-            min,
-            max,
+            id, automaton, target_node, target_param,
+            ParameterMapping::Linear, min, max,
         );
-        
         self.add_servo(servo);
     }
     
@@ -892,26 +644,11 @@ impl PatchbayControl {
         min: f64,
         max: f64,
     ) {
-        let automaton = EnvelopeAutomaton::new(
-            id,
-            attack,
-            decay,
-            sustain,
-            release,
-            target_node,
-            target_param,
-        );
-        
+        let automaton = EnvelopeAutomaton::adsr(id, attack, decay, sustain, release);
         let servo = Servo::new(
-            id,
-            automaton,
-            target_node,
-            target_param,
-            ParameterMapping::Linear,
-            min,
-            max,
+            id, automaton, target_node, target_param,
+            ParameterMapping::Linear, min, max,
         );
-        
         self.add_servo(servo);
     }
     
@@ -1023,6 +760,7 @@ pub fn osc_address(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::queues::MpscQueue;
     
     #[test]
     fn test_midi_mapping() {
@@ -1050,7 +788,7 @@ mod tests {
     #[test]
     fn test_lfo_servo() {
         let node = NodeId(1);
-        let queue = Arc::new(RtQueue::new(64));
+        let queue = Arc::new(MpscQueue::with_capacity(64));
         let mut control = PatchbayControl::new(queue);
         
         control.add_lfo(
@@ -1064,7 +802,7 @@ mod tests {
         assert!(control.get_servo("test_lfo").is_some());
         
         // Несколько обновлений должны генерировать команды
-        for i in 0..10 {
+        for _i in 0..10 {
             control.update(0.1);
         }
     }
@@ -1072,7 +810,7 @@ mod tests {
     #[test]
     fn test_envelope_servo() {
         let node = NodeId(1);
-        let queue = Arc::new(RtQueue::new(64));
+        let queue = Arc::new(MpscQueue::with_capacity(64));
         let mut control = PatchbayControl::new(queue.clone());
         
         control.add_envelope(
@@ -1083,7 +821,7 @@ mod tests {
         );
         
         // Находим сервопривод и триггерим его
-        if let Some(servo) = control.get_servo_mut("test_env") {
+        if let Some(_servo) = control.get_servo_mut("test_env") {
             // В реальном коде здесь нужно вызвать trigger
             // Для теста просто обновляем время
         }

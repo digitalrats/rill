@@ -1,77 +1,52 @@
-//! Пример использования LFO с envelope для автоматизации
-
-use rill_automation::{
-    automaton::{LfoAutomaton, LfoWithEnvelopeAutomaton},
-    AutomationContext,
-    AutomationManager,
-    Automaton,
-    ParameterMapping,
-    Servo,
-    TestSignalSender,
-    Waveform,
-};
-use rill_core::time::{Clock, SystemClock};
-use rill_core::traits::{NodeId, ParameterId, PortId};
+use rill_core::NodeId;
+use rill_core::queues::MpscQueue;
+use rill_patchbay::{LfoWaveform, PatchbayControl};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== LFO with Envelope Example ===\n");
+    println!("=== LFO + Envelope Example ===\n");
 
-    let clock = Arc::new(SystemClock::new(44100.0, 120.0));
-    let system_clock = SystemClock::new(44100.0, 120.0);
-    let signal_sender = Arc::new(TestSignalSender::new());
-
-    let mut manager = AutomationManager::new(clock.clone(), system_clock)
-        .with_signal_sender(signal_sender.clone());
-
+    let queue = Arc::new(MpscQueue::with_capacity(1024));
+    let mut control = PatchbayControl::new(queue.clone());
     let node = NodeId(1);
-    let port = PortId::control_in(node, 0);
-    let filter_param = ParameterId::new("filter_cutoff")?;
 
-    println!("Создаём LFO с envelope (attack=2s, release=2s)...");
-
-    // LFO с огибающей
-    manager.add_lfo_with_envelope(
-        "envelope_lfo",
-        0.5,  // частота
-        0.8,  // амплитуда
-        0.5,  // смещение
-        2.0,  // attack
-        2.0,  // release
-        port,
-        filter_param,
+    // LFO
+    control.add_lfo(
+        "lfo",
+        0.5,
+        0.8,
+        0.5,
+        LfoWaveform::Sine,
+        node,
+        "modulator",
+        0.0,
+        1.0,
     );
 
-    println!("\nВремя(s)\tFilter Cutoff\tСостояние");
-    println!("--------\t-------------\t---------");
+    // Envelope
+    control.add_envelope(
+        "env",
+        0.1,
+        0.2,
+        0.7,
+        0.3,
+        node,
+        "amplifier",
+        0.0,
+        1.0,
+    );
+
+    println!("Components added. Running updates...\n");
+    println!("Time(s)\tCommands in queue");
+    println!("-------\t-----------------");
 
     for i in 0..20 {
-        let time = i as f64 * 0.5;
-
-        clock.advance(22050);
-        manager.update(22050);
-
-        let cutoff = signal_sender
-            .get_signals_for_param(&ParameterId::new("filter_cutoff")?)
-            .last()
-            .map(|s| s.value)
-            .unwrap_or(0.5);
-
-        let state = if time < 2.0 {
-            "Attack"
-        } else if time < 4.0 {
-            "Sustain"
-        } else {
-            "Release"
-        };
-
-        println!("{:.1}\t\t{:.3}\t\t{}", time, cutoff, state);
-
-        thread::sleep(Duration::from_millis(100));
+        let time = i as f64 * 0.1;
+        control.update(0.1);
+        let count = std::iter::from_fn(|| queue.pop()).count();
+        println!("{:.1}\t{}", time, count);
     }
 
-    println!("\n✅ Пример с envelope завершён");
+    println!("\nDone");
     Ok(())
 }

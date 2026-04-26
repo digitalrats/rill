@@ -10,6 +10,7 @@ use super::basic::{BasicOscillator, Waveform};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator};
 use crate::vector::prelude::*;
+use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::AudioNum;
 
 // =============================================================================
@@ -26,8 +27,13 @@ use rill_core::AudioNum;
 ///
 /// # Пример
 /// ```
+/// use rill_core::time::ClockTick;
+/// use rill_core::traits::ActionContext;
 /// use rill_core_dsp::generators::*;
 /// use rill_core_dsp::Algorithm;
+///
+/// let tick = ClockTick::default();
+/// let ctx = ActionContext::new(&tick);
 ///
 /// // Создаём FM синтезатор с соотношением частот 2:1
 /// let mut fm = SimpleFmSynth::<f32>::new(
@@ -39,7 +45,7 @@ use rill_core::AudioNum;
 ///
 /// // Генерируем семпл
 /// let mut output = [0.0_f32];
-/// fm.process_block(&[0.0], &mut output);
+/// fm.process(None, &mut output, &ctx).unwrap();
 /// let sample = output[0];
 /// ```
 #[derive(Clone, Copy)]
@@ -136,7 +142,8 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
         self.modulator.reset();
     }
 
-    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Получаем модулирующий сигнал
             let mod_signal = self.modulator.generate().extract(0);
@@ -148,6 +155,7 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
             // Возвращаем сигнал несущей
             *out = self.carrier.generate().extract(0);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -158,20 +166,6 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
     }
 }
 
@@ -346,7 +340,8 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
         self.reset_all();
     }
 
-    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Сохраняем текущие значения всех операторов
             let mut values = [T::ZERO; N];
@@ -375,6 +370,7 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
             // (в классической FM архитектуре)
             *out = values[N - 1];
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -423,20 +419,6 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
                 version: env!("CARGO_PKG_VERSION"),
             },
         }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
     }
 }
 
@@ -511,6 +493,8 @@ pub mod algorithms_6op {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::time::ClockTick;
+    use rill_core::traits::ActionContext;
 
     #[test]
     fn test_simple_fm_synth() {
@@ -518,7 +502,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -531,7 +517,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -562,7 +550,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -574,7 +564,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -591,7 +583,9 @@ mod tests {
         fm.set_waveform(1, Waveform::Square);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }

@@ -1,6 +1,8 @@
 //! Трейты для эффектов
 
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm};
+use rill_core::time::ClockTick;
+use rill_core::traits::ActionContext;
 use rill_core::AudioNum;
 
 /// Базовый трейт для эффектов
@@ -19,13 +21,17 @@ pub trait Effect<T: AudioNum>: ParameterizedAlgorithm<T> {
     fn process_stereo(&mut self, left: T, right: T) -> (T, T) {
         let input = [left, right];
         let mut output = [T::ZERO, T::ZERO];
-        self.process_block(&input, &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        let _ = self.process(Some(&input), &mut output, &ctx);
         (output[0], output[1])
     }
 
     /// Обработать блок с использованием векторного eDSL (опционально)
     fn process_block_vector(&mut self, input: &[T], output: &mut [T]) {
-        self.process_block(input, output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        let _ = self.process(Some(input), output, &ctx);
     }
 }
 
@@ -43,7 +49,9 @@ pub trait Bypassable<T: AudioNum>: Effect<T> {
             input
         } else {
             let mut output = [T::ZERO];
-            self.process_block(&[input], &mut output);
+            let tick = ClockTick::default();
+            let ctx = ActionContext::new(&tick);
+            let _ = self.process(Some(&[input]), &mut output, &ctx);
             output[0]
         }
     }
@@ -60,7 +68,9 @@ pub trait DryWet<T: AudioNum>: Effect<T> {
     /// Обработка с учётом dry/wet
     fn process_with_dry_wet(&mut self, input: T, dry: T) -> T {
         let mut wet = [T::ZERO];
-        self.process_block(&[input], &mut wet);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        let _ = self.process(Some(&[input]), &mut wet, &ctx);
         let mix = T::from_f32(self.dry_wet());
         let one_minus_mix = T::from_f32(1.0 - self.dry_wet());
 

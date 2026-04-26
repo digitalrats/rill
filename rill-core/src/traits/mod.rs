@@ -3,6 +3,8 @@
 //! This module defines the fundamental traits that form the backbone
 //! of the Rill ecosystem.
 
+pub mod action;
+pub mod algorithm;
 mod error;
 pub mod node;
 pub mod param;
@@ -10,6 +12,8 @@ pub mod port;
 pub mod processable;
 
 // Re-export all public items
+pub use action::*;
+pub use algorithm::*;
 pub use error::*;
 pub use node::*;
 pub use param::*;

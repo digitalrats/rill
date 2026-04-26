@@ -6,6 +6,7 @@
 //! - `Processor`: Passive processor (has inputs and outputs)
 //! - `Sink`: Active consumer (has no outputs)
 
+use crate::queues::signal::SetParameter;
 use crate::traits::param::{ParameterId, ParamValue, ParamMetadata};
 use crate::time::ClockTick;
 use crate::traits::ProcessResult;
@@ -272,6 +273,37 @@ pub trait AudioNode<T: crate::math::AudioNum, const BUF_SIZE: usize>: Send + Syn
     /// Set the value of a parameter
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
     
+    /// Apply a `SetParameter` command to this node.
+    ///
+    /// Routes the command to the appropriate port based on `cmd.port`.
+    /// Falls back to `set_parameter()` when the port is not found.
+    fn apply_set_parameter(&mut self, cmd: &SetParameter) -> ProcessResult<()> {
+        use crate::traits::port::{PortDirection, PortType};
+        let value = T::from_f32(cmd.value);
+        let port = match cmd.port.port_type() {
+            PortType::Control => {
+                self.control_port_mut(cmd.port.index() as usize)
+            }
+            PortType::Audio => match cmd.port.direction() {
+                PortDirection::Input => self.input_port_mut(cmd.port.index() as usize),
+                PortDirection::Output => self.output_port_mut(cmd.port.index() as usize),
+            },
+            PortType::Param => {
+                self.input_port_mut(cmd.port.index() as usize)
+            }
+            PortType::Clock | PortType::Feedback => None,
+        };
+        match port {
+            Some(p) => {
+                p.set_value(value);
+                Ok(())
+            }
+            None => {
+                self.set_parameter(&cmd.parameter, ParamValue::Float(cmd.value))
+            }
+        }
+    }
+    
     /// Get node ID
     fn id(&self) -> NodeId;
     
@@ -354,13 +386,14 @@ pub trait Source<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, 
     /// * `clock` - Current clock tick
     /// * `control_inputs` - Control signal values (one per control input)
     /// * `clock_inputs` - Clock signal values (one per clock input)
-    /// * `outputs` - Audio output buffers to fill
+    ///
+    /// The source writes output samples into its own output port buffers,
+    /// accessible via `self.output_port_mut(index)`.
     fn generate(
         &mut self,
         clock: &ClockTick,
         control_inputs: &[T],
         clock_inputs: &[ClockTick],
-        outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()>;
     
     /// Number of audio outputs (default 1)
@@ -390,10 +423,9 @@ pub trait Processor<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<
     /// * `control_inputs` - Control signal values (one per control input)
     /// * `clock_inputs` - Clock signal values (one per clock input)
     /// * `feedback_inputs` - Feedback values from previous blocks (one per feedback port)
-    /// * `audio_outputs` - Audio output buffers to fill
-    /// * `control_outputs` - Control output values to send (one per control output)
-    /// * `clock_outputs` - Clock output values to send (one per clock output)
-    /// * `feedback_outputs` - Feedback values to store for next block
+    ///
+    /// The processor writes output samples into its own output port buffers,
+    /// accessible via `self.output_port_mut(index)`.
     fn process(
         &mut self,
         clock: &ClockTick,
@@ -401,10 +433,6 @@ pub trait Processor<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<
         control_inputs: &[T],
         clock_inputs: &[ClockTick],
         feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        control_outputs: &mut [T],
-        clock_outputs: &mut [ClockTick],
-        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()>;
     
     /// Latency in samples (for delay compensation)
@@ -428,8 +456,6 @@ pub trait Sink<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BU
     /// * `control_inputs` - Control signal values (one per control input)
     /// * `clock_inputs` - Clock signal values (one per clock input)
     /// * `feedback_inputs` - Feedback values from previous blocks
-    /// * `control_outputs` - Control output values to send
-    /// * `clock_outputs` - Clock output values to send
     fn consume(
         &mut self,
         clock: &ClockTick,
@@ -437,8 +463,6 @@ pub trait Sink<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BU
         control_inputs: &[T],
         clock_inputs: &[ClockTick],
         feedback_inputs: &[&[T; BUF_SIZE]],
-        control_outputs: &mut [T],
-        clock_outputs: &mut [ClockTick],
     ) -> ProcessResult<()>;
 }
 

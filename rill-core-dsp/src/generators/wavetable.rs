@@ -4,6 +4,7 @@ use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::math::{lerp, AudioNum};
 use crate::vector::{ScalarVector1, Vector};
+use rill_core::traits::{ActionContext, ProcessResult};
 
 /// Вейвтейбл осциллятор
 pub struct WavetableOscillator<T: AudioNum, const SIZE: usize> {
@@ -118,7 +119,8 @@ impl<T: AudioNum, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZ
         self.phase = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 
         for i in 0..len {
@@ -140,6 +142,7 @@ impl<T: AudioNum, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZ
                 self.phase = self.phase - ScalarVector1::splat(T::from_f32(SIZE as f32));
             }
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {

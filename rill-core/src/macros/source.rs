@@ -13,7 +13,7 @@ macro_rules! source_node {
             generate: $generate:expr
         }
     ) => {
-        #[derive(Debug, Clone)]
+        #[derive(Debug)]
         $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
         $(where $($bounds)*)?
         {
@@ -187,14 +187,8 @@ macro_rules! source_node {
                 clock: &$crate::ClockTick,
                 control_inputs: &[$T],
                 clock_inputs: &[$crate::ClockTick],
-                outputs: &mut [&mut [$T; $BUF]],
             ) -> $crate::ProcessResult<()> {
-                if outputs.is_empty() {
-                    return Ok(());
-                }
-                
-                ($generate)(self, outputs[0])?;
-                
+                ($generate)(self)?;
                 Ok(())
             }
             

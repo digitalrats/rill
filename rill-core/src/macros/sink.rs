@@ -13,7 +13,7 @@ macro_rules! sink_node {
             consume: $consume:expr
         }
     ) => {
-        #[derive(Debug, Clone)]
+        #[derive(Debug)]
         $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
         $(where $($bounds)*)?
         {
@@ -169,10 +169,7 @@ macro_rules! sink_node {
                 control_inputs: &[$T],
                 clock_inputs: &[$crate::ClockTick],
                 feedback_inputs: &[&[$T; $BUF]],
-                control_outputs: &mut [$T],
-                clock_outputs: &mut [$crate::ClockTick],
             ) -> $crate::ProcessResult<()> {
-                // Передаем только self, внутри замыкания обращаемся к его полям
                 ($consume)(self)?;
                 Ok(())
             }

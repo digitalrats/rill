@@ -101,19 +101,21 @@
 //!         clock: &ClockTick,
 //!         _control_inputs: &[T],
 //!         _clock_inputs: &[ClockTick],
-//!         outputs: &mut [&mut [T; BUF_SIZE]],
 //!     ) -> ProcessResult<()> {
 //!         let two_pi = T::from_f32(2.0 * std::f32::consts::PI);
 //!         let phase_inc = self.frequency / T::from_f32(clock.sample_rate);
+//!         let amp = self.amplitude;
 //!         
+//!         let mut temp = [T::ZERO; BUF_SIZE];
 //!         for i in 0..BUF_SIZE {
 //!             let phase_rad = self.phase * two_pi;
-//!             outputs[0][i] = phase_rad.sin() * self.amplitude;
+//!             temp[i] = phase_rad.sin() * amp;
 //!             self.phase = self.phase + phase_inc;
 //!             if self.phase >= T::from_f32(1.0) {
 //!                 self.phase = self.phase - T::from_f32(1.0);
 //!             }
 //!         }
+//!         *self.output_port_mut(0).unwrap().buffer.as_mut_array() = temp;
 //!         Ok(())
 //!     }
 //!     
