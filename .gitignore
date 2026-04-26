@@ -13,6 +13,13 @@ Thumbs.db
 *.swp
 *.swo
 
+# Obsidian (локальное состояние)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/plugins/
+.obsidian/themes/
+
+
 # Build файлы
 *.o
 *.so
