@@ -166,7 +166,7 @@ impl Default for LofiConfig {
 impl LofiConfig {
     pub fn for_system(system: ClassicSystem) -> Self {
         Self {
-            system: system.clone(),
+            system,
             hardware: HardwareEmulation::for_system(system),
             ..Default::default()
         }

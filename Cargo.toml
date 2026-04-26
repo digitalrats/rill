@@ -8,7 +8,7 @@ members = [
     "rill-digital-filters",
     "rill-digital-effects",
     "rill-router",
-    #"rill-lofi", # Временно отключен
+    "rill-lofi",
     #"rill-io", # Временно отключен 
     #"rill-server" # В разработке
     #"rill-wdf" # Планируется

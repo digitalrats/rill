@@ -1,12 +1,11 @@
 //! Lo-fi audio emulation: 8-bit, 12-bit, and classic digital audio systems
 
-#![warn(missing_docs)]
+//#![warn(missing_docs)]
+#![allow(missing_docs)]
 
 mod error;
 mod config;
 mod lofi_processor;
-mod node_params;
-
 // Публичные модули
 pub mod dsp;
 pub mod emulators;
@@ -19,10 +18,8 @@ pub use emulators::{NesEmulator, Ay38910Emulator, AkaiS900Emulator};
 
 // Реэкспорт для удобства
 pub use rill_core::traits::AudioNode;
-pub use rill_buffers::{BufferHead, ReadMode};
 
-#[cfg(feature = "automation")]
-pub mod automation_integration;
+
 
 #[cfg(test)]
 mod tests {

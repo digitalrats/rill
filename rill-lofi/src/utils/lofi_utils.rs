@@ -3,13 +3,13 @@ use std::f32::consts::PI;
 
 pub fn create_8bit_sound(samples: &[f32], bit_depth: u8) -> Vec<f32> {
     samples.iter()
-        .map(|&s| dsp::quantize(s, bit_depth, true))
+        .map(|&s| dsp::bitcrush(s, bit_depth, true))
         .collect()
 }
 
 pub fn add_vintage_noise(samples: &[f32], noise_level: f32) -> Vec<f32> {
     samples.iter()
-        .map(|&s| dsp::add_thermal_noise(s, noise_level))
+        .map(|&s| s + dsp::white_noise(noise_level))
         .collect()
 }
 

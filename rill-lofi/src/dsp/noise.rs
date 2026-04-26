@@ -10,7 +10,7 @@ pub fn white_noise(level: f32) -> f32 {
 
 /// Розовый шум (простая аппроксимация)
 pub fn pink_noise(level: f32, _sample_rate: f32) -> f32 {
-    use std::f32::consts::PI;
+    
     
     static mut LAST_NOISE: f32 = 0.0;
     static mut FILTER_STATE: [f32; 3] = [0.0; 3];
@@ -46,7 +46,7 @@ pub fn system_noise(system: crate::config::ClassicSystem, sample: f32) -> f32 {
         crate::config::ClassicSystem::Commodore64 => 0.03,
         crate::config::ClassicSystem::AkaiS900 => 0.01,
         crate::config::ClassicSystem::FairlightCMI => 0.04,
-        crate::config::ClassicSystem::Custom { noise_floor, .. } => noise_floor as f32 / 100.0,
+        crate::config::ClassicSystem::Custom { noise_floor, .. } => noise_floor / 100.0,
         _ => 0.02,
     };
     
