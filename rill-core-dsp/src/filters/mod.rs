@@ -89,6 +89,7 @@ mod biquad;
 mod butterworth;
 mod chebyshev;
 mod comb;
+mod moog_ladder;
 mod one_pole;
 mod svf;
 
@@ -96,6 +97,7 @@ pub use biquad::Biquad;
 pub use butterworth::Butterworth;
 pub use chebyshev::{ChebyshevI, ChebyshevII, ChebyshevParams};
 pub use comb::CombFilter;
+pub use moog_ladder::MoogLadder;
 pub use one_pole::OnePole;
 pub use svf::StateVariableFilter;
 

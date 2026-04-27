@@ -121,7 +121,7 @@ pub use crate::buffer::{
 // ============================================================================
 
 pub use crate::queues::{
-    QueueError, QueueResult,
+    QueueError, QueueResult, TelemetryBlock,
 };
 
 // ============================================================================

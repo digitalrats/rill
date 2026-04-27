@@ -476,37 +476,6 @@ impl PatchbayManager {
         self.handle_event(event);
     }
     
-    // =========================================================================
-    // Обновление состояния
-    // =========================================================================
-    
-    /// Обновить состояние автоматов
-    fn update_automata(&mut self, dt: f64) {
-        self.time += dt;
-        
-        let mut commands = Vec::new();
-        
-        // Обновляем все автоматы и собираем команды
-        for (id, _automaton) in &self.automata {
-            let _state = self.automaton_states.get_mut(id).unwrap();
-            
-            // В реальном коде нужно извлечь состояние и применить действие
-            // Здесь упрощённо
-            
-            if let Some(servo) = self.servos.get_mut(id) {
-                if let Some(cmd) = servo.update(self.time) {
-                    commands.push(cmd);
-                }
-            }
-        }
-        
-        // Отправляем команды в аудиопоток
-        for cmd in commands {
-            let _ = self.command_queue.push(cmd.clone());
-            self.stats.commands_sent += 1;
-        }
-    }
-    
     /// Отправить событие (если есть канал)
     fn emit_event(&self, event: PatchbayEvent) {
         if let Some(tx) = &self.event_tx {

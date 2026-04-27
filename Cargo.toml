@@ -7,11 +7,14 @@ members = [
     "rill-oscillators",
     "rill-digital-filters",
     "rill-digital-effects",
+    "rill-telemetry",
     "rill-router",
     "rill-lofi",
     "rill-io",
+    "rill-core-wdf",
+    "rill-analog-filters",
+    "rill-analog-effects",
     #"rill-server" # В разработке
-    #"rill-wdf" # Планируется
 ]
 resolver = "2"
 

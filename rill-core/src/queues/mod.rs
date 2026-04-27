@@ -24,6 +24,7 @@ pub mod error;
 pub mod command;
 pub mod signal;
 pub mod telemetry;
+pub mod telemetry_block;
 pub mod observer;
 pub mod mpsc;
 pub mod ring;
@@ -34,6 +35,7 @@ pub use command::CommandQueue;
 pub use error::{QueueError, QueueResult};
 pub use mpsc::MpscQueue;
 pub use rt_queue::RtQueue;
+pub use telemetry_block::TelemetryBlock;
 
 // Re-export key signal types
 pub use signal::{
