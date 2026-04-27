@@ -11,10 +11,10 @@ pub struct CassetteDeckModel {
 
     input_amp: OperationalAmplifier,
     bias_oscillator: f64,
-    record_head: Inductor,
+    record_head: Inductor<f64>,
     #[allow(dead_code)]
-    playback_head: Inductor,
-    eq_filters: [Capacitor; 2],
+    playback_head: Inductor<f64>,
+    eq_filters: [Capacitor<f64>; 2],
     output_amp: OperationalAmplifier,
 
     pub tape_speed: f64,
@@ -41,11 +41,11 @@ impl CassetteDeckModel {
 
             input_amp: OperationalAmplifier::new(10.0, 0.5, 1e6),
             bias_oscillator: 100_000.0,
-            record_head: Inductor::new(100e-6, sample_rate),
-            playback_head: Inductor::new(50e-6, sample_rate),
+            record_head: Inductor::<f64>::new(100e-6, sample_rate),
+            playback_head: Inductor::<f64>::new(50e-6, sample_rate),
             eq_filters: [
-                Capacitor::new(100e-9, sample_rate),
-                Capacitor::new(1e-6, sample_rate),
+                Capacitor::<f64>::new(100e-9, sample_rate),
+                Capacitor::<f64>::new(1e-6, sample_rate),
             ],
             output_amp: OperationalAmplifier::new(5.0, 0.5, 1e6),
 

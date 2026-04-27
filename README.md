@@ -153,7 +153,7 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 | **rill-lofi** | 0.3.0 | ✅ **Lo-Fi эмуляция** (NES, AY-3-8910, Akai S900) |
 | **rill-io** | 0.3.0 | ✅ **Аудио ввод-вывод** (ALSA, CPAL, PipeWire, JACK) |
 | **rill-telemetry** | 0.3.0 | ✅ **Телеметрия** (пробники, коллекторы данных) |
-| **rill-core-wdf** | 0.3.0 | ✅ **WDF ядро** (элементы, адаптеры, анализ, SIMD) |
+| **rill-core-wdf** | 0.3.0 | ✅ **WDF ядро** (generic `AudioNum` элементы, адаптеры, анализ, WDF-фильтры, SIMD) |
 | **rill-analog-filters** | 0.3.0 | ✅ **Аналоговые фильтры** (WdfMoogLadder на WDF-элементах) |
 | **rill-analog-effects** | 0.3.0 | ✅ **Аналоговые эффекты** (операционники, ленточные деки, преампы) |
 | rill-server | планируется | 🔌 OSC-сервер |
@@ -183,9 +183,10 @@ graph TD
     CORE --> IO[rill-io]
     CORE --> LOFI[rill-lofi]
     CORE --> TELEMETRY[rill-telemetry]
+    CORE --> CORE_WDF[rill-core-wdf]
     CORE --> ANALOG_FILTERS[rill-analog-filters]
     CORE --> ANALOG_EFFECTS[rill-analog-effects]
-    CORE_WDF[rill-core-wdf] --> ANALOG_FILTERS
+    CORE_WDF --> ANALOG_FILTERS
     CORE_WDF --> ANALOG_EFFECTS
     
     style CORE fill:#90ee90

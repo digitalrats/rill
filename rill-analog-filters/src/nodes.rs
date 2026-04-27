@@ -1,5 +1,5 @@
 use rill_core::prelude::*;
-use crate::WdfMoogLadder;
+use rill_core_wdf::filters::MoogLadder;
 
 pub struct WdfMoogLadderProcessor<T: AudioNum, const BUF_SIZE: usize> {
     id: NodeId,
@@ -7,10 +7,9 @@ pub struct WdfMoogLadderProcessor<T: AudioNum, const BUF_SIZE: usize> {
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    pub algorithm: WdfMoogLadder,
+    pub algorithm: MoogLadder<f64>,
     pub cutoff: f32,
     pub resonance: f32,
-    pub drive: f32,
 }
 
 impl<T: AudioNum, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
@@ -23,9 +22,6 @@ impl<T: AudioNum, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
             ParamMetadata::new("resonance", ParamType::Float, ParamValue::Float(0.0))
                 .with_description("Resonance (0-1)")
                 .with_range(0.0, 1.0, 0.01),
-            ParamMetadata::new("drive", ParamType::Float, ParamValue::Float(1.0))
-                .with_description("Drive gain")
-                .with_range(0.1, 10.0, 0.1),
         ];
 
         let mut inputs = Vec::new();
@@ -33,7 +29,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
         inputs.push(Port::input(NodeId(0), 0, "audio_in"));
         outputs.push(Port::output(NodeId(0), 0, "audio_out"));
 
-        let mut algorithm = WdfMoogLadder::new(sample_rate as f64);
+        let mut algorithm = MoogLadder::<f64>::new(sample_rate as f64);
         algorithm.set_cutoff(1000.0);
 
         Self {
@@ -45,14 +41,12 @@ impl<T: AudioNum, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
             algorithm,
             cutoff: 1000.0,
             resonance: 0.0,
-            drive: 1.0,
         }
     }
 
     fn update_algorithm(&mut self) {
         self.algorithm.set_cutoff(self.cutoff as f64);
         self.algorithm.set_resonance(self.resonance as f64);
-        self.algorithm.set_drive(self.drive as f64);
     }
 }
 
@@ -80,7 +74,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
 
     fn init(&mut self, sample_rate: f32) {
         self.state.sample_rate = sample_rate;
-        self.algorithm = WdfMoogLadder::new(sample_rate as f64);
+        self.algorithm = MoogLadder::<f64>::new(sample_rate as f64);
         self.update_algorithm();
     }
 
@@ -95,7 +89,6 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
         match name {
             "cutoff" => Some(ParamValue::Float(self.cutoff)),
             "resonance" => Some(ParamValue::Float(self.resonance)),
-            "drive" => Some(ParamValue::Float(self.drive)),
             _ => None,
         }
     }
@@ -111,11 +104,6 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
                 }
                 "resonance" => {
                     self.resonance = v.clamp(0.0, 1.0);
-                    self.update_algorithm();
-                    Ok(())
-                }
-                "drive" => {
-                    self.drive = v.clamp(0.1, 10.0);
                     self.update_algorithm();
                     Ok(())
                 }
@@ -185,7 +173,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         let output_buf = self.outputs[0].buffer.as_mut_array();
         for i in 0..BUF_SIZE {
             let x = input_buf[i].to_f64();
-            let y = self.algorithm.process(x);
+            let y = self.algorithm.process_sample(x);
             output_buf[i] = T::from_f32(y as f32);
         }
         self.state.advance();
@@ -206,7 +194,6 @@ mod tests {
         let p = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
         assert_eq!(p.cutoff, 1000.0);
         assert_eq!(p.resonance, 0.0);
-        assert_eq!(p.drive, 1.0);
     }
 
     #[test]

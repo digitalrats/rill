@@ -59,7 +59,7 @@ impl SimdDetector {
     }
     
     /// Возвращает максимальную рекомендуемую ширину SIMD для текущей платформы
-    pub fn recommended_simd_width<T: rill_core::AudioNum>() -> usize {
+    pub fn recommended_simd_width<T: crate::AudioNum>() -> usize {
         // Временная заглушка: всегда возвращаем скалярную ширину
         // В реальной реализации здесь будет логика выбора на основе детекции
         1

@@ -150,6 +150,9 @@ pub mod queues;
 /// Time and clock abstractions for synchronization
 pub mod time;
 
+/// Vector operations for SIMD-optimized DSP
+pub mod vector;
+
 /// Macros for node creation and boilerplate reduction
 #[macro_use]
 pub mod macros;

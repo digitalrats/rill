@@ -86,6 +86,22 @@ pub use crate::time::{
 pub use crate::math::AudioNum;
 
 // ============================================================================
+// Vector Types (SIMD abstractions)
+// ============================================================================
+
+#[cfg(feature = "simd")]
+pub use crate::vector::simd::*;
+pub use crate::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
+pub use crate::vector::traits::{Vector, VectorMask, VectorReduce, VectorScalarOps};
+pub use crate::vector::ops::{
+    add_scalar_slice, add_slices, div_slices, mul_scalar_slice, mul_slices, sub_slices,
+};
+pub use crate::vector::math::{
+    abs_slice, clamp_slice, cos_slice, exp_slice, ln_slice, max_slice, min_slice, sin_slice,
+    sqrt_slice, tan_slice,
+};
+
+// ============================================================================
 // Buffer Types
 // ============================================================================
 

@@ -5,8 +5,8 @@
 //!
 //! ## Примеры
 //! ```
-//! use rill_core_dsp::vector::prelude::*;
-//! use rill_core_dsp::vector::macros::*;
+//! use rill_core::vector::prelude::*;
+//! use rill_core::vector::macros::*;
 //!
 //! let a = ScalarVector4::splat(1.0);
 //! let b = ScalarVector4::splat(2.0);
@@ -39,8 +39,8 @@ use crate::vector::scalar::ScalarVector4;
 ///
 /// # Пример
 /// ```
-/// # use rill_core_dsp::vector::macros::*;
-/// # use rill_core_dsp::vector::prelude::*;
+/// # use rill_core::vector::macros::*;
+/// # use rill_core::vector::prelude::*;
 /// let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
 /// let mut output = [0.0f32; 8];
 /// vec_map!(|x| x * 2.0 + 1.0, &input, &mut output);

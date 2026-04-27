@@ -6,7 +6,7 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-use crate::math::AudioNum;
+use crate::AudioNum;
 use super::super::traits::*;
 
 // -----------------------------------------------------------------------------

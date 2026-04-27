@@ -385,26 +385,30 @@ let mut akai = LofiProcessor::new(akai_config);
 Пробники и коллекторы данных для мониторинга audio-потока и управления. Предоставляет механизмы сбора статистики производительности, отслеживания нарушений real-time безопасности и обратной связи для внешних систем.
 
 ### `rill-core-wdf` (0.3.0, ✅ активен)
-Wave Digital Filter (WDF) ядро — элементы (Resistor, Capacitor, Inductor, Diode), адаптеры (SeriesAdapter, ParallelAdapter) и функции анализа (частотная характеристика, искажения). Не зависит от `rill-core`, использует только встроенную математику `f64`. Опциональная фича `simd` включает SIMD-векторизацию через `core::simd`.
+Wave Digital Filter (WDF) ядро — элементы (Resistor, Capacitor, Inductor, Diode), адаптеры (SeriesAdapter, ParallelAdapter), функции анализа (частотная характеристика, искажения) и WDF-фильтры (WdfMoogLadder). Generic над `rill_core::AudioNum` — поддерживает `f32` и `f64`. Опциональная фича `simd` включает SIMD-векторизацию через `rill_core::vector::F64x4` (backed by `wide`).
 
 ```rust
 use rill_core_wdf::{Resistor, Capacitor, WdfElement, WaveVariables};
+use rill_core_wdf::filters::MoogLadder;
+use rill_core::traits::Algorithm;
 
-let mut cap = Capacitor::new(0.1e-6, 44100.0);
+let mut cap: Capacitor<f64> = Capacitor::new(0.1e-6, 44100.0);
 let a = cap.port_resistance();
-cap.update_state();
+
+let mut ladder: MoogLadder<f64> = MoogLadder::new(44100.0);
+ladder.set_cutoff(5000.0);
+ladder.set_resonance(0.7);
+let y = ladder.process_sample(0.5);
 ```
 
 ### `rill-analog-filters` (0.3.0, ✅ активен)
-WDF-основанные аналоговые фильтры. Включает `WdfRcPole` — однополюсное RC-звено (билинейное преобразование) и `WdfMoogLadder` — 4-полюсный фильтр Moog с резонансной обратной связью. Зависит от `rill-core` (AudioNode/Processor трейты) и `rill-core-wdf`.
+WDF-основанные аналоговые фильтры. Включает `WdfMoogLadderProcessor` — AudioNode-обёртку над `rill_core_wdf::filters::MoogLadder<f64>`. Предоставляет узлы графа для процессора.
 
 ```rust
-use rill_analog_filters::WdfMoogLadder;
+use rill_analog_filters::WdfMoogLadderProcessor;
 
-let mut filter = WdfMoogLadder::new(44100.0);
-filter.set_cutoff(5000.0);
-filter.set_resonance(0.7);
-let y = filter.process(0.5);
+let mut processor = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
+processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(5000.0));
 ```
 
 ### `rill-analog-effects` (0.3.0, ✅ активен)
@@ -465,7 +469,8 @@ graph TD
     CORE --> TELEMETRY[rill-telemetry]
     CORE --> ANALOG_FILTERS[rill-analog-filters]
     CORE --> ANALOG_EFFECTS[rill-analog-effects]
-    CORE_WDF[rill-core-wdf] --> ANALOG_FILTERS
+    CORE --> CORE_WDF[rill-core-wdf]
+    CORE_WDF --> ANALOG_FILTERS
     CORE_WDF --> ANALOG_EFFECTS
     
     style CORE fill:#90ee90

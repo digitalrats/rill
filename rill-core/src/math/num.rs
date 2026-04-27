@@ -32,6 +32,9 @@ pub trait AudioNum:
     
     /// Максимальное значение (для клиппинга)
     const MAX: Self;
+
+    /// Число π
+    const PI: Self;
     
     /// Преобразование в f32
     fn to_f32(self) -> f32;
@@ -42,6 +45,11 @@ pub trait AudioNum:
     /// Преобразование в f64
     fn to_f64(self) -> f64 {
         self.to_f32() as f64
+    }
+
+    /// Преобразование из f64
+    fn from_f64(value: f64) -> Self {
+        Self::from_f32(value as f32)
     }
     
     /// Абсолютное значение
@@ -84,12 +92,16 @@ impl AudioNum for f32 {
     const ONE: f32 = 1.0;
     const MIN: f32 = -1.0;
     const MAX: f32 = 1.0;
-    
+    const PI: f32 = std::f32::consts::PI;
+
     #[inline(always)]
     fn to_f32(self) -> f32 { self }
     
     #[inline(always)]
     fn from_f32(value: f32) -> f32 { value }
+
+    #[inline(always)]
+    fn from_f64(value: f64) -> f32 { value as f32 }
     
     #[inline(always)]
     fn abs(self) -> f32 { self.abs() }
@@ -131,12 +143,16 @@ impl AudioNum for f64 {
     const ONE: f64 = 1.0;
     const MIN: f64 = -1.0;
     const MAX: f64 = 1.0;
-    
+    const PI: f64 = std::f64::consts::PI;
+
     #[inline(always)]
     fn to_f32(self) -> f32 { self as f32 }
     
     #[inline(always)]
     fn from_f32(value: f32) -> f64 { value as f64 }
+
+    #[inline(always)]
+    fn from_f64(value: f64) -> f64 { value }
     
     #[inline(always)]
     fn abs(self) -> f64 { self.abs() }

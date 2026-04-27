@@ -8,7 +8,6 @@
 //! - Оконные функции для гранулярного синтеза
 //! - Интерполяцию и сглаживание
 
-use core::f32::consts::PI;
 use rill_core::AudioNum;
 
 // -----------------------------------------------------------------------------
@@ -141,7 +140,7 @@ pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
 /// Генерация синусоиды (фаза 0..1)
 #[inline(always)]
 pub fn sine_phase<T: AudioNum>(phase: T) -> T {
-    (phase.mul(T::from_f32(2.0 * PI))).sin()
+    (phase * T::from_f32(2.0) * T::PI).sin()
 }
 
 /// Генерация пилообразной волны (фаза 0..1)
@@ -178,28 +177,26 @@ pub fn square_phase<T: AudioNum>(phase: T, pulse_width: T) -> T {
 #[inline(always)]
 pub fn hann_window<T: AudioNum>(x: T) -> T {
     // 0.5 * (1 - cos(2πx))
-    let cos_term = x.mul(T::from_f32(2.0 * PI)).cos();
-    T::from_f32(0.5).mul(T::from_f32(1.0).sub(cos_term))
+    let cos_term = (x * T::from_f32(2.0) * T::PI).cos();
+    T::from_f32(0.5) * (T::from_f32(1.0) - cos_term)
 }
 
 /// Окно Хэмминга (Hamming)
 #[inline(always)]
 pub fn hamming_window<T: AudioNum>(x: T) -> T {
     // 0.54 - 0.46 * cos(2πx)
-    let cos_term = x.mul(T::from_f32(2.0 * PI)).cos();
-    T::from_f32(0.54).sub(T::from_f32(0.46).mul(cos_term))
+    let cos_term = (x * T::from_f32(2.0) * T::PI).cos();
+    T::from_f32(0.54) - T::from_f32(0.46) * cos_term
 }
 
 /// Окно Блэкмана (Blackman)
 #[inline(always)]
 pub fn blackman_window<T: AudioNum>(x: T) -> T {
     // 0.42 - 0.5 * cos(2πx) + 0.08 * cos(4πx)
-    let cos1 = x.mul(T::from_f32(2.0 * PI)).cos();
-    let cos2 = x.mul(T::from_f32(4.0 * PI)).cos();
+    let cos1 = (x * T::from_f32(2.0) * T::PI).cos();
+    let cos2 = (x * T::from_f32(4.0) * T::PI).cos();
 
-    T::from_f32(0.42)
-        .sub(T::from_f32(0.5).mul(cos1))
-        .add(T::from_f32(0.08).mul(cos2))
+    T::from_f32(0.42) - T::from_f32(0.5) * cos1 + T::from_f32(0.08) * cos2
 }
 
 /// Окно с переменной формой (0 = прямоугольное, 1 = Ханна)

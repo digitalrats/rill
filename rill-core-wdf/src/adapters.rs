@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use parking_lot::RwLock;
+use rill_core::AudioNum;
 use crate::WdfElement;
 
 /// Series adapter — connects WDF elements in series
@@ -7,12 +8,12 @@ use crate::WdfElement;
 /// Total port resistance is the sum of all element port resistances.
 /// Current is equal through all elements, voltage sums.
 #[derive(Clone)]
-pub struct SeriesAdapter {
-    elements: Vec<Arc<RwLock<dyn WdfElement>>>,
-    port_resistance: f64,
+pub struct SeriesAdapter<T: AudioNum> {
+    elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>,
+    port_resistance: T,
 }
 
-impl std::fmt::Debug for SeriesAdapter {
+impl<T: AudioNum> std::fmt::Debug for SeriesAdapter<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SeriesAdapter")
             .field("num_elements", &self.elements.len())
@@ -21,12 +22,12 @@ impl std::fmt::Debug for SeriesAdapter {
     }
 }
 
-impl SeriesAdapter {
+impl<T: AudioNum> SeriesAdapter<T> {
     /// Create a new series adapter from WDF elements
-    pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement>>>) -> Self {
-        let port_resistance: f64 = elements.iter()
+    pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>) -> Self {
+        let port_resistance: T = elements.iter()
             .map(|e| e.read().port_resistance())
-            .sum();
+            .fold(T::ZERO, |a, b| a + b);
 
         Self {
             elements,
@@ -35,19 +36,19 @@ impl SeriesAdapter {
     }
 
     /// Get a reference to the inner elements
-    pub fn elements(&self) -> &[Arc<RwLock<dyn WdfElement>>] {
+    pub fn elements(&self) -> &[Arc<RwLock<dyn WdfElement<T>>>] {
         &self.elements
     }
 }
 
-impl WdfElement for SeriesAdapter {
-    fn port_resistance(&self) -> f64 {
+impl<T: AudioNum> WdfElement<T> for SeriesAdapter<T> {
+    fn port_resistance(&self) -> T {
         self.port_resistance
     }
 
-    fn process_incident(&mut self, a: f64) -> f64 {
+    fn process_incident(&mut self, a: T) -> T {
         let total_r = self.port_resistance;
-        let mut b_total = 0.0;
+        let mut b_total = T::ZERO;
 
         for element in &self.elements {
             let r_i = element.read().port_resistance();
@@ -66,16 +67,16 @@ impl WdfElement for SeriesAdapter {
         }
     }
 
-    fn voltage(&self) -> f64 {
+    fn voltage(&self) -> T {
         self.elements.iter()
             .map(|e| e.read().voltage())
-            .sum()
+            .fold(T::ZERO, |a, b| a + b)
     }
 
-    fn current(&self) -> f64 {
+    fn current(&self) -> T {
         self.elements.first()
             .map(|e| e.read().current())
-            .unwrap_or(0.0)
+            .unwrap_or(T::ZERO)
     }
 
     fn reset(&mut self) {
@@ -90,12 +91,12 @@ impl WdfElement for SeriesAdapter {
 /// Total conductance is the sum of all element conductances.
 /// Voltage is equal across all elements, current sums.
 #[derive(Clone)]
-pub struct ParallelAdapter {
-    elements: Vec<Arc<RwLock<dyn WdfElement>>>,
-    port_resistance: f64,
+pub struct ParallelAdapter<T: AudioNum> {
+    elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>,
+    port_resistance: T,
 }
 
-impl std::fmt::Debug for ParallelAdapter {
+impl<T: AudioNum> std::fmt::Debug for ParallelAdapter<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParallelAdapter")
             .field("num_elements", &self.elements.len())
@@ -104,14 +105,14 @@ impl std::fmt::Debug for ParallelAdapter {
     }
 }
 
-impl ParallelAdapter {
+impl<T: AudioNum> ParallelAdapter<T> {
     /// Create a new parallel adapter from WDF elements
-    pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement>>>) -> Self {
-        let inv_port_resistance: f64 = elements.iter()
-            .map(|e| 1.0 / e.read().port_resistance())
-            .sum();
+    pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>) -> Self {
+        let inv_port_resistance: T = elements.iter()
+            .map(|e| T::ONE / e.read().port_resistance())
+            .fold(T::ZERO, |a, b| a + b);
 
-        let port_resistance = 1.0 / inv_port_resistance;
+        let port_resistance = T::ONE / inv_port_resistance;
 
         Self {
             elements,
@@ -120,29 +121,30 @@ impl ParallelAdapter {
     }
 
     /// Get a reference to the inner elements
-    pub fn elements(&self) -> &[Arc<RwLock<dyn WdfElement>>] {
+    pub fn elements(&self) -> &[Arc<RwLock<dyn WdfElement<T>>>] {
         &self.elements
     }
 }
 
-impl WdfElement for ParallelAdapter {
-    fn port_resistance(&self) -> f64 {
+impl<T: AudioNum> WdfElement<T> for ParallelAdapter<T> {
+    fn port_resistance(&self) -> T {
         self.port_resistance
     }
 
-    fn process_incident(&mut self, a: f64) -> f64 {
-        let total_g: f64 = self.elements.iter()
-            .map(|e| 1.0 / e.read().port_resistance())
-            .sum();
+    fn process_incident(&mut self, a: T) -> T {
+        let total_g: T = self.elements.iter()
+            .map(|e| T::ONE / e.read().port_resistance())
+            .fold(T::ZERO, |a, b| a + b);
 
-        let alpha: Vec<f64> = self.elements.iter()
+        let two = T::from_f32(2.0);
+        let alpha: Vec<T> = self.elements.iter()
             .map(|e| {
-                let g_i = 1.0 / e.read().port_resistance();
-                2.0 * g_i / total_g
+                let g_i = T::ONE / e.read().port_resistance();
+                two * g_i / total_g
             })
             .collect();
 
-        let mut sum_alpha_b = 0.0;
+        let mut sum_alpha_b = T::ZERO;
         for (i, element) in self.elements.iter().enumerate() {
             let b_i = element.write().process_incident(a);
             sum_alpha_b += alpha[i] * b_i;
@@ -157,16 +159,16 @@ impl WdfElement for ParallelAdapter {
         }
     }
 
-    fn voltage(&self) -> f64 {
+    fn voltage(&self) -> T {
         self.elements.first()
             .map(|e| e.read().voltage())
-            .unwrap_or(0.0)
+            .unwrap_or(T::ZERO)
     }
 
-    fn current(&self) -> f64 {
+    fn current(&self) -> T {
         self.elements.iter()
             .map(|e| e.read().current())
-            .sum()
+            .fold(T::ZERO, |a, b| a + b)
     }
 
     fn reset(&mut self) {
@@ -185,11 +187,11 @@ mod tests {
     fn test_series_adapter() {
         let sample_rate = 44100.0;
 
-        let resistor: Arc<RwLock<dyn WdfElement>> = Arc::new(RwLock::new(Resistor::new(1000.0)));
-        let capacitor: Arc<RwLock<dyn WdfElement>> = Arc::new(RwLock::new(Capacitor::new(1e-6, sample_rate)));
+        let resistor: Arc<RwLock<dyn WdfElement<f64>>> = Arc::new(RwLock::new(Resistor::new(1000.0)));
+        let capacitor: Arc<RwLock<dyn WdfElement<f64>>> = Arc::new(RwLock::new(Capacitor::new(1e-6, sample_rate)));
 
         let elements = vec![resistor.clone(), capacitor.clone()];
-        let adapter = SeriesAdapter::new(elements);
+        let adapter: SeriesAdapter<f64> = SeriesAdapter::new(elements);
 
         let total_r = adapter.port_resistance();
         let r1 = resistor.read().port_resistance();

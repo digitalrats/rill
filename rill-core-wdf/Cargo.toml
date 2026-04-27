@@ -7,8 +7,9 @@ license = "Apache-2.0"
 authors = ["Digital Rats / Rill Team"]
 
 [dependencies]
+rill-core = { path = "../rill-core", version = "0.3.0" }
 parking_lot = { workspace = true }
 
 [features]
 default = []
-simd = []
+simd = ["rill-core/simd"]

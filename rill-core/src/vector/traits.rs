@@ -2,7 +2,7 @@
 //!
 //! Определяет основные абстракции для работы с векторами в DSP.
 
-use rill_core::AudioNum;
+use crate::AudioNum;
 use std::ops::{Add, Sub, Mul, Div, Rem, Neg};
 
 /// Основной трейт для векторных типов
@@ -138,6 +138,13 @@ pub trait VectorMask<T: AudioNum, const N: usize> {
     
     /// Выбор элементов по маске
     fn select(&self, other: &Self, mask: Self::Mask) -> Self;
+
+    /// Проверка, что все элементы маски истинны.
+    ///
+    /// Возвращает `true` только если каждый элемент маски указывает на истинное
+    /// значение (например, все биты установлены для битовой маски, или все
+    /// знаковые биты установлены для NaN-маски).
+    fn all(mask: &Self::Mask) -> bool;
 }
 
 use std::fmt;

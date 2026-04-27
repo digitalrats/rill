@@ -70,6 +70,6 @@ pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
 /// Окно Ханна
 #[inline(always)]
 pub fn hann_window<T: AudioNum>(x: T) -> T {
-    let cos_term = (x * T::from_f32(2.0 * std::f32::consts::PI)).cos();
+    let cos_term = (x * T::from_f32(2.0) * T::PI).cos();
     T::from_f32(0.5) * (T::ONE - cos_term)
 }

@@ -2,7 +2,7 @@
 //!
 //! Реализация математических функций (sin, cos, exp, ln, sqrt и т.д.) для векторных типов.
 
-use rill_core::AudioNum;
+use crate::AudioNum;
 use super::traits::*;
 
 // -----------------------------------------------------------------------------
@@ -296,7 +296,7 @@ pub fn fast_cos_slice_f32(input: &[f32], output: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::AudioNum;
+    use crate::AudioNum;
     
     // Тесты будут добавлены после реализации скалярных векторов
 }
