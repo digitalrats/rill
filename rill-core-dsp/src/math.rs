@@ -1,14 +1,14 @@
 //! # Математические абстракции и утилиты для DSP
 //!
 //! Этот модуль объединяет:
-//! - Числовые типы (`AudioNum`) для абстракции f32/f64
+//! - Числовые типы (`Transcendental`) для абстракции f32/f64
 //! - Конвертацию между линейными шкалами и dB
 //! - Быстрые математические функции (tanh, sin, exp)
 //! - Генерацию сигналов (синус, пила, квадрат)
 //! - Оконные функции для гранулярного синтеза
 //! - Интерполяцию и сглаживание
 
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 // -----------------------------------------------------------------------------
 // Конвертация между шкалами
@@ -24,7 +24,7 @@ use rill_core::AudioNum;
 /// - -6 dB → 0.5
 /// - +6 dB → 2.0
 #[inline(always)]
-pub fn db_to_linear<T: AudioNum>(db: T) -> T {
+pub fn db_to_linear<T: Transcendental>(db: T) -> T {
     T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
 }
 
@@ -33,7 +33,7 @@ pub fn db_to_linear<T: AudioNum>(db: T) -> T {
 /// # Формула
 /// `dB = 20 * log10(linear)`
 #[inline(always)]
-pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
+pub fn linear_to_db<T: Transcendental>(linear: T) -> T {
     T::from_f32(20.0 * linear.to_f32().log10())
 }
 
@@ -42,14 +42,14 @@ pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
 /// # Формула
 /// `freq = 440 * 2^((note - 69)/12)`
 #[inline(always)]
-pub fn midi_to_freq<T: AudioNum>(note: u8) -> T {
+pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
     let exp = (note as f32 - 69.0) / 12.0;
     T::from_f32(440.0 * 2.0_f32.powf(exp))
 }
 
 /// Преобразовать частоту в MIDI ноту
 #[inline(always)]
-pub fn freq_to_midi<T: AudioNum>(freq: T) -> f32 {
+pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
     69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
 }
 
@@ -73,7 +73,7 @@ pub fn seconds_to_samples(seconds: f32, sample_rate: f32) -> usize {
 ///
 /// Точность ~ 1e-5, в 2-3 раза быстрее стандартной exp()
 #[inline(always)]
-pub fn fast_exp<T: AudioNum>(x: T) -> T {
+pub fn fast_exp<T: Transcendental>(x: T) -> T {
     let xf = x.to_f32();
 
     // exp(x) ≈ (1 + x/n)^n для большого n
@@ -91,7 +91,7 @@ pub fn fast_exp<T: AudioNum>(x: T) -> T {
 ///
 /// Точность ~ 1e-3, очень быстрая (без ветвлений)
 #[inline(always)]
-pub fn fast_tanh<T: AudioNum>(x: T) -> T {
+pub fn fast_tanh<T: Transcendental>(x: T) -> T {
     let xf = x.to_f32();
 
     // tanh(x) ≈ x * (27 + x^2) / (27 + 9*x^2)
@@ -107,7 +107,7 @@ pub fn fast_tanh<T: AudioNum>(x: T) -> T {
 ///
 /// Точность ~ 1e-3 для |x| < π, очень быстрая
 #[inline(always)]
-pub fn fast_sin<T: AudioNum>(x: T) -> T {
+pub fn fast_sin<T: Transcendental>(x: T) -> T {
     let xf = x.to_f32();
 
     // sin(x) ≈ x - x^3/6 + x^5/120
@@ -120,7 +120,7 @@ pub fn fast_sin<T: AudioNum>(x: T) -> T {
 
 /// Мягкое клиппирование (wave shaping)
 #[inline(always)]
-pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
+pub fn soft_clip<T: Transcendental>(x: T, threshold: T) -> T {
     let xf = x.to_f32();
     let t = threshold.to_f32();
 
@@ -139,20 +139,20 @@ pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
 
 /// Генерация синусоиды (фаза 0..1)
 #[inline(always)]
-pub fn sine_phase<T: AudioNum>(phase: T) -> T {
+pub fn sine_phase<T: Transcendental>(phase: T) -> T {
     (phase * T::from_f32(2.0) * T::PI).sin()
 }
 
 /// Генерация пилообразной волны (фаза 0..1)
 #[inline(always)]
-pub fn saw_phase<T: AudioNum>(phase: T) -> T {
+pub fn saw_phase<T: Transcendental>(phase: T) -> T {
     // 2 * phase - 1
     phase.mul(T::from_f32(2.0)).sub(T::from_f32(1.0))
 }
 
 /// Генерация треугольной волны (фаза 0..1)
 #[inline(always)]
-pub fn triangle_phase<T: AudioNum>(phase: T) -> T {
+pub fn triangle_phase<T: Transcendental>(phase: T) -> T {
     // 4 * |phase - 0.5| - 1
     let p = phase.sub(T::from_f32(0.5));
     let abs_p = p.abs();
@@ -161,7 +161,7 @@ pub fn triangle_phase<T: AudioNum>(phase: T) -> T {
 
 /// Генерация квадратной волны (фаза 0..1, pulse_width 0..1)
 #[inline(always)]
-pub fn square_phase<T: AudioNum>(phase: T, pulse_width: T) -> T {
+pub fn square_phase<T: Transcendental>(phase: T, pulse_width: T) -> T {
     if phase.to_f32() < pulse_width.to_f32() {
         T::from_f32(1.0)
     } else {
@@ -175,7 +175,7 @@ pub fn square_phase<T: AudioNum>(phase: T, pulse_width: T) -> T {
 
 /// Окно Ханна (Hann)
 #[inline(always)]
-pub fn hann_window<T: AudioNum>(x: T) -> T {
+pub fn hann_window<T: Transcendental>(x: T) -> T {
     // 0.5 * (1 - cos(2πx))
     let cos_term = (x * T::from_f32(2.0) * T::PI).cos();
     T::from_f32(0.5) * (T::from_f32(1.0) - cos_term)
@@ -183,7 +183,7 @@ pub fn hann_window<T: AudioNum>(x: T) -> T {
 
 /// Окно Хэмминга (Hamming)
 #[inline(always)]
-pub fn hamming_window<T: AudioNum>(x: T) -> T {
+pub fn hamming_window<T: Transcendental>(x: T) -> T {
     // 0.54 - 0.46 * cos(2πx)
     let cos_term = (x * T::from_f32(2.0) * T::PI).cos();
     T::from_f32(0.54) - T::from_f32(0.46) * cos_term
@@ -191,7 +191,7 @@ pub fn hamming_window<T: AudioNum>(x: T) -> T {
 
 /// Окно Блэкмана (Blackman)
 #[inline(always)]
-pub fn blackman_window<T: AudioNum>(x: T) -> T {
+pub fn blackman_window<T: Transcendental>(x: T) -> T {
     // 0.42 - 0.5 * cos(2πx) + 0.08 * cos(4πx)
     let cos1 = (x * T::from_f32(2.0) * T::PI).cos();
     let cos2 = (x * T::from_f32(4.0) * T::PI).cos();
@@ -201,7 +201,7 @@ pub fn blackman_window<T: AudioNum>(x: T) -> T {
 
 /// Окно с переменной формой (0 = прямоугольное, 1 = Ханна)
 #[inline(always)]
-pub fn variable_window<T: AudioNum>(x: T, shape: T) -> T {
+pub fn variable_window<T: Transcendental>(x: T, shape: T) -> T {
     let one = T::from_f32(1.0);
     let rect = one;
     let hann = hann_window(x);
@@ -216,13 +216,13 @@ pub fn variable_window<T: AudioNum>(x: T, shape: T) -> T {
 
 /// Линейная интерполяция
 #[inline(always)]
-pub fn lerp<T: AudioNum>(a: T, b: T, t: T) -> T {
+pub fn lerp<T: Transcendental>(a: T, b: T, t: T) -> T {
     a.add(b.sub(a).mul(t))
 }
 
 /// Кубическая интерполяция (Hermite)
 #[inline(always)]
-pub fn cubic_interpolate<T: AudioNum>(y0: T, y1: T, y2: T, y3: T, t: T) -> T {
+pub fn cubic_interpolate<T: Transcendental>(y0: T, y1: T, y2: T, y3: T, t: T) -> T {
     let t2 = t.mul(t);
     let t3 = t2.mul(t);
 
@@ -236,7 +236,7 @@ pub fn cubic_interpolate<T: AudioNum>(y0: T, y1: T, y2: T, y3: T, t: T) -> T {
 
 /// Интерполяция методом наименьших квадратов (для дробных задержек)
 #[inline(always)]
-pub fn lagrange_interpolate<T: AudioNum>(y: &[T; 4], x: T) -> T {
+pub fn lagrange_interpolate<T: Transcendental>(y: &[T; 4], x: T) -> T {
     let x0 = T::from_f32(0.0);
     let x1 = T::from_f32(1.0);
     let x2 = T::from_f32(2.0);
@@ -279,13 +279,13 @@ pub fn lagrange_interpolate<T: AudioNum>(y: &[T; 4], x: T) -> T {
 
 /// Экспоненциальное сглаживание (однополюсный фильтр)
 #[derive(Debug, Clone)]
-pub struct Smoother<T: AudioNum> {
+pub struct Smoother<T: Transcendental> {
     current: T,
     target: T,
     coeff: T,
 }
 
-impl<T: AudioNum> Smoother<T> {
+impl<T: Transcendental> Smoother<T> {
     /// Создать новый сглаживатель
     pub fn new(coeff: T) -> Self {
         Self {
@@ -633,7 +633,7 @@ mod tests {
 
     /// Генерация треугольной волны (фаза 0..1)
     #[inline(always)]
-    pub fn triangle_phase<T: AudioNum>(phase: T) -> T {
+    pub fn triangle_phase<T: Transcendental>(phase: T) -> T {
         // Исправленная формула:
         // Для фазы 0..0.5: 4 * phase - 1
         // Для фазы 0.5..1: 3 - 4 * phase

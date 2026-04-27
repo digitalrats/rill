@@ -1,4 +1,4 @@
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use crate::traits::NodeId;
 
 /// Fixed-size telemetry frame for RT-safe ring buffer communication.
@@ -7,7 +7,7 @@ use crate::traits::NodeId;
 /// Implements `Copy` + `Default`, compatible with `SpscQueue` (overwrite-oldest).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct TelemetryBlock<T: AudioNum, const BUF_SIZE: usize> {
+pub struct TelemetryBlock<T: Transcendental, const BUF_SIZE: usize> {
     /// Source node identifier
     pub node_id: NodeId,
     /// Audio channel index
@@ -28,7 +28,7 @@ pub struct TelemetryBlock<T: AudioNum, const BUF_SIZE: usize> {
     pub data: [T; BUF_SIZE],
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Default for TelemetryBlock<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Default for TelemetryBlock<T, BUF_SIZE> {
     fn default() -> Self {
         Self {
             node_id: NodeId(0),
@@ -44,7 +44,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Default for TelemetryBlock<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> TelemetryBlock<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> TelemetryBlock<T, BUF_SIZE> {
     /// Compute metrics (peak, RMS, DC offset) from the block data.
     #[inline]
     pub fn compute_metrics(&mut self) {

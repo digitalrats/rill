@@ -1,6 +1,6 @@
 //! Контекст выполнения DSP-алгоритмов
 
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Контекст DSP-обработки
 ///
@@ -10,7 +10,7 @@ use rill_core::AudioNum;
 /// - размер блока
 /// - и т.д.
 #[derive(Debug, Clone)]
-pub struct DspContext<T: AudioNum> {
+pub struct DspContext<T: Transcendental> {
     /// Текущая частота дискретизации
     pub sample_rate: f32,
 
@@ -24,7 +24,7 @@ pub struct DspContext<T: AudioNum> {
     pub _phantom: std::marker::PhantomData<T>,
 }
 
-impl<'a, T: AudioNum> DspContext<T> {
+impl<'a, T: Transcendental> DspContext<T> {
     /// Создать новый контекст
     pub fn new(sample_rate: f32, block_size: usize, block_position: usize) -> Self {
         Self {

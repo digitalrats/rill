@@ -4,7 +4,7 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator, SyncableGenerator};
 use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use std::f32::consts::PI;
 
 /// Тип волны
@@ -54,7 +54,7 @@ impl Waveform {
 /// - Анти-алиасинга для пилообразной волны
 /// - Синхронизации фазы
 #[derive(Clone, Copy)]
-pub struct BasicOscillator<T: AudioNum> {
+pub struct BasicOscillator<T: Transcendental> {
     /// Тип волны
     waveform: Waveform,
     /// Частота (Hz)
@@ -73,7 +73,7 @@ pub struct BasicOscillator<T: AudioNum> {
     fm_amount: ScalarVector1<T>,
 }
 
-impl<T: AudioNum> BasicOscillator<T> {
+impl<T: Transcendental> BasicOscillator<T> {
     /// Создать новый осциллятор
     ///
     /// # Arguments
@@ -222,7 +222,7 @@ impl<T: AudioNum> BasicOscillator<T> {
 
 // ==================== Реализация трейта Algorithm ====================
 
-impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
+impl<T: Transcendental> Algorithm<T> for BasicOscillator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_phase_inc();
@@ -262,7 +262,7 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
 
 // ==================== Реализация трейта Generator ====================
 
-impl<T: AudioNum> Generator<T> for BasicOscillator<T> {
+impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
     fn phase(&self) -> T {
         self.phase.extract(0)
     }
@@ -307,7 +307,7 @@ impl<T: AudioNum> Generator<T> for BasicOscillator<T> {
 
 // ==================== Реализация трейта SyncableGenerator ====================
 
-impl<T: AudioNum> SyncableGenerator<T> for BasicOscillator<T> {
+impl<T: Transcendental> SyncableGenerator<T> for BasicOscillator<T> {
     fn sync(&mut self, reset: bool) {
         if reset {
             self.phase = ScalarVector1::splat(T::ZERO);
@@ -321,7 +321,7 @@ impl<T: AudioNum> SyncableGenerator<T> for BasicOscillator<T> {
 
 // ==================== Реализация трейта ModulatableGenerator ====================
 
-impl<T: AudioNum> ModulatableGenerator<T> for BasicOscillator<T> {
+impl<T: Transcendental> ModulatableGenerator<T> for BasicOscillator<T> {
     fn modulate_frequency(&mut self, amount: T) {
         self.fm_amount = ScalarVector1::splat(amount);
     }

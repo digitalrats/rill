@@ -3,7 +3,7 @@
 use crate::delay::Delay;
 use rill_core::{
     buffer::DelayLine,
-    math::AudioNum,
+    math::Transcendental,
     traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
@@ -18,7 +18,7 @@ const MAX_LOOKAHEAD_SAMPLES: usize = (MAX_LOOKAHEAD_TIME * MAX_SAMPLE_RATE) as u
 const ANALYSIS_BUF_SIZE: usize = MAX_LOOKAHEAD_SAMPLES * 2;
 
 /// Limiter with lookahead using Delay + envelope detection
-pub struct Limiter<T: AudioNum, const BUF_SIZE: usize> {
+pub struct Limiter<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -67,7 +67,7 @@ pub struct Limiter<T: AudioNum, const BUF_SIZE: usize> {
     warming_up: bool,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
     /// Create a new limiter
     pub fn new(
         sample_rate: f32,
@@ -299,7 +299,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -430,7 +430,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Limiter<T, B
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
     fn process(
         &mut self,
         _clock: &ClockTick,

@@ -80,8 +80,8 @@ pub mod prelude {
         DEFAULT_BLOCK_SIZE,
     };
 
-    // Re-export AudioNum from math module for convenience
-    pub use crate::math::AudioNum;
+    // Re-export Transcendental from math module for convenience
+    pub use crate::math::Transcendental;
 }
 
 // ============================================================================

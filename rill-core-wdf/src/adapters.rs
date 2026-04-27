@@ -1,6 +1,6 @@
 use crate::WdfElement;
 use parking_lot::RwLock;
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use std::sync::Arc;
 
 /// Series adapter — connects WDF elements in series
@@ -8,12 +8,12 @@ use std::sync::Arc;
 /// Total port resistance is the sum of all element port resistances.
 /// Current is equal through all elements, voltage sums.
 #[derive(Clone)]
-pub struct SeriesAdapter<T: AudioNum> {
+pub struct SeriesAdapter<T: Transcendental> {
     elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>,
     port_resistance: T,
 }
 
-impl<T: AudioNum> std::fmt::Debug for SeriesAdapter<T> {
+impl<T: Transcendental> std::fmt::Debug for SeriesAdapter<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SeriesAdapter")
             .field("num_elements", &self.elements.len())
@@ -22,7 +22,7 @@ impl<T: AudioNum> std::fmt::Debug for SeriesAdapter<T> {
     }
 }
 
-impl<T: AudioNum> SeriesAdapter<T> {
+impl<T: Transcendental> SeriesAdapter<T> {
     /// Create a new series adapter from WDF elements
     pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>) -> Self {
         let port_resistance: T = elements
@@ -42,7 +42,7 @@ impl<T: AudioNum> SeriesAdapter<T> {
     }
 }
 
-impl<T: AudioNum> WdfElement<T> for SeriesAdapter<T> {
+impl<T: Transcendental> WdfElement<T> for SeriesAdapter<T> {
     fn port_resistance(&self) -> T {
         self.port_resistance
     }
@@ -94,12 +94,12 @@ impl<T: AudioNum> WdfElement<T> for SeriesAdapter<T> {
 /// Total conductance is the sum of all element conductances.
 /// Voltage is equal across all elements, current sums.
 #[derive(Clone)]
-pub struct ParallelAdapter<T: AudioNum> {
+pub struct ParallelAdapter<T: Transcendental> {
     elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>,
     port_resistance: T,
 }
 
-impl<T: AudioNum> std::fmt::Debug for ParallelAdapter<T> {
+impl<T: Transcendental> std::fmt::Debug for ParallelAdapter<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParallelAdapter")
             .field("num_elements", &self.elements.len())
@@ -108,7 +108,7 @@ impl<T: AudioNum> std::fmt::Debug for ParallelAdapter<T> {
     }
 }
 
-impl<T: AudioNum> ParallelAdapter<T> {
+impl<T: Transcendental> ParallelAdapter<T> {
     /// Create a new parallel adapter from WDF elements
     pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>) -> Self {
         let inv_port_resistance: T = elements
@@ -130,7 +130,7 @@ impl<T: AudioNum> ParallelAdapter<T> {
     }
 }
 
-impl<T: AudioNum> WdfElement<T> for ParallelAdapter<T> {
+impl<T: Transcendental> WdfElement<T> for ParallelAdapter<T> {
     fn port_resistance(&self) -> T {
         self.port_resistance
     }

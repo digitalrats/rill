@@ -3,12 +3,12 @@
 //! # Пример
 //! ```
 //! use rill_core_dsp::simple_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! simple_algorithm! {
 //!     /// Простой усилитель
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct Gain<T: AudioNum> {
+//!     pub struct Gain<T: Transcendental> {
 //!         params: {
 //!             /// Коэффициент усиления
 //!             gain: T = T::from_f32(1.0),
@@ -31,12 +31,12 @@
 /// # Пример
 /// ```
 /// use rill_core_dsp::simple_algorithm;
-/// use rill_core::math::AudioNum;
+/// use rill_core::math::Transcendental;
 ///
 /// simple_algorithm! {
 ///     /// Простой усилитель
 ///     #[derive(Debug, Clone, Copy)]
-///     pub struct Gain<T: AudioNum> {
+///     pub struct Gain<T: Transcendental> {
 ///         params: {
 ///             /// Коэффициент усиления
 ///             gain: T = T::from_f32(1.0),
@@ -98,7 +98,7 @@ macro_rules! simple_algorithm {
 
         impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
         where
-            T: rill_core::math::AudioNum,
+            T: rill_core::math::Transcendental,
         {
             fn init(&mut self, _sample_rate: f32) {}
 

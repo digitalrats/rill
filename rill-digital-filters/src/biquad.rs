@@ -5,14 +5,14 @@
 
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{
-    AudioNode, AudioNum, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    AudioNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
 use rill_core_dsp::algorithm::ParameterizedAlgorithm;
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 /// Biquad processor with configurable filter type and parameters.
-pub struct BiquadProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct BiquadProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -37,7 +37,7 @@ pub struct BiquadProcessor<T: AudioNum, const BUF_SIZE: usize> {
     pub algorithm: Biquad<T>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
     /// Creates a new Biquad processor with default parameters.
     pub fn new(sample_rate: f32) -> Self {
         let metadata = NodeMetadata::new("BiquadProcessor", NodeCategory::Processor);
@@ -166,7 +166,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -276,7 +276,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for BiquadProces
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
@@ -325,7 +325,7 @@ pub trait BiquadExt<T> {
     fn set_filter_type(&mut self, filter_type: FilterType);
 }
 
-impl<T: rill_core::AudioNum> BiquadExt<T> for Biquad<T>
+impl<T: rill_core::Transcendental> BiquadExt<T> for Biquad<T>
 where
     Biquad<T>: ParameterizedAlgorithm<T, Params = FilterParams>,
 {

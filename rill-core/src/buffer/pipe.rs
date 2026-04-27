@@ -2,7 +2,7 @@
 
 use super::array_from_fn;
 use crate::buffer::{AtomicCell, AtomicStats, AudioBuffer, BufferStats, CACHE_LINE_SIZE};
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::fmt;
@@ -17,10 +17,10 @@ use std::fmt;
 /// It is ideal for point-to-point connections between audio nodes.
 ///
 /// # Type Parameters
-/// - `T`: Audio sample type (f32 or f64) implementing `AudioNum`
+/// - `T`: Audio sample type (f32 or f64) implementing `Transcendental`
 /// - `N`: Buffer size (number of samples per block)
 #[repr(align(64))]
-pub struct PipeBuffer<T: AudioNum, const N: usize> {
+pub struct PipeBuffer<T: Transcendental, const N: usize> {
     /// Storage for the buffer using AtomicCell for each sample
     /// This provides safe concurrent access without unsafe code
     storage: [AtomicCell<T>; N],
@@ -45,7 +45,7 @@ pub struct PipeBuffer<T: AudioNum, const N: usize> {
     _phantom: PhantomData<[T; N]>,
 }
 
-impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
+impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
     /// Create a new pipe buffer
     ///
     /// The buffer starts empty with no data available.
@@ -186,7 +186,7 @@ impl<T: AudioNum, const N: usize> PipeBuffer<T, N> {
 // AudioBuffer Implementation
 // ============================================================================
 
-impl<T: AudioNum, const N: usize> AudioBuffer<T> for PipeBuffer<T, N> {
+impl<T: Transcendental, const N: usize> AudioBuffer<T> for PipeBuffer<T, N> {
     fn capacity(&self) -> usize {
         N
     }
@@ -227,7 +227,7 @@ impl<T: AudioNum, const N: usize> AudioBuffer<T> for PipeBuffer<T, N> {
 // Default Implementation
 // ============================================================================
 
-impl<T: AudioNum, const N: usize> Default for PipeBuffer<T, N> {
+impl<T: Transcendental, const N: usize> Default for PipeBuffer<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -237,7 +237,7 @@ impl<T: AudioNum, const N: usize> Default for PipeBuffer<T, N> {
 // Debug Implementation
 // ============================================================================
 
-impl<T: AudioNum + fmt::Debug, const N: usize> fmt::Debug for PipeBuffer<T, N> {
+impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for PipeBuffer<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PipeBuffer")
             .field("capacity", &N)
@@ -255,7 +255,7 @@ impl<T: AudioNum + fmt::Debug, const N: usize> fmt::Debug for PipeBuffer<T, N> {
 // Clone Implementation
 // ============================================================================
 
-impl<T: AudioNum + Copy, const N: usize> Clone for PipeBuffer<T, N> {
+impl<T: Transcendental + Copy, const N: usize> Clone for PipeBuffer<T, N> {
     fn clone(&self) -> Self {
         let new = Self::new();
 

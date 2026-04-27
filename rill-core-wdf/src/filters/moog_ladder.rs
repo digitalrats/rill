@@ -1,19 +1,19 @@
 use rill_core::traits::{
     ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult,
 };
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// WDF first-order lowpass section (bilinear-transform real pole).
 ///
 /// Models a series RC lowpass in the wave digital domain. The coefficient
 /// α = π·fc/fs / (1 + π·fc/fs) sets the cutoff frequency.
 #[derive(Debug, Clone)]
-struct WdfLpSection<T: AudioNum> {
+struct WdfLpSection<T: Transcendental> {
     alpha: T,
     state: T,
 }
 
-impl<T: AudioNum> WdfLpSection<T> {
+impl<T: Transcendental> WdfLpSection<T> {
     fn new(alpha: T) -> Self {
         Self {
             alpha,
@@ -44,7 +44,7 @@ impl<T: AudioNum> WdfLpSection<T> {
 /// Four first-order WDF lowpass sections in cascade with resonance feedback.
 /// Uses wave digital filter math for authentic analog behaviour.
 #[derive(Debug, Clone)]
-pub struct MoogLadder<T: AudioNum> {
+pub struct MoogLadder<T: Transcendental> {
     poles: [WdfLpSection<T>; 4],
     cutoff: T,
     resonance: T,
@@ -52,7 +52,7 @@ pub struct MoogLadder<T: AudioNum> {
     feedback_prev: T,
 }
 
-impl<T: AudioNum> MoogLadder<T> {
+impl<T: Transcendental> MoogLadder<T> {
     /// Create a new WDF Moog ladder filter.
     pub fn new(sample_rate: T) -> Self {
         let two = T::from_f32(2.0);
@@ -137,7 +137,7 @@ impl<T: AudioNum> MoogLadder<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for MoogLadder<T> {
+impl<T: Transcendental> Algorithm<T> for MoogLadder<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = T::from_f32(sample_rate);
         self.update_coeffs();

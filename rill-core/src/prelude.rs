@@ -14,7 +14,7 @@
 //! - Error types (`ProcessResult`, `ProcessError`, etc.)
 //! - Buffer types (`PipeBuffer`, `FanOutBuffer`, `DelayLine`, `RingBuffer`)
 //! - Atomic types (`AtomicCell`, `AtomicStats`)
-//! - Math abstractions (`AudioNum`)
+//! - Math abstractions (`Scalar`, `Transcendental`)
 //! - Constants (`DEFAULT_BLOCK_SIZE`, `MAX_SAMPLE_RATE`, etc.)
 //!
 //! ## Example
@@ -26,7 +26,7 @@
 //! ```rust
 //! use rill_core::prelude::*;
 //!
-//! fn process_block<T: AudioNum, const BUF_SIZE: usize>(
+//! fn process_block<T: Transcendental, const BUF_SIZE: usize>(
 //!     source: &mut dyn Source<T, BUF_SIZE>,
 //!     processor: &mut dyn Processor<T, BUF_SIZE>,
 //!     sink: &mut dyn Sink<T, BUF_SIZE>,
@@ -101,23 +101,25 @@ pub use crate::time::{ClockSource, ClockTick, SystemClock, TimeError, TimeResult
 // Math Abstractions
 // ============================================================================
 
-pub use crate::math::AudioNum;
+pub use crate::math::Transcendental;
 
 // ============================================================================
 // Vector Types (SIMD abstractions)
 // ============================================================================
 
-pub use crate::vector::math::{
-    abs_slice, clamp_slice, cos_slice, exp_slice, ln_slice, max_slice, min_slice, sin_slice,
-    sqrt_slice, tan_slice,
+pub use crate::math::vector::math::{
+    abs_slice, clamp_slice, cos_slice, exp_slice, ln_slice,
+    max_slice, min_slice, sin_slice, sqrt_slice, tan_slice,
 };
-pub use crate::vector::ops::{
+pub use crate::math::vector::ops::{
     add_scalar_slice, add_slices, div_slices, mul_scalar_slice, mul_slices, sub_slices,
 };
-pub use crate::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
+pub use crate::math::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
 #[cfg(feature = "simd")]
-pub use crate::vector::simd::*;
-pub use crate::vector::traits::{Vector, VectorMask, VectorReduce, VectorScalarOps};
+pub use crate::math::vector::simd::*;
+pub use crate::math::vector::traits::{
+    Vector, VectorMask, VectorReduce, VectorScalarOps, VectorTranscendental,
+};
 
 // ============================================================================
 // Buffer Types
@@ -243,7 +245,7 @@ pub mod f32_prelude {
     // Re-export traits
     pub use crate::traits::{Processor as ProcessorF32, Sink as SinkF32, Source as SourceF32};
 
-    pub use crate::math::AudioNum;
+    pub use crate::math::Transcendental;
 }
 
 /// Prelude for working with f64 samples (high precision)
@@ -273,7 +275,7 @@ pub mod f64_prelude {
     // Re-export traits
     pub use crate::traits::{Processor as ProcessorF64, Sink as SinkF64, Source as SourceF64};
 
-    pub use crate::math::AudioNum;
+    pub use crate::math::Transcendental;
 }
 
 /// Prelude for working with time

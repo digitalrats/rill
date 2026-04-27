@@ -1,7 +1,7 @@
-//! # Audio Buffers with AudioNum Support
+//! # Audio Buffers with Transcendental Support
 //!
 //! This module provides lock-free, real-time safe buffers for audio processing
-//! with full `AudioNum` support for both `f32` and `f64` sample types.
+//! with full `Transcendental` support for both `f32` and `f64` sample types.
 //!
 //! ## Buffer Types
 //!
@@ -20,7 +20,7 @@
 //! - **Cache-line aligned** - Prevents false sharing between threads
 //! - **Real-time safe** - No allocations, no blocking, no system calls
 //! - **Statistically monitored** - Track performance metrics
-//! - **Type-safe** - Generic over `AudioNum` (f32/f64)
+//! - **Type-safe** - Generic over `Transcendental` (f32/f64)
 //! - **Const generics** - Sizes checked at compile time
 
 use core::marker::PhantomData;
@@ -28,7 +28,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::fmt;
 
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 
 // ============================================================================
 // Submodules
@@ -277,8 +277,8 @@ impl BufferStats {
 /// It provides methods for querying capacity, current length, and statistics.
 ///
 /// # Type Parameters
-/// - `T`: The sample type (must implement `AudioNum`)
-pub trait AudioBuffer<T: AudioNum> {
+/// - `T`: The sample type (must implement `Transcendental`)
+pub trait AudioBuffer<T: Transcendental> {
     /// Get the total capacity of the buffer in samples
     ///
     /// For block-based buffers, this is the number of samples per block.
@@ -327,7 +327,7 @@ pub trait AudioBuffer<T: AudioNum> {
 /// It is not `Copy` or `Clone` by design - use references or pointers.
 ///
 /// # Type Parameters
-/// - `T`: The sample type (must implement `AudioNum`)
+/// - `T`: The sample type (must implement `Transcendental`)
 /// - `N`: The number of elements
 ///
 /// # Safety
@@ -346,7 +346,7 @@ pub trait AudioBuffer<T: AudioNum> {
 #[allow(dead_code)]
 pub struct ReadGuard<'a, T, B>
 where
-    T: AudioNum,
+    T: Transcendental,
     B: AudioBuffer<T>,
 {
     buffer: &'a B,
@@ -356,7 +356,7 @@ where
 
 impl<'a, T, B> Deref for ReadGuard<'a, T, B>
 where
-    T: AudioNum,
+    T: Transcendental,
     B: AudioBuffer<T>,
 {
     type Target = [T];
@@ -373,7 +373,7 @@ where
 #[allow(dead_code)]
 pub struct WriteGuard<'a, T, B>
 where
-    T: AudioNum,
+    T: Transcendental,
     B: AudioBuffer<T>,
 {
     buffer: &'a mut B,
@@ -383,7 +383,7 @@ where
 
 impl<'a, T, B> Deref for WriteGuard<'a, T, B>
 where
-    T: AudioNum,
+    T: Transcendental,
     B: AudioBuffer<T>,
 {
     type Target = [T];
@@ -395,7 +395,7 @@ where
 
 impl<'a, T, B> DerefMut for WriteGuard<'a, T, B>
 where
-    T: AudioNum,
+    T: Transcendental,
     B: AudioBuffer<T>,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -446,7 +446,7 @@ pub mod utils {
     #[inline(always)]
     pub fn mix_with_gain<T>(src: &[T], dst: &mut [T], gain: T)
     where
-        T: AudioNum + core::ops::Mul<Output = T> + core::ops::Add<Output = T>,
+        T: Transcendental + core::ops::Mul<Output = T> + core::ops::Add<Output = T>,
     {
         let len = src.len().min(dst.len());
         for i in 0..len {
@@ -462,7 +462,7 @@ pub mod utils {
     #[inline(always)]
     pub fn apply_gain<T>(slice: &mut [T], gain: T)
     where
-        T: AudioNum + core::ops::Mul<Output = T>,
+        T: Transcendental + core::ops::Mul<Output = T>,
     {
         for item in slice.iter_mut() {
             *item = *item * gain;
@@ -479,7 +479,7 @@ pub mod utils {
     #[inline(always)]
     pub fn calculate_rms<T>(slice: &[T]) -> f64
     where
-        T: AudioNum + core::ops::Mul<Output = T> + core::iter::Sum,
+        T: Transcendental + core::ops::Mul<Output = T> + core::iter::Sum,
     {
         let sum_squares: T = slice.iter().map(|&x| x * x).sum();
         let sum_f64: f64 = sum_squares.to_f64();
@@ -496,7 +496,7 @@ pub mod utils {
     #[inline(always)]
     pub fn calculate_peak<T>(slice: &[T]) -> f64
     where
-        T: AudioNum + PartialOrd,
+        T: Transcendental + PartialOrd,
     {
         slice.iter().map(|&x| x.to_f64().abs()).fold(0.0, f64::max)
     }

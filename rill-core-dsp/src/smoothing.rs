@@ -2,7 +2,7 @@
 //!
 //! This is useful for smoothing parameter changes to avoid zipper noise.
 
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
 use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
 
@@ -28,7 +28,7 @@ use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMe
 /// // output approaches 1.0 via exponential smoothing
 /// ```
 #[derive(Debug, Clone)]
-pub struct ParamSmoother<T: AudioNum> {
+pub struct ParamSmoother<T: Transcendental> {
     /// Current (smoothed) value
     current: T,
     /// Target value
@@ -37,7 +37,7 @@ pub struct ParamSmoother<T: AudioNum> {
     coeff: T,
 }
 
-impl<T: AudioNum> ParamSmoother<T> {
+impl<T: Transcendental> ParamSmoother<T> {
     /// Create a new smoother with the given coefficient.
     ///
     /// `coeff` should be in (0, 1]. Lower values = slower smoothing.
@@ -79,7 +79,7 @@ impl<T: AudioNum> ParamSmoother<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for ParamSmoother<T> {
+impl<T: Transcendental> Algorithm<T> for ParamSmoother<T> {
     fn process(
         &mut self,
         _input: Option<&[T]>,

@@ -1,12 +1,12 @@
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{
-    AudioNode, AudioNum, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    AudioNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
 use rill_core_dsp::filters::MoogLadder;
 
 /// Processor wrapper for Moog ladder filter
-pub struct MoogLadderProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct MoogLadderProcessor<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
@@ -21,7 +21,7 @@ pub struct MoogLadderProcessor<T: AudioNum, const BUF_SIZE: usize> {
     pub algorithm: MoogLadder<T>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> {
     /// Create a new Moog ladder processor
     pub fn new(sample_rate: f32) -> Self {
         let metadata = NodeMetadata::new("MoogLadderProcessor", NodeCategory::Processor);
@@ -54,7 +54,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     for MoogLadderProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -161,7 +161,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for MoogLadderProcessor<T, BUF_SIZE>
 {
     fn process(

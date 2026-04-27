@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use parking_lot::Mutex;
 
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use super::aligned::AlignedBuffer;
 
 /// Пул выровненных буферов
@@ -23,7 +23,7 @@ use super::aligned::AlignedBuffer;
 /// // Использовать...
 /// // Буфер автоматически возвращается в пул при drop
 /// ```
-pub struct BufferPool<T: AudioNum, const N: usize> {
+pub struct BufferPool<T: Transcendental, const N: usize> {
     /// Доступные буферы
     available: Mutex<Vec<AlignedBuffer<T, N>>>,
     /// Максимальный размер пула
@@ -48,14 +48,14 @@ pub struct PoolStats {
 }
 
 /// Умный указатель на буфер из пула
-pub struct PooledBuffer<T: AudioNum, const N: usize> {
+pub struct PooledBuffer<T: Transcendental, const N: usize> {
     /// Буфер
     buffer: Option<AlignedBuffer<T, N>>,
     /// Ссылка на пул
     pool: Arc<BufferPool<T, N>>,
 }
 
-impl<T: AudioNum, const N: usize> BufferPool<T, N> {
+impl<T: Transcendental, const N: usize> BufferPool<T, N> {
     /// Создать новый пул с указанным максимальным размером
     pub fn new(max_size: usize) -> Self {
         Self {
@@ -135,7 +135,7 @@ impl<T: AudioNum, const N: usize> BufferPool<T, N> {
     }
 }
 
-impl<T: AudioNum, const N: usize> PooledBuffer<T, N> {
+impl<T: Transcendental, const N: usize> PooledBuffer<T, N> {
     /// Получить ссылку на буфер
     pub fn as_buffer(&self) -> &AlignedBuffer<T, N> {
         self.buffer.as_ref().unwrap()
@@ -147,7 +147,7 @@ impl<T: AudioNum, const N: usize> PooledBuffer<T, N> {
     }
 }
 
-impl<T: AudioNum, const N: usize> std::ops::Deref for PooledBuffer<T, N> {
+impl<T: Transcendental, const N: usize> std::ops::Deref for PooledBuffer<T, N> {
     type Target = AlignedBuffer<T, N>;
     
     fn deref(&self) -> &Self::Target {
@@ -155,13 +155,13 @@ impl<T: AudioNum, const N: usize> std::ops::Deref for PooledBuffer<T, N> {
     }
 }
 
-impl<T: AudioNum, const N: usize> std::ops::DerefMut for PooledBuffer<T, N> {
+impl<T: Transcendental, const N: usize> std::ops::DerefMut for PooledBuffer<T, N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_buffer_mut()
     }
 }
 
-impl<T: AudioNum, const N: usize> Drop for PooledBuffer<T, N> {
+impl<T: Transcendental, const N: usize> Drop for PooledBuffer<T, N> {
     fn drop(&mut self) {
         if let Some(buffer) = self.buffer.take() {
             self.pool.release(buffer);

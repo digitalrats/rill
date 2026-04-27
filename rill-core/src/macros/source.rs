@@ -115,7 +115,7 @@ macro_rules! source_node {
                 match name {
                     $(
                         stringify!($param_name) => Some($crate::ParamValue::Float(
-                            <_ as $crate::math::AudioNum>::to_f32(self.$param_name)
+                            <_ as $crate::math::Transcendental>::to_f32(self.$param_name)
                         )),
                     )*
                     _ => None,
@@ -128,7 +128,7 @@ macro_rules! source_node {
                     match name {
                         $(
                             stringify!($param_name) => {
-                                self.$param_name = $crate::math::AudioNum::from_f32(v);
+                                self.$param_name = $crate::math::Transcendental::from_f32(v);
                                 Ok(())
                             },
                         )*
@@ -178,7 +178,7 @@ macro_rules! source_node {
             }
         }
 
-        impl<$T: $crate::math::AudioNum, const $BUF: usize>
+        impl<$T: $crate::math::Transcendental, const $BUF: usize>
             $crate::Source<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {

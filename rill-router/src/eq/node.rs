@@ -1,7 +1,7 @@
 //! Processor nodes for integration with rill-core audio graphs.
 
 use rill_core::{
-    AudioNode, AudioNum, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    AudioNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
 use rill_core_dsp::filters::{Biquad, Filter, FilterParams, FilterType};
@@ -31,7 +31,7 @@ impl FilterFactory<Biquad<f32>> for BiquadFactory {
 }
 
 /// Parametric equalizer processor node for audio graphs.
-pub struct ParametricEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct ParametricEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -52,7 +52,7 @@ pub struct ParametricEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
     num_bands: usize,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE> {
     /// Creates a new parametric equalizer processor with default parameters.
     pub fn new(sample_rate: f32, num_bands: usize) -> Self {
         let metadata = NodeMetadata::new("ParametricEqProcessor", NodeCategory::Processor);
@@ -135,7 +135,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -342,7 +342,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
 {
     fn process(
@@ -377,7 +377,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
 }
 
 /// Graphic equalizer processor node for audio graphs.
-pub struct GraphicEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct GraphicEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -398,7 +398,7 @@ pub struct GraphicEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
     num_bands: usize,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
     /// Creates a new graphic equalizer processor with ISO 1/3 octave bands.
     pub fn new_third_octave(sample_rate: f32) -> Self {
         let metadata = NodeMetadata::new("GraphicEqProcessor", NodeCategory::Processor);
@@ -495,7 +495,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -659,7 +659,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>
 {
     fn process(

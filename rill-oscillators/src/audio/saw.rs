@@ -1,11 +1,11 @@
-//! Sawtooth wave oscillator using rill-core-dsp with AudioNum
+//! Sawtooth wave oscillator using rill-core-dsp with Transcendental
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
     ParameterId, Port, Processor,
 };
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
 use rill_core_dsp::generators::{BasicOscillator, Generator, Waveform};
 use std::marker::PhantomData;
@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 ///
 /// Uses the optimized BasicOscillator from rill-core-dsp with built-in
 /// BLEP anti-aliasing.
-pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
+pub struct SawOsc<T: Transcendental, const BUF_SIZE: usize> {
     /// Core DSP oscillator
     osc: BasicOscillator<T>,
 
@@ -40,7 +40,7 @@ pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
     /// Create new sawtooth oscillator
     pub fn new() -> Self {
         let osc = BasicOscillator::new(Waveform::Saw, 440.0, T::from_f32(1.0));
@@ -100,13 +100,13 @@ impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SawOsc".to_string(),
@@ -219,7 +219,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BU
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
     fn process(
         &mut self,
         clock: &ClockTick,

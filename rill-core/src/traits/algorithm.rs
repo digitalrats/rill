@@ -4,7 +4,7 @@
 //! Every port's `run_action()` delegates to its `Algorithm::process()`.
 //! Low-level DSP primitives (filters, generators) also implement `Algorithm`.
 
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::ProcessResult;
 
@@ -105,7 +105,7 @@ impl AlgorithmMetadata {
 /// - `apply_command()` — receive a real-time parameter value from the control
 ///   path (called between samples by the graph driver).
 /// - `metadata()` — return descriptive info (defaults to empty).
-pub trait Algorithm<T: AudioNum>: Send + Sync {
+pub trait Algorithm<T: Transcendental>: Send + Sync {
     /// Process one block of audio.
     ///
     /// # Arguments

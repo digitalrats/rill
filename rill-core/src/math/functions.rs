@@ -1,35 +1,35 @@
 //! Общие математические функции для аудиообработки
 
-use super::num::AudioNum;
+use super::num::Transcendental;
 
 /// Линейная интерполяция
 #[inline(always)]
-pub fn lerp<T: AudioNum>(a: T, b: T, t: T) -> T {
+pub fn lerp<T: Transcendental>(a: T, b: T, t: T) -> T {
     a + (b - a) * t
 }
 
 /// Преобразовать децибелы в линейный коэффициент
 #[inline(always)]
-pub fn db_to_linear<T: AudioNum>(db: T) -> T {
+pub fn db_to_linear<T: Transcendental>(db: T) -> T {
     T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
 }
 
 /// Преобразовать линейный коэффициент в децибелы
 #[inline(always)]
-pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
+pub fn linear_to_db<T: Transcendental>(linear: T) -> T {
     T::from_f32(20.0 * linear.to_f32().log10())
 }
 
 /// Преобразовать MIDI ноту в частоту
 #[inline(always)]
-pub fn midi_to_freq<T: AudioNum>(note: u8) -> T {
+pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
     let exp = (note as f32 - 69.0) / 12.0;
     T::from_f32(440.0 * 2.0_f32.powf(exp))
 }
 
 /// Преобразовать частоту в MIDI ноту
 #[inline(always)]
-pub fn freq_to_midi<T: AudioNum>(freq: T) -> f32 {
+pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
     69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
 }
 
@@ -47,14 +47,14 @@ pub fn samples_to_seconds(samples: usize, sample_rate: f32) -> f32 {
 
 /// Быстрая аппроксимация tanh
 #[inline(always)]
-pub fn fast_tanh<T: AudioNum>(x: T) -> T {
+pub fn fast_tanh<T: Transcendental>(x: T) -> T {
     let xf = x.to_f32();
     T::from_f32(xf / (1.0 + xf.abs()))
 }
 
 /// Мягкое клиппирование
 #[inline(always)]
-pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
+pub fn soft_clip<T: Transcendental>(x: T, threshold: T) -> T {
     let xf = x.to_f32();
     let t = threshold.to_f32();
 
@@ -69,7 +69,7 @@ pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
 
 /// Окно Ханна
 #[inline(always)]
-pub fn hann_window<T: AudioNum>(x: T) -> T {
+pub fn hann_window<T: Transcendental>(x: T) -> T {
     let cos_term = (x * T::from_f32(2.0) * T::PI).cos();
     T::from_f32(0.5) * (T::ONE - cos_term)
 }

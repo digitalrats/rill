@@ -5,7 +5,7 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::filters::{FilterParams, FilterType, OnePole};
 use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Тип шума
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,7 +40,7 @@ impl NoiseType {
 }
 
 /// Генератор шума (Xorshift RNG)
-pub struct NoiseGenerator<T: AudioNum> {
+pub struct NoiseGenerator<T: Transcendental> {
     /// Тип шума
     noise_type: NoiseType,
     /// Амплитуда
@@ -59,7 +59,7 @@ pub struct NoiseGenerator<T: AudioNum> {
     last_white2: ScalarVector1<T>,
 }
 
-impl<T: AudioNum> NoiseGenerator<T> {
+impl<T: Transcendental> NoiseGenerator<T> {
     /// Создать новый генератор шума
     pub fn new(noise_type: NoiseType, amplitude: T) -> Self {
         // Создаем OnePole фильтры через new с правильными параметрами
@@ -90,7 +90,7 @@ impl<T: AudioNum> NoiseGenerator<T> {
         }
     }
 
-    /// Xorshift RNG (работает с u32, возвращает f32 через AudioNum)
+    /// Xorshift RNG (работает с u32, возвращает f32 через Transcendental)
     #[inline(always)]
     fn xorshift(&mut self) -> T {
         let mut x = self.state;
@@ -170,7 +170,7 @@ impl<T: AudioNum> NoiseGenerator<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for NoiseGenerator<T> {
+impl<T: Transcendental> Algorithm<T> for NoiseGenerator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
 
@@ -227,7 +227,7 @@ impl<T: AudioNum> Algorithm<T> for NoiseGenerator<T> {
     }
 }
 
-impl<T: AudioNum> Generator<T> for NoiseGenerator<T> {
+impl<T: Transcendental> Generator<T> for NoiseGenerator<T> {
     fn phase(&self) -> T {
         T::ZERO
     } // Шум не имеет фазы

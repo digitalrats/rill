@@ -1,10 +1,10 @@
 //! Трейты для анализаторов сигнала
 
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use crate::algorithm::Algorithm;
 
 /// Базовый трейт для анализаторов
-pub trait Analyzer<T: AudioNum>: Algorithm<T> {
+pub trait Analyzer<T: Transcendental>: Algorithm<T> {
     /// Тип результата анализа
     type Output;
     
@@ -16,7 +16,7 @@ pub trait Analyzer<T: AudioNum>: Algorithm<T> {
 }
 
 /// Пиковый детектор (VU метр)
-pub trait PeakMeter<T: AudioNum>: Analyzer<T, Output = T> {
+pub trait PeakMeter<T: Transcendental>: Analyzer<T, Output = T> {
     /// Скорость спада (0.0-1.0)
     fn decay(&self) -> f32;
     
@@ -30,7 +30,7 @@ pub trait PeakMeter<T: AudioNum>: Analyzer<T, Output = T> {
 }
 
 /// Детектор огибающей
-pub trait EnvelopeFollower<T: AudioNum>: Analyzer<T, Output = T> {
+pub trait EnvelopeFollower<T: Transcendental>: Analyzer<T, Output = T> {
     /// Время атаки в секундах
     fn attack(&self) -> f32;
     
@@ -47,7 +47,7 @@ pub trait EnvelopeFollower<T: AudioNum>: Analyzer<T, Output = T> {
 }
 
 /// Детектор частоты (для тюнеров)
-pub trait FrequencyDetector<T: AudioNum>: Analyzer<T, Output = f32> {
+pub trait FrequencyDetector<T: Transcendental>: Analyzer<T, Output = f32> {
     /// Минимальная частота детектирования
     fn min_freq(&self) -> f32;
     
@@ -71,7 +71,7 @@ pub trait FrequencyDetector<T: AudioNum>: Analyzer<T, Output = f32> {
 }
 
 /// Спектроанализатор (FFT)
-pub trait SpectrumAnalyzer<T: AudioNum>: Analyzer<T, Output = Vec<f32>> {
+pub trait SpectrumAnalyzer<T: Transcendental>: Analyzer<T, Output = Vec<f32>> {
     /// Размер FFT
     fn fft_size(&self) -> usize;
     

@@ -1,7 +1,7 @@
 //! # Макросы для создания DSP алгоритмов
 //!
 //! Этот модуль предоставляет макросы для удобного создания DSP алгоритмов,
-//! реализующих трейты из `crate::algorithm` и использующих `AudioNum` из `rill_core`.
+//! реализующих трейты из `crate::algorithm` и использующих `Transcendental` из `rill_core`.
 //!
 //! ## Доступные макросы
 //!
@@ -15,12 +15,12 @@
 //!
 //! ```
 //! use rill_core_dsp::simple_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! simple_algorithm! {
 //!     /// Простой усилитель
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct Gain<T: AudioNum> {
+//!     pub struct Gain<T: Transcendental> {
 //!         params: {
 //!             /// Коэффициент усиления
 //!             gain: T = T::from_f32(1.0),

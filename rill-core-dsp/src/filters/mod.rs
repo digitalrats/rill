@@ -2,7 +2,7 @@
 //!
 //! Этот модуль предоставляет различные реализации фильтров, от простых
 //! до сложных, для использования в аудио обработке. Все фильтры
-//! параметризованы типом `T: AudioNum` и могут работать с `f32` или `f64`.
+//! параметризованы типом `T: Transcendental` и могут работать с `f32` или `f64`.
 //!
 //! ## Доступные фильтры
 //!
@@ -23,11 +23,11 @@
 //!
 //! ```rust
 //! use rill_core_dsp::filters::*;
-//! use rill_core::AudioNum;
+//! use rill_core::Transcendental;
 //! use rill_core::time::ClockTick;
 //! use rill_core::traits::ActionContext;
 //!
-//! fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
+//! fn process_filter<T: Transcendental>(filter: &mut dyn Filter<T>, input: T) -> T {
 //!     filter.set_cutoff(1000.0);
 //!     filter.set_q(0.707);
 //!     let mut output = [T::ZERO];
@@ -102,7 +102,7 @@ pub use one_pole::OnePole;
 pub use svf::StateVariableFilter;
 
 use crate::algorithm::{Algorithm, AlgorithmMetadata, ParameterizedAlgorithm};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Общий тип параметров для всех фильтров
 ///
@@ -302,11 +302,11 @@ impl FilterType {
 /// # Пример
 /// ```
 /// use rill_core_dsp::filters::*;
-/// use rill_core::AudioNum;
+/// use rill_core::Transcendental;
 /// use rill_core::time::ClockTick;
 /// use rill_core::traits::ActionContext;
 ///
-/// fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
+/// fn process_filter<T: Transcendental>(filter: &mut dyn Filter<T>, input: T) -> T {
 ///     filter.set_cutoff(1000.0);
 ///     filter.set_q(0.707);
 ///     let mut output = [T::ZERO];
@@ -316,7 +316,7 @@ impl FilterType {
 ///     output[0]
 /// }
 /// ```
-pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> {
+pub trait Filter<T: Transcendental>: ParameterizedAlgorithm<T, Params = FilterParams> {
     /// Установить частоту среза
     ///
     /// # Arguments
@@ -369,7 +369,7 @@ pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> 
 }
 
 // Blanket implementation для всех типов с Params = FilterParams
-impl<T: AudioNum, F> Filter<T> for F where F: ParameterizedAlgorithm<T, Params = FilterParams> {}
+impl<T: Transcendental, F> Filter<T> for F where F: ParameterizedAlgorithm<T, Params = FilterParams> {}
 
 // =============================================================================
 // Сравнение фильтров
@@ -443,7 +443,7 @@ mod examples {
     /// use rill_core::time::ClockTick;
     /// use rill_core::traits::ActionContext;
     /// use rill_core_dsp::filters::*;
-    /// use rill_core::AudioNum;
+    /// use rill_core::Transcendental;
     /// use rill_core_dsp::Algorithm;
     /// use std::f32::consts::PI;
     ///
@@ -491,7 +491,7 @@ mod examples {
     /// let phase_inc = 2.0 * PI * frequency / sample_rate;
     /// let mut phase = 0.0;
     ///
-    /// let mut max_output = 0.0;
+    /// let mut max_output = 0.0_f32;
     /// for _ in 0..1000 {
     ///     let input = amplitude * phase.sin();
     ///     let mut out = [0.0_f32];

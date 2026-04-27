@@ -8,11 +8,11 @@
 //! - FM синтез
 //!
 //! Все генераторы реализуют общий трейт [`Generator`] и параметризованы
-//! типом `T: AudioNum` (f32 или f64).
+//! типом `T: Transcendental` (f32 или f64).
 
 // Импортируем необходимые типы и трейты
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 // Объявляем подмодули
 mod basic;
@@ -34,7 +34,7 @@ pub use noise::*;
 /// - управление фазой
 /// - изменение частоты
 /// - изменение амплитуды
-pub trait Generator<T: AudioNum>: Algorithm<T> {
+pub trait Generator<T: Transcendental>: Algorithm<T> {
     /// Получить текущую фазу (0.0 - 1.0)
     fn phase(&self) -> T;
 
@@ -63,7 +63,7 @@ pub trait Generator<T: AudioNum>: Algorithm<T> {
 ///
 /// Позволяет синхронизировать несколько генераторов
 /// по фазе или тактовому сигналу.
-pub trait SyncableGenerator<T: AudioNum>: Generator<T> {
+pub trait SyncableGenerator<T: Transcendental>: Generator<T> {
     /// Синхронизировать с внешним тактовым сигналом
     ///
     /// # Arguments
@@ -78,7 +78,7 @@ pub trait SyncableGenerator<T: AudioNum>: Generator<T> {
 ///
 /// Поддерживает частотную модуляцию (FM) для создания
 /// сложных тембров.
-pub trait ModulatableGenerator<T: AudioNum>: Generator<T> {
+pub trait ModulatableGenerator<T: Transcendental>: Generator<T> {
     /// Применить модуляцию частоты
     ///
     /// # Arguments
@@ -162,9 +162,9 @@ mod tests {
     #[test]
     fn test_generator_trait_bounds() {
         // Проверяем, что все генераторы реализуют нужные трейты
-        fn assert_generator<T: AudioNum, G: Generator<T>>() {}
-        fn assert_syncable<T: AudioNum, G: SyncableGenerator<T>>() {}
-        fn assert_modulatable<T: AudioNum, G: ModulatableGenerator<T>>() {}
+        fn assert_generator<T: Transcendental, G: Generator<T>>() {}
+        fn assert_syncable<T: Transcendental, G: SyncableGenerator<T>>() {}
+        fn assert_modulatable<T: Transcendental, G: ModulatableGenerator<T>>() {}
 
         assert_generator::<f32, BasicOscillator<f32>>();
         assert_generator::<f32, NoiseGenerator<f32>>();

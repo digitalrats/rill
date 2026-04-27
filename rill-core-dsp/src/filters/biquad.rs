@@ -4,11 +4,11 @@ use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use std::f32::consts::PI;
 
 /// Биквадратный фильтр
-pub struct Biquad<T: AudioNum> {
+pub struct Biquad<T: Transcendental> {
     params: FilterParams,
     coeffs: (
         ScalarVector1<T>,
@@ -26,7 +26,7 @@ pub struct Biquad<T: AudioNum> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum> Biquad<T> {
+impl<T: Transcendental> Biquad<T> {
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
             params,
@@ -201,7 +201,7 @@ impl<T: AudioNum> Biquad<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for Biquad<T> {
+impl<T: Transcendental> Algorithm<T> for Biquad<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_coeffs();
@@ -256,7 +256,7 @@ impl<T: AudioNum> Algorithm<T> for Biquad<T> {
     }
 }
 
-impl<T: AudioNum> ParameterizedAlgorithm<T> for Biquad<T> {
+impl<T: Transcendental> ParameterizedAlgorithm<T> for Biquad<T> {
     type Params = FilterParams;
 
     fn params(&self) -> &Self::Params {

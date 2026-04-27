@@ -8,7 +8,8 @@
 //! ```text
 //! rill-core/
 //! ├── traits/           # Core traits (AudioNode, Source, Processor, Sink, etc.)
-//! ├── math/             # Mathematical abstractions (AudioNum, numeric traits)
+//! ├── math/             # Mathematical abstractions (Scalar, Transcendental, Vector)
+//! │   └── vector/       # Vector types, SIMD abstractions, slice operations
 //! ├── buffer/           # Lock-free audio buffers with AtomicCell safety
 //! ├── queues/           # Real-time safe command queues
 //! └── time/             # Time and clock abstractions (ClockTick, SystemClock)
@@ -16,7 +17,8 @@
 //!
 //! ## Key Concepts
 //!
-//! - **AudioNum**: Unified numeric abstraction for f32/f64 with full arithmetic support
+//! - **Scalar**: Base numeric trait for any type (floats and integers)
+//! - **Transcendental**: Float numeric abstraction with sin/cos/sqrt
 //! - **AtomicCell**: Safe atomic wrapper for lock-free data structures
 //! - **AudioNode**: Base trait for all nodes in the audio graph
 //! - **Source**: Active generators (oscillators, file readers)
@@ -34,14 +36,14 @@
 //! use rill_core::traits::node;
 //!
 //! // Create a simple sine source
-//! struct MySine<T: AudioNum, const BUF_SIZE: usize> {
+//! struct MySine<T: Transcendental, const BUF_SIZE: usize> {
 //!     frequency: T,
 //!     amplitude: T,
 //!     phase: T,
 //!     sample_rate: T,
 //! }
 //!
-//! impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
+//! impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn metadata(&self) -> NodeMetadata {
 //!         NodeMetadata {
 //!             name: "Sine".to_string(),
@@ -95,7 +97,7 @@
 //!     }
 //! }
 //!
-//! impl<T: AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
+//! impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn generate(
 //!         &mut self,
 //!         clock: &ClockTick,
@@ -150,8 +152,8 @@ pub mod queues;
 /// Time and clock abstractions for synchronization
 pub mod time;
 
-/// Vector operations for SIMD-optimized DSP
-pub mod vector;
+#[doc(hidden)]
+pub use math::vector as vector;
 
 /// Macros for node creation and boilerplate reduction
 #[macro_use]
@@ -184,7 +186,7 @@ pub use traits::{
 };
 
 // Re-export math abstractions
-pub use math::AudioNum;
+pub use math::{Scalar, Transcendental};
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
@@ -241,7 +243,7 @@ pub const CACHE_LINE_SIZE: usize = 64;
 
 /// Utility functions for common operations
 pub mod utils {
-    use crate::math::AudioNum;
+    use crate::math::Transcendental;
 
     /// Convert seconds to samples
     #[inline(always)]
@@ -257,26 +259,26 @@ pub mod utils {
 
     /// Convert MIDI note to frequency
     #[inline(always)]
-    pub fn midi_to_freq<T: AudioNum>(note: u8) -> T {
+    pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
         let exp = (note as f32 - 69.0) / 12.0;
         T::from_f32(440.0 * 2.0_f32.powf(exp))
     }
 
     /// Convert frequency to MIDI note
     #[inline(always)]
-    pub fn freq_to_midi<T: AudioNum>(freq: T) -> f32 {
+    pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
         69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
     }
 
     /// Convert dB to linear gain
     #[inline(always)]
-    pub fn db_to_linear<T: AudioNum>(db: T) -> T {
+    pub fn db_to_linear<T: Transcendental>(db: T) -> T {
         T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
     }
 
     /// Convert linear gain to dB
     #[inline(always)]
-    pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
+    pub fn linear_to_db<T: Transcendental>(linear: T) -> T {
         T::from_f32(20.0 * linear.to_f32().log10())
     }
 

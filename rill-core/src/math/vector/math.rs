@@ -2,17 +2,17 @@
 //!
 //! Реализация математических функций (sin, cos, exp, ln, sqrt и т.д.) для векторных типов.
 
-use super::traits::*;
-use crate::AudioNum;
+use super::traits::{Vector, VectorTranscendental};
+use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
 // Функции для работы со слайсами
 // -----------------------------------------------------------------------------
 
 /// Поэлементный синус слайса
-pub fn sin_slice<T: AudioNum, const N: usize, V>(input: &[T], output: &mut [T])
+pub fn sin_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
-    V: Vector<T, N>,
+    V: VectorTranscendental<T, N>,
 {
     assert_eq!(input.len(), output.len());
 
@@ -35,9 +35,9 @@ where
 }
 
 /// Поэлементный косинус слайса
-pub fn cos_slice<T: AudioNum, const N: usize, V>(input: &[T], output: &mut [T])
+pub fn cos_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
-    V: Vector<T, N>,
+    V: VectorTranscendental<T, N>,
 {
     assert_eq!(input.len(), output.len());
 
@@ -60,9 +60,9 @@ where
 }
 
 /// Поэлементный тангенс слайса
-pub fn tan_slice<T: AudioNum, const N: usize, V>(input: &[T], output: &mut [T])
+pub fn tan_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
-    V: Vector<T, N>,
+    V: VectorTranscendental<T, N>,
 {
     assert_eq!(input.len(), output.len());
 
@@ -85,9 +85,9 @@ where
 }
 
 /// Поэлементная экспонента слайса
-pub fn exp_slice<T: AudioNum, const N: usize, V>(input: &[T], output: &mut [T])
+pub fn exp_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
-    V: Vector<T, N>,
+    V: VectorTranscendental<T, N>,
 {
     assert_eq!(input.len(), output.len());
 
@@ -110,9 +110,9 @@ where
 }
 
 /// Поэлементный натуральный логарифм слайса
-pub fn ln_slice<T: AudioNum, const N: usize, V>(input: &[T], output: &mut [T])
+pub fn ln_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
-    V: Vector<T, N>,
+    V: VectorTranscendental<T, N>,
 {
     assert_eq!(input.len(), output.len());
 
@@ -135,9 +135,9 @@ where
 }
 
 /// Поэлементный квадратный корень слайса
-pub fn sqrt_slice<T: AudioNum, const N: usize, V>(input: &[T], output: &mut [T])
+pub fn sqrt_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
-    V: Vector<T, N>,
+    V: VectorTranscendental<T, N>,
 {
     assert_eq!(input.len(), output.len());
 
@@ -160,7 +160,7 @@ where
 }
 
 /// Поэлементный модуль слайса
-pub fn abs_slice<T: AudioNum, const N: usize, V>(input: &[T], output: &mut [T])
+pub fn abs_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -185,7 +185,7 @@ where
 }
 
 /// Поэлементный минимум двух слайсов
-pub fn min_slice<T: AudioNum, const N: usize, V>(a: &[T], b: &[T], output: &mut [T])
+pub fn min_slice<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], output: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -212,7 +212,7 @@ where
 }
 
 /// Поэлементный максимум двух слайсов
-pub fn max_slice<T: AudioNum, const N: usize, V>(a: &[T], b: &[T], output: &mut [T])
+pub fn max_slice<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], output: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -239,7 +239,7 @@ where
 }
 
 /// Поэлементное ограничение слайса
-pub fn clamp_slice<T: AudioNum, const N: usize, V>(
+pub fn clamp_slice<T: Transcendental, const N: usize, V>(
     input: &[T],
     min: &[T],
     max: &[T],
@@ -279,14 +279,14 @@ pub fn clamp_slice<T: AudioNum, const N: usize, V>(
 #[cfg(feature = "fast_math")]
 pub fn fast_sin_slice_f32(input: &[f32], output: &mut [f32]) {
     // TODO: реализовать аппроксимацию
-    sin_slice::<f32, 4, crate::vector::scalar::ScalarVector4<f32>>(input, output);
+    sin_slice::<f32, 4, crate::math::vector::scalar::ScalarVector4<f32>>(input, output);
 }
 
 /// Быстрый косинус через аппроксимацию (только для f32)
 #[cfg(feature = "fast_math")]
 pub fn fast_cos_slice_f32(input: &[f32], output: &mut [f32]) {
     // TODO: реализовать аппроксимацию
-    cos_slice::<f32, 4, crate::vector::scalar::ScalarVector4<f32>>(input, output);
+    cos_slice::<f32, 4, crate::math::vector::scalar::ScalarVector4<f32>>(input, output);
 }
 
 // -----------------------------------------------------------------------------
@@ -296,7 +296,7 @@ pub fn fast_cos_slice_f32(input: &[f32], output: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AudioNum;
+    use crate::Transcendental;
 
     // Тесты будут добавлены после реализации скалярных векторов
 }

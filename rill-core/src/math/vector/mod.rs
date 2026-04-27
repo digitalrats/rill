@@ -58,17 +58,17 @@ pub use scalar::*;
 
 /// Prelude для удобного импорта
 pub mod prelude {
-    pub use crate::vector::math::*;
-    pub use crate::vector::ops::*;
-    pub use crate::vector::traits::*;
-    // pub use crate::vector::expr::*;  // временно отключено
-    pub use crate::vector::macros::*;
-    pub use crate::vector::scalar::*;
+    pub use crate::math::vector::math::*;
+    pub use crate::math::vector::ops::*;
+    pub use crate::math::vector::traits::*;
+    // pub use crate::math::vector::expr::*;  // временно отключено
+    pub use crate::math::vector::macros::*;
+    pub use crate::math::vector::scalar::*;
 
     // Типы векторов
     #[cfg(feature = "simd")]
-    pub use crate::vector::simd::*;
+    pub use crate::math::vector::simd::*;
 
     // Скалярные типы
-    pub use crate::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
+    pub use crate::math::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
 }

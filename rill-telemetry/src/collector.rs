@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core::queues::spsc::SpscQueue;
 use rill_core::queues::TelemetryBlock;
 
@@ -22,12 +22,12 @@ use rill_core::queues::TelemetryBlock;
 /// });
 /// collector.poll();  // drain available frames
 /// ```
-pub struct TelemetryCollector<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize> {
+pub struct TelemetryCollector<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> {
     queue: Arc<SpscQueue<TelemetryBlock<T, BUF_SIZE>, QUEUE_CAP>>,
     callback: Box<dyn FnMut(TelemetryBlock<T, BUF_SIZE>)>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize>
+impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
     TelemetryCollector<T, BUF_SIZE, QUEUE_CAP>
 {
     /// Create a new collector backed by the shared ring buffer.

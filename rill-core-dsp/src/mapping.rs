@@ -3,7 +3,7 @@
 //! Provides `MappingStrategy` to select the mapping curve and `ControlMapper<T>`
 //! which implements `Algorithm<T>`.
 
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
 use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
 
@@ -22,7 +22,7 @@ pub enum MappingStrategy {
 
 impl MappingStrategy {
     /// Map a normalized value `x` in [0,1] to [min, max] using this strategy.
-    pub fn map<T: AudioNum>(&self, x: T, min: T, max: T) -> T {
+    pub fn map<T: Transcendental>(&self, x: T, min: T, max: T) -> T {
         let xf: f32 = x.to_f32();
         let minf: f32 = min.to_f32();
         let maxf: f32 = max.to_f32();
@@ -67,7 +67,7 @@ impl MappingStrategy {
 /// // output maps 0.5 exponentially between 20..20000
 /// ```
 #[derive(Debug, Clone)]
-pub struct ControlMapper<T: AudioNum> {
+pub struct ControlMapper<T: Transcendental> {
     /// Minimum of the output range
     min: T,
     /// Maximum of the output range
@@ -78,7 +78,7 @@ pub struct ControlMapper<T: AudioNum> {
     value: T,
 }
 
-impl<T: AudioNum> ControlMapper<T> {
+impl<T: Transcendental> ControlMapper<T> {
     /// Create a new `ControlMapper`.
     pub fn new(min: T, max: T, strategy: MappingStrategy) -> Self {
         Self {
@@ -106,7 +106,7 @@ impl<T: AudioNum> ControlMapper<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for ControlMapper<T> {
+impl<T: Transcendental> Algorithm<T> for ControlMapper<T> {
     fn process(
         &mut self,
         input: Option<&[T]>,

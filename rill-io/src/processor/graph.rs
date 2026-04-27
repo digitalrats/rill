@@ -10,7 +10,7 @@
 
 use std::marker::PhantomData;
 
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core::time::ClockSource;
 use rill_graph::{AudioGraph, GraphBuilder};
 
@@ -22,12 +22,12 @@ const DEFAULT_BUF_SIZE: usize = 256;
 ///
 /// `BUF_SIZE` must match the block size used when building the graph
 /// (defaults to 256).
-pub struct GraphProcessor<T: AudioNum = f32, const BUF_SIZE: usize = DEFAULT_BUF_SIZE> {
+pub struct GraphProcessor<T: Transcendental = f32, const BUF_SIZE: usize = DEFAULT_BUF_SIZE> {
     graph: AudioGraph<T, BUF_SIZE>,
     _marker: PhantomData<T>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> GraphProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> GraphProcessor<T, BUF_SIZE> {
     /// Build a graph from a `GraphBuilder`, then wrap it.
     ///
     /// The builder is consumed and the graph is validated internally.
@@ -76,7 +76,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioProcessor for GraphProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioProcessor for GraphProcessor<T, BUF_SIZE> {
     fn process(&mut self, input: &[f32], output: &mut [f32]) {
         self.graph.dispatch_set_parameters(&[]);
         let n = output.len().min(input.len());

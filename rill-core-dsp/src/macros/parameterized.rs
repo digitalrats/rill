@@ -3,12 +3,12 @@
 //! # Пример
 //! ```
 //! use rill_core_dsp::parameterized_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! parameterized_algorithm! {
 //!     /// Фильтр с изменяемой частотой среза
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct LowPass<T: AudioNum> {
+//!     pub struct LowPass<T: Transcendental> {
 //!         params: {
 //!             /// Частота среза в Hz
 //!             cutoff: T = T::from_f32(1000.0),
@@ -36,12 +36,12 @@
 /// # Пример
 /// ```
 /// use rill_core_dsp::parameterized_algorithm;
-/// use rill_core::math::AudioNum;
+/// use rill_core::math::Transcendental;
 ///
 /// parameterized_algorithm! {
 ///     /// Фильтр с изменяемой частотой среза
 ///     #[derive(Debug, Clone, Copy)]
-///     pub struct LowPass<T: AudioNum> {
+///     pub struct LowPass<T: Transcendental> {
 ///         params: {
 ///             /// Частота среза в Hz
 ///             cutoff: T = T::from_f32(1000.0),
@@ -119,7 +119,7 @@ macro_rules! parameterized_algorithm {
 
         impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
         where
-            T: rill_core::math::AudioNum,
+            T: rill_core::math::Transcendental,
         {
             fn init(&mut self, sample_rate: f32) {
                 self.sample_rate = sample_rate;

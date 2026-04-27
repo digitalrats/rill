@@ -7,10 +7,10 @@
 use super::{Filter, FilterParams, OnePole};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Moog ladder 4-pole lowpass filter
-pub struct MoogLadder<T: AudioNum> {
+pub struct MoogLadder<T: Transcendental> {
     stages: [OnePole<T>; 4],
     cutoff: f32,
     resonance: f32,
@@ -18,7 +18,7 @@ pub struct MoogLadder<T: AudioNum> {
     feedback_prev: T,
 }
 
-impl<T: AudioNum> MoogLadder<T> {
+impl<T: Transcendental> MoogLadder<T> {
     /// Create a new Moog ladder filter
     pub fn new(cutoff: f32, resonance: f32) -> Self {
         let params = FilterParams {
@@ -82,7 +82,7 @@ impl<T: AudioNum> MoogLadder<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for MoogLadder<T> {
+impl<T: Transcendental> Algorithm<T> for MoogLadder<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         for stage in &mut self.stages {

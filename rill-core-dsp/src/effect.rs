@@ -3,10 +3,10 @@
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm};
 use rill_core::time::ClockTick;
 use rill_core::traits::ActionContext;
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Базовый трейт для эффектов
-pub trait Effect<T: AudioNum>: ParameterizedAlgorithm<T> {
+pub trait Effect<T: Transcendental>: ParameterizedAlgorithm<T> {
     /// Получить количество входных каналов
     fn num_inputs(&self) -> usize {
         1
@@ -36,7 +36,7 @@ pub trait Effect<T: AudioNum>: ParameterizedAlgorithm<T> {
 }
 
 /// Эффект с возможностью bypass
-pub trait Bypassable<T: AudioNum>: Effect<T> {
+pub trait Bypassable<T: Transcendental>: Effect<T> {
     /// Включить/выключить bypass
     fn set_bypass(&mut self, bypass: bool);
 
@@ -58,7 +58,7 @@ pub trait Bypassable<T: AudioNum>: Effect<T> {
 }
 
 /// Эффект с поддержкой dry/wet
-pub trait DryWet<T: AudioNum>: Effect<T> {
+pub trait DryWet<T: Transcendental>: Effect<T> {
     /// Установить соотношение dry/wet (0.0 = только dry, 1.0 = только wet)
     fn set_dry_wet(&mut self, mix: f32);
 
@@ -79,7 +79,7 @@ pub trait DryWet<T: AudioNum>: Effect<T> {
 }
 
 /// Эффект с модуляцией
-pub trait Modulatable<T: AudioNum>: Effect<T> {
+pub trait Modulatable<T: Transcendental>: Effect<T> {
     /// Количество модуляционных входов
     fn num_mod_inputs(&self) -> usize;
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core::prelude::{
     AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     ProcessResult,
@@ -24,7 +24,7 @@ use rill_core::traits::Processor;
 /// - Every `interval` blocks, computes peak/RMS/DC and pushes into the queue
 /// - Queue is `SpscQueue` with overwrite-oldest policy (default)
 /// - Non-blocking: if the queue is full, old entries are overwritten
-pub struct TelemetryProbe<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize> {
+pub struct TelemetryProbe<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> {
     id: NodeId,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
@@ -45,7 +45,7 @@ pub struct TelemetryProbe<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: u
     node_name: String,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize>
+impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
     TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
     /// Create a new telemetry probe.
@@ -90,7 +90,7 @@ impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize>
 
 // ── AudioNode ──────────────────────────────────────────────────────────────
 
-impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> AudioNode<T, BUF_SIZE>
     for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
     fn metadata(&self) -> NodeMetadata {
@@ -172,7 +172,7 @@ impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize> AudioNode<T, BU
 
 // ── Processor ──────────────────────────────────────────────────────────────
 
-impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> Processor<T, BUF_SIZE>
     for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
     fn process(

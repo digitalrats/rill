@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::math::AudioNum;
+    use crate::math::Transcendental;
     use crate::prelude::*;
     use crate::traits::IntoParamValue;
     use std::f32::consts::PI;
@@ -13,7 +13,7 @@ mod tests {
     // Тестовый источник
     source_node! {
         /// Тестовый синус
-        pub TestSine<T: AudioNum, const BUF_SIZE: usize>
+        pub TestSine<T: Transcendental, const BUF_SIZE: usize>
         {
             params {
                 frequency: f32 = 440.0,
@@ -52,7 +52,7 @@ mod tests {
     // Тестовый процессор
     processor_node! {
         /// Тестовый усилитель
-        pub TestGain<T: AudioNum, const BUF_SIZE: usize>
+        pub TestGain<T: Transcendental, const BUF_SIZE: usize>
         {
             params {
                 gain: T = T::from_f32(1.0),
@@ -80,7 +80,7 @@ mod tests {
     // Тестовый приёмник
     sink_node! {
         /// Тестовый приёмник
-        pub TestSink<T: AudioNum, const BUF_SIZE: usize>
+        pub TestSink<T: Transcendental, const BUF_SIZE: usize>
         {
             params {
                 volume: T = T::from_f32(1.0),

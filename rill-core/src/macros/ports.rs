@@ -5,7 +5,7 @@
 macro_rules! audio_node {
     (
         $(#[$meta:meta])*
-        source $name:ident<$T:ident: $crate::math::AudioNum, const $BUF:ident: usize>
+        source $name:ident<$T:ident: $crate::math::Transcendental, const $BUF:ident: usize>
         $(where $($bounds:tt)*)?
         { $($tt:tt)* }
     ) => {
@@ -19,7 +19,7 @@ macro_rules! audio_node {
 
     (
         $(#[$meta:meta])*
-        processor $name:ident<$T:ident: $crate::math::AudioNum, const $BUF:ident: usize>
+        processor $name:ident<$T:ident: $crate::math::Transcendental, const $BUF:ident: usize>
         $(where $($bounds:tt)*)?
         { $($tt:tt)* }
     ) => {
@@ -33,7 +33,7 @@ macro_rules! audio_node {
 
     (
         $(#[$meta:meta])*
-        sink $name:ident<$T:ident: $crate::math::AudioNum, const $BUF:ident: usize>
+        sink $name:ident<$T:ident: $crate::math::Transcendental, const $BUF:ident: usize>
         $(where $($bounds:tt)*)?
         { $($tt:tt)* }
     ) => {

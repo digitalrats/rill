@@ -1,5 +1,5 @@
 use rill_core::buffer::Buffer;
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
 use rill_core::traits::{AudioNode, NodeVariant, PortId};
 use std::collections::VecDeque;
@@ -51,7 +51,7 @@ pub struct GraphStats {
 // Node Storage
 // ============================================================================
 
-struct NodeEntry<T: AudioNum, const BUF_SIZE: usize> {
+struct NodeEntry<T: Transcendental, const BUF_SIZE: usize> {
     node: NodeVariant<T, BUF_SIZE>,
 }
 
@@ -60,19 +60,19 @@ struct NodeEntry<T: AudioNum, const BUF_SIZE: usize> {
 // ============================================================================
 
 /// Mutable builder for an immutable audio graph.
-pub struct GraphBuilder<T: AudioNum, const BUF_SIZE: usize> {
+pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     audio_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -212,7 +212,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 /// port-level methods (`pre_process`, `snapshot_feedback`, `propagate`)
 /// called from external code (e.g. a real-time audio callback or an
 /// offline renderer).
-pub struct AudioGraph<T: AudioNum, const BUF_SIZE: usize> {
+pub struct AudioGraph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     topo_order: Vec<usize>,
     #[allow(dead_code)]
@@ -220,7 +220,7 @@ pub struct AudioGraph<T: AudioNum, const BUF_SIZE: usize> {
     current_tick: ClockTick,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
     /// Create an empty graph with the given clock source.
     pub fn new(clock_source: Box<dyn ClockSource>) -> Self {
         let sample_rate = clock_source.sample_rate();
@@ -289,7 +289,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::math::AudioNum;
+    use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
     use rill_core::traits::{
         AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
@@ -299,13 +299,13 @@ mod tests {
     // ------------------------------------------------------------------------
     // Mock: ConstantSource — fills output with a constant value
     // ------------------------------------------------------------------------
-    struct ConstantSource<T: AudioNum, const BUF_SIZE: usize> {
+    struct ConstantSource<T: Transcendental, const BUF_SIZE: usize> {
         value: T,
         state: NodeState<T, BUF_SIZE>,
         outputs: Vec<Port<T, BUF_SIZE>>,
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> ConstantSource<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> ConstantSource<T, BUF_SIZE> {
         fn new(value: T, sample_rate: f32) -> Self {
             let mut outputs = Vec::with_capacity(1);
             outputs.push(Port {
@@ -327,7 +327,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "ConstantSource".into(),
@@ -383,7 +383,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn generate(
             &mut self,
             _clock: &ClockTick,
@@ -404,11 +404,11 @@ mod tests {
     // ------------------------------------------------------------------------
     // Mock: NoopProcessor — minimal processor for topology tests
     // ------------------------------------------------------------------------
-    struct NoopProcessor<T: AudioNum, const BUF_SIZE: usize> {
+    struct NoopProcessor<T: Transcendental, const BUF_SIZE: usize> {
         state: NodeState<T, BUF_SIZE>,
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> NoopProcessor<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> NoopProcessor<T, BUF_SIZE> {
         fn new(sample_rate: f32) -> Self {
             Self {
                 state: NodeState::new(sample_rate),
@@ -416,7 +416,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "NoopProcessor".into(),
@@ -472,7 +472,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn process(
             &mut self,
             _clock: &ClockTick,
@@ -488,11 +488,11 @@ mod tests {
     // ------------------------------------------------------------------------
     // Mock: NoopSink — minimal sink for topology tests
     // ------------------------------------------------------------------------
-    struct NoopSink<T: AudioNum, const BUF_SIZE: usize> {
+    struct NoopSink<T: Transcendental, const BUF_SIZE: usize> {
         state: NodeState<T, BUF_SIZE>,
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> NoopSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> NoopSink<T, BUF_SIZE> {
         fn new(sample_rate: f32) -> Self {
             Self {
                 state: NodeState::new(sample_rate),
@@ -500,7 +500,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "NoopSink".into(),
@@ -556,7 +556,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn consume(
             &mut self,
             _clock: &ClockTick,

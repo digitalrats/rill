@@ -9,7 +9,7 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, SyncableGenerator};
 use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// LFO генератор (Low Frequency Oscillator)
 ///
@@ -45,7 +45,7 @@ use rill_core::AudioNum;
 /// let modulation = output[0];
 /// ```
 #[derive(Clone, Copy)]
-pub struct LFO<T: AudioNum> {
+pub struct LFO<T: Transcendental> {
     /// Внутренний осциллятор
     osc: BasicOscillator<T>,
     /// Биполярный режим (-1..1) или униполярный (0..1)
@@ -54,7 +54,7 @@ pub struct LFO<T: AudioNum> {
     phase_offset: ScalarVector1<T>,
 }
 
-impl<T: AudioNum> LFO<T> {
+impl<T: Transcendental> LFO<T> {
     /// Создать новый LFO
     ///
     /// # Arguments
@@ -142,7 +142,7 @@ impl<T: AudioNum> LFO<T> {
 
 // ==================== Реализация трейта Algorithm ====================
 
-impl<T: AudioNum> Algorithm<T> for LFO<T> {
+impl<T: Transcendental> Algorithm<T> for LFO<T> {
     fn init(&mut self, sample_rate: f32) {
         self.osc.init(sample_rate);
         self.osc.set_phase(self.phase_offset.extract(0));
@@ -190,7 +190,7 @@ impl<T: AudioNum> Algorithm<T> for LFO<T> {
 
 // ==================== Реализация трейта Generator ====================
 
-impl<T: AudioNum> Generator<T> for LFO<T> {
+impl<T: Transcendental> Generator<T> for LFO<T> {
     fn phase(&self) -> T {
         self.osc.phase()
     }
@@ -218,7 +218,7 @@ impl<T: AudioNum> Generator<T> for LFO<T> {
 
 // ==================== Реализация трейта SyncableGenerator ====================
 
-impl<T: AudioNum> SyncableGenerator<T> for LFO<T> {
+impl<T: Transcendental> SyncableGenerator<T> for LFO<T> {
     fn sync(&mut self, reset: bool) {
         if reset {
             self.osc.set_phase(self.phase_offset.extract(0));

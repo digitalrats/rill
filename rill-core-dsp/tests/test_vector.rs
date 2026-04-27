@@ -3,7 +3,7 @@
 //! Проверяем базовые арифметические операции и математические функции
 //! как для скалярного представления, так и для SIMD (если доступно).
 
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core_dsp::vector::prelude::*;
 
 #[test]

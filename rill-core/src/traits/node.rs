@@ -186,7 +186,7 @@ impl NodeMetadata {
 /// State of a node during processing
 /// State of a node during processing
 #[derive(Debug, Clone)]
-pub struct NodeState<T: crate::math::AudioNum, const BUF_SIZE: usize> {
+pub struct NodeState<T: crate::math::Transcendental, const BUF_SIZE: usize> {
     /// Current sample position
     pub sample_pos: u64,
 
@@ -203,7 +203,7 @@ pub struct NodeState<T: crate::math::AudioNum, const BUF_SIZE: usize> {
     pub phase: T,
 }
 
-impl<T: crate::math::AudioNum, const BUF_SIZE: usize> NodeState<T, BUF_SIZE> {
+impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZE> {
     /// Create new node state
     pub fn new(sample_rate: f32) -> Self {
         Self {
@@ -249,7 +249,7 @@ impl<T: crate::math::AudioNum, const BUF_SIZE: usize> NodeState<T, BUF_SIZE> {
 /// - `Source` for generators
 /// - `Processor` for processors with inputs/outputs
 /// - `Sink` for consumers
-pub trait AudioNode<T: crate::math::AudioNum, const BUF_SIZE: usize>: Send + Sync {
+pub trait AudioNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sync {
     /// Get node metadata
     fn metadata(&self) -> NodeMetadata;
 
@@ -398,7 +398,7 @@ pub trait AudioNode<T: crate::math::AudioNum, const BUF_SIZE: usize>: Send + Syn
 ///
 /// Sources generate audio from internal state. They have no audio inputs,
 /// but may have control and clock inputs for modulation.
-pub trait Source<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
+pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
     /// Generate the next block of audio
     ///
     /// # Arguments
@@ -439,7 +439,7 @@ pub trait Source<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, 
 ///
 /// Processors transform input signals into output signals.
 /// They have audio inputs and outputs, and may have control and clock ports.
-pub trait Processor<T: crate::math::AudioNum, const BUF_SIZE: usize>:
+pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
     AudioNode<T, BUF_SIZE>
 {
     /// Process a block of audio
@@ -476,7 +476,7 @@ pub trait Processor<T: crate::math::AudioNum, const BUF_SIZE: usize>:
 ///
 /// Sinks consume audio and send it to external destinations.
 /// They have no audio outputs, but may have control and clock ports.
-pub trait Sink<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
+pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
     /// Consume a block of audio
     ///
     /// # Arguments
@@ -502,11 +502,11 @@ pub trait Sink<T: crate::math::AudioNum, const BUF_SIZE: usize>: AudioNode<T, BU
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::AudioNum;
+    use crate::math::Transcendental;
 
     struct TestNode;
 
-    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for TestNode {
+    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for TestNode {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "Test".to_string(),

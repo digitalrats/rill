@@ -3,7 +3,7 @@
 //! This module defines the `Processable` trait that unifies `generate`, `process`, and `consume`
 //! into a single `process_block` method, making it easier to build generic audio graphs.
 
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::ProcessResult;
 
@@ -16,7 +16,7 @@ use crate::traits::ProcessResult;
 /// Nodes write their output directly into their own output port buffers
 /// (accessible via `AudioNode::output_port_mut`), so only input data
 /// is passed through this context.
-pub struct ProcessContext<'a, T: AudioNum, const BUF_SIZE: usize> {
+pub struct ProcessContext<'a, T: Transcendental, const BUF_SIZE: usize> {
     /// Current clock tick
     pub clock: &'a ClockTick,
     /// Audio input buffers (slice of references to [T; BUF_SIZE])
@@ -38,7 +38,7 @@ pub struct ProcessContext<'a, T: AudioNum, const BUF_SIZE: usize> {
 /// This trait is implemented for all `Source`, `Processor`, and `Sink` types,
 /// providing a single method that dispatches to the appropriate underlying
 /// method (`generate`, `process`, or `consume`).
-pub trait Processable<T: AudioNum, const BUF_SIZE: usize> {
+pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
     /// Process a single block of audio.
     ///
     /// The default implementation uses the node's category to call the
@@ -54,7 +54,7 @@ pub trait Processable<T: AudioNum, const BUF_SIZE: usize> {
 impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for Box<dyn crate::traits::Source<T, BUF_SIZE>>
 where
-    T: AudioNum,
+    T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
         self.as_mut()
@@ -65,7 +65,7 @@ where
 impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for Box<dyn crate::traits::Processor<T, BUF_SIZE>>
 where
-    T: AudioNum,
+    T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
         self.as_mut().process(
@@ -81,7 +81,7 @@ where
 impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for Box<dyn crate::traits::Sink<T, BUF_SIZE>>
 where
-    T: AudioNum,
+    T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
         self.as_mut().consume(
@@ -99,13 +99,13 @@ where
 // ============================================================================
 
 /// Enum that holds any kind of audio node.
-pub enum NodeVariant<T: AudioNum, const BUF_SIZE: usize> {
+pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
     Source(Box<dyn crate::traits::Source<T, BUF_SIZE>>),
     Processor(Box<dyn crate::traits::Processor<T, BUF_SIZE>>),
     Sink(Box<dyn crate::traits::Sink<T, BUF_SIZE>>),
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for NodeVariant<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for NodeVariant<T, BUF_SIZE> {
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
         match self {
             NodeVariant::Source(src) => src.process_block(ctx),
@@ -115,7 +115,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for NodeVarian
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE>
     for NodeVariant<T, BUF_SIZE>
 {
     fn metadata(&self) -> crate::traits::NodeMetadata {

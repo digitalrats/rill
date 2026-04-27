@@ -5,7 +5,7 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, Paramete
 use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use std::f64::consts::PI as PI64;
 
 // -----------------------------------------------------------------------------
@@ -82,12 +82,12 @@ fn chebyshev_type_ii_poles_zeros(n: usize, ripple_db: f64) -> (Vec<Complex64>, V
 // -----------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct BiquadSection<T: AudioNum> {
+struct BiquadSection<T: Transcendental> {
     coeffs: [ScalarVector1<T>; 5],
     state: [ScalarVector1<T>; 4],
 }
 
-impl<T: AudioNum> BiquadSection<T> {
+impl<T: Transcendental> BiquadSection<T> {
     fn new() -> Self {
         Self {
             coeffs: [
@@ -160,7 +160,7 @@ pub struct ChebyshevParams {
 // Фильтр Чебышева типа I
 // -----------------------------------------------------------------------------
 
-pub struct ChebyshevI<T: AudioNum, const MAX_SECTIONS: usize> {
+pub struct ChebyshevI<T: Transcendental, const MAX_SECTIONS: usize> {
     params: ChebyshevParams,
     sections: [BiquadSection<T>; MAX_SECTIONS],
     num_sections: usize,
@@ -168,7 +168,7 @@ pub struct ChebyshevI<T: AudioNum, const MAX_SECTIONS: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
+impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
     pub fn new(params: FilterParams, order: usize, ripple_db: f32) -> Self {
         let mut filter = Self {
             params: ChebyshevParams {
@@ -231,7 +231,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
     }
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevI<T, MAX_SECTIONS> {
+impl<T: Transcendental, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevI<T, MAX_SECTIONS> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.design();
@@ -277,7 +277,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevI<T, MAX_
     }
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
+impl<T: Transcendental, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
     for ChebyshevI<T, MAX_SECTIONS>
 {
     type Params = FilterParams;
@@ -296,7 +296,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
 // Фильтр Чебышева типа II
 // -----------------------------------------------------------------------------
 
-pub struct ChebyshevII<T: AudioNum, const MAX_SECTIONS: usize> {
+pub struct ChebyshevII<T: Transcendental, const MAX_SECTIONS: usize> {
     params: ChebyshevParams,
     sections: [BiquadSection<T>; MAX_SECTIONS],
     num_sections: usize,
@@ -304,7 +304,7 @@ pub struct ChebyshevII<T: AudioNum, const MAX_SECTIONS: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> {
+impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> {
     pub fn new(params: FilterParams, order: usize, ripple_db: f32) -> Self {
         let mut filter = Self {
             params: ChebyshevParams {
@@ -378,7 +378,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> {
     }
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevII<T, MAX_SECTIONS> {
+impl<T: Transcendental, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevII<T, MAX_SECTIONS> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.design();
@@ -424,7 +424,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevII<T, MAX
     }
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
+impl<T: Transcendental, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
     for ChebyshevII<T, MAX_SECTIONS>
 {
     type Params = FilterParams;

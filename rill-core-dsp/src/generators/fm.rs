@@ -11,7 +11,7 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator};
 use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 // =============================================================================
 // Простой 2-операторный FM синтезатор
@@ -49,7 +49,7 @@ use rill_core::AudioNum;
 /// let sample = output[0];
 /// ```
 #[derive(Clone, Copy)]
-pub struct SimpleFmSynth<T: AudioNum> {
+pub struct SimpleFmSynth<T: Transcendental> {
     /// Несущий осциллятор (carrier) - производит выходной сигнал
     carrier: BasicOscillator<T>,
     /// Модулирующий осциллятор (modulator) - модулирует частоту carrier
@@ -60,7 +60,7 @@ pub struct SimpleFmSynth<T: AudioNum> {
     ratio: f32,
 }
 
-impl<T: AudioNum> SimpleFmSynth<T> {
+impl<T: Transcendental> SimpleFmSynth<T> {
     /// Создать новый FM синтезатор
     ///
     /// # Arguments
@@ -131,7 +131,7 @@ impl<T: AudioNum> SimpleFmSynth<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
+impl<T: Transcendental> Algorithm<T> for SimpleFmSynth<T> {
     fn init(&mut self, sample_rate: f32) {
         self.carrier.init(sample_rate);
         self.modulator.init(sample_rate);
@@ -176,7 +176,7 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
 
 // ==================== Реализация трейта Generator для SimpleFmSynth ====================
 
-impl<T: AudioNum> Generator<T> for SimpleFmSynth<T> {
+impl<T: Transcendental> Generator<T> for SimpleFmSynth<T> {
     fn phase(&self) -> T {
         self.carrier.phase()
     }
@@ -206,7 +206,7 @@ impl<T: AudioNum> Generator<T> for SimpleFmSynth<T> {
 
 // ==================== Реализация трейта ModulatableGenerator для SimpleFmSynth ====================
 
-impl<T: AudioNum> ModulatableGenerator<T> for SimpleFmSynth<T> {
+impl<T: Transcendental> ModulatableGenerator<T> for SimpleFmSynth<T> {
     fn modulate_frequency(&mut self, amount: T) {
         self.carrier.modulate_frequency(amount);
         // Также обновляем modulation_index, чтобы он соответствовал
@@ -253,7 +253,7 @@ impl<T: AudioNum> ModulatableGenerator<T> for SimpleFmSynth<T> {
 /// let mut fm = FmSynth::<f32, 6>::new(frequencies, algorithm);
 /// fm.init(44100.0);
 /// ```
-pub struct FmSynth<T: AudioNum, const N: usize> {
+pub struct FmSynth<T: Transcendental, const N: usize> {
     /// Операторы (все используют BasicOscillator)
     operators: [BasicOscillator<T>; N],
     /// Алгоритм соединения (матрица маршрутов)
@@ -263,7 +263,7 @@ pub struct FmSynth<T: AudioNum, const N: usize> {
     modulation_indices: [ScalarVector1<T>; N],
 }
 
-impl<T: AudioNum, const N: usize> FmSynth<T, N> {
+impl<T: Transcendental, const N: usize> FmSynth<T, N> {
     /// Создать новый FM синтезатор
     ///
     /// # Arguments
@@ -334,7 +334,7 @@ impl<T: AudioNum, const N: usize> FmSynth<T, N> {
     }
 }
 
-impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
+impl<T: Transcendental, const N: usize> Algorithm<T> for FmSynth<T, N> {
     fn init(&mut self, sample_rate: f32) {
         for op in &mut self.operators {
             op.init(sample_rate);

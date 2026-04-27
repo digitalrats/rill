@@ -3,12 +3,12 @@
 //! # Пример
 //! ```
 //! use rill_core_dsp::filter_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! filter_algorithm! {
 //!     /// Биквадратный фильтр
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct Biquad<T: AudioNum> {
+//!     pub struct Biquad<T: Transcendental> {
 //!         params: {
 //!             cutoff: T = T::from_f32(1000.0),
 //!             q: T = T::from_f32(0.707),
@@ -42,12 +42,12 @@
 /// # Пример
 /// ```
 /// use rill_core_dsp::filter_algorithm;
-/// use rill_core::math::AudioNum;
+/// use rill_core::math::Transcendental;
 ///
 /// filter_algorithm! {
 ///     /// Биквадратный фильтр
 ///     #[derive(Debug, Clone, Copy)]
-///     pub struct Biquad<T: AudioNum> {
+///     pub struct Biquad<T: Transcendental> {
 ///         params: {
 ///             cutoff: T = T::from_f32(1000.0),
 ///             q: T = T::from_f32(0.707),
@@ -143,7 +143,7 @@ macro_rules! filter_algorithm {
 
         impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
         where
-            T: rill_core::math::AudioNum,
+            T: rill_core::math::Transcendental,
         {
             fn init(&mut self, sample_rate: f32) {
                 self.sample_rate = sample_rate;

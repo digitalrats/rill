@@ -1,4 +1,4 @@
-//! Audio-rate oscillators (20Hz - 20kHz) with AudioNum support
+//! Audio-rate oscillators (20Hz - 20kHz) with Transcendental support
 
 mod saw;
 mod sine;
@@ -15,4 +15,4 @@ pub use noise::{NoiseOsc, NoiseType};
 // pub use fm::FmOsc;
 
 // Re-export core types
-pub use rill_core::AudioNum;
+pub use rill_core::Transcendental;

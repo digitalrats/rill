@@ -3,12 +3,12 @@
 //! # Пример
 //! ```
 //! use rill_core_dsp::effect_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! effect_algorithm! {
 //!     /// Эффект задержки
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct Delay<T: AudioNum> {
+//!     pub struct Delay<T: Transcendental> {
 //!         params: {
 //!             time: T = T::from_f32(0.3),
 //!             feedback: T = T::from_f32(0.5),
@@ -31,12 +31,12 @@
 /// # Пример
 /// ```
 /// use rill_core_dsp::effect_algorithm;
-/// use rill_core::math::AudioNum;
+/// use rill_core::math::Transcendental;
 ///
 /// effect_algorithm! {
 ///     /// Эффект задержки
 ///     #[derive(Debug, Clone, Copy)]
-///     pub struct Delay<T: AudioNum> {
+///     pub struct Delay<T: Transcendental> {
 ///         params: {
 ///             time: T = T::from_f32(0.3),
 ///             feedback: T = T::from_f32(0.5),
@@ -112,7 +112,7 @@ macro_rules! effect_algorithm {
 
         impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
         where
-            T: rill_core::math::AudioNum,
+            T: rill_core::math::Transcendental,
         {
             fn init(&mut self, sample_rate: f32) {
                 self.sample_rate = sample_rate;

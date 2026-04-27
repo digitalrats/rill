@@ -1,17 +1,17 @@
 use crate::constants::{BOLTZMANN, ELECTRON_CHARGE, NEWTON_TOLERANCE};
 use crate::WdfElement;
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Resistor WDF element
 #[derive(Debug, Clone)]
-pub struct Resistor<T: AudioNum> {
+pub struct Resistor<T: Transcendental> {
     resistance: T,
     port_resistance: T,
     voltage: T,
     current: T,
 }
 
-impl<T: AudioNum> Resistor<T> {
+impl<T: Transcendental> Resistor<T> {
     /// Create a new resistor with given resistance in ohms
     pub fn new(resistance: T) -> Self {
         Self {
@@ -28,7 +28,7 @@ impl<T: AudioNum> Resistor<T> {
     }
 }
 
-impl<T: AudioNum> WdfElement<T> for Resistor<T> {
+impl<T: Transcendental> WdfElement<T> for Resistor<T> {
     fn port_resistance(&self) -> T {
         self.port_resistance
     }
@@ -57,7 +57,7 @@ impl<T: AudioNum> WdfElement<T> for Resistor<T> {
 
 /// Capacitor WDF element (trapezoidal integration)
 #[derive(Debug, Clone)]
-pub struct Capacitor<T: AudioNum> {
+pub struct Capacitor<T: Transcendental> {
     capacitance: T,
     sample_rate: T,
     port_resistance: T,
@@ -66,7 +66,7 @@ pub struct Capacitor<T: AudioNum> {
     state: T,
 }
 
-impl<T: AudioNum> Capacitor<T> {
+impl<T: Transcendental> Capacitor<T> {
     /// Create a new capacitor with given capacitance in farads and sample rate
     pub fn new(capacitance: T, sample_rate: T) -> Self {
         let two = T::from_f32(2.0);
@@ -105,7 +105,7 @@ impl<T: AudioNum> Capacitor<T> {
     }
 }
 
-impl<T: AudioNum> WdfElement<T> for Capacitor<T> {
+impl<T: Transcendental> WdfElement<T> for Capacitor<T> {
     fn port_resistance(&self) -> T {
         self.port_resistance
     }
@@ -138,7 +138,7 @@ impl<T: AudioNum> WdfElement<T> for Capacitor<T> {
 
 /// Inductor WDF element (trapezoidal integration)
 #[derive(Debug, Clone)]
-pub struct Inductor<T: AudioNum> {
+pub struct Inductor<T: Transcendental> {
     inductance: T,
     sample_rate: T,
     port_resistance: T,
@@ -147,7 +147,7 @@ pub struct Inductor<T: AudioNum> {
     state: T,
 }
 
-impl<T: AudioNum> Inductor<T> {
+impl<T: Transcendental> Inductor<T> {
     /// Create a new inductor with given inductance in henries and sample rate
     pub fn new(inductance: T, sample_rate: T) -> Self {
         let two = T::from_f32(2.0);
@@ -165,7 +165,7 @@ impl<T: AudioNum> Inductor<T> {
     }
 }
 
-impl<T: AudioNum> WdfElement<T> for Inductor<T> {
+impl<T: Transcendental> WdfElement<T> for Inductor<T> {
     fn port_resistance(&self) -> T {
         self.port_resistance
     }
@@ -198,7 +198,7 @@ impl<T: AudioNum> WdfElement<T> for Inductor<T> {
 
 /// Diode WDF element (nonlinear, Newton-Raphson solution)
 #[derive(Debug, Clone)]
-pub struct Diode<T: AudioNum> {
+pub struct Diode<T: Transcendental> {
     saturation_current: T,
     thermal_voltage: T,
     ideality_factor: T,
@@ -208,7 +208,7 @@ pub struct Diode<T: AudioNum> {
     last_b: T,
 }
 
-impl<T: AudioNum> Diode<T> {
+impl<T: Transcendental> Diode<T> {
     /// Create a new diode with Shockley parameters
     ///
     /// * `saturation_current` - Reverse saturation current Is (amperes)
@@ -273,7 +273,7 @@ impl<T: AudioNum> Diode<T> {
     }
 }
 
-impl<T: AudioNum> WdfElement<T> for Diode<T> {
+impl<T: Transcendental> WdfElement<T> for Diode<T> {
     fn port_resistance(&self) -> T {
         self.port_resistance
     }

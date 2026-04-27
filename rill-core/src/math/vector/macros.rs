@@ -16,7 +16,7 @@
 //! // Применение выражения ко всему слайсу
 //! let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
 //! let mut output = [0.0f32; 8];
-//! vec_map!(|x| x * 2.0 + 1.0, &input, &mut output);
+//! vec_map!(&input, &mut output, |x| x * 2.0 + 1.0);
 //! // output = [3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 17.0]
 //! ```
 //!
@@ -25,70 +25,44 @@
 //! - [`vec_expr!`] – создаёт ленивое векторное выражение (заглушка, требует исправления модуля expr).
 //! - [`vec_eval!`] – немедленно вычисляет векторное выражение (заглушка).
 
-use crate::vector::scalar::ScalarVector4;
-use crate::vector::traits::Vector;
+use crate::math::vector::scalar::ScalarVector4;
+use crate::math::vector::traits::Vector;
 
-// -----------------------------------------------------------------------------
-// vec_map!
-// -----------------------------------------------------------------------------
-
-/// Применяет векторное выражение ко всему слайсу, используя оптимальную ширину вектора.
-///
-/// Синтаксис: `vec_map!(замыкание, входной_слайс, выходной_слайс)`
-/// Замыкание должно принимать один параметр типа `ScalarVector4<T>` и возвращать `ScalarVector4<T>`.
-///
-/// # Пример
-/// ```
-/// # use rill_core::vector::macros::*;
-/// # use rill_core::vector::prelude::*;
-/// let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-/// let mut output = [0.0f32; 8];
-/// vec_map!(|x| x * 2.0 + 1.0, &input, &mut output);
-/// ```
-///
-/// # Ограничения
-/// - В настоящее время используется фиксированная ширина вектора 4.
-/// - Тип элементов слайса должен быть `f32` или `f64` (поддерживается `AudioNum`).
-/// - Замыкание должно использовать только операции, определённые для `ScalarVector4<T>`.
 #[macro_export]
+///
 macro_rules! vec_map {
-    ($closure:expr, $input:expr, $output:expr) => {{
-        use $crate::vector::traits::Vector;
-        const N: usize = 4; // ширина вектора ScalarVector4
+    ($input:expr, $output:expr, |$x:ident| $($body:tt)*) => {{
+        use $crate::math::vector::traits::Vector;
+        use $crate::math::vector::scalar::ScalarVector4;
+        const N: usize = 4;
         let input: &[_] = $input;
         let output: &mut [_] = $output;
         assert_eq!(input.len(), output.len(), "input and output slices must have equal length");
 
-        // Определяем тип элемента по первому элементу входного слайса (если он пуст — ничего не делаем)
         if input.is_empty() {
             return;
         }
 
-        // Обработка по чанкам
+        let closure = |$x: ScalarVector4<_>| -> ScalarVector4<_> { $($body)* };
+
         let chunks = input.len() / N;
         let remainder = input.len() % N;
 
         for i in 0..chunks {
             let start = i * N;
-            // Загружаем вектор из входного слайса
             let x = <ScalarVector4<_>>::load(&input[start..start + N]);
-            // Вычисляем замыкание
-            let y = $closure(x);
-            // Сохраняем результат в выходной слайс
+            let y = closure(x);
             y.store(&mut output[start..start + N]);
         }
 
-        // Обработка остатка скалярно
         if remainder > 0 {
             let start = chunks * N;
-            // Создаём временный вектор для остатка (дополняем нулями)
             let mut temp_input = [Default::default(); 4];
             for i in 0..remainder {
                 temp_input[i] = input[start + i];
             }
             let x = <ScalarVector4<_>>::load(&temp_input[0..4]);
-            let y = $closure(x);
-            // Сохраняем только remainder элементов
+            let y = closure(x);
             for i in 0..remainder {
                 output[start + i] = y.extract(i);
             }
@@ -128,7 +102,7 @@ pub use crate::vec_map;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::scalar::ScalarVector4;
+        use crate::math::vector::scalar::ScalarVector4;
 
     #[test]
     fn test_vec_map_f32() {
@@ -136,7 +110,7 @@ mod tests {
         let mut output = [0.0f32; 8];
 
         // Замыкание: x * 2.0 + 1.0
-        vec_map!(|x| x * 2.0 + 1.0, &input, &mut output);
+        vec_map!(&input, &mut output, |x| x * 2.0 + 1.0);
 
         assert_eq!(output[0], 3.0); // 1*2 + 1
         assert_eq!(output[1], 5.0); // 2*2 + 1
@@ -153,7 +127,7 @@ mod tests {
         let input = [1.0f64, 2.0, 3.0, 4.0];
         let mut output = [0.0f64; 4];
 
-        vec_map!(|x| x * 3.0 - 1.0, &input, &mut output);
+        vec_map!(&input, &mut output, |x| x * 3.0 - 1.0);
 
         assert_eq!(output[0], 2.0); // 1*3 - 1
         assert_eq!(output[1], 5.0); // 2*3 - 1
@@ -165,7 +139,7 @@ mod tests {
     fn test_vec_map_empty() {
         let input: [f32; 0] = [];
         let mut output: [f32; 0] = [];
-        vec_map!(|x| x * 2.0, &input, &mut output); // не должно паниковать
+        vec_map!(&input, &mut output, |x| x * 2.0); // не должно паниковать
     }
 
     #[test]
@@ -173,7 +147,7 @@ mod tests {
         let input = [1.0f32, 2.0, 3.0]; // три элемента
         let mut output = [0.0f32; 3];
 
-        vec_map!(|x| x + 10.0, &input, &mut output);
+        vec_map!(&input, &mut output, |x| x + 10.0);
 
         assert_eq!(output[0], 11.0);
         assert_eq!(output[1], 12.0);

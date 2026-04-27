@@ -3,7 +3,7 @@
 //! Эти тесты вынесены в отдельный файл, чтобы избежать конфликтов
 //! с экспортом макросов и проблем видимости.
 
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
 use rill_core::time::ClockTick;
 use rill_core::traits::ActionContext;
 use rill_core_dsp::algorithm::Algorithm;
@@ -19,7 +19,7 @@ fn test_simple_algorithm_f32() {
     simple_algorithm! {
         /// Test gain
         #[derive(Debug, Clone, Copy)]
-        pub struct TestGain<T: AudioNum> {
+        pub struct TestGain<T: Transcendental> {
             params: {
                 gain: T = T::from_f32(2.0),
             },
@@ -49,7 +49,7 @@ fn test_simple_algorithm_f64() {
     simple_algorithm! {
         /// Test gain
         #[derive(Debug, Clone, Copy)]
-        pub struct TestGain<T: AudioNum> {
+        pub struct TestGain<T: Transcendental> {
             params: {
                 gain: T = T::from_f32(2.0),
             },
@@ -79,7 +79,7 @@ fn test_parameterized_algorithm() {
     parameterized_algorithm! {
         /// Test parameterized
         #[derive(Debug, Clone, Copy)]
-        pub struct TestParam<T: AudioNum> {
+        pub struct TestParam<T: Transcendental> {
             params: {
                 value: T = T::from_f32(1.0),
             },
@@ -111,7 +111,7 @@ fn test_filter_algorithm() {
     filter_algorithm! {
         /// Test filter
         #[derive(Debug, Clone, Copy)]
-        pub struct TestFilter<T: AudioNum> {
+        pub struct TestFilter<T: Transcendental> {
             params: {
                 cutoff: T = T::from_f32(1000.0),
                 q: T = T::from_f32(0.707),
@@ -160,7 +160,7 @@ fn test_effect_algorithm_f32() {
     effect_algorithm! {
         /// Test effect
         #[derive(Debug, Clone, Copy)]
-        pub struct TestEffect<T: AudioNum> {
+        pub struct TestEffect<T: Transcendental> {
             params: {
                 amount: T = T::from_f32(0.5),
             },
@@ -193,7 +193,7 @@ fn test_effect_algorithm_f64() {
     effect_algorithm! {
         /// Test effect
         #[derive(Debug, Clone, Copy)]
-        pub struct TestEffect<T: AudioNum> {
+        pub struct TestEffect<T: Transcendental> {
             params: {
                 amount: T = T::from_f32(0.5),
             },
@@ -226,7 +226,7 @@ fn test_generator_algorithm_f32() {
     generator_algorithm! {
         /// Test generator
         #[derive(Debug, Clone, Copy)]
-        pub struct TestGen<T: AudioNum> {
+        pub struct TestGen<T: Transcendental> {
             params: {
                 value: T = T::from_f32(1.0),
             },
@@ -254,7 +254,7 @@ fn test_generator_algorithm_f64() {
     generator_algorithm! {
         /// Test generator
         #[derive(Debug, Clone, Copy)]
-        pub struct TestGen<T: AudioNum> {
+        pub struct TestGen<T: Transcendental> {
             params: {
                 value: T = T::from_f32(1.0),
             },

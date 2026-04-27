@@ -3,7 +3,7 @@
 //! Fallback реализации для платформ без SIMD поддержки или для отладки.
 
 use super::traits::*;
-use crate::AudioNum;
+use crate::{Scalar, Transcendental};
 
 // -----------------------------------------------------------------------------
 // Скалярные векторные типы
@@ -11,25 +11,25 @@ use crate::AudioNum;
 
 /// Скалярный вектор из 1 элемента
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ScalarVector1<T: AudioNum>([T; 1]);
+pub struct ScalarVector1<T: Scalar>([T; 1]);
 
 /// Скалярный вектор из 2 элементов
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ScalarVector2<T: AudioNum>([T; 2]);
+pub struct ScalarVector2<T: Scalar>([T; 2]);
 
 /// Скалярный вектор из 4 элементов
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ScalarVector4<T: AudioNum>([T; 4]);
+pub struct ScalarVector4<T: Scalar>([T; 4]);
 
 /// Скалярный вектор из 8 элементов
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ScalarVector8<T: AudioNum>([T; 8]);
+pub struct ScalarVector8<T: Scalar>([T; 8]);
 
 // -----------------------------------------------------------------------------
 // Реализация Vector для ScalarVector4
 // -----------------------------------------------------------------------------
 
-impl<T: AudioNum> Vector<T, 4> for ScalarVector4<T> {
+impl<T: Scalar> Vector<T, 4> for ScalarVector4<T> {
     fn splat(value: T) -> Self {
         ScalarVector4([value; 4])
     }
@@ -134,62 +134,24 @@ impl<T: AudioNum> Vector<T, 4> for ScalarVector4<T> {
         ScalarVector4(arr)
     }
 
-    fn sqrt(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].sqrt();
-        }
-        ScalarVector4(arr)
-    }
-
-    fn exp(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].exp();
-        }
-        ScalarVector4(arr)
-    }
-
-    fn ln(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].ln();
-        }
-        ScalarVector4(arr)
-    }
-
-    fn sin(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].sin();
-        }
-        ScalarVector4(arr)
-    }
-
-    fn cos(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].cos();
-        }
-        ScalarVector4(arr)
-    }
-
-    fn tan(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].tan();
-        }
-        ScalarVector4(arr)
-    }
 }
 
-impl<T: AudioNum> Default for ScalarVector4<T> {
+impl<T: Transcendental> VectorTranscendental<T, 4> for ScalarVector4<T> {
+    fn sqrt(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].sqrt(); } ScalarVector4(a) }
+    fn exp(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].exp(); } ScalarVector4(a) }
+    fn ln(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].ln(); } ScalarVector4(a) }
+    fn sin(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].sin(); } ScalarVector4(a) }
+    fn cos(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].cos(); } ScalarVector4(a) }
+    fn tan(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].tan(); } ScalarVector4(a) }
+}
+
+impl<T: Scalar> Default for ScalarVector4<T> {
     fn default() -> Self {
         ScalarVector4([T::ZERO; 4])
     }
 }
 
-impl<T: AudioNum> Vector<T, 1> for ScalarVector1<T> {
+impl<T: Scalar> Vector<T, 1> for ScalarVector1<T> {
     fn splat(value: T) -> Self {
         ScalarVector1([value; 1])
     }
@@ -274,44 +236,18 @@ impl<T: AudioNum> Vector<T, 1> for ScalarVector1<T> {
         ScalarVector1(arr)
     }
 
-    fn sqrt(&self) -> Self {
-        let mut arr = [T::ZERO; 1];
-        arr[0] = self.0[0].sqrt();
-        ScalarVector1(arr)
-    }
-
-    fn exp(&self) -> Self {
-        let mut arr = [T::ZERO; 1];
-        arr[0] = self.0[0].exp();
-        ScalarVector1(arr)
-    }
-
-    fn ln(&self) -> Self {
-        let mut arr = [T::ZERO; 1];
-        arr[0] = self.0[0].ln();
-        ScalarVector1(arr)
-    }
-
-    fn sin(&self) -> Self {
-        let mut arr = [T::ZERO; 1];
-        arr[0] = self.0[0].sin();
-        ScalarVector1(arr)
-    }
-
-    fn cos(&self) -> Self {
-        let mut arr = [T::ZERO; 1];
-        arr[0] = self.0[0].cos();
-        ScalarVector1(arr)
-    }
-
-    fn tan(&self) -> Self {
-        let mut arr = [T::ZERO; 1];
-        arr[0] = self.0[0].tan();
-        ScalarVector1(arr)
-    }
 }
 
-impl<T: AudioNum> Default for ScalarVector1<T> {
+impl<T: Transcendental> VectorTranscendental<T, 1> for ScalarVector1<T> {
+    fn sqrt(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].sqrt(); ScalarVector1(a) }
+    fn exp(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].exp(); ScalarVector1(a) }
+    fn ln(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].ln(); ScalarVector1(a) }
+    fn sin(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].sin(); ScalarVector1(a) }
+    fn cos(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].cos(); ScalarVector1(a) }
+    fn tan(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].tan(); ScalarVector1(a) }
+}
+
+impl<T: Scalar> Default for ScalarVector1<T> {
     fn default() -> Self {
         ScalarVector1([T::ZERO; 1])
     }
@@ -319,7 +255,7 @@ impl<T: AudioNum> Default for ScalarVector1<T> {
 
 // Реализации для ScalarVector2 и ScalarVector8 аналогичны (опущены для краткости)
 
-impl<T: AudioNum> Vector<T, 2> for ScalarVector2<T> {
+impl<T: Scalar> Vector<T, 2> for ScalarVector2<T> {
     fn splat(value: T) -> Self {
         ScalarVector2([value; 2])
     }
@@ -424,56 +360,18 @@ impl<T: AudioNum> Vector<T, 2> for ScalarVector2<T> {
         ScalarVector2(arr)
     }
 
-    fn sqrt(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].sqrt();
-        }
-        ScalarVector2(arr)
-    }
-
-    fn exp(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].exp();
-        }
-        ScalarVector2(arr)
-    }
-
-    fn ln(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].ln();
-        }
-        ScalarVector2(arr)
-    }
-
-    fn sin(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].sin();
-        }
-        ScalarVector2(arr)
-    }
-
-    fn cos(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].cos();
-        }
-        ScalarVector2(arr)
-    }
-
-    fn tan(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].tan();
-        }
-        ScalarVector2(arr)
-    }
 }
 
-impl<T: AudioNum> Default for ScalarVector2<T> {
+impl<T: Transcendental> VectorTranscendental<T, 2> for ScalarVector2<T> {
+    fn sqrt(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].sqrt(); } ScalarVector2(a) }
+    fn exp(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].exp(); } ScalarVector2(a) }
+    fn ln(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].ln(); } ScalarVector2(a) }
+    fn sin(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].sin(); } ScalarVector2(a) }
+    fn cos(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].cos(); } ScalarVector2(a) }
+    fn tan(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].tan(); } ScalarVector2(a) }
+}
+
+impl<T: Scalar> Default for ScalarVector2<T> {
     fn default() -> Self {
         ScalarVector2([T::ZERO; 2])
     }
@@ -485,7 +383,7 @@ impl<T: AudioNum> Default for ScalarVector2<T> {
 
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 
-impl<T: AudioNum> Add for ScalarVector4<T> {
+impl<T: Scalar> Add for ScalarVector4<T> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
@@ -497,7 +395,7 @@ impl<T: AudioNum> Add for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Sub for ScalarVector4<T> {
+impl<T: Scalar> Sub for ScalarVector4<T> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
@@ -509,7 +407,7 @@ impl<T: AudioNum> Sub for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Mul for ScalarVector4<T> {
+impl<T: Scalar> Mul for ScalarVector4<T> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
@@ -521,7 +419,7 @@ impl<T: AudioNum> Mul for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Div for ScalarVector4<T> {
+impl<T: Scalar> Div for ScalarVector4<T> {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self {
@@ -533,7 +431,7 @@ impl<T: AudioNum> Div for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Rem for ScalarVector4<T> {
+impl<T: Scalar> Rem for ScalarVector4<T> {
     type Output = Self;
 
     fn rem(self, rhs: Self) -> Self {
@@ -545,7 +443,7 @@ impl<T: AudioNum> Rem for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Neg for ScalarVector4<T> {
+impl<T: Scalar> Neg for ScalarVector4<T> {
     type Output = Self;
 
     fn neg(self) -> Self {
@@ -557,7 +455,7 @@ impl<T: AudioNum> Neg for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Add for ScalarVector2<T> {
+impl<T: Scalar> Add for ScalarVector2<T> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
@@ -569,7 +467,7 @@ impl<T: AudioNum> Add for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Sub for ScalarVector2<T> {
+impl<T: Scalar> Sub for ScalarVector2<T> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
@@ -581,7 +479,7 @@ impl<T: AudioNum> Sub for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Mul for ScalarVector2<T> {
+impl<T: Scalar> Mul for ScalarVector2<T> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
@@ -593,7 +491,7 @@ impl<T: AudioNum> Mul for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Div for ScalarVector2<T> {
+impl<T: Scalar> Div for ScalarVector2<T> {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self {
@@ -605,7 +503,7 @@ impl<T: AudioNum> Div for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Rem for ScalarVector2<T> {
+impl<T: Scalar> Rem for ScalarVector2<T> {
     type Output = Self;
 
     fn rem(self, rhs: Self) -> Self {
@@ -617,7 +515,7 @@ impl<T: AudioNum> Rem for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Neg for ScalarVector2<T> {
+impl<T: Scalar> Neg for ScalarVector2<T> {
     type Output = Self;
 
     fn neg(self) -> Self {
@@ -629,7 +527,7 @@ impl<T: AudioNum> Neg for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Add for ScalarVector1<T> {
+impl<T: Scalar> Add for ScalarVector1<T> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
@@ -639,7 +537,7 @@ impl<T: AudioNum> Add for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Sub for ScalarVector1<T> {
+impl<T: Scalar> Sub for ScalarVector1<T> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
@@ -649,7 +547,7 @@ impl<T: AudioNum> Sub for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Mul for ScalarVector1<T> {
+impl<T: Scalar> Mul for ScalarVector1<T> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
@@ -659,7 +557,7 @@ impl<T: AudioNum> Mul for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Div for ScalarVector1<T> {
+impl<T: Scalar> Div for ScalarVector1<T> {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self {
@@ -669,7 +567,7 @@ impl<T: AudioNum> Div for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Rem for ScalarVector1<T> {
+impl<T: Scalar> Rem for ScalarVector1<T> {
     type Output = Self;
 
     fn rem(self, rhs: Self) -> Self {
@@ -679,7 +577,7 @@ impl<T: AudioNum> Rem for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Neg for ScalarVector1<T> {
+impl<T: Scalar> Neg for ScalarVector1<T> {
     type Output = Self;
 
     fn neg(self) -> Self {
@@ -693,7 +591,7 @@ impl<T: AudioNum> Neg for ScalarVector1<T> {
 // Операции со скалярами
 // -----------------------------------------------------------------------------
 
-impl<T: AudioNum> Mul<T> for ScalarVector4<T> {
+impl<T: Scalar> Mul<T> for ScalarVector4<T> {
     type Output = Self;
 
     fn mul(self, rhs: T) -> Self {
@@ -701,7 +599,7 @@ impl<T: AudioNum> Mul<T> for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Div<T> for ScalarVector4<T> {
+impl<T: Scalar> Div<T> for ScalarVector4<T> {
     type Output = Self;
 
     fn div(self, rhs: T) -> Self {
@@ -709,7 +607,7 @@ impl<T: AudioNum> Div<T> for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Add<T> for ScalarVector4<T> {
+impl<T: Scalar> Add<T> for ScalarVector4<T> {
     type Output = Self;
 
     fn add(self, rhs: T) -> Self {
@@ -717,7 +615,7 @@ impl<T: AudioNum> Add<T> for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Sub<T> for ScalarVector4<T> {
+impl<T: Scalar> Sub<T> for ScalarVector4<T> {
     type Output = Self;
 
     fn sub(self, rhs: T) -> Self {
@@ -725,7 +623,7 @@ impl<T: AudioNum> Sub<T> for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Rem<T> for ScalarVector4<T> {
+impl<T: Scalar> Rem<T> for ScalarVector4<T> {
     type Output = Self;
 
     fn rem(self, rhs: T) -> Self {
@@ -733,7 +631,7 @@ impl<T: AudioNum> Rem<T> for ScalarVector4<T> {
     }
 }
 
-impl<T: AudioNum> Mul<T> for ScalarVector2<T> {
+impl<T: Scalar> Mul<T> for ScalarVector2<T> {
     type Output = Self;
 
     fn mul(self, rhs: T) -> Self {
@@ -741,7 +639,7 @@ impl<T: AudioNum> Mul<T> for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Div<T> for ScalarVector2<T> {
+impl<T: Scalar> Div<T> for ScalarVector2<T> {
     type Output = Self;
 
     fn div(self, rhs: T) -> Self {
@@ -749,7 +647,7 @@ impl<T: AudioNum> Div<T> for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Add<T> for ScalarVector2<T> {
+impl<T: Scalar> Add<T> for ScalarVector2<T> {
     type Output = Self;
 
     fn add(self, rhs: T) -> Self {
@@ -757,7 +655,7 @@ impl<T: AudioNum> Add<T> for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Sub<T> for ScalarVector2<T> {
+impl<T: Scalar> Sub<T> for ScalarVector2<T> {
     type Output = Self;
 
     fn sub(self, rhs: T) -> Self {
@@ -765,7 +663,7 @@ impl<T: AudioNum> Sub<T> for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Rem<T> for ScalarVector2<T> {
+impl<T: Scalar> Rem<T> for ScalarVector2<T> {
     type Output = Self;
 
     fn rem(self, rhs: T) -> Self {
@@ -773,7 +671,7 @@ impl<T: AudioNum> Rem<T> for ScalarVector2<T> {
     }
 }
 
-impl<T: AudioNum> Mul<T> for ScalarVector1<T> {
+impl<T: Scalar> Mul<T> for ScalarVector1<T> {
     type Output = Self;
 
     fn mul(self, rhs: T) -> Self {
@@ -781,7 +679,7 @@ impl<T: AudioNum> Mul<T> for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Div<T> for ScalarVector1<T> {
+impl<T: Scalar> Div<T> for ScalarVector1<T> {
     type Output = Self;
 
     fn div(self, rhs: T) -> Self {
@@ -789,7 +687,7 @@ impl<T: AudioNum> Div<T> for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Add<T> for ScalarVector1<T> {
+impl<T: Scalar> Add<T> for ScalarVector1<T> {
     type Output = Self;
 
     fn add(self, rhs: T) -> Self {
@@ -797,7 +695,7 @@ impl<T: AudioNum> Add<T> for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Sub<T> for ScalarVector1<T> {
+impl<T: Scalar> Sub<T> for ScalarVector1<T> {
     type Output = Self;
 
     fn sub(self, rhs: T) -> Self {
@@ -805,7 +703,7 @@ impl<T: AudioNum> Sub<T> for ScalarVector1<T> {
     }
 }
 
-impl<T: AudioNum> Rem<T> for ScalarVector1<T> {
+impl<T: Scalar> Rem<T> for ScalarVector1<T> {
     type Output = Self;
 
     fn rem(self, rhs: T) -> Self {

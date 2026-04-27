@@ -1,12 +1,12 @@
 use crate::WdfElement;
 use parking_lot::RwLock;
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use std::sync::Arc;
 
 /// Analyze magnitude response of a WDF element chain
 ///
 /// Returns a vector of (frequency, magnitude) pairs.
-pub fn frequency_response_magnitude<T: AudioNum>(
+pub fn frequency_response_magnitude<T: Transcendental>(
     elements: &[Arc<RwLock<dyn WdfElement<T>>>],
     frequencies: &[T],
     _sample_rate: T,
@@ -31,7 +31,7 @@ pub fn frequency_response_magnitude<T: AudioNum>(
 }
 
 /// Analyze total harmonic distortion (THD) of a WDF element
-pub fn analyze_distortion<T: AudioNum>(
+pub fn analyze_distortion<T: Transcendental>(
     element: &mut dyn WdfElement<T>,
     frequency: T,
     amplitude: T,

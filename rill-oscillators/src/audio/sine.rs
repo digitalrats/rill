@@ -1,22 +1,22 @@
-//! Sine wave oscillator using rill-core-dsp with AudioNum
+//! Sine wave oscillator using rill-core-dsp with Transcendental
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
     ParameterId, Port, Processor,
 };
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
 use rill_core_dsp::generators::{BasicOscillator, Generator, Waveform};
 use std::marker::PhantomData;
 
 /// Sine wave oscillator generic over floating point type
 ///
-/// Uses the optimized BasicOscillator from rill-core-dsp with AudioNum trait.
+/// Uses the optimized BasicOscillator from rill-core-dsp with Transcendental trait.
 /// Supports both f32 and f64 through type parameter T.
 ///
 /// # Type Parameters
-/// - `T`: Floating point type (f32 or f64) implementing AudioNum
+/// - `T`: Floating point type (f32 or f64) implementing Transcendental
 /// - `BUF_SIZE`: Fixed block size for processing
 ///
 /// # Parameters
@@ -30,7 +30,7 @@ use std::marker::PhantomData;
 ///
 /// # Outputs
 /// - Port 0: Sine wave output
-pub struct SineOsc<T: AudioNum, const BUF_SIZE: usize> {
+pub struct SineOsc<T: Transcendental, const BUF_SIZE: usize> {
     /// Core DSP oscillator
     osc: BasicOscillator<T>,
 
@@ -65,7 +65,7 @@ pub struct SineOsc<T: AudioNum, const BUF_SIZE: usize> {
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
     /// Create new sine oscillator with default settings
     pub fn new() -> Self {
         let osc = BasicOscillator::new(Waveform::Sine, 440.0, T::from_f32(1.0));
@@ -170,13 +170,13 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SineOsc".to_string(),
@@ -331,7 +331,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, B
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn process(
         &mut self,
         clock: &ClockTick,

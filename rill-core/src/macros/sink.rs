@@ -95,7 +95,7 @@ macro_rules! sink_node {
                 match name {
                     $(
                         stringify!($param_name) => Some($crate::ParamValue::Float(
-                            <_ as $crate::math::AudioNum>::to_f32(self.$param_name)
+                            <_ as $crate::math::Transcendental>::to_f32(self.$param_name)
                         )),
                     )*
                     _ => None,
@@ -108,7 +108,7 @@ macro_rules! sink_node {
                     match name {
                         $(
                             stringify!($param_name) => {
-                                self.$param_name = $crate::math::AudioNum::from_f32(v);
+                                self.$param_name = $crate::math::Transcendental::from_f32(v);
                                 Ok(())
                             },
                         )*

@@ -1,7 +1,7 @@
 use crate::CassetteDeckModel;
 use rill_core::prelude::*;
 
-pub struct CassetteDeckProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct CassetteDeckProcessor<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
@@ -14,7 +14,7 @@ pub struct CassetteDeckProcessor<T: AudioNum, const BUF_SIZE: usize> {
     pub wow_flutter: f32,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE> {
     pub fn new(sample_rate: f32) -> Self {
         let mut metadata = NodeMetadata::new("CassetteDeck", NodeCategory::Processor);
         metadata.parameters = vec![
@@ -59,7 +59,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     for CassetteDeckProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> NodeTypeId
@@ -180,7 +180,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for CassetteDeckProcessor<T, BUF_SIZE>
 {
     fn process(

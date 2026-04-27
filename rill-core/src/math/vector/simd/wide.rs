@@ -7,11 +7,11 @@
 //! - `F32x4`, `F32x8` для `f32`
 //! - `F64x2`, `F64x4` для `f64`
 
-use crate::AudioNum;
+use crate::Transcendental;
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 use wide::{f32x4, f32x8, f64x2, f64x4, CmpEq, CmpGe, CmpGt, CmpLe, CmpLt, CmpNe};
 
-use crate::vector::traits::{Vector, VectorMask};
+use crate::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
 
 // -----------------------------------------------------------------------------
 // Обёртки над типами wide для реализации трейта Vector
@@ -140,29 +140,15 @@ impl Vector<f32, 4> for F32x4 {
         F32x4(self.0.max(min.0).min(max.0))
     }
 
-    fn sqrt(&self) -> Self {
-        F32x4(self.0.sqrt())
-    }
+}
 
-    fn exp(&self) -> Self {
-        F32x4(self.0.exp())
-    }
-
-    fn ln(&self) -> Self {
-        F32x4(self.0.ln())
-    }
-
-    fn sin(&self) -> Self {
-        F32x4(self.0.sin())
-    }
-
-    fn cos(&self) -> Self {
-        F32x4(self.0.cos())
-    }
-
-    fn tan(&self) -> Self {
-        F32x4(self.0.tan())
-    }
+impl VectorTranscendental<f32, 4> for F32x4 {
+    fn sqrt(&self) -> Self { F32x4(self.0.sqrt()) }
+    fn exp(&self) -> Self { F32x4(self.0.exp()) }
+    fn ln(&self) -> Self { F32x4(self.0.ln()) }
+    fn sin(&self) -> Self { F32x4(self.0.sin()) }
+    fn cos(&self) -> Self { F32x4(self.0.cos()) }
+    fn tan(&self) -> Self { F32x4(self.0.tan()) }
 }
 
 // -----------------------------------------------------------------------------
@@ -242,29 +228,15 @@ impl Vector<f32, 8> for F32x8 {
         F32x8(self.0.max(min.0).min(max.0))
     }
 
-    fn sqrt(&self) -> Self {
-        F32x8(self.0.sqrt())
-    }
+}
 
-    fn exp(&self) -> Self {
-        F32x8(self.0.exp())
-    }
-
-    fn ln(&self) -> Self {
-        F32x8(self.0.ln())
-    }
-
-    fn sin(&self) -> Self {
-        F32x8(self.0.sin())
-    }
-
-    fn cos(&self) -> Self {
-        F32x8(self.0.cos())
-    }
-
-    fn tan(&self) -> Self {
-        F32x8(self.0.tan())
-    }
+impl VectorTranscendental<f32, 8> for F32x8 {
+    fn sqrt(&self) -> Self { F32x8(self.0.sqrt()) }
+    fn exp(&self) -> Self { F32x8(self.0.exp()) }
+    fn ln(&self) -> Self { F32x8(self.0.ln()) }
+    fn sin(&self) -> Self { F32x8(self.0.sin()) }
+    fn cos(&self) -> Self { F32x8(self.0.cos()) }
+    fn tan(&self) -> Self { F32x8(self.0.tan()) }
 }
 
 // -----------------------------------------------------------------------------
@@ -344,29 +316,15 @@ impl Vector<f64, 2> for F64x2 {
         F64x2(self.0.max(min.0).min(max.0))
     }
 
-    fn sqrt(&self) -> Self {
-        F64x2(self.0.sqrt())
-    }
+}
 
-    fn exp(&self) -> Self {
-        F64x2(self.0.exp())
-    }
-
-    fn ln(&self) -> Self {
-        F64x2(self.0.ln())
-    }
-
-    fn sin(&self) -> Self {
-        F64x2(self.0.sin())
-    }
-
-    fn cos(&self) -> Self {
-        F64x2(self.0.cos())
-    }
-
-    fn tan(&self) -> Self {
-        F64x2(self.0.tan())
-    }
+impl VectorTranscendental<f64, 2> for F64x2 {
+    fn sqrt(&self) -> Self { F64x2(self.0.sqrt()) }
+    fn exp(&self) -> Self { F64x2(self.0.exp()) }
+    fn ln(&self) -> Self { F64x2(self.0.ln()) }
+    fn sin(&self) -> Self { F64x2(self.0.sin()) }
+    fn cos(&self) -> Self { F64x2(self.0.cos()) }
+    fn tan(&self) -> Self { F64x2(self.0.tan()) }
 }
 
 // -----------------------------------------------------------------------------
@@ -446,29 +404,15 @@ impl Vector<f64, 4> for F64x4 {
         F64x4(self.0.max(min.0).min(max.0))
     }
 
-    fn sqrt(&self) -> Self {
-        F64x4(self.0.sqrt())
-    }
+}
 
-    fn exp(&self) -> Self {
-        F64x4(self.0.exp())
-    }
-
-    fn ln(&self) -> Self {
-        F64x4(self.0.ln())
-    }
-
-    fn sin(&self) -> Self {
-        F64x4(self.0.sin())
-    }
-
-    fn cos(&self) -> Self {
-        F64x4(self.0.cos())
-    }
-
-    fn tan(&self) -> Self {
-        F64x4(self.0.tan())
-    }
+impl VectorTranscendental<f64, 4> for F64x4 {
+    fn sqrt(&self) -> Self { F64x4(self.0.sqrt()) }
+    fn exp(&self) -> Self { F64x4(self.0.exp()) }
+    fn ln(&self) -> Self { F64x4(self.0.ln()) }
+    fn sin(&self) -> Self { F64x4(self.0.sin()) }
+    fn cos(&self) -> Self { F64x4(self.0.cos()) }
+    fn tan(&self) -> Self { F64x4(self.0.tan()) }
 }
 
 // -----------------------------------------------------------------------------
@@ -722,7 +666,7 @@ impl Neg for F64x4 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::traits::VectorMask;
+        use crate::math::vector::traits::VectorMask;
 
     #[test]
     fn test_f32x4_basic() {

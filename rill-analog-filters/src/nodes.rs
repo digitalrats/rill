@@ -1,7 +1,7 @@
 use rill_core::prelude::*;
 use rill_core_wdf::filters::MoogLadder;
 
-pub struct WdfMoogLadderProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct WdfMoogLadderProcessor<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
@@ -12,7 +12,7 @@ pub struct WdfMoogLadderProcessor<T: AudioNum, const BUF_SIZE: usize> {
     pub resonance: f32,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
     pub fn new(sample_rate: f32) -> Self {
         let mut metadata = NodeMetadata::new("WdfMoogLadder", NodeCategory::Processor);
         metadata.parameters = vec![
@@ -50,7 +50,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     for WdfMoogLadderProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> NodeTypeId
@@ -158,7 +158,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for WdfMoogLadderProcessor<T, BUF_SIZE>
 {
     fn process(

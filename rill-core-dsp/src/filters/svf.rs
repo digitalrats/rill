@@ -10,7 +10,7 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, Paramete
 use crate::vector::{ScalarVector1, Vector};
 use core::f32::consts::PI;
 use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Фильтр переменных состояния
 ///
@@ -18,7 +18,7 @@ use rill_core::AudioNum;
 /// - lowpass: низкие частоты
 /// - highpass: высокие частоты
 /// - bandpass: полосовой
-pub struct StateVariableFilter<T: AudioNum> {
+pub struct StateVariableFilter<T: Transcendental> {
     /// Параметры фильтра
     params: FilterParams,
     /// Коэффициенты
@@ -34,7 +34,7 @@ pub struct StateVariableFilter<T: AudioNum> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum> StateVariableFilter<T> {
+impl<T: Transcendental> StateVariableFilter<T> {
     /// Создать новый SVF
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
@@ -76,7 +76,7 @@ impl<T: AudioNum> StateVariableFilter<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
+impl<T: Transcendental> Algorithm<T> for StateVariableFilter<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_coeffs();
@@ -126,7 +126,7 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
     }
 }
 
-impl<T: AudioNum> ParameterizedAlgorithm<T> for StateVariableFilter<T> {
+impl<T: Transcendental> ParameterizedAlgorithm<T> for StateVariableFilter<T> {
     type Params = FilterParams;
 
     fn params(&self) -> &Self::Params {

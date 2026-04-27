@@ -2,7 +2,7 @@
 
 use super::array_from_fn;
 use crate::buffer::{AtomicCell, AtomicStats, AudioBuffer, BufferStats, CACHE_LINE_SIZE};
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::fmt;
@@ -13,7 +13,7 @@ use std::fmt;
 
 /// Buffer for broadcasting from one producer to multiple consumers
 #[repr(align(64))]
-pub struct FanOutBuffer<T: AudioNum, const N: usize, const CONSUMERS: usize> {
+pub struct FanOutBuffer<T: Transcendental, const N: usize, const CONSUMERS: usize> {
     /// Shared data storage using AtomicCell for each sample
     storage: [AtomicCell<T>; N],
 
@@ -33,7 +33,7 @@ pub struct FanOutBuffer<T: AudioNum, const N: usize, const CONSUMERS: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: AudioNum, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, N, CONSUMERS> {
+impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, N, CONSUMERS> {
     /// Create new fan-out buffer
     pub fn new() -> Self {
         assert!(
@@ -137,7 +137,7 @@ impl<T: AudioNum, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, N, CON
     }
 }
 
-impl<T: AudioNum, const N: usize, const CONSUMERS: usize> AudioBuffer<T>
+impl<T: Transcendental, const N: usize, const CONSUMERS: usize> AudioBuffer<T>
     for FanOutBuffer<T, N, CONSUMERS>
 {
     fn capacity(&self) -> usize {
@@ -189,7 +189,7 @@ impl<T: AudioNum, const N: usize, const CONSUMERS: usize> AudioBuffer<T>
 
 /// Buffer for mixing multiple producers to one consumer
 #[repr(align(64))]
-pub struct FanInBuffer<T: AudioNum, const N: usize, const PRODUCERS: usize> {
+pub struct FanInBuffer<T: Transcendental, const N: usize, const PRODUCERS: usize> {
     /// Storage for each producer, each using AtomicCell for samples
     storage: [[AtomicCell<T>; N]; PRODUCERS],
 
@@ -209,7 +209,7 @@ pub struct FanInBuffer<T: AudioNum, const N: usize, const PRODUCERS: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: AudioNum, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N, PRODUCERS> {
+impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N, PRODUCERS> {
     /// Create new fan-in buffer
     pub fn new() -> Self {
         assert!(PRODUCERS > 0, "FanInBuffer must have at least one producer");
@@ -328,7 +328,7 @@ impl<T: AudioNum, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N, PROD
     }
 }
 
-impl<T: AudioNum, const N: usize, const PRODUCERS: usize> AudioBuffer<T>
+impl<T: Transcendental, const N: usize, const PRODUCERS: usize> AudioBuffer<T>
     for FanInBuffer<T, N, PRODUCERS>
 {
     fn capacity(&self) -> usize {
@@ -381,7 +381,7 @@ impl<T: AudioNum, const N: usize, const PRODUCERS: usize> AudioBuffer<T>
 // Default implementations
 // ============================================================================
 
-impl<T: AudioNum, const N: usize, const CONSUMERS: usize> Default
+impl<T: Transcendental, const N: usize, const CONSUMERS: usize> Default
     for FanOutBuffer<T, N, CONSUMERS>
 {
     fn default() -> Self {
@@ -389,7 +389,7 @@ impl<T: AudioNum, const N: usize, const CONSUMERS: usize> Default
     }
 }
 
-impl<T: AudioNum, const N: usize, const PRODUCERS: usize> Default for FanInBuffer<T, N, PRODUCERS> {
+impl<T: Transcendental, const N: usize, const PRODUCERS: usize> Default for FanInBuffer<T, N, PRODUCERS> {
     fn default() -> Self {
         Self::new()
     }
@@ -399,7 +399,7 @@ impl<T: AudioNum, const N: usize, const PRODUCERS: usize> Default for FanInBuffe
 // Debug implementations
 // ============================================================================
 
-impl<T: AudioNum + fmt::Debug, const N: usize, const CONSUMERS: usize> fmt::Debug
+impl<T: Transcendental + fmt::Debug, const N: usize, const CONSUMERS: usize> fmt::Debug
     for FanOutBuffer<T, N, CONSUMERS>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -414,7 +414,7 @@ impl<T: AudioNum + fmt::Debug, const N: usize, const CONSUMERS: usize> fmt::Debu
     }
 }
 
-impl<T: AudioNum + fmt::Debug, const N: usize, const PRODUCERS: usize> fmt::Debug
+impl<T: Transcendental + fmt::Debug, const N: usize, const PRODUCERS: usize> fmt::Debug
     for FanInBuffer<T, N, PRODUCERS>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -441,7 +441,7 @@ impl<T: AudioNum + fmt::Debug, const N: usize, const PRODUCERS: usize> fmt::Debu
 // Clone implementations (where possible)
 // ============================================================================
 
-impl<T: AudioNum + Copy, const N: usize, const CONSUMERS: usize> Clone
+impl<T: Transcendental + Copy, const N: usize, const CONSUMERS: usize> Clone
     for FanOutBuffer<T, N, CONSUMERS>
 {
     fn clone(&self) -> Self {
@@ -459,7 +459,7 @@ impl<T: AudioNum + Copy, const N: usize, const CONSUMERS: usize> Clone
     }
 }
 
-impl<T: AudioNum + Copy, const N: usize, const PRODUCERS: usize> Clone
+impl<T: Transcendental + Copy, const N: usize, const PRODUCERS: usize> Clone
     for FanInBuffer<T, N, PRODUCERS>
 {
     fn clone(&self) -> Self {

@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::storage::AtomicCell;
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 
 // =============================================================================
 // Основная структура
@@ -39,7 +39,7 @@ use crate::math::AudioNum;
 /// assert_eq!(buffer.read_delayed(3), 1.0);
 /// ```
 #[repr(C, align(64))]
-pub struct RingBuffer<T: AudioNum, const N: usize> {
+pub struct RingBuffer<T: Transcendental, const N: usize> {
     /// Данные буфера (атомарные ячейки для lock-free доступа)
     data: [AtomicCell<T>; N],
 
@@ -56,7 +56,7 @@ pub struct RingBuffer<T: AudioNum, const N: usize> {
     full: AtomicUsize,
 }
 
-impl<T: AudioNum, const N: usize> RingBuffer<T, N> {
+impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
     /// Создать новый кольцевой буфер
     ///
     /// # Panics
@@ -249,7 +249,7 @@ impl<T: AudioNum, const N: usize> RingBuffer<T, N> {
 // Реализация Default
 // =============================================================================
 
-impl<T: AudioNum, const N: usize> Default for RingBuffer<T, N> {
+impl<T: Transcendental, const N: usize> Default for RingBuffer<T, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -259,7 +259,7 @@ impl<T: AudioNum, const N: usize> Default for RingBuffer<T, N> {
 // Реализация Debug
 // =============================================================================
 
-impl<T: AudioNum + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T, N> {
+impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Читаем текущее состояние атомарно
         let head = self.head.load(Ordering::Relaxed);
@@ -289,23 +289,23 @@ impl<T: AudioNum + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T, N> {
 // Реализация Send/Sync (безопасно, так как AtomicCell управляет синхронизацией)
 // =============================================================================
 #[allow(unsafe_code)]
-unsafe impl<T: AudioNum + Send, const N: usize> Send for RingBuffer<T, N> {}
+unsafe impl<T: Transcendental + Send, const N: usize> Send for RingBuffer<T, N> {}
 #[allow(unsafe_code)]
-unsafe impl<T: AudioNum + Sync, const N: usize> Sync for RingBuffer<T, N> {}
+unsafe impl<T: Transcendental + Sync, const N: usize> Sync for RingBuffer<T, N> {}
 
 // =============================================================================
 // Итератор для кольцевого буфера
 // =============================================================================
 
 /// Итератор по элементам кольцевого буфера (от самого старого к самому новому)
-pub struct RingBufferIter<'a, T: AudioNum, const N: usize> {
+pub struct RingBufferIter<'a, T: Transcendental, const N: usize> {
     buffer: &'a RingBuffer<T, N>,
     pos: usize,
     end: usize,
 }
 
 // rill-core/src/buffer/ring.rs - исправляем итератор
-impl<'a, T: AudioNum, const N: usize> RingBufferIter<'a, T, N> {
+impl<'a, T: Transcendental, const N: usize> RingBufferIter<'a, T, N> {
     fn new(buffer: &'a RingBuffer<T, N>) -> Self {
         let tail = buffer.tail.load(Ordering::Acquire);
         let head = buffer.head.load(Ordering::Acquire);
@@ -331,7 +331,7 @@ impl<'a, T: AudioNum, const N: usize> RingBufferIter<'a, T, N> {
     }
 }
 
-impl<'a, T: AudioNum, const N: usize> Iterator for RingBufferIter<'a, T, N> {
+impl<'a, T: Transcendental, const N: usize> Iterator for RingBufferIter<'a, T, N> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -346,13 +346,13 @@ impl<'a, T: AudioNum, const N: usize> Iterator for RingBufferIter<'a, T, N> {
     }
 }
 
-impl<'a, T: AudioNum, const N: usize> ExactSizeIterator for RingBufferIter<'a, T, N> {
+impl<'a, T: Transcendental, const N: usize> ExactSizeIterator for RingBufferIter<'a, T, N> {
     fn len(&self) -> usize {
         self.end - self.pos
     }
 }
 
-impl<T: AudioNum, const N: usize> RingBuffer<T, N> {
+impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
     /// Получить итератор по элементам буфера (от самого старого к самому новому)
     pub fn iter(&self) -> RingBufferIter<'_, T, N> {
         RingBufferIter::new(self)

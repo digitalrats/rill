@@ -2,12 +2,12 @@
 //!
 //! # Пример
 //! use rill_core_dsp::generator_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! generator_algorithm! {
 //!     /// Генератор синуса
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct SineGen<T: AudioNum> {
+//!     pub struct SineGen<T: Transcendental> {
 //!         params: {
 //!             freq: T = T::from_f32(440.0),
 //!             amp: T = T::from_f32(0.5),
@@ -28,12 +28,12 @@
 ///
 /// # Пример
 /// use rill_core_dsp::generator_algorithm;
-/// use rill_core::math::AudioNum;
+/// use rill_core::math::Transcendental;
 ///
 /// generator_algorithm! {
 ///     /// Генератор синуса
 ///     #[derive(Debug, Clone, Copy)]
-///     pub struct SineGen<T: AudioNum> {
+///     pub struct SineGen<T: Transcendental> {
 ///         params: {
 ///             freq: T = T::from_f32(440.0),
 ///             amp: T = T::from_f32(0.5),
@@ -98,7 +98,7 @@ macro_rules! generator_algorithm {
 
         impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
         where
-            T: rill_core::math::AudioNum,
+            T: rill_core::math::Transcendental,
         {
             fn init(&mut self, sample_rate: f32) {
                 self.sample_rate = sample_rate;

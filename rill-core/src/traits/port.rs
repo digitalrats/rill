@@ -6,7 +6,7 @@
 //! that receive data from upstream output ports.
 
 use crate::buffer::Buffer;
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::algorithm::Algorithm;
 use crate::traits::node::{AudioNode, NodeId};
@@ -299,7 +299,7 @@ impl fmt::Display for PortId {
 ///   feedback value that gets mixed into `buffer` by `pre_process()`.
 /// - `downstream` lists audio connections from this output port to input ports
 ///   of other nodes, populated at build time by the graph builder.
-pub struct Port<T: AudioNum, const BUF_SIZE: usize> {
+pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Port identifier
     pub id: PortId,
     /// Port name
@@ -329,7 +329,7 @@ pub struct Port<T: AudioNum, const BUF_SIZE: usize> {
     pub feedback_downstream: Vec<(usize, usize)>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Port")
             .field("id", &self.id)
@@ -342,7 +342,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// Create a new audio output port
     pub fn output(node_id: NodeId, index: u16, name: &str) -> Self {
         Self {
@@ -569,7 +569,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
 // ============================================================================
 
 /// Trait for ports that can actively pull/push data.
-pub trait ActivePort<T: AudioNum, const BUF_SIZE: usize> {
+pub trait ActivePort<T: Transcendental, const BUF_SIZE: usize> {
     /// Pull data from the port (for input ports).
     fn pull(&mut self) -> Option<[T; BUF_SIZE]>;
 
@@ -583,7 +583,7 @@ pub trait ActivePort<T: AudioNum, const BUF_SIZE: usize> {
     fn on_tick(&mut self, _tick: &ClockTick) {}
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<T, BUF_SIZE> {
     #[inline]
     fn pull(&mut self) -> Option<[T; BUF_SIZE]> {
         if self.is_input() {

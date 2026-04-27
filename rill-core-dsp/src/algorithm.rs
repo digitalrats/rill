@@ -9,14 +9,14 @@ pub use rill_core::traits::algorithm::{
 pub use rill_core::traits::ProcessResult;
 
 use rill_core::traits::ParamValue;
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// An `Algorithm` with typed, settable parameters.
 ///
 /// Extends the base `Algorithm` trait with the ability to get and set
 /// a typed parameter struct (`Params`) and to update individual parameters
 /// by name (for automation integration).
-pub trait ParameterizedAlgorithm<T: AudioNum>: Algorithm<T> {
+pub trait ParameterizedAlgorithm<T: Transcendental>: Algorithm<T> {
     /// The concrete parameter type for this algorithm.
     type Params: Clone + Send + Sync;
 

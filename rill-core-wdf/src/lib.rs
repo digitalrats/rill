@@ -1,7 +1,7 @@
 //! Wave Digital Filter (WDF) core — elements, adapters, and analysis
 //! for analog circuit modeling.
 //!
-//! All types are generic over [`rill_core::AudioNum`], supporting both `f32`
+//! All types are generic over [`rill_core::Transcendental`], supporting both `f32`
 //! and `f64`. The SIMD module (behind the `simd` feature) uses the
 //! [`rill_core_dsp`](https://docs.rs/rill-core-dsp) vector infrastructure.
 //!
@@ -21,7 +21,7 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 mod adapters;
 /// Frequency response and distortion analysis
@@ -51,14 +51,14 @@ pub enum PortType {
 
 /// Wave variables: a (incident), b (reflected)
 #[derive(Debug, Clone, Copy)]
-pub struct WaveVariables<T: AudioNum> {
+pub struct WaveVariables<T: Transcendental> {
     /// Incident wave
     pub a: T,
     /// Reflected wave
     pub b: T,
 }
 
-impl<T: AudioNum> WaveVariables<T> {
+impl<T: Transcendental> WaveVariables<T> {
     /// Create zero wave variables
     pub fn new() -> Self {
         Self {
@@ -83,7 +83,7 @@ impl<T: AudioNum> WaveVariables<T> {
     }
 }
 
-impl<T: AudioNum> Default for WaveVariables<T> {
+impl<T: Transcendental> Default for WaveVariables<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -93,7 +93,7 @@ impl<T: AudioNum> Default for WaveVariables<T> {
 ///
 /// Every WDF element has a port resistance and processes incident
 /// waves to produce reflected waves.
-pub trait WdfElement<T: AudioNum>: Send + Sync {
+pub trait WdfElement<T: Transcendental>: Send + Sync {
     /// Port resistance
     fn port_resistance(&self) -> T;
 

@@ -1,7 +1,7 @@
 //! Distortion effect with waveshaping
 
 use rill_core::{
-    math::AudioNum,
+    math::Transcendental,
     traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
@@ -53,7 +53,7 @@ impl DistortionType {
 /// - drive: input gain (1.0 - 100.0)
 /// - type: distortion type
 /// - output_gain: output level (0.0 - 2.0)
-pub struct Distortion<T: AudioNum, const BUF_SIZE: usize> {
+pub struct Distortion<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -76,7 +76,7 @@ pub struct Distortion<T: AudioNum, const BUF_SIZE: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
     /// Create a new distortion effect with default parameters
     pub fn new(sample_rate: f32) -> Self {
         let metadata = NodeMetadata::new("Distortion", NodeCategory::Processor);
@@ -160,7 +160,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -277,7 +277,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Distortion<T
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
     fn process(
         &mut self,
         _clock: &ClockTick,

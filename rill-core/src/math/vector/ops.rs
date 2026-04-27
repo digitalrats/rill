@@ -3,14 +3,14 @@
 //! Реализация базовых арифметических операций для векторных типов.
 
 use super::traits::*;
-use crate::AudioNum;
+use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
 // Вспомогательные функции
 // -----------------------------------------------------------------------------
 
 /// Поэлементное сложение двух слайсов с сохранением результата в третий
-pub fn add_slices<T: AudioNum, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
+pub fn add_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -38,7 +38,7 @@ where
 }
 
 /// Поэлементное вычитание двух слайсов
-pub fn sub_slices<T: AudioNum, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
+pub fn sub_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -65,7 +65,7 @@ where
 }
 
 /// Поэлементное умножение двух слайсов
-pub fn mul_slices<T: AudioNum, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
+pub fn mul_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -92,7 +92,7 @@ where
 }
 
 /// Поэлементное деление двух слайсов
-pub fn div_slices<T: AudioNum, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
+pub fn div_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -119,7 +119,7 @@ where
 }
 
 /// Умножение слайса на скаляр
-pub fn mul_scalar_slice<T: AudioNum, const N: usize, V>(a: &[T], scalar: T, out: &mut [T])
+pub fn mul_scalar_slice<T: Transcendental, const N: usize, V>(a: &[T], scalar: T, out: &mut [T])
 where
     V: Vector<T, N>,
 {
@@ -145,7 +145,7 @@ where
 }
 
 /// Сложение слайса со скаляром
-pub fn add_scalar_slice<T: AudioNum, const N: usize, V>(a: &[T], scalar: T, out: &mut [T])
+pub fn add_scalar_slice<T: Transcendental, const N: usize, V>(a: &[T], scalar: T, out: &mut [T])
 where
     V: Vector<T, N>,
 {

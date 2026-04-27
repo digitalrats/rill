@@ -71,14 +71,14 @@ impl RmsAnalyzer {
     }
     
     /// Добавить семпл
-    pub fn add_sample<T: crate::math::AudioNum>(&mut self, sample: T) {
+    pub fn add_sample<T: crate::math::Transcendental>(&mut self, sample: T) {
         let val = sample.to_f64();
         self.sum_squares += val * val;
         self.count += 1;
     }
     
     /// Добавить срез
-    pub fn add_slice<T: crate::math::AudioNum>(&mut self, slice: &[T]) {
+    pub fn add_slice<T: crate::math::Transcendental>(&mut self, slice: &[T]) {
         for &s in slice {
             self.add_sample(s);
         }
@@ -117,7 +117,7 @@ impl PeakDetector {
     }
     
     /// Добавить семпл
-    pub fn add_sample<T: crate::math::AudioNum>(&mut self, sample: T) {
+    pub fn add_sample<T: crate::math::Transcendental>(&mut self, sample: T) {
         let abs = sample.to_f32().abs();
         if abs > self.peak {
             self.peak = abs;
