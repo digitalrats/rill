@@ -40,7 +40,6 @@ cargo test --workspace           # all tests
 cargo test -p <crate>            # single crate
 cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
-./scripts/bump-version.sh <ver>  # bump all crates in sync
 ```
 
 ## Code conventions
@@ -55,9 +54,11 @@ cargo fmt                        # format (max_width=100, tab_spaces=4)
     - Prefer internal workspace tools over bringing in new third-party dependencies.
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
-- **Versioning & Workspace:** 
-    - Crates must stay in version lockstep. 
-    - **Never** manually edit `version` fields in `Cargo.toml`. Use `./scripts/bump-version.sh`.
+- **Versioning (independent):** 
+    - Each crate versions independently — only bump when it actually changes.
+    - Core crates (`rill-core`, `rill-core-dsp`, `rill-core-wdf`) are independent of each other; a consumer crate's version reflects only its own changes, not the core's.
+    - When bumping a crate, also update its `version` in `[workspace.dependencies]` in the root `Cargo.toml` so consumers resolve correctly.
+    - **Do not use `./scripts/bump-version.sh`** — it is deprecated and kept only as a reference.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
