@@ -1,0 +1,15 @@
+[package]
+name = "rill-telemetry"
+version = "0.3.0"
+edition = "2021"
+description = "Real-time telemetry probe and collector for Rill audio graph"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rill-core = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+float-cmp = "0.9"

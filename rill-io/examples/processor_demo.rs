@@ -3,7 +3,7 @@
 use rill_io::{
     backends::{CpalBackend, NullBackend},
     processor::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SineProcessor},
-    AudioConfig, AudioEngine, BackendType,
+    AudioBackend, AudioConfig, AudioEngine, BackendType,
 };
 
 #[cfg(feature = "alsa")]
@@ -27,8 +27,7 @@ fn create_backend(
     Ok(Box::new(NullBackend::new(config)))
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Rill IO Processor Demo ===\n");
 
     let config = AudioConfig::default()

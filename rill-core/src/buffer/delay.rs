@@ -2,7 +2,7 @@
 
 use super::array_from_fn;
 use crate::buffer::{AtomicCell, AtomicStats, AudioBuffer, BufferStats};
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
 
@@ -15,7 +15,7 @@ use core::ops::{Index, IndexMut};
 /// Provides a circular buffer for implementing delay, reverb,
 /// and other time-based effects.
 #[repr(align(64))]
-pub struct DelayLine<T: AudioNum, const MAX_DELAY: usize> {
+pub struct DelayLine<T: Transcendental, const MAX_DELAY: usize> {
     /// Circular buffer storage using AtomicCell for each sample
     buffer: [AtomicCell<T>; MAX_DELAY],
 
@@ -35,7 +35,7 @@ pub struct DelayLine<T: AudioNum, const MAX_DELAY: usize> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
     /// Create a new delay line with the specified sample rate
     ///
     /// # Arguments
@@ -184,7 +184,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
 // Index implementations
 // ============================================================================
 
-impl<T: AudioNum, const MAX_DELAY: usize> Index<usize> for DelayLine<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> Index<usize> for DelayLine<T, MAX_DELAY> {
     type Output = T;
 
     fn index(&self, _index: usize) -> &Self::Output {
@@ -195,7 +195,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Index<usize> for DelayLine<T, MAX_DELA
     }
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> IndexMut<usize> for DelayLine<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> IndexMut<usize> for DelayLine<T, MAX_DELAY> {
     fn index_mut(&mut self, _index: usize) -> &mut Self::Output {
         unimplemented!("Direct indexing not supported with AtomicCell")
     }
@@ -205,7 +205,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> IndexMut<usize> for DelayLine<T, MAX_D
 // AudioBuffer Implementation
 // ============================================================================
 
-impl<T: AudioNum, const MAX_DELAY: usize> AudioBuffer<T> for DelayLine<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> AudioBuffer<T> for DelayLine<T, MAX_DELAY> {
     fn capacity(&self) -> usize {
         MAX_DELAY
     }

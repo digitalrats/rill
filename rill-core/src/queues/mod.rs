@@ -1,54 +1,47 @@
 //! # Неблокирующие очереди для двухпоточной архитектуры
 //!
-//! Этот модуль предоставляет lock-free очереди для безопасного обмена
+//! Этот модуль предоставляет очереди для безопасного обмена
 //! данными между потоком управления (soft RT) и аудиопотоком (hard RT).
 //!
 //! ## Основные компоненты
 //!
 //! - [`SpscQueue`] — Single-producer single-consumer очередь (максимальная скорость)
 //! - [`RtQueueBase`] — базовый трейт для всех очередей
-//! - [`QueueError`] — ошибки операций с очередями
+//! - [`QueueError`] — ошибки операций с очередями (thiserror)
+//! - [`CommandQueue`] — команды из control thread в audio thread
 //! - [`OverflowPolicy`] — политики поведения при переполнении
 //! - [`UnderflowPolicy`] — политики поведения при опустошении
 
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+// =============================================================================
+// Подмодули
+// =============================================================================
+
+pub mod command;
+pub mod error;
+pub mod mpsc;
+pub mod observer;
+pub mod ring;
+pub mod rt_queue;
+pub mod signal;
 pub mod spsc;
+pub mod telemetry;
+pub mod telemetry_block;
 
+pub use command::CommandQueue;
+pub use error::{QueueError, QueueResult};
+pub use mpsc::MpscQueue;
+pub use rt_queue::RtQueue;
 pub use spsc::SpscQueue;
+pub use telemetry_block::TelemetryBlock;
 
-// =============================================================================
-// Базовые типы ошибок
-// =============================================================================
-
-/// Ошибки операций с очередью
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueueError {
-    /// Очередь пуста
-    Empty,
-    /// Очередь переполнена
-    Full,
-    /// Неверный индекс
-    InvalidIndex,
-    /// Канал закрыт
-    Closed,
-}
-
-impl fmt::Display for QueueError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            QueueError::Empty => write!(f, "Queue is empty"),
-            QueueError::Full => write!(f, "Queue is full"),
-            QueueError::InvalidIndex => write!(f, "Invalid index"),
-            QueueError::Closed => write!(f, "Queue is closed"),
-        }
-    }
-}
-
-impl std::error::Error for QueueError {}
-
-/// Результат операций с очередью
-pub type QueueResult<T> = Result<T, QueueError>;
+// Re-export key signal types
+pub use signal::{
+    AutomatonCommand, CalibrationKind, CommandEnum, MappingType, SensorCommand, ServoCommand,
+    SetParameter, SignalSource,
+};
 
 // =============================================================================
 // Политики поведения
@@ -77,8 +70,70 @@ pub enum UnderflowPolicy {
 }
 
 // =============================================================================
-// Статистика очереди (упрощённая версия без атомарных типов)
+// Статистика очереди
 // =============================================================================
+
+/// Живая статистика очереди (собирается внутри очереди)
+pub struct QueueStats {
+    pushes: AtomicUsize,
+    pops: AtomicUsize,
+    overflows: AtomicUsize,
+    underflows: AtomicUsize,
+    max_size: AtomicUsize,
+}
+
+impl QueueStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_push(&self, current_size: usize) {
+        self.pushes.fetch_add(1, Ordering::Relaxed);
+        let prev = self.max_size.load(Ordering::Relaxed);
+        if current_size > prev {
+            let _ = self.max_size.compare_exchange(
+                prev,
+                current_size,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    pub fn record_pop(&self) {
+        self.pops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_overflow(&self) {
+        self.overflows.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_underflow(&self) {
+        self.underflows.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> QueueStatsSnapshot {
+        QueueStatsSnapshot {
+            pushes: self.pushes.load(Ordering::Relaxed),
+            pops: self.pops.load(Ordering::Relaxed),
+            overflows: self.overflows.load(Ordering::Relaxed),
+            underflows: self.underflows.load(Ordering::Relaxed),
+            max_size: self.max_size.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl Default for QueueStats {
+    fn default() -> Self {
+        Self {
+            pushes: AtomicUsize::new(0),
+            pops: AtomicUsize::new(0),
+            overflows: AtomicUsize::new(0),
+            underflows: AtomicUsize::new(0),
+            max_size: AtomicUsize::new(0),
+        }
+    }
+}
 
 /// Снимок статистики очереди
 #[derive(Debug, Clone, Copy, Default)]
@@ -100,7 +155,7 @@ impl QueueStatsSnapshot {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Объединить две статистики
     pub fn merge(&self, other: &Self) -> Self {
         Self {
@@ -131,42 +186,30 @@ impl fmt::Display for QueueStatsSnapshot {
 ///
 /// Все реализации должны быть:
 /// - Lock-free (никаких мьютексов)
-/// - Wait-free для производителя
 /// - RT-safe (без аллокаций, без блокировок)
 pub trait RtQueueBase<T>: Send + Sync {
     /// Добавить элемент в очередь
-    ///
-    /// # Arguments
-    /// * `value` - значение для добавления
-    ///
-    /// # Returns
-    /// * `Ok(())` - элемент успешно добавлен
-    /// * `Err(QueueError::Full)` - очередь переполнена
     fn push(&self, value: T) -> QueueResult<()>;
-    
+
     /// Извлечь элемент из очереди
-    ///
-    /// # Returns
-    /// * `Some(value)` - элемент успешно извлечён
-    /// * `None` - очередь пуста
     fn pop(&self) -> Option<T>;
-    
+
     /// Текущий размер очереди
     fn len(&self) -> usize;
-    
+
     /// Вместимость очереди
     fn capacity(&self) -> usize;
-    
+
     /// Проверить, пуста ли очередь
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    
+
     /// Проверить, полна ли очередь
     fn is_full(&self) -> bool {
         self.len() == self.capacity()
     }
-    
+
     /// Очистить очередь
     fn clear(&self);
 }
@@ -201,15 +244,7 @@ pub const fn next_power_of_two(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    #[test]
-    fn test_queue_error_display() {
-        assert_eq!(QueueError::Empty.to_string(), "Queue is empty");
-        assert_eq!(QueueError::Full.to_string(), "Queue is full");
-        assert_eq!(QueueError::InvalidIndex.to_string(), "Invalid index");
-        assert_eq!(QueueError::Closed.to_string(), "Queue is closed");
-    }
-    
+
     #[test]
     fn test_stats_snapshot() {
         let stats1 = QueueStatsSnapshot {
@@ -219,7 +254,7 @@ mod tests {
             underflows: 0,
             max_size: 8,
         };
-        
+
         let stats2 = QueueStatsSnapshot {
             pushes: 20,
             pops: 15,
@@ -227,7 +262,7 @@ mod tests {
             underflows: 2,
             max_size: 16,
         };
-        
+
         let merged = stats1.merge(&stats2);
         assert_eq!(merged.pushes, 30);
         assert_eq!(merged.pops, 20);
@@ -235,7 +270,7 @@ mod tests {
         assert_eq!(merged.underflows, 2);
         assert_eq!(merged.max_size, 16);
     }
-    
+
     #[test]
     fn test_power_of_two() {
         assert!(is_power_of_two(1));
@@ -248,7 +283,7 @@ mod tests {
         assert!(!is_power_of_two(6));
         assert!(!is_power_of_two(7));
     }
-    
+
     #[test]
     fn test_next_power_of_two() {
         assert_eq!(next_power_of_two(1), 1);
@@ -260,5 +295,20 @@ mod tests {
         assert_eq!(next_power_of_two(7), 8);
         assert_eq!(next_power_of_two(8), 8);
         assert_eq!(next_power_of_two(9), 16);
+    }
+
+    #[test]
+    fn test_queue_stats_record() {
+        let stats = QueueStats::new();
+        stats.record_push(5);
+        stats.record_push(8);
+        stats.record_overflow();
+        stats.record_pop();
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.pushes, 2);
+        assert_eq!(snap.pops, 1);
+        assert_eq!(snap.overflows, 1);
+        assert_eq!(snap.max_size, 8);
     }
 }

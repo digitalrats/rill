@@ -3,10 +3,11 @@
 //! Позволяет нескольким производителям отправлять данные
 //! одному потребителю. Использует атомарные операции для
 //! синхронизации производителей.
+#![allow(unsafe_code)]
 
-use super::{QueueError, QueueResult, QueueStats, OverflowPolicy};
-use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
+use super::{QueueError, QueueResult, QueueStats};
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 /// Узел связного списка для MPSC очереди
 struct Node<T> {
@@ -21,7 +22,7 @@ impl<T> Node<T> {
             next: AtomicPtr::new(ptr::null_mut()),
         }))
     }
-    
+
     fn stub() -> *mut Node<T> {
         Box::into_raw(Box::new(Node {
             value: None,
@@ -60,14 +61,14 @@ impl<T> MpscQueue<T> {
             size: AtomicUsize::new(0),
         }
     }
-    
+
     /// Создать очередь с ограниченной ёмкостью
     pub fn with_capacity(capacity: usize) -> Self {
         let mut queue = Self::new();
         queue.max_capacity = capacity;
         queue
     }
-    
+
     /// Добавить элемент (может вызываться из нескольких потоков)
     pub fn push(&self, value: T) -> QueueResult<()> {
         // Проверка на переполнение
@@ -75,24 +76,26 @@ impl<T> MpscQueue<T> {
             let size = self.size.load(Ordering::Relaxed);
             if size >= self.max_capacity {
                 self.stats.record_overflow();
-                return Err(QueueError::Full);
+                return Err(QueueError::QueueFull);
             }
         }
-        
+
         let node = Node::new(value);
         let mut tail = self.tail.load(Ordering::Acquire);
-        
+
         loop {
             let next = unsafe { (*tail).next.load(Ordering::Acquire) };
-            
+
             if next.is_null() {
                 // Пытаемся добавить новый узел
-                match unsafe { (*tail).next.compare_exchange_weak(
-                    ptr::null_mut(),
-                    node,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                ) } {
+                match unsafe {
+                    (*tail).next.compare_exchange_weak(
+                        ptr::null_mut(),
+                        node,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    )
+                } {
                     Ok(_) => {
                         // Обновляем tail
                         let _ = self.tail.compare_exchange(
@@ -118,53 +121,39 @@ impl<T> MpscQueue<T> {
                 }
             } else {
                 // Продвигаем tail
-                let _ = self.tail.compare_exchange(
-                    tail,
-                    next,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                );
+                let _ =
+                    self.tail
+                        .compare_exchange(tail, next, Ordering::Release, Ordering::Relaxed);
                 tail = next;
             }
         }
     }
-    
+
     /// Извлечь элемент (только consumer)
     pub fn pop(&self) -> Option<T> {
-        let mut head = self.head.load(Ordering::Acquire);
-        
         loop {
+            let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);
             let next = unsafe { (*head).next.load(Ordering::Acquire) };
-            
+
             if head == tail {
                 if next.is_null() {
-                    // Очередь пуста
                     return None;
                 }
-                // Tail отстаёт, помогаем продвинуть
-                let _ = self.tail.compare_exchange(
-                    tail,
-                    next,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                );
+                let _ =
+                    self.tail
+                        .compare_exchange(tail, next, Ordering::Release, Ordering::Relaxed);
             } else {
                 if next.is_null() {
                     continue;
                 }
-                
-                // Забираем значение
-                let value = unsafe {
-                    let node = Box::from_raw(next);
-                    node.value
-                };
-                
-                // Обновляем head
-                if self.head
+
+                if self
+                    .head
                     .compare_exchange(head, next, Ordering::Release, Ordering::Relaxed)
                     .is_ok()
                 {
+                    let value = unsafe { (*next).value.take() };
                     unsafe {
                         drop(Box::from_raw(head));
                     }
@@ -175,23 +164,23 @@ impl<T> MpscQueue<T> {
             }
         }
     }
-    
+
     /// Текущий размер (приблизительный)
     pub fn size(&self) -> usize {
         self.size.load(Ordering::Relaxed)
     }
-    
+
     /// Вместимость (0 = неограничена)
     pub fn capacity(&self) -> usize {
         self.max_capacity
     }
-    
+
     /// Проверить, пуста ли очередь
     pub fn is_empty(&self) -> bool {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
         let next = unsafe { (*head).next.load(Ordering::Acquire) };
-        
+
         head == tail && next.is_null()
     }
 }
@@ -199,7 +188,7 @@ impl<T> MpscQueue<T> {
 impl<T> Drop for MpscQueue<T> {
     fn drop(&mut self) {
         while let Some(_) = self.pop() {}
-        
+
         let head = self.head.load(Ordering::Relaxed);
         if !head.is_null() {
             unsafe {
@@ -216,26 +205,26 @@ unsafe impl<T: Send> Sync for MpscQueue<T> {}
 mod tests {
     use super::*;
     use std::thread;
-    
+
     #[test]
     fn test_mpsc_basic() {
         let queue = MpscQueue::new();
-        
+
         queue.push(1).unwrap();
         queue.push(2).unwrap();
         queue.push(3).unwrap();
-        
+
         assert_eq!(queue.pop(), Some(1));
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), Some(3));
         assert_eq!(queue.pop(), None);
     }
-    
+
     #[test]
     fn test_mpsc_multiple_producers() {
         let queue = std::sync::Arc::new(MpscQueue::new());
         let mut handles = vec![];
-        
+
         for i in 0..4 {
             let queue = queue.clone();
             handles.push(thread::spawn(move || {
@@ -244,16 +233,16 @@ mod tests {
                 }
             }));
         }
-        
+
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         let mut count = 0;
         while queue.pop().is_some() {
             count += 1;
         }
-        
+
         assert_eq!(count, 1000);
     }
 }

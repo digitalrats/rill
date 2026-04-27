@@ -1,23 +1,22 @@
-//! Sine wave oscillator using rill-core-dsp with AudioNum
+//! Sine wave oscillator using rill-core-dsp with Transcendental
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    Processor,
+    ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ParameterId, Port, Processor,
 };
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
-use rill_core_dsp::algorithm::Algorithm;
 use rill_core_dsp::generators::{BasicOscillator, Generator, Waveform};
 use std::marker::PhantomData;
 
 /// Sine wave oscillator generic over floating point type
 ///
-/// Uses the optimized BasicOscillator from rill-core-dsp with AudioNum trait.
+/// Uses the optimized BasicOscillator from rill-core-dsp with Transcendental trait.
 /// Supports both f32 and f64 through type parameter T.
 ///
 /// # Type Parameters
-/// - `T`: Floating point type (f32 or f64) implementing AudioNum
+/// - `T`: Floating point type (f32 or f64) implementing Transcendental
 /// - `BUF_SIZE`: Fixed block size for processing
 ///
 /// # Parameters
@@ -31,7 +30,7 @@ use std::marker::PhantomData;
 ///
 /// # Outputs
 /// - Port 0: Sine wave output
-pub struct SineOsc<T: AudioNum, const BUF_SIZE: usize> {
+pub struct SineOsc<T: Transcendental, const BUF_SIZE: usize> {
     /// Core DSP oscillator
     osc: BasicOscillator<T>,
 
@@ -50,6 +49,15 @@ pub struct SineOsc<T: AudioNum, const BUF_SIZE: usize> {
     /// Whether FM is enabled
     use_fm: bool,
 
+    /// Audio input ports
+    inputs: Vec<Port<T, BUF_SIZE>>,
+
+    /// Audio output ports
+    outputs: Vec<Port<T, BUF_SIZE>>,
+
+    /// Control ports
+    controls: Vec<Port<T, BUF_SIZE>>,
+
     /// Node state
     state: Option<NodeState<T, BUF_SIZE>>,
 
@@ -57,7 +65,7 @@ pub struct SineOsc<T: AudioNum, const BUF_SIZE: usize> {
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
     /// Create new sine oscillator with default settings
     pub fn new() -> Self {
         let osc = BasicOscillator::new(Waveform::Sine, 440.0, T::from_f32(1.0));
@@ -69,6 +77,9 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
             phase_offset: T::ZERO,
             fm_amount: T::ZERO,
             use_fm: false,
+            inputs: Vec::new(),
+            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            controls: Vec::new(),
             state: None,
             _phantom: PhantomData,
         }
@@ -116,7 +127,12 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
     }
 
     /// Generate a block of samples with FM (sample-by-sample)
-    fn generate_block_with_fm(&mut self, output: &mut [T; BUF_SIZE], fm_input: &[T; BUF_SIZE]) {
+    fn generate_block_with_fm(
+        &mut self,
+        output: &mut [T; BUF_SIZE],
+        fm_input: &[T; BUF_SIZE],
+        clock: &ClockTick,
+    ) -> ProcessResult<()> {
         let one = T::from_f32(1.0);
         let two = T::from_f32(2.0);
         let min_freq = T::from_f32(0.1);
@@ -125,34 +141,42 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
         for i in 0..BUF_SIZE {
             let mod_normalized = fm_input[i] * two - one;
             let modulation = mod_normalized * self.fm_amount;
-            let modulated_freq = (self.frequency + modulation).max(min_freq).min(max_freq);
+            let modulated_freq = (self.frequency + modulation).max(min_freq).max(max_freq);
 
             self.osc.set_frequency(modulated_freq.to_f32());
             let mut sample_buf = [T::ZERO; 1];
-            self.osc.process_block(&[], &mut sample_buf);
+            self.osc
+                .process(None, &mut sample_buf, &ActionContext::new(clock))?;
             output[i] = sample_buf[0] * self.amplitude;
         }
 
         self.osc.set_frequency(self.frequency.to_f32());
+        Ok(())
     }
 
     /// Generate a block of samples without FM (efficient block processing)
-    fn generate_block_no_fm(&mut self, output: &mut [T; BUF_SIZE]) {
+    fn generate_block_no_fm(
+        &mut self,
+        output: &mut [T; BUF_SIZE],
+        clock: &ClockTick,
+    ) -> ProcessResult<()> {
         self.osc.set_frequency(self.frequency.to_f32());
-        self.osc.process_block(&[], &mut output[..]);
+        self.osc
+            .process(None, &mut output[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
             output[i] = output[i] * self.amplitude;
         }
+        Ok(())
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SineOsc".to_string(),
@@ -175,6 +199,9 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, B
         self.osc.init(sample_rate);
         self.osc.set_frequency(self.frequency.to_f32());
         self.osc.set_phase(self.phase_offset);
+        if self.use_fm && self.inputs.is_empty() {
+            self.inputs.push(Port::input(NodeId(0), 0, "fm_in"));
+        }
         self.state = Some(NodeState::new(sample_rate));
     }
 
@@ -236,6 +263,11 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, B
             "use_fm" => {
                 if let ParamValue::Bool(b) = value {
                     self.use_fm = b;
+                    if b && self.inputs.is_empty() {
+                        self.inputs.push(Port::input(NodeId(0), 0, "fm_in"));
+                    } else if !b && !self.inputs.is_empty() {
+                        self.inputs.clear();
+                    }
                     Ok(())
                 } else {
                     Err(ProcessError::Parameter("Expected bool".into()))
@@ -254,28 +286,28 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, B
 
     fn set_id(&mut self, _id: NodeId) {}
 
-    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        None
+    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.inputs.get(index)
     }
 
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        None
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.inputs.get_mut(index)
     }
 
-    fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        None
+    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.outputs.get(index)
     }
 
-    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        None
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        None
+    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.controls.get(index)
     }
 
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        None
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.controls.get_mut(index)
     }
 
     fn state(&self) -> &NodeState<T, BUF_SIZE> {
@@ -299,40 +331,23 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, B
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn process(
         &mut self,
         clock: &ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
-        control_inputs: &[T],
-        clock_inputs: &[ClockTick],
-        feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        control_outputs: &mut [T],
-        clock_outputs: &mut [ClockTick],
-        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+        _audio_inputs: &[&[T; BUF_SIZE]],
+        _control_inputs: &[T],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        // Ignore unused inputs/outputs for now
-        let _ = (
-            clock,
-            control_inputs,
-            clock_inputs,
-            feedback_inputs,
-            control_outputs,
-            clock_outputs,
-            feedback_outputs,
-        );
-
-        if audio_outputs.is_empty() {
-            return Ok(());
-        }
-
-        if self.use_fm && !audio_inputs.is_empty() {
-            self.generate_block_with_fm(audio_outputs[0], audio_inputs[0]);
+        let mut temp = [T::ZERO; BUF_SIZE];
+        if !self.inputs.is_empty() {
+            let input_buf = *self.inputs[0].buffer.as_array();
+            self.generate_block_with_fm(&mut temp, &input_buf, clock)?;
         } else {
-            self.generate_block_no_fm(audio_outputs[0]);
+            self.generate_block_no_fm(&mut temp, clock)?;
         }
-
+        *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
     }
 
@@ -378,27 +393,16 @@ mod tests {
 
         osc.init(44100.0);
 
-        let mut output = [0.0; 64];
-        let mut outputs = [&mut output];
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(
-            &clock,
-            &[],
-            &[],
-            &[],
-            &[],
-            &mut outputs,
-            &mut [],
-            &mut [],
-            &mut [],
-        )
-        .unwrap();
+        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+
+        let output = osc.outputs[0].buffer.as_array();
 
         // First sample should be near 0 (sine with phase 0)
         assert!(approx_eq!(f32, output[0], 0.0, epsilon = 1e-4));
 
         // All samples should be within amplitude range
-        for &sample in &output {
+        for &sample in output.iter() {
             assert!(sample >= -0.5 && sample <= 0.5);
         }
     }
@@ -411,27 +415,16 @@ mod tests {
 
         osc.init(44100.0);
 
-        let mut output = [0.0; 64];
-        let mut outputs = [&mut output];
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(
-            &clock,
-            &[],
-            &[],
-            &[],
-            &[],
-            &mut outputs,
-            &mut [],
-            &mut [],
-            &mut [],
-        )
-        .unwrap();
+        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+
+        let output = osc.outputs[0].buffer.as_array();
 
         // First sample should be near 0
         assert!((output[0]).abs() < 1e-10);
 
         // All samples should be within amplitude range
-        for &sample in &output {
+        for &sample in output.iter() {
             assert!(sample >= -0.5 && sample <= 0.5);
         }
     }
@@ -442,23 +435,14 @@ mod tests {
 
         osc.init(44100.0);
 
-        let mut output = [0.0; 64];
-        let fm_input = [0.5; 64];
-        let inputs = [&fm_input];
-        let mut outputs = [&mut output];
+        // Populate FM input port
+        let fm_port = osc.input_port_mut(0).unwrap();
+        fm_port.buffer.as_mut_array().fill(0.5);
+
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(
-            &clock,
-            &inputs,
-            &[],
-            &[],
-            &[],
-            &mut outputs,
-            &mut [],
-            &mut [],
-            &mut [],
-        )
-        .unwrap();
+        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+
+        let output = osc.outputs[0].buffer.as_array();
 
         // Should produce valid output
         assert!(output.iter().any(|&x| x != 0.0));

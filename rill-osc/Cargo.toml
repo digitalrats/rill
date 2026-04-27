@@ -1,0 +1,16 @@
+[package]
+name = "rill-osc"
+version = "0.3.0"
+edition = "2021"
+description = "OSC server and networking for Rill audio graph"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt"] }
+
+[dev-dependencies]
+float-cmp = "0.9"

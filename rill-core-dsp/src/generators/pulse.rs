@@ -3,10 +3,11 @@
 use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::vector::{ScalarVector1, Vector};
-use rill_core::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 
 /// Pulse wave генератор с PWM
-pub struct PulseOscillator<T: AudioNum> {
+pub struct PulseOscillator<T: Transcendental> {
     /// Базовая частота
     frequency: f32,
     /// Амплитуда
@@ -23,7 +24,7 @@ pub struct PulseOscillator<T: AudioNum> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum> PulseOscillator<T> {
+impl<T: Transcendental> PulseOscillator<T> {
     /// Создать новый pulse генератор
     pub fn new(frequency: f32, pulse_width: T) -> Self {
         let mut osc = Self {
@@ -92,7 +93,7 @@ impl<T: AudioNum> PulseOscillator<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
+impl<T: Transcendental> Algorithm<T> for PulseOscillator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_phase_inc();
@@ -103,7 +104,8 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
         self.phase = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 
         for i in 0..len {
@@ -119,6 +121,7 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
                 self.phase = self.phase - ScalarVector1::splat(T::from_f32(1.0));
             }
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -132,7 +135,7 @@ impl<T: AudioNum> Algorithm<T> for PulseOscillator<T> {
     }
 }
 
-impl<T: AudioNum> Generator<T> for PulseOscillator<T> {
+impl<T: Transcendental> Generator<T> for PulseOscillator<T> {
     fn phase(&self) -> T {
         self.phase.extract(0)
     }

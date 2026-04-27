@@ -1,7 +1,6 @@
 //! Null бэкенд для тестирования
 
 use std::time::Duration;
-use std::fmt;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
@@ -30,52 +29,52 @@ impl AudioBackend for NullBackend {
     fn backend_type(&self) -> BackendType {
         BackendType::Null
     }
-    
+
     fn config(&self) -> &AudioConfig {
         &self.config
     }
-    
+
     fn config_mut(&mut self) -> &mut AudioConfig {
         &mut self.config
     }
-    
+
     fn init(&mut self) -> IoResult<()> {
         Ok(())
     }
-    
+
     fn start(&mut self) -> IoResult<()> {
         self.is_running = true;
         Ok(())
     }
-    
+
     fn stop(&mut self) -> IoResult<()> {
         self.is_running = false;
         Ok(())
     }
-    
+
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
         buffer.fill(0.0);
         Ok(buffer.len())
     }
-    
+
     fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
         Ok(buffer.len())
     }
-    
+
     fn xruns(&self) -> u32 {
         self.xruns
     }
-    
+
     fn latency(&self) -> Duration {
         Duration::from_micros(
-            (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64
+            (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
         )
     }
-    
+
     fn list_input_devices(&self) -> Vec<String> {
         vec!["Null Input".to_string()]
     }
-    
+
     fn list_output_devices(&self) -> Vec<String> {
         vec!["Null Output".to_string()]
     }

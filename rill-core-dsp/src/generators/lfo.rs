@@ -8,7 +8,8 @@ use super::basic::{BasicOscillator, Waveform};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, SyncableGenerator};
 use crate::vector::prelude::*;
-use rill_core::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 
 /// LFO генератор (Low Frequency Oscillator)
 ///
@@ -22,8 +23,13 @@ use rill_core::AudioNum;
 ///
 /// # Пример
 /// ```
+/// use rill_core::time::ClockTick;
+/// use rill_core::traits::ActionContext;
 /// use rill_core_dsp::generators::*;
 /// use rill_core_dsp::Algorithm;
+///
+/// let tick = ClockTick::default();
+/// let ctx = ActionContext::new(&tick);
 ///
 /// // Создаём LFO для модуляции частоты фильтра
 /// let mut lfo = LFO::<f32>::new(
@@ -35,11 +41,11 @@ use rill_core::AudioNum;
 ///
 /// // Генерируем модуляционный сигнал
 /// let mut output = [0.0_f32];
-/// lfo.process_block(&[0.0], &mut output);
+/// lfo.process(None, &mut output, &ctx).unwrap();
 /// let modulation = output[0];
 /// ```
 #[derive(Clone, Copy)]
-pub struct LFO<T: AudioNum> {
+pub struct LFO<T: Transcendental> {
     /// Внутренний осциллятор
     osc: BasicOscillator<T>,
     /// Биполярный режим (-1..1) или униполярный (0..1)
@@ -48,7 +54,7 @@ pub struct LFO<T: AudioNum> {
     phase_offset: ScalarVector1<T>,
 }
 
-impl<T: AudioNum> LFO<T> {
+impl<T: Transcendental> LFO<T> {
     /// Создать новый LFO
     ///
     /// # Arguments
@@ -136,7 +142,7 @@ impl<T: AudioNum> LFO<T> {
 
 // ==================== Реализация трейта Algorithm ====================
 
-impl<T: AudioNum> Algorithm<T> for LFO<T> {
+impl<T: Transcendental> Algorithm<T> for LFO<T> {
     fn init(&mut self, sample_rate: f32) {
         self.osc.init(sample_rate);
         self.osc.set_phase(self.phase_offset.extract(0));
@@ -147,10 +153,17 @@ impl<T: AudioNum> Algorithm<T> for LFO<T> {
         self.osc.set_phase(self.phase_offset.extract(0));
     }
 
-    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             *out = self.modulate();
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -173,25 +186,11 @@ impl<T: AudioNum> Algorithm<T> for LFO<T> {
             version: env!("CARGO_PKG_VERSION"),
         }
     }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
 }
 
 // ==================== Реализация трейта Generator ====================
 
-impl<T: AudioNum> Generator<T> for LFO<T> {
+impl<T: Transcendental> Generator<T> for LFO<T> {
     fn phase(&self) -> T {
         self.osc.phase()
     }
@@ -219,7 +218,7 @@ impl<T: AudioNum> Generator<T> for LFO<T> {
 
 // ==================== Реализация трейта SyncableGenerator ====================
 
-impl<T: AudioNum> SyncableGenerator<T> for LFO<T> {
+impl<T: Transcendental> SyncableGenerator<T> for LFO<T> {
     fn sync(&mut self, reset: bool) {
         if reset {
             self.osc.set_phase(self.phase_offset.extract(0));
@@ -237,6 +236,8 @@ impl<T: AudioNum> SyncableGenerator<T> for LFO<T> {
 mod tests {
     use super::*;
     use float_cmp::approx_eq;
+    use rill_core::time::ClockTick;
+    use rill_core::traits::ActionContext;
 
     #[test]
     fn test_lfo_creation() {
@@ -253,8 +254,10 @@ mod tests {
 
         // В биполярном режиме значения должны быть в [-1, 1]
         let mut output = [0.0f32; 1];
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
         for _ in 0..100 {
-            lfo.process_block(&[], &mut output);
+            lfo.process(None, &mut output, &ctx).unwrap();
             let val = output[0];
             assert!(
                 val >= -1.0 && val <= 1.0,
@@ -271,8 +274,10 @@ mod tests {
 
         // В униполярном режиме значения должны быть в [0, 1]
         let mut output = [0.0f32; 1];
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
         for _ in 0..100 {
-            lfo.process_block(&[], &mut output);
+            lfo.process(None, &mut output, &ctx).unwrap();
             let val = output[0];
             assert!(val >= 0.0 && val <= 1.0, "Value {} out of range [0,1]", val);
         }
@@ -296,8 +301,10 @@ mod tests {
 
         // Продвигаем фазу
         let mut output = [0.0f32; 1];
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
         for _ in 0..10 {
-            lfo.process_block(&[], &mut output);
+            lfo.process(None, &mut output, &ctx).unwrap();
         }
 
         // Синхронизируем со сбросом
@@ -319,7 +326,9 @@ mod tests {
             lfo.init(44100.0);
 
             let mut output = [0.0f32; 1];
-            lfo.process_block(&[], &mut output);
+            let tick = ClockTick::default();
+            let ctx = ActionContext::new(&tick);
+            lfo.process(None, &mut output, &ctx).unwrap();
             let val = output[0];
             assert!(
                 val >= -1.0 && val <= 1.0,
@@ -364,12 +373,14 @@ mod tests {
         let initial_phase = lfo.phase();
         println!("Initial phase: {}", initial_phase.to_f32());
         let mut output = [0.0f32; 1];
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
 
         // Продвигаем фазу на несколько периодов
         for i in 0..samples_per_period * 3 {
             // 3 полных периода
             let before_phase = lfo.phase();
-            lfo.process_block(&[], &mut output);
+            lfo.process(None, &mut output, &ctx).unwrap();
             let after_phase = lfo.phase();
 
             // Проверяем, не произошёл ли сброс фазы

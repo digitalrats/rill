@@ -3,12 +3,12 @@
 //! # Пример
 //! ```
 //! use rill_core_dsp::filter_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! filter_algorithm! {
 //!     /// Биквадратный фильтр
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct Biquad<T: AudioNum> {
+//!     pub struct Biquad<T: Transcendental> {
 //!         params: {
 //!             cutoff: T = T::from_f32(1000.0),
 //!             q: T = T::from_f32(0.707),
@@ -42,12 +42,12 @@
 /// # Пример
 /// ```
 /// use rill_core_dsp::filter_algorithm;
-/// use rill_core::math::AudioNum;
+/// use rill_core::math::Transcendental;
 ///
 /// filter_algorithm! {
 ///     /// Биквадратный фильтр
 ///     #[derive(Debug, Clone, Copy)]
-///     pub struct Biquad<T: AudioNum> {
+///     pub struct Biquad<T: Transcendental> {
 ///         params: {
 ///             cutoff: T = T::from_f32(1000.0),
 ///             q: T = T::from_f32(0.707),
@@ -143,7 +143,7 @@ macro_rules! filter_algorithm {
 
         impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
         where
-            T: rill_core::math::AudioNum,
+            T: rill_core::math::Transcendental,
         {
             fn init(&mut self, sample_rate: f32) {
                 self.sample_rate = sample_rate;
@@ -156,12 +156,19 @@ macro_rules! filter_algorithm {
                 )*
             }
 
-            fn process_block(&mut self, input: &[T], output: &mut [T]) {
+            fn process(
+                &mut self,
+                input: Option<&[T]>,
+                output: &mut [T],
+                _ctx: &$crate::algorithm::ActionContext,
+            ) -> $crate::algorithm::ProcessResult<()> {
+                let input = input.unwrap_or(&[]);
                 let len = input.len().min(output.len());
                 let process_fn: fn(&mut Self, T) -> T = $process;
                 for i in 0..len {
                     output[i] = process_fn(self, input[i]);
                 }
+                Ok(())
             }
 
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {

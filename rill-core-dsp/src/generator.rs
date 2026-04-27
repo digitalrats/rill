@@ -1,20 +1,26 @@
 //! Трейты для генераторов (источников сигнала)
 
 use crate::algorithm::Algorithm;
-use rill_core::AudioNum;
+use rill_core::time::ClockTick;
+use rill_core::traits::ActionContext;
+use rill_core::Transcendental;
 
 /// Базовый трейт для генераторов
-pub trait Generator<T: AudioNum>: Algorithm<T> {
+pub trait Generator<T: Transcendental>: Algorithm<T> {
     /// Генерировать следующий семпл
     fn generate(&mut self) -> T {
         let mut output = [T::ZERO];
-        self.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        let _ = self.process(None, &mut output, &ctx);
         output[0]
     }
 
-    /// Генерировать блок семплов (по умолчанию использует process_block)
+    /// Генерировать блок семплов (по умолчанию использует process)
     fn generate_block(&mut self, output: &mut [T]) {
-        self.process_block(&[], output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        let _ = self.process(None, output, &ctx);
     }
 
     /// Генерировать блок с использованием векторного eDSL (опционально)
@@ -30,7 +36,7 @@ pub trait Generator<T: AudioNum>: Algorithm<T> {
 }
 
 /// Генератор с изменяемой частотой
-pub trait FrequencySource<T: AudioNum>: Generator<T> {
+pub trait FrequencySource<T: Transcendental>: Generator<T> {
     /// Установить частоту в Hz
     fn set_frequency(&mut self, freq: f32);
 
@@ -45,7 +51,7 @@ pub trait FrequencySource<T: AudioNum>: Generator<T> {
 }
 
 /// Генератор с изменяемой амплитудой
-pub trait AmplitudeSource<T: AudioNum>: Generator<T> {
+pub trait AmplitudeSource<T: Transcendental>: Generator<T> {
     /// Установить амплитуду (0.0-1.0)
     fn set_amplitude(&mut self, amp: T);
 
@@ -59,7 +65,7 @@ pub trait AmplitudeSource<T: AudioNum>: Generator<T> {
 }
 
 /// Генератор с изменяемой формой волны
-pub trait WaveformSource<T: AudioNum>: Generator<T> {
+pub trait WaveformSource<T: Transcendental>: Generator<T> {
     /// Тип波形
     type Waveform;
 
@@ -71,7 +77,7 @@ pub trait WaveformSource<T: AudioNum>: Generator<T> {
 }
 
 /// Шумовой генератор
-pub trait NoiseSource<T: AudioNum>: Generator<T> {
+pub trait NoiseSource<T: Transcendental>: Generator<T> {
     /// Тип шума
     type NoiseType;
 

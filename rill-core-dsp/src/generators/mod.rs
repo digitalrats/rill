@@ -8,25 +8,25 @@
 //! - FM синтез
 //!
 //! Все генераторы реализуют общий трейт [`Generator`] и параметризованы
-//! типом `T: AudioNum` (f32 или f64).
+//! типом `T: Transcendental` (f32 или f64).
 
 // Импортируем необходимые типы и трейты
-use rill_core::AudioNum;
-use crate::algorithm::{Algorithm, AlgorithmMetadata, AlgorithmCategory};
+use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::Transcendental;
 
 // Объявляем подмодули
 mod basic;
-mod noise;
 mod envelope;
-mod lfo;
 mod fm;
+mod lfo;
+mod noise;
 
 // Реэкспортируем всё из подмодулей
 pub use basic::*;
-pub use noise::*;
 pub use envelope::*;
-pub use lfo::*;
 pub use fm::*;
+pub use lfo::*;
+pub use noise::*;
 
 /// Базовый трейт для всех генераторов
 ///
@@ -34,27 +34,27 @@ pub use fm::*;
 /// - управление фазой
 /// - изменение частоты
 /// - изменение амплитуды
-pub trait Generator<T: AudioNum>: Algorithm<T> {
+pub trait Generator<T: Transcendental>: Algorithm<T> {
     /// Получить текущую фазу (0.0 - 1.0)
     fn phase(&self) -> T;
-    
+
     /// Установить фазу
     fn set_phase(&mut self, phase: T);
-    
+
     /// Сбросить фазу в 0
     fn reset_phase(&mut self) {
         self.set_phase(T::ZERO);
     }
-    
+
     /// Получить частоту в Hz
     fn frequency(&self) -> f32;
-    
+
     /// Установить частоту
     fn set_frequency(&mut self, freq: f32);
-    
+
     /// Получить амплитуду
     fn amplitude(&self) -> T;
-    
+
     /// Установить амплитуду
     fn set_amplitude(&mut self, amp: T);
 }
@@ -63,13 +63,13 @@ pub trait Generator<T: AudioNum>: Algorithm<T> {
 ///
 /// Позволяет синхронизировать несколько генераторов
 /// по фазе или тактовому сигналу.
-pub trait SyncableGenerator<T: AudioNum>: Generator<T> {
+pub trait SyncableGenerator<T: Transcendental>: Generator<T> {
     /// Синхронизировать с внешним тактовым сигналом
     ///
     /// # Arguments
     /// * `reset` - если true, сбросить фазу в 0
     fn sync(&mut self, reset: bool);
-    
+
     /// Получить количество периодов с последнего сброса
     fn periods(&self) -> u32;
 }
@@ -78,16 +78,16 @@ pub trait SyncableGenerator<T: AudioNum>: Generator<T> {
 ///
 /// Поддерживает частотную модуляцию (FM) для создания
 /// сложных тембров.
-pub trait ModulatableGenerator<T: AudioNum>: Generator<T> {
+pub trait ModulatableGenerator<T: Transcendental>: Generator<T> {
     /// Применить модуляцию частоты
     ///
     /// # Arguments
     /// * `amount` - величина модуляции
     fn modulate_frequency(&mut self, amount: T);
-    
+
     /// Индекс модуляции (текущая величина FM)
     fn modulation_index(&self) -> T;
-    
+
     /// Установить индекс модуляции
     fn set_modulation_index(&mut self, index: T);
 }
@@ -117,7 +117,7 @@ impl GeneratorComparison {
          │ Brown      │ Спад 6dB/октаву (1/f²)          │\n\
          └────────────┴─────────────────────────────────┘"
     }
-    
+
     /// Рекомендации по применению
     pub fn usage_guide() -> &'static str {
         "Как выбрать генератор:\n\n\
@@ -138,7 +138,7 @@ impl GeneratorComparison {
          🎵 **Модуляция**:\n\
          → LFO - вибрато, тремоло, фильтр-свип"
     }
-    
+
     /// Характеристики производительности
     pub fn performance_guide() -> &'static str {
         "Производительность (относительная):\n\
@@ -158,24 +158,24 @@ impl GeneratorComparison {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_generator_trait_bounds() {
         // Проверяем, что все генераторы реализуют нужные трейты
-        fn assert_generator<T: AudioNum, G: Generator<T>>() {}
-        fn assert_syncable<T: AudioNum, G: SyncableGenerator<T>>() {}
-        fn assert_modulatable<T: AudioNum, G: ModulatableGenerator<T>>() {}
-        
+        fn assert_generator<T: Transcendental, G: Generator<T>>() {}
+        fn assert_syncable<T: Transcendental, G: SyncableGenerator<T>>() {}
+        fn assert_modulatable<T: Transcendental, G: ModulatableGenerator<T>>() {}
+
         assert_generator::<f32, BasicOscillator<f32>>();
         assert_generator::<f32, NoiseGenerator<f32>>();
         assert_generator::<f32, EnvelopeGenerator<f32>>();
         assert_generator::<f32, LFO<f32>>();
         assert_generator::<f32, SimpleFmSynth<f32>>();
-        
+
         assert_syncable::<f32, BasicOscillator<f32>>();
         assert_modulatable::<f32, BasicOscillator<f32>>();
     }
-    
+
     #[test]
     fn test_comparison_guides() {
         assert!(!GeneratorComparison::harmonic_content().is_empty());

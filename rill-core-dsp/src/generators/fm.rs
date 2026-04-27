@@ -10,7 +10,8 @@ use super::basic::{BasicOscillator, Waveform};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator};
 use crate::vector::prelude::*;
-use rill_core::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 
 // =============================================================================
 // Простой 2-операторный FM синтезатор
@@ -26,8 +27,13 @@ use rill_core::AudioNum;
 ///
 /// # Пример
 /// ```
+/// use rill_core::time::ClockTick;
+/// use rill_core::traits::ActionContext;
 /// use rill_core_dsp::generators::*;
 /// use rill_core_dsp::Algorithm;
+///
+/// let tick = ClockTick::default();
+/// let ctx = ActionContext::new(&tick);
 ///
 /// // Создаём FM синтезатор с соотношением частот 2:1
 /// let mut fm = SimpleFmSynth::<f32>::new(
@@ -39,11 +45,11 @@ use rill_core::AudioNum;
 ///
 /// // Генерируем семпл
 /// let mut output = [0.0_f32];
-/// fm.process_block(&[0.0], &mut output);
+/// fm.process(None, &mut output, &ctx).unwrap();
 /// let sample = output[0];
 /// ```
 #[derive(Clone, Copy)]
-pub struct SimpleFmSynth<T: AudioNum> {
+pub struct SimpleFmSynth<T: Transcendental> {
     /// Несущий осциллятор (carrier) - производит выходной сигнал
     carrier: BasicOscillator<T>,
     /// Модулирующий осциллятор (modulator) - модулирует частоту carrier
@@ -54,7 +60,7 @@ pub struct SimpleFmSynth<T: AudioNum> {
     ratio: f32,
 }
 
-impl<T: AudioNum> SimpleFmSynth<T> {
+impl<T: Transcendental> SimpleFmSynth<T> {
     /// Создать новый FM синтезатор
     ///
     /// # Arguments
@@ -125,7 +131,7 @@ impl<T: AudioNum> SimpleFmSynth<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
+impl<T: Transcendental> Algorithm<T> for SimpleFmSynth<T> {
     fn init(&mut self, sample_rate: f32) {
         self.carrier.init(sample_rate);
         self.modulator.init(sample_rate);
@@ -136,7 +142,13 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
         self.modulator.reset();
     }
 
-    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Получаем модулирующий сигнал
             let mod_signal = self.modulator.generate().extract(0);
@@ -148,6 +160,7 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
             // Возвращаем сигнал несущей
             *out = self.carrier.generate().extract(0);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -159,25 +172,11 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
             version: env!("CARGO_PKG_VERSION"),
         }
     }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
 }
 
 // ==================== Реализация трейта Generator для SimpleFmSynth ====================
 
-impl<T: AudioNum> Generator<T> for SimpleFmSynth<T> {
+impl<T: Transcendental> Generator<T> for SimpleFmSynth<T> {
     fn phase(&self) -> T {
         self.carrier.phase()
     }
@@ -207,7 +206,7 @@ impl<T: AudioNum> Generator<T> for SimpleFmSynth<T> {
 
 // ==================== Реализация трейта ModulatableGenerator для SimpleFmSynth ====================
 
-impl<T: AudioNum> ModulatableGenerator<T> for SimpleFmSynth<T> {
+impl<T: Transcendental> ModulatableGenerator<T> for SimpleFmSynth<T> {
     fn modulate_frequency(&mut self, amount: T) {
         self.carrier.modulate_frequency(amount);
         // Также обновляем modulation_index, чтобы он соответствовал
@@ -254,7 +253,7 @@ impl<T: AudioNum> ModulatableGenerator<T> for SimpleFmSynth<T> {
 /// let mut fm = FmSynth::<f32, 6>::new(frequencies, algorithm);
 /// fm.init(44100.0);
 /// ```
-pub struct FmSynth<T: AudioNum, const N: usize> {
+pub struct FmSynth<T: Transcendental, const N: usize> {
     /// Операторы (все используют BasicOscillator)
     operators: [BasicOscillator<T>; N],
     /// Алгоритм соединения (матрица маршрутов)
@@ -264,7 +263,7 @@ pub struct FmSynth<T: AudioNum, const N: usize> {
     modulation_indices: [ScalarVector1<T>; N],
 }
 
-impl<T: AudioNum, const N: usize> FmSynth<T, N> {
+impl<T: Transcendental, const N: usize> FmSynth<T, N> {
     /// Создать новый FM синтезатор
     ///
     /// # Arguments
@@ -335,7 +334,7 @@ impl<T: AudioNum, const N: usize> FmSynth<T, N> {
     }
 }
 
-impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
+impl<T: Transcendental, const N: usize> Algorithm<T> for FmSynth<T, N> {
     fn init(&mut self, sample_rate: f32) {
         for op in &mut self.operators {
             op.init(sample_rate);
@@ -346,7 +345,13 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
         self.reset_all();
     }
 
-    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Сохраняем текущие значения всех операторов
             let mut values = [T::ZERO; N];
@@ -375,6 +380,7 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
             // (в классической FM архитектуре)
             *out = values[N - 1];
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -423,20 +429,6 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
                 version: env!("CARGO_PKG_VERSION"),
             },
         }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
     }
 }
 
@@ -511,6 +503,8 @@ pub mod algorithms_6op {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::time::ClockTick;
+    use rill_core::traits::ActionContext;
 
     #[test]
     fn test_simple_fm_synth() {
@@ -518,7 +512,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -531,7 +527,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -562,7 +560,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -574,7 +574,9 @@ mod tests {
         fm.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }
@@ -591,7 +593,9 @@ mod tests {
         fm.set_waveform(1, Waveform::Square);
 
         let mut output = [0.0f32; 1];
-        fm.process_block(&[], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        fm.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }

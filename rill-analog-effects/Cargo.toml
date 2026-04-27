@@ -1,0 +1,16 @@
+[package]
+name = "rill-analog-effects"
+version = "0.3.0"
+edition = "2021"
+description = "Analog circuit models: op-amps, tape decks, preamps"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rill-core = { workspace = true }
+rill-core-wdf = { workspace = true }
+rand = { workspace = true }
+
+[features]
+default = []

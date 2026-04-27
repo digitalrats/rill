@@ -1,6 +1,6 @@
 //! "Дикое" серво — нарушает законы природы (микро-контроль)
 
-use crate::automaton::Automaton;
+use crate::control::Automaton;
 use crate::core::{ParameterTarget, SignalOrigin, WorldTime};
 use crate::servo::Servo;
 use rill_core::queues::MicroControlObserver;
@@ -55,11 +55,10 @@ impl<A: Automaton> WildServo<A> {
     pub fn update(&mut self, time: WorldTime, graph: &mut AudioGraph) {
         let (new_state, _) = self.automaton.step(
             time.absolute,
-            &crate::core::AutomatonContext::dummy(), // Упрощенно
-            A::Action::default(),
+            &A::Action::default(),
             &self.state,
         );
-        
+
         self.state = new_state;
         let raw_value = self.automaton.extract_value(&self.state);
         let value = self.target.scale(raw_value);
@@ -127,11 +126,10 @@ impl<A: Automaton> SafeServo<A> {
     pub fn update(&mut self, time: WorldTime) {
         let (new_state, _) = self.automaton.step(
             time.absolute,
-            &crate::core::AutomatonContext::dummy(),
-            A::Action::default(),
+            &A::Action::default(),
             &self.state,
         );
-        
+
         self.state = new_state;
         let raw_value = self.automaton.extract_value(&self.state);
         let value = self.target.scale(raw_value);

@@ -2,7 +2,7 @@
 //!
 //! Этот модуль предоставляет различные реализации фильтров, от простых
 //! до сложных, для использования в аудио обработке. Все фильтры
-//! параметризованы типом `T: AudioNum` и могут работать с `f32` или `f64`.
+//! параметризованы типом `T: Transcendental` и могут работать с `f32` или `f64`.
 //!
 //! ## Доступные фильтры
 //!
@@ -23,13 +23,17 @@
 //!
 //! ```rust
 //! use rill_core_dsp::filters::*;
-//! use rill_core::AudioNum;
+//! use rill_core::Transcendental;
+//! use rill_core::time::ClockTick;
+//! use rill_core::traits::ActionContext;
 //!
-//! fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
+//! fn process_filter<T: Transcendental>(filter: &mut dyn Filter<T>, input: T) -> T {
 //!     filter.set_cutoff(1000.0);
 //!     filter.set_q(0.707);
 //!     let mut output = [T::ZERO];
-//!     filter.process_block(&[input], &mut output);
+//!     let tick = ClockTick::default();
+//!     let ctx = ActionContext::new(&tick);
+//!     filter.process(Some(&[input]), &mut output, &ctx).unwrap();
 //!     output[0]
 //! }
 //! ```
@@ -38,6 +42,8 @@
 //!
 //! ### Создание фильтра нижних частот
 //! ```
+//! use rill_core::time::ClockTick;
+//! use rill_core::traits::ActionContext;
 //! use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 //! use rill_core_dsp::Algorithm;
 //!
@@ -50,7 +56,9 @@
 //! lowpass.init(44100.0);
 //!
 //! let mut output = [0.0_f32];
-//! lowpass.process_block(&[0.5], &mut output);
+//! let tick = ClockTick::default();
+//! let ctx = ActionContext::new(&tick);
+//! lowpass.process(Some(&[0.5]), &mut output, &ctx).unwrap();
 //! let output = output[0];
 //! ```
 //!
@@ -81,6 +89,7 @@ mod biquad;
 mod butterworth;
 mod chebyshev;
 mod comb;
+mod moog_ladder;
 mod one_pole;
 mod svf;
 
@@ -88,11 +97,12 @@ pub use biquad::Biquad;
 pub use butterworth::Butterworth;
 pub use chebyshev::{ChebyshevI, ChebyshevII, ChebyshevParams};
 pub use comb::CombFilter;
+pub use moog_ladder::MoogLadder;
 pub use one_pole::OnePole;
 pub use svf::StateVariableFilter;
 
 use crate::algorithm::{Algorithm, AlgorithmMetadata, ParameterizedAlgorithm};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 /// Общий тип параметров для всех фильтров
 ///
@@ -292,17 +302,21 @@ impl FilterType {
 /// # Пример
 /// ```
 /// use rill_core_dsp::filters::*;
-/// use rill_core::AudioNum;
+/// use rill_core::Transcendental;
+/// use rill_core::time::ClockTick;
+/// use rill_core::traits::ActionContext;
 ///
-/// fn process_filter<T: AudioNum>(filter: &mut dyn Filter<T>, input: T) -> T {
+/// fn process_filter<T: Transcendental>(filter: &mut dyn Filter<T>, input: T) -> T {
 ///     filter.set_cutoff(1000.0);
 ///     filter.set_q(0.707);
 ///     let mut output = [T::ZERO];
-///     filter.process_block(&[input], &mut output);
+///     let tick = ClockTick::default();
+///     let ctx = ActionContext::new(&tick);
+///     filter.process(Some(&[input]), &mut output, &ctx).unwrap();
 ///     output[0]
 /// }
 /// ```
-pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> {
+pub trait Filter<T: Transcendental>: ParameterizedAlgorithm<T, Params = FilterParams> {
     /// Установить частоту среза
     ///
     /// # Arguments
@@ -355,7 +369,7 @@ pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> 
 }
 
 // Blanket implementation для всех типов с Params = FilterParams
-impl<T: AudioNum, F> Filter<T> for F where F: ParameterizedAlgorithm<T, Params = FilterParams> {}
+impl<T: Transcendental, F> Filter<T> for F where F: ParameterizedAlgorithm<T, Params = FilterParams> {}
 
 // =============================================================================
 // Сравнение фильтров
@@ -426,10 +440,15 @@ impl FilterComparison {
 #[cfg(doctest)]
 mod examples {
     /// ```rust
+    /// use rill_core::time::ClockTick;
+    /// use rill_core::traits::ActionContext;
     /// use rill_core_dsp::filters::*;
-    /// use rill_core::AudioNum;
+    /// use rill_core::Transcendental;
     /// use rill_core_dsp::Algorithm;
     /// use std::f32::consts::PI;
+    ///
+    /// let tick = ClockTick::default();
+    /// let ctx = ActionContext::new(&tick);
     ///
     /// // 1. Простой low-pass фильтр для сглаживания
     /// let mut smooth = OnePole::<f32>::new(FilterParams {
@@ -444,7 +463,7 @@ mod examples {
     /// let mut smoothed = 0.0;
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
-    ///     smooth.process_block(&[1.0], &mut out);
+    ///     smooth.process(Some(&[1.0]), &mut out, &ctx).unwrap();
     ///     smoothed = out[0];
     /// }
     /// // После 1000 итераций значение должно быть близко к 1.0
@@ -462,7 +481,7 @@ mod examples {
     /// // Прогреваем фильтр
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
-    ///     peq.process_block(&[0.0], &mut out);
+    ///     peq.process(Some(&[0.0]), &mut out, &ctx).unwrap();
     /// }
     ///
     /// // Генерируем синусоиду на частоте фильтра
@@ -472,11 +491,11 @@ mod examples {
     /// let phase_inc = 2.0 * PI * frequency / sample_rate;
     /// let mut phase = 0.0;
     ///
-    /// let mut max_output = 0.0;
+    /// let mut max_output = 0.0_f32;
     /// for _ in 0..1000 {
     ///     let input = amplitude * phase.sin();
     ///     let mut out = [0.0_f32];
-    ///     peq.process_block(&[input], &mut out);
+    ///     peq.process(Some(&[input]), &mut out, &ctx).unwrap();
     ///     let output = out[0];
     ///     max_output = max_output.max(output.abs());
     ///     phase += phase_inc;
@@ -504,7 +523,7 @@ mod examples {
     ///
     /// let input = 0.5;
     /// let mut out = [0.0_f32];
-    /// svf.process_block(&[input], &mut out);
+    /// svf.process(Some(&[input]), &mut out, &ctx).unwrap();
     /// let lp = out[0];
     /// let hp = svf.highpass();
     /// let bp = svf.bandpass();

@@ -6,32 +6,32 @@ use thiserror::Error;
 pub type QueueResult<T> = Result<T, QueueError>;
 
 /// Ошибки очередей
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum QueueError {
     /// Очередь переполнена (при попытке отправить в ограниченную очередь)
     #[error("Queue is full")]
     QueueFull,
-    
+
     /// Очередь пуста (при попытке получить из пустой очереди)
     #[error("Queue is empty")]
     QueueEmpty,
-    
+
     /// Канал отключен (все отправители/получатели уничтожены)
     #[error("Channel disconnected")]
     ChannelDisconnected,
-    
+
     /// Таймаут при ожидании
     #[error("Operation timed out")]
     Timeout,
-    
+
     /// Неподдерживаемая операция для данного типа очереди
     #[error("Operation not supported: {0}")]
     Unsupported(String),
-    
+
     /// Ошибка отправки с потерей данных
     #[error("Send failed: {0}")]
     SendFailed(String),
-    
+
     /// Ошибка получения
     #[error("Receive failed: {0}")]
     ReceiveFailed(String),

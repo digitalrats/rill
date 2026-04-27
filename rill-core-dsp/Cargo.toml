@@ -3,28 +3,22 @@ name = "rill-core-dsp"
 version = "0.3.0"
 edition = "2021"
 description = "Core DSP abstractions and algorithms for Rill"
-license = "Apache-2.0"
-authors = ["Digital Rats / Rill Team"]
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
-rill-core = { path = "../rill-core", version = "0.3.0" }
-
-# Математические зависимости
+rill-core = { workspace = true }
 num-traits = "0.2"
-num-complex = "0.4"      # Для комплексных чисел в фильтрах
-float-cmp = "0.9"        # Для сравнения чисел с плавающей точкой в тестах
+num-complex = "0.4"
 thiserror = "1.0"
 
-# SIMD поддержка (только при включенной фиче simd)
-wide = { version = "0.7", optional = true }
-
 [dev-dependencies]
-# Зависимости только для тестов
-float-cmp = "0.9"        # Уже указано выше, но можно оставить для ясности
+float-cmp = "0.9"
 
 [features]
 default = []
-simd = ["wide"]          # Для SIMD оптимизаций (включает крейт wide)
-f64 = []                 # Включить поддержку f64
-fast_math = []           # Быстрые приближённые математические функции (меньшая точность)
-unstable = []            # Нестабильные фичи (generic_const_exprs)
+simd = ["rill-core/simd"]  # SIMD оптимизации через rill-core
+f64 = []                   # Включить поддержку f64
+fast_math = []             # Быстрые приближённые математические функции (меньшая точность)
+unstable = []              # Нестабильные фичи (generic_const_exprs)

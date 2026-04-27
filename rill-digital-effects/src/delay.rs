@@ -2,7 +2,7 @@
 
 use rill_core::{
     buffer::DelayLine,
-    math::AudioNum,
+    math::Transcendental,
     traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
@@ -20,7 +20,7 @@ const MAX_DELAY_SAMPLES: usize = (MAX_DELAY_SECONDS * MAX_SAMPLE_RATE) as usize;
 /// - delay_time: delay time in seconds (0.01 - 2.0)
 /// - feedback: feedback amount (0.0 - 0.99)
 /// - mix: dry/wet mix (0.0 - 1.0)
-pub struct Delay<T: AudioNum, const BUF_SIZE: usize> {
+pub struct Delay<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -47,7 +47,7 @@ pub struct Delay<T: AudioNum, const BUF_SIZE: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
     /// Create a new delay effect with default parameters
     pub fn new(sample_rate: f32) -> Self {
         let metadata = NodeMetadata::new("Delay", NodeCategory::Processor);
@@ -132,7 +132,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -242,32 +242,21 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Delay<T, BUF
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
     fn process(
         &mut self,
         _clock: &ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        _control_outputs: &mut [T],
-        _clock_outputs: &mut [ClockTick],
-        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if audio_outputs.is_empty() {
-            return Ok(());
+        let input_buf = *self.inputs[0].buffer.as_array();
+        let mut temp = [T::ZERO; BUF_SIZE];
+        for i in 0..BUF_SIZE {
+            temp[i] = self.process_sample(input_buf[i]);
         }
-
-        // We have exactly one audio input and one audio output (as per construction)
-        if let (Some(input_buffer), Some(output_buffer)) =
-            (audio_inputs.first(), audio_outputs.first_mut())
-        {
-            for i in 0..BUF_SIZE {
-                output_buffer[i] = self.process_sample(input_buffer[i]);
-            }
-        }
-
+        *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
     }
 

@@ -9,7 +9,8 @@ use super::{Filter, FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use core::f32::consts::PI;
-use rill_core::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 
 /// Фильтр переменных состояния
 ///
@@ -17,7 +18,7 @@ use rill_core::AudioNum;
 /// - lowpass: низкие частоты
 /// - highpass: высокие частоты
 /// - bandpass: полосовой
-pub struct StateVariableFilter<T: AudioNum> {
+pub struct StateVariableFilter<T: Transcendental> {
     /// Параметры фильтра
     params: FilterParams,
     /// Коэффициенты
@@ -33,7 +34,7 @@ pub struct StateVariableFilter<T: AudioNum> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum> StateVariableFilter<T> {
+impl<T: Transcendental> StateVariableFilter<T> {
     /// Создать новый SVF
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
@@ -75,7 +76,7 @@ impl<T: AudioNum> StateVariableFilter<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
+impl<T: Transcendental> Algorithm<T> for StateVariableFilter<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_coeffs();
@@ -89,7 +90,13 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
         self.x1 = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 
         for i in 0..len {
@@ -105,6 +112,7 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
                 _ => self.lp.extract(0), // по умолчанию low-pass
             };
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -118,7 +126,7 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
     }
 }
 
-impl<T: AudioNum> ParameterizedAlgorithm<T> for StateVariableFilter<T> {
+impl<T: Transcendental> ParameterizedAlgorithm<T> for StateVariableFilter<T> {
     type Params = FilterParams;
 
     fn params(&self) -> &Self::Params {

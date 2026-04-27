@@ -3,12 +3,12 @@
 //! # Пример
 //! ```
 //! use rill_core_dsp::simple_algorithm;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! simple_algorithm! {
 //!     /// Простой усилитель
 //!     #[derive(Debug, Clone, Copy)]
-//!     pub struct Gain<T: AudioNum> {
+//!     pub struct Gain<T: Transcendental> {
 //!         params: {
 //!             /// Коэффициент усиления
 //!             gain: T = T::from_f32(1.0),
@@ -31,12 +31,12 @@
 /// # Пример
 /// ```
 /// use rill_core_dsp::simple_algorithm;
-/// use rill_core::math::AudioNum;
+/// use rill_core::math::Transcendental;
 ///
 /// simple_algorithm! {
 ///     /// Простой усилитель
 ///     #[derive(Debug, Clone, Copy)]
-///     pub struct Gain<T: AudioNum> {
+///     pub struct Gain<T: Transcendental> {
 ///         params: {
 ///             /// Коэффициент усиления
 ///             gain: T = T::from_f32(1.0),
@@ -98,7 +98,7 @@ macro_rules! simple_algorithm {
 
         impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
         where
-            T: rill_core::math::AudioNum,
+            T: rill_core::math::Transcendental,
         {
             fn init(&mut self, _sample_rate: f32) {}
 
@@ -108,12 +108,19 @@ macro_rules! simple_algorithm {
                 )*
             }
 
-            fn process_block(&mut self, input: &[T], output: &mut [T]) {
+            fn process(
+                &mut self,
+                input: Option<&[T]>,
+                output: &mut [T],
+                _ctx: &$crate::algorithm::ActionContext,
+            ) -> $crate::algorithm::ProcessResult<()> {
+                let input = input.unwrap_or(&[]);
                 let len = input.len().min(output.len());
                 let process_fn: fn(&mut Self, T) -> T = $process;
                 for i in 0..len {
                     output[i] = process_fn(self, input[i]);
                 }
+                Ok(())
             }
 
             fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {

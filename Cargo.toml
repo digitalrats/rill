@@ -3,16 +3,18 @@ members = [
     "rill-core",
     "rill-core-dsp",
     "rill-graph",
-    #"rill-patchbay", # Временно отключен
+    "rill-patchbay",
     "rill-oscillators",
     "rill-digital-filters",
     "rill-digital-effects",
+    "rill-telemetry",
     "rill-router",
-    #"rill-lofi", # Временно отключен
-    #"rill-io", # Временно отключен 
-    #"rill-server" # В разработке
-    #"rill-wdf" # Планируется
-    #"rill-sequenser # Планируется
+    "rill-lofi",
+    "rill-io",
+    "rill-core-wdf",
+    "rill-analog-filters",
+    "rill-analog-effects",
+    "rill-osc",
 ]
 resolver = "2"
 
@@ -20,6 +22,7 @@ resolver = "2"
 license = "Apache-2.0"
 authors = ["Digital Rats / Rill Team"]
 edition = "2021"
+repository = "https://github.com/DigitalRats/rill"
 
 [workspace.dependencies]
 parking_lot = "0.12"
@@ -31,3 +34,20 @@ rand = "0.8"
 log = "0.4"
 crossbeam-channel = "0.5"
 tokio = "1.0"
+
+# Internal workspace crates
+rill-core = { path = "rill-core", version = "0.3.0" }
+rill-core-dsp = { path = "rill-core-dsp", version = "0.3.0" }
+rill-core-wdf = { path = "rill-core-wdf", version = "0.3.0" }
+rill-graph = { path = "rill-graph", version = "0.3.0" }
+rill-patchbay = { path = "rill-patchbay", version = "0.3.0" }
+rill-oscillators = { path = "rill-oscillators", version = "0.3.0" }
+rill-digital-filters = { path = "rill-digital-filters", version = "0.3.0" }
+rill-digital-effects = { path = "rill-digital-effects", version = "0.3.0" }
+rill-router = { path = "rill-router", version = "0.3.0" }
+rill-lofi = { path = "rill-lofi", version = "0.3.0" }
+rill-io = { path = "rill-io", version = "0.3.0" }
+rill-telemetry = { path = "rill-telemetry", version = "0.3.0" }
+rill-analog-filters = { path = "rill-analog-filters", version = "0.3.0" }
+rill-analog-effects = { path = "rill-analog-effects", version = "0.3.0" }
+rill-osc = { path = "rill-osc", version = "0.3.0" }

@@ -4,7 +4,8 @@ use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::math::Smoother;
 use crate::vector::prelude::*;
-use rill_core::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 
 /// Стадия огибающей
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,7 +38,7 @@ pub enum EnvelopeType {
 }
 
 /// Генератор огибающей ADSR
-pub struct EnvelopeGenerator<T: AudioNum> {
+pub struct EnvelopeGenerator<T: Transcendental> {
     /// Тип огибающей
     env_type: EnvelopeType,
     /// Времена (в секундах)
@@ -62,7 +63,7 @@ pub struct EnvelopeGenerator<T: AudioNum> {
     gate: bool,
 }
 
-impl<T: AudioNum> EnvelopeGenerator<T> {
+impl<T: Transcendental> EnvelopeGenerator<T> {
     /// Создать новую ADSR огибающую
     pub fn adsr(attack: f32, decay: f32, sustain: T, release: f32) -> Self {
         Self {
@@ -155,7 +156,7 @@ impl<T: AudioNum> EnvelopeGenerator<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
+impl<T: Transcendental> Algorithm<T> for EnvelopeGenerator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_samples();
@@ -170,7 +171,13 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
         self.smoother.set_current(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             let gate_signal = input[i];
@@ -239,6 +246,7 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
             // Применяем сглаживание
             output[i] = self.smoother.process_sample(self.level.extract(0));
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -260,7 +268,7 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
     }
 }
 
-impl<T: AudioNum> Generator<T> for EnvelopeGenerator<T> {
+impl<T: Transcendental> Generator<T> for EnvelopeGenerator<T> {
     fn phase(&self) -> T {
         T::ZERO
     }

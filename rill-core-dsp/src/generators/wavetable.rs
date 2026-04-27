@@ -2,11 +2,12 @@
 
 use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use crate::math::{lerp, AudioNum};
+use crate::math::{lerp, Transcendental};
 use crate::vector::{ScalarVector1, Vector};
+use rill_core::traits::{ActionContext, ProcessResult};
 
 /// Вейвтейбл осциллятор
-pub struct WavetableOscillator<T: AudioNum, const SIZE: usize> {
+pub struct WavetableOscillator<T: Transcendental, const SIZE: usize> {
     /// Вейвтейбл (таблица волны)
     table: [T; SIZE],
     /// Частота
@@ -23,7 +24,7 @@ pub struct WavetableOscillator<T: AudioNum, const SIZE: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const SIZE: usize> WavetableOscillator<T, SIZE> {
+impl<T: Transcendental, const SIZE: usize> WavetableOscillator<T, SIZE> {
     /// Создать новый вейвтейбл осциллятор
     pub fn new(table: [T; SIZE], frequency: f32) -> Self {
         let mut osc = Self {
@@ -107,7 +108,7 @@ impl<T: AudioNum, const SIZE: usize> WavetableOscillator<T, SIZE> {
     }
 }
 
-impl<T: AudioNum, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZE> {
+impl<T: Transcendental, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZE> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_phase_inc();
@@ -118,7 +119,8 @@ impl<T: AudioNum, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZ
         self.phase = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 
         for i in 0..len {
@@ -140,6 +142,7 @@ impl<T: AudioNum, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZ
                 self.phase = self.phase - ScalarVector1::splat(T::from_f32(SIZE as f32));
             }
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -153,7 +156,7 @@ impl<T: AudioNum, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZ
     }
 }
 
-impl<T: AudioNum, const SIZE: usize> Generator<T> for WavetableOscillator<T, SIZE> {
+impl<T: Transcendental, const SIZE: usize> Generator<T> for WavetableOscillator<T, SIZE> {
     fn phase(&self) -> T {
         self.phase.extract(0).div(T::from_f32(SIZE as f32))
     }

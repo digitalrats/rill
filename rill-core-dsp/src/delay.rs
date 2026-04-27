@@ -6,9 +6,9 @@
 //! - Многоголовая задержка (Multi-tap Delay)
 //! - Диффузионная задержка (для реверберации)
 
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm, ProcessResult};
 use crate::buffer::{DelayLine, RingBuffer};
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 
 // -----------------------------------------------------------------------------
 // Базовые параметры задержки
@@ -69,7 +69,7 @@ impl DelayParams {
 /// # Type Parameters
 /// - `T`: Тип данных (f32/f64)
 /// - `MAX_DELAY`: Максимальная задержка в семплах
-pub struct Delay<T: AudioNum, const MAX_DELAY: usize> {
+pub struct Delay<T: Transcendental, const MAX_DELAY: usize> {
     /// Параметры задержки
     params: DelayParams,
     /// Линия задержки
@@ -80,7 +80,7 @@ pub struct Delay<T: AudioNum, const MAX_DELAY: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> Delay<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> Delay<T, MAX_DELAY> {
     /// Создать новый алгоритм задержки
     pub fn new(params: DelayParams) -> Self {
         Self {
@@ -123,7 +123,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Delay<T, MAX_DELAY> {
     }
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for Delay<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for Delay<T, MAX_DELAY> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_delay_samples();
@@ -134,7 +134,15 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for Delay<T, MAX_DELAY> {
         self.delay_line.reset();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
+        let len = input.len().min(output.len());
+        for i in 0..len {
         let len = input.len().min(output.len());
         for i in 0..len {
             // Читаем задержанный сигнал
@@ -159,6 +167,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for Delay<T, MAX_DELAY> {
             // Записываем в линию задержки
             let _ = self.delay_line.write(write_signal);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -172,7 +181,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for Delay<T, MAX_DELAY> {
     }
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> ParameterizedAlgorithm<T> for Delay<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> ParameterizedAlgorithm<T> for Delay<T, MAX_DELAY> {
     type Params = DelayParams;
 
     fn params(&self) -> &Self::Params {
@@ -204,7 +213,7 @@ pub struct TapParams {
 ///
 /// Позволяет создать несколько независимых задержек
 /// с разными временами и усилением.
-pub struct MultiTapDelay<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize> {
+pub struct MultiTapDelay<T: Transcendental, const MAX_DELAY: usize, const MAX_TAPS: usize> {
     /// Основная линия задержки
     delay_line: DelayLine<T, MAX_DELAY>,
     /// Параметры каждой головки
@@ -217,7 +226,7 @@ pub struct MultiTapDelay<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: us
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize>
+impl<T: Transcendental, const MAX_DELAY: usize, const MAX_TAPS: usize>
     MultiTapDelay<T, MAX_DELAY, MAX_TAPS>
 {
     /// Создать новую многоголовую задержку
@@ -273,7 +282,7 @@ impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize>
     }
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize> Algorithm<T>
+impl<T: Transcendental, const MAX_DELAY: usize, const MAX_TAPS: usize> Algorithm<T>
     for MultiTapDelay<T, MAX_DELAY, MAX_TAPS>
 {
     fn init(&mut self, sample_rate: f32) {
@@ -291,7 +300,13 @@ impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize> Algorithm<T>
         self.delay_line.reset();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             // Записываем вход в линию задержки
@@ -317,6 +332,7 @@ impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize> Algorithm<T>
             }
             output[i] = out;
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -335,7 +351,7 @@ impl<T: AudioNum, const MAX_DELAY: usize, const MAX_TAPS: usize> Algorithm<T>
 // -----------------------------------------------------------------------------
 
 /// Диффузионная секция (комбинация allpass фильтров)
-pub struct DiffusionDelay<T: AudioNum, const STAGES: usize, const MAX_DELAY: usize> {
+pub struct DiffusionDelay<T: Transcendental, const STAGES: usize, const MAX_DELAY: usize> {
     /// Линии задержки для каждого этапа
     delays: [DelayLine<T, MAX_DELAY>; STAGES],
     /// Времена задержки для каждого этапа
@@ -346,7 +362,7 @@ pub struct DiffusionDelay<T: AudioNum, const STAGES: usize, const MAX_DELAY: usi
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const STAGES: usize, const MAX_DELAY: usize>
+impl<T: Transcendental, const STAGES: usize, const MAX_DELAY: usize>
     DiffusionDelay<T, STAGES, MAX_DELAY>
 {
     /// Создать новую диффузионную задержку
@@ -389,7 +405,7 @@ impl<T: AudioNum, const STAGES: usize, const MAX_DELAY: usize>
     }
 }
 
-impl<T: AudioNum, const STAGES: usize, const MAX_DELAY: usize> Algorithm<T>
+impl<T: Transcendental, const STAGES: usize, const MAX_DELAY: usize> Algorithm<T>
     for DiffusionDelay<T, STAGES, MAX_DELAY>
 {
     fn init(&mut self, sample_rate: f32) {
@@ -410,11 +426,18 @@ impl<T: AudioNum, const STAGES: usize, const MAX_DELAY: usize> Algorithm<T>
         }
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             output[i] = self.process_diffusion(input[i]);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -448,7 +471,7 @@ pub struct ModulatedDelayParams {
 }
 
 /// Модуляционная задержка (Chorus/Flanger)
-pub struct ModulatedDelay<T: AudioNum, const MAX_DELAY: usize> {
+pub struct ModulatedDelay<T: Transcendental, const MAX_DELAY: usize> {
     /// Параметры
     params: ModulatedDelayParams,
     /// Линия задержки
@@ -459,7 +482,7 @@ pub struct ModulatedDelay<T: AudioNum, const MAX_DELAY: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> ModulatedDelay<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> ModulatedDelay<T, MAX_DELAY> {
     /// Создать новую модуляционную задержку
     pub fn new(params: ModulatedDelayParams) -> Self {
         Self {
@@ -477,7 +500,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> ModulatedDelay<T, MAX_DELAY> {
     }
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX_DELAY> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.lfo_phase = T::ZERO;
@@ -489,7 +512,13 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX
         self.delay_line.reset();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             // Обновляем фазу LFO
@@ -520,6 +549,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX
 
             output[i] = dry.mul(one_minus_mix).add(wet.mul(mix));
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -540,6 +570,8 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for ModulatedDelay<T, MAX
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::time::ClockTick;
+    use rill_core::traits::ActionContext;
 
     #[test]
     fn test_delay_basic() {
@@ -548,11 +580,13 @@ mod tests {
 
         // Первый семпл - задержки ещё нет
         let mut output = [0.0];
-        delay.process_block(&[1.0], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        delay.process(Some(&[1.0]), &mut output, &ctx).unwrap();
         assert_eq!(output[0], 0.5);
 
         // Второй семпл - задержка ещё не появилась
-        delay.process_block(&[1.0], &mut output);
+        delay.process(Some(&[1.0]), &mut output, &ctx).unwrap();
         assert_eq!(output[0], 0.5);
     }
 
@@ -563,9 +597,11 @@ mod tests {
 
         // Проверяем, что обратная связь работает
         let mut output = [0.0];
-        delay.process_block(&[1.0], &mut output);
+        let tick = ClockTick::default();
+        let ctx = ActionContext::new(&tick);
+        delay.process(Some(&[1.0]), &mut output, &ctx).unwrap();
         let out1 = output[0];
-        delay.process_block(&[0.0], &mut output);
+        delay.process(Some(&[0.0]), &mut output, &ctx).unwrap();
         let out2 = output[0];
 
         assert!(out2 > 0.0); // Должен быть сигнал от обратной связи

@@ -1,9 +1,10 @@
 //! Пример с Null бэкендом
 
-use rill_io::{backends::NullBackend, processor::SilenceProcessor, AudioConfig, AudioEngine};
+use rill_io::{
+    backends::NullBackend, processor::SilenceProcessor, AudioBackend, AudioConfig, AudioEngine,
+};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Rill IO Null Backend Demo ===\n");
 
     let config = AudioConfig::default()

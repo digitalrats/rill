@@ -1,20 +1,19 @@
 [package]
 name = "rill-io"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Audio I/O backends for Rill - CPAL, ALSA, PipeWire, JACK"
-license = "Apache-2.0"
-authors = ["Digital Rats / Rill Team"]
-repository = "https://github.com/DigitalRats/rill"
-homepage = "https://github.com/DigitalRats/rill"
-readme = "README.md"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
 
 [dependencies]
-rill-core = { path = "../rill-core", version = "0.3.0" }
-rill-graph = { path = "../rill-graph", optional = true }
-rill-oscillators = { path = "../rill-oscillators", optional = true }
-rill-digital-effects = { path = "../rill-digital-effects", optional = true }
-async-trait = "0.1"
+rill-core = { workspace = true }
+rill-graph = { workspace = true, optional = true }
+rill-oscillators = { workspace = true, optional = true }
+rill-digital-effects = { workspace = true, optional = true }
+rill-digital-filters = { workspace = true, optional = true }
 thiserror = "1.0"
 parking_lot = "0.12"
 log = "0.4"
@@ -23,7 +22,7 @@ crossbeam-channel = "0.5"
 # Бэкенды
 cpal = { version = "0.15", optional = true }
 alsa = { version = "0.9", optional = true }
-pipewire = { version = "0.8", optional = true }
+pipewire = { version = "0.9", optional = true }
 jack = { version = "0.10", optional = true }
 
 # Для конфигурации
@@ -31,8 +30,8 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 
 [dev-dependencies]
 float-cmp = "0.9"
-rill-oscillators = { path = "../rill-oscillators" }
-rill-digital-filters = { path = "../rill-digital-filters" }
+rill-oscillators = { workspace = true }
+rill-digital-filters = { workspace = true }
 
 [features]
 default = ["cpal"]

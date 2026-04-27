@@ -1,17 +1,22 @@
 //! Integration tests for BiquadFilter
 
 use float_cmp::approx_eq;
-use rill_core_dsp::Algorithm; // для init(), reset(), process_sample()
+use rill_core::time::ClockTick;
+use rill_core::traits::{ActionContext, Algorithm};
+use rill_core_dsp::filters::{Filter, FilterParams};
 use rill_digital_filters::{BiquadFilter, FilterType};
-use rill_core_dsp::filters::{Filter, FilterParams}; // для cutoff(), q(), gain_db(), etc.
-
 
 /// Test parameter changes
 #[test]
 fn test_biquad_parameters() {
     println!("\n=== Test: Parameter Changes ===");
 
-    let mut filter = BiquadFilter::new(FilterParams { filter_type: FilterType::LowPass, cutoff: 1000.0, q: 0.707, gain_db: 0.0 });
+    let mut filter = BiquadFilter::new(FilterParams {
+        filter_type: FilterType::LowPass,
+        cutoff: 1000.0,
+        q: 0.707,
+        gain_db: 0.0,
+    });
     filter.init(44100.0);
 
     // Test cutoff change
@@ -27,7 +32,12 @@ fn test_biquad_parameters() {
     assert_eq!(filter.gain_db(), 3.0);
 
     // Test type change (via new)
-    let new_filter = BiquadFilter::new(FilterParams { filter_type: FilterType::HighPass, cutoff: 500.0, q: 1.0, gain_db: 0.0 });
+    let new_filter = BiquadFilter::new(FilterParams {
+        filter_type: FilterType::HighPass,
+        cutoff: 500.0,
+        q: 1.0,
+        gain_db: 0.0,
+    });
     assert_eq!(new_filter.filter_type(), FilterType::HighPass);
 
     println!("All parameter changes verified");
@@ -39,8 +49,18 @@ fn test_biquad_stereo() {
     println!("\n=== Test: Stereo Processing ===");
 
     let sample_rate = 44100.0;
-    let mut left = BiquadFilter::new(FilterParams { filter_type: FilterType::LowPass, cutoff: 1000.0, q: 0.707, gain_db: 0.0 });
-    let mut right = BiquadFilter::new(FilterParams { filter_type: FilterType::LowPass, cutoff: 1000.0, q: 0.707, gain_db: 0.0 });
+    let mut left = BiquadFilter::new(FilterParams {
+        filter_type: FilterType::LowPass,
+        cutoff: 1000.0,
+        q: 0.707,
+        gain_db: 0.0,
+    });
+    let mut right = BiquadFilter::new(FilterParams {
+        filter_type: FilterType::LowPass,
+        cutoff: 1000.0,
+        q: 0.707,
+        gain_db: 0.0,
+    });
 
     left.init(sample_rate);
     right.init(sample_rate);
@@ -58,10 +78,16 @@ fn test_biquad_stereo() {
     let mut left_output = vec![0.0; num_samples];
     let mut right_output = vec![0.0; num_samples];
 
+    let tick = ClockTick::default();
+    let ctx = ActionContext::new(&tick);
+
     // Process left channel
-    left.process_block(&left_input, &mut left_output);
+    left.process(Some(&left_input), &mut left_output, &ctx)
+        .unwrap();
     // Process right channel
-    right.process_block(&right_input, &mut right_output);
+    right
+        .process(Some(&right_input), &mut right_output, &ctx)
+        .unwrap();
 
     // Verify both channels processed correctly
     assert!(left_output.iter().any(|&x| x != 0.0));

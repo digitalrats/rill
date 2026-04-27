@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum ClassicSystem {
@@ -32,7 +32,7 @@ impl ClassicSystem {
             ClassicSystem::Custom { bit_depth, .. } => *bit_depth,
         }
     }
-    
+
     pub fn get_sample_rate(&self) -> f32 {
         match self {
             ClassicSystem::Nes => 44_100.0,
@@ -46,14 +46,18 @@ impl ClassicSystem {
             ClassicSystem::Custom { sample_rate, .. } => *sample_rate,
         }
     }
-    
+
     pub fn has_nonlinear_encoding(&self) -> bool {
-        matches!(self, 
-            ClassicSystem::AkaiS900 | 
-            ClassicSystem::Custom { nonlinear: true, .. }
+        matches!(
+            self,
+            ClassicSystem::AkaiS900
+                | ClassicSystem::Custom {
+                    nonlinear: true,
+                    ..
+                }
         )
     }
-    
+
     pub fn get_noise_floor_db(&self) -> f32 {
         match self {
             ClassicSystem::Nes => -42.0,
@@ -96,7 +100,7 @@ impl Default for HardwareEmulation {
 impl HardwareEmulation {
     pub fn for_system(system: ClassicSystem) -> Self {
         let mut emulation = Self::default();
-        
+
         match system {
             ClassicSystem::Nes => {
                 emulation.bit_depth = 7;
@@ -128,7 +132,7 @@ impl HardwareEmulation {
                 emulation.sample_rate = system.get_sample_rate();
             }
         }
-        
+
         emulation
     }
 }
@@ -166,7 +170,7 @@ impl Default for LofiConfig {
 impl LofiConfig {
     pub fn for_system(system: ClassicSystem) -> Self {
         Self {
-            system: system.clone(),
+            system,
             hardware: HardwareEmulation::for_system(system),
             ..Default::default()
         }

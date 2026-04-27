@@ -22,7 +22,6 @@ pub struct AtomicCell<T> {
 
 #[allow(unsafe_code)]
 impl<T> AtomicCell<T> {
-
     /// Безопасно загрузить значение
     ///
     /// # Safety
@@ -34,13 +33,13 @@ impl<T> AtomicCell<T> {
     where
         T: Copy,
     {
-        // SAFETY: 
+        // SAFETY:
         // - Вызывающий код гарантирует отсутствие одновременной записи
         // - Relaxed ordering достаточен для наших целей
         // - Значение всегда корректно инициализировано
         unsafe { *self.inner.get() }
     }
-    
+
     /// Безопасно сохранить значение
     ///
     /// # Safety
@@ -57,20 +56,20 @@ impl<T> AtomicCell<T> {
             *self.inner.get() = value;
         }
     }
-    
+
     /// Получить указатель на данные (для совместимости)
     #[inline]
     pub fn as_ptr(&self) -> *mut T {
         self.inner.get()
     }
 
-        #[inline]
+    #[inline]
     pub const fn new(value: T) -> Self {
         Self {
             inner: UnsafeCell::new(value),
         }
     }
-    
+
     /// Создать новую атомарную ячейку с проверкой
     pub fn try_new(value: T) -> Result<Self, AtomicCellError> {
         if std::mem::size_of::<T>() > isize::MAX as usize {
@@ -129,28 +128,28 @@ unsafe impl<T: Sync> Sync for AtomicCell<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_atomic_cell_basic() {
         let cell = AtomicCell::new(42);
         assert_eq!(cell.load(), 42);
-        
+
         cell.store(100);
         assert_eq!(cell.load(), 100);
     }
-    
+
     #[test]
     fn test_atomic_cell_try_new() {
         let cell = AtomicCell::try_new(42).unwrap();
         assert_eq!(cell.load(), 42);
     }
-    
+
     #[test]
     fn test_atomic_cell_default() {
         let cell = AtomicCell::<i32>::default();
         assert_eq!(cell.load(), 0);
     }
-    
+
     #[test]
     fn test_atomic_cell_clone() {
         let cell1 = AtomicCell::new(42);
@@ -158,4 +157,3 @@ mod tests {
         assert_eq!(cell2.load(), 42);
     }
 }
-

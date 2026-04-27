@@ -8,10 +8,11 @@ use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::buffer::DelayLine;
-use rill_core::math::AudioNum;
+use rill_core::math::Transcendental;
+use rill_core::traits::{ActionContext, ProcessResult};
 
 /// Гребенчатый фильтр
-pub struct CombFilter<T: AudioNum, const MAX_DELAY: usize> {
+pub struct CombFilter<T: Transcendental, const MAX_DELAY: usize> {
     params: FilterParams,
     delay: DelayLine<T, MAX_DELAY>,
     feedback: ScalarVector1<T>,
@@ -19,7 +20,7 @@ pub struct CombFilter<T: AudioNum, const MAX_DELAY: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> CombFilter<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> CombFilter<T, MAX_DELAY> {
     /// Создать новый гребенчатый фильтр
     pub fn new(params: FilterParams, feedback: f32) -> Self {
         Self {
@@ -44,7 +45,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> CombFilter<T, MAX_DELAY> {
     }
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DELAY> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_delay();
@@ -55,7 +56,13 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DEL
         self.delay.clear();
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             // Читаем задержанный сигнал
@@ -68,6 +75,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DEL
             let write_signal = input[i] + delayed * self.feedback.extract(0);
             let _ = self.delay.write(write_signal);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -81,7 +89,7 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DEL
     }
 }
 
-impl<T: AudioNum, const MAX_DELAY: usize> ParameterizedAlgorithm<T> for CombFilter<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> ParameterizedAlgorithm<T> for CombFilter<T, MAX_DELAY> {
     type Params = FilterParams;
 
     fn params(&self) -> &Self::Params {

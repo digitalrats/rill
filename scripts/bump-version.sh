@@ -1,5 +1,11 @@
 #!/bin/bash
 # scripts/bump-version.sh
+#
+# DEPRECATED — kept only as a reference.
+# Rill now uses independent versioning per crate.
+# Use `cargo set-version --package <crate> <version>` (cargo-edit) or
+# manually edit version in the crate's Cargo.toml, then update
+# the corresponding `version` in [workspace.dependencies] in root Cargo.toml.
 
 set -e
 
@@ -29,13 +35,7 @@ done
 
 echo "✅ Done! Version updated to $NEW_VERSION"
 echo ""
-echo "Next steps:"
+echo "Next steps (DEPRECATED):"
 echo "  1. Review changes: git diff"
 echo "  2. Commit: git add . && git commit -m \"chore(release): prepare $NEW_VERSION\""
 echo "  3. Continue with release: git flow release finish $NEW_VERSION"
-```
-
-Делаем скрипт исполняемым:
-```bash
-chmod +x scripts/bump-version.sh
-```

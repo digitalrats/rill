@@ -13,7 +13,7 @@
 //!
 //! ## Архитектура
 //!
-//! ```
+//! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                     ПОТОК УПРАВЛЕНИЯ                         │
 //! │                                                              │
@@ -45,12 +45,10 @@
 // Внешние зависимости
 // =============================================================================
 
-use std::sync::Arc;
-
 // Реэкспорты из rill-core
 pub use rill_core::prelude::*;
-pub use rill_core::queue::RtQueue;
-pub use rill_core::param::{ParameterId, ParameterValue, NodeId, PortId};
+pub use rill_core::queues::RtQueue;
+pub use rill_core::{NodeId, ParamValue, ParameterId, PortId};
 
 // =============================================================================
 // Публичные модули
@@ -75,10 +73,16 @@ pub mod utils;
 // Реэкспорты для удобства
 // =============================================================================
 
-pub use automaton::*;
-pub use control::*;
-pub use manager::*;
-pub use sensor::*;
+// Selective re-exports
+pub use automaton::{
+    EnvelopeAutomaton, EnvelopeStage, EnvelopeType, FunctionAutomaton, LfoAutomaton, LfoWaveform,
+    PlayMode, Range, SequencerAutomaton, StatefulFunctionAutomaton, Step, SyncMode,
+};
+pub use control::{
+    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
+    NoAction, ParameterCommand, ParameterMapping, PatchbayControl, Servo, Target, Transform,
+};
+pub use manager::PatchbayManager;
 
 // =============================================================================
 // Прелюдия для удобного импорта
@@ -90,13 +94,12 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::control::*;
     pub use crate::manager::*;
-    pub use crate::sensor::*;
     pub use crate::utils::*;
-    
+
     // Реэкспорты из rill-core
     pub use rill_core::prelude::*;
-    pub use rill_core::queue::RtQueue;
-    pub use rill_core::param::{ParameterId, NodeId, PortId};
+    pub use rill_core::queues::RtQueue;
+    pub use rill_core::{NodeId, ParameterId, PortId};
 }
 
 // =============================================================================
@@ -106,7 +109,7 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_basic_imports() {
         // Просто проверяем, что всё импортируется

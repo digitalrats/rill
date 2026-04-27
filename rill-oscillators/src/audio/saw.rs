@@ -1,13 +1,12 @@
-//! Sawtooth wave oscillator using rill-core-dsp with AudioNum
+//! Sawtooth wave oscillator using rill-core-dsp with Transcendental
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    Processor,
+    ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ParameterId, Port, Processor,
 };
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
-use rill_core_dsp::algorithm::Algorithm;
 use rill_core_dsp::generators::{BasicOscillator, Generator, Waveform};
 use std::marker::PhantomData;
 
@@ -15,7 +14,7 @@ use std::marker::PhantomData;
 ///
 /// Uses the optimized BasicOscillator from rill-core-dsp with built-in
 /// BLEP anti-aliasing.
-pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
+pub struct SawOsc<T: Transcendental, const BUF_SIZE: usize> {
     /// Core DSP oscillator
     osc: BasicOscillator<T>,
 
@@ -25,6 +24,15 @@ pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
     /// Output amplitude
     amplitude: T,
 
+    /// Audio input ports
+    inputs: Vec<Port<T, BUF_SIZE>>,
+
+    /// Audio output ports
+    outputs: Vec<Port<T, BUF_SIZE>>,
+
+    /// Control ports
+    controls: Vec<Port<T, BUF_SIZE>>,
+
     /// Node state
     state: Option<NodeState<T, BUF_SIZE>>,
 
@@ -32,7 +40,7 @@ pub struct SawOsc<T: AudioNum, const BUF_SIZE: usize> {
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
     /// Create new sawtooth oscillator
     pub fn new() -> Self {
         let osc = BasicOscillator::new(Waveform::Saw, 440.0, T::from_f32(1.0));
@@ -41,6 +49,9 @@ impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
             osc,
             frequency: T::from_f32(440.0),
             amplitude: T::from_f32(0.5),
+            inputs: Vec::new(),
+            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            controls: Vec::new(),
             state: None,
             _phantom: PhantomData,
         }
@@ -74,22 +85,28 @@ impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
     }
 
     /// Generate a block of samples
-    fn generate_block(&mut self, output: &mut [T; BUF_SIZE]) {
+    fn generate_block(
+        &mut self,
+        output: &mut [T; BUF_SIZE],
+        clock: &ClockTick,
+    ) -> ProcessResult<()> {
         self.osc.set_frequency(self.frequency.to_f32());
-        self.osc.process_block(&[], &mut output[..]);
+        self.osc
+            .process(None, &mut output[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
             output[i] = output[i] * self.amplitude;
         }
+        Ok(())
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SawOsc".to_string(),
@@ -161,28 +178,28 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BU
 
     fn set_id(&mut self, _id: NodeId) {}
 
-    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        None
+    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.inputs.get(index)
     }
 
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        None
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.inputs.get_mut(index)
     }
 
-    fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        None
+    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.outputs.get(index)
     }
 
-    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        None
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        None
+    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.controls.get(index)
     }
 
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        None
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.controls.get_mut(index)
     }
 
     fn state(&self) -> &NodeState<T, BUF_SIZE> {
@@ -202,35 +219,18 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BU
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
     fn process(
         &mut self,
         clock: &ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
-        control_inputs: &[T],
-        clock_inputs: &[ClockTick],
-        feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        control_outputs: &mut [T],
-        clock_outputs: &mut [ClockTick],
-        feedback_outputs: &mut [&mut [T; BUF_SIZE]],
+        _audio_inputs: &[&[T; BUF_SIZE]],
+        _control_inputs: &[T],
+        _clock_inputs: &[ClockTick],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let _ = (
-            clock,
-            audio_inputs,
-            control_inputs,
-            clock_inputs,
-            feedback_inputs,
-            control_outputs,
-            clock_outputs,
-            feedback_outputs,
-        );
-
-        if audio_outputs.is_empty() {
-            return Ok(());
-        }
-
-        self.generate_block(audio_outputs[0]);
+        let mut temp = [T::ZERO; BUF_SIZE];
+        self.generate_block(&mut temp, clock)?;
+        *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
     }
 

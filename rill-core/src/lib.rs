@@ -8,7 +8,8 @@
 //! ```text
 //! rill-core/
 //! ├── traits/           # Core traits (AudioNode, Source, Processor, Sink, etc.)
-//! ├── math/             # Mathematical abstractions (AudioNum, numeric traits)
+//! ├── math/             # Mathematical abstractions (Scalar, Transcendental, Vector)
+//! │   └── vector/       # Vector types, SIMD abstractions, slice operations
 //! ├── buffer/           # Lock-free audio buffers with AtomicCell safety
 //! ├── queues/           # Real-time safe command queues
 //! └── time/             # Time and clock abstractions (ClockTick, SystemClock)
@@ -16,7 +17,8 @@
 //!
 //! ## Key Concepts
 //!
-//! - **AudioNum**: Unified numeric abstraction for f32/f64 with full arithmetic support
+//! - **Scalar**: Base numeric trait for any type (floats and integers)
+//! - **Transcendental**: Float numeric abstraction with sin/cos/sqrt
 //! - **AtomicCell**: Safe atomic wrapper for lock-free data structures
 //! - **AudioNode**: Base trait for all nodes in the audio graph
 //! - **Source**: Active generators (oscillators, file readers)
@@ -34,14 +36,14 @@
 //! use rill_core::traits::node;
 //!
 //! // Create a simple sine source
-//! struct MySine<T: AudioNum, const BUF_SIZE: usize> {
+//! struct MySine<T: Transcendental, const BUF_SIZE: usize> {
 //!     frequency: T,
 //!     amplitude: T,
 //!     phase: T,
 //!     sample_rate: T,
 //! }
 //!
-//! impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
+//! impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn metadata(&self) -> NodeMetadata {
 //!         NodeMetadata {
 //!             name: "Sine".to_string(),
@@ -60,20 +62,20 @@
 //!         }
 //!     }
 //!     
-//!     fn init(&mut self, sample_rate: f32) { 
-//!         self.sample_rate = T::from_f32(sample_rate); 
+//!     fn init(&mut self, sample_rate: f32) {
+//!         self.sample_rate = T::from_f32(sample_rate);
 //!     }
 //!     
-//!     fn reset(&mut self) { 
-//!         self.phase = T::ZERO; 
+//!     fn reset(&mut self) {
+//!         self.phase = T::ZERO;
 //!     }
 //!     
-//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { 
-//!         None 
+//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
+//!         None
 //!     }
 //!     
-//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { 
-//!         Ok(()) 
+//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
+//!         Ok(())
 //!     }
 //!     
 //!     fn id(&self) -> NodeId { NodeId(0) }
@@ -95,25 +97,27 @@
 //!     }
 //! }
 //!
-//! impl<T: AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
+//! impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn generate(
 //!         &mut self,
 //!         clock: &ClockTick,
 //!         _control_inputs: &[T],
 //!         _clock_inputs: &[ClockTick],
-//!         outputs: &mut [&mut [T; BUF_SIZE]],
 //!     ) -> ProcessResult<()> {
 //!         let two_pi = T::from_f32(2.0 * std::f32::consts::PI);
 //!         let phase_inc = self.frequency / T::from_f32(clock.sample_rate);
+//!         let amp = self.amplitude;
 //!         
+//!         let mut temp = [T::ZERO; BUF_SIZE];
 //!         for i in 0..BUF_SIZE {
 //!             let phase_rad = self.phase * two_pi;
-//!             outputs[0][i] = phase_rad.sin() * self.amplitude;
+//!             temp[i] = phase_rad.sin() * amp;
 //!             self.phase = self.phase + phase_inc;
 //!             if self.phase >= T::from_f32(1.0) {
 //!                 self.phase = self.phase - T::from_f32(1.0);
 //!             }
 //!         }
+//!         *self.output_port_mut(0).unwrap().buffer.as_mut_array() = temp;
 //!         Ok(())
 //!     }
 //!     
@@ -148,6 +152,9 @@ pub mod queues;
 /// Time and clock abstractions for synchronization
 pub mod time;
 
+#[doc(hidden)]
+pub use math::vector as vector;
+
 /// Macros for node creation and boilerplate reduction
 #[macro_use]
 pub mod macros;
@@ -172,37 +179,26 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    AudioNode, Source, Processor, Sink,
-    NodeId, NodeMetadata, NodeCategory, NodeTypeId, NodeState,
-    ParameterId, ParamValue, ParamType, ParamRange, ParamMetadata,
-    PortId, PortType, PortDirection, Port,
-    ProcessResult, ProcessError,
-    ParameterResult, ParameterError,
-    PortResult, PortError,
-    ClockResult, ClockError,
-    ConnectionResult, ConnectionError,
+    AudioNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
+    NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
+    ParameterError, ParameterId, ParameterResult, Port, PortDirection, PortError, PortId,
+    PortResult, PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };
 
 // Re-export math abstractions
-pub use math::AudioNum;
+pub use math::{Scalar, Transcendental};
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
-    AudioBuffer, BufferStats, BufferError, BufferResult,
-    AtomicCell, AtomicCellError,
-    PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer,
-    AtomicStats,
+    AtomicCell, AtomicCellError, AtomicStats, AudioBuffer, BufferError, BufferResult, BufferStats,
+    DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
 };
 
 // Re-export queue types (from rill-patchbay integration)
-pub use queues::{
-    QueueError, QueueResult,
-};
+pub use queues::{QueueError, QueueResult};
 
 // Re-export time abstractions
-pub use time::{
-    ClockSource, ClockTick, SystemClock,
-};
+pub use time::{ClockSource, ClockTick, SystemClock};
 
 // ============================================================================
 // Constants
@@ -247,51 +243,51 @@ pub const CACHE_LINE_SIZE: usize = 64;
 
 /// Utility functions for common operations
 pub mod utils {
-    use crate::math::AudioNum;
-    
+    use crate::math::Transcendental;
+
     /// Convert seconds to samples
     #[inline(always)]
     pub fn seconds_to_samples(seconds: f32, sample_rate: f32) -> usize {
         (seconds * sample_rate) as usize
     }
-    
+
     /// Convert samples to seconds
     #[inline(always)]
     pub fn samples_to_seconds(samples: usize, sample_rate: f32) -> f32 {
         samples as f32 / sample_rate
     }
-    
+
     /// Convert MIDI note to frequency
     #[inline(always)]
-    pub fn midi_to_freq<T: AudioNum>(note: u8) -> T {
+    pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
         let exp = (note as f32 - 69.0) / 12.0;
         T::from_f32(440.0 * 2.0_f32.powf(exp))
     }
-    
+
     /// Convert frequency to MIDI note
     #[inline(always)]
-    pub fn freq_to_midi<T: AudioNum>(freq: T) -> f32 {
+    pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
         69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
     }
-    
+
     /// Convert dB to linear gain
     #[inline(always)]
-    pub fn db_to_linear<T: AudioNum>(db: T) -> T {
+    pub fn db_to_linear<T: Transcendental>(db: T) -> T {
         T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
     }
-    
+
     /// Convert linear gain to dB
     #[inline(always)]
-    pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
+    pub fn linear_to_db<T: Transcendental>(linear: T) -> T {
         T::from_f32(20.0 * linear.to_f32().log10())
     }
-    
+
     /// Check if a value is a power of two
     #[inline(always)]
     pub const fn is_power_of_two(x: usize) -> bool {
         x != 0 && (x & (x - 1)) == 0
     }
-    
+
     /// Round up to the next power of two
     #[inline(always)]
     pub const fn next_power_of_two(x: usize) -> usize {
@@ -325,16 +321,16 @@ pub fn version_info() -> VersionInfo {
 pub struct VersionInfo {
     /// Crate version
     pub version: &'static str,
-    
+
     /// Crate name
     pub crate_name: &'static str,
-    
+
     /// Authors
     pub authors: &'static str,
-    
+
     /// Description
     pub description: &'static str,
-    
+
     /// Repository URL
     pub repository: &'static str,
 }
@@ -347,7 +343,7 @@ pub struct VersionInfo {
 mod tests {
     use super::prelude::*;
     use super::utils;
-    
+
     #[test]
     fn test_constants() {
         assert!(!VERSION.is_empty());
@@ -357,29 +353,29 @@ mod tests {
         assert_eq!(DEFAULT_SAMPLE_RATE, 44100.0);
         assert_eq!(CACHE_LINE_SIZE, 64);
     }
-    
+
     #[test]
     fn test_utils() {
         assert_eq!(utils::seconds_to_samples(1.0, 44100.0), 44100);
         assert!((utils::samples_to_seconds(44100, 44100.0) - 1.0).abs() < 1e-6);
-        
+
         let freq: f32 = utils::midi_to_freq(69);
         assert!((freq - 440.0).abs() < 1e-6);
-        
+
         let midi = utils::freq_to_midi(440.0f32);
         assert!((midi - 69.0).abs() < 1e-6);
-        
+
         let linear = utils::db_to_linear(0.0f32);
         assert!((linear - 1.0).abs() < 1e-6);
-        
+
         let db = utils::linear_to_db(1.0f32);
         assert!((db - 0.0).abs() < 1e-6);
-        
+
         assert!(utils::is_power_of_two(64));
         assert!(!utils::is_power_of_two(63));
         assert_eq!(utils::next_power_of_two(63), 64);
     }
-    
+
     #[test]
     fn test_atomic_cell() {
         let cell = AtomicCell::new(42);

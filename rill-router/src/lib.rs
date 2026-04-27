@@ -16,13 +16,9 @@ pub use rill_core_dsp::filters::{Filter, FilterType};
 
 // Re-export main types from eq module
 pub use eq::{
-    BandType, EqBand, GraphicEq, ParametricEq, 
-    BiquadFactory, GraphicEqProcessor, ParametricEqProcessor, 
-    log_spaced_frequencies, FilterFactory
+    log_spaced_frequencies, BandType, BiquadFactory, EqBand, FilterFactory, GraphicEq,
+    GraphicEqProcessor, ParametricEq, ParametricEqProcessor,
 };
 
 // Re-export main types from mixer module
-pub use mixer::{
-    ChannelConfig, ChannelMode, ChannelState, 
-    MixerNode, SendConfig, SendType
-};
+pub use mixer::{ChannelConfig, ChannelMode, ChannelState, MixerNode, SendConfig, SendType};

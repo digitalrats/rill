@@ -1,0 +1,15 @@
+[package]
+name = "rill-analog-filters"
+version = "0.3.0"
+edition = "2021"
+description = "Analog-modeled filters using Wave Digital Filter elements"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rill-core = { workspace = true }
+rill-core-wdf = { workspace = true }
+
+[features]
+default = []

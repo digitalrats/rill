@@ -1,7 +1,7 @@
 //! Processor nodes for integration with rill-core audio graphs.
 
 use rill_core::{
-    AudioNode, AudioNum, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    AudioNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
 use rill_core_dsp::filters::{Biquad, Filter, FilterParams, FilterType};
@@ -31,7 +31,7 @@ impl FilterFactory<Biquad<f32>> for BiquadFactory {
 }
 
 /// Parametric equalizer processor node for audio graphs.
-pub struct ParametricEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct ParametricEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -52,7 +52,7 @@ pub struct ParametricEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
     num_bands: usize,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE> {
     /// Creates a new parametric equalizer processor with default parameters.
     pub fn new(sample_rate: f32, num_bands: usize) -> Self {
         let metadata = NodeMetadata::new("ParametricEqProcessor", NodeCategory::Processor);
@@ -135,7 +135,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -342,43 +342,30 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
 {
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        _control_outputs: &mut [T],
-        _clock_outputs: &mut [rill_core::ClockTick],
-        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if audio_outputs.is_empty() {
-            return Ok(());
+        let input_buf = *self.inputs[0].buffer.as_array();
+        let output_buf = self.outputs[0].buffer.as_mut_array();
+
+        let mut input_f32 = [0.0f32; BUF_SIZE];
+        for i in 0..BUF_SIZE {
+            input_f32[i] = input_buf[i].to_f32();
         }
 
-        // We have exactly one audio input and one audio output (as per construction)
-        if let (Some(input_buffer), Some(output_buffer)) =
-            (audio_inputs.first(), audio_outputs.first_mut())
-        {
-            // Convert input from T to f32
-            let mut input_f32 = [0.0f32; BUF_SIZE];
-            for i in 0..BUF_SIZE {
-                input_f32[i] = input_buffer[i].to_f32();
-            }
+        let mut output_f32 = [0.0f32; BUF_SIZE];
+        self.eq.process_block(&input_f32, &mut output_f32);
 
-            // Process through equalizer
-            let mut output_f32 = [0.0f32; BUF_SIZE];
-            self.eq.process_block(&input_f32, &mut output_f32);
-
-            // Convert output back to T
-            for i in 0..BUF_SIZE {
-                output_buffer[i] = T::from_f32(output_f32[i]);
-            }
+        for i in 0..BUF_SIZE {
+            output_buf[i] = T::from_f32(output_f32[i]);
         }
 
         Ok(())
@@ -390,7 +377,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
 }
 
 /// Graphic equalizer processor node for audio graphs.
-pub struct GraphicEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct GraphicEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
     /// Node metadata
@@ -411,7 +398,7 @@ pub struct GraphicEqProcessor<T: AudioNum, const BUF_SIZE: usize> {
     num_bands: usize,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
     /// Creates a new graphic equalizer processor with ISO 1/3 octave bands.
     pub fn new_third_octave(sample_rate: f32) -> Self {
         let metadata = NodeMetadata::new("GraphicEqProcessor", NodeCategory::Processor);
@@ -508,7 +495,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -672,42 +659,30 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>
 {
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
-        audio_outputs: &mut [&mut [T; BUF_SIZE]],
-        _control_outputs: &mut [T],
-        _clock_outputs: &mut [rill_core::ClockTick],
-        _feedback_outputs: &mut [&mut [T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if audio_outputs.is_empty() {
-            return Ok(());
+        let input_buf = *self.inputs[0].buffer.as_array();
+        let output_buf = self.outputs[0].buffer.as_mut_array();
+
+        let mut input_f32 = [0.0f32; BUF_SIZE];
+        for i in 0..BUF_SIZE {
+            input_f32[i] = input_buf[i].to_f32();
         }
 
-        if let (Some(input_buffer), Some(output_buffer)) =
-            (audio_inputs.first(), audio_outputs.first_mut())
-        {
-            // Convert input from T to f32
-            let mut input_f32 = [0.0f32; BUF_SIZE];
-            for i in 0..BUF_SIZE {
-                input_f32[i] = input_buffer[i].to_f32();
-            }
+        let mut output_f32 = [0.0f32; BUF_SIZE];
+        self.eq.process_block(&input_f32, &mut output_f32);
 
-            // Process through equalizer
-            let mut output_f32 = [0.0f32; BUF_SIZE];
-            self.eq.process_block(&input_f32, &mut output_f32);
-
-            // Convert output back to T
-            for i in 0..BUF_SIZE {
-                output_buffer[i] = T::from_f32(output_f32[i]);
-            }
+        for i in 0..BUF_SIZE {
+            output_buf[i] = T::from_f32(output_f32[i]);
         }
 
         Ok(())

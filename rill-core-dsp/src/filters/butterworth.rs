@@ -3,8 +3,9 @@
 use super::{Filter, FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
-use rill_core::AudioNum;
 use num_complex::Complex64;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 use std::f64::consts::PI as PI64;
 
 // -----------------------------------------------------------------------------
@@ -33,12 +34,12 @@ fn butterworth_analog_poles(n: usize) -> Vec<Complex64> {
 // -----------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct BiquadSection<T: AudioNum> {
+struct BiquadSection<T: Transcendental> {
     coeffs: [ScalarVector1<T>; 5],
     state: [ScalarVector1<T>; 4],
 }
 
-impl<T: AudioNum> BiquadSection<T> {
+impl<T: Transcendental> BiquadSection<T> {
     fn new() -> Self {
         Self {
             coeffs: [
@@ -101,7 +102,7 @@ impl<T: AudioNum> BiquadSection<T> {
 // -----------------------------------------------------------------------------
 
 /// Фильтр Баттерворта (каскадная реализация)
-pub struct Butterworth<T: AudioNum, const MAX_SECTIONS: usize> {
+pub struct Butterworth<T: Transcendental, const MAX_SECTIONS: usize> {
     /// Параметры фильтра (используем общий FilterParams)
     params: FilterParams,
     /// Порядок фильтра
@@ -116,7 +117,7 @@ pub struct Butterworth<T: AudioNum, const MAX_SECTIONS: usize> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> {
+impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> {
     /// Создать новый фильтр Баттерворта
     pub fn new(params: FilterParams, order: usize) -> Self {
         let mut filter = Self {
@@ -271,7 +272,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> {
     }
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX_SECTIONS> {
+impl<T: Transcendental, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX_SECTIONS> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.design();
@@ -284,7 +285,13 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX
         }
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
             let mut x = input[i].mul(self.gain.extract(0));
@@ -294,6 +301,7 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX
             }
             output[i] = x;
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -305,23 +313,9 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<T, MAX
             version: env!("CARGO_PKG_VERSION"),
         }
     }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
 }
 
-impl<T: AudioNum, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
+impl<T: Transcendental, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
     for Butterworth<T, MAX_SECTIONS>
 {
     type Params = FilterParams;

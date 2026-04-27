@@ -1,6 +1,6 @@
 //! Трейты для фильтров
 
-use rill_core::AudioNum;
+use rill_core::Transcendental;
 use crate::algorithm::{Algorithm, ParameterizedAlgorithm};
 
 /// Тип фильтра
@@ -56,7 +56,7 @@ impl Default for FilterParams {
 }
 
 /// Трейт для фильтров
-pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> {
+pub trait Filter<T: Transcendental>: ParameterizedAlgorithm<T, Params = FilterParams> {
     /// Установить частоту среза
     fn set_cutoff(&mut self, cutoff: f32) {
         let mut params = self.params().clone();
@@ -105,7 +105,7 @@ pub trait Filter<T: AudioNum>: ParameterizedAlgorithm<T, Params = FilterParams> 
 }
 
 /// Фильтр с автоматической регулировкой (адаптивный)
-pub trait AdaptiveFilter<T: AudioNum>: Filter<T> {
+pub trait AdaptiveFilter<T: Transcendental>: Filter<T> {
     /// Адаптироваться к сигналу
     fn adapt(&mut self, reference: &[T], error: &[T]);
     

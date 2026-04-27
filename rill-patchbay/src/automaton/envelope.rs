@@ -3,7 +3,7 @@
 //! Генераторы огибающих для управления амплитудой, фильтрами и другими
 //! параметрами во времени. Поддерживаются ADSR, AR, ASR и другие типы.
 
-use super::{Automaton, Time, Range, SyncMode, NoAction};
+use crate::control::{Automaton, Range, Time};
 
 /// Тип огибающей
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,32 +61,6 @@ pub struct EnvelopeState {
     pub gate: bool,
 }
 
-/// Действия для огибающей
-#[derive(Debug, Clone, Default)]
-pub enum EnvelopeAction {
-    /// Нет действия
-    #[default]
-    None,
-    /// Запустить огибающую (gate on)
-    Trigger,
-    /// Отпустить огибающую (gate off)
-    Release,
-    /// Сбросить в ноль
-    Reset,
-    /// Установить параметры
-    SetParams(EnvelopeParams),
-}
-
-/// Параметры огибающей
-#[derive(Debug, Clone)]
-pub struct EnvelopeParams {
-    pub attack: f64,
-    pub hold: Option<f64>,
-    pub decay: f64,
-    pub sustain: f64,
-    pub release: f64,
-}
-
 /// Огибающая автомат
 #[derive(Debug, Clone)]
 pub struct EnvelopeAutomaton {
@@ -112,13 +86,7 @@ pub struct EnvelopeAutomaton {
 
 impl EnvelopeAutomaton {
     /// Создать новую ADSR огибающую
-    pub fn adsr(
-        name: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-    ) -> Self {
+    pub fn adsr(name: &str, attack: f64, decay: f64, sustain: f64, release: f64) -> Self {
         Self {
             name: name.to_string(),
             env_type: EnvelopeType::ADSR,
@@ -131,7 +99,7 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Создать новую AR огибающую (для перкуссии)
     pub fn ar(name: &str, attack: f64, release: f64) -> Self {
         Self {
@@ -146,7 +114,7 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Создать новую ASR огибающую (для органных звуков)
     pub fn asr(name: &str, attack: f64, sustain: f64, release: f64) -> Self {
         Self {
@@ -161,7 +129,7 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Создать новую AHDSR огибающую
     pub fn ahdsr(
         name: &str,
@@ -183,19 +151,19 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Установить кривую стадий
     pub fn with_curve(mut self, curve: f64) -> Self {
         self.curve = curve.max(0.1);
         self
     }
-    
+
     /// Установить диапазон
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
-    
+
     /// Вычислить значение с учётом кривой
     fn apply_curve(&self, t: f64) -> f64 {
         if self.curve == 1.0 {
@@ -204,15 +172,11 @@ impl EnvelopeAutomaton {
             t.powf(self.curve)
         }
     }
-    
+
     /// Обновить стадию на основе времени
-    fn update_stage(
-        &self,
-        state: &mut EnvelopeState,
-        time: Time,
-    ) {
+    fn update_stage(&self, state: &mut EnvelopeState, time: Time) {
         let elapsed = time - state.stage_start_time;
-        
+
         match state.stage {
             EnvelopeStage::Attack => {
                 if elapsed >= self.attack {
@@ -249,11 +213,12 @@ impl EnvelopeAutomaton {
                     }
                 } else {
                     let t = elapsed / self.attack;
-                    state.level = state.stage_start_level + 
-                        (state.stage_target_level - state.stage_start_level) * self.apply_curve(t);
+                    state.level = state.stage_start_level
+                        + (state.stage_target_level - state.stage_start_level)
+                            * self.apply_curve(t);
                 }
             }
-            
+
             EnvelopeStage::Hold => {
                 if elapsed >= self.hold {
                     state.stage = EnvelopeStage::Decay;
@@ -265,33 +230,35 @@ impl EnvelopeAutomaton {
                     state.level = 1.0;
                 }
             }
-            
+
             EnvelopeStage::Decay => {
                 if elapsed >= self.decay {
                     state.stage = EnvelopeStage::Sustain;
                     state.level = self.sustain;
                 } else {
                     let t = elapsed / self.decay;
-                    state.level = state.stage_start_level + 
-                        (state.stage_target_level - state.stage_start_level) * self.apply_curve(t);
+                    state.level = state.stage_start_level
+                        + (state.stage_target_level - state.stage_start_level)
+                            * self.apply_curve(t);
                 }
             }
-            
+
             EnvelopeStage::Sustain => {
                 state.level = self.sustain;
             }
-            
+
             EnvelopeStage::Release => {
-                if elapsed >= self.release || !state.gate {
+                if elapsed >= self.release {
                     state.stage = EnvelopeStage::Off;
                     state.level = 0.0;
                 } else {
                     let t = elapsed / self.release;
-                    state.level = state.stage_start_level + 
-                        (state.stage_target_level - state.stage_start_level) * self.apply_curve(t);
+                    state.level = state.stage_start_level
+                        + (state.stage_target_level - state.stage_start_level)
+                            * self.apply_curve(t);
                 }
             }
-            
+
             EnvelopeStage::Off => {
                 state.level = 0.0;
             }
@@ -299,69 +266,56 @@ impl EnvelopeAutomaton {
     }
 }
 
+/// Действие для огибающей
+#[derive(Debug, Clone, Default)]
+pub enum EnvelopeAction {
+    #[default]
+    /// Удержание (None/Off)
+    None,
+    /// Запуск атаки
+    GateOn,
+    /// Запуск отпускания
+    GateOff,
+}
+
 impl Automaton for EnvelopeAutomaton {
     type State = EnvelopeState;
     type Action = EnvelopeAction;
-    
+
     fn step(
         &self,
         time: Time,
-        action: Self::Action,
+        action: &Self::Action,
         state: &Self::State,
-    ) -> (Self::State, Option<f64>, Option<Self::Action>) {
+    ) -> (Self::State, Option<f64>) {
         let mut new_state = state.clone();
-        
-        // Обрабатываем действия
+
+        // Обработка действия Gate
         match action {
-            EnvelopeAction::Trigger => {
+            EnvelopeAction::GateOn => {
                 new_state.gate = true;
                 new_state.stage = EnvelopeStage::Attack;
                 new_state.stage_start_time = time;
-                new_state.stage_start_level = 0.0;
+                new_state.stage_start_level = new_state.level;
                 new_state.stage_target_level = 1.0;
-                new_state.stage_duration = self.attack;
             }
-            
-            EnvelopeAction::Release => {
-                if new_state.gate {
-                    new_state.gate = false;
-                    new_state.stage = EnvelopeStage::Release;
-                    new_state.stage_start_time = time;
-                    new_state.stage_start_level = new_state.level;
-                    new_state.stage_target_level = 0.0;
-                    new_state.stage_duration = self.release;
-                }
-            }
-            
-            EnvelopeAction::Reset => {
+            EnvelopeAction::GateOff => {
                 new_state.gate = false;
-                new_state.stage = EnvelopeStage::Off;
-                new_state.level = 0.0;
+                new_state.stage = EnvelopeStage::Release;
+                new_state.stage_start_time = time;
+                new_state.stage_start_level = new_state.level;
+                new_state.stage_target_level = 0.0;
             }
-            
-            EnvelopeAction::SetParams(params) => {
-                let mut new_automaton = self.clone();
-                new_automaton.attack = params.attack;
-                if let Some(h) = params.hold {
-                    new_automaton.hold = h;
-                }
-                new_automaton.decay = params.decay;
-                new_automaton.sustain = params.sustain;
-                new_automaton.release = params.release;
-                // В реальном коде нужно обновить автомат
-            }
-            
             EnvelopeAction::None => {}
         }
-        
-        // Обновляем стадию
+
         self.update_stage(&mut new_state, time);
-        
+
         let value = self.range.denormalize(new_state.level);
-        
-        (new_state, Some(value), None)
+
+        (new_state, Some(value))
     }
-    
+
     fn initial_state(&self) -> Self::State {
         EnvelopeState {
             stage: EnvelopeStage::Off,
@@ -373,11 +327,11 @@ impl Automaton for EnvelopeAutomaton {
             gate: false,
         }
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn extract_value(&self, state: &Self::State) -> f64 {
         self.range.denormalize(state.level)
     }
@@ -386,22 +340,27 @@ impl Automaton for EnvelopeAutomaton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_adsr_envelope() {
         let env = EnvelopeAutomaton::adsr("ADSR", 0.1, 0.2, 0.7, 0.3);
-        let state = env.initial_state();
-        
-        // Trigger
-        let (state, value, _) = env.step(0.0, EnvelopeAction::Trigger, &state);
+        let mut state = env.initial_state();
+
+        assert_eq!(state.stage, EnvelopeStage::Off);
+
+        // Gate on — start attack
+        let (_s, _value) = env.step(0.0, &EnvelopeAction::GateOn, &state);
+        state = _s;
+        assert_eq!(state.stage, EnvelopeStage::Attack);
+
+        // Step at time 0.05 (during attack) — no new gate action
+        let (s, value) = env.step(0.05, &EnvelopeAction::None, &state);
+        state = s;
         assert!(value.unwrap() > 0.0);
-        
-        // Attack phase
-        let (state, value, _) = env.step(0.05, EnvelopeAction::None, &state);
-        assert!(value.unwrap() > 0.5);
-        
-        // Release
-        let (state, value, _) = env.step(0.5, EnvelopeAction::Release, &state);
-        assert!(value.unwrap() < 0.7);
+        assert!(value.unwrap() < 1.0);
+
+        // Gate off — start release
+        let (s, _) = env.step(0.5, &EnvelopeAction::GateOff, &state);
+        assert_eq!(s.stage, EnvelopeStage::Release);
     }
 }

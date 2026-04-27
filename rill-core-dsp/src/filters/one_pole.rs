@@ -9,7 +9,8 @@ use super::{Filter, FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use core::f32::consts::PI;
-use rill_core::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 
 /// Однополюсный фильтр
 ///
@@ -17,7 +18,7 @@ use rill_core::AudioNum;
 /// ```text
 /// y[n] = a * x[n] + (1 - a) * y[n-1]
 /// ```
-pub struct OnePole<T: AudioNum> {
+pub struct OnePole<T: Transcendental> {
     /// Параметры фильтра
     params: FilterParams,
     /// Коэффициент фильтра
@@ -28,7 +29,7 @@ pub struct OnePole<T: AudioNum> {
     sample_rate: f32,
 }
 
-impl<T: AudioNum> OnePole<T> {
+impl<T: Transcendental> OnePole<T> {
     /// Создать новый однополюсный фильтр
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
@@ -67,7 +68,7 @@ impl<T: AudioNum> OnePole<T> {
     }
 }
 
-impl<T: AudioNum> Algorithm<T> for OnePole<T> {
+impl<T: Transcendental> Algorithm<T> for OnePole<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_alpha();
@@ -78,7 +79,13 @@ impl<T: AudioNum> Algorithm<T> for OnePole<T> {
         self.y1 = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_block(&mut self, input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         let one = ScalarVector1::splat(T::from_f32(1.0));
 
@@ -98,6 +105,7 @@ impl<T: AudioNum> Algorithm<T> for OnePole<T> {
             self.y1 = out;
             output[i] = out.extract(0);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -111,7 +119,7 @@ impl<T: AudioNum> Algorithm<T> for OnePole<T> {
     }
 }
 
-impl<T: AudioNum> ParameterizedAlgorithm<T> for OnePole<T> {
+impl<T: Transcendental> ParameterizedAlgorithm<T> for OnePole<T> {
     type Params = FilterParams;
 
     fn params(&self) -> &Self::Params {

@@ -1,13 +1,14 @@
 [package]
 name = "rill-patchbay"
-version = "0.2.9"
+version = "0.3.0"
 edition = "2021"
 description = "The world where Automata live - control system for Rill"
-license = "Apache-2.0"
-authors = ["Digital Rats / Rill Team"]
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
-rill-core = { path = "../rill-core", version = "0.3.0" }
+rill-core = { workspace = true }
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 thiserror = "1.0"

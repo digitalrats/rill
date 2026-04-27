@@ -3,7 +3,8 @@
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator, SyncableGenerator};
 use crate::vector::prelude::*;
-use rill_core::AudioNum;
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 use std::f32::consts::PI;
 
 /// Тип волны
@@ -53,7 +54,7 @@ impl Waveform {
 /// - Анти-алиасинга для пилообразной волны
 /// - Синхронизации фазы
 #[derive(Clone, Copy)]
-pub struct BasicOscillator<T: AudioNum> {
+pub struct BasicOscillator<T: Transcendental> {
     /// Тип волны
     waveform: Waveform,
     /// Частота (Hz)
@@ -72,7 +73,7 @@ pub struct BasicOscillator<T: AudioNum> {
     fm_amount: ScalarVector1<T>,
 }
 
-impl<T: AudioNum> BasicOscillator<T> {
+impl<T: Transcendental> BasicOscillator<T> {
     /// Создать новый осциллятор
     ///
     /// # Arguments
@@ -221,7 +222,7 @@ impl<T: AudioNum> BasicOscillator<T> {
 
 // ==================== Реализация трейта Algorithm ====================
 
-impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
+impl<T: Transcendental> Algorithm<T> for BasicOscillator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.update_phase_inc();
@@ -235,10 +236,17 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
         self.fm_amount = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process_block(&mut self, _input: &[T], output: &mut [T]) {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             *out = self.generate().extract(0);
         }
+        Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
@@ -250,25 +258,11 @@ impl<T: AudioNum> Algorithm<T> for BasicOscillator<T> {
             version: env!("CARGO_PKG_VERSION"),
         }
     }
-
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
-    }
 }
 
 // ==================== Реализация трейта Generator ====================
 
-impl<T: AudioNum> Generator<T> for BasicOscillator<T> {
+impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
     fn phase(&self) -> T {
         self.phase.extract(0)
     }
@@ -313,7 +307,7 @@ impl<T: AudioNum> Generator<T> for BasicOscillator<T> {
 
 // ==================== Реализация трейта SyncableGenerator ====================
 
-impl<T: AudioNum> SyncableGenerator<T> for BasicOscillator<T> {
+impl<T: Transcendental> SyncableGenerator<T> for BasicOscillator<T> {
     fn sync(&mut self, reset: bool) {
         if reset {
             self.phase = ScalarVector1::splat(T::ZERO);
@@ -327,7 +321,7 @@ impl<T: AudioNum> SyncableGenerator<T> for BasicOscillator<T> {
 
 // ==================== Реализация трейта ModulatableGenerator ====================
 
-impl<T: AudioNum> ModulatableGenerator<T> for BasicOscillator<T> {
+impl<T: Transcendental> ModulatableGenerator<T> for BasicOscillator<T> {
     fn modulate_frequency(&mut self, amount: T) {
         self.fm_amount = ScalarVector1::splat(amount);
     }
@@ -355,12 +349,14 @@ mod tests {
 
         // Первый семпл должен быть 0
         let mut output = [0.0f32; 1];
-        osc.process_block(&[], &mut output);
+        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
+        let ctx = rill_core::traits::ActionContext::new(&tick);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample1 = output[0];
         assert!(approx_eq!(f32, sample1, 0.0, epsilon = 1e-6));
 
         // Второй семпл должен быть не 0
-        osc.process_block(&[], &mut output);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample2 = output[0];
         assert!(sample2 != 0.0);
         assert!(sample2 >= -0.5 && sample2 <= 0.5);
@@ -372,7 +368,9 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        osc.process_block(&[], &mut output);
+        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
+        let ctx = rill_core::traits::ActionContext::new(&tick);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -0.5 && sample <= 0.5);
     }
@@ -383,7 +381,9 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        osc.process_block(&[], &mut output);
+        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
+        let ctx = rill_core::traits::ActionContext::new(&tick);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample == 0.5 || sample == -0.5);
     }
@@ -394,7 +394,9 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        osc.process_block(&[], &mut output);
+        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
+        let ctx = rill_core::traits::ActionContext::new(&tick);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -0.5 && sample <= 0.5);
     }
@@ -405,7 +407,9 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        osc.process_block(&[], &mut output);
+        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
+        let ctx = rill_core::traits::ActionContext::new(&tick);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample == 0.5); // При фазе 0 должен быть положительный импульс
     }
@@ -439,7 +443,9 @@ mod tests {
 
         osc.set_phase(0.25); // π/2
         let mut output = [0.0f32; 1];
-        osc.process_block(&[], &mut output);
+        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
+        let ctx = rill_core::traits::ActionContext::new(&tick);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(approx_eq!(f32, sample, 1.0, epsilon = 1e-4)); // sin(π/2) = 1
     }
@@ -454,7 +460,9 @@ mod tests {
 
         // Проверяем, что модуляция применяется
         let mut output = [0.0f32; 1];
-        osc.process_block(&[], &mut output);
+        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
+        let ctx = rill_core::traits::ActionContext::new(&tick);
+        osc.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }

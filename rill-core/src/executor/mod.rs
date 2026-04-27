@@ -9,27 +9,27 @@
 //! # Example
 //! ```
 //! use rill_core::executor::GraphExecutor;
-//! use rill_core::math::AudioNum;
+//! use rill_core::math::Transcendental;
 //!
 //! // Create a graph executor (graph omitted for prototype).
 //! // let mut executor = GraphExecutor::new(graph);
 //! // executor.process_block().unwrap();
 //! ```
 
-use crate::math::AudioNum;
+use crate::math::Transcendental;
 use crate::traits::ActivePort;
 
 /// Executor for an audio graph that processes nodes in topological order.
 ///
 /// This is a prototype that outlines the structure. In a real implementation,
 /// the executor would hold a concrete graph and iterate over its nodes.
-pub struct GraphExecutor<T: AudioNum, const BUF_SIZE: usize> {
+pub struct GraphExecutor<T: Transcendental, const BUF_SIZE: usize> {
     // Placeholder for the audio graph.
     // In reality, this would be something like `graph: rill_graph::AudioGraph<T, BUF_SIZE>`.
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> GraphExecutor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> GraphExecutor<T, BUF_SIZE> {
     /// Create a new executor from an existing graph.
     pub fn new() -> Self {
         Self {
@@ -63,7 +63,7 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphExecutor<T, BUF_SIZE> {
 
 /// Example of using ActivePort trait to pull data from an input port.
 /// This function illustrates the intended pattern.
-pub fn demonstrate_pull<T: AudioNum, const BUF_SIZE: usize>(
+pub fn demonstrate_pull<T: Transcendental, const BUF_SIZE: usize>(
     port: &mut dyn ActivePort<T, BUF_SIZE>,
 ) -> Option<[T; BUF_SIZE]> {
     // Pull data from the port (if connected).
@@ -71,7 +71,7 @@ pub fn demonstrate_pull<T: AudioNum, const BUF_SIZE: usize>(
 }
 
 /// Example of pushing data to an output port.
-pub fn demonstrate_push<T: AudioNum, const BUF_SIZE: usize>(
+pub fn demonstrate_push<T: Transcendental, const BUF_SIZE: usize>(
     port: &mut dyn ActivePort<T, BUF_SIZE>,
     data: [T; BUF_SIZE],
 ) -> Result<(), crate::traits::PortError> {

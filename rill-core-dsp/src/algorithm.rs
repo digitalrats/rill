@@ -1,101 +1,37 @@
-//! Базовые трейты для DSP алгоритмов
+//! Re-exports `rill_core::Algorithm` and provides DSP-specific extensions.
 //!
-//! Алгоритм - это чистая DSP логика, не зависящая от графа.
-//! Все алгоритмы должны быть RT-safe.
+//! The base `Algorithm` trait lives in `rill_core`. This module re-exports it
+//! together with the DSP-specific `ParameterizedAlgorithm` abstraction.
+
+pub use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+pub use rill_core::traits::ProcessResult;
 
 use rill_core::traits::ParamValue;
-use rill_core::AudioNum;
-use std::any::Any;
+use rill_core::Transcendental;
 
-/// Метаданные алгоритма
-#[derive(Debug, Clone)]
-pub struct AlgorithmMetadata {
-    /// Название алгоритма
-    pub name: &'static str,
-    /// Категория
-    pub category: AlgorithmCategory,
-    /// Описание
-    pub description: &'static str,
-    /// Автор
-    pub author: &'static str,
-    /// Версия
-    pub version: &'static str,
-}
-
-/// Категория алгоритма
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AlgorithmCategory {
-    Generator,
-    Filter,
-    Effect,
-    Analyzer,
-    Utility,
-}
-
-/// Базовый трейт для всех DSP алгоритмов
+/// An `Algorithm` with typed, settable parameters.
 ///
-/// Алгоритмы работают только с блоками семплов, используя векторные операции.
-pub trait Algorithm<T: AudioNum>: Send + Sync {
-    /// Инициализация алгоритма
-    fn init(&mut self, sample_rate: f32) {
-        // По умолчанию ничего не делаем
-    }
-
-    /// Сброс внутреннего состояния
-    fn reset(&mut self);
-
-    /// Обработка блока семплов с использованием векторных операций
-    ///
-    /// Алгоритмы должны использовать векторный eDSL через `vec_map!` или другие
-    /// векторные примитивы для оптимальной производительности.
-    fn process_block(&mut self, input: &[T], output: &mut [T]);
-
-    /// Получить метаданные алгоритма
-    fn metadata(&self) -> AlgorithmMetadata;
-
-    /// Для downcasting (опционально)
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static + Sized, // Добавляем Sized
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
-    where
-        Self: 'static + Sized, // Добавляем Sized
-    {
-        self
-    }
-}
-
-/// Алгоритм с параметрами
-pub trait ParameterizedAlgorithm<T: AudioNum>: Algorithm<T> {
-    /// Тип параметров
+/// Extends the base `Algorithm` trait with the ability to get and set
+/// a typed parameter struct (`Params`) and to update individual parameters
+/// by name (for automation integration).
+pub trait ParameterizedAlgorithm<T: Transcendental>: Algorithm<T> {
+    /// The concrete parameter type for this algorithm.
     type Params: Clone + Send + Sync;
 
-    /// Получить текущие параметры
+    /// Get a reference to the current parameters.
     fn params(&self) -> &Self::Params;
 
-    /// Установить новые параметры
+    /// Replace all parameters atomically.
+    ///
+    /// The implementation should recompute any derived coefficients.
     fn set_params(&mut self, params: Self::Params);
 
-    /// Обновить параметр по имени (для автоматизации)
+    /// Set a single parameter by name (for automation / scripting).
+    ///
+    /// Default: returns an error for any unrecognised name.
     fn set_parameter(&mut self, name: &str, value: ParamValue) -> Result<(), &'static str> {
         Err(format!("Parameter '{}' not supported", name).leak())
-    }
-}
-
-/// Алгоритм с контролем качества (для тестирования)
-pub trait QualityMetrics<T: AudioNum>: Algorithm<T> {
-    /// Вычислить SNR (Signal-to-Noise Ratio)
-    fn snr(&self, reference: &[T], output: &[T]) -> f64 {
-        // Базовая реализация
-        0.0
-    }
-
-    /// Вычислить THD (Total Harmonic Distortion)
-    fn thd(&self, frequency: f32, amplitude: T) -> f64 {
-        0.0
     }
 }

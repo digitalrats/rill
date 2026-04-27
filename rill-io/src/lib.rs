@@ -1,26 +1,24 @@
 //! Audio I/O backends for Rill
-//! 
-//! Этот крейт предоставляет унифицированный интерфейс для различных
-//! аудио бэкендов с использованием кольцевых буферов из rill-buffers.
+//!
+//! This crate provides a unified interface to various audio backends
+//! using dynamic ring buffers for cross-thread I/O.
 
 #![warn(missing_docs)]
 
 mod backend;
+mod buffer;
 mod config;
-mod error;
 mod engine;
+mod error;
 
-// Публичные модули
 pub mod backends;
 pub mod processor;
 
-// Реэкспорты из модулей
 pub use backend::{AudioBackend, BackendType, DeviceInfo};
 pub use config::AudioConfig;
-pub use error::{IoError, IoResult};
 pub use engine::{AudioEngine, AudioProcessor, EngineState};
+pub use error::{IoError, IoResult};
 
-// Реэкспорты бэкендов
 pub use backends::NullBackend;
 
 #[cfg(feature = "cpal")]
@@ -35,13 +33,8 @@ pub use backends::PipewireBackend;
 #[cfg(feature = "jack")]
 pub use backends::JackBackend;
 
-// Реэкспорты процессоров
-pub use processor::{
-    PassThroughProcessor,
-    SilenceProcessor,
-    GainProcessor,
-    MonoMixerProcessor,
-};
+// Processor re-exports
+pub use processor::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor};
 
 #[cfg(feature = "graph")]
 pub use processor::GraphProcessor;
@@ -50,16 +43,15 @@ pub use processor::GraphProcessor;
 pub use processor::SineProcessor;
 
 #[cfg(feature = "examples")]
-pub use processor::GranularProcessor;
-
-#[cfg(feature = "examples")]
 pub use processor::CaptureProcessor;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::AudioConfig;
-    use crate::processor::{GainProcessor, PassThroughProcessor, SilenceProcessor, MonoMixerProcessor};
+    use crate::processor::{
+        GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor,
+    };
 
     #[test]
     fn test_config_default() {
@@ -87,8 +79,8 @@ mod tests {
             .with_buffer_size(256);
         let latency_sec = config.latency_seconds();
         let latency_ms = config.latency_ms();
-        assert!((latency_sec - 256.0/48000.0).abs() < 1e-10);
-        assert!((latency_ms - 256.0*1000.0/48000.0).abs() < 1e-10);
+        assert!((latency_sec - 256.0 / 48000.0).abs() < 1e-10);
+        assert!((latency_ms - 256.0 * 1000.0 / 48000.0).abs() < 1e-10);
     }
 
     #[test]
@@ -113,7 +105,7 @@ mod tests {
     fn test_silence_processor() {
         let mut proc = SilenceProcessor;
         let input = vec![1.0, 2.0, 3.0];
-        let mut output = vec![1.0; 3]; // заполним чем-то
+        let mut output = vec![1.0; 3];
         proc.process(&input, &mut output);
         assert_eq!(output, vec![0.0; 3]);
     }
@@ -121,11 +113,9 @@ mod tests {
     #[test]
     fn test_mono_mixer_processor() {
         let mut proc = MonoMixerProcessor;
-        // стерео вход: L,R,L,R...
         let input = vec![0.8, 0.2, 0.5, 0.5, 1.0, 0.0];
         let mut output = vec![0.0; 3];
         proc.process(&input, &mut output);
-        // ожидаем (0.8+0.2)/2 = 0.5, (0.5+0.5)/2 = 0.5, (1.0+0.0)/2 = 0.5
         assert_eq!(output, vec![0.5, 0.5, 0.5]);
     }
 }

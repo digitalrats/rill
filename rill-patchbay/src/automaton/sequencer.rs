@@ -3,7 +3,7 @@
 //! Автоматы для генерации ритмических паттернов и последовательностей
 //! значений во времени.
 
-use super::{Automaton, Time, Range, SyncMode, NoAction};
+use crate::control::{Automaton, NoAction, Range, Time};
 use std::collections::VecDeque;
 
 /// Шаг секвенсора
@@ -49,23 +49,6 @@ pub struct SequencerState {
     pub history: VecDeque<usize>,
 }
 
-/// Действия для секвенсора
-#[derive(Debug, Clone, Default)]
-pub enum SequencerAction {
-    #[default]
-    None,
-    /// Запустить
-    Start,
-    /// Остановить
-    Stop,
-    /// Перейти к следующему шагу
-    NextStep,
-    /// Перейти к предыдущему шагу
-    PrevStep,
-    /// Перейти на конкретный шаг
-    GotoStep(usize),
-}
-
 /// Секвенсор автомат
 #[derive(Debug, Clone)]
 pub struct SequencerAutomaton {
@@ -101,36 +84,36 @@ impl SequencerAutomaton {
             rng_state: 123456789,
         }
     }
-    
+
     /// Установить режим воспроизведения
     pub fn with_mode(mut self, mode: PlayMode) -> Self {
         self.mode = mode;
         self
     }
-    
+
     /// Установить темп
     pub fn with_tempo(mut self, bpm: f64) -> Self {
         self.tempo = bpm.max(1.0);
         self
     }
-    
+
     /// Включить/выключить интерполяцию
     pub fn with_interpolation(mut self, interpolate: bool) -> Self {
         self.interpolate = interpolate;
         self
     }
-    
+
     /// Установить диапазон
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
-    
+
     /// Получить длительность шага в секундах
     fn step_duration(&self, step: &Step) -> f64 {
         step.duration * 60.0 / self.tempo * 4.0 * self.duration_scale
     }
-    
+
     /// Выбрать следующий шаг
     fn next_step(&self, state: &SequencerState) -> usize {
         match self.mode {
@@ -141,11 +124,9 @@ impl SequencerAutomaton {
                     state.current_step
                 }
             }
-            
-            PlayMode::Loop => {
-                (state.current_step + 1) % self.steps.len()
-            }
-            
+
+            PlayMode::Loop => (state.current_step + 1) % self.steps.len(),
+
             PlayMode::PingPong => {
                 let next = state.current_step as i32 + state.direction as i32;
                 if next < 0 {
@@ -156,17 +137,13 @@ impl SequencerAutomaton {
                     next as usize
                 }
             }
-            
-            PlayMode::Random => {
-                self.random_index(&mut self.rng_state.clone())
-            }
-            
-            PlayMode::Brownian => {
-                self.brownian_next(state, &mut self.rng_state.clone())
-            }
+
+            PlayMode::Random => self.random_index(&mut self.rng_state.clone()),
+
+            PlayMode::Brownian => self.brownian_next(state, &mut self.rng_state.clone()),
         }
     }
-    
+
     /// Случайный индекс
     fn random_index(&self, rng: &mut u64) -> usize {
         let mut x = *rng;
@@ -174,17 +151,17 @@ impl SequencerAutomaton {
         x ^= x >> 7;
         x ^= x << 17;
         *rng = x;
-        
+
         (x as usize) % self.steps.len()
     }
-    
+
     /// Следующий шаг для броуновского движения
     fn brownian_next(&self, state: &SequencerState, rng: &mut u64) -> usize {
         let mut candidates = Vec::new();
-        
+
         // Может остаться на месте
         candidates.push(state.current_step);
-        
+
         // Или перейти к соседним
         if state.current_step > 0 {
             candidates.push(state.current_step - 1);
@@ -192,7 +169,7 @@ impl SequencerAutomaton {
         if state.current_step < self.steps.len() - 1 {
             candidates.push(state.current_step + 1);
         }
-        
+
         let idx = self.random_index(rng) % candidates.len();
         candidates[idx]
     }
@@ -200,67 +177,21 @@ impl SequencerAutomaton {
 
 impl Automaton for SequencerAutomaton {
     type State = SequencerState;
-    type Action = SequencerAction;
-    
+    type Action = NoAction;
+
     fn step(
         &self,
         time: Time,
-        action: Self::Action,
+        _action: &Self::Action,
         state: &Self::State,
-    ) -> (Self::State, Option<f64>, Option<Self::Action>) {
+    ) -> (Self::State, Option<f64>) {
         let mut new_state = state.clone();
-        
-        match action {
-            SequencerAction::Start => {
-                new_state.step_start_time = time;
-            }
-            
-            SequencerAction::Stop => {
-                // Ничего не делаем
-            }
-            
-            SequencerAction::NextStep => {
-                let next = self.next_step(state);
-                new_state.current_step = next;
-                new_state.step_start_time = time;
-                new_state.current_value = self.steps[next].value;
-                new_state.target_value = self.steps[next].value;
-                
-                if let PlayMode::PingPong = self.mode {
-                    if next == 0 {
-                        new_state.direction = 1;
-                    } else if next == self.steps.len() - 1 {
-                        new_state.direction = -1;
-                    }
-                }
-            }
-            
-            SequencerAction::PrevStep => {
-                if state.current_step > 0 {
-                    new_state.current_step -= 1;
-                }
-                new_state.step_start_time = time;
-                new_state.current_value = self.steps[new_state.current_step].value;
-                new_state.target_value = self.steps[new_state.current_step].value;
-            }
-            
-            SequencerAction::GotoStep(step) => {
-                if step < self.steps.len() {
-                    new_state.current_step = step;
-                    new_state.step_start_time = time;
-                    new_state.current_value = self.steps[step].value;
-                    new_state.target_value = self.steps[step].value;
-                }
-            }
-            
-            SequencerAction::None => {}
-        }
-        
+
         // Проверяем, не пора ли перейти к следующему шагу
         let current_step = &self.steps[new_state.current_step];
         let step_dur = self.step_duration(current_step);
         let elapsed = time - new_state.step_start_time;
-        
+
         if elapsed >= step_dur {
             // Переходим к следующему шагу
             let next = self.next_step(&new_state);
@@ -268,7 +199,7 @@ impl Automaton for SequencerAutomaton {
             new_state.step_start_time = time;
             new_state.current_value = self.steps[next].value;
             new_state.target_value = self.steps[next].value;
-            
+
             if let PlayMode::PingPong = self.mode {
                 if next == 0 {
                     new_state.direction = 1;
@@ -276,8 +207,7 @@ impl Automaton for SequencerAutomaton {
                     new_state.direction = -1;
                 }
             }
-            
-            // Обновляем историю для Brownian
+
             if let PlayMode::Brownian = self.mode {
                 new_state.history.push_back(next);
                 if new_state.history.len() > 10 {
@@ -285,23 +215,21 @@ impl Automaton for SequencerAutomaton {
                 }
             }
         } else if self.interpolate && step_dur > 0.0 {
-            // Интерполяция между значениями
             let t = elapsed / step_dur;
             let next_idx = (new_state.current_step + 1) % self.steps.len();
             let next_val = self.steps[next_idx].value;
-            
-            // Используем кривую если есть
+
             let curve = current_step.curve.unwrap_or(1.0);
             let tt = t.powf(curve);
-            
+
             new_state.current_value = current_step.value * (1.0 - tt) + next_val * tt;
         }
-        
+
         let value = self.range.denormalize(new_state.current_value);
-        
-        (new_state, Some(value), None)
+
+        (new_state, Some(value))
     }
-    
+
     fn initial_state(&self) -> Self::State {
         SequencerState {
             current_step: 0,
@@ -312,11 +240,11 @@ impl Automaton for SequencerAutomaton {
             history: VecDeque::with_capacity(10),
         }
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn extract_value(&self, state: &Self::State) -> f64 {
         self.range.denormalize(state.current_value)
     }
@@ -337,16 +265,16 @@ pub fn simple_sequence(values: Vec<f64>, duration: f64) -> Vec<Step> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_sequencer() {
-        let steps = simple_sequence(vec![0.0, 0.5, 1.0, 0.5], 0.5);
+        let steps = simple_sequence(vec![0.0, 0.5, 1.0, 0.5], 0.25);
         let seq = SequencerAutomaton::new("Test", steps);
         let state = seq.initial_state();
-        
+
         assert_eq!(state.current_value, 0.0);
-        
-        let (state, value, _) = seq.step(0.6, SequencerAction::None, &state);
-        assert_eq!(state.current_step, 1);
+
+        let (new_state, _value) = seq.step(0.6, &NoAction, &state);
+        assert_eq!(new_state.current_step, 1);
     }
 }
