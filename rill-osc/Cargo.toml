@@ -1,5 +1,5 @@
 [package]
-name = "rill-server"
+name = "rill-osc"
 version = "0.3.0"
 edition = "2021"
 description = "OSC server and networking for Rill audio graph"

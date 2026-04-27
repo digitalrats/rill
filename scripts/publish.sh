@@ -22,7 +22,7 @@
 #  12  rill-io
 #  13  rill-analog-filters
 #  14  rill-analog-effects
-#  15  rill-server
+#  15  rill-osc
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -42,7 +42,7 @@ CRATES=(
     rill-io
     rill-analog-filters
     rill-analog-effects
-    rill-server
+    rill-osc
 )
 
 DRY_RUN=false
@@ -92,7 +92,7 @@ for i in "${!CRATES[@]}"; do
 
     if [ "$DRY_RUN" = true ]; then
         # Leaf crates (no internal deps) — full package verification
-        if [ "$crate" = "rill-core" ] || [ "$crate" = "rill-server" ]; then
+        if [ "$crate" = "rill-core" ] || [ "$crate" = "rill-osc" ]; then
             if cargo publish -p "$crate" --dry-run --allow-dirty 2>&1; then
                 echo "  ✓ $crate publish dry-run passed"
             else

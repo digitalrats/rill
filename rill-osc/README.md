@@ -1,4 +1,4 @@
-# rill-server
+# rill-osc
 
 OSC (Open Sound Control) server and networking for remote control of Rill audio graphs.
 
@@ -29,4 +29,4 @@ Standalone — no rill-core dependency. Uses `tokio` for async UDP.
 ## Links
 
 - Repository: <https://github.com/DigitalRats/rill>
-- Documentation: <https://docs.rs/rill-server>
+- Documentation: <https://docs.rs/rill-osc>

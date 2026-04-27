@@ -20,7 +20,7 @@ Cargo workspace — 15 active crates:
 | `rill-core-wdf` | Active — WDF elements, adapters, analysis |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
-| `rill-server` | Active — OSC server and networking |
+| `rill-osc` | Active — OSC server and networking |
 
 Dependency tree:
 - **`rill-core`** — foundation, depended on by all other crates except `rill-core-wdf`
