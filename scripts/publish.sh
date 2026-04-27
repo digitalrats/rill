@@ -48,12 +48,24 @@ CRATES=(
 DRY_RUN=false
 RESUME=0
 
-for arg in "$@"; do
-    case "$arg" in
-        --check) DRY_RUN=true ;;
-        --resume) RESUME="$2"; shift ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --check) DRY_RUN=true; shift ;;
+        --resume) RESUME="${2:?Missing resume number}"; shift 2 ;;
+        *) shift ;;
     esac
 done
+
+if [ "$RESUME" = "0" ] && [ "$DRY_RUN" = false ]; then
+    echo "Usage: $0 [--check] [--resume N]"
+    echo ""
+    echo "  --check       dry-run (validate packages without publishing)"
+    echo "  --resume N    start from crate N (1-indexed, see list below)"
+    echo ""
+    echo "Crates:"
+    for i in "${!CRATES[@]}"; do echo "  $((i + 1))) ${CRATES[$i]}"; done
+    exit 1
+fi
 
 if [ "$(git status --porcelain | wc -l)" -gt 0 ]; then
     echo "ERROR: working tree has uncommitted changes."
@@ -97,10 +109,40 @@ for i in "${!CRATES[@]}"; do
             fi
         fi
     else
-        cargo publish -p "$crate" 2>&1
-        echo "  ✓ published $crate"
-        echo "  Waiting 30s for crates.io index to update..."
-        sleep 30
+        echo "  Publishing $crate..."
+        output=$(cargo publish -p "$crate" 2>&1) || true
+        if echo "$output" | grep -q "429 Too Many Requests"; then
+            retry_after=$(echo "$output" | grep -oP 'after \K.*?(?= GMT)')
+            retry_after="${retry_after} GMT"
+            retry_ts=$(date -d "$retry_after" +%s 2>/dev/null || echo "")
+            if [ -n "$retry_ts" ]; then
+                now=$(date +%s)
+                wait_sec=$((retry_ts - now + 5))
+                [ "$wait_sec" -lt 0 ] && wait_sec=0
+                echo "  Rate limited. Waiting ${wait_sec}s until $retry_after..."
+                sleep "$wait_sec"
+                cargo publish -p "$crate" 2>&1
+                echo "  ✓ published $crate"
+            else
+                echo "$output"
+                echo "  ✗ rate limited, but could not parse retry time."
+                exit 1
+            fi
+        else
+            echo "$output"
+            if echo "$output" | grep -q "^error"; then
+                echo "  ✗ publish FAILED"
+                exit 1
+            fi
+            echo "  ✓ published $crate"
+        fi
+        if [ "$idx" -gt 5 ]; then
+            echo "  Rate limit cooldown: waiting 600s before next publish..."
+            sleep 600
+        else
+            echo "  Waiting 30s for crates.io index to update..."
+            sleep 30
+        fi
     fi
 
     echo ""
