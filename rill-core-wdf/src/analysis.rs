@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use crate::WdfElement;
 use parking_lot::RwLock;
 use rill_core::AudioNum;
-use crate::WdfElement;
+use std::sync::Arc;
 
 /// Analyze magnitude response of a WDF element chain
 ///

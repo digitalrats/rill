@@ -10,20 +10,18 @@ pub fn white_noise(level: f32) -> f32 {
 
 /// Розовый шум (простая аппроксимация)
 pub fn pink_noise(level: f32, _sample_rate: f32) -> f32 {
-    
-    
     static mut LAST_NOISE: f32 = 0.0;
     static mut FILTER_STATE: [f32; 3] = [0.0; 3];
-    
+
     let white = white_noise(level);
-    
+
     unsafe {
         // Простой фильтр нижних частот для окраски
         let cutoff = 1000.0 / 44100.0;
         FILTER_STATE[0] = FILTER_STATE[0] + cutoff * (white - FILTER_STATE[0]);
         FILTER_STATE[1] = FILTER_STATE[1] + cutoff * (FILTER_STATE[0] - FILTER_STATE[1]);
         FILTER_STATE[2] = FILTER_STATE[2] + cutoff * (FILTER_STATE[1] - FILTER_STATE[2]);
-        
+
         LAST_NOISE = FILTER_STATE[2];
         LAST_NOISE
     }
@@ -49,6 +47,6 @@ pub fn system_noise(system: crate::config::ClassicSystem, sample: f32) -> f32 {
         crate::config::ClassicSystem::Custom { noise_floor, .. } => noise_floor / 100.0,
         _ => 0.02,
     };
-    
+
     sample + white_noise(noise_level)
 }

@@ -89,7 +89,10 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         idx
     }
 
-    pub fn add_processor(&mut self, processor: Box<dyn rill_core::traits::Processor<T, BUF_SIZE>>) -> usize {
+    pub fn add_processor(
+        &mut self,
+        processor: Box<dyn rill_core::traits::Processor<T, BUF_SIZE>>,
+    ) -> usize {
         let idx = self.nodes.len();
         self.nodes.push(NodeEntry {
             node: NodeVariant::Processor(processor),
@@ -114,7 +117,8 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         to_node: usize,
         to_port: usize,
     ) {
-        self.audio_edges.push((from_node, from_port, to_node, to_port));
+        self.audio_edges
+            .push((from_node, from_port, to_node, to_port));
     }
 
     /// Connect a feedback output to a feedback input.
@@ -126,11 +130,15 @@ impl<T: AudioNum, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         to_node: usize,
         to_port: usize,
     ) {
-        self.feedback_edges.push((from_node, from_port, to_node, to_port));
+        self.feedback_edges
+            .push((from_node, from_port, to_node, to_port));
     }
 
     /// Build the immutable AudioGraph.
-    pub fn build(mut self, clock_source: Box<dyn ClockSource>) -> Result<AudioGraph<T, BUF_SIZE>, BuildError> {
+    pub fn build(
+        mut self,
+        clock_source: Box<dyn ClockSource>,
+    ) -> Result<AudioGraph<T, BUF_SIZE>, BuildError> {
         let num_nodes = self.nodes.len();
 
         // --- adjacency for Kahn (audio edges only; feedback is not a DAG edge) ---
@@ -258,7 +266,10 @@ impl<T: AudioNum, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
     ///
     /// Each command is routed to the node identified by `cmd.port.node_id()`
     /// via that node's `apply_set_parameter` method.
-    pub fn dispatch_set_parameters(&mut self, commands: &[rill_core::queues::signal::SetParameter]) {
+    pub fn dispatch_set_parameters(
+        &mut self,
+        commands: &[rill_core::queues::signal::SetParameter],
+    ) {
         for cmd in commands {
             let target = cmd.port.node_id();
             for entry in self.nodes.iter_mut() {
@@ -281,8 +292,8 @@ mod tests {
     use rill_core::math::AudioNum;
     use rill_core::time::ClockTick;
     use rill_core::traits::{
-        AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
-        Port, PortDirection, PortId, ProcessResult, Source, Processor, Sink,
+        AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+        PortDirection, PortId, ProcessResult, Processor, Sink, Source,
     };
 
     // ------------------------------------------------------------------------
@@ -316,9 +327,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
-        for ConstantSource<T, BUF_SIZE>
-    {
+    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "ConstantSource".into(),
@@ -341,51 +350,29 @@ mod tests {
         fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
             None
         }
-        fn set_parameter(
-            &mut self,
-            _id: &ParameterId,
-            _value: ParamValue,
-        ) -> ProcessResult<()> {
+        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
             Ok(())
         }
         fn id(&self) -> NodeId {
             NodeId(0)
         }
         fn set_id(&mut self, _id: NodeId) {}
-        fn input_port(
-            &self,
-            _index: usize,
-        ) -> Option<&Port<T, BUF_SIZE>> {
+        fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
             None
         }
-        fn input_port_mut(
-            &mut self,
-            _index: usize,
-        ) -> Option<&mut Port<T, BUF_SIZE>> {
+        fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
             None
         }
-        fn output_port(
-            &self,
-            index: usize,
-        ) -> Option<&Port<T, BUF_SIZE>> {
+        fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
             self.outputs.get(index)
         }
-        fn output_port_mut(
-            &mut self,
-            index: usize,
-        ) -> Option<&mut Port<T, BUF_SIZE>> {
+        fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
             self.outputs.get_mut(index)
         }
-        fn control_port(
-            &self,
-            _index: usize,
-        ) -> Option<&Port<T, BUF_SIZE>> {
+        fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
             None
         }
-        fn control_port_mut(
-            &mut self,
-            _index: usize,
-        ) -> Option<&mut Port<T, BUF_SIZE>> {
+        fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
             None
         }
         fn state(&self) -> &NodeState<T, BUF_SIZE> {
@@ -396,9 +383,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE>
-        for ConstantSource<T, BUF_SIZE>
-    {
+    impl<T: AudioNum, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn generate(
             &mut self,
             _clock: &ClockTick,
@@ -431,9 +416,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
-        for NoopProcessor<T, BUF_SIZE>
-    {
+    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "NoopProcessor".into(),
@@ -456,28 +439,40 @@ mod tests {
         fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
             None
         }
-        fn set_parameter(
-            &mut self,
-            _id: &ParameterId,
-            _value: ParamValue,
-        ) -> ProcessResult<()> {
+        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
             Ok(())
         }
-        fn id(&self) -> NodeId { NodeId(1) }
+        fn id(&self) -> NodeId {
+            NodeId(1)
+        }
         fn set_id(&mut self, _id: NodeId) {}
-        fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-        fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-        fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-        fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-        fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-        fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-        fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
-        fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
+        fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+            None
+        }
+        fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+            None
+        }
+        fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+            None
+        }
+        fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+            None
+        }
+        fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+            None
+        }
+        fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+            None
+        }
+        fn state(&self) -> &NodeState<T, BUF_SIZE> {
+            &self.state
+        }
+        fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+            &mut self.state
+        }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
-        for NoopProcessor<T, BUF_SIZE>
-    {
+    impl<T: AudioNum, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn process(
             &mut self,
             _clock: &ClockTick,
@@ -505,9 +500,7 @@ mod tests {
         }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
-        for NoopSink<T, BUF_SIZE>
-    {
+    impl<T: AudioNum, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "NoopSink".into(),
@@ -527,27 +520,43 @@ mod tests {
         }
         fn init(&mut self, _sample_rate: f32) {}
         fn reset(&mut self) {}
-        fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
-        fn set_parameter(
-            &mut self,
-            _id: &ParameterId,
-            _value: ParamValue,
-        ) -> ProcessResult<()> { Ok(()) }
-        fn id(&self) -> NodeId { NodeId(2) }
+        fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
+            None
+        }
+        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
+            Ok(())
+        }
+        fn id(&self) -> NodeId {
+            NodeId(2)
+        }
         fn set_id(&mut self, _id: NodeId) {}
-        fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-        fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-        fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-        fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-        fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-        fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-        fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
-        fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
+        fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+            None
+        }
+        fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+            None
+        }
+        fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+            None
+        }
+        fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+            None
+        }
+        fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+            None
+        }
+        fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+            None
+        }
+        fn state(&self) -> &NodeState<T, BUF_SIZE> {
+            &self.state
+        }
+        fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+            &mut self.state
+        }
     }
 
-    impl<T: AudioNum, const BUF_SIZE: usize> Sink<T, BUF_SIZE>
-        for NoopSink<T, BUF_SIZE>
-    {
+    impl<T: AudioNum, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn consume(
             &mut self,
             _clock: &ClockTick,

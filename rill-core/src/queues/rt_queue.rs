@@ -4,8 +4,8 @@
 //! потоком управления и аудиопотоком. Объединяет функциональность
 //! SPSC и MPSC очередей с удобным API.
 
-use super::{QueueResult, QueueStatsSnapshot};
 use super::spsc::SpscQueue;
+use super::{QueueResult, QueueStatsSnapshot};
 
 /// Тип очереди
 #[derive(Debug, Clone, Copy)]
@@ -39,7 +39,7 @@ pub struct RtQueue<T: Copy> {
 }
 
 enum RtQueueInner<T: Copy> {
-    Spsc(SpscQueue<T, 1024>),      // Для одного производителя
+    Spsc(SpscQueue<T, 1024>),        // Для одного производителя
     Mpsc(super::mpsc::MpscQueue<T>), // Для многих производителей
 }
 
@@ -57,21 +57,21 @@ impl<T: Copy + Default + Send + 'static> RtQueue<T> {
             }
         }
     }
-    
+
     /// Создать очередь для одного производителя
     pub fn new_spsc() -> Self {
         Self {
             inner: RtQueueInner::Spsc(SpscQueue::new()),
         }
     }
-    
+
     /// Создать очередь для многих производителей
     pub fn new_mpsc(capacity: usize) -> Self {
         Self {
             inner: RtQueueInner::Mpsc(super::mpsc::MpscQueue::with_capacity(capacity)),
         }
     }
-    
+
     /// Добавить элемент (из потока управления)
     pub fn push(&self, value: T) -> QueueResult<()> {
         match &self.inner {
@@ -79,7 +79,7 @@ impl<T: Copy + Default + Send + 'static> RtQueue<T> {
             RtQueueInner::Mpsc(q) => q.push(value),
         }
     }
-    
+
     /// Извлечь элемент (из аудиопотока)
     pub fn pop(&self) -> Option<T> {
         match &self.inner {
@@ -87,7 +87,7 @@ impl<T: Copy + Default + Send + 'static> RtQueue<T> {
             RtQueueInner::Mpsc(q) => q.pop(),
         }
     }
-    
+
     /// Текущий размер
     pub fn len(&self) -> usize {
         match &self.inner {
@@ -95,7 +95,7 @@ impl<T: Copy + Default + Send + 'static> RtQueue<T> {
             RtQueueInner::Mpsc(q) => q.size(),
         }
     }
-    
+
     /// Вместимость
     pub fn capacity(&self) -> usize {
         match &self.inner {
@@ -103,12 +103,12 @@ impl<T: Copy + Default + Send + 'static> RtQueue<T> {
             RtQueueInner::Mpsc(q) => q.capacity(),
         }
     }
-    
+
     /// Проверить, пуста ли очередь
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    
+
     /// Получить статистику
     pub fn stats(&self) -> QueueStatsSnapshot {
         match &self.inner {
@@ -139,8 +139,6 @@ impl<T: Copy> Clone for RtQueue<T> {
     }
 }
 
-
-
 #[allow(unsafe_code)]
 unsafe impl<T: Copy + Send> Send for RtQueue<T> {}
 #[allow(unsafe_code)]
@@ -149,24 +147,24 @@ unsafe impl<T: Copy + Sync> Sync for RtQueue<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_rt_queue_spsc() {
         let queue = RtQueue::<i32>::new_spsc();
-        
+
         queue.push(42).unwrap();
         assert_eq!(queue.pop(), Some(42));
         assert_eq!(queue.pop(), None);
     }
-    
+
     #[test]
     fn test_rt_queue_mpsc() {
         let queue = RtQueue::<i32>::new_mpsc(16);
-        
+
         queue.push(1).unwrap();
         queue.push(2).unwrap();
         queue.push(3).unwrap();
-        
+
         assert_eq!(queue.pop(), Some(1));
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), Some(3));

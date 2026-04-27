@@ -1,5 +1,5 @@
-use rill_core_wdf::{Capacitor, Inductor, WdfElement};
 use crate::OperationalAmplifier;
+use rill_core_wdf::{Capacitor, Inductor, WdfElement};
 
 /// Cassette deck model (Sony TC-260 style)
 ///

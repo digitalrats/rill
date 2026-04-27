@@ -57,7 +57,7 @@ impl SimdDetector {
             has_wasm_simd128: false,
         }
     }
-    
+
     /// Возвращает максимальную рекомендуемую ширину SIMD для текущей платформы
     pub fn recommended_simd_width<T: crate::AudioNum>() -> usize {
         // Временная заглушка: всегда возвращаем скалярную ширину

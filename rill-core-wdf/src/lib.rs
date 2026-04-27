@@ -23,11 +23,11 @@
 
 use rill_core::AudioNum;
 
-mod constants;
-mod elements;
 mod adapters;
 /// Frequency response and distortion analysis
 pub mod analysis;
+mod constants;
+mod elements;
 
 #[cfg(feature = "simd")]
 pub mod simd;
@@ -35,8 +35,8 @@ pub mod simd;
 /// WDF-based filter models
 pub mod filters;
 
-pub use elements::{Resistor, Capacitor, Inductor, Diode};
-pub use adapters::{SeriesAdapter, ParallelAdapter};
+pub use adapters::{ParallelAdapter, SeriesAdapter};
+pub use elements::{Capacitor, Diode, Inductor, Resistor};
 
 /// Wave port type for WDF adapters
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,7 +61,10 @@ pub struct WaveVariables<T: AudioNum> {
 impl<T: AudioNum> WaveVariables<T> {
     /// Create zero wave variables
     pub fn new() -> Self {
-        Self { a: T::ZERO, b: T::ZERO }
+        Self {
+            a: T::ZERO,
+            b: T::ZERO,
+        }
     }
 
     /// Compute voltage and current from wave variables

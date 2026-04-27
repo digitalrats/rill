@@ -3,11 +3,12 @@ name = "rill-telemetry"
 version = "0.3.0"
 edition = "2021"
 description = "Real-time telemetry probe and collector for Rill audio graph"
-license = "Apache-2.0"
-authors = ["Digital Rats / Rill Team"]
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
-rill-core = { path = "../rill-core" }
+rill-core = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

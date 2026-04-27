@@ -91,7 +91,8 @@ impl<T: AudioNum, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
         clock: &ClockTick,
     ) -> ProcessResult<()> {
         self.osc.set_frequency(self.frequency.to_f32());
-        self.osc.process(None, &mut output[..], &ActionContext::new(clock))?;
+        self.osc
+            .process(None, &mut output[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
             output[i] = output[i] * self.amplitude;
         }

@@ -3,8 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rill_core::math::AudioNum;
 use rill_core::prelude::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState,
-    ParameterId, ParamValue, Port,
+    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     ProcessResult,
 };
 use rill_core::queues::spsc::SpscQueue;
@@ -91,8 +90,8 @@ impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize>
 
 // ── AudioNode ──────────────────────────────────────────────────────────────
 
-impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize>
-    AudioNode<T, BUF_SIZE> for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
+impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize> AudioNode<T, BUF_SIZE>
+    for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
     fn metadata(&self) -> NodeMetadata {
         let mut meta = NodeMetadata::new(&self.node_name, NodeCategory::Analyzer);
@@ -173,8 +172,8 @@ impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize>
 
 // ── Processor ──────────────────────────────────────────────────────────────
 
-impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize>
-    Processor<T, BUF_SIZE> for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
+impl<T: AudioNum, const BUF_SIZE: usize, const QUEUE_CAP: usize> Processor<T, BUF_SIZE>
+    for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
     fn process(
         &mut self,

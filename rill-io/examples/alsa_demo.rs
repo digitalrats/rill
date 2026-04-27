@@ -2,7 +2,9 @@
 //!
 //! Запуск: cargo run --example alsa_demo --features "alsa,examples"
 
-use rill_io::{backends::AlsaBackend, processor::SineProcessor, AudioBackend, AudioConfig, AudioEngine};
+use rill_io::{
+    backends::AlsaBackend, processor::SineProcessor, AudioBackend, AudioConfig, AudioEngine,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Rill IO ALSA Demo ===\n");

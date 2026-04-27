@@ -32,12 +32,12 @@ impl ValueConverter {
             transform,
         }
     }
-    
+
     /// Конвертировать значение
     pub fn convert(&self, value: f64) -> f64 {
         // Нормализуем входное значение
         let norm = self.input_range.normalize(value);
-        
+
         // Применяем преобразование
         let transformed = match self.transform {
             Transform::Linear => norm,
@@ -46,11 +46,11 @@ impl ValueConverter {
             Transform::Inverted => 1.0 - norm,
             Transform::Custom(ref f) => f(norm as f32) as f64,
         };
-        
+
         // Денормализуем в выходной диапазон
         self.output_range.denormalize(transformed)
     }
-    
+
     /// Конвертировать значение в обратном направлении
     pub fn convert_inverse(&self, value: f64) -> f64 {
         // Денормализуем в обратную сторону (приблизительно)
@@ -107,7 +107,7 @@ impl Metronome {
             quarter_duration,
         }
     }
-    
+
     /// Обновить состояние и проверить, был ли тик
     pub fn update(&mut self, time: f64) -> bool {
         if time >= self.next_tick {
@@ -118,19 +118,19 @@ impl Metronome {
             false
         }
     }
-    
+
     /// Получить текущую фазу (0.0-1.0) внутри четверти
     pub fn phase(&self, time: f64) -> f64 {
         ((time - self.last_tick) / self.quarter_duration).clamp(0.0, 1.0)
     }
-    
+
     /// Установить новый BPM
     pub fn set_bpm(&mut self, bpm: f64) {
         self.bpm = bpm;
         self.quarter_duration = 60.0 / bpm;
         self.next_tick = self.last_tick + self.quarter_duration;
     }
-    
+
     /// Сбросить метроном
     pub fn reset(&mut self) {
         self.last_tick = 0.0;
@@ -193,11 +193,9 @@ pub struct RecordedEvent {
 impl EventRecorder {
     /// Создать новый рекордер
     pub fn new() -> Self {
-        Self {
-            events: Vec::new(),
-        }
+        Self { events: Vec::new() }
     }
-    
+
     /// Записать событие
     pub fn record(&mut self, time: f64, event_type: &str, value: f64, data: &str) {
         self.events.push(RecordedEvent {
@@ -207,17 +205,17 @@ impl EventRecorder {
             data: data.to_string(),
         });
     }
-    
+
     /// Получить все события
     pub fn events(&self) -> &[RecordedEvent] {
         &self.events
     }
-    
+
     /// Очистить запись
     pub fn clear(&mut self) {
         self.events.clear();
     }
-    
+
     /// Найти события по типу
     pub fn find_by_type(&self, event_type: &str) -> Vec<&RecordedEvent> {
         self.events
@@ -275,44 +273,44 @@ impl TestSignalGenerator {
             params,
         }
     }
-    
+
     /// Генерировать значение в заданное время
     pub fn generate(&self, time: f64) -> f64 {
         if time > self.params.duration {
             return 0.0;
         }
-        
+
         match self.signal_type {
             TestSignalType::Sine => {
                 let phase = 2.0 * std::f64::consts::PI * self.params.frequency * time;
                 self.params.offset + self.params.amplitude * phase.sin()
             }
-            
+
             TestSignalType::Square => {
                 let phase = (self.params.frequency * time) % 1.0;
                 let value = if phase < 0.5 { 1.0 } else { -1.0 };
                 self.params.offset + self.params.amplitude * value
             }
-            
+
             TestSignalType::Saw => {
                 let phase = (self.params.frequency * time) % 1.0;
                 let value = 2.0 * phase - 1.0;
                 self.params.offset + self.params.amplitude * value
             }
-            
+
             TestSignalType::Noise => {
                 use rand::Rng;
                 let mut rng = rand::thread_rng();
                 self.params.offset + self.params.amplitude * (rng.gen::<f64>() * 2.0 - 1.0)
             }
-            
+
             TestSignalType::Envelope => {
                 // Простая ADSR-подобная огибающая
                 let attack = 0.1;
                 let decay = 0.2;
                 let sustain = 0.7;
                 let release = 0.3;
-                
+
                 if time < attack {
                     (time / attack) * self.params.amplitude
                 } else if time < attack + decay {
@@ -335,7 +333,7 @@ impl TestSignalGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_value_converter() {
         let converter = ValueConverter::new(
@@ -343,20 +341,20 @@ mod tests {
             Range::new(0.0, 1.0),
             Transform::Linear,
         );
-        
+
         let result = converter.convert(64.0);
         assert!((result - 0.5).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_metronome() {
         let mut metro = Metronome::new(120.0); // 120 BPM = 0.5 сек на четверть
-        
+
         assert!(!metro.update(0.2));
         assert!(metro.update(0.6));
         assert!((metro.phase(0.6) - 0.2).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_test_signal() {
         let params = TestSignalParams {
@@ -365,7 +363,7 @@ mod tests {
             offset: 0.0,
             duration: 2.0,
         };
-        
+
         let gen = TestSignalGenerator::new(TestSignalType::Sine, params);
         let val = gen.generate(0.25);
         assert!((val - 1.0).abs() < 0.01);

@@ -16,7 +16,7 @@ macro_rules! audio_node {
             { $($tt)* }
         }
     };
-    
+
     (
         $(#[$meta:meta])*
         processor $name:ident<$T:ident: $crate::math::AudioNum, const $BUF:ident: usize>
@@ -30,7 +30,7 @@ macro_rules! audio_node {
             { $($tt)* }
         }
     };
-    
+
     (
         $(#[$meta:meta])*
         sink $name:ident<$T:ident: $crate::math::AudioNum, const $BUF:ident: usize>

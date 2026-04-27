@@ -20,16 +20,16 @@
 //! #
 //! // Создаем очередь команд
 //! let queue: CommandQueue<CommandEnum> = CommandQueue::new("audio-control", 1024);
-//! 
+//!
 //! // Создаем идентификаторы
 //! let node = NodeId(1);
 //! let port = PortId::control_in(node, 0);
 //! let param = ParameterId::new("gain").unwrap();
-//! 
+//!
 //! // Где-то в мире автоматов
 //! let cmd = SetParameter::new(port, param, 0.5, SignalSource::Automaton("lfo".into()));
 //! queue.send(CommandEnum::SetParameter(cmd)).unwrap();
-//! 
+//!
 //! // Где-то в звуковом мире
 //! while let Ok(cmd_enum) = queue.try_recv() {
 //!     if let CommandEnum::SetParameter(cmd) = cmd_enum {
@@ -74,7 +74,7 @@ impl SignalSource {
             SignalSource::Script => "script",
         }
     }
-    
+
     pub fn kind(&self) -> &'static str {
         match self {
             SignalSource::Automaton(_) => "automaton",
@@ -122,7 +122,7 @@ impl SetParameter {
             timestamp: Self::now(),
         }
     }
-    
+
     pub fn with_timestamp(
         port: PortId,
         parameter: ParameterId,
@@ -138,7 +138,7 @@ impl SetParameter {
             timestamp,
         }
     }
-    
+
     pub fn now() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -149,8 +149,8 @@ impl SetParameter {
 
 impl PartialEq for SetParameter {
     fn eq(&self, other: &Self) -> bool {
-        self.port == other.port 
-            && self.parameter == other.parameter 
+        self.port == other.port
+            && self.parameter == other.parameter
             && (self.value - other.value).abs() < f32::EPSILON
             && self.source == other.source
     }
@@ -161,11 +161,7 @@ impl fmt::Display for SetParameter {
         write!(
             f,
             "[{}] {} → {}::{} = {:.3}",
-            self.timestamp,
-            self.source,
-            self.port,
-            self.parameter,
-            self.value
+            self.timestamp, self.source, self.port, self.parameter, self.value
         )
     }
 }
@@ -177,13 +173,35 @@ impl Command for SetParameter {}
 
 #[derive(Debug, Clone)]
 pub enum AutomatonCommand {
-    SetEnabled { id: String, enabled: bool },
-    SetParameter { id: String, name: String, value: f32 },
-    Reset { id: String },
-    Connect { from: String, to: String, gain: f32 },
-    Disconnect { from: String, to: String },
-    Create { kind: String, id: String, params: Vec<(String, f32)> },
-    Destroy { id: String },
+    SetEnabled {
+        id: String,
+        enabled: bool,
+    },
+    SetParameter {
+        id: String,
+        name: String,
+        value: f32,
+    },
+    Reset {
+        id: String,
+    },
+    Connect {
+        from: String,
+        to: String,
+        gain: f32,
+    },
+    Disconnect {
+        from: String,
+        to: String,
+    },
+    Create {
+        kind: String,
+        id: String,
+        params: Vec<(String, f32)>,
+    },
+    Destroy {
+        id: String,
+    },
 }
 
 impl AutomatonCommand {
@@ -219,7 +237,13 @@ impl fmt::Display for AutomatonCommand {
                 write!(f, "Automaton disconnect {} → {}", from, to)
             }
             AutomatonCommand::Create { kind, id, params } => {
-                write!(f, "Automaton create {} as {} with {} params", kind, id, params.len())
+                write!(
+                    f,
+                    "Automaton create {} as {} with {} params",
+                    kind,
+                    id,
+                    params.len()
+                )
             }
             AutomatonCommand::Destroy { id } => {
                 write!(f, "Automaton destroy {}", id)
@@ -321,12 +345,31 @@ impl fmt::Display for MappingType {
 
 #[derive(Debug, Clone)]
 pub enum ServoCommand {
-    BindToAutomaton { servo_id: String, automaton_id: String },
-    BindToParameter { servo_id: String, port: PortId, parameter: ParameterId },
-    Unbind { servo_id: String },
-    SetRange { servo_id: String, min: f32, max: f32 },
-    SetMapping { servo_id: String, mapping: MappingType },
-    SetEnabled { servo_id: String, enabled: bool },
+    BindToAutomaton {
+        servo_id: String,
+        automaton_id: String,
+    },
+    BindToParameter {
+        servo_id: String,
+        port: PortId,
+        parameter: ParameterId,
+    },
+    Unbind {
+        servo_id: String,
+    },
+    SetRange {
+        servo_id: String,
+        min: f32,
+        max: f32,
+    },
+    SetMapping {
+        servo_id: String,
+        mapping: MappingType,
+    },
+    SetEnabled {
+        servo_id: String,
+        enabled: bool,
+    },
 }
 
 impl ServoCommand {
@@ -345,10 +388,17 @@ impl ServoCommand {
 impl fmt::Display for ServoCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ServoCommand::BindToAutomaton { servo_id, automaton_id } => {
+            ServoCommand::BindToAutomaton {
+                servo_id,
+                automaton_id,
+            } => {
                 write!(f, "Servo[{}] bind to automaton {}", servo_id, automaton_id)
             }
-            ServoCommand::BindToParameter { servo_id, port, parameter } => {
+            ServoCommand::BindToParameter {
+                servo_id,
+                port,
+                parameter,
+            } => {
                 write!(f, "Servo[{}] bind to {}::{}", servo_id, port, parameter)
             }
             ServoCommand::Unbind { servo_id } => {
@@ -427,7 +477,7 @@ impl CommandEnum {
             CommandEnum::System { .. } => CommandType::System,
         }
     }
-    
+
     /// Получить временную метку (если есть)
     pub fn timestamp(&self) -> Option<u64> {
         match self {
@@ -435,7 +485,7 @@ impl CommandEnum {
             _ => None,
         }
     }
-    
+
     /// Попытаться преобразовать в SetParameter
     pub fn as_set_parameter(&self) -> Option<&SetParameter> {
         match self {
@@ -443,7 +493,7 @@ impl CommandEnum {
             _ => None,
         }
     }
-    
+
     /// Попытаться преобразовать в AutomatonCommand
     pub fn as_automaton(&self) -> Option<&AutomatonCommand> {
         match self {
@@ -451,7 +501,7 @@ impl CommandEnum {
             _ => None,
         }
     }
-    
+
     /// Попытаться преобразовать в SensorCommand
     pub fn as_sensor(&self) -> Option<&SensorCommand> {
         match self {
@@ -459,7 +509,7 @@ impl CommandEnum {
             _ => None,
         }
     }
-    
+
     /// Попытаться преобразовать в ServoCommand
     pub fn as_servo(&self) -> Option<&ServoCommand> {
         match self {
@@ -492,7 +542,7 @@ impl Command for CommandEnum {}
 pub trait ToCommand: Send + 'static {
     /// Тип команды, в которую преобразуется
     type Command: Into<CommandEnum>;
-    
+
     /// Преобразовать в команду
     fn to_command(self) -> Self::Command;
 }
@@ -501,7 +551,7 @@ pub trait ToCommand: Send + 'static {
 pub trait FromCommand: Sized {
     /// Тип команды, из которой создается
     type Command: TryInto<Self> + Clone;
-    
+
     /// Попытаться создать из команды
     fn from_command(cmd: Self::Command) -> Option<Self>;
 }
@@ -532,7 +582,7 @@ impl From<ServoCommand> for CommandEnum {
 
 impl TryFrom<CommandEnum> for SetParameter {
     type Error = ();
-    
+
     fn try_from(cmd: CommandEnum) -> Result<Self, Self::Error> {
         match cmd {
             CommandEnum::SetParameter(cmd) => Ok(cmd),
@@ -543,7 +593,7 @@ impl TryFrom<CommandEnum> for SetParameter {
 
 impl TryFrom<CommandEnum> for AutomatonCommand {
     type Error = ();
-    
+
     fn try_from(cmd: CommandEnum) -> Result<Self, Self::Error> {
         match cmd {
             CommandEnum::Automaton(cmd) => Ok(cmd),
@@ -554,7 +604,7 @@ impl TryFrom<CommandEnum> for AutomatonCommand {
 
 impl TryFrom<CommandEnum> for SensorCommand {
     type Error = ();
-    
+
     fn try_from(cmd: CommandEnum) -> Result<Self, Self::Error> {
         match cmd {
             CommandEnum::Sensor(cmd) => Ok(cmd),
@@ -565,7 +615,7 @@ impl TryFrom<CommandEnum> for SensorCommand {
 
 impl TryFrom<CommandEnum> for ServoCommand {
     type Error = ();
-    
+
     fn try_from(cmd: CommandEnum) -> Result<Self, Self::Error> {
         match cmd {
             CommandEnum::Servo(cmd) => Ok(cmd),

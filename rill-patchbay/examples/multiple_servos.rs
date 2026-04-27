@@ -1,8 +1,6 @@
-use rill_core::NodeId;
 use rill_core::queues::MpscQueue;
-use rill_patchbay::{
-    FunctionAutomaton, LfoWaveform, ParameterMapping, PatchbayControl, Servo,
-};
+use rill_core::NodeId;
+use rill_patchbay::{FunctionAutomaton, LfoWaveform, ParameterMapping, PatchbayControl, Servo};
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,18 +12,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Three different automata
     control.add_lfo(
-        "lfo_sine", 1.0, 0.3, 0.5, LfoWaveform::Sine, node, "gain", 0.0, 1.0,
+        "lfo_sine",
+        1.0,
+        0.3,
+        0.5,
+        LfoWaveform::Sine,
+        node,
+        "gain",
+        0.0,
+        1.0,
     );
     control.add_lfo(
-        "lfo_tri", 0.5, 0.4, 0.3, LfoWaveform::Triangle, node, "pan", -1.0, 1.0,
+        "lfo_tri",
+        0.5,
+        0.4,
+        0.3,
+        LfoWaveform::Triangle,
+        node,
+        "pan",
+        -1.0,
+        1.0,
     );
 
-    let square = FunctionAutomaton::new("Square", |t| {
-        if (t * 2.0).sin() > 0.0 { 1.0 } else { 0.0 }
-    });
+    let square =
+        FunctionAutomaton::new("Square", |t| if (t * 2.0).sin() > 0.0 { 1.0 } else { 0.0 });
     let servo = Servo::new(
-        "gate", square, node, "mute",
-        ParameterMapping::Linear, 0.0, 1.0,
+        "gate",
+        square,
+        node,
+        "mute",
+        ParameterMapping::Linear,
+        0.0,
+        1.0,
     );
     control.add_servo(servo);
 
@@ -37,11 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..10 {
         control.update(0.01);
         let cmds: Vec<_> = std::iter::from_fn(|| queue.pop()).collect();
-        println!(
-            "Update {}: {} command(s) sent",
-            i + 1,
-            cmds.len()
-        );
+        println!("Update {}: {} command(s) sent", i + 1, cmds.len());
     }
 
     println!("\nDone");

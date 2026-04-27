@@ -1,6 +1,6 @@
-use rill_core::prelude::*;
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
+use rill_core::prelude::*;
 
 #[derive(Clone)]
 struct NesPulseChannel {
@@ -102,25 +102,45 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
             },
             outputs,
             pulse1: NesPulseChannel {
-                duty_cycle: 0.25, frequency: 440.0, volume: 0.5,
-                phase: 0.0, sweep_enabled: false, sweep_rate: 0.0,
+                duty_cycle: 0.25,
+                frequency: 440.0,
+                volume: 0.5,
+                phase: 0.0,
+                sweep_enabled: false,
+                sweep_rate: 0.0,
             },
             pulse2: NesPulseChannel {
-                duty_cycle: 0.125, frequency: 660.0, volume: 0.3,
-                phase: 0.0, sweep_enabled: false, sweep_rate: 0.0,
+                duty_cycle: 0.125,
+                frequency: 660.0,
+                volume: 0.3,
+                phase: 0.0,
+                sweep_enabled: false,
+                sweep_rate: 0.0,
             },
             triangle: NesTriangleChannel {
-                frequency: 220.0, volume: 0.4, phase: 0.0, linear_counter: 0,
+                frequency: 220.0,
+                volume: 0.4,
+                phase: 0.0,
+                linear_counter: 0,
             },
             noise: NesNoiseChannel {
-                mode: NoiseMode::Short, frequency: 1000.0, volume: 0.2,
-                shift_register: 1, tick_counter: 0.0,
+                mode: NoiseMode::Short,
+                frequency: 1000.0,
+                volume: 0.2,
+                shift_register: 1,
+                tick_counter: 0.0,
             },
             dpcm: NesDpcmChannel {
-                sample_rate: _sample_rate / 2.0, delta: 0,
-                sample_buffer: Vec::new(), position: 0,
+                sample_rate: _sample_rate / 2.0,
+                delta: 0,
+                sample_buffer: Vec::new(),
+                position: 0,
             },
-            mixer: NesMixer { pulse_mix: 0.5, tnd_mix: 0.5, output: 0.0 },
+            mixer: NesMixer {
+                pulse_mix: 0.5,
+                tnd_mix: 0.5,
+                output: 0.0,
+            },
             lofi: LofiProcessor::new(lofi_config),
         }
     }
@@ -180,17 +200,25 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
             self.noise.tick_counter = 0.0;
 
             let feedback = match self.noise.mode {
-                NoiseMode::Short => (self.noise.shift_register & 0x0001) ^
-                                   ((self.noise.shift_register >> 6) & 0x0001),
-                NoiseMode::Long => (self.noise.shift_register & 0x0001) ^
-                                  ((self.noise.shift_register >> 1) & 0x0001),
+                NoiseMode::Short => {
+                    (self.noise.shift_register & 0x0001)
+                        ^ ((self.noise.shift_register >> 6) & 0x0001)
+                }
+                NoiseMode::Long => {
+                    (self.noise.shift_register & 0x0001)
+                        ^ ((self.noise.shift_register >> 1) & 0x0001)
+                }
             };
 
             self.noise.shift_register >>= 1;
             self.noise.shift_register |= feedback << 14;
         }
 
-        let sample = if (self.noise.shift_register & 0x0001) == 0 { 1.0 } else { -1.0 };
+        let sample = if (self.noise.shift_register & 0x0001) == 0 {
+            1.0
+        } else {
+            -1.0
+        };
         sample * self.noise.volume
     }
 }
@@ -227,12 +255,20 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
         Ok(())
     }
 
-    fn id(&self) -> NodeId { self.id }
+    fn id(&self) -> NodeId {
+        self.id
+    }
 
-    fn set_id(&mut self, id: NodeId) { self.id = id; }
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
 
-    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> { None }
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> { None }
+    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
 
     fn output_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.outputs.get(index)
@@ -242,14 +278,26 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
         self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> { None }
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> { None }
+    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> { &self.state }
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> { &mut self.state }
+    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
+        &mut self.state
+    }
 
-    fn num_audio_inputs(&self) -> usize { 0 }
-    fn num_audio_outputs(&self) -> usize { 1 }
+    fn num_audio_inputs(&self) -> usize {
+        0
+    }
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
 }
 
 impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {

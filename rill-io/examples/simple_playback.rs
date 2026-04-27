@@ -1,10 +1,10 @@
 //! Простое воспроизведение с автоматическим выбором бэкенда
 
+use rill_io::processor::SineProcessor;
 use rill_io::{
     backends::{CpalBackend, NullBackend},
     AudioBackend, AudioConfig, AudioEngine, BackendType,
 };
-use rill_io::processor::SineProcessor;
 
 #[cfg(feature = "alsa")]
 use rill_io::backends::AlsaBackend;

@@ -3,13 +3,16 @@ name = "rill-graph"
 version = "0.3.0"
 edition = "2021"
 description = "Real-time audio graph with block processing"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
-rill-core = { path = "../rill-core" }
+rill-core = { workspace = true }
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 thiserror = "1.0"
 log = "0.4"
 
 [dev-dependencies]
-rill-core-dsp = { path = "../rill-core-dsp" }
+rill-core-dsp = { workspace = true }

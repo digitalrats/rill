@@ -2,11 +2,9 @@
 //!
 //! This is useful for smoothing parameter changes to avoid zipper noise.
 
-use rill_core::traits::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
-};
 use rill_core::math::AudioNum;
 use rill_core::traits::ProcessResult;
+use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
 
 /// One-pole exponential smoother that implements `Algorithm<T>`.
 ///

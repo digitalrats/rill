@@ -8,16 +8,16 @@
 mod backend;
 mod buffer;
 mod config;
-mod error;
 mod engine;
+mod error;
 
 pub mod backends;
 pub mod processor;
 
 pub use backend::{AudioBackend, BackendType, DeviceInfo};
 pub use config::AudioConfig;
-pub use error::{IoError, IoResult};
 pub use engine::{AudioEngine, AudioProcessor, EngineState};
+pub use error::{IoError, IoResult};
 
 pub use backends::NullBackend;
 
@@ -34,12 +34,7 @@ pub use backends::PipewireBackend;
 pub use backends::JackBackend;
 
 // Processor re-exports
-pub use processor::{
-    GainProcessor,
-    MonoMixerProcessor,
-    PassThroughProcessor,
-    SilenceProcessor,
-};
+pub use processor::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor};
 
 #[cfg(feature = "graph")]
 pub use processor::GraphProcessor;
@@ -54,7 +49,9 @@ pub use processor::CaptureProcessor;
 mod tests {
     use super::*;
     use crate::config::AudioConfig;
-    use crate::processor::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor};
+    use crate::processor::{
+        GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor,
+    };
 
     #[test]
     fn test_config_default() {
@@ -82,8 +79,8 @@ mod tests {
             .with_buffer_size(256);
         let latency_sec = config.latency_seconds();
         let latency_ms = config.latency_ms();
-        assert!((latency_sec - 256.0/48000.0).abs() < 1e-10);
-        assert!((latency_ms - 256.0*1000.0/48000.0).abs() < 1e-10);
+        assert!((latency_sec - 256.0 / 48000.0).abs() < 1e-10);
+        assert!((latency_ms - 256.0 * 1000.0 / 48000.0).abs() < 1e-10);
     }
 
     #[test]

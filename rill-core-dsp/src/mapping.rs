@@ -3,11 +3,9 @@
 //! Provides `MappingStrategy` to select the mapping curve and `ControlMapper<T>`
 //! which implements `Algorithm<T>`.
 
-use rill_core::traits::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
-};
 use rill_core::math::AudioNum;
 use rill_core::traits::ProcessResult;
+use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
 
 /// Mapping strategy for translating normalized [0,1] values to a parameter range.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -31,13 +29,11 @@ impl MappingStrategy {
         let range = maxf - minf;
         let result = match self {
             MappingStrategy::Linear => minf + xf * range,
-            MappingStrategy::Exponential { exponent } => {
-                minf + xf.powf(*exponent) * range
-            }
+            MappingStrategy::Exponential { exponent } => minf + xf.powf(*exponent) * range,
             MappingStrategy::Logarithmic => {
                 let one = 1.0f32;
-                let mapped = (one + xf * (core::f32::consts::E - one)).ln()
-                    / core::f32::consts::E.ln();
+                let mapped =
+                    (one + xf * (core::f32::consts::E - one)).ln() / core::f32::consts::E.ln();
                 minf + mapped * range
             }
             MappingStrategy::Inverted => maxf - xf * range,
@@ -122,7 +118,11 @@ impl<T: AudioNum> Algorithm<T> for ControlMapper<T> {
             // Otherwise, use the value set by apply_command.
             let normalized = match input {
                 Some(buf) => {
-                    if i < buf.len() { buf[i] } else { self.value }
+                    if i < buf.len() {
+                        buf[i]
+                    } else {
+                        self.value
+                    }
                 }
                 None => self.value,
             };

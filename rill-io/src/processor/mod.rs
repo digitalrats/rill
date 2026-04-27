@@ -11,12 +11,7 @@ mod graph;
 #[cfg(feature = "examples")]
 mod sine;
 
-pub use basic::{
-    GainProcessor,
-    MonoMixerProcessor,
-    PassThroughProcessor,
-    SilenceProcessor,
-};
+pub use basic::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor};
 
 #[cfg(feature = "examples")]
 pub use basic::CaptureProcessor;

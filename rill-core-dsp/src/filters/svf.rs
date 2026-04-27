@@ -90,7 +90,12 @@ impl<T: AudioNum> Algorithm<T> for StateVariableFilter<T> {
         self.x1 = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 

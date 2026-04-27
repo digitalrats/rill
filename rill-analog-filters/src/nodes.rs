@@ -202,7 +202,8 @@ mod tests {
         let cutoff_id = ParameterId::new("cutoff").unwrap();
         let res_id = ParameterId::new("resonance").unwrap();
 
-        p.set_parameter(&cutoff_id, ParamValue::Float(5000.0)).unwrap();
+        p.set_parameter(&cutoff_id, ParamValue::Float(5000.0))
+            .unwrap();
         assert!((p.cutoff - 5000.0).abs() < 1.0);
 
         p.set_parameter(&res_id, ParamValue::Float(0.7)).unwrap();

@@ -24,33 +24,27 @@
 //! ```
 
 mod clock;
+mod error;
 mod source;
 mod tick;
-mod error;
 
 pub use clock::SystemClock;
+pub use error::TimeError;
 pub use source::ClockSource;
 pub use tick::ClockTick;
-pub use error::TimeError;
 
 /// Result type for time operations
 pub type TimeResult<T> = Result<T, TimeError>;
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use super::{
-        ClockTick,
-        ClockSource,
-        SystemClock,
-        TimeResult,
-        TimeError,
-    };
+    pub use super::{ClockSource, ClockTick, SystemClock, TimeError, TimeResult};
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_module_exports() {
         let _clock = SystemClock::with_sample_rate(44100.0);

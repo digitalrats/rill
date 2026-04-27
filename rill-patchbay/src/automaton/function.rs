@@ -3,7 +3,7 @@
 //! Автоматы, построенные на произвольных функциях времени.
 //! Позволяют реализовать любую математическую зависимость.
 
-use crate::control::{Automaton, NoAction, Time, Range};
+use crate::control::{Automaton, NoAction, Range, Time};
 use std::fmt;
 use std::sync::Arc;
 
@@ -50,7 +50,7 @@ impl FunctionAutomaton {
             range: Range::bipolar(),
         }
     }
-    
+
     /// Установить диапазон
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
@@ -123,7 +123,7 @@ impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
             range: Range::bipolar(),
         }
     }
-    
+
     /// Установить диапазон
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
@@ -164,17 +164,19 @@ impl<S: fmt::Debug + Send + Sync + Clone + 'static> Automaton for StatefulFuncti
 }
 
 /// Функция-генератор для LFO (удобная обёртка)
-pub fn lfo_function(
-    freq: f64,
-    phase: f64,
-    waveform: &'static str,
-) -> impl Fn(Time) -> f64 {
+pub fn lfo_function(freq: f64, phase: f64, waveform: &'static str) -> impl Fn(Time) -> f64 {
     move |t| {
         let p = (t * freq + phase).fract();
         match waveform {
             "sine" => (p * 2.0 * std::f64::consts::PI).sin(),
             "saw" => 2.0 * p - 1.0,
-            "square" => if p < 0.5 { 1.0 } else { -1.0 },
+            "square" => {
+                if p < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
             _ => 0.0,
         }
     }
@@ -183,7 +185,7 @@ pub fn lfo_function(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_function_automaton() {
         let automaton = FunctionAutomaton::new("Test", |t| (t * 2.0).sin());
@@ -202,7 +204,8 @@ mod tests {
                 *counter as f64
             },
             0,
-        ).with_range(Range::new(0.0, 100.0));
+        )
+        .with_range(Range::new(0.0, 100.0));
 
         let state = automaton.initial_state();
         assert_eq!(state.0, 1.0);

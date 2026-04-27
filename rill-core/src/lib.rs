@@ -60,20 +60,20 @@
 //!         }
 //!     }
 //!     
-//!     fn init(&mut self, sample_rate: f32) { 
-//!         self.sample_rate = T::from_f32(sample_rate); 
+//!     fn init(&mut self, sample_rate: f32) {
+//!         self.sample_rate = T::from_f32(sample_rate);
 //!     }
 //!     
-//!     fn reset(&mut self) { 
-//!         self.phase = T::ZERO; 
+//!     fn reset(&mut self) {
+//!         self.phase = T::ZERO;
 //!     }
 //!     
-//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { 
-//!         None 
+//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
+//!         None
 //!     }
 //!     
-//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { 
-//!         Ok(()) 
+//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
+//!         Ok(())
 //!     }
 //!     
 //!     fn id(&self) -> NodeId { NodeId(0) }
@@ -177,15 +177,10 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    AudioNode, Source, Processor, Sink,
-    NodeId, NodeMetadata, NodeCategory, NodeTypeId, NodeState,
-    ParameterId, ParamValue, ParamType, ParamRange, ParamMetadata,
-    PortId, PortType, PortDirection, Port,
-    ProcessResult, ProcessError,
-    ParameterResult, ParameterError,
-    PortResult, PortError,
-    ClockResult, ClockError,
-    ConnectionResult, ConnectionError,
+    AudioNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
+    NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
+    ParameterError, ParameterId, ParameterResult, Port, PortDirection, PortError, PortId,
+    PortResult, PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };
 
 // Re-export math abstractions
@@ -193,21 +188,15 @@ pub use math::AudioNum;
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
-    AudioBuffer, BufferStats, BufferError, BufferResult,
-    AtomicCell, AtomicCellError,
-    PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer,
-    AtomicStats,
+    AtomicCell, AtomicCellError, AtomicStats, AudioBuffer, BufferError, BufferResult, BufferStats,
+    DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
 };
 
 // Re-export queue types (from rill-patchbay integration)
-pub use queues::{
-    QueueError, QueueResult,
-};
+pub use queues::{QueueError, QueueResult};
 
 // Re-export time abstractions
-pub use time::{
-    ClockSource, ClockTick, SystemClock,
-};
+pub use time::{ClockSource, ClockTick, SystemClock};
 
 // ============================================================================
 // Constants
@@ -253,50 +242,50 @@ pub const CACHE_LINE_SIZE: usize = 64;
 /// Utility functions for common operations
 pub mod utils {
     use crate::math::AudioNum;
-    
+
     /// Convert seconds to samples
     #[inline(always)]
     pub fn seconds_to_samples(seconds: f32, sample_rate: f32) -> usize {
         (seconds * sample_rate) as usize
     }
-    
+
     /// Convert samples to seconds
     #[inline(always)]
     pub fn samples_to_seconds(samples: usize, sample_rate: f32) -> f32 {
         samples as f32 / sample_rate
     }
-    
+
     /// Convert MIDI note to frequency
     #[inline(always)]
     pub fn midi_to_freq<T: AudioNum>(note: u8) -> T {
         let exp = (note as f32 - 69.0) / 12.0;
         T::from_f32(440.0 * 2.0_f32.powf(exp))
     }
-    
+
     /// Convert frequency to MIDI note
     #[inline(always)]
     pub fn freq_to_midi<T: AudioNum>(freq: T) -> f32 {
         69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
     }
-    
+
     /// Convert dB to linear gain
     #[inline(always)]
     pub fn db_to_linear<T: AudioNum>(db: T) -> T {
         T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
     }
-    
+
     /// Convert linear gain to dB
     #[inline(always)]
     pub fn linear_to_db<T: AudioNum>(linear: T) -> T {
         T::from_f32(20.0 * linear.to_f32().log10())
     }
-    
+
     /// Check if a value is a power of two
     #[inline(always)]
     pub const fn is_power_of_two(x: usize) -> bool {
         x != 0 && (x & (x - 1)) == 0
     }
-    
+
     /// Round up to the next power of two
     #[inline(always)]
     pub const fn next_power_of_two(x: usize) -> usize {
@@ -330,16 +319,16 @@ pub fn version_info() -> VersionInfo {
 pub struct VersionInfo {
     /// Crate version
     pub version: &'static str,
-    
+
     /// Crate name
     pub crate_name: &'static str,
-    
+
     /// Authors
     pub authors: &'static str,
-    
+
     /// Description
     pub description: &'static str,
-    
+
     /// Repository URL
     pub repository: &'static str,
 }
@@ -352,7 +341,7 @@ pub struct VersionInfo {
 mod tests {
     use super::prelude::*;
     use super::utils;
-    
+
     #[test]
     fn test_constants() {
         assert!(!VERSION.is_empty());
@@ -362,29 +351,29 @@ mod tests {
         assert_eq!(DEFAULT_SAMPLE_RATE, 44100.0);
         assert_eq!(CACHE_LINE_SIZE, 64);
     }
-    
+
     #[test]
     fn test_utils() {
         assert_eq!(utils::seconds_to_samples(1.0, 44100.0), 44100);
         assert!((utils::samples_to_seconds(44100, 44100.0) - 1.0).abs() < 1e-6);
-        
+
         let freq: f32 = utils::midi_to_freq(69);
         assert!((freq - 440.0).abs() < 1e-6);
-        
+
         let midi = utils::freq_to_midi(440.0f32);
         assert!((midi - 69.0).abs() < 1e-6);
-        
+
         let linear = utils::db_to_linear(0.0f32);
         assert!((linear - 1.0).abs() < 1e-6);
-        
+
         let db = utils::linear_to_db(1.0f32);
         assert!((db - 0.0).abs() < 1e-6);
-        
+
         assert!(utils::is_power_of_two(64));
         assert!(!utils::is_power_of_two(63));
         assert_eq!(utils::next_power_of_two(63), 64);
     }
-    
+
     #[test]
     fn test_atomic_cell() {
         let cell = AtomicCell::new(42);

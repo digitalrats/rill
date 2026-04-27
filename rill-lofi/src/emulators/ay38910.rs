@@ -1,6 +1,6 @@
-use rill_core::prelude::*;
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
+use rill_core::prelude::*;
 
 #[derive(Clone)]
 struct AyChannel {
@@ -126,13 +126,20 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
     }
 
     pub fn read_register(&self, reg: usize) -> u8 {
-        if reg < 16 { self.registers[reg] } else { 0 }
+        if reg < 16 {
+            self.registers[reg]
+        } else {
+            0
+        }
     }
 
     fn update_from_registers(&mut self) {
-        self.channels[0].tone_period = ((self.registers[1] as u16 & 0x0F) << 8) | (self.registers[0] as u16);
-        self.channels[1].tone_period = ((self.registers[3] as u16 & 0x0F) << 8) | (self.registers[2] as u16);
-        self.channels[2].tone_period = ((self.registers[5] as u16 & 0x0F) << 8) | (self.registers[4] as u16);
+        self.channels[0].tone_period =
+            ((self.registers[1] as u16 & 0x0F) << 8) | (self.registers[0] as u16);
+        self.channels[1].tone_period =
+            ((self.registers[3] as u16 & 0x0F) << 8) | (self.registers[2] as u16);
+        self.channels[2].tone_period =
+            ((self.registers[5] as u16 & 0x0F) << 8) | (self.registers[4] as u16);
 
         self.noise.period = self.registers[6] & 0x1F;
         if self.noise.period > 0 {
@@ -142,9 +149,9 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
         }
 
         let mixer_reg = self.registers[7];
-        self.mixer.channel_modes[0] = mixer_reg & 0x03 ;
-        self.mixer.channel_modes[1] = (mixer_reg >> 2) & 0x03 ;
-        self.mixer.channel_modes[2] = (mixer_reg >> 4) & 0x03 ;
+        self.mixer.channel_modes[0] = mixer_reg & 0x03;
+        self.mixer.channel_modes[1] = (mixer_reg >> 2) & 0x03;
+        self.mixer.channel_modes[2] = (mixer_reg >> 4) & 0x03;
         self.mixer.io_a_enabled = (mixer_reg & 0x40) == 0;
         self.mixer.io_b_enabled = (mixer_reg & 0x80) == 0;
 
@@ -170,7 +177,6 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
         let mut channel_samples = [0.0f32; 3];
 
         for (i, channel) in self.channels.iter_mut().enumerate() {
-
             if channel.tone_period > 0 {
                 let tone_freq = chip_clock / (16.0 * channel.tone_period as f32);
                 let phase_inc = tone_freq / sample_rate;
@@ -185,13 +191,21 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
             let noise_enabled = (self.mixer.channel_modes[i] & 0x02) == 0;
 
             let tone_sample = if tone_enabled && channel.tone_period > 0 {
-                if channel.phase < 0.5 { 1.0 } else { -1.0 }
+                if channel.phase < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
             } else {
                 0.0
             };
 
             let noise_sample = if noise_enabled {
-                if self.noise.output { 1.0 } else { -1.0 }
+                if self.noise.output {
+                    1.0
+                } else {
+                    -1.0
+                }
             } else {
                 0.0
             };
@@ -227,8 +241,8 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
         if self.noise.phase >= 1.0 {
             self.noise.phase -= 1.0;
 
-            let feedback = (self.noise.shift_register >> 16) ^
-                           (self.noise.shift_register >> 13) & 1;
+            let feedback =
+                (self.noise.shift_register >> 16) ^ (self.noise.shift_register >> 13) & 1;
             self.noise.shift_register = ((self.noise.shift_register << 1) | feedback) & 0x1FFFF;
 
             self.noise.output = (self.noise.shift_register >> 16) != 0;
@@ -266,7 +280,11 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
                     };
                 } else {
                     self.envelope.value = if hold {
-                        if attack { 15 } else { 0 }
+                        if attack {
+                            15
+                        } else {
+                            0
+                        }
                     } else {
                         0
                     };
@@ -348,15 +366,26 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for Ay38910Emulator<BUF_SIZ
                     Err(ProcessError::parameter("chip_clock must be a float"))
                 }
             }
-            _ => Err(ProcessError::parameter(format!("Unknown parameter: {}", id))),
+            _ => Err(ProcessError::parameter(format!(
+                "Unknown parameter: {}",
+                id
+            ))),
         }
     }
 
-    fn id(&self) -> NodeId { self.id }
-    fn set_id(&mut self, id: NodeId) { self.id = id; }
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
 
-    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> { None }
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> { None }
+    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
 
     fn output_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.outputs.get(index)
@@ -366,14 +395,26 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for Ay38910Emulator<BUF_SIZ
         self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> { None }
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> { None }
+    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> { &self.state }
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> { &mut self.state }
+    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
+        &mut self.state
+    }
 
-    fn num_audio_inputs(&self) -> usize { 0 }
-    fn num_audio_outputs(&self) -> usize { 1 }
+    fn num_audio_inputs(&self) -> usize {
+        0
+    }
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
 }
 
 impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for Ay38910Emulator<BUF_SIZE> {

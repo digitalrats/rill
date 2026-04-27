@@ -4,10 +4,10 @@
 //! resonance feedback.  Resonance is clamped to `[-1, 1]` to prevent
 //! runaway oscillation.
 
-use rill_core::traits::{ActionContext, ProcessResult};
-use rill_core::AudioNum;
 use super::{Filter, FilterParams, OnePole};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::AudioNum;
 
 /// Moog ladder 4-pole lowpass filter
 pub struct MoogLadder<T: AudioNum> {

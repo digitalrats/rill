@@ -4,8 +4,8 @@
 //! из потока управления (control thread) в аудиопоток (audio thread)
 //! через bounded crossbeam channel.
 
+use crossbeam_channel::{self, Receiver, Sender, TryRecvError, TrySendError};
 use std::fmt;
-use crossbeam_channel::{self, Sender, Receiver, TrySendError, TryRecvError};
 
 /// Базовый трейт для всех команд
 ///
@@ -19,7 +19,9 @@ pub struct CommandSender<T> {
 
 impl<T> Clone for CommandSender<T> {
     fn clone(&self) -> Self {
-        Self { tx: self.tx.clone() }
+        Self {
+            tx: self.tx.clone(),
+        }
     }
 }
 

@@ -68,7 +68,11 @@ impl MixerNode {
 
         let mut input_ports = Vec::with_capacity(num_channels);
         for i in 0..num_channels {
-            input_ports.push(Port::input(NodeId::new(0), i as u16, &format!("ch{}_in", i + 1)));
+            input_ports.push(Port::input(
+                NodeId::new(0),
+                i as u16,
+                &format!("ch{}_in", i + 1),
+            ));
         }
 
         let mut output_ports = Vec::with_capacity(2 + num_buses);
@@ -132,8 +136,11 @@ impl MixerNode {
         self.channel_names.insert(config.name.clone(), index);
         self.channels.push(ChannelState::new(config));
         self.sends.push(Vec::new());
-        self.input_ports
-            .push(Port::input(NodeId::new(0), index as u16, &format!("ch{}_in", index + 1)));
+        self.input_ports.push(Port::input(
+            NodeId::new(0),
+            index as u16,
+            &format!("ch{}_in", index + 1),
+        ));
         index
     }
 

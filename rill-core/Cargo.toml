@@ -3,9 +3,9 @@ name = "rill-core"
 version = "0.3.0"
 edition = "2021"
 description = "Ядро экосистемы Rill: базовые трейты и сигнальная система"
-license = "Apache-2.0"
-authors = ["Digital Rats / Rill Team"]
-repository = "https://github.com/DigitalRats/rill"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/rill-core"
 
 [dependencies]

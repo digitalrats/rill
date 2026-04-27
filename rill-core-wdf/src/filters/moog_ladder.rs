@@ -1,4 +1,6 @@
-use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult};
+use rill_core::traits::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult,
+};
 use rill_core::AudioNum;
 
 /// WDF first-order lowpass section (bilinear-transform real pole).
@@ -166,8 +168,7 @@ impl<T: AudioNum> Algorithm<T> for MoogLadder<T> {
         AlgorithmMetadata {
             name: "WDF Moog Ladder Filter",
             category: AlgorithmCategory::Filter,
-            description:
-                "WDF-based 4-pole Moog transistor ladder VCF with resonance",
+            description: "WDF-based 4-pole Moog transistor ladder VCF with resonance",
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }
@@ -224,8 +225,11 @@ mod tests {
         for _ in 0..1000 {
             out = filter.process_sample(1.0);
         }
-        assert!((out - 1.0).abs() < 0.01,
-            "DC gain should be near unity, got {}", out);
+        assert!(
+            (out - 1.0).abs() < 0.01,
+            "DC gain should be near unity, got {}",
+            out
+        );
     }
 
     #[test]
@@ -240,19 +244,25 @@ mod tests {
             let input = (2.0 * core::f64::consts::PI * 500.0 * t).sin() * 0.1;
             out = filter.process_sample(input);
         }
-        assert!(out.abs() > 0.0,
-            "resonance should produce a non-zero output");
+        assert!(
+            out.abs() > 0.0,
+            "resonance should produce a non-zero output"
+        );
     }
 
     #[test]
     fn test_moog_ladder_cutoff_clamp() {
         let mut filter = MoogLadder::<f64>::new(44100.0);
         filter.set_cutoff(10.0);
-        assert!((filter.cutoff() - 20.0).abs() < 1e-6,
-            "cutoff should clamp to 20 Hz");
+        assert!(
+            (filter.cutoff() - 20.0).abs() < 1e-6,
+            "cutoff should clamp to 20 Hz"
+        );
         filter.set_cutoff(50000.0);
-        assert!((filter.cutoff() - 22050.0).abs() < 1e-6,
-            "cutoff should clamp to Nyquist");
+        assert!(
+            (filter.cutoff() - 22050.0).abs() < 1e-6,
+            "cutoff should clamp to Nyquist"
+        );
     }
 
     #[test]
@@ -272,8 +282,11 @@ mod tests {
         }
         for &o in &output {
             assert!(o.is_finite(), "output should be finite, got {}", o);
-            assert!((o - 1.0).abs() < 0.05,
-                "DC through lowpass should be near 1.0, got {}", o);
+            assert!(
+                (o - 1.0).abs() < 0.05,
+                "DC through lowpass should be near 1.0, got {}",
+                o
+            );
         }
     }
 
@@ -307,7 +320,10 @@ mod tests {
             }
         }
         // 100 Hz sine through 10 kHz lowpass should pass with little attenuation
-        assert!(max_out > 0.1,
-            "sine should pass through, max_out = {}", max_out);
+        assert!(
+            max_out > 0.1,
+            "sine should pass through, max_out = {}",
+            max_out
+        );
     }
 }

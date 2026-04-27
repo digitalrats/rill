@@ -3,7 +3,7 @@
 //! Генераторы огибающих для управления амплитудой, фильтрами и другими
 //! параметрами во времени. Поддерживаются ADSR, AR, ASR и другие типы.
 
-use crate::control::{Automaton, Time, Range};
+use crate::control::{Automaton, Range, Time};
 
 /// Тип огибающей
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,13 +86,7 @@ pub struct EnvelopeAutomaton {
 
 impl EnvelopeAutomaton {
     /// Создать новую ADSR огибающую
-    pub fn adsr(
-        name: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-    ) -> Self {
+    pub fn adsr(name: &str, attack: f64, decay: f64, sustain: f64, release: f64) -> Self {
         Self {
             name: name.to_string(),
             env_type: EnvelopeType::ADSR,
@@ -105,7 +99,7 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Создать новую AR огибающую (для перкуссии)
     pub fn ar(name: &str, attack: f64, release: f64) -> Self {
         Self {
@@ -120,7 +114,7 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Создать новую ASR огибающую (для органных звуков)
     pub fn asr(name: &str, attack: f64, sustain: f64, release: f64) -> Self {
         Self {
@@ -135,7 +129,7 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Создать новую AHDSR огибающую
     pub fn ahdsr(
         name: &str,
@@ -157,19 +151,19 @@ impl EnvelopeAutomaton {
             curve: 1.0,
         }
     }
-    
+
     /// Установить кривую стадий
     pub fn with_curve(mut self, curve: f64) -> Self {
         self.curve = curve.max(0.1);
         self
     }
-    
+
     /// Установить диапазон
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
-    
+
     /// Вычислить значение с учётом кривой
     fn apply_curve(&self, t: f64) -> f64 {
         if self.curve == 1.0 {
@@ -178,15 +172,11 @@ impl EnvelopeAutomaton {
             t.powf(self.curve)
         }
     }
-    
+
     /// Обновить стадию на основе времени
-    fn update_stage(
-        &self,
-        state: &mut EnvelopeState,
-        time: Time,
-    ) {
+    fn update_stage(&self, state: &mut EnvelopeState, time: Time) {
         let elapsed = time - state.stage_start_time;
-        
+
         match state.stage {
             EnvelopeStage::Attack => {
                 if elapsed >= self.attack {
@@ -223,11 +213,12 @@ impl EnvelopeAutomaton {
                     }
                 } else {
                     let t = elapsed / self.attack;
-                    state.level = state.stage_start_level + 
-                        (state.stage_target_level - state.stage_start_level) * self.apply_curve(t);
+                    state.level = state.stage_start_level
+                        + (state.stage_target_level - state.stage_start_level)
+                            * self.apply_curve(t);
                 }
             }
-            
+
             EnvelopeStage::Hold => {
                 if elapsed >= self.hold {
                     state.stage = EnvelopeStage::Decay;
@@ -239,33 +230,35 @@ impl EnvelopeAutomaton {
                     state.level = 1.0;
                 }
             }
-            
+
             EnvelopeStage::Decay => {
                 if elapsed >= self.decay {
                     state.stage = EnvelopeStage::Sustain;
                     state.level = self.sustain;
                 } else {
                     let t = elapsed / self.decay;
-                    state.level = state.stage_start_level + 
-                        (state.stage_target_level - state.stage_start_level) * self.apply_curve(t);
+                    state.level = state.stage_start_level
+                        + (state.stage_target_level - state.stage_start_level)
+                            * self.apply_curve(t);
                 }
             }
-            
+
             EnvelopeStage::Sustain => {
                 state.level = self.sustain;
             }
-            
+
             EnvelopeStage::Release => {
                 if elapsed >= self.release {
                     state.stage = EnvelopeStage::Off;
                     state.level = 0.0;
                 } else {
                     let t = elapsed / self.release;
-                    state.level = state.stage_start_level + 
-                        (state.stage_target_level - state.stage_start_level) * self.apply_curve(t);
+                    state.level = state.stage_start_level
+                        + (state.stage_target_level - state.stage_start_level)
+                            * self.apply_curve(t);
                 }
             }
-            
+
             EnvelopeStage::Off => {
                 state.level = 0.0;
             }
@@ -347,7 +340,7 @@ impl Automaton for EnvelopeAutomaton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_adsr_envelope() {
         let env = EnvelopeAutomaton::adsr("ADSR", 0.1, 0.2, 0.7, 0.3);

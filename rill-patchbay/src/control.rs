@@ -8,15 +8,15 @@
 //! Все операции выполняются в **потоке управления** (soft RT) и
 //! отправляют команды в аудиопоток через `RtQueue<ParameterCommand>`.
 
-use std::sync::Arc;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use rill_core::prelude::*;
 use rill_core::queues::MpscQueue;
 
-use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
 pub use crate::automaton::Range;
+use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
 
 // =============================================================================
 // 1. Паттерны событий (из rill-control)
@@ -29,33 +29,30 @@ pub enum EventPattern {
     AnyButton,
     /// Кнопка с конкретным ID
     ButtonId(u32),
-    
+
     /// Любая ручка
     AnyKnob,
     /// Ручка с конкретным ID
     KnobId(u32),
-    
+
     /// Любой фейдер
     AnyFader,
     /// Фейдер с конкретным ID
     FaderId(u32),
-    
+
     /// Любое MIDI сообщение
     AnyMidi,
     /// MIDI Control Change
-    MidiControl {
-        channel: Option<u8>,
-        controller: u8,
-    },
+    MidiControl { channel: Option<u8>, controller: u8 },
     /// MIDI Note
     MidiNote {
         channel: Option<u8>,
         note: Option<u8>,
     },
-    
+
     /// OSC сообщение по адресу
     OscAddress(String),
-    
+
     /// OSC с паттерном (содержит)
     OscPattern(String),
 }
@@ -66,24 +63,31 @@ impl EventPattern {
         match (self, event) {
             (EventPattern::AnyButton, ControlEvent::Button { .. }) => true,
             (EventPattern::ButtonId(id), ControlEvent::Button { id: eid, .. }) => *id == *eid,
-            
+
             (EventPattern::AnyKnob, ControlEvent::Knob { .. }) => true,
             (EventPattern::KnobId(id), ControlEvent::Knob { id: eid, .. }) => *id == *eid,
-            
+
             (EventPattern::AnyFader, ControlEvent::Fader { .. }) => true,
             (EventPattern::FaderId(id), ControlEvent::Fader { id: eid, .. }) => *id == *eid,
-            
-            (EventPattern::MidiControl { channel, controller }, 
-             ControlEvent::MidiControl { channel: ech, controller: ectr, .. }) => {
-                (channel.is_none() || channel.unwrap() == *ech) && *controller == *ectr
-            }
-            
+
+            (
+                EventPattern::MidiControl {
+                    channel,
+                    controller,
+                },
+                ControlEvent::MidiControl {
+                    channel: ech,
+                    controller: ectr,
+                    ..
+                },
+            ) => (channel.is_none() || channel.unwrap() == *ech) && *controller == *ectr,
+
             (EventPattern::OscAddress(addr), ControlEvent::Osc { address, .. }) => addr == address,
-            
+
             (EventPattern::OscPattern(pat), ControlEvent::Osc { address, .. }) => {
                 address.contains(pat)
             }
-            
+
             _ => false,
         }
     }
@@ -97,33 +101,30 @@ impl EventPattern {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlEvent {
     /// Кнопка (нажата/отпущена)
-    Button {
-        id: u32,
-        pressed: bool,
-    },
-    
+    Button { id: u32, pressed: bool },
+
     /// Поворотная ручка (энкодер)
     Knob {
         id: u32,
-        value: f32,           // 0.0 - 1.0
-        normalized: f32,      // то же, для совместимости
+        value: f32,      // 0.0 - 1.0
+        normalized: f32, // то же, для совместимости
     },
-    
+
     /// Фейдер (линейный ползунок)
     Fader {
         id: u32,
-        value: f32,           // 0.0 - 1.0
+        value: f32, // 0.0 - 1.0
         normalized: f32,
     },
-    
+
     /// MIDI Control Change
     MidiControl {
         channel: u8,
         controller: u8,
-        value: u8,            // 0-127
-        normalized: f32,      // 0.0 - 1.0
+        value: u8,       // 0-127
+        normalized: f32, // 0.0 - 1.0
     },
-    
+
     /// MIDI Note
     MidiNote {
         channel: u8,
@@ -131,12 +132,9 @@ pub enum ControlEvent {
         velocity: u8,
         on: bool,
     },
-    
+
     /// OSC сообщение
-    Osc {
-        address: String,
-        args: Vec<f32>,
-    },
+    Osc { address: String, args: Vec<f32> },
 }
 
 impl ControlEvent {
@@ -150,7 +148,7 @@ impl ControlEvent {
             _ => None,
         }
     }
-    
+
     /// Получить ID элемента управления, если применимо
     pub fn id(&self) -> Option<u32> {
         match self {
@@ -171,16 +169,16 @@ impl ControlEvent {
 pub enum Transform {
     /// Линейное: out = min + value * (max - min)
     Linear,
-    
+
     /// Экспоненциальное: out = min + value^2 * (max - min)
     Exponential,
-    
+
     /// Логарифмическое: out = min + log(1 + value * 9) / log(10) * (max - min)
     Logarithmic,
-    
+
     /// Инвертированное: out = max - value * (max - min)
     Inverted,
-    
+
     /// Пользовательское
     Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>),
 }
@@ -202,7 +200,7 @@ impl Transform {
     pub fn apply(&self, value: f32, min: f32, max: f32) -> f32 {
         let range = max - min;
         let normalized = value.clamp(0.0, 1.0);
-        
+
         let mapped = match self {
             Transform::Linear => min + normalized * range,
             Transform::Exponential => min + normalized * normalized * range,
@@ -210,7 +208,7 @@ impl Transform {
             Transform::Inverted => max - normalized * range,
             Transform::Custom(f) => min + f(normalized) * range,
         };
-        
+
         mapped.clamp(min, max)
     }
 }
@@ -259,18 +257,18 @@ impl Mapping {
             enabled: true,
         }
     }
-    
+
     /// Проверить, подходит ли событие под этот маппинг
     pub fn matches(&self, event: &ControlEvent) -> bool {
         self.enabled && self.pattern.matches(event)
     }
-    
+
     /// Применить событие и получить команду для параметра
     pub fn apply(&self, event: &ControlEvent) -> Option<ParameterCommand> {
         if !self.matches(event) {
             return None;
         }
-        
+
         event.normalized_value().map(|norm| {
             let value = self.transform.apply(norm, self.target.min, self.target.max);
             ParameterCommand {
@@ -429,25 +427,27 @@ impl<A: Automaton> Servo<A> {
             last_time: 0.0,
         }
     }
-    
+
     /// Обновить сервопривод и вернуть команду, если значение изменилось
     pub fn update(&mut self, time: Time) -> Option<ParameterCommand> {
         if !self.enabled {
             return None;
         }
-        
-        let (new_state, value_opt) = self.automaton.step(time, &A::Action::default(), &self.state);
+
+        let (new_state, value_opt) = self
+            .automaton
+            .step(time, &A::Action::default(), &self.state);
         self.state = new_state;
-        
+
         if let Some(raw_value) = value_opt {
             let mapped = self.mapping.apply(raw_value);
             let clamped = mapped.clamp(self.min, self.max);
-            
+
             // Отправляем только если значение изменилось значительно
             if (clamped - self.last_value).abs() > 1e-6 {
                 self.last_value = clamped;
                 self.last_time = time;
-                
+
                 return Some(ParameterCommand {
                     node_id: self.target_node,
                     param: self.target_param.clone(),
@@ -455,15 +455,15 @@ impl<A: Automaton> Servo<A> {
                 });
             }
         }
-        
+
         None
     }
-    
+
     /// Включить/выключить сервопривод
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
-    
+
     /// Получить ID сервопривода
     pub fn id(&self) -> &str {
         &self.id
@@ -483,11 +483,11 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
     fn update(&mut self, time: Time) -> Option<ParameterCommand> {
         Servo::update(self, time)
     }
-    
+
     fn id(&self) -> &str {
         &self.id
     }
-    
+
     fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
@@ -530,13 +530,13 @@ impl ParameterCommand {
 pub struct PatchbayControl {
     /// Маппинги событий
     mappings: Vec<Mapping>,
-    
+
     /// Сервоприводы (автоматы)
     servos: HashMap<String, BoxedServo>,
-    
+
     /// Очередь для отправки команд в аудиопоток
     command_queue: Arc<MpscQueue<ParameterCommand>>,
-    
+
     /// Внутреннее время (секунды)
     time: Time,
 }
@@ -551,12 +551,12 @@ impl PatchbayControl {
             time: 0.0,
         }
     }
-    
+
     /// Добавить маппинг события
     pub fn add_mapping(&mut self, mapping: Mapping) {
         self.mappings.push(mapping);
     }
-    
+
     /// Добавить маппинг из строк (удобно для скриптов)
     pub fn add_mapping_str(
         &mut self,
@@ -585,7 +585,10 @@ impl PatchbayControl {
                 if parts.len() == 2 {
                     let channel = parts[0].parse().ok();
                     let controller = parts[1].parse().map_err(|_| "Invalid controller")?;
-                    EventPattern::MidiControl { channel, controller }
+                    EventPattern::MidiControl {
+                        channel,
+                        controller,
+                    }
                 } else {
                     EventPattern::AnyMidi
                 }
@@ -593,23 +596,23 @@ impl PatchbayControl {
             p if p.starts_with("osc:") => EventPattern::OscAddress(p[4..].to_string()),
             _ => return Err("Unknown pattern"),
         };
-        
+
         let target = Target {
             node_id: target_node,
             param_name: target_param.to_string(),
             min,
             max,
         };
-        
+
         self.add_mapping(Mapping::new(pattern, target, transform));
         Ok(())
     }
-    
+
     /// Добавить сервопривод (автомат)
     pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) {
         self.servos.insert(servo.id().to_string(), Box::new(servo));
     }
-    
+
     /// Добавить LFO как сервопривод
     pub fn add_lfo(
         &mut self,
@@ -625,12 +628,17 @@ impl PatchbayControl {
     ) {
         let automaton = LfoAutomaton::new(id, frequency, amplitude, offset, waveform);
         let servo = Servo::new(
-            id, automaton, target_node, target_param,
-            ParameterMapping::Linear, min, max,
+            id,
+            automaton,
+            target_node,
+            target_param,
+            ParameterMapping::Linear,
+            min,
+            max,
         );
         self.add_servo(servo);
     }
-    
+
     /// Добавить огибающую как сервопривод
     pub fn add_envelope(
         &mut self,
@@ -646,12 +654,17 @@ impl PatchbayControl {
     ) {
         let automaton = EnvelopeAutomaton::adsr(id, attack, decay, sustain, release);
         let servo = Servo::new(
-            id, automaton, target_node, target_param,
-            ParameterMapping::Linear, min, max,
+            id,
+            automaton,
+            target_node,
+            target_param,
+            ParameterMapping::Linear,
+            min,
+            max,
         );
         self.add_servo(servo);
     }
-    
+
     /// Обработать внешнее событие (MIDI/OSC)
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
@@ -660,11 +673,11 @@ impl PatchbayControl {
             }
         }
     }
-    
+
     /// Обновить состояние (вызывается регулярно из потока управления)
     pub fn update(&mut self, dt: f32) {
         self.time += dt as f64;
-        
+
         // Обновляем все сервоприводы
         for servo in self.servos.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
@@ -672,38 +685,38 @@ impl PatchbayControl {
             }
         }
     }
-    
+
     /// Получить все маппинги
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
     }
-    
+
     /// Получить сервопривод по ID
     pub fn get_servo(&self, id: &str) -> Option<&dyn AnyServo> {
         self.servos.get(id).map(|b| b.as_ref())
     }
-    
+
     /// Получить мутабельный сервопривод по ID
     pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedServo> {
         self.servos.get_mut(id)
     }
-    
+
     /// Удалить сервопривод
     pub fn remove_servo(&mut self, id: &str) -> bool {
         self.servos.remove(id).is_some()
     }
-    
+
     /// Очистить все маппинги и сервоприводы
     pub fn clear(&mut self) {
         self.mappings.clear();
         self.servos.clear();
     }
-    
+
     /// Сбросить время
     pub fn reset_time(&mut self) {
         self.time = 0.0;
     }
-    
+
     /// Текущее время
     pub fn current_time(&self) -> Time {
         self.time
@@ -724,7 +737,10 @@ pub fn midi_cc(
     max: f32,
     transform: Transform,
 ) -> Mapping {
-    let pattern = EventPattern::MidiControl { channel, controller };
+    let pattern = EventPattern::MidiControl {
+        channel,
+        controller,
+    };
     let target = Target {
         node_id: target_node,
         param_name: target_param.to_string(),
@@ -761,74 +777,70 @@ pub fn osc_address(
 mod tests {
     use super::*;
     use rill_core::queues::MpscQueue;
-    
+
     #[test]
     fn test_midi_mapping() {
         let node = NodeId(1);
-        let mapping = midi_cc(
-            7, Some(1), node, "volume",
-            0.0, 1.0, Transform::Linear,
-        );
-        
+        let mapping = midi_cc(7, Some(1), node, "volume", 0.0, 1.0, Transform::Linear);
+
         let event = ControlEvent::MidiControl {
             channel: 1,
             controller: 7,
             value: 64,
             normalized: 0.5,
         };
-        
+
         assert!(mapping.matches(&event));
-        
+
         let cmd = mapping.apply(&event).unwrap();
         assert_eq!(cmd.node_id, node);
         assert_eq!(cmd.param, "volume");
         assert!((cmd.value - 0.5).abs() < 1e-6);
     }
-    
+
     #[test]
     fn test_lfo_servo() {
         let node = NodeId(1);
         let queue = Arc::new(MpscQueue::with_capacity(64));
         let mut control = PatchbayControl::new(queue);
-        
+
         control.add_lfo(
             "test_lfo",
-            1.0, 0.5, 0.0,
+            1.0,
+            0.5,
+            0.0,
             LfoWaveform::Sine,
-            node, "cutoff",
-            100.0, 1000.0,
+            node,
+            "cutoff",
+            100.0,
+            1000.0,
         );
-        
+
         assert!(control.get_servo("test_lfo").is_some());
-        
+
         // Несколько обновлений должны генерировать команды
         for _i in 0..10 {
             control.update(0.1);
         }
     }
-    
+
     #[test]
     fn test_envelope_servo() {
         let node = NodeId(1);
         let queue = Arc::new(MpscQueue::with_capacity(64));
         let mut control = PatchbayControl::new(queue.clone());
-        
-        control.add_envelope(
-            "test_env",
-            0.1, 0.2, 0.7, 0.3,
-            node, "gain",
-            0.0, 1.0,
-        );
-        
+
+        control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
+
         // Находим сервопривод и триггерим его
         if let Some(_servo) = control.get_servo_mut("test_env") {
             // В реальном коде здесь нужно вызвать trigger
             // Для теста просто обновляем время
         }
-        
+
         control.update(0.05);
         control.update(0.05);
-        
+
         // Должны быть команды в очереди
         // assert!(queue.len() > 0); // В реальном тесте
     }

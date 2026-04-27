@@ -57,7 +57,8 @@ impl IoRingBuffer {
             let idx = (w + i) & self.mask;
             self.buffer[idx] = data[i];
         }
-        self.write_index.store(w.wrapping_add(to_write), Ordering::Release);
+        self.write_index
+            .store(w.wrapping_add(to_write), Ordering::Release);
         to_write
     }
 
@@ -71,14 +72,16 @@ impl IoRingBuffer {
             let idx = (r + i) & self.mask;
             data[i] = self.buffer[idx];
         }
-        self.read_index.store(r.wrapping_add(to_read), Ordering::Release);
+        self.read_index
+            .store(r.wrapping_add(to_read), Ordering::Release);
         to_read
     }
 
     /// Clear all data from the buffer.
     #[allow(dead_code)]
     pub fn clear(&mut self) {
-        self.read_index.store(self.write_index.load(Ordering::Acquire), Ordering::Release);
+        self.read_index
+            .store(self.write_index.load(Ordering::Acquire), Ordering::Release);
     }
 
     /// Fill the entire buffer with zeros and reset indices.

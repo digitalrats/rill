@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use crate::WdfElement;
 use parking_lot::RwLock;
 use rill_core::AudioNum;
-use crate::WdfElement;
+use std::sync::Arc;
 
 /// Series adapter — connects WDF elements in series
 ///
@@ -25,7 +25,8 @@ impl<T: AudioNum> std::fmt::Debug for SeriesAdapter<T> {
 impl<T: AudioNum> SeriesAdapter<T> {
     /// Create a new series adapter from WDF elements
     pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>) -> Self {
-        let port_resistance: T = elements.iter()
+        let port_resistance: T = elements
+            .iter()
             .map(|e| e.read().port_resistance())
             .fold(T::ZERO, |a, b| a + b);
 
@@ -68,13 +69,15 @@ impl<T: AudioNum> WdfElement<T> for SeriesAdapter<T> {
     }
 
     fn voltage(&self) -> T {
-        self.elements.iter()
+        self.elements
+            .iter()
             .map(|e| e.read().voltage())
             .fold(T::ZERO, |a, b| a + b)
     }
 
     fn current(&self) -> T {
-        self.elements.first()
+        self.elements
+            .first()
             .map(|e| e.read().current())
             .unwrap_or(T::ZERO)
     }
@@ -108,7 +111,8 @@ impl<T: AudioNum> std::fmt::Debug for ParallelAdapter<T> {
 impl<T: AudioNum> ParallelAdapter<T> {
     /// Create a new parallel adapter from WDF elements
     pub fn new(elements: Vec<Arc<RwLock<dyn WdfElement<T>>>>) -> Self {
-        let inv_port_resistance: T = elements.iter()
+        let inv_port_resistance: T = elements
+            .iter()
             .map(|e| T::ONE / e.read().port_resistance())
             .fold(T::ZERO, |a, b| a + b);
 
@@ -132,12 +136,16 @@ impl<T: AudioNum> WdfElement<T> for ParallelAdapter<T> {
     }
 
     fn process_incident(&mut self, a: T) -> T {
-        let total_g: T = self.elements.iter()
+        let total_g: T = self
+            .elements
+            .iter()
             .map(|e| T::ONE / e.read().port_resistance())
             .fold(T::ZERO, |a, b| a + b);
 
         let two = T::from_f32(2.0);
-        let alpha: Vec<T> = self.elements.iter()
+        let alpha: Vec<T> = self
+            .elements
+            .iter()
             .map(|e| {
                 let g_i = T::ONE / e.read().port_resistance();
                 two * g_i / total_g
@@ -160,13 +168,15 @@ impl<T: AudioNum> WdfElement<T> for ParallelAdapter<T> {
     }
 
     fn voltage(&self) -> T {
-        self.elements.first()
+        self.elements
+            .first()
             .map(|e| e.read().voltage())
             .unwrap_or(T::ZERO)
     }
 
     fn current(&self) -> T {
-        self.elements.iter()
+        self.elements
+            .iter()
             .map(|e| e.read().current())
             .fold(T::ZERO, |a, b| a + b)
     }
@@ -181,14 +191,16 @@ impl<T: AudioNum> WdfElement<T> for ParallelAdapter<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elements::{Resistor, Capacitor};
+    use crate::elements::{Capacitor, Resistor};
 
     #[test]
     fn test_series_adapter() {
         let sample_rate = 44100.0;
 
-        let resistor: Arc<RwLock<dyn WdfElement<f64>>> = Arc::new(RwLock::new(Resistor::new(1000.0)));
-        let capacitor: Arc<RwLock<dyn WdfElement<f64>>> = Arc::new(RwLock::new(Capacitor::new(1e-6, sample_rate)));
+        let resistor: Arc<RwLock<dyn WdfElement<f64>>> =
+            Arc::new(RwLock::new(Resistor::new(1000.0)));
+        let capacitor: Arc<RwLock<dyn WdfElement<f64>>> =
+            Arc::new(RwLock::new(Capacitor::new(1e-6, sample_rate)));
 
         let elements = vec![resistor.clone(), capacitor.clone()];
         let adapter: SeriesAdapter<f64> = SeriesAdapter::new(elements);

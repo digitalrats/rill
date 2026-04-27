@@ -1,6 +1,6 @@
-use rill_core::prelude::*;
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
+use rill_core::prelude::*;
 
 pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
     state: NodeState<f32, BUF_SIZE>,
@@ -95,8 +95,7 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
         self.position += self.pitch;
 
         if self.loop_enabled && (self.position as usize) >= self.loop_end {
-            self.position = self.loop_start as f32 +
-                           (self.position - self.loop_end as f32);
+            self.position = self.loop_start as f32 + (self.position - self.loop_end as f32);
         }
 
         processed
@@ -149,15 +148,26 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SI
                     Err(ProcessError::parameter("loop_enabled must be a bool"))
                 }
             }
-            _ => Err(ProcessError::parameter(format!("Unknown parameter: {}", id))),
+            _ => Err(ProcessError::parameter(format!(
+                "Unknown parameter: {}",
+                id
+            ))),
         }
     }
 
-    fn id(&self) -> NodeId { self.id }
-    fn set_id(&mut self, id: NodeId) { self.id = id; }
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
 
-    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> { None }
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> { None }
+    fn input_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
 
     fn output_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.outputs.get(index)
@@ -167,14 +177,26 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SI
         self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> { None }
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> { None }
+    fn control_port(&self, _index: usize) -> Option<&Port<f32, BUF_SIZE>> {
+        None
+    }
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
+        None
+    }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> { &self.state }
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> { &mut self.state }
+    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
+        &mut self.state
+    }
 
-    fn num_audio_inputs(&self) -> usize { 0 }
-    fn num_audio_outputs(&self) -> usize { 1 }
+    fn num_audio_inputs(&self) -> usize {
+        0
+    }
+    fn num_audio_outputs(&self) -> usize {
+        1
+    }
 }
 
 impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {

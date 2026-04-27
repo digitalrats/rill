@@ -1,5 +1,5 @@
-use crate::WdfElement;
 use crate::constants::{BOLTZMANN, ELECTRON_CHARGE, NEWTON_TOLERANCE};
+use crate::WdfElement;
 use rill_core::AudioNum;
 
 /// Resistor WDF element

@@ -32,16 +32,16 @@ use std::fmt;
 pub struct ClockTick {
     /// Absolute sample position since start
     pub sample_pos: u64,
-    
+
     /// Number of samples since the last tick
     pub samples_since_last: u32,
-    
+
     /// Whether this is the start of a new block
     pub is_new_block: bool,
-    
+
     /// Current sample rate in Hz
     pub sample_rate: f32,
-    
+
     /// Current tempo in BPM (if available)
     pub tempo: Option<f32>,
 }
@@ -65,7 +65,7 @@ impl ClockTick {
             tempo: None,
         }
     }
-    
+
     /// Create a new clock tick with tempo information
     ///
     /// # Arguments
@@ -87,7 +87,7 @@ impl ClockTick {
             tempo: Some(tempo),
         }
     }
-    
+
     /// Get the time since the last tick in seconds
     ///
     /// # Returns
@@ -96,7 +96,7 @@ impl ClockTick {
     pub fn delta_seconds(&self) -> f32 {
         self.samples_since_last as f32 / self.sample_rate
     }
-    
+
     /// Get the absolute time in seconds since start
     ///
     /// # Returns
@@ -105,7 +105,7 @@ impl ClockTick {
     pub fn absolute_seconds(&self) -> f64 {
         self.sample_pos as f64 / self.sample_rate as f64
     }
-    
+
     /// Get the current beat position (if tempo is available)
     ///
     /// # Returns
@@ -118,7 +118,7 @@ impl ClockTick {
             self.absolute_seconds() / seconds_per_beat
         })
     }
-    
+
     /// Get the current bar-beat-sixteenth position (if tempo is available)
     ///
     /// # Returns
@@ -128,15 +128,15 @@ impl ClockTick {
         self.tempo.map(|bpm| {
             let seconds_per_beat = 60.0 / bpm as f64;
             let total_beats = self.absolute_seconds() / seconds_per_beat;
-            
+
             let bar = (total_beats / 4.0).floor() as u32;
             let beat_in_bar = (total_beats % 4.0) as u8;
             let sixteenth = ((total_beats.fract() * 4.0) as u8) % 4;
-            
+
             (bar, beat_in_bar, sixteenth)
         })
     }
-    
+
     /// Advance to the next tick
     ///
     /// # Arguments
@@ -146,7 +146,7 @@ impl ClockTick {
         self.samples_since_last = samples;
         self.is_new_block = true;
     }
-    
+
     /// Check if this tick is at the start of a new bar
     ///
     /// # Returns
@@ -158,7 +158,7 @@ impl ClockTick {
             false
         }
     }
-    
+
     /// Check if this tick is at the start of a new beat
     ///
     /// # Returns
@@ -193,11 +193,11 @@ impl fmt::Display for ClockTick {
             self.delta_seconds() * 1000.0,
             self.sample_rate,
         )?;
-        
+
         if let Some(tempo) = self.tempo {
             write!(f, ", tempo={}BPM", tempo)?;
         }
-        
+
         write!(f, ")")
     }
 }
@@ -205,7 +205,7 @@ impl fmt::Display for ClockTick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_clock_tick_creation() {
         let tick = ClockTick::new(44100, 44100, 44100.0);
@@ -215,31 +215,31 @@ mod tests {
         assert_eq!(tick.sample_rate, 44100.0);
         assert_eq!(tick.tempo, None);
     }
-    
+
     #[test]
     fn test_clock_tick_with_tempo() {
         let tick = ClockTick::with_tempo(44100, 44100, 44100.0, 120.0);
         assert_eq!(tick.tempo, Some(120.0));
     }
-    
+
     #[test]
     fn test_delta_seconds() {
         let tick = ClockTick::new(0, 44100, 44100.0);
         assert_eq!(tick.delta_seconds(), 1.0);
-        
+
         let tick = ClockTick::new(0, 22050, 44100.0);
         assert_eq!(tick.delta_seconds(), 0.5);
     }
-    
+
     #[test]
     fn test_absolute_seconds() {
         let tick = ClockTick::new(44100, 44100, 44100.0);
         assert_eq!(tick.absolute_seconds(), 1.0);
-        
+
         let tick = ClockTick::new(88200, 44100, 44100.0);
         assert_eq!(tick.absolute_seconds(), 2.0);
     }
-    
+
     #[test]
     fn test_beat_position() {
         let tick = ClockTick::with_tempo(44100, 44100, 44100.0, 120.0);
@@ -247,7 +247,7 @@ mod tests {
         // 1 second = 2 beats
         assert_eq!(tick.beat_position(), Some(2.0));
     }
-    
+
     #[test]
     fn test_musical_position() {
         let tick = ClockTick::with_tempo(44100 * 2, 44100, 44100.0, 120.0);
@@ -255,13 +255,13 @@ mod tests {
         // 4 beats = 1 bar
         let pos = tick.musical_position();
         assert_eq!(pos, Some((1, 0, 0)));
-        
+
         let tick = ClockTick::with_tempo(44100 * 3, 44100, 44100.0, 120.0);
         // 3 seconds = 6 beats = 1.5 bars
         let pos = tick.musical_position();
         assert_eq!(pos, Some((1, 2, 0)));
     }
-    
+
     #[test]
     fn test_advance() {
         let mut tick = ClockTick::new(0, 0, 44100.0);
@@ -270,27 +270,27 @@ mod tests {
         assert_eq!(tick.samples_since_last, 64);
         assert!(tick.is_new_block);
     }
-    
+
     #[test]
     fn test_is_new_bar() {
         let tick = ClockTick::with_tempo(0, 0, 44100.0, 120.0);
         assert!(tick.is_new_bar());
-        
+
         let tick = ClockTick::with_tempo(22050, 22050, 44100.0, 120.0);
         // 0.5 seconds = 1 beat, not new bar
         assert!(!tick.is_new_bar());
     }
-    
+
     #[test]
     fn test_is_new_beat() {
         let tick = ClockTick::with_tempo(0, 0, 44100.0, 120.0);
         assert!(tick.is_new_beat());
-        
+
         let tick = ClockTick::with_tempo(11025, 11025, 44100.0, 120.0);
         // 0.25 seconds = half beat, not new beat
         assert!(!tick.is_new_beat());
     }
-    
+
     #[test]
     fn test_default() {
         let tick = ClockTick::default();
@@ -300,14 +300,14 @@ mod tests {
         assert_eq!(tick.sample_rate, 44100.0);
         assert_eq!(tick.tempo, None);
     }
-    
+
     #[test]
     fn test_display() {
         let tick = ClockTick::new(44100, 44100, 44100.0);
         let display = format!("{}", tick);
         assert!(display.contains("pos=44100"));
         assert!(display.contains("delta=1000ms"));
-        
+
         let tick = ClockTick::with_tempo(44100, 44100, 44100.0, 120.0);
         let display = format!("{}", tick);
         assert!(display.contains("tempo=120BPM"));

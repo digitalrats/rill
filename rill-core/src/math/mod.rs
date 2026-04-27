@@ -5,9 +5,9 @@
 //! - Общие математические функции (lerp, db conversion, и т.д.)
 //! - Быстрые аппроксимации для DSP
 
-mod num;
-mod functions;
 mod conversions;
+mod functions;
+mod num;
 
-pub use num::AudioNum;
 pub use functions::*;
+pub use num::AudioNum;

@@ -5,13 +5,13 @@
 //! that defines how data is produced. Input ports are connection endpoints
 //! that receive data from upstream output ports.
 
-use crate::traits::node::{AudioNode, NodeId};
-use crate::traits::algorithm::Algorithm;
-use crate::traits::processable::NodeVariant;
 use crate::buffer::Buffer;
 use crate::math::AudioNum;
-use crate::traits::PortError;
 use crate::time::ClockTick;
+use crate::traits::algorithm::Algorithm;
+use crate::traits::node::{AudioNode, NodeId};
+use crate::traits::processable::NodeVariant;
+use crate::traits::PortError;
 use std::fmt;
 
 // ============================================================================
@@ -23,16 +23,16 @@ use std::fmt;
 pub enum PortType {
     /// Audio signal port - carries sound (typically -1.0 to 1.0)
     Audio,
-    
+
     /// Control signal port - carries modulation/automation
     Control,
-    
+
     /// Clock signal port - carries timing information
     Clock,
-    
+
     /// Feedback port - stores state between blocks
     Feedback,
-    
+
     /// Parameter port - for node parameters (special)
     Param,
 }
@@ -48,17 +48,17 @@ impl PortType {
             Self::Param => "param",
         }
     }
-    
+
     /// Check if this port carries audio-rate signals
     pub const fn is_audio_rate(&self) -> bool {
         matches!(self, Self::Audio)
     }
-    
+
     /// Check if this port carries control-rate signals
     pub const fn is_control_rate(&self) -> bool {
         matches!(self, Self::Control)
     }
-    
+
     /// Check if this port carries clock signals
     pub const fn is_clock(&self) -> bool {
         matches!(self, Self::Clock)
@@ -80,7 +80,7 @@ impl fmt::Display for PortType {
 pub enum PortDirection {
     /// Input port (receives data into the node)
     Input,
-    
+
     /// Output port (sends data out of the node)
     Output,
 }
@@ -93,12 +93,12 @@ impl PortDirection {
             Self::Output => "output",
         }
     }
-    
+
     /// Check if this is an input port
     pub const fn is_input(&self) -> bool {
         matches!(self, Self::Input)
     }
-    
+
     /// Check if this is an output port
     pub const fn is_output(&self) -> bool {
         matches!(self, Self::Output)
@@ -139,130 +139,130 @@ impl PortId {
             index,
         }
     }
-    
+
     // ========================================================================
     // Audio Port Constructors
     // ========================================================================
-    
+
     /// Create a new audio input port
     pub const fn audio_in(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Audio, PortDirection::Input, index)
     }
-    
+
     /// Create a new audio output port
     pub const fn audio_out(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Audio, PortDirection::Output, index)
     }
-    
+
     // ========================================================================
     // Control Port Constructors
     // ========================================================================
-    
+
     /// Create a new control input port
     pub const fn control_in(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Control, PortDirection::Input, index)
     }
-    
+
     /// Create a new control output port
     pub const fn control_out(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Control, PortDirection::Output, index)
     }
-    
+
     // ========================================================================
     // Clock Port Constructors
     // ========================================================================
-    
+
     /// Create a new clock input port
     pub const fn clock_in(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Clock, PortDirection::Input, index)
     }
-    
+
     /// Create a new clock output port
     pub const fn clock_out(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Clock, PortDirection::Output, index)
     }
-    
+
     // ========================================================================
     // Feedback Port Constructors
     // ========================================================================
-    
+
     /// Create a new feedback input port
     pub const fn feedback_in(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Feedback, PortDirection::Input, index)
     }
-    
+
     /// Create a new feedback output port
     pub const fn feedback_out(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Feedback, PortDirection::Output, index)
     }
-    
+
     // ========================================================================
     // Parameter Port Constructors
     // ========================================================================
-    
+
     /// Create a new parameter port (always input)
     pub const fn param(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Param, PortDirection::Input, index)
     }
-    
+
     // ========================================================================
     // Getters
     // ========================================================================
-    
+
     /// Get the node ID
     pub const fn node_id(&self) -> NodeId {
         self.node
     }
-    
+
     /// Get the port type
     pub const fn port_type(&self) -> PortType {
         self.port_type
     }
-    
+
     /// Get the port direction
     pub const fn direction(&self) -> PortDirection {
         self.direction
     }
-    
+
     /// Get the port index
     pub const fn index(&self) -> u16 {
         self.index
     }
-    
+
     // ========================================================================
     // Predicates
     // ========================================================================
-    
+
     /// Check if this is an input port
     pub const fn is_input(&self) -> bool {
         self.direction.is_input()
     }
-    
+
     /// Check if this is an output port
     pub const fn is_output(&self) -> bool {
         self.direction.is_output()
     }
-    
+
     /// Check if this is an audio port
     pub const fn is_audio(&self) -> bool {
         matches!(self.port_type, PortType::Audio)
     }
-    
+
     /// Check if this is a control port
     pub const fn is_control(&self) -> bool {
         matches!(self.port_type, PortType::Control)
     }
-    
+
     /// Check if this is a clock port
     pub const fn is_clock(&self) -> bool {
         matches!(self.port_type, PortType::Clock)
     }
-    
+
     /// Check if this is a feedback port
     pub const fn is_feedback(&self) -> bool {
         matches!(self.port_type, PortType::Feedback)
     }
-    
+
     /// Check if this is a parameter port
     pub const fn is_param(&self) -> bool {
         matches!(self.port_type, PortType::Param)
@@ -619,19 +619,19 @@ impl<T: AudioNum, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<T, BUF
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_port_id_creation() {
         let node = NodeId(42);
-        
+
         let audio_in = PortId::audio_in(node, 0);
         assert_eq!(audio_in.port_type(), PortType::Audio);
         assert!(audio_in.is_input());
-        
+
         let clock_out = PortId::clock_out(node, 0);
         assert_eq!(clock_out.port_type(), PortType::Clock);
         assert!(clock_out.is_output());
-        
+
         let feedback_in = PortId::feedback_in(node, 0);
         assert_eq!(feedback_in.port_type(), PortType::Feedback);
         assert!(feedback_in.is_input());

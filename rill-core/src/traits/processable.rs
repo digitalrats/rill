@@ -51,16 +51,19 @@ pub trait Processable<T: AudioNum, const BUF_SIZE: usize> {
 // Blanket Implementations for Trait Objects
 // ============================================================================
 
-impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for Box<dyn crate::traits::Source<T, BUF_SIZE>>
+impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
+    for Box<dyn crate::traits::Source<T, BUF_SIZE>>
 where
     T: AudioNum,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
-        self.as_mut().generate(ctx.clock, ctx.control_inputs, ctx.clock_inputs)
+        self.as_mut()
+            .generate(ctx.clock, ctx.control_inputs, ctx.clock_inputs)
     }
 }
 
-impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for Box<dyn crate::traits::Processor<T, BUF_SIZE>>
+impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
+    for Box<dyn crate::traits::Processor<T, BUF_SIZE>>
 where
     T: AudioNum,
 {
@@ -75,7 +78,8 @@ where
     }
 }
 
-impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for Box<dyn crate::traits::Sink<T, BUF_SIZE>>
+impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
+    for Box<dyn crate::traits::Sink<T, BUF_SIZE>>
 where
     T: AudioNum,
 {
@@ -111,7 +115,9 @@ impl<T: AudioNum, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for NodeVarian
     }
 }
 
-impl<T: AudioNum, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE> for NodeVariant<T, BUF_SIZE> {
+impl<T: AudioNum, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE>
+    for NodeVariant<T, BUF_SIZE>
+{
     fn metadata(&self) -> crate::traits::NodeMetadata {
         match self {
             NodeVariant::Source(src) => src.metadata(),
@@ -144,7 +150,11 @@ impl<T: AudioNum, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE> f
         }
     }
 
-    fn set_parameter(&mut self, id: &crate::traits::ParameterId, value: crate::traits::ParamValue) -> ProcessResult<()> {
+    fn set_parameter(
+        &mut self,
+        id: &crate::traits::ParameterId,
+        value: crate::traits::ParamValue,
+    ) -> ProcessResult<()> {
         match self {
             NodeVariant::Source(src) => src.set_parameter(id, value),
             NodeVariant::Processor(proc) => proc.set_parameter(id, value),
@@ -176,7 +186,10 @@ impl<T: AudioNum, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE> f
         }
     }
 
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
+    fn input_port_mut(
+        &mut self,
+        index: usize,
+    ) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
         match self {
             NodeVariant::Source(src) => src.input_port_mut(index),
             NodeVariant::Processor(proc) => proc.input_port_mut(index),
@@ -192,7 +205,10 @@ impl<T: AudioNum, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE> f
         }
     }
 
-    fn output_port_mut(&mut self, index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
+    fn output_port_mut(
+        &mut self,
+        index: usize,
+    ) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
         match self {
             NodeVariant::Source(src) => src.output_port_mut(index),
             NodeVariant::Processor(proc) => proc.output_port_mut(index),
@@ -208,7 +224,10 @@ impl<T: AudioNum, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE> f
         }
     }
 
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
+    fn control_port_mut(
+        &mut self,
+        index: usize,
+    ) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
         match self {
             NodeVariant::Source(src) => src.control_port_mut(index),
             NodeVariant::Processor(proc) => proc.control_port_mut(index),

@@ -3,7 +3,7 @@
 //! Генерация сигналов на основе клеточных автоматов.
 //! Поддерживаются 1D и 2D клеточные автоматы с различными правилами.
 
-use crate::control::{Automaton, NoAction, Time, Range};
+use crate::control::{Automaton, NoAction, Range, Time};
 
 /// Тип клеточного автомата
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -78,7 +78,7 @@ impl CellularAutomaton {
             rng_state: 123456789,
         }
     }
-    
+
     /// Создать новый Game of Life
     pub fn game_of_life(name: &str, width: usize, height: usize) -> Self {
         Self {
@@ -91,19 +91,19 @@ impl CellularAutomaton {
             rng_state: 123456789,
         }
     }
-    
+
     /// Установить режим вывода
     pub fn with_output_mode(mut self, mode: OutputMode) -> Self {
         self.output_mode = mode;
         self
     }
-    
+
     /// Установить диапазон
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
-    
+
     /// Инициализировать случайное состояние
     fn random_initial(&self, _width: usize, _height: usize, rng: &mut u64) -> Vec<u8> {
         let mut gen = Vec::with_capacity(self.size);
@@ -112,7 +112,7 @@ impl CellularAutomaton {
         }
         gen
     }
-    
+
     /// Случайный бит
     fn random_bit(&self, rng: &mut u64) -> bool {
         let mut x = *rng;
@@ -122,61 +122,71 @@ impl CellularAutomaton {
         *rng = x;
         (x & 1) == 1
     }
-    
+
     /// Применить правило Вольфрама (1D)
     fn apply_rule_1d(&self, generation: &[u8]) -> Vec<u8> {
         let mut next = vec![0; generation.len()];
-        
+
         for i in 0..generation.len() {
-            let left = if i > 0 { generation[i-1] } else { generation[generation.len()-1] };
+            let left = if i > 0 {
+                generation[i - 1]
+            } else {
+                generation[generation.len() - 1]
+            };
             let center = generation[i];
-            let right = if i < generation.len()-1 { generation[i+1] } else { generation[0] };
-            
+            let right = if i < generation.len() - 1 {
+                generation[i + 1]
+            } else {
+                generation[0]
+            };
+
             let pattern = (left << 2) | (center << 1) | right;
             let bit = (self.rule >> pattern) & 1;
             next[i] = bit;
         }
-        
+
         next
     }
-    
+
     /// Применить правило Game of Life (2D)
     fn apply_rule_gol(&self, generation: &[u8], width: usize, height: usize) -> Vec<u8> {
         let mut next = vec![0; generation.len()];
-        
+
         for y in 0..height {
             for x in 0..width {
                 let idx = y * width + x;
                 let cell = generation[idx];
-                
+
                 // Считаем живых соседей (8 направлений)
                 let mut neighbors = 0;
                 for dy in -1..=1 {
                     for dx in -1..=1 {
-                        if dx == 0 && dy == 0 { continue; }
-                        
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+
                         let nx = (x as i32 + dx + width as i32) % width as i32;
                         let ny = (y as i32 + dy + height as i32) % height as i32;
                         let nidx = (ny * width as i32 + nx) as usize;
-                        
+
                         if generation[nidx] == 1 {
                             neighbors += 1;
                         }
                     }
                 }
-                
+
                 // Правила Game of Life
                 next[idx] = match (cell, neighbors) {
-                    (1, 2) | (1, 3) => 1,  // Выживание
-                    (0, 3) => 1,            // Рождение
-                    _ => 0,                  // Смерть
+                    (1, 2) | (1, 3) => 1, // Выживание
+                    (0, 3) => 1,          // Рождение
+                    _ => 0,               // Смерть
                 };
             }
         }
-        
+
         next
     }
-    
+
     /// Вычислить выходное значение
     fn compute_output(&self, generation: &[u8], _state: &CellularState) -> f64 {
         match self.output_mode {
@@ -184,17 +194,17 @@ impl CellularAutomaton {
                 let idx = self.size / 2;
                 generation[idx] as f64
             }
-            
+
             OutputMode::Sum => {
                 let sum: usize = generation.iter().map(|&c| c as usize).sum();
                 sum as f64 / self.size as f64
             }
-            
+
             OutputMode::Density => {
                 let sum: usize = generation.iter().map(|&c| c as usize).sum();
                 sum as f64 / self.size as f64
             }
-            
+
             OutputMode::Index(idx) => {
                 if idx < generation.len() {
                     generation[idx] as f64
@@ -219,15 +229,11 @@ impl Automaton for CellularAutomaton {
         let mut new_state = state.clone();
 
         new_state.next_generation = match self.cell_type {
-            CellularType::OneDimensional => {
-                self.apply_rule_1d(&state.generation)
-            }
+            CellularType::OneDimensional => self.apply_rule_1d(&state.generation),
             CellularType::TwoDimensional => {
                 self.apply_rule_gol(&state.generation, state.width, state.height)
             }
-            CellularType::Cyclic => {
-                state.generation.clone()
-            }
+            CellularType::Cyclic => state.generation.clone(),
         };
 
         std::mem::swap(&mut new_state.generation, &mut new_state.next_generation);
@@ -277,7 +283,7 @@ pub mod rules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_rule_30() {
         let ca = CellularAutomaton::one_dimensional("Rule 30", rules::RULE_30, 31);

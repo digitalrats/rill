@@ -3,7 +3,9 @@
 //! The base `Algorithm` trait lives in `rill_core`. This module re-exports it
 //! together with the DSP-specific `ParameterizedAlgorithm` abstraction.
 
-pub use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ActionContext};
+pub use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
 pub use rill_core::traits::ProcessResult;
 
 use rill_core::traits::ParamValue;

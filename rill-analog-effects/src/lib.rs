@@ -2,10 +2,10 @@
 
 #![deny(unsafe_code)]
 
-mod op_amp;
 mod cassette;
 mod nodes;
+mod op_amp;
 
-pub use op_amp::OperationalAmplifier;
 pub use cassette::CassetteDeckModel;
 pub use nodes::CassetteDeckProcessor;
+pub use op_amp::OperationalAmplifier;

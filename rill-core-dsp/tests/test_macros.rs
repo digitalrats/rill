@@ -38,7 +38,8 @@ fn test_simple_algorithm_f32() {
     let mut output = [0.0f32; 1];
     let tick = ClockTick::default();
     let ctx = ActionContext::new(&tick);
-    gain.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
+    gain.process(Some(&[1.0f32] as &[_]), &mut output, &ctx)
+        .unwrap();
     assert_eq!(output[0], 2.0);
     assert_eq!(gain.last, 2.0);
 }
@@ -67,7 +68,8 @@ fn test_simple_algorithm_f64() {
     let mut output = [0.0f64; 1];
     let tick = ClockTick::default();
     let ctx = ActionContext::new(&tick);
-    gain.process(Some(&[1.0] as &[_]), &mut output, &ctx).unwrap();
+    gain.process(Some(&[1.0] as &[_]), &mut output, &ctx)
+        .unwrap();
     assert_eq!(output[0], 2.0);
     assert!((gain.last - 2.0).abs() < 1e-10);
 }
@@ -99,7 +101,8 @@ fn test_parameterized_algorithm() {
     let mut output = [0.0f32; 1];
     let tick = ClockTick::default();
     let ctx = ActionContext::new(&tick);
-    algo.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
+    algo.process(Some(&[1.0f32] as &[_]), &mut output, &ctx)
+        .unwrap();
     assert_eq!(output[0], 2.0);
 }
 
@@ -146,7 +149,9 @@ fn test_filter_algorithm() {
     let mut output = [0.0f32; 1];
     let tick = ClockTick::default();
     let ctx = ActionContext::new(&tick);
-    filter.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
+    filter
+        .process(Some(&[1.0f32] as &[_]), &mut output, &ctx)
+        .unwrap();
     assert_eq!(output[0], 1.0);
 }
 
@@ -176,7 +181,9 @@ fn test_effect_algorithm_f32() {
     let mut output = [0.0f32; 1];
     let tick = ClockTick::default();
     let ctx = ActionContext::new(&tick);
-    effect.process(Some(&[1.0f32] as &[_]), &mut output, &ctx).unwrap();
+    effect
+        .process(Some(&[1.0f32] as &[_]), &mut output, &ctx)
+        .unwrap();
     let expected = 0.5 * 1.0 * 0.7 + 1.0 * 0.3;
     assert!((output[0] - expected).abs() < 1e-6);
 }
@@ -207,7 +214,9 @@ fn test_effect_algorithm_f64() {
     let mut output = [0.0f64; 1];
     let tick = ClockTick::default();
     let ctx = ActionContext::new(&tick);
-    effect.process(Some(&[1.0] as &[_]), &mut output, &ctx).unwrap();
+    effect
+        .process(Some(&[1.0] as &[_]), &mut output, &ctx)
+        .unwrap();
     let expected = 0.5 * 1.0 * 0.7 + 1.0 * 0.3;
     assert!((output[0] - expected).abs() < 1e-10);
 }

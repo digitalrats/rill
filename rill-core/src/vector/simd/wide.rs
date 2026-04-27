@@ -8,11 +8,8 @@
 //! - `F64x2`, `F64x4` для `f64`
 
 use crate::AudioNum;
-use wide::{
-    f32x4, f32x8, f64x2, f64x4,
-    CmpEq, CmpGe, CmpGt, CmpLe, CmpLt, CmpNe,
-};
-use std::ops::{Add, Sub, Mul, Div, Rem, Neg};
+use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
+use wide::{f32x4, f32x8, f64x2, f64x4, CmpEq, CmpGe, CmpGt, CmpLe, CmpLt, CmpNe};
 
 use crate::vector::traits::{Vector, VectorMask};
 
@@ -72,45 +69,45 @@ impl Vector<f32, 4> for F32x4 {
     fn splat(value: f32) -> Self {
         F32x4(f32x4::splat(value))
     }
-    
+
     fn load(slice: &[f32]) -> Self {
         let mut arr = [0.0f32; 4];
         arr.copy_from_slice(&slice[0..4]);
         F32x4(f32x4::from(arr))
     }
-    
+
     fn store(&self, slice: &mut [f32]) {
         let arr: [f32; 4] = self.0.into();
         slice[0..4].copy_from_slice(&arr);
     }
-    
+
     fn extract(&self, index: usize) -> f32 {
         let arr: [f32; 4] = self.0.into();
         arr[index]
     }
-    
+
     fn insert(&self, index: usize, value: f32) -> Self {
         let mut arr: [f32; 4] = self.0.into();
         arr[index] = value;
         F32x4(f32x4::from(arr))
     }
-    
+
     fn add(&self, other: &Self) -> Self {
         F32x4(self.0 + other.0)
     }
-    
+
     fn sub(&self, other: &Self) -> Self {
         F32x4(self.0 - other.0)
     }
-    
+
     fn mul(&self, other: &Self) -> Self {
         F32x4(self.0 * other.0)
     }
-    
+
     fn div(&self, other: &Self) -> Self {
         F32x4(self.0 / other.0)
     }
-    
+
     fn rem(&self, other: &Self) -> Self {
         // wide не предоставляет операцию остатка, реализуем покомпонентно
         let a: [f32; 4] = self.0.into();
@@ -121,48 +118,48 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(f32x4::from(arr))
     }
-    
+
     fn neg(&self) -> Self {
         F32x4(-self.0)
     }
-    
+
     fn abs(&self) -> Self {
         F32x4(self.0.abs())
     }
-    
+
     fn min(&self, other: &Self) -> Self {
         F32x4(self.0.min(other.0))
     }
-    
+
     fn max(&self, other: &Self) -> Self {
         F32x4(self.0.max(other.0))
     }
-    
+
     fn clamp(&self, min: &Self, max: &Self) -> Self {
         // clamp = self.max(min).min(max)
         F32x4(self.0.max(min.0).min(max.0))
     }
-    
+
     fn sqrt(&self) -> Self {
         F32x4(self.0.sqrt())
     }
-    
+
     fn exp(&self) -> Self {
         F32x4(self.0.exp())
     }
-    
+
     fn ln(&self) -> Self {
         F32x4(self.0.ln())
     }
-    
+
     fn sin(&self) -> Self {
         F32x4(self.0.sin())
     }
-    
+
     fn cos(&self) -> Self {
         F32x4(self.0.cos())
     }
-    
+
     fn tan(&self) -> Self {
         F32x4(self.0.tan())
     }
@@ -176,45 +173,45 @@ impl Vector<f32, 8> for F32x8 {
     fn splat(value: f32) -> Self {
         F32x8(f32x8::splat(value))
     }
-    
+
     fn load(slice: &[f32]) -> Self {
         let mut arr = [0.0f32; 8];
         arr.copy_from_slice(&slice[0..8]);
         F32x8(f32x8::from(arr))
     }
-    
+
     fn store(&self, slice: &mut [f32]) {
         let arr: [f32; 8] = self.0.into();
         slice[0..8].copy_from_slice(&arr);
     }
-    
+
     fn extract(&self, index: usize) -> f32 {
         let arr: [f32; 8] = self.0.into();
         arr[index]
     }
-    
+
     fn insert(&self, index: usize, value: f32) -> Self {
         let mut arr: [f32; 8] = self.0.into();
         arr[index] = value;
         F32x8(f32x8::from(arr))
     }
-    
+
     fn add(&self, other: &Self) -> Self {
         F32x8(self.0 + other.0)
     }
-    
+
     fn sub(&self, other: &Self) -> Self {
         F32x8(self.0 - other.0)
     }
-    
+
     fn mul(&self, other: &Self) -> Self {
         F32x8(self.0 * other.0)
     }
-    
+
     fn div(&self, other: &Self) -> Self {
         F32x8(self.0 / other.0)
     }
-    
+
     fn rem(&self, other: &Self) -> Self {
         let a: [f32; 8] = self.0.into();
         let b: [f32; 8] = other.0.into();
@@ -224,47 +221,47 @@ impl Vector<f32, 8> for F32x8 {
         }
         F32x8(f32x8::from(arr))
     }
-    
+
     fn neg(&self) -> Self {
         F32x8(-self.0)
     }
-    
+
     fn abs(&self) -> Self {
         F32x8(self.0.abs())
     }
-    
+
     fn min(&self, other: &Self) -> Self {
         F32x8(self.0.min(other.0))
     }
-    
+
     fn max(&self, other: &Self) -> Self {
         F32x8(self.0.max(other.0))
     }
-    
+
     fn clamp(&self, min: &Self, max: &Self) -> Self {
         F32x8(self.0.max(min.0).min(max.0))
     }
-    
+
     fn sqrt(&self) -> Self {
         F32x8(self.0.sqrt())
     }
-    
+
     fn exp(&self) -> Self {
         F32x8(self.0.exp())
     }
-    
+
     fn ln(&self) -> Self {
         F32x8(self.0.ln())
     }
-    
+
     fn sin(&self) -> Self {
         F32x8(self.0.sin())
     }
-    
+
     fn cos(&self) -> Self {
         F32x8(self.0.cos())
     }
-    
+
     fn tan(&self) -> Self {
         F32x8(self.0.tan())
     }
@@ -278,45 +275,45 @@ impl Vector<f64, 2> for F64x2 {
     fn splat(value: f64) -> Self {
         F64x2(f64x2::splat(value))
     }
-    
+
     fn load(slice: &[f64]) -> Self {
         let mut arr = [0.0f64; 2];
         arr.copy_from_slice(&slice[0..2]);
         F64x2(f64x2::from(arr))
     }
-    
+
     fn store(&self, slice: &mut [f64]) {
         let arr: [f64; 2] = self.0.into();
         slice[0..2].copy_from_slice(&arr);
     }
-    
+
     fn extract(&self, index: usize) -> f64 {
         let arr: [f64; 2] = self.0.into();
         arr[index]
     }
-    
+
     fn insert(&self, index: usize, value: f64) -> Self {
         let mut arr: [f64; 2] = self.0.into();
         arr[index] = value;
         F64x2(f64x2::from(arr))
     }
-    
+
     fn add(&self, other: &Self) -> Self {
         F64x2(self.0 + other.0)
     }
-    
+
     fn sub(&self, other: &Self) -> Self {
         F64x2(self.0 - other.0)
     }
-    
+
     fn mul(&self, other: &Self) -> Self {
         F64x2(self.0 * other.0)
     }
-    
+
     fn div(&self, other: &Self) -> Self {
         F64x2(self.0 / other.0)
     }
-    
+
     fn rem(&self, other: &Self) -> Self {
         let a: [f64; 2] = self.0.into();
         let b: [f64; 2] = other.0.into();
@@ -326,47 +323,47 @@ impl Vector<f64, 2> for F64x2 {
         }
         F64x2(f64x2::from(arr))
     }
-    
+
     fn neg(&self) -> Self {
         F64x2(-self.0)
     }
-    
+
     fn abs(&self) -> Self {
         F64x2(self.0.abs())
     }
-    
+
     fn min(&self, other: &Self) -> Self {
         F64x2(self.0.min(other.0))
     }
-    
+
     fn max(&self, other: &Self) -> Self {
         F64x2(self.0.max(other.0))
     }
-    
+
     fn clamp(&self, min: &Self, max: &Self) -> Self {
         F64x2(self.0.max(min.0).min(max.0))
     }
-    
+
     fn sqrt(&self) -> Self {
         F64x2(self.0.sqrt())
     }
-    
+
     fn exp(&self) -> Self {
         F64x2(self.0.exp())
     }
-    
+
     fn ln(&self) -> Self {
         F64x2(self.0.ln())
     }
-    
+
     fn sin(&self) -> Self {
         F64x2(self.0.sin())
     }
-    
+
     fn cos(&self) -> Self {
         F64x2(self.0.cos())
     }
-    
+
     fn tan(&self) -> Self {
         F64x2(self.0.tan())
     }
@@ -380,45 +377,45 @@ impl Vector<f64, 4> for F64x4 {
     fn splat(value: f64) -> Self {
         F64x4(f64x4::splat(value))
     }
-    
+
     fn load(slice: &[f64]) -> Self {
         let mut arr = [0.0f64; 4];
         arr.copy_from_slice(&slice[0..4]);
         F64x4(f64x4::from(arr))
     }
-    
+
     fn store(&self, slice: &mut [f64]) {
         let arr: [f64; 4] = self.0.into();
         slice[0..4].copy_from_slice(&arr);
     }
-    
+
     fn extract(&self, index: usize) -> f64 {
         let arr: [f64; 4] = self.0.into();
         arr[index]
     }
-    
+
     fn insert(&self, index: usize, value: f64) -> Self {
         let mut arr: [f64; 4] = self.0.into();
         arr[index] = value;
         F64x4(f64x4::from(arr))
     }
-    
+
     fn add(&self, other: &Self) -> Self {
         F64x4(self.0 + other.0)
     }
-    
+
     fn sub(&self, other: &Self) -> Self {
         F64x4(self.0 - other.0)
     }
-    
+
     fn mul(&self, other: &Self) -> Self {
         F64x4(self.0 * other.0)
     }
-    
+
     fn div(&self, other: &Self) -> Self {
         F64x4(self.0 / other.0)
     }
-    
+
     fn rem(&self, other: &Self) -> Self {
         let a: [f64; 4] = self.0.into();
         let b: [f64; 4] = other.0.into();
@@ -428,47 +425,47 @@ impl Vector<f64, 4> for F64x4 {
         }
         F64x4(f64x4::from(arr))
     }
-    
+
     fn neg(&self) -> Self {
         F64x4(-self.0)
     }
-    
+
     fn abs(&self) -> Self {
         F64x4(self.0.abs())
     }
-    
+
     fn min(&self, other: &Self) -> Self {
         F64x4(self.0.min(other.0))
     }
-    
+
     fn max(&self, other: &Self) -> Self {
         F64x4(self.0.max(other.0))
     }
-    
+
     fn clamp(&self, min: &Self, max: &Self) -> Self {
         F64x4(self.0.max(min.0).min(max.0))
     }
-    
+
     fn sqrt(&self) -> Self {
         F64x4(self.0.sqrt())
     }
-    
+
     fn exp(&self) -> Self {
         F64x4(self.0.exp())
     }
-    
+
     fn ln(&self) -> Self {
         F64x4(self.0.ln())
     }
-    
+
     fn sin(&self) -> Self {
         F64x4(self.0.sin())
     }
-    
+
     fn cos(&self) -> Self {
         F64x4(self.0.cos())
     }
-    
+
     fn tan(&self) -> Self {
         F64x4(self.0.tan())
     }
@@ -726,22 +723,22 @@ impl Neg for F64x4 {
 mod tests {
     use super::*;
     use crate::vector::traits::VectorMask;
-    
+
     #[test]
     fn test_f32x4_basic() {
         let a = F32x4::load(&[1.0, 2.0, 3.0, 4.0]);
         let b = F32x4::load(&[5.0, 6.0, 7.0, 8.0]);
-        
+
         let c = a + b;
         let mut arr = [0.0f32; 4];
         c.store(&mut arr);
         assert_eq!(arr, [6.0, 8.0, 10.0, 12.0]);
-        
+
         let c = a * b;
         c.store(&mut arr);
         assert_eq!(arr, [5.0, 12.0, 21.0, 32.0]);
     }
-    
+
     #[test]
     fn test_f32x4_math() {
         let a = F32x4::load(&[0.0, 0.5, 1.0, 2.0]);
@@ -753,12 +750,12 @@ mod tests {
             assert!((arr[i] - expected[i]).abs() < 1e-5);
         }
     }
-    
+
     #[test]
     fn test_f64x2_basic() {
         let a = F64x2::load(&[1.0, 2.0]);
         let b = F64x2::load(&[3.0, 4.0]);
-        
+
         let c = a + b;
         let mut arr = [0.0f64; 2];
         c.store(&mut arr);
@@ -828,10 +825,7 @@ mod tests {
 
     #[test]
     fn test_f64x4_vector_mask_all() {
-        let all_true = <F64x4 as VectorMask<f64, 4>>::lt(
-            &F64x4::splat(1.0),
-            &F64x4::splat(2.0),
-        );
+        let all_true = <F64x4 as VectorMask<f64, 4>>::lt(&F64x4::splat(1.0), &F64x4::splat(2.0));
         assert!(<F64x4 as VectorMask<f64, 4>>::all(&all_true));
 
         let partial_true = <F64x4 as VectorMask<f64, 4>>::lt(

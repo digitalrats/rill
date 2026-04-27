@@ -2,8 +2,8 @@
 //!
 //! Реализация математических функций (sin, cos, exp, ln, sqrt и т.д.) для векторных типов.
 
-use crate::AudioNum;
 use super::traits::*;
+use crate::AudioNum;
 
 // -----------------------------------------------------------------------------
 // Функции для работы со слайсами
@@ -15,17 +15,17 @@ where
     V: Vector<T, N>,
 {
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let vec = V::load(&input[start..start + N]);
         let result = vec.sin();
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -40,17 +40,17 @@ where
     V: Vector<T, N>,
 {
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let vec = V::load(&input[start..start + N]);
         let result = vec.cos();
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -65,17 +65,17 @@ where
     V: Vector<T, N>,
 {
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let vec = V::load(&input[start..start + N]);
         let result = vec.tan();
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -90,17 +90,17 @@ where
     V: Vector<T, N>,
 {
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let vec = V::load(&input[start..start + N]);
         let result = vec.exp();
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -115,17 +115,17 @@ where
     V: Vector<T, N>,
 {
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let vec = V::load(&input[start..start + N]);
         let result = vec.ln();
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -140,17 +140,17 @@ where
     V: Vector<T, N>,
 {
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let vec = V::load(&input[start..start + N]);
         let result = vec.sqrt();
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -165,17 +165,17 @@ where
     V: Vector<T, N>,
 {
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let vec = V::load(&input[start..start + N]);
         let result = vec.abs();
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -191,10 +191,10 @@ where
 {
     assert_eq!(a.len(), b.len());
     assert_eq!(a.len(), output.len());
-    
+
     let chunks = a.len() / N;
     let remainder = a.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let a_vec = V::load(&a[start..start + N]);
@@ -202,7 +202,7 @@ where
         let result = a_vec.min(&b_vec);
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -218,10 +218,10 @@ where
 {
     assert_eq!(a.len(), b.len());
     assert_eq!(a.len(), output.len());
-    
+
     let chunks = a.len() / N;
     let remainder = a.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let a_vec = V::load(&a[start..start + N]);
@@ -229,7 +229,7 @@ where
         let result = a_vec.max(&b_vec);
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -250,10 +250,10 @@ pub fn clamp_slice<T: AudioNum, const N: usize, V>(
     assert_eq!(input.len(), min.len());
     assert_eq!(input.len(), max.len());
     assert_eq!(input.len(), output.len());
-    
+
     let chunks = input.len() / N;
     let remainder = input.len() % N;
-    
+
     for i in 0..chunks {
         let start = i * N;
         let input_vec = V::load(&input[start..start + N]);
@@ -262,7 +262,7 @@ pub fn clamp_slice<T: AudioNum, const N: usize, V>(
         let result = input_vec.clamp(&min_vec, &max_vec);
         result.store(&mut output[start..start + N]);
     }
-    
+
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -297,6 +297,6 @@ pub fn fast_cos_slice_f32(input: &[f32], output: &mut [f32]) {
 mod tests {
     use super::*;
     use crate::AudioNum;
-    
+
     // Тесты будут добавлены после реализации скалярных векторов
 }

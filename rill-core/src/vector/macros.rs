@@ -25,8 +25,8 @@
 //! - [`vec_expr!`] – создаёт ленивое векторное выражение (заглушка, требует исправления модуля expr).
 //! - [`vec_eval!`] – немедленно вычисляет векторное выражение (заглушка).
 
-use crate::vector::traits::Vector;
 use crate::vector::scalar::ScalarVector4;
+use crate::vector::traits::Vector;
 
 // -----------------------------------------------------------------------------
 // vec_map!
@@ -58,16 +58,16 @@ macro_rules! vec_map {
         let input: &[_] = $input;
         let output: &mut [_] = $output;
         assert_eq!(input.len(), output.len(), "input and output slices must have equal length");
-        
+
         // Определяем тип элемента по первому элементу входного слайса (если он пуст — ничего не делаем)
         if input.is_empty() {
             return;
         }
-        
+
         // Обработка по чанкам
         let chunks = input.len() / N;
         let remainder = input.len() % N;
-        
+
         for i in 0..chunks {
             let start = i * N;
             // Загружаем вектор из входного слайса
@@ -77,7 +77,7 @@ macro_rules! vec_map {
             // Сохраняем результат в выходной слайс
             y.store(&mut output[start..start + N]);
         }
-        
+
         // Обработка остатка скалярно
         if remainder > 0 {
             let start = chunks * N;
@@ -117,9 +117,9 @@ macro_rules! vec_eval {
     };
 }
 
-pub use crate::vec_map;
-pub use crate::vec_expr;
 pub use crate::vec_eval;
+pub use crate::vec_expr;
+pub use crate::vec_map;
 
 // -----------------------------------------------------------------------------
 // Тесты
@@ -129,15 +129,15 @@ pub use crate::vec_eval;
 mod tests {
     use super::*;
     use crate::vector::scalar::ScalarVector4;
-    
+
     #[test]
     fn test_vec_map_f32() {
         let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let mut output = [0.0f32; 8];
-        
+
         // Замыкание: x * 2.0 + 1.0
         vec_map!(|x| x * 2.0 + 1.0, &input, &mut output);
-        
+
         assert_eq!(output[0], 3.0); // 1*2 + 1
         assert_eq!(output[1], 5.0); // 2*2 + 1
         assert_eq!(output[2], 7.0);
@@ -147,46 +147,46 @@ mod tests {
         assert_eq!(output[6], 15.0);
         assert_eq!(output[7], 17.0);
     }
-    
+
     #[test]
     fn test_vec_map_f64() {
         let input = [1.0f64, 2.0, 3.0, 4.0];
         let mut output = [0.0f64; 4];
-        
+
         vec_map!(|x| x * 3.0 - 1.0, &input, &mut output);
-        
+
         assert_eq!(output[0], 2.0); // 1*3 - 1
         assert_eq!(output[1], 5.0); // 2*3 - 1
         assert_eq!(output[2], 8.0);
         assert_eq!(output[3], 11.0);
     }
-    
+
     #[test]
     fn test_vec_map_empty() {
         let input: [f32; 0] = [];
         let mut output: [f32; 0] = [];
         vec_map!(|x| x * 2.0, &input, &mut output); // не должно паниковать
     }
-    
+
     #[test]
     fn test_vec_map_remainder() {
         let input = [1.0f32, 2.0, 3.0]; // три элемента
         let mut output = [0.0f32; 3];
-        
+
         vec_map!(|x| x + 10.0, &input, &mut output);
-        
+
         assert_eq!(output[0], 11.0);
         assert_eq!(output[1], 12.0);
         assert_eq!(output[2], 13.0);
     }
-    
+
     #[test]
     fn test_vec_expr_stub() {
         let vec = ScalarVector4::splat(5.0);
         let result = vec_expr!(vec);
         assert_eq!(result, vec);
     }
-    
+
     #[test]
     fn test_vec_eval_stub() {
         let a = ScalarVector4::splat(2.0);

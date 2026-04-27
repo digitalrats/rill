@@ -171,7 +171,12 @@ impl<T: AudioNum> Algorithm<T> for EnvelopeGenerator<T> {
         self.smoother.set_current(T::ZERO);
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {

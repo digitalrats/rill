@@ -7,19 +7,19 @@
 //! время и текущее состояние, возвращает новое состояние и значение.
 //! Внешние воздействия на состояние не предполагаются.
 
-pub mod lfo;
+pub mod cellular;
 pub mod envelope;
 pub mod function;
-pub mod sequencer;
+pub mod lfo;
 pub mod random;
-pub mod cellular;
+pub mod sequencer;
 
-pub use lfo::*;
+pub use cellular::*;
 pub use envelope::*;
 pub use function::*;
-pub use sequencer::*;
+pub use lfo::*;
 pub use random::*;
-pub use cellular::*;
+pub use sequencer::*;
 
 use std::fmt::Debug;
 
@@ -52,7 +52,10 @@ impl Range {
     }
 
     pub const fn bipolar() -> Self {
-        Self { min: -1.0, max: 1.0 }
+        Self {
+            min: -1.0,
+            max: 1.0,
+        }
     }
 
     pub fn clamp(&self, value: f64) -> f64 {

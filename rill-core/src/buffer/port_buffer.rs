@@ -11,7 +11,9 @@ pub struct Buffer<T, const SIZE: usize> {
 
 impl<T: Copy + Default, const SIZE: usize> Buffer<T, SIZE> {
     pub fn new() -> Self {
-        Self { data: [T::default(); SIZE] }
+        Self {
+            data: [T::default(); SIZE],
+        }
     }
 
     pub fn from_array(data: [T; SIZE]) -> Self {

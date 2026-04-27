@@ -3,9 +3,9 @@
 //! Parameters are values that can be changed at runtime,
 //! either by automation or direct user control.
 
+use super::error::{ParameterError, ParameterResult};
 use std::fmt;
 use std::str::FromStr;
-use super::error::{ParameterError, ParameterResult};
 
 // ============================================================================
 // Parameter ID
@@ -20,7 +20,7 @@ pub struct ParameterId {
 impl ParameterId {
     /// Maximum length of a parameter name
     pub const MAX_LEN: usize = 64;
-    
+
     /// Create a new ParameterId with validation
     ///
     /// # Rules
@@ -30,34 +30,34 @@ impl ParameterId {
     /// - Contains only letters, digits, and underscores
     pub fn new(name: impl Into<String>) -> ParameterResult<Self> {
         let name = name.into();
-        
+
         if name.is_empty() {
             return Err(ParameterError::Empty);
         }
-        
+
         if name.len() > Self::MAX_LEN {
             return Err(ParameterError::TooLong { max: Self::MAX_LEN });
         }
-        
+
         let first = name.chars().next().unwrap();
         if !first.is_ascii_alphabetic() {
             return Err(ParameterError::MustStartWithLetter);
         }
-        
+
         for c in name.chars() {
             if !c.is_ascii_alphanumeric() && c != '_' {
                 return Err(ParameterError::InvalidCharacter(c));
             }
         }
-        
+
         Ok(Self { name })
     }
-    
+
     /// Get the string representation
     pub fn as_str(&self) -> &str {
         &self.name
     }
-    
+
     /// Convert into a String
     pub fn into_string(self) -> String {
         self.name
@@ -78,7 +78,7 @@ impl fmt::Display for ParameterId {
 
 impl FromStr for ParameterId {
     type Err = ParameterError;
-    
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         ParameterId::new(s)
     }
@@ -93,16 +93,16 @@ impl FromStr for ParameterId {
 pub enum ParamType {
     /// Floating point value
     Float,
-    
+
     /// Integer value
     Int,
-    
+
     /// Boolean value
     Bool,
-    
+
     /// String value
     String,
-    
+
     /// Choice from a list of options
     Choice,
 }
@@ -135,16 +135,16 @@ impl fmt::Display for ParamType {
 pub enum ParamValue {
     /// Floating point value
     Float(f32),
-    
+
     /// Integer value
     Int(i32),
-    
+
     /// Boolean value
     Bool(bool),
-    
+
     /// String value
     String(String),
-    
+
     /// Choice from a list of options
     Choice(String),
 }
@@ -160,7 +160,7 @@ impl ParamValue {
             Self::Choice(_) => ParamType::Choice,
         }
     }
-    
+
     /// Try to convert to f32
     pub fn as_f32(&self) -> Option<f32> {
         match self {
@@ -170,7 +170,7 @@ impl ParamValue {
             _ => None,
         }
     }
-    
+
     /// Try to convert to i32
     pub fn as_i32(&self) -> Option<i32> {
         match self {
@@ -180,7 +180,7 @@ impl ParamValue {
             _ => None,
         }
     }
-    
+
     /// Try to convert to bool
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -201,10 +201,10 @@ impl ParamValue {
 pub struct ParamRange {
     /// Minimum value (if applicable)
     pub min: Option<f32>,
-    
+
     /// Maximum value (if applicable)
     pub max: Option<f32>,
-    
+
     /// Step size (if applicable)
     pub step: Option<f32>,
 }
@@ -218,25 +218,25 @@ impl ParamRange {
             step: None,
         }
     }
-    
+
     /// Set minimum value
     pub fn with_min(mut self, min: f32) -> Self {
         self.min = Some(min);
         self
     }
-    
+
     /// Set maximum value
     pub fn with_max(mut self, max: f32) -> Self {
         self.max = Some(max);
         self
     }
-    
+
     /// Set step size
     pub fn with_step(mut self, step: f32) -> Self {
         self.step = Some(step);
         self
     }
-    
+
     /// Check if value is within range
     pub fn contains(&self, value: f32) -> bool {
         if let Some(min) = self.min {
@@ -251,7 +251,7 @@ impl ParamRange {
         }
         true
     }
-    
+
     /// Clamp value to range
     pub fn clamp(&self, value: f32) -> f32 {
         let mut value = value;
@@ -280,22 +280,22 @@ impl Default for ParamRange {
 pub struct ParamMetadata {
     /// Parameter name (must be a valid ParameterId)
     pub name: String,
-    
+
     /// Human-readable description
     pub description: String,
-    
+
     /// Parameter type
     pub typ: ParamType,
-    
+
     /// Default value
     pub default: ParamValue,
-    
+
     /// Value range (if applicable)
     pub range: ParamRange,
-    
+
     /// Unit of measurement (e.g., "Hz", "dB", "ms")
     pub unit: Option<String>,
-    
+
     /// Possible choices (for Choice parameters)
     pub choices: Option<Vec<(String, f32)>>,
 }
@@ -313,13 +313,13 @@ impl ParamMetadata {
             choices: None,
         }
     }
-    
+
     /// Set description
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
         self
     }
-    
+
     /// Set range
     pub fn with_range(mut self, min: f32, max: f32, step: f32) -> Self {
         self.range = ParamRange::new()
@@ -328,13 +328,13 @@ impl ParamMetadata {
             .with_step(step);
         self
     }
-    
+
     /// Set unit
     pub fn with_unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = Some(unit.into());
         self
     }
-    
+
     /// Set choices
     pub fn with_choices(mut self, choices: Vec<(String, f32)>) -> Self {
         self.choices = Some(choices);
@@ -362,18 +362,18 @@ mod tests {
         assert!(ParameterId::new("").is_err());
         assert!(ParameterId::new("1gain").is_err());
         assert!(ParameterId::new("_gain").is_err());
-        
+
         let long_name = "a".repeat(ParameterId::MAX_LEN + 1);
         assert!(ParameterId::new(long_name).is_err());
     }
-    
+
     #[test]
     fn test_param_value_conversion() {
         let f = ParamValue::Float(42.0);
         assert_eq!(f.as_f32(), Some(42.0));
         assert_eq!(f.as_i32(), Some(42));
         assert_eq!(f.as_bool(), Some(true));
-        
+
         let i = ParamValue::Int(0);
         assert_eq!(i.as_f32(), Some(0.0));
         assert_eq!(i.as_i32(), Some(0));

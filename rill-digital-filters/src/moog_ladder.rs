@@ -1,8 +1,8 @@
+use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{
     AudioNode, AudioNum, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
-use rill_core::traits::{ActionContext, Algorithm};
 use rill_core_dsp::filters::MoogLadder;
 
 /// Processor wrapper for Moog ladder filter

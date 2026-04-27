@@ -19,29 +19,28 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // Подмодули
 // =============================================================================
 
-pub mod spsc;
-pub mod error;
 pub mod command;
-pub mod signal;
-pub mod telemetry;
-pub mod telemetry_block;
-pub mod observer;
+pub mod error;
 pub mod mpsc;
+pub mod observer;
 pub mod ring;
 pub mod rt_queue;
+pub mod signal;
+pub mod spsc;
+pub mod telemetry;
+pub mod telemetry_block;
 
-pub use spsc::SpscQueue;
 pub use command::CommandQueue;
 pub use error::{QueueError, QueueResult};
 pub use mpsc::MpscQueue;
 pub use rt_queue::RtQueue;
+pub use spsc::SpscQueue;
 pub use telemetry_block::TelemetryBlock;
 
 // Re-export key signal types
 pub use signal::{
-    CommandEnum, SetParameter, SignalSource,
-    AutomatonCommand, SensorCommand, ServoCommand,
-    MappingType, CalibrationKind,
+    AutomatonCommand, CalibrationKind, CommandEnum, MappingType, SensorCommand, ServoCommand,
+    SetParameter, SignalSource,
 };
 
 // =============================================================================
@@ -93,7 +92,10 @@ impl QueueStats {
         let prev = self.max_size.load(Ordering::Relaxed);
         if current_size > prev {
             let _ = self.max_size.compare_exchange(
-                prev, current_size, Ordering::Relaxed, Ordering::Relaxed,
+                prev,
+                current_size,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
             );
         }
     }

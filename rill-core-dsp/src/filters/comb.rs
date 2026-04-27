@@ -56,7 +56,12 @@ impl<T: AudioNum, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, MAX_DEL
         self.delay.clear();
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {

@@ -145,7 +145,8 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
 
             self.osc.set_frequency(modulated_freq.to_f32());
             let mut sample_buf = [T::ZERO; 1];
-            self.osc.process(None, &mut sample_buf, &ActionContext::new(clock))?;
+            self.osc
+                .process(None, &mut sample_buf, &ActionContext::new(clock))?;
             output[i] = sample_buf[0] * self.amplitude;
         }
 
@@ -160,7 +161,8 @@ impl<T: AudioNum, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
         clock: &ClockTick,
     ) -> ProcessResult<()> {
         self.osc.set_frequency(self.frequency.to_f32());
-        self.osc.process(None, &mut output[..], &ActionContext::new(clock))?;
+        self.osc
+            .process(None, &mut output[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
             output[i] = output[i] * self.amplitude;
         }

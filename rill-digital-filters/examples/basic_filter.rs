@@ -4,8 +4,8 @@
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{ActionContext, Algorithm};
-use rill_digital_filters::{BiquadFilter, FilterType, BiquadExt};
 use rill_core_dsp::filters::FilterParams;
+use rill_digital_filters::{BiquadExt, BiquadFilter, FilterType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Basic Filter Example ===\n");

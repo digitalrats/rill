@@ -1,6 +1,6 @@
 //! Basic oscillator example
 use rill_core::traits::{AudioNode, Processor};
-use rill_core::{ClockTick};
+use rill_core::ClockTick;
 use rill_oscillators::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
 const BLOCK_SIZE: usize = 64;

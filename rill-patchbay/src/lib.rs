@@ -48,7 +48,7 @@
 // Реэкспорты из rill-core
 pub use rill_core::prelude::*;
 pub use rill_core::queues::RtQueue;
-pub use rill_core::{ParameterId, ParamValue, NodeId, PortId};
+pub use rill_core::{NodeId, ParamValue, ParameterId, PortId};
 
 // =============================================================================
 // Публичные модули
@@ -75,18 +75,12 @@ pub mod utils;
 
 // Selective re-exports
 pub use automaton::{
-    LfoWaveform, LfoAutomaton,
-    EnvelopeAutomaton, EnvelopeStage, EnvelopeType,
-    FunctionAutomaton, StatefulFunctionAutomaton,
-    SequencerAutomaton, Step, PlayMode,
-    Range, SyncMode,
+    EnvelopeAutomaton, EnvelopeStage, EnvelopeType, FunctionAutomaton, LfoAutomaton, LfoWaveform,
+    PlayMode, Range, SequencerAutomaton, StatefulFunctionAutomaton, Step, SyncMode,
 };
 pub use control::{
-    Automaton, NoAction,
-    BoxedServo, AnyServo, Servo, ParameterMapping, ParameterCommand,
-    Mapping, EventPattern, Target, Transform, ControlEvent,
-    PatchbayControl,
-    midi_cc, osc_address,
+    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
+    NoAction, ParameterCommand, ParameterMapping, PatchbayControl, Servo, Target, Transform,
 };
 pub use manager::PatchbayManager;
 
@@ -101,11 +95,11 @@ pub mod prelude {
     pub use crate::control::*;
     pub use crate::manager::*;
     pub use crate::utils::*;
-    
+
     // Реэкспорты из rill-core
     pub use rill_core::prelude::*;
     pub use rill_core::queues::RtQueue;
-    pub use rill_core::{ParameterId, NodeId, PortId};
+    pub use rill_core::{NodeId, ParameterId, PortId};
 }
 
 // =============================================================================
@@ -115,7 +109,7 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_basic_imports() {
         // Просто проверяем, что всё импортируется

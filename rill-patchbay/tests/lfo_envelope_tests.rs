@@ -38,17 +38,7 @@ fn test_envelope_in_control() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue.clone());
 
-    control.add_envelope(
-        "test_env",
-        0.1,
-        0.2,
-        0.7,
-        0.3,
-        NodeId(1),
-        "gain",
-        0.0,
-        1.0,
-    );
+    control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);
 
     assert!(control.get_servo("test_env").is_some());
     control.update(0.05);

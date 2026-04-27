@@ -1,5 +1,5 @@
-use rill_core::prelude::*;
 use crate::CassetteDeckModel;
+use rill_core::prelude::*;
 
 pub struct CassetteDeckProcessor<T: AudioNum, const BUF_SIZE: usize> {
     id: NodeId,

@@ -4,8 +4,8 @@
 //! позволяющий читать данные с произвольной задержкой.
 
 use super::QueueStats;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::buffer::AtomicCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Кольцевая очередь с произвольным доступом
 ///
@@ -42,7 +42,8 @@ impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
     pub fn push(&self, value: T) {
         let pos = self.write_pos.load(Ordering::Relaxed);
         self.data[pos].store(value);
-        self.write_pos.store((pos + 1) & self.mask, Ordering::Release);
+        self.write_pos
+            .store((pos + 1) & self.mask, Ordering::Release);
         self.stats.record_push(self.len());
     }
 

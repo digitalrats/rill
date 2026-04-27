@@ -3,9 +3,9 @@
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
+use num_complex::Complex64;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::AudioNum;
-use num_complex::Complex64;
 use std::f64::consts::PI as PI64;
 
 // -----------------------------------------------------------------------------
@@ -244,7 +244,12 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevI<T, MAX_
         }
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
@@ -386,7 +391,12 @@ impl<T: AudioNum, const MAX_SECTIONS: usize> Algorithm<T> for ChebyshevII<T, MAX
         }
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {

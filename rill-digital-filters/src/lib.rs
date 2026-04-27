@@ -11,7 +11,6 @@ pub mod biquad;
 pub mod moog_ladder;
 
 // Re-export main types from rill-core-dsp
-pub use biquad::{BiquadFilter, BiquadProcessor, BiquadExt};
+pub use biquad::{BiquadExt, BiquadFilter, BiquadProcessor};
 pub use moog_ladder::MoogLadderProcessor;
 pub use rill_core_dsp::filters::{Filter, FilterParams, FilterType, MoogLadder};
-

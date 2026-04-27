@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 14 active crates, 1 planned:
+Cargo workspace — 15 active crates:
 
 | Crate | Status |
 |---|---|
@@ -20,7 +20,7 @@ Cargo workspace — 14 active crates, 1 planned:
 | `rill-core-wdf` | Active — WDF elements, adapters, analysis |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
-| `rill-server` | Planned — OSC server |
+| `rill-server` | Active — OSC server and networking |
 
 Dependency tree:
 - **`rill-core`** — foundation, depended on by all other crates except `rill-core-wdf`
@@ -76,7 +76,7 @@ Conventional commits: `<type>(<scope>): <description>`.
 
 ## Known pitfalls
 
-- `examples/` are **stale** — they reference removed APIs (`rill_core::dsp`, `rilldelay`). Do not trust as canonical.
+- Root `examples/` were **stale** and have been removed. Use per-crate `examples/` for canonical usage.
 - README prose about "Мир автоматов" (patchbay) describes an active subsystem, but code examples may be aspirational.
 - No CI workflows or pre-commit hooks exist.
-- `rill-tests` integration test crate is planned but not yet created.
+- Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.

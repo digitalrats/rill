@@ -6,8 +6,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-use crate::AudioNum;
 use super::super::traits::*;
+use crate::AudioNum;
 
 // -----------------------------------------------------------------------------
 // SIMD типы
@@ -51,27 +51,27 @@ impl Vector<f32, 4> for F32x4 {
     fn splat(value: f32) -> Self {
         F32x4([value; 4])
     }
-    
+
     fn load(slice: &[f32]) -> Self {
         let mut arr = [0.0; 4];
         arr.copy_from_slice(&slice[0..4]);
         F32x4(arr)
     }
-    
+
     fn store(&self, slice: &mut [f32]) {
         slice[0..4].copy_from_slice(&self.0);
     }
-    
+
     fn extract(&self, index: usize) -> f32 {
         self.0[index]
     }
-    
+
     fn insert(&self, index: usize, value: f32) -> Self {
         let mut arr = self.0;
         arr[index] = value;
         F32x4(arr)
     }
-    
+
     fn add(&self, other: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -79,7 +79,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn sub(&self, other: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -87,7 +87,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn mul(&self, other: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -95,7 +95,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn div(&self, other: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -103,7 +103,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn rem(&self, other: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -111,7 +111,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn neg(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -119,7 +119,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn abs(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -127,7 +127,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn min(&self, other: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -135,7 +135,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn max(&self, other: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -143,7 +143,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn clamp(&self, min: &Self, max: &Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -151,7 +151,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn sqrt(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -159,7 +159,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn exp(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -167,7 +167,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn ln(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -175,7 +175,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn sin(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -183,7 +183,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn cos(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -191,7 +191,7 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-    
+
     fn tan(&self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -204,11 +204,11 @@ impl Vector<f32, 4> for F32x4 {
 // Пока реализуем остальные типы как заглушки (скалярные версии)
 // В будущем здесь будут настоящие SIMD инструкции через core::arch::x86_64
 
-use std::ops::{Add, Sub, Mul, Div, Rem, Neg};
+use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 
 impl Add for F32x4 {
     type Output = Self;
-    
+
     fn add(self, rhs: Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -220,7 +220,7 @@ impl Add for F32x4 {
 
 impl Sub for F32x4 {
     type Output = Self;
-    
+
     fn sub(self, rhs: Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -232,7 +232,7 @@ impl Sub for F32x4 {
 
 impl Mul for F32x4 {
     type Output = Self;
-    
+
     fn mul(self, rhs: Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -244,7 +244,7 @@ impl Mul for F32x4 {
 
 impl Div for F32x4 {
     type Output = Self;
-    
+
     fn div(self, rhs: Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -256,7 +256,7 @@ impl Div for F32x4 {
 
 impl Rem for F32x4 {
     type Output = Self;
-    
+
     fn rem(self, rhs: Self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -268,7 +268,7 @@ impl Rem for F32x4 {
 
 impl Neg for F32x4 {
     type Output = Self;
-    
+
     fn neg(self) -> Self {
         let mut arr = [0.0; 4];
         for i in 0..4 {
@@ -291,14 +291,14 @@ impl Default for F32x4 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_f32x4_splat() {
         let v = F32x4::splat(2.5);
         assert_eq!(v.extract(0), 2.5);
         assert_eq!(v.extract(3), 2.5);
     }
-    
+
     #[test]
     fn test_f32x4_add() {
         let a = F32x4::splat(1.0);
@@ -306,7 +306,7 @@ mod tests {
         let c = a + b;
         assert_eq!(c.extract(0), 3.0);
     }
-    
+
     #[test]
     fn test_f32x4_mul() {
         let a = F32x4::splat(3.0);
@@ -314,7 +314,7 @@ mod tests {
         let c = a * b;
         assert_eq!(c.extract(0), 12.0);
     }
-    
+
     #[test]
     fn test_f32x4_sin() {
         let a = F32x4::splat(0.0);

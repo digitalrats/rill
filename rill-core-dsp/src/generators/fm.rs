@@ -142,7 +142,12 @@ impl<T: AudioNum> Algorithm<T> for SimpleFmSynth<T> {
         self.modulator.reset();
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Получаем модулирующий сигнал
@@ -340,7 +345,12 @@ impl<T: AudioNum, const N: usize> Algorithm<T> for FmSynth<T, N> {
         self.reset_all();
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Сохраняем текущие значения всех операторов

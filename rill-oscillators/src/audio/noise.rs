@@ -1,12 +1,12 @@
 //! Noise generators
 
+use rand::Rng;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     Processor,
 };
 use rill_core::{ProcessError, ProcessResult};
-use rand::Rng;
 
 /// Types of noise
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -334,9 +334,7 @@ mod tests {
 
         let clock = ClockTick::new(0, 64, 44100.0);
 
-        noise
-            .process(&clock, &[], &[], &[], &[])
-            .unwrap();
+        noise.process(&clock, &[], &[], &[], &[]).unwrap();
 
         let output = noise.outputs[0].buffer.as_array();
 
@@ -360,9 +358,7 @@ mod tests {
 
             let clock = ClockTick::new(0, 64, 44100.0);
 
-            noise
-                .process(&clock, &[], &[], &[], &[])
-                .unwrap();
+            noise.process(&clock, &[], &[], &[], &[]).unwrap();
 
             let output = noise.outputs[0].buffer.as_array();
 

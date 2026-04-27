@@ -217,7 +217,12 @@ impl<T: AudioNum> Algorithm<T> for Biquad<T> {
         );
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         let (b0, b1, b2, a1, a2) = self.coeffs;

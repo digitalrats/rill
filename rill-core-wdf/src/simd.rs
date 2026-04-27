@@ -4,7 +4,7 @@
 //! (backed by `rill_core::vector::simd::F64x4`).
 
 use crate::constants::{BOLTZMANN, ELECTRON_CHARGE, NEWTON_TOLERANCE};
-use rill_core::vector::prelude::{Vector, VectorMask, F64x4};
+use rill_core::vector::prelude::{F64x4, Vector, VectorMask};
 
 /// SIMD WDF element trait
 pub trait SimdWdfElement: Send + Sync {
@@ -225,8 +225,13 @@ mod tests {
         let v = diode.solve_newton_simd(a, r);
         let v0 = v.extract(0);
         for i in 1..4 {
-            assert!((v.extract(i) - v0).abs() < 1e-12,
-                "lane {} diverged: {} vs {}", i, v.extract(i), v0);
+            assert!(
+                (v.extract(i) - v0).abs() < 1e-12,
+                "lane {} diverged: {} vs {}",
+                i,
+                v.extract(i),
+                v0
+            );
         }
     }
 
@@ -250,8 +255,12 @@ mod tests {
         let r = F64x4::splat(1000.0);
         let v = diode.solve_newton_simd(a, r);
         for i in 0..4 {
-            assert!(v.extract(i).is_finite(),
-                "v[{}] should be finite, got {}", i, v.extract(i));
+            assert!(
+                v.extract(i).is_finite(),
+                "v[{}] should be finite, got {}",
+                i,
+                v.extract(i)
+            );
         }
     }
 }

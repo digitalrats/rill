@@ -48,10 +48,9 @@ impl OperationalAmplifier {
         let alpha = 1.0 / (1.0 + 2.0 * std::f64::consts::PI * pole_frequency * dt);
         self.output_voltage = alpha * self.internal_state + (1.0 - alpha) * ideal_output;
 
-        self.output_voltage = self.output_voltage.clamp(
-            self.voltage_rails.0,
-            self.voltage_rails.1,
-        );
+        self.output_voltage = self
+            .output_voltage
+            .clamp(self.voltage_rails.0, self.voltage_rails.1);
 
         self.output_voltage
     }

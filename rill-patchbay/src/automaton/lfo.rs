@@ -3,7 +3,7 @@
 //! Генераторы периодических сигналов для модуляции параметров.
 //! Поддерживаются различные формы волны и режимы синхронизации.
 
-use crate::control::{Automaton, Time, Range};
+use crate::control::{Automaton, Range, Time};
 use std::f64::consts::PI;
 
 /// Форма волны LFO
@@ -20,7 +20,7 @@ pub enum LfoWaveform {
     /// Прямоугольная волна
     Square,
     /// Прямоугольная с переменной скважностью
-    Pulse(f64),  // 0.0 - 1.0
+    Pulse(f64), // 0.0 - 1.0
     /// Случайное значение, удерживаемое в течение периода
     SampleAndHold,
     /// Плавное случайное блуждание
@@ -41,12 +41,12 @@ impl LfoWaveform {
             LfoWaveform::RandomWalk => "Random Walk",
         }
     }
-    
+
     /// Вычислить значение для заданной фазы
     pub fn evaluate(&self, phase: f64, pulse_width: Option<f64>) -> f64 {
         match self {
             LfoWaveform::Sine => (phase * 2.0 * PI).sin(),
-            
+
             LfoWaveform::Triangle => {
                 if phase < 0.25 {
                     4.0 * phase
@@ -56,27 +56,35 @@ impl LfoWaveform {
                     4.0 * phase - 4.0
                 }
             }
-            
+
             LfoWaveform::Saw => 2.0 * phase - 1.0,
-            
+
             LfoWaveform::ReverseSaw => 1.0 - 2.0 * phase,
-            
+
             LfoWaveform::Square => {
-                if phase < 0.5 { 1.0 } else { -1.0 }
+                if phase < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
             }
-            
+
             LfoWaveform::Pulse(width) => {
                 let w = pulse_width.unwrap_or(*width);
-                if phase < w { 1.0 } else { -1.0 }
+                if phase < w {
+                    1.0
+                } else {
+                    -1.0
+                }
             }
-            
+
             LfoWaveform::SampleAndHold => {
                 // Значение обновляется на каждом периоде
                 // Здесь просто возвращаем фазу как заглушку
                 // Реальное значение хранится в состоянии автомата
                 phase
             }
-            
+
             LfoWaveform::RandomWalk => {
                 // Непрерывное случайное блуждание
                 // Здесь просто возвращаем фазу как заглушку
@@ -218,7 +226,9 @@ impl Automaton for LfoAutomaton {
         let raw_value = match self.waveform {
             LfoWaveform::SampleAndHold => new_state.value,
             LfoWaveform::RandomWalk => new_state.value,
-            _ => self.waveform.evaluate(new_state.phase, Some(self.pulse_width)),
+            _ => self
+                .waveform
+                .evaluate(new_state.phase, Some(self.pulse_width)),
         };
 
         let value = raw_value * self.amplitude + self.offset;
@@ -259,7 +269,7 @@ impl Automaton for LfoAutomaton {
 mod tests {
     use super::*;
     use float_cmp::approx_eq;
-    
+
     #[test]
     fn test_sine_lfo() {
         let lfo = LfoAutomaton::new("Sine", 1.0, 1.0, 0.0, LfoWaveform::Sine);

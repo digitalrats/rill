@@ -1,8 +1,7 @@
-use rill_core::NodeId;
 use rill_core::queues::MpscQueue;
+use rill_core::NodeId;
 use rill_patchbay::{
-    FunctionAutomaton, ParameterMapping, PatchbayControl, Servo,
-    StatefulFunctionAutomaton,
+    FunctionAutomaton, ParameterMapping, PatchbayControl, Servo, StatefulFunctionAutomaton,
 };
 use std::sync::Arc;
 

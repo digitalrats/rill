@@ -1,6 +1,8 @@
 //! Пример с Null бэкендом
 
-use rill_io::{backends::NullBackend, processor::SilenceProcessor, AudioBackend, AudioConfig, AudioEngine};
+use rill_io::{
+    backends::NullBackend, processor::SilenceProcessor, AudioBackend, AudioConfig, AudioEngine,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Rill IO Null Backend Demo ===\n");

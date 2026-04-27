@@ -1,7 +1,7 @@
 //! Sine wave generator processor
 
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 use crate::engine::AudioProcessor;
 

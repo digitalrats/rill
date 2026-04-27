@@ -1,5 +1,5 @@
-use rill_core::NodeId;
 use rill_core::queues::MpscQueue;
+use rill_core::NodeId;
 use rill_patchbay::{LfoWaveform, PatchbayControl};
 use std::sync::Arc;
 

@@ -5,7 +5,7 @@
 //! - Chaos (детерминированный хаос)
 //! - Noise (белый, розовый, коричневый шум)
 
-use crate::control::{Automaton, NoAction, Time, Range};
+use crate::control::{Automaton, NoAction, Range, Time};
 
 /// Тип случайного процесса
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,7 +68,7 @@ impl RandomAutomaton {
             update_rate: 0.0,
         }
     }
-    
+
     /// Создать логистическое отображение (хаос)
     pub fn logistic(name: &str, r: f64) -> Self {
         Self {
@@ -80,7 +80,7 @@ impl RandomAutomaton {
             update_rate: 0.0,
         }
     }
-    
+
     /// Создать отображение Эно
     pub fn henon(name: &str, a: f64, b: f64) -> Self {
         Self {
@@ -92,7 +92,7 @@ impl RandomAutomaton {
             update_rate: 0.0,
         }
     }
-    
+
     /// Создать генератор белого шума
     pub fn white_noise(name: &str, update_rate: f64) -> Self {
         Self {
@@ -104,13 +104,13 @@ impl RandomAutomaton {
             update_rate: update_rate.max(1.0),
         }
     }
-    
+
     /// Установить диапазон
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
-    
+
     /// Xorshift RNG
     fn xorshift(&self, state: &mut u64) -> u64 {
         let mut x = *state;
@@ -120,40 +120,40 @@ impl RandomAutomaton {
         *state = x;
         x
     }
-    
+
     /// Случайное число в диапазоне [0, 1)
     fn random_f64(&self, state: &mut u64) -> f64 {
         self.xorshift(state) as f64 / u64::MAX as f64
     }
-    
+
     /// Обновить Random Walk
     fn update_walk(&self, state: &mut RandomState, dt: Time) {
         let step = (self.random_f64(&mut state.rng_state) - 0.5) * 2.0 * self.rate * dt;
         state.value = (state.value + step).clamp(-1.0, 1.0);
     }
-    
+
     /// Обновить логистическое отображение
     fn update_logistic(&self, state: &mut RandomState, _dt: Time) {
         let r = self.chaos_params.0;
         state.value = r * state.value * (1.0 - state.value);
     }
-    
+
     /// Обновить отображение Эно
     fn update_henon(&self, state: &mut RandomState, _dt: Time) {
         let a = self.chaos_params.0;
         let b = self.chaos_params.1;
-        
+
         if state.extra.is_empty() {
             state.extra.push(0.0);
         }
-        
+
         let x = state.value;
         let y = state.extra[0];
-        
+
         state.value = 1.0 - a * x * x + y;
         state.extra[0] = b * x;
     }
-    
+
     /// Обновить белый шум
     fn update_white_noise(&self, state: &mut RandomState, dt: Time) {
         state.last_time += dt;
@@ -219,7 +219,7 @@ impl Automaton for RandomAutomaton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_random_walk() {
         let walk = RandomAutomaton::walk("Walk", 0.1);

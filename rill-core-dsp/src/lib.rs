@@ -11,16 +11,15 @@
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
-
 // Для сложных const expr (опционально)
 #![cfg_attr(feature = "unstable", feature(generic_const_exprs))]
 
 pub mod algorithm;
-pub mod filters;
 pub mod context;
+pub mod filters;
 pub mod generators;
-pub mod math;
 pub mod mapping;
+pub mod math;
 pub mod smoothing;
 pub mod vector;
 
@@ -28,20 +27,22 @@ pub mod vector;
 pub mod macros;
 
 // Re-exports
-pub use algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
-pub use filters::{Filter, FilterType, FilterParams};
-pub use generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
+pub use algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 pub use context::DspContext;
+pub use filters::{Filter, FilterParams, FilterType};
+pub use generators::{EnvelopeGenerator, Generator, NoiseGenerator, LFO};
 
 /// Prelude для удобного импорта
 pub mod prelude {
-    pub use crate::algorithm::{Algorithm, ParameterizedAlgorithm, AlgorithmMetadata, AlgorithmCategory};
+    pub use crate::algorithm::{
+        Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
+    };
     pub use crate::context::DspContext;
-    pub use crate::filters::{Filter, FilterType, FilterParams};
-    pub use crate::generators::{Generator, LFO, NoiseGenerator, EnvelopeGenerator};
+    pub use crate::filters::{Filter, FilterParams, FilterType};
+    pub use crate::generators::{EnvelopeGenerator, Generator, NoiseGenerator, LFO};
+    pub use crate::macros::prelude::*;
     pub use crate::mapping::{ControlMapper, MappingStrategy};
     pub use crate::math::*;
     pub use crate::smoothing::ParamSmoother;
     pub use crate::vector::prelude::*;
-    pub use crate::macros::prelude::*;
 }

@@ -17,14 +17,22 @@ fn test_mixer_basic_processing() {
     let input1 = [0.5; DEFAULT_BLOCK_SIZE];
     let input2 = [0.3; DEFAULT_BLOCK_SIZE];
 
-    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input1);
-    mixer.input_port_mut(1).unwrap().buffer.as_mut_array().copy_from_slice(&input2);
+    mixer
+        .input_port_mut(0)
+        .unwrap()
+        .buffer
+        .as_mut_array()
+        .copy_from_slice(&input1);
+    mixer
+        .input_port_mut(1)
+        .unwrap()
+        .buffer
+        .as_mut_array()
+        .copy_from_slice(&input2);
 
     let clock = ClockTick::default();
 
-    mixer
-        .process(&clock, &[], &[], &[], &[])
-        .unwrap();
+    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -58,13 +66,16 @@ fn test_mixer_pan() {
 
     let input = [1.0; DEFAULT_BLOCK_SIZE];
 
-    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input);
+    mixer
+        .input_port_mut(0)
+        .unwrap()
+        .buffer
+        .as_mut_array()
+        .copy_from_slice(&input);
 
     let clock = ClockTick::default();
 
-    mixer
-        .process(&clock, &[], &[], &[], &[])
-        .unwrap();
+    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -85,13 +96,16 @@ fn test_mixer_mute() {
 
     let input = [1.0; DEFAULT_BLOCK_SIZE];
 
-    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input);
+    mixer
+        .input_port_mut(0)
+        .unwrap()
+        .buffer
+        .as_mut_array()
+        .copy_from_slice(&input);
 
     let clock = ClockTick::default();
 
-    mixer
-        .process(&clock, &[], &[], &[], &[])
-        .unwrap();
+    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -139,13 +153,16 @@ fn test_mixer_sends() {
 
     let input = [1.0; DEFAULT_BLOCK_SIZE];
 
-    mixer.input_port_mut(0).unwrap().buffer.as_mut_array().copy_from_slice(&input);
+    mixer
+        .input_port_mut(0)
+        .unwrap()
+        .buffer
+        .as_mut_array()
+        .copy_from_slice(&input);
 
     let clock = ClockTick::default();
 
-    mixer
-        .process(&clock, &[], &[], &[], &[])
-        .unwrap();
+    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();

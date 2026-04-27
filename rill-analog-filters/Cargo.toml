@@ -3,12 +3,13 @@ name = "rill-analog-filters"
 version = "0.3.0"
 edition = "2021"
 description = "Analog-modeled filters using Wave Digital Filter elements"
-license = "Apache-2.0"
-authors = ["Digital Rats / Rill Team"]
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
-rill-core = { path = "../rill-core", version = "0.3.0" }
-rill-core-wdf = { path = "../rill-core-wdf", version = "0.3.0" }
+rill-core = { workspace = true }
+rill-core-wdf = { workspace = true }
 
 [features]
 default = []

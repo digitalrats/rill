@@ -1,9 +1,8 @@
 use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
 use rill_patchbay::{
-    LfoWaveform, FunctionAutomaton, ParameterMapping,
-    PatchbayControl, Servo, Transform, ControlEvent,
-    EventPattern, Target, Mapping,
+    ControlEvent, EventPattern, FunctionAutomaton, LfoWaveform, Mapping, ParameterMapping,
+    PatchbayControl, Servo, Target, Transform,
 };
 use std::sync::Arc;
 
@@ -45,17 +44,7 @@ fn test_add_envelope_servo() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue.clone());
 
-    control.add_envelope(
-        "env1",
-        0.1,
-        0.2,
-        0.7,
-        0.3,
-        NodeId(1),
-        "gain",
-        0.0,
-        1.0,
-    );
+    control.add_envelope("env1", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);
 
     assert!(control.get_servo("env1").is_some());
 }
@@ -85,8 +74,28 @@ fn test_remove_servo() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue);
 
-    control.add_lfo("lfo1", 1.0, 0.2, 0.5, LfoWaveform::Sine, NodeId(1), "gain", 0.0, 1.0);
-    control.add_lfo("lfo2", 2.0, 0.3, 0.3, LfoWaveform::Sine, NodeId(1), "pan", 0.0, 1.0);
+    control.add_lfo(
+        "lfo1",
+        1.0,
+        0.2,
+        0.5,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "gain",
+        0.0,
+        1.0,
+    );
+    control.add_lfo(
+        "lfo2",
+        2.0,
+        0.3,
+        0.3,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "pan",
+        0.0,
+        1.0,
+    );
 
     assert!(control.remove_servo("lfo1"));
     assert!(control.get_servo("lfo1").is_none());
@@ -99,9 +108,39 @@ fn test_clear_servos() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue);
 
-    control.add_lfo("lfo1", 1.0, 0.2, 0.5, LfoWaveform::Sine, NodeId(1), "gain", 0.0, 1.0);
-    control.add_lfo("lfo2", 2.0, 0.3, 0.3, LfoWaveform::Sine, NodeId(1), "pan", 0.0, 1.0);
-    control.add_lfo("lfo3", 0.5, 0.1, 0.7, LfoWaveform::Sine, NodeId(1), "cutoff", 0.0, 1.0);
+    control.add_lfo(
+        "lfo1",
+        1.0,
+        0.2,
+        0.5,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "gain",
+        0.0,
+        1.0,
+    );
+    control.add_lfo(
+        "lfo2",
+        2.0,
+        0.3,
+        0.3,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "pan",
+        0.0,
+        1.0,
+    );
+    control.add_lfo(
+        "lfo3",
+        0.5,
+        0.1,
+        0.7,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "cutoff",
+        0.0,
+        1.0,
+    );
 
     control.clear();
     assert!(control.get_servo("lfo1").is_none());
@@ -114,7 +153,17 @@ fn test_servo_updates() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue.clone());
 
-    control.add_lfo("lfo1", 1.0, 0.2, 0.5, LfoWaveform::Sine, NodeId(1), "gain", 0.0, 1.0);
+    control.add_lfo(
+        "lfo1",
+        1.0,
+        0.2,
+        0.5,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "gain",
+        0.0,
+        1.0,
+    );
 
     for _ in 1..=3 {
         control.update(0.1);
@@ -132,9 +181,39 @@ fn test_multiple_servos() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue);
 
-    control.add_lfo("lfo1", 1.0, 0.2, 0.5, LfoWaveform::Sine, NodeId(1), "gain", 0.0, 1.0);
-    control.add_lfo("lfo2", 2.0, 0.3, 0.3, LfoWaveform::Sine, NodeId(1), "pan", 0.0, 1.0);
-    control.add_lfo("lfo3", 0.5, 0.1, 0.7, LfoWaveform::Sine, NodeId(1), "cutoff", 0.0, 1.0);
+    control.add_lfo(
+        "lfo1",
+        1.0,
+        0.2,
+        0.5,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "gain",
+        0.0,
+        1.0,
+    );
+    control.add_lfo(
+        "lfo2",
+        2.0,
+        0.3,
+        0.3,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "pan",
+        0.0,
+        1.0,
+    );
+    control.add_lfo(
+        "lfo3",
+        0.5,
+        0.1,
+        0.7,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "cutoff",
+        0.0,
+        1.0,
+    );
 
     assert!(control.get_servo("lfo1").is_some());
     assert!(control.get_servo("lfo2").is_some());
@@ -146,7 +225,17 @@ fn test_disable_servo() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue.clone());
 
-    control.add_lfo("lfo1", 0.25, 0.5, 0.5, LfoWaveform::Sine, NodeId(1), "gain", 0.0, 1.0);
+    control.add_lfo(
+        "lfo1",
+        0.25,
+        0.5,
+        0.5,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "gain",
+        0.0,
+        1.0,
+    );
 
     control.update(0.1);
     let initial_count = drain_count(&queue);
@@ -160,10 +249,7 @@ fn test_disable_servo() {
     }
 
     let disabled_count = drain_count(&queue);
-    assert_eq!(
-        disabled_count, 0,
-        "Signals were sent while disabled"
-    );
+    assert_eq!(disabled_count, 0, "Signals were sent while disabled");
 
     if let Some(servo) = control.get_servo_mut("lfo1") {
         servo.set_enabled(true);
@@ -171,7 +257,10 @@ fn test_disable_servo() {
 
     control.update(0.1);
     let after_enable = drain_count(&queue);
-    assert!(after_enable > 0 || initial_count > 0, "Should produce some signals");
+    assert!(
+        after_enable > 0 || initial_count > 0,
+        "Should produce some signals"
+    );
 }
 
 fn drain_count(queue: &Arc<MpscQueue<rill_patchbay::ParameterCommand>>) -> usize {
@@ -187,10 +276,21 @@ fn test_different_servo_types() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue);
 
-    control.add_lfo("lfo", 1.0, 0.5, 0.5, LfoWaveform::Sine, NodeId(1), "float_param", 0.0, 1.0);
+    control.add_lfo(
+        "lfo",
+        1.0,
+        0.5,
+        0.5,
+        LfoWaveform::Sine,
+        NodeId(1),
+        "float_param",
+        0.0,
+        1.0,
+    );
     control.add_envelope("env", 0.1, 0.2, 0.7, 0.3, NodeId(1), "int_param", 0.0, 1.0);
 
-    let square = FunctionAutomaton::new("Square", |t| if (t * 0.2).sin() > 0.0 { 1.0 } else { 0.0 });
+    let square =
+        FunctionAutomaton::new("Square", |t| if (t * 0.2).sin() > 0.0 { 1.0 } else { 0.0 });
     let servo = Servo::new(
         "gate",
         square,
@@ -244,14 +344,9 @@ fn test_mapping_in_control() {
     let queue = Arc::new(MpscQueue::with_capacity(64));
     let mut control = PatchbayControl::new(queue.clone());
 
-    control.add_mapping_str(
-        "midi:1:7",
-        NodeId(1),
-        "volume",
-        0.0,
-        1.0,
-        Transform::Linear,
-    ).unwrap();
+    control
+        .add_mapping_str("midi:1:7", NodeId(1), "volume", 0.0, 1.0, Transform::Linear)
+        .unwrap();
 
     assert_eq!(control.mappings().len(), 1);
 

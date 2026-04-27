@@ -9,21 +9,19 @@
 //! Работает в **потоке управления** (soft RT) и отправляет
 //! команды в аудиопоток через `RtQueue<ParameterCommand>`.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use rill_core::prelude::*;
 use rill_core::queues::MpscQueue;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::automaton::{
-    LfoWaveform, LfoAutomaton,
-    EnvelopeAutomaton, FunctionAutomaton, SequencerAutomaton, Step,
+    EnvelopeAutomaton, FunctionAutomaton, LfoAutomaton, LfoWaveform, SequencerAutomaton, Step,
 };
 use crate::control::{
-    Automaton, BoxedServo, AnyServo, ParameterMapping, ParameterCommand,
-    Mapping, EventPattern, Transform, ControlEvent,
-    midi_cc, osc_address,
+    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
+    ParameterCommand, ParameterMapping, Transform,
 };
 
 // =============================================================================
@@ -32,11 +30,7 @@ use crate::control::{
 #[derive(Debug, Clone)]
 pub enum PatchbayEvent {
     /// Автомат обновлён
-    AutomatonUpdated {
-        id: String,
-        value: f64,
-        time: f64,
-    },
+    AutomatonUpdated { id: String, value: f64, time: f64 },
     /// Маппинг сработал
     MappingTriggered {
         pattern: String,
@@ -121,44 +115,41 @@ impl Default for PatchbayConfig {
 pub struct PatchbayManager {
     /// Конфигурация
     config: PatchbayConfig,
-    
+
     /// Автоматы (ключ — ID, type-erased)
     automata: HashMap<String, Box<dyn std::any::Any + Send>>,
-    
+
     /// Состояния автоматов
     automaton_states: HashMap<String, Box<dyn std::any::Any + Send>>,
-    
+
     /// Сервоприводы (связь автоматов с параметрами)
     servos: HashMap<String, BoxedServo>,
-    
+
     /// Маппинги событий
     mappings: Vec<Mapping>,
-    
+
     /// Очередь для отправки команд в аудиопоток
     command_queue: Arc<MpscQueue<ParameterCommand>>,
-    
+
     /// Канал для событий (опционально)
     event_tx: Option<crossbeam_channel::Sender<PatchbayEvent>>,
-    
+
     /// Текущее время (секунды)
     time: f64,
-    
+
     /// Статистика
     stats: PatchbayStats,
-    
+
     /// Флаг работы
     running: Arc<AtomicBool>,
-    
+
     /// Поток обновления
     update_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PatchbayManager {
     /// Создать новый менеджер
-    pub fn new(
-        config: PatchbayConfig,
-        command_queue: Arc<MpscQueue<ParameterCommand>>,
-    ) -> Self {
+    pub fn new(config: PatchbayConfig, command_queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
         Self {
             config,
             automata: HashMap::new(),
@@ -173,17 +164,17 @@ impl PatchbayManager {
             update_thread: None,
         }
     }
-    
+
     /// Установить канал для событий
     pub fn with_event_channel(mut self, tx: crossbeam_channel::Sender<PatchbayEvent>) -> Self {
         self.event_tx = Some(tx);
         self
     }
-    
+
     // =========================================================================
     // Управление автоматами
     // =========================================================================
-    
+
     /// Добавить автомат
     pub fn add_automaton<A: Automaton + 'static>(
         &mut self,
@@ -197,14 +188,17 @@ impl PatchbayManager {
         if self.automata.contains_key(&id) {
             return Err("Automaton with this ID already exists");
         }
-        
+
         let state = automaton.initial_state();
-        self.automata.insert(id.clone(), Box::new(automaton) as Box<dyn std::any::Any + Send>);
+        self.automata.insert(
+            id.clone(),
+            Box::new(automaton) as Box<dyn std::any::Any + Send>,
+        );
         self.automaton_states.insert(id, Box::new(state));
-        
+
         Ok(())
     }
-    
+
     /// Добавить LFO как автомат
     pub fn add_lfo(
         &mut self,
@@ -215,16 +209,10 @@ impl PatchbayManager {
         waveform: LfoWaveform,
     ) -> Result<(), &'static str> {
         let id_str = id.into();
-        let automaton = LfoAutomaton::new(
-            &id_str,
-            frequency,
-            amplitude,
-            offset,
-            waveform,
-        );
+        let automaton = LfoAutomaton::new(&id_str, frequency, amplitude, offset, waveform);
         self.add_automaton(id_str, automaton)
     }
-    
+
     /// Добавить огибающую как автомат
     pub fn add_envelope(
         &mut self,
@@ -235,16 +223,10 @@ impl PatchbayManager {
         release: f64,
     ) -> Result<(), &'static str> {
         let id_str = id.into();
-        let automaton = EnvelopeAutomaton::adsr(
-            &id_str,
-            attack,
-            decay,
-            sustain,
-            release,
-        );
+        let automaton = EnvelopeAutomaton::adsr(&id_str, attack, decay, sustain, release);
         self.add_automaton(id_str, automaton)
     }
-    
+
     /// Добавить секвенсор как автомат
     pub fn add_sequencer(
         &mut self,
@@ -255,7 +237,7 @@ impl PatchbayManager {
         let automaton = SequencerAutomaton::new(&id_str, steps);
         self.add_automaton(id_str, automaton)
     }
-    
+
     /// Добавить функциональный автомат
     pub fn add_function<F>(
         &mut self,
@@ -269,27 +251,32 @@ impl PatchbayManager {
         let automaton = FunctionAutomaton::new(&id_str, generator);
         self.add_automaton(id_str, automaton)
     }
-    
+
     /// Сбросить автомат (generic, caller must know the type)
-    pub fn reset_automaton<A: Automaton + 'static>(&mut self, id: &str) -> Result<(), &'static str> {
-        let automaton = self.automata.get(id)
+    pub fn reset_automaton<A: Automaton + 'static>(
+        &mut self,
+        id: &str,
+    ) -> Result<(), &'static str> {
+        let automaton = self
+            .automata
+            .get(id)
             .and_then(|a| a.downcast_ref::<A>())
             .ok_or("Automaton not found or type mismatch")?;
         let state = automaton.initial_state();
-        self.automaton_states.insert(id.to_string(), Box::new(state));
+        self.automaton_states
+            .insert(id.to_string(), Box::new(state));
         Ok(())
     }
-    
+
     /// Удалить автомат
     pub fn remove_automaton(&mut self, id: &str) -> bool {
-        self.automata.remove(id).is_some() &&
-        self.automaton_states.remove(id).is_some()
+        self.automata.remove(id).is_some() && self.automaton_states.remove(id).is_some()
     }
-    
+
     // =========================================================================
     // Управление сервоприводами
     // =========================================================================
-    
+
     /// Добавить сервопривод (связь автомата с параметром)
     pub fn add_servo(
         &mut self,
@@ -304,25 +291,27 @@ impl PatchbayManager {
         let id_str = id.into();
         let automaton_id_str = automaton_id.into();
         let target_param_str = target_param.into();
-        let _automaton = self.automata.get(&automaton_id_str)
+        let _automaton = self
+            .automata
+            .get(&automaton_id_str)
             .ok_or("Automaton not found")?;
-        
+
         // Создаём сервопривод
         // В реальном коде нужно клонировать автомат
         // Здесь упрощённо
-        
+
         let servo = Box::new(TestServo {
             id: id_str.clone(),
             target_node,
             target_param: target_param_str,
             last_value: 0.0,
         });
-        
+
         self.servos.insert(id_str, servo);
-        
+
         Ok(())
     }
-    
+
     /// Добавить LFO как сервопривод (упрощённый метод)
     pub fn add_lfo_servo(
         &mut self,
@@ -339,33 +328,41 @@ impl PatchbayManager {
         let id_str = id.into();
         let automaton_id = format!("{}_auto", &id_str);
         self.add_lfo(&automaton_id, frequency, amplitude, offset, waveform)?;
-        self.add_servo(id_str, automaton_id, target_node, target_param, ParameterMapping::Linear, min, max)
+        self.add_servo(
+            id_str,
+            automaton_id,
+            target_node,
+            target_param,
+            ParameterMapping::Linear,
+            min,
+            max,
+        )
     }
-    
+
     /// Получить сервопривод
     pub fn get_servo(&self, id: &str) -> Option<&dyn AnyServo> {
         self.servos.get(id).map(|b| b.as_ref())
     }
-    
+
     /// Получить мутабельный сервопривод
     pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedServo> {
         self.servos.get_mut(id)
     }
-    
+
     /// Удалить сервопривод
     pub fn remove_servo(&mut self, id: &str) -> bool {
         self.servos.remove(id).is_some()
     }
-    
+
     // =========================================================================
     // Управление маппингами
     // =========================================================================
-    
+
     /// Добавить маппинг события
     pub fn add_mapping(&mut self, mapping: Mapping) {
         self.mappings.push(mapping);
     }
-    
+
     /// Добавить MIDI маппинг
     pub fn add_midi_mapping(
         &mut self,
@@ -388,7 +385,7 @@ impl PatchbayManager {
         );
         self.add_mapping(mapping);
     }
-    
+
     /// Добавить OSC маппинг
     pub fn add_osc_mapping(
         &mut self,
@@ -409,53 +406,56 @@ impl PatchbayManager {
         );
         self.add_mapping(mapping);
     }
-    
+
     /// Удалить маппинги по паттерну
     pub fn remove_mappings(&mut self, pattern: &EventPattern) -> usize {
         let before = self.mappings.len();
         self.mappings.retain(|m| &m.pattern != pattern);
         before - self.mappings.len()
     }
-    
+
     /// Очистить все маппинги
     pub fn clear_mappings(&mut self) {
         self.mappings.clear();
     }
-    
+
     // =========================================================================
     // Обработка событий
     // =========================================================================
-    
+
     /// Обработать внешнее событие (MIDI/OSC)
     pub fn handle_event(&mut self, event: ControlEvent) {
         let mut commands = Vec::new();
-        
+
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
                 let value = cmd.value;
                 commands.push(cmd);
-                
+
                 if self.config.log_events {
                     self.emit_event(PatchbayEvent::MappingTriggered {
                         pattern: format!("{:?}", mapping.pattern),
-                        target: format!("{}:{}", mapping.target.node_id.0, mapping.target.param_name),
+                        target: format!(
+                            "{}:{}",
+                            mapping.target.node_id.0, mapping.target.param_name
+                        ),
                         value,
                     });
                 }
             }
         }
-        
+
         // Отправляем команды в аудиопоток
         for cmd in commands {
             let _ = self.command_queue.push(cmd.clone());
             self.stats.commands_sent += 1;
-            
+
             if self.config.log_events {
                 self.emit_event(PatchbayEvent::CommandSent(cmd));
             }
         }
     }
-    
+
     /// Обработать MIDI сообщение (упрощённый метод)
     pub fn handle_midi(&mut self, channel: u8, controller: u8, value: u8) {
         let event = ControlEvent::MidiControl {
@@ -466,7 +466,7 @@ impl PatchbayManager {
         };
         self.handle_event(event);
     }
-    
+
     /// Обработать OSC сообщение (упрощённый метод)
     pub fn handle_osc(&mut self, address: &str, args: Vec<f32>) {
         let event = ControlEvent::Osc {
@@ -475,59 +475,59 @@ impl PatchbayManager {
         };
         self.handle_event(event);
     }
-    
+
     /// Отправить событие (если есть канал)
     fn emit_event(&self, event: PatchbayEvent) {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(event);
         }
     }
-    
+
     // =========================================================================
     // Запуск и остановка
     // =========================================================================
-    
+
     /// Запустить менеджер в отдельном потоке
     pub fn start(&mut self) -> Result<(), &'static str> {
         if self.running.load(Ordering::Relaxed) {
             return Err("Already running");
         }
-        
+
         self.running.store(true, Ordering::Relaxed);
-        
+
         let running = self.running.clone();
         let update_interval = Duration::from_secs_f64(1.0 / self.config.update_rate_hz);
         let collect_stats = self.config.collect_stats;
-        
+
         // Перемещаем данные в поток
         let automata = std::mem::replace(&mut self.automata, HashMap::new());
         let mut automaton_states = std::mem::take(&mut self.automaton_states);
         let mut servos = std::mem::take(&mut self.servos);
         let command_queue = self.command_queue.clone();
         let _event_tx = self.event_tx.clone();
-        
+
         self.update_thread = Some(std::thread::spawn(move || {
             let mut last_time = Instant::now();
             let mut stats = PatchbayStats::default();
             let mut time = 0.0;
-            
+
             while running.load(Ordering::Relaxed) {
                 let frame_start = Instant::now();
-                
+
                 // Вычисляем dt
                 let now = Instant::now();
                 let dt = now.duration_since(last_time).as_secs_f64();
                 last_time = now;
                 time += dt;
-                
+
                 // Обновляем все автоматы
                 let mut commands = Vec::new();
-                
+
                 for (id, _automaton) in &automata {
                     if let Some(_state) = automaton_states.get_mut(id) {
                         // В реальном коде здесь нужно применить шаг автомата
                         // и получить команды от сервоприводов
-                        
+
                         if let Some(servo) = servos.get_mut(id) {
                             if let Some(cmd) = servo.update(time) {
                                 commands.push(cmd);
@@ -535,18 +535,18 @@ impl PatchbayManager {
                         }
                     }
                 }
-                
+
                 // Отправляем команды
                 for cmd in commands {
                     let _ = command_queue.push(cmd.clone());
                     stats.commands_sent += 1;
                 }
-                
+
                 // Обновляем статистику
                 if collect_stats {
                     stats.update(frame_start.elapsed());
                 }
-                
+
                 // Спим до следующего обновления
                 let elapsed = frame_start.elapsed();
                 if elapsed < update_interval {
@@ -554,34 +554,34 @@ impl PatchbayManager {
                 }
             }
         }));
-        
+
         Ok(())
     }
-    
+
     /// Остановить менеджер
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
-        
+
         if let Some(thread) = self.update_thread.take() {
             let _ = thread.join();
         }
     }
-    
+
     /// Получить статистику
     pub fn stats(&self) -> &PatchbayStats {
         &self.stats
     }
-    
+
     /// Сбросить статистику
     pub fn reset_stats(&mut self) {
         self.stats = PatchbayStats::default();
     }
-    
+
     /// Получить текущее время
     pub fn current_time(&self) -> f64 {
         self.time
     }
-    
+
     /// Проверить, запущен ли менеджер
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
@@ -610,7 +610,7 @@ impl AnyServo for TestServo {
     fn update(&mut self, time: f64) -> Option<ParameterCommand> {
         // Генерируем тестовое значение
         let value = (time * 2.0).sin() * 0.5 + 0.5;
-        
+
         if (value - self.last_value).abs() > 0.01 {
             self.last_value = value;
             Some(ParameterCommand::new(
@@ -622,15 +622,14 @@ impl AnyServo for TestServo {
             None
         }
     }
-    
+
     fn id(&self) -> &str {
         &self.id
     }
-    
+
     fn set_enabled(&mut self, _enabled: bool) {
         // Игнорируем
     }
-    
 }
 
 // =============================================================================
@@ -653,50 +652,50 @@ impl PatchbayManagerBuilder {
             event_channel: None,
         }
     }
-    
+
     /// Установить конфигурацию
     pub fn with_config(mut self, config: PatchbayConfig) -> Self {
         self.config = config;
         self
     }
-    
+
     /// Установить частоту обновления
     pub fn with_update_rate(mut self, hz: f64) -> Self {
         self.config.update_rate_hz = hz;
         self
     }
-    
+
     /// Установить очередь команд
     pub fn with_command_queue(mut self, queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
         self.command_queue = Some(queue);
         self
     }
-    
+
     /// Установить канал событий
     pub fn with_event_channel(mut self, tx: crossbeam_channel::Sender<PatchbayEvent>) -> Self {
         self.event_channel = Some(tx);
         self.config.log_events = true;
         self
     }
-    
+
     /// Включить сбор статистики
     pub fn with_stats(mut self, enabled: bool) -> Self {
         self.config.collect_stats = enabled;
         self
     }
-    
+
     /// Собрать менеджер
     pub fn build(self) -> PatchbayManager {
-        let queue = self.command_queue.unwrap_or_else(|| {
-            Arc::new(MpscQueue::with_capacity(self.config.command_queue_size))
-        });
-        
+        let queue = self
+            .command_queue
+            .unwrap_or_else(|| Arc::new(MpscQueue::with_capacity(self.config.command_queue_size)));
+
         let mut manager = PatchbayManager::new(self.config, queue);
-        
+
         if let Some(tx) = self.event_channel {
             manager = manager.with_event_channel(tx);
         }
-        
+
         manager
     }
 }
@@ -716,81 +715,81 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
-    
+
     #[test]
     fn test_manager_creation() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
         let manager = PatchbayManager::new(PatchbayConfig::default(), queue);
-        
+
         assert_eq!(manager.automata.len(), 0);
         assert_eq!(manager.mappings.len(), 0);
         assert!(!manager.is_running());
     }
-    
+
     #[test]
     fn test_add_automaton() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
         let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue);
-        
+
         let result = manager.add_lfo("test_lfo", 1.0, 0.5, 0.0, LfoWaveform::Sine);
         assert!(result.is_ok());
         assert_eq!(manager.automata.len(), 1);
     }
-    
+
     #[test]
     fn test_add_mapping() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
         let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue);
-        
+
         manager.add_midi_mapping(7, None, NodeId(1), "volume", 0.0, 1.0, Transform::Linear);
         assert_eq!(manager.mappings.len(), 1);
     }
-    
+
     #[test]
     fn test_handle_event() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
         let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue.clone());
-        
+
         manager.add_midi_mapping(7, None, NodeId(1), "volume", 0.0, 1.0, Transform::Linear);
-        
+
         let event = ControlEvent::MidiControl {
             channel: 1,
             controller: 7,
             value: 64,
             normalized: 0.5,
         };
-        
+
         manager.handle_event(event);
-        
+
         // Должна быть команда в очереди
         // assert!(queue.len() > 0); // В реальном тесте
     }
-    
+
     #[test]
     fn test_start_stop() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
         let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue);
-        
+
         let result = manager.start();
         assert!(result.is_ok());
         assert!(manager.is_running());
-        
+
         thread::sleep(Duration::from_millis(100));
-        
+
         manager.stop();
         assert!(!manager.is_running());
     }
-    
+
     #[test]
     fn test_builder() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        
+
         let manager = PatchbayManagerBuilder::new()
             .with_update_rate(500.0)
             .with_command_queue(queue)
             .with_stats(true)
             .build();
-        
+
         assert_eq!(manager.config.update_rate_hz, 500.0);
         assert!(manager.config.collect_stats);
     }

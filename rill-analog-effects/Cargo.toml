@@ -3,12 +3,13 @@ name = "rill-analog-effects"
 version = "0.3.0"
 edition = "2021"
 description = "Analog circuit models: op-amps, tape decks, preamps"
-license = "Apache-2.0"
-authors = ["Digital Rats / Rill Team"]
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
-rill-core = { path = "../rill-core", version = "0.3.0" }
-rill-core-wdf = { path = "../rill-core-wdf", version = "0.3.0" }
+rill-core = { workspace = true }
+rill-core-wdf = { workspace = true }
 rand = { workspace = true }
 
 [features]

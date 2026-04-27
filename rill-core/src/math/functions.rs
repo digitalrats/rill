@@ -57,7 +57,7 @@ pub fn fast_tanh<T: AudioNum>(x: T) -> T {
 pub fn soft_clip<T: AudioNum>(x: T, threshold: T) -> T {
     let xf = x.to_f32();
     let t = threshold.to_f32();
-    
+
     if xf > t {
         T::from_f32(t + (xf - t) / (1.0 + ((xf - t) / (1.0 - t)).powi(2)))
     } else if xf < -t {

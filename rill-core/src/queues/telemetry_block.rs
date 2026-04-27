@@ -101,7 +101,11 @@ mod tests {
         block.compute_metrics();
         assert!((block.peak - 1.0).abs() < 0.01, "peak={}", block.peak);
         assert!((block.rms - 0.707).abs() < 0.01, "rms={}", block.rms);
-        assert!(block.dc_offset.abs() < 0.01, "dc_offset={}", block.dc_offset);
+        assert!(
+            block.dc_offset.abs() < 0.01,
+            "dc_offset={}",
+            block.dc_offset
+        );
     }
 
     #[test]

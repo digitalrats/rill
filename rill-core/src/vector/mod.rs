@@ -38,39 +38,37 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-pub mod traits;
-pub mod ops;
 pub mod math;
+pub mod ops;
+pub mod traits;
 // pub mod expr;  // временно отключено из-за ошибок компиляции
-pub mod scalar;
 pub mod macros;
+pub mod scalar;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod simd;
 
-
-
 // Re-exports
-pub use traits::*;
-pub use ops::*;
 pub use math::*;
+pub use ops::*;
+pub use traits::*;
 // pub use expr::*;  // временно отключено
-pub use scalar::*;
 pub use macros::*;
+pub use scalar::*;
 
 /// Prelude для удобного импорта
 pub mod prelude {
-    pub use crate::vector::traits::*;
-    pub use crate::vector::ops::*;
     pub use crate::vector::math::*;
+    pub use crate::vector::ops::*;
+    pub use crate::vector::traits::*;
     // pub use crate::vector::expr::*;  // временно отключено
-    pub use crate::vector::scalar::*;
     pub use crate::vector::macros::*;
-    
+    pub use crate::vector::scalar::*;
+
     // Типы векторов
     #[cfg(feature = "simd")]
     pub use crate::vector::simd::*;
-    
+
     // Скалярные типы
     pub use crate::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
 }
