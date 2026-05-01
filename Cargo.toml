@@ -37,9 +37,9 @@ crossbeam-channel = "0.5"
 tokio = "1.0"
 
 # Internal workspace crates
-rill-core = { path = "rill-core", version = "0.3.0" }
+rill-core = { path = "rill-core", version = "0.3.1" }
 rill-core-dsp = { path = "rill-core-dsp", version = "0.3.0" }
-rill-core-wdf = { path = "rill-core-wdf", version = "0.3.0" }
+rill-core-wdf = { path = "rill-core-wdf", version = "0.3.1" }
 rill-graph = { path = "rill-graph", version = "0.3.0" }
 rill-patchbay = { path = "rill-patchbay", version = "0.3.0" }
 rill-oscillators = { path = "rill-oscillators", version = "0.3.0" }
@@ -49,7 +49,7 @@ rill-router = { path = "rill-router", version = "0.3.0" }
 rill-lofi = { path = "rill-lofi", version = "0.3.0" }
 rill-io = { path = "rill-io", version = "0.3.0" }
 rill-telemetry = { path = "rill-telemetry", version = "0.3.0" }
-rill-analog-filters = { path = "rill-analog-filters", version = "0.3.0" }
+rill-analog-filters = { path = "rill-analog-filters", version = "0.3.1" }
 rill-analog-effects = { path = "rill-analog-effects", version = "0.3.0" }
 rill-osc = { path = "rill-osc", version = "0.3.0" }
 rill-adrift = { path = "rill-adrift", version = "0.3.0" }

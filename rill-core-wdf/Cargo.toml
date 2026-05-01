@@ -1,6 +1,6 @@
 [package]
 name = "rill-core-wdf"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Wave Digital Filter core — elements, adapters, and analysis for analog circuit modeling"
 license.workspace = true
