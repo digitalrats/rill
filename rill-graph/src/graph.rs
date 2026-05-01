@@ -280,6 +280,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
             }
         }
     }
+
+    /// Consume the graph and return its parts for the AudioEngine.
+    pub fn into_parts(
+        self,
+    ) -> (Vec<NodeVariant<T, BUF_SIZE>>, Vec<usize>, ClockTick) {
+        let nodes = self.nodes.into_iter().map(|e| e.node).collect();
+        (nodes, self.topo_order, self.current_tick)
+    }
 }
 
 // ============================================================================

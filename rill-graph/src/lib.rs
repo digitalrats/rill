@@ -19,6 +19,9 @@
 
 mod graph;
 
+/// Real-time safe audio engine for driving an [`AudioGraph`].
+pub mod engine;
+
 pub use graph::{AudioGraph, BuildError, ConnectionKind, GraphBuilder};
 
 /// Prelude for convenient imports

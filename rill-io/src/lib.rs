@@ -1,22 +1,20 @@
 //! Audio I/O backends for Rill
 //!
 //! This crate provides a unified interface to various audio backends
-//! using dynamic ring buffers for cross-thread I/O.
+//! (ALSA, CPAL, PipeWire, JACK). Graph processing is handled by
+//! [`rill_graph::AudioEngine`] — this crate is purely about hardware I/O.
 
 #![warn(missing_docs)]
 
 mod backend;
 mod buffer;
 mod config;
-mod engine;
 mod error;
 
 pub mod backends;
-pub mod processor;
 
 pub use backend::{AudioBackend, BackendType, DeviceInfo};
 pub use config::AudioConfig;
-pub use engine::{AudioEngine, AudioProcessor, EngineState};
 pub use error::{IoError, IoResult};
 
 pub use backends::NullBackend;
@@ -33,25 +31,9 @@ pub use backends::PipewireBackend;
 #[cfg(feature = "jack")]
 pub use backends::JackBackend;
 
-// Processor re-exports
-pub use processor::{GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor};
-
-#[cfg(feature = "graph")]
-pub use processor::GraphProcessor;
-
-#[cfg(feature = "examples")]
-pub use processor::SineProcessor;
-
-#[cfg(feature = "examples")]
-pub use processor::CaptureProcessor;
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AudioConfig;
-    use crate::processor::{
-        GainProcessor, MonoMixerProcessor, PassThroughProcessor, SilenceProcessor,
-    };
 
     #[test]
     fn test_config_default() {
@@ -81,41 +63,5 @@ mod tests {
         let latency_ms = config.latency_ms();
         assert!((latency_sec - 256.0 / 48000.0).abs() < 1e-10);
         assert!((latency_ms - 256.0 * 1000.0 / 48000.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_gain_processor() {
-        let mut proc = GainProcessor::new(2.0);
-        let input = vec![1.0, 2.0, 3.0];
-        let mut output = vec![0.0; 3];
-        proc.process(&input, &mut output);
-        assert_eq!(output, vec![2.0, 4.0, 6.0]);
-    }
-
-    #[test]
-    fn test_passthrough_processor() {
-        let mut proc = PassThroughProcessor;
-        let input = vec![1.0, -1.0, 0.5];
-        let mut output = vec![0.0; 3];
-        proc.process(&input, &mut output);
-        assert_eq!(output, input);
-    }
-
-    #[test]
-    fn test_silence_processor() {
-        let mut proc = SilenceProcessor;
-        let input = vec![1.0, 2.0, 3.0];
-        let mut output = vec![1.0; 3];
-        proc.process(&input, &mut output);
-        assert_eq!(output, vec![0.0; 3]);
-    }
-
-    #[test]
-    fn test_mono_mixer_processor() {
-        let mut proc = MonoMixerProcessor;
-        let input = vec![0.8, 0.2, 0.5, 0.5, 1.0, 0.0];
-        let mut output = vec![0.0; 3];
-        proc.process(&input, &mut output);
-        assert_eq!(output, vec![0.5, 0.5, 0.5]);
     }
 }

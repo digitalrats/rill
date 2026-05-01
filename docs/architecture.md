@@ -419,7 +419,7 @@ let output = opamp.process(0.3);
 ```
 
 ### `rill-io` (0.3.0, активен)
-Аудио ввод-вывод.
+Аудио ввод-вывод. Pure I/O backends — без движка, без процессоров.
 
 ```rust
 pub trait AudioBackend: Send + Sync {
@@ -429,14 +429,29 @@ pub trait AudioBackend: Send + Sync {
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize>;
     fn write(&mut self, buffer: &[f32]) -> IoResult<usize>;
 }
+```
 
-// Основной движок
-pub struct AudioEngine<B: AudioBackend, P: AudioProcessor> {
-    backend: B,
-    processor: P,
-    // ...
+Графовый движок живёт в `rill-graph::AudioEngine` — см. раздел `rill-graph`.
+
+### `rill-graph::AudioEngine` (текущая реализация)
+
+```rust
+pub struct AudioEngine<T: Transcendental, const BUF_SIZE: usize> {
+    nodes: Vec<NodeVariant<T, BUF_SIZE>>,
+    topo_order: Vec<usize>,
+    cmd_slots: Vec<Option<CommandEnum>>,
+    cmd_rx: Option<Receiver<CommandEnum>>,
+    tel_tx: Option<Sender<Telemetry>>,
+    running: Arc<AtomicBool>,
 }
 ```
+
+- `process_tick(tick)` — clock boundary: drain команд (anti-ack), pre_process (feedback mix), apply параметров
+- `process_block(tick)` — full cycle: process_tick + topo-order node processing + snapshot + propagate
+- `spawn()` — moves engine into dedicated audio thread
+- Two-thread architecture: audio thread (hard RT) + control thread (soft RT, PatchbayManager)
+
+Push (Source active) и pull (Sink active) модели обе поддерживаются.
 
 ## Ключевые принципы архитектуры
 

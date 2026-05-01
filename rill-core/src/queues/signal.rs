@@ -478,6 +478,14 @@ impl CommandEnum {
         }
     }
 
+    /// Вернуть NodeId если команда адресована узлу графа (SetParameter).
+    pub fn target_node_id(&self) -> Option<crate::traits::NodeId> {
+        match self {
+            CommandEnum::SetParameter(cmd) => Some(cmd.port.node_id()),
+            _ => None,
+        }
+    }
+
     /// Получить временную метку (если есть)
     pub fn timestamp(&self) -> Option<u64> {
         match self {

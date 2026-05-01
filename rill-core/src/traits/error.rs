@@ -86,6 +86,11 @@ pub enum ProcessError {
     #[error("Operation timed out")]
     Timeout,
 
+    /// Real-time violation — operation exceeded its time budget or
+    /// performed an illegal action (allocation, blocking, etc.)
+    #[error("Realtime violation: {0}")]
+    RealtimeViolation(String),
+
     /// Internal error (for implementation-specific errors)
     #[error("Internal error: {0}")]
     Internal(String),
@@ -175,6 +180,7 @@ impl ProcessError {
             Self::AlreadyInitialized => true,
             Self::Unsupported(_) => false,
             Self::Timeout => true,
+            Self::RealtimeViolation(_) => false,
             Self::Internal(_) => false,
         }
     }
@@ -196,6 +202,7 @@ impl ProcessError {
             Self::AlreadyInitialized => "ERR_ALREADY_INIT",
             Self::Unsupported(_) => "ERR_UNSUPPORTED",
             Self::Timeout => "ERR_TIMEOUT",
+            Self::RealtimeViolation(_) => "ERR_RT_VIOLATION",
             Self::Internal(_) => "ERR_INTERNAL",
         }
     }

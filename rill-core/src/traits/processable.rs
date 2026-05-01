@@ -178,6 +178,125 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
         }
     }
 
+    fn num_audio_inputs(&self) -> usize {
+        match self {
+            NodeVariant::Source(src) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                n.num_audio_inputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                n.num_audio_inputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                n.num_audio_inputs()
+            }
+        }
+    }
+
+    fn num_audio_outputs(&self) -> usize {
+        match self {
+            NodeVariant::Source(src) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                n.num_audio_outputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                n.num_audio_outputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                n.num_audio_outputs()
+            }
+        }
+    }
+
+    fn num_control_inputs(&self) -> usize {
+        match self {
+            NodeVariant::Source(src) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                n.num_control_inputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                n.num_control_inputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                n.num_control_inputs()
+            }
+        }
+    }
+
+    fn num_control_outputs(&self) -> usize {
+        match self {
+            NodeVariant::Source(src) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                n.num_control_outputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                n.num_control_outputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                n.num_control_outputs()
+            }
+        }
+    }
+
+    fn num_clock_inputs(&self) -> usize {
+        match self {
+            NodeVariant::Source(src) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                n.num_clock_inputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                n.num_clock_inputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                n.num_clock_inputs()
+            }
+        }
+    }
+
+    fn num_clock_outputs(&self) -> usize {
+        match self {
+            NodeVariant::Source(src) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                n.num_clock_outputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                n.num_clock_outputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                n.num_clock_outputs()
+            }
+        }
+    }
+
+    fn num_feedback_ports(&self) -> usize {
+        match self {
+            NodeVariant::Source(src) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                n.num_feedback_ports()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                n.num_feedback_ports()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                n.num_feedback_ports()
+            }
+        }
+    }
+
     fn input_port(&self, index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>> {
         match self {
             NodeVariant::Source(src) => src.input_port(index),
