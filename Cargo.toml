@@ -15,6 +15,7 @@ members = [
     "rill-analog-filters",
     "rill-analog-effects",
     "rill-osc",
+    "rill-adrift",
 ]
 resolver = "2"
 
@@ -51,3 +52,4 @@ rill-telemetry = { path = "rill-telemetry", version = "0.3.0" }
 rill-analog-filters = { path = "rill-analog-filters", version = "0.3.0" }
 rill-analog-effects = { path = "rill-analog-effects", version = "0.3.0" }
 rill-osc = { path = "rill-osc", version = "0.3.0" }
+rill-adrift = { path = "rill-adrift", version = "0.3.0" }

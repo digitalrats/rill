@@ -29,7 +29,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZ
         inputs.push(Port::input(NodeId(0), 0, "audio_in"));
         outputs.push(Port::output(NodeId(0), 0, "audio_out"));
 
-        let mut algorithm = MoogLadder::<f64>::new(sample_rate as f64);
+        let pole = rill_core_wdf::filters::RcPole::new(0.0);
+        let mut algorithm = MoogLadder::new(pole, 1000.0, 0.0, sample_rate as f64);
+        algorithm.update_coeffs();
         algorithm.set_cutoff(1000.0);
 
         Self {
@@ -74,7 +76,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
 
     fn init(&mut self, sample_rate: f32) {
         self.state.sample_rate = sample_rate;
-        self.algorithm = MoogLadder::<f64>::new(sample_rate as f64);
+        let pole = rill_core_wdf::filters::RcPole::new(0.0);
+        self.algorithm = MoogLadder::new(pole, 1000.0, 0.0, sample_rate as f64);
+        self.algorithm.update_coeffs();
         self.update_algorithm();
     }
 

@@ -3,7 +3,7 @@ use crate::WdfElement;
 use rill_core::Transcendental;
 
 /// Resistor WDF element
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Resistor<T: Transcendental> {
     resistance: T,
     port_resistance: T,
@@ -56,7 +56,7 @@ impl<T: Transcendental> WdfElement<T> for Resistor<T> {
 }
 
 /// Capacitor WDF element (trapezoidal integration)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Capacitor<T: Transcendental> {
     capacitance: T,
     sample_rate: T,
@@ -111,14 +111,17 @@ impl<T: Transcendental> WdfElement<T> for Capacitor<T> {
     }
 
     fn process_incident(&mut self, a: T) -> T {
-        self.state - a
+        let two = T::from_f32(2.0);
+        let b = self.state - a;
+        self.voltage = (a + b) / two;
+        self.current = (a - b) / (two * self.port_resistance);
+        let next_state = self.voltage + self.port_resistance * self.current;
+        self.state = next_state;
+        b
     }
 
     fn update_state(&mut self) {
-        self.state = -self.current * self.port_resistance;
-
-        let t = T::ONE / self.sample_rate;
-        self.voltage += self.current * t / self.capacitance;
+        // state already updated in process_incident
     }
 
     fn voltage(&self) -> T {
@@ -137,7 +140,7 @@ impl<T: Transcendental> WdfElement<T> for Capacitor<T> {
 }
 
 /// Inductor WDF element (trapezoidal integration)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Inductor<T: Transcendental> {
     inductance: T,
     sample_rate: T,
@@ -197,14 +200,14 @@ impl<T: Transcendental> WdfElement<T> for Inductor<T> {
 }
 
 /// Diode WDF element (nonlinear, Newton-Raphson solution)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Diode<T: Transcendental> {
-    saturation_current: T,
-    thermal_voltage: T,
-    ideality_factor: T,
-    port_resistance: T,
-    voltage: T,
-    current: T,
+    pub(crate) saturation_current: T,
+    pub(crate) thermal_voltage: T,
+    pub(crate) ideality_factor: T,
+    pub(crate) port_resistance: T,
+    pub(crate) voltage: T,
+    pub(crate) current: T,
     last_b: T,
 }
 
@@ -241,18 +244,24 @@ impl<T: Transcendental> Diode<T> {
         self.thermal_voltage
     }
 
-    fn diode_equation(&self, v: T) -> T {
+    pub(crate) fn diode_equation(&self, v: T) -> T {
         let vt = self.thermal_voltage * self.ideality_factor;
         self.saturation_current * ((v / vt).exp() - T::ONE)
     }
 
-    fn diode_derivative(&self, v: T) -> T {
+    pub(crate) fn diode_derivative(&self, v: T) -> T {
         let vt = self.thermal_voltage * self.ideality_factor;
         self.saturation_current * (v / vt).exp() / vt
     }
 
-    fn solve_newton(&self, a: T, r: T) -> T {
-        let mut v = T::ZERO;
+    pub(crate) fn solve_newton(&self, a: T, r: T) -> T {
+        let vt = self.thermal_voltage * self.ideality_factor;
+        // Improved initial guess using simplified diode equation.
+        // For small a: v ≈ a / (1 + r*Is/vt)
+        // For large a: v ≈ vt * ln(a / (r*Is))
+        // Using a smoother approximation: v ≈ vt * ln(1 + a/(r*Is))
+        let guess = vt * (T::ONE + a / (r * self.saturation_current)).ln();
+        let mut v = guess.max(T::ZERO);
         let tolerance = T::from_f64(NEWTON_TOLERANCE);
 
         for _ in 0..10 {
