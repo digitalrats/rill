@@ -25,10 +25,12 @@ Thumbs.db
 *.so
 *.dylib
 *.dll
+*.rlib
 
 # Documentation
 /doc/
 /book/
+/docs/book/
 
 # Environment
 .env

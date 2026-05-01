@@ -1,0 +1,3 @@
+# Manifesto
+
+{{#include ../MANIFESTO.md}}

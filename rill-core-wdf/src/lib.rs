@@ -21,12 +21,16 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-use rill_core::Transcendental;
+pub use rill_core::Transcendental;
+
+/// WDF eDSL macros for defining elements and filters
+pub mod macros;
 
 mod adapters;
 /// Frequency response and distortion analysis
 pub mod analysis;
-mod constants;
+/// Physical constants and tolerances
+pub mod constants;
 mod elements;
 
 #[cfg(feature = "simd")]
