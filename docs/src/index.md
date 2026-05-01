@@ -11,7 +11,7 @@ rill-adrift = "0.3"
 
 ```rust
 use rill_adrift::prelude::*;
-use rill_adrift::oscillators::audio::SineOsc;
+use rill_adrift::rill_oscillators::audio::SineOsc;
 ```
 
 ## What is Rill?

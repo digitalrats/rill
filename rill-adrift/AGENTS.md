@@ -12,7 +12,7 @@ Umbrella crate re-exporting all rill crates for audio application development. O
 
 ```rust
 use rill_adrift::prelude::*;
-use rill_adrift::oscillators::audio::SineOsc;
+use rill_adrift::rill_oscillators::audio::SineOsc;
 ```
 
 ## Commands
