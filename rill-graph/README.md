@@ -17,9 +17,10 @@ the [`AudioEngine`] — a real-time safe graph engine.
   - `running_flag()` — `Arc<AtomicBool>` for cooperative shutdown
 - **Two-thread architecture** — audio thread (hard RT) runs the engine,
   control thread (soft RT) runs `PatchbayManager` via queues
-- **Push and pull models** — Source-active (push) and Sink-active (pull)
-  are both supported; `process_block` processes topo-order regardless
-- **Port routing** — connections and feedback buffers stored on ports
+- **Zero-copy routing** — 1:1 и fan-out соединения читают напрямую из буфера
+  upstream-порта (`Port::upstream_buffer`). Копирование только при fan-in и feedback.
+- **SIMD-friendly** — фиксированное положение буфера в памяти на всё время жизни графа.
+- **Port routing** — соединения и буферы обратной связи хранятся на портах
 - **Feedback support** — deferred feedback via `port.pre_process` /
   `port.snapshot_feedback`
 - **Port types** — `Audio`, `Control`, `Clock`, `Feedback`, `Param`
