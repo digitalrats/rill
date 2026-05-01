@@ -3,7 +3,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Processor,
+    ParameterId, Port, Processor, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -332,28 +332,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOs
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
-    fn process(
+impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+    fn generate(
         &mut self,
         clock: &ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let mut temp = [T::ZERO; BUF_SIZE];
-        if !self.inputs.is_empty() {
-            let input_buf = *self.inputs[0].buffer.as_array();
-            self.generate_block_with_fm(&mut temp, &input_buf, clock)?;
-        } else {
-            self.generate_block_no_fm(&mut temp, clock)?;
-        }
+        self.generate_block_no_fm(&mut temp, clock)?;
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
     }
 }
 
@@ -395,7 +384,7 @@ mod tests {
         osc.init(44100.0);
 
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+        osc.generate(&clock, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -417,7 +406,7 @@ mod tests {
         osc.init(44100.0);
 
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+        osc.generate(&clock, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -436,12 +425,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        // Populate FM input port
-        let fm_port = osc.input_port_mut(0).unwrap();
-        fm_port.buffer.as_mut_array().fill(0.5);
-
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+        osc.generate(&clock, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 

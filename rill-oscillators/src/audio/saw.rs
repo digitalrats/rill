@@ -3,7 +3,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Processor,
+    ParameterId, Port, Processor, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -220,22 +220,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
-    fn process(
+impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+    fn generate(
         &mut self,
         clock: &ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let mut temp = [T::ZERO; BUF_SIZE];
         self.generate_block(&mut temp, clock)?;
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
     }
 }

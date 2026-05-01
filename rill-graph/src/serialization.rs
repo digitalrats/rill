@@ -68,19 +68,22 @@ pub struct NodeDef {
 }
 
 /// A connection between two ports.
+///
+/// Nodes are identified by their [`NodeDef::id`] (not by position in the
+/// `nodes` array).  The importer resolves IDs to indices internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionDef {
     /// Signal kind.
     pub kind: SignalKind,
 
-    /// Source node index (position in `nodes` array).
-    pub from_node: usize,
+    /// Source node [`NodeDef::id`].
+    pub from_node: u32,
 
     /// Source port index.
     pub from_port: usize,
 
-    /// Target node index.
-    pub to_node: usize,
+    /// Target node [`NodeDef::id`].
+    pub to_node: u32,
 
     /// Target port index.
     pub to_port: usize,
@@ -130,6 +133,54 @@ impl std::fmt::Display for SerializationError {
 }
 
 impl std::error::Error for SerializationError {}
+
+// ============================================================================
+// Construction helpers (for incremental / interactive graph building)
+// ============================================================================
+
+impl GraphDocument {
+    /// Create an empty document with sensible defaults.
+    pub fn new(sample_rate: f32, block_size: usize) -> Self {
+        Self {
+            format_version: "rill/1".to_string(),
+            sample_rate,
+            block_size,
+            nodes: Vec::new(),
+            connections: Vec::new(),
+        }
+    }
+
+    /// Append a node definition.
+    ///
+    /// Returns an error if the [`NodeDef::id`] duplicates an existing one.
+    pub fn add_node(&mut self, def: NodeDef) -> Result<(), SerializationError> {
+        if self.nodes.iter().any(|n| n.id == def.id) {
+            return Err(SerializationError::DuplicateNodeId(def.id));
+        }
+        self.nodes.push(def);
+        Ok(())
+    }
+
+    /// Append a connection.
+    ///
+    /// Validity of the node IDs is checked only at [`into_builder`] time.
+    pub fn add_connection(&mut self, conn: ConnectionDef) {
+        self.connections.push(conn);
+    }
+
+    /// Set a parameter value on an existing node (identified by [`NodeDef::id`]).
+    pub fn set_node_param(&mut self, node_id: u32, key: &str, value: ParamValue) {
+        if let Some(nd) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+            nd.parameters.insert(key.to_string(), value);
+        }
+    }
+
+    /// Remove all nodes and connections.
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.connections.clear();
+    }
+}
 
 // ============================================================================
 // Export (AudioGraph → GraphDocument)
@@ -192,37 +243,35 @@ fn extract_connections<T: Transcendental, const B: usize>(
 ) -> Vec<ConnectionDef> {
     let mut conns = Vec::new();
 
-    for (from_node, entry) in entries.iter().enumerate() {
+    for (from_idx, entry) in entries.iter().enumerate() {
         let variant = &entry.node;
+        let from_id = variant.id().inner();
 
-        // Audio output ports → downstream
         let audio_outs = variant.metadata().audio_outputs;
         for from_port in 0..audio_outs {
             if let Some(port) = variant.output_port(from_port) {
-                for &(to_node, to_port) in &port.downstream {
+                for &(to_idx, to_port) in &port.downstream {
+                    let to_id = entries[to_idx].node.id().inner();
                     conns.push(ConnectionDef {
                         kind: SignalKind::Audio,
-                        from_node,
+                        from_node: from_id,
                         from_port,
-                        to_node,
+                        to_node: to_id,
                         to_port,
                     });
                 }
-                for &(to_node, to_port) in &port.feedback_downstream {
+                for &(to_idx, to_port) in &port.feedback_downstream {
+                    let to_id = entries[to_idx].node.id().inner();
                     conns.push(ConnectionDef {
                         kind: SignalKind::Feedback,
-                        from_node,
+                        from_node: from_id,
                         from_port,
-                        to_node,
+                        to_node: to_id,
                         to_port,
                     });
                 }
             }
         }
-
-        // Control output ports — no official routing field yet,
-        // so we skip them for now (future: control_downstream on Port).
-        // Clock output ports — same situation.
     }
 
     conns
@@ -261,8 +310,6 @@ impl GraphDocument {
 
         // ── construct nodes ──
         for nd in &self.nodes {
-            let params = NodeParams::new(self.sample_rate);
-            // Transfer the document's parameter entries.
             let mut p = NodeParams::new(self.sample_rate);
             for (k, v) in &nd.parameters {
                 p = p.with(k.clone(), v.clone());
@@ -270,20 +317,35 @@ impl GraphDocument {
             builder.add_node_with_id(registry, &nd.type_name, &p, NodeId(nd.id))?;
         }
 
+        // ── build NodeId → index map ──
+        let id_to_idx: HashMap<u32, usize> =
+            self.nodes.iter().enumerate().map(|(i, n)| (n.id, i)).collect();
+
         // ── wire connections ──
         for conn in &self.connections {
+            let from = *id_to_idx
+                .get(&conn.from_node)
+                .ok_or_else(|| SerializationError::InvalidFormat(
+                    format!("connection references unknown from_node {}", conn.from_node),
+                ))?;
+            let to = *id_to_idx
+                .get(&conn.to_node)
+                .ok_or_else(|| SerializationError::InvalidFormat(
+                    format!("connection references unknown to_node {}", conn.to_node),
+                ))?;
+
             match conn.kind {
                 SignalKind::Audio => {
-                    builder.connect_audio(conn.from_node, conn.from_port, conn.to_node, conn.to_port);
+                    builder.connect_audio(from, conn.from_port, to, conn.to_port);
                 }
                 SignalKind::Control => {
-                    builder.connect_control(conn.from_node, conn.from_port, conn.to_node, conn.to_port);
+                    builder.connect_control(from, conn.from_port, to, conn.to_port);
                 }
                 SignalKind::Clock => {
-                    builder.connect_clock(conn.from_node, conn.from_port, conn.to_node, conn.to_port);
+                    builder.connect_clock(from, conn.from_port, to, conn.to_port);
                 }
                 SignalKind::Feedback => {
-                    builder.connect_feedback(conn.from_node, conn.from_port, conn.to_node, conn.to_port);
+                    builder.connect_feedback(from, conn.from_port, to, conn.to_port);
                 }
             }
         }

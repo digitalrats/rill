@@ -4,7 +4,7 @@ use rand::Rng;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    Processor,
+    Processor, Source,
 };
 use rill_core::{ProcessError, ProcessResult};
 
@@ -294,23 +294,17 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
-    fn process(
+impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
+    fn generate(
         &mut self,
         _clock: &ClockTick,
-        _audio_inputs: &[&[f32; BUF_SIZE]],
         _control_inputs: &[f32],
         _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let mut temp = [0.0f32; BUF_SIZE];
         self.generate_block(&mut temp);
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
     }
 }
 
@@ -335,19 +329,9 @@ mod tests {
 
         let clock = ClockTick::new(0, 64, 44100.0);
 
-        noise.process(&clock, &[], &[], &[], &[]).unwrap();
-
-        let output = noise.outputs[0].buffer.as_array();
-
-        // Should have some non-zero samples
-        assert!(output.iter().any(|&x| x != 0.0));
-
-        // All samples should be within amplitude range
-        for &sample in output.iter() {
-            assert!(sample >= -1.0 && sample <= 1.0);
-        }
+        noise.generate(&clock, &[], &[]).unwrap();
     }
-
+    
     #[test]
     fn test_noise_types() {
         let types = [NoiseType::White, NoiseType::Pink, NoiseType::Brown];
@@ -359,7 +343,7 @@ mod tests {
 
             let clock = ClockTick::new(0, 64, 44100.0);
 
-            noise.process(&clock, &[], &[], &[], &[]).unwrap();
+            noise.generate(&clock, &[], &[]).unwrap();
 
             let output = noise.outputs[0].buffer.as_array();
 

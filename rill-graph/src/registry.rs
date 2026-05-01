@@ -33,7 +33,7 @@ impl std::error::Error for RegistryError {}
 /// implements this trait. The [`construct`](Self::construct) method
 /// receives a [`NodeId`] and [`NodeParams`] and must return the
 /// appropriate [`NodeVariant`].
-pub trait NodeConstructor<T: Transcendental, const BUF_SIZE: usize> {
+pub trait NodeConstructor<T: Transcendental, const BUF_SIZE: usize>: Send + Sync {
     /// Canonical name for this node type (e.g. `"rill/sine_osc"`).
     fn type_name(&self) -> &'static str;
 
@@ -96,7 +96,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeRegistry<T, BUF_SIZE> {
     pub fn register_fn(
         &mut self,
         type_name: &'static str,
-        f: impl Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + 'static,
+        f: impl Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + Send + Sync + 'static,
     ) {
         self.entries.insert(
             type_name,
@@ -163,7 +163,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeRegistry<T, BUF_SIZE> {
 
 struct ClosureCtor<T: Transcendental, const BUF_SIZE: usize> {
     type_name: &'static str,
-    f: Box<dyn Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE>>,
+    f: Box<dyn Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + Send + Sync>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> NodeConstructor<T, BUF_SIZE>
