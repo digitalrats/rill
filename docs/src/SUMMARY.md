@@ -13,6 +13,7 @@
 - [Getting Started](src/guides/getting-started.md)
 - [Two-Thread Architecture](src/guides/two-thread-arch.md)
 - [eDSL: Embedded Domain-Specific Languages](src/guides/dsl.md)
+- [Graph Serialization](src/guides/serialization.md)
 
 # Reference
 
