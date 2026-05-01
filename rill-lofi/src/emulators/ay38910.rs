@@ -72,7 +72,8 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
             id,
             metadata: NodeMetadata {
                 name: "AY-3-8910".to_string(),
-                category: NodeCategory::Source,
+                
+            type_name: None,category: NodeCategory::Source,
                 description: "AY-3-8910 / YM2149 sound chip emulation (ZX Spectrum 128, Atari ST, Amstrad CPC)".to_string(),
                 author: "Rill Lo-Fi".to_string(),
                 version: "1.0".to_string(),

@@ -169,7 +169,8 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "NoiseOsc".to_string(),
-            category: NodeCategory::Source,
+            
+            type_name: None,category: NodeCategory::Source,
             description: "Noise generator (white, pink, brown)".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),

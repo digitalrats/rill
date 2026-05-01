@@ -180,7 +180,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOs
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SineOsc".to_string(),
-            category: NodeCategory::Source,
+            
+            type_name: None,category: NodeCategory::Source,
             description: "Sine wave oscillator with FM".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),

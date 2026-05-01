@@ -22,10 +22,18 @@ mod graph;
 /// Real-time safe audio engine for driving an [`AudioGraph`].
 pub mod engine;
 
+/// Node factory and registry for constructing nodes by type name.
+pub mod registry;
+
+/// Graph serialization (JSON / CBOR). Feature-gated behind `serialization`.
+#[cfg(feature = "serialization")]
+pub mod serialization;
+
 pub use graph::{AudioGraph, BuildError, ConnectionKind, GraphBuilder};
+pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use crate::{AudioGraph, GraphBuilder};
+    pub use crate::{AudioGraph, GraphBuilder, NodeConstructor, NodeRegistry, RegistryError};
     pub use rill_core::prelude::*;
 }

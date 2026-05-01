@@ -360,7 +360,7 @@ mod tests {
         for ConstantSource<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
-            NodeMetadata {
+            NodeMetadata { type_name: None,
                 name: "ConstantSource".into(),
                 category: NodeCategory::Source,
                 description: String::new(),
@@ -485,7 +485,7 @@ mod tests {
         for NoopProcessor<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
-            NodeMetadata {
+            NodeMetadata { type_name: None,
                 name: "NoopProcessor".into(),
                 category: NodeCategory::Processor,
                 description: String::new(),
@@ -607,7 +607,7 @@ mod tests {
         for CaptureSink<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
-            NodeMetadata {
+            NodeMetadata { type_name: None,
                 name: "CaptureSink".into(),
                 category: NodeCategory::Sink,
                 description: String::new(),
@@ -868,7 +868,7 @@ mod tests {
         for AdcSource<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
-            NodeMetadata {
+            NodeMetadata { type_name: None,
                 name: "AdcSource".into(),
                 category: NodeCategory::Source,
                 description: String::new(),
@@ -960,7 +960,7 @@ mod tests {
         for DacSink<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
-            NodeMetadata {
+            NodeMetadata { type_name: None,
                 name: "DacSink".into(),
                 category: NodeCategory::Sink,
                 description: String::new(),

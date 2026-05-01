@@ -32,7 +32,8 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
             id,
             metadata: NodeMetadata {
                 name: "Akai S900".to_string(),
-                category: NodeCategory::Source,
+                
+            type_name: None,category: NodeCategory::Source,
                 description: "Akai S900 sampler emulation".to_string(),
                 author: "Rill Lo-Fi".to_string(),
                 version: "1.0".to_string(),

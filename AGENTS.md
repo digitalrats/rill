@@ -82,8 +82,18 @@ mdbook serve docs/                # dev server at localhost:3000
 
 ## Branching
 
-Git Flow: `main` (stable), `develop` (integration), `feature/*`, `release/*`, `hotfix/*`.
+[git-flow](https://github.com/petervanderdoes/gitflow-avh) workflow via the `git-flow` CLI plugin.
+
+| Branch pattern | Purpose |
+|---|---|
+| `main` | Stable releases |
+| `develop` | Integration branch |
+| `feature/*` | New features (branch off `develop`, merge back) |
+| `release/*` | Release candidates |
+| `hotfix/*` | Urgent fixes (branch off `main`, merge back to both) |
+
 Conventional commits: `<type>(<scope>): <description>`.
+Start a feature branch: `git flow feature start <name>`.
 
 ## Known pitfalls
 

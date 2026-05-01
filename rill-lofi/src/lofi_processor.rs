@@ -140,7 +140,8 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
 
         NodeMetadata {
             name: system_name.to_string(),
-            category: NodeCategory::Processor,
+            
+            type_name: None,category: NodeCategory::Processor,
             description,
             author: "Rill Lo-Fi".to_string(),
             version: "0.2.0".to_string(),

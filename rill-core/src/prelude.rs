@@ -62,6 +62,7 @@ pub use crate::traits::{
     // Node identification
     NodeId,
     NodeMetadata,
+    NodeParams,
     NodeState,
 
     NodeTypeId,

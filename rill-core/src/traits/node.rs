@@ -121,6 +121,10 @@ pub struct NodeMetadata {
     /// Name of the node
     pub name: String,
 
+    /// Canonical type name used for serialization / factory lookup
+    /// (e.g. `Some("rill/sine_osc")`). When `None`, [`name`] is used instead.
+    pub type_name: Option<String>,
+
     /// Category of the node
     pub category: NodeCategory,
 
@@ -162,6 +166,7 @@ impl NodeMetadata {
     /// Create new node metadata with minimal info
     pub fn new(name: &str, category: NodeCategory) -> Self {
         Self {
+            type_name: None,
             name: name.to_string(),
             category,
             description: String::new(),
@@ -510,6 +515,7 @@ mod tests {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "Test".to_string(),
+                type_name: None,
                 category: NodeCategory::Utility,
                 description: "Test node".to_string(),
                 author: "Rill".to_string(),

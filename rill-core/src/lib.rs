@@ -47,6 +47,7 @@
 //!     fn metadata(&self) -> NodeMetadata {
 //!         NodeMetadata {
 //!             name: "Sine".to_string(),
+//!             type_name: None,
 //!             category: NodeCategory::Source,
 //!             description: "Sine wave oscillator".to_string(),
 //!             author: "Rill".to_string(),
@@ -180,8 +181,8 @@ pub use error::*;
 // Re-export core traits
 pub use traits::{
     AudioNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
-    NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
-    ParameterError, ParameterId, ParameterResult, Port, PortDirection, PortError, PortId,
+    NodeMetadata, NodeParams, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType,
+    ParamValue, ParameterError, ParameterId, Port, PortDirection, PortError, PortId,
     PortResult, PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };
 

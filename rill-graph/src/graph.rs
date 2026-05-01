@@ -1,7 +1,8 @@
+use crate::registry::{NodeRegistry, RegistryError};
 use rill_core::buffer::Buffer;
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
-use rill_core::traits::{AudioNode, NodeVariant, PortId};
+use rill_core::traits::{AudioNode, NodeId, NodeParams, NodeVariant, PortId};
 use std::collections::VecDeque;
 
 // ============================================================================
@@ -51,8 +52,8 @@ pub struct GraphStats {
 // Node Storage
 // ============================================================================
 
-struct NodeEntry<T: Transcendental, const BUF_SIZE: usize> {
-    node: NodeVariant<T, BUF_SIZE>,
+pub(crate) struct NodeEntry<T: Transcendental, const BUF_SIZE: usize> {
+    pub(crate) node: NodeVariant<T, BUF_SIZE>,
 }
 
 // ============================================================================
@@ -63,6 +64,8 @@ struct NodeEntry<T: Transcendental, const BUF_SIZE: usize> {
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     audio_edges: Vec<(usize, usize, usize, usize)>,
+    control_edges: Vec<(usize, usize, usize, usize)>,
+    clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
 }
 
@@ -77,6 +80,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         Self {
             nodes: Vec::new(),
             audio_edges: Vec::new(),
+            control_edges: Vec::new(),
+            clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
         }
     }
@@ -108,6 +113,54 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         idx
     }
 
+    /// Add a node by type name via the registry.
+    ///
+    /// Looks up the type name in `registry`, calls its
+    /// [`NodeConstructor::construct`], and pushes the resulting
+    /// [`NodeVariant`] into the graph. The node's [`NodeId`] is
+    /// automatically assigned from its position in the graph.
+    ///
+    /// Returns the index of the newly added node.
+    pub fn add_node(
+        &mut self,
+        registry: &NodeRegistry<T, BUF_SIZE>,
+        type_name: &str,
+        params: &NodeParams,
+    ) -> Result<usize, RegistryError> {
+        let id = NodeId(self.nodes.len() as u32);
+        self.add_node_with_id(registry, type_name, params, id)
+    }
+
+    /// Add a node with an explicit [`NodeId`].
+    ///
+    /// Unlike [`add_node`](Self::add_node) which auto-assigns IDs, this
+    /// method uses the provided `id` directly. Important for serialization
+    /// where external references (e.g. patchbay bindings) depend on exact IDs.
+    ///
+    /// Returns the index (position) of the newly added node.
+    ///
+    /// # Panics
+    ///
+    /// If `id` duplicates a previously registered ID the error is reported
+    /// by the caller — this method does not check for duplicates.
+    pub fn add_node_with_id(
+        &mut self,
+        registry: &NodeRegistry<T, BUF_SIZE>,
+        type_name: &str,
+        params: &NodeParams,
+        id: NodeId,
+    ) -> Result<usize, RegistryError> {
+        let node = registry.construct(type_name, id, params)?;
+        let idx = self.nodes.len();
+        self.nodes.push(NodeEntry { node });
+        Ok(idx)
+    }
+
+    /// Return the number of nodes added so far.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// Connect audio output port `from_port` of node `from_node`
     /// to audio input port `to_port` of node `to_node`.
     pub fn connect_audio(
@@ -118,6 +171,30 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         to_port: usize,
     ) {
         self.audio_edges
+            .push((from_node, from_port, to_node, to_port));
+    }
+
+    /// Connect a control output to a control input.
+    pub fn connect_control(
+        &mut self,
+        from_node: usize,
+        from_port: usize,
+        to_node: usize,
+        to_port: usize,
+    ) {
+        self.control_edges
+            .push((from_node, from_port, to_node, to_port));
+    }
+
+    /// Connect a clock output to a clock input.
+    pub fn connect_clock(
+        &mut self,
+        from_node: usize,
+        from_port: usize,
+        to_node: usize,
+        to_port: usize,
+    ) {
+        self.clock_edges
             .push((from_node, from_port, to_node, to_port));
     }
 
@@ -277,6 +354,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
         &self.topo_order
     }
 
+    // ── pub(crate) accessors for serialization ─────────────────────
+
+    pub(crate) fn node_entries(&self) -> &[NodeEntry<T, BUF_SIZE>] {
+        &self.nodes
+    }
+
+    pub(crate) fn sample_rate(&self) -> f32 {
+        self.current_tick.sample_rate
+    }
+
+    // ── Dispatch ──────────────────────────────────────────────────
+
     /// Dispatch `SetParameter` commands to their target nodes.
     ///
     /// Each command is routed to the node identified by `cmd.port.node_id()`
@@ -354,6 +443,7 @@ mod tests {
     impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
+                type_name: None,
                 name: "ConstantSource".into(),
                 category: NodeCategory::Source,
                 description: String::new(),
@@ -443,6 +533,7 @@ mod tests {
     impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
+                type_name: None,
                 name: "NoopProcessor".into(),
                 category: NodeCategory::Processor,
                 description: String::new(),
@@ -527,6 +618,7 @@ mod tests {
     impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
+                type_name: None,
                 name: "NoopSink".into(),
                 category: NodeCategory::Sink,
                 description: String::new(),

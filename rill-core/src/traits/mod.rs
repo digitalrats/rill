@@ -246,6 +246,7 @@ mod tests {
     fn test_node_metadata() {
         let metadata = NodeMetadata {
             name: "TestNode".to_string(),
+            type_name: None,
             category: NodeCategory::Processor,
             description: "A test node".to_string(),
             author: "Rill".to_string(),

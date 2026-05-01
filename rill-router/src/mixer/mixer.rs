@@ -295,6 +295,7 @@ impl rill_core::traits::AudioNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
 
         NodeMetadata {
             name: "Mixer".to_string(),
+            type_name: Some("rill/mixer".to_string()),
             category: NodeCategory::Processor,
             description: format!(
                 "Mixer with {} channels and {} buses",
