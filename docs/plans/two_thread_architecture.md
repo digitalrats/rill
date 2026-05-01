@@ -102,7 +102,7 @@ Per-node peak value emission, parameter change notifications, and processing tim
 
 | Component | Thread | Requirements |
 |-----------|--------|--------------|
-| `AudioEngine::process_block` | Audio (hard RT) | Copy-based propagate (no alloc in RT path) |
+| `AudioEngine::process_block` | Audio (hard RT) | Topo-order propagate (O(n) where n = connections) |
 | `AudioEngine::start/stop` | Any | Atomic flags |
 | `CommandQueue::send` | Control (soft RT) | Lock-free push |
 | `CommandQueue::try_recv` | Audio (hard RT) | Lock-free pop |

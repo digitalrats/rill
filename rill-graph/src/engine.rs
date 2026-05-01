@@ -16,8 +16,9 @@ use std::thread;
 /// 1. **Clock boundary** — [`process_tick`](Self::process_tick): drains
 ///    commands (with anti-ack) and runs `pre_process` (feedback mix).
 /// 2. **Block processing** — [`process_block`](Self::process_block):
-///    iterates nodes in topological order calling `process_block` on
-///    each, followed by `snapshot_feedback` and `propagate`.
+///    iterates nodes in topological order: for each node, calls
+///    `process_block`, then `snapshot_feedback`, then `propagate` to
+///    downstream nodes via pre-established port connections.
 /// 3. **Thread management** — [`start`](Self::start)/[`stop`](Self::stop)
 ///    manage a cooperative running flag; [`spawn`](Self::spawn) consumes
 ///    the engine and runs it in a dedicated audio thread.
