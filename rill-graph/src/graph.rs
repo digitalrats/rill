@@ -174,10 +174,25 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             return Err(BuildError::CycleDetected);
         }
 
-        // --- populate Port::downstream from audio edges ---
+        // --- populate Port::downstream and Port::upstream_buffer ---
         for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
                 port.downstream.push((to_n, to_p));
+            }
+        }
+        // upstream_buffer: set on input ports for zero-copy 1:1 connections.
+        // Fan-in (multiple outputs → same input) falls back to copy-based.
+        for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
+            let upstream = self.nodes[from_n]
+                .node
+                .output_port(from_p)
+                .map(|p| &p.buffer as *const Buffer<T, BUF_SIZE>);
+            if let Some(port) = self.nodes[to_n].node.input_port_mut(to_p) {
+                if port.upstream_buffer.is_none() {
+                    port.upstream_buffer = upstream;
+                } else {
+                    port.upstream_buffer = None;
+                }
             }
         }
 
@@ -326,6 +341,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+            upstream_buffer: None,
             });
             Self {
                 value,

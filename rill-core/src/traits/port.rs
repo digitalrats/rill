@@ -299,6 +299,14 @@ impl fmt::Display for PortId {
 ///   feedback value that gets mixed into `buffer` by `pre_process()`.
 /// - `downstream` lists audio connections from this output port to input ports
 ///   of other nodes, populated at build time by the graph builder.
+/// - `upstream_buffer` on input ports: direct pointer to the upstream output
+///   port's buffer for zero-copy routing. `None` for fan-in/feedback ports.
+///
+/// # Safety
+/// `upstream_buffer` is safe because the graph topology is immutable and
+/// processing is strictly single-threaded in topological order. The
+/// upstream output buffer is guaranteed to outlive the downstream input
+/// port that references it.
 pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Port identifier
     pub id: PortId,
@@ -308,24 +316,23 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     pub direction: PortDirection,
     /// Per-port processing algorithm (None for simple input ports)
     pub action: Option<Box<dyn Algorithm<T>>>,
-    /// Pending command value from the control path, delivered to the
-    /// algorithm via `Algorithm::apply_command()` before the next
-    /// `process()` call. When there is no algorithm, this value is
-    /// written directly into the buffer.
+    /// Pending command value from the control path
     pub pending_command: Option<T>,
-    /// Owned audio buffer
+    /// Owned audio buffer (for output ports and input ports without upstream)
     pub buffer: Buffer<T, BUF_SIZE>,
-    /// Delayed feedback state (None if not on a feedback edge).
-    /// On output ports: snapshotted from buffer after DSP for next block.
-    /// On input ports: receives the delayed feedback from the source output,
-    /// mixed into buffer by pre_process().
+    /// Delayed feedback state (None if not on a feedback edge)
     pub feedback_buffer: Option<Buffer<T, BUF_SIZE>>,
-    /// Downstream audio connections: (target_node_index, target_port_index).
-    /// Set at build time by GraphBuilder; immutable during processing.
+    /// Downstream audio connections: (target_node_index, target_port_index)
     pub downstream: Vec<(usize, usize)>,
-    /// Feedback edge targets from this output port: (target_node_index, target_port_index).
-    /// Populated at build time by GraphBuilder; the delayed feedback buffer is
-    /// written to these input ports by a processing driver.
+    /// Direct pointer to upstream output buffer for zero-copy routing.
+    /// `Some` for input ports with exactly one upstream (1:1 connection).
+    /// `None` for output ports, fan-in, feedback, or unconnected input ports.
+    ///
+    /// # Safety
+    /// Valid for the engine's lifetime: the graph topology is static and
+    /// processing is single-threaded in topological order.
+    pub upstream_buffer: Option<*const Buffer<T, BUF_SIZE>>,
+    /// Feedback edge targets from this output port
     pub feedback_downstream: Vec<(usize, usize)>,
 }
 
@@ -355,6 +362,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            upstream_buffer: None,
         }
     }
 
@@ -375,6 +383,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            upstream_buffer: None,
         }
     }
 
@@ -390,6 +399,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            upstream_buffer: None,
         }
     }
 
@@ -405,6 +415,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            upstream_buffer: None,
         }
     }
 
@@ -425,6 +436,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            upstream_buffer: None,
         }
     }
 
@@ -440,6 +452,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            upstream_buffer: None,
         }
     }
 
@@ -471,6 +484,41 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// Get a mutable reference to the buffer
     pub fn buffer_mut(&mut self) -> &mut Buffer<T, BUF_SIZE> {
         &mut self.buffer
+    }
+
+    /// Get the effective audio buffer for an input port.
+    ///
+    /// Returns a reference to the upstream output buffer when this port has
+    /// a direct 1:1 connection (zero-copy), or the port's own buffer for
+    /// fan-in/feedback/unconnected ports (copy-based).
+    ///
+    /// # Safety
+    /// The upstream pointer is valid because the graph topology is static
+    /// and processing is single-threaded in topological order. The upstream
+    /// output buffer is owned by another port in the same graph and lives
+    /// for the entire processing session.
+    pub fn audio_buffer(&self) -> &Buffer<T, BUF_SIZE> {
+        match self.upstream_buffer {
+            Some(ptr) => {
+                #[allow(unsafe_code)]
+                unsafe {
+                    &*ptr
+                }
+            }
+            None => &self.buffer,
+        }
+    }
+
+    /// Directly dereference an upstream buffer pointer to a `&Buffer`.
+    /// Used by the engine to avoid borrowing `self` (and thus the node)
+    /// when building audio input references for zero-copy processing.
+    ///
+    /// # Safety
+    /// `ptr` must be a valid, aligned pointer to a `Buffer<T, BUF_SIZE>`
+    /// that lives for the entire processing session.
+    #[allow(unsafe_code)]
+    pub unsafe fn upstream_ref(ptr: *const Buffer<T, BUF_SIZE>) -> &'static Buffer<T, BUF_SIZE> {
+        &*ptr
     }
 
     /// Pre-process this port before node DSP.
@@ -611,6 +659,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<
     #[inline]
     fn on_tick(&mut self, _tick: &ClockTick) {}
 }
+
+// SAFETY: `upstream_buffer` is a raw pointer to a buffer owned by another
+// Port in the same static graph. The graph is immutable during processing
+// and runs single-threaded in topological order. The pointer target
+// outlives the pointer for the entire processing session.
+#[allow(unsafe_code)]
+unsafe impl<T: Transcendental + Send, const BUF_SIZE: usize> Send for Port<T, BUF_SIZE> {}
+#[allow(unsafe_code)]
+unsafe impl<T: Transcendental + Sync, const BUF_SIZE: usize> Sync for Port<T, BUF_SIZE> {}
 
 // ============================================================================
 // Tests
