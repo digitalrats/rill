@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 15 active crates:
+Cargo workspace — 16 active crates:
 
 | Crate | Status |
 |---|---|
@@ -21,17 +21,20 @@ Cargo workspace — 15 active crates:
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
+| `rill-adrift` | Active — umbrella crate for audio applications |
 
 Dependency tree:
-- **`rill-core`** — foundation, depended on by all other crates except `rill-core-wdf`
+- **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
-
-  Consumer crates that depend on both `rill-core` AND `rill-core-dsp`:
-  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`
 - **`rill-graph`** — audio graph, depends on `rill-core` only (no DSP dependency)
-- **`rill-core-wdf`** — WDF core, standalone (no `rill-core` dependency)
-- **`rill-analog-filters`** — analog filters, depends on `rill-core` + `rill-core-wdf`
-- **`rill-analog-effects`** — analog effects, depends on `rill-core` + `rill-core-wdf`
+- **`rill-osc`** — standalone crate (no internal workspace deps)
+
+  Crates depending on both `rill-core` + `rill-core-dsp`:
+  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`
+- **`rill-core-wdf`** — WDF core, depends on `rill-core`
+- **`rill-analog-filters`** — depends on `rill-core` + `rill-core-wdf`
+- **`rill-analog-effects`** — depends on `rill-core` + `rill-core-wdf`
+- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`
 
 ## Commands
 
@@ -40,35 +43,41 @@ cargo test --workspace           # all tests
 cargo test -p <crate>            # single crate
 cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
+
+# publish order (leaf to root):
+./scripts/publish.sh              # all 16 crates to crates.io
+./scripts/publish.sh --check      # dry-run
+
+# documentation site (mdBook):
+mdbook build docs/                # build site to docs/book/
+mdbook serve docs/                # dev server at localhost:3000
 ```
 
 ## Code conventions
 
 - **Safety & Unsafe Policy:**
-    - Strictly respect `#![deny(unsafe_code)]` in `rill-core`, `rill-core-dsp`, and `rill-graph`.
-    - **Always ask and obtain explicit user permission before suggesting ANY `unsafe` code**, even in crates where it is not denied.
-    - Prioritize using existing abstractions from `rill-core` and `rill-core-dsp` (buffers, SIMD wrappers) over raw pointer manipulation or `unsafe` blocks. 
-    - Architectural safety always takes precedence over micro-optimizations unless a bottleneck is proven.
+    - `#![deny(unsafe_code)]` set in 7 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-wdf`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`.
+    - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
+    - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
+    - Architectural safety over micro-optimizations unless a bottleneck is proven.
 - **Dependencies:** 
     - Do not add new external crates to `Cargo.toml` without explicit confirmation.
     - Prefer internal workspace tools over bringing in new third-party dependencies.
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
-- **Versioning (independent):** 
-    - Each crate versions independently — only bump when it actually changes.
-    - Core crates (`rill-core`, `rill-core-dsp`, `rill-core-wdf`) are independent of each other; a consumer crate's version reflects only its own changes, not the core's.
-    - When bumping a crate, also update its `version` in `[workspace.dependencies]` in the root `Cargo.toml` so consumers resolve correctly.
-    - **Do not use `./scripts/bump-version.sh`** — it is deprecated and kept only as a reference.
+- **Versioning:** crates version synchronously (all at 0.3.0). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
 
 ## Feature flags (non-default)
 
-- `rill-core-dsp`: `simd` (needs `wide` crate), `f64`, `fast_math`, `unstable`
+- `rill-core-dsp`: `simd`, `f64`, `fast_math`, `unstable`
 - `rill-digital-effects`: `modulation` (enables `rill-oscillators`)
 - `rill-core`: `serde`, `stats`
 - `rill-core-wdf`: `simd`
+- `rill-io`: `cpal` (default), `alsa`, `pipewire`, `jack`, `all-backends`, `graph`, `examples`
+- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc` (default), `analog` (opt-in); `alsa`, `cpal`, `jack`, `pipewire` (backends, forward to `rill-io`)
 
 ## Branching
 
@@ -81,3 +90,4 @@ Conventional commits: `<type>(<scope>): <description>`.
 - README prose about "Мир автоматов" (patchbay) describes an active subsystem, but code examples may be aspirational.
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
+- `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.

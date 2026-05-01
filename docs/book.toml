@@ -1,0 +1,15 @@
+[book]
+title = "rill-adrift"
+description = "Rill — modular audio/signal processing ecosystem for Rust"
+authors = ["Digital Rats"]
+language = "en"
+
+[output.html]
+site-url = "https://rill-adrift.io/"
+git-repository-url = "https://github.com/DigitalRats/rill"
+edit-url-template = "https://github.com/DigitalRats/rill/edit/main/docs/{path}"
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+
+[build]
+build-dir = "book"

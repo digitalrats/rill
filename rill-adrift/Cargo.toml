@@ -1,0 +1,42 @@
+[package]
+name = "rill-adrift"
+version = "0.3.0"
+edition = "2021"
+description = "Umbrella crate re-exporting all rill crates for audio application development"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rill-core = { workspace = true }
+rill-core-dsp = { workspace = true }
+rill-graph = { workspace = true }
+rill-oscillators = { workspace = true }
+rill-digital-filters = { workspace = true }
+rill-digital-effects = { workspace = true }
+rill-router = { workspace = true }
+rill-patchbay = { workspace = true }
+
+# Optional (feature-gated)
+rill-io = { workspace = true, optional = true }
+rill-lofi = { workspace = true, optional = true }
+rill-telemetry = { workspace = true, optional = true }
+rill-osc = { workspace = true, optional = true }
+rill-core-wdf = { workspace = true, optional = true }
+rill-analog-filters = { workspace = true, optional = true }
+rill-analog-effects = { workspace = true, optional = true }
+
+[features]
+default = ["io", "lofi", "telemetry", "osc"]
+
+io = ["dep:rill-io"]
+lofi = ["dep:rill-lofi"]
+telemetry = ["dep:rill-telemetry"]
+osc = ["dep:rill-osc"]
+analog = ["dep:rill-core-wdf", "dep:rill-analog-filters", "dep:rill-analog-effects"]
+
+# Audio backend passthrough
+alsa = ["rill-io/alsa"]
+cpal = ["rill-io/cpal"]
+jack = ["rill-io/jack"]
+pipewire = ["rill-io/pipewire"]
