@@ -1,1 +1,0 @@
-# Two-Thread Architecture
