@@ -98,6 +98,10 @@ mdbook serve docs/                # dev server at localhost:3000
 Conventional commits: `<type>(<scope>): <description>`.
 Start a feature branch: `git flow feature start <name>`.
 
+> **Before any work:** if the current branch is `develop`, you **must** create a
+> `feature/*` branch first (`git flow feature start <name>`). Directly editing
+> `develop` is not allowed.
+
 ## Known pitfalls
 
 - Root `examples/` were **stale** and have been removed. Use per-crate `examples/` for canonical usage.
