@@ -102,6 +102,33 @@ Start a feature branch: `git flow feature start <name>`.
 > `feature/*` branch first (`git flow feature start <name>`). Directly editing
 > `develop` is not allowed.
 
+> **`master`** is write-protected at the Git level — no direct commits, no
+> `feature/*` merges. Only `release/*` and `hotfix/*` branches (handled by
+> `git flow release finish` / `git flow hotfix finish`) touch `master`.
+
+**Enforcement layers:**
+
+| Layer | What it protects | How |
+|---|---|---|
+| Convention (`AGENTS.md`) | develop, master | Rule above |
+| Pre-commit hook | develop, master | Rejects `git commit` on protected branches. Install once: `ln -s ../../scripts/pre-commit .git/hooks/pre-commit` |
+| GitHub branch rules (optional) | develop, master | Require PR + status checks in repo settings |
+
+To create the hook manually:
+```bash
+cat > .git/hooks/pre-commit << 'HOOK'
+#!/usr/bin/env bash
+branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+if [ "$branch" = "develop" ] || [ "$branch" = "master" ]; then
+    echo "ERROR: Direct commits to $branch are not allowed."
+    echo "Create a feature/hotfix/release branch first:"
+    echo "  git flow feature start <name>"
+    exit 1
+fi
+HOOK
+chmod +x .git/hooks/pre-commit
+```
+
 ## Known pitfalls
 
 - Root `examples/` were **stale** and have been removed. Use per-crate `examples/` for canonical usage.
