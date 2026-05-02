@@ -51,6 +51,18 @@ cargo fmt                        # format (max_width=100, tab_spaces=4)
 ./scripts/publish.sh              # all 17 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
+## crates.io publication rules
+
+- **Order:** leaf → root (see `scripts/publish.sh` for exact sequence).
+- **Burst limit:** publish **no more than 5 crates consecutively**, then wait **≥10 minutes**.
+- **Error-driven pause:** if crates.io responds with `429 Too Many Requests`,
+  wait **≥10 minutes** before the next attempt, even if fewer than 5 have been published.
+- **Rate limit cooldown:** between individual publishes, wait **30 seconds** for
+  the index to update (leaf crates) or **10 minutes** (dependent crates, to avoid
+  index staleness errors).
+
+The `scripts/publish.sh` script implements all of these rules automatically.
+
 # documentation site (mdBook):
 mdbook build docs/                # build site to docs/book/
 mdbook serve docs/                # dev server at localhost:3000
