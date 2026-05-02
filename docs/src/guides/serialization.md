@@ -191,7 +191,7 @@ use rill_graph::prelude::*;
 let mut builder = GraphBuilder::<f32, 64>::new();
 builder.add_node(&registry, "rill/sine", &NodeParams::new(44100.0))?;
 builder.add_node(&registry, "rill/delay", &NodeParams::new(44100.0))?;
-builder.connect_audio(0, 0, 1, 0);
+builder.connect_signal(0, 0, 1, 0);
 let graph = builder.build(clock)?;
 
 // Export

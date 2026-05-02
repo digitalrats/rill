@@ -256,16 +256,17 @@ rill-core/
 │   ├── prelude.rs             # Прелюдия для удобного импорта
 │   ├── config.rs              # Конфигурация
 │   ├── error.rs               # Система ошибок
-│   ├── event.rs               # События и сигналы
-│   ├── graph.rs               # Базовые типы для графа
 │   ├── utils.rs               # Утилиты
+│   ├── interpolate.rs         # Интерполяция с дробным индексом
 │   ├── traits/
 │   │   ├── mod.rs             # Трейты узлов (SignalNode, Source, Processor, Sink)
 │   │   ├── node.rs            # Узлы и идентификаторы
 │   │   ├── port.rs            # Порты
 │   │   ├── param.rs           # Параметры
 │   │   ├── processable.rs     # Интерфейс обработки
-│   │   └── error.rs           # Ошибки трейтов
+│   │   ├── error.rs           # Ошибки трейтов
+│   │   ├── action.rs          # Действия узлов
+│   │   └── algorithm.rs       # Алгоритмы обработки
 │   ├── math/
 │   │   ├── mod.rs             # Абстракции числовых типов
 │   │   ├── num.rs             # Scalar + Transcendental трейты
@@ -279,7 +280,8 @@ rill-core/
 │   │   ├── delay.rs           # Линия задержки
 │   │   ├── ring.rs            # Кольцевой буфер
 │   │   ├── storage.rs         # AtomicCell
-│   │   └── pool.rs            # Пул буферов
+│   │   ├── pool.rs            # Пул буферов
+│   │   └── port_buffer.rs     # Буфер для порта узла
 │   ├── queues/
 │   │   ├── mod.rs             # Очереди команд и телеметрии
 │   │   ├── rt_queue.rs        # Real-time очередь
@@ -291,7 +293,8 @@ rill-core/
 │   │   ├── signal.rs          # Сигналы
 │   │   ├── observer.rs        # Наблюдатели
 │   │   ├── atomic.rs          # Атомарные операции
-│   │   └── error.rs           # Ошибки очередей
+│   │   ├── error.rs           # Ошибки очередей
+│   │   └── telemetry_block.rs # Блок телеметрии
 │   ├── time/
 │   │   ├── mod.rs             # Время и тактовые сигналы
 │   │   ├── clock.rs           # Трейты Clock и ClockSource
@@ -814,9 +817,9 @@ let filter = graph.add_processor(LowPassFilter::new(1000.0))?;
 let gain = graph.add_processor(GainNode::new(0.8))?;
 let dac = graph.add_sink(AlsaSink::new("hw:0")?)?;
 
-graph.connect_audio(osc, 0, filter, 0)?;
-graph.connect_audio(filter, 0, gain, 0)?;
-graph.connect_audio(gain, 0, dac, 0)?;
+graph.connect_signal(osc, 0, filter, 0)?;
+graph.connect_signal(filter, 0, gain, 0)?;
+graph.connect_signal(gain, 0, dac, 0)?;
 
 // Source активен, запускает обработку
 graph.run()?;
@@ -829,9 +832,9 @@ let gate = graph.add_processor(NoiseGate::new(-40.0))?;
 let compressor = graph.add_processor(Compressor::new(2.0, 10.0))?;
 let recorder = graph.add_sink(WavFileSink::new("recording.wav")?)?;
 
-graph.connect_audio(mic, 0, gate, 0)?;
-graph.connect_audio(gate, 0, compressor, 0)?;
-graph.connect_audio(compressor, 0, recorder, 0)?;
+graph.connect_signal(mic, 0, gate, 0)?;
+graph.connect_signal(gate, 0, compressor, 0)?;
+graph.connect_signal(compressor, 0, recorder, 0)?;
 
 // Sink активен, запускается по сигналу от ALSA
 graph.run_capture()?;
@@ -1112,7 +1115,7 @@ let servo = Servo::new(
 ┌─────────────────────────────────────────────────────┐
 │                    GraphBuilder                      │
 │  add_source() → idx  add_processor() → idx          │
-│  add_sink() → idx    connect_audio(from, to)        │
+│  add_sink() → idx    connect_signal(from, to)       │
 │  connect_feedback(from, to)    build() → SignalGraph │
 └──────────────────────┬──────────────────────────────┘
                        │ consume
@@ -1162,8 +1165,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proc = builder.add_processor(Box::new(MyProcessor::new(44100.0)));
     let sink = builder.add_sink(Box::new(MySink::new(44100.0)));
 
-    builder.connect_audio(src, 0, proc, 0);
-    builder.connect_audio(proc, 0, sink, 0);
+    builder.connect_signal(src, 0, proc, 0);
+    builder.connect_signal(proc, 0, sink, 0);
 
     // 2. Собираем иммутабельный граф
     let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0)))?;
@@ -1182,7 +1185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 // Аудио-соединение (становится Port::downstream при build())
-builder.connect_audio(source_id, 0, processor_id, 0);
+builder.connect_signal(source_id, 0, processor_id, 0);
 
 // Feedback-соединение (создаёт Port::feedback_buffer + feedback_downstream)
 builder.connect_feedback(processor_id, 0, source_id, 0);

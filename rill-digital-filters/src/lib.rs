@@ -2,7 +2,7 @@
 //!
 //! This crate provides digital filter implementations:
 //! - Biquad filter (LowPass, HighPass, BandPass, Notch, Peak, LowShelf, HighShelf, AllPass)
-//! - More filters coming soon: OnePole, StateVariable, Comb, etc.
+//! - Moog ladder 4-pole lowpass filter with resonance
 
 #![warn(missing_docs)]
 

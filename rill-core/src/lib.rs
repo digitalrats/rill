@@ -12,7 +12,11 @@
 //! │   └── vector/       # Vector types, SIMD abstractions, slice operations
 //! ├── buffer/           # Lock-free signal buffers with AtomicCell safety
 //! ├── queues/           # Real-time safe command queues
-//! └── time/             # Time and clock abstractions (ClockTick, SystemClock)
+//! ├── time/             # Time and clock abstractions (ClockTick, SystemClock)
+//! ├── macros/           # Node creation macros (source_node!, processor_node!, etc.)
+//! ├── prelude           # Convenience prelude for common imports
+//! ├── interpolate       # Fractional-index interpolation trait
+//! └── executor/         # Graph executor for driving signal processing
 //! ```
 //!
 //! ## Key Concepts

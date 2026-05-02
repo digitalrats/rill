@@ -1,13 +1,23 @@
 // rill-core-dsp/src/lib.rs
 //! # Rill Core DSP
 //!
-//! Ядро DSP-абстракций для Rill.
+//! Core DSP abstractions and algorithms for the Rill ecosystem.
 //!
-//! ## Особенности
-//! - Полная параметризация типами (f32/f64) через `Transcendental`
-//! - RT-safe буферы с const generics (стабильная фича)
-//! - Базовые алгоритмы (Delay, Biquad, и т.д.)
-//! - Макросы для генерации узлов
+//! ## Modules
+//! - `algorithm` — DSP algorithm trait (`Algorithm`, `ParameterizedAlgorithm`) and categories
+//! - `context` — DSP context with sample rate, block size, and time info
+//! - `filters` — Filter trait and types (Biquad coefficients, MoogLadder, etc.)
+//! - `generators` — signal generators (WavetableOscillator, SamplePlayer, LFO, Envelope, Noise)
+//! - `mapping` — control mapping strategies
+//! - `math` — extra math utilities
+//! - `smoothing` — parameter smoothing (ParamSmoother)
+//! - `vector` — SIMD vector abstractions
+//! - `macros` — macros for algorithm-to-node conversion and prelude
+//!
+//! ## Features
+//! - Full type parameterization (f32/f64) via `Transcendental`
+//! - RT-safe buffers with const generics
+//! - SIMD acceleration behind `simd` feature flag
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
