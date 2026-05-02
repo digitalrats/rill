@@ -23,7 +23,8 @@
 #  13  rill-analog-filters
 #  14  rill-analog-effects
 #  15  rill-osc
-#  16  rill-adrift
+#  16  rill-sampler
+#  17  rill-adrift
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -44,11 +45,16 @@ CRATES=(
     rill-analog-filters
     rill-analog-effects
     rill-osc
+    rill-sampler
     rill-adrift
 )
 
 DRY_RUN=false
 RESUME=0
+PUBLISH_COUNT=0
+BURST_LIMIT=5
+BURST_WAIT=600   # 10 minutes
+INDEX_WAIT=30    # 30 seconds for index update
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -114,22 +120,12 @@ for i in "${!CRATES[@]}"; do
         echo "  Publishing $crate..."
         output=$(cargo publish -p "$crate" 2>&1) || true
         if echo "$output" | grep -q "429 Too Many Requests"; then
-            retry_after=$(echo "$output" | grep -oP 'after \K.*?(?= GMT)')
-            retry_after="${retry_after} GMT"
-            retry_ts=$(date -d "$retry_after" +%s 2>/dev/null || echo "")
-            if [ -n "$retry_ts" ]; then
-                now=$(date +%s)
-                wait_sec=$((retry_ts - now + 5))
-                [ "$wait_sec" -lt 0 ] && wait_sec=0
-                echo "  Rate limited. Waiting ${wait_sec}s until $retry_after..."
-                sleep "$wait_sec"
-                cargo publish -p "$crate" 2>&1
-                echo "  ✓ published $crate"
-            else
-                echo "$output"
-                echo "  ✗ rate limited, but could not parse retry time."
-                exit 1
-            fi
+            echo "  Rate limited (429). Waiting 10 minutes before retry..."
+            sleep "$BURST_WAIT"
+            PUBLISH_COUNT=0  # reset burst counter after forced pause
+            echo "  Retrying $crate..."
+            cargo publish -p "$crate" 2>&1
+            echo "  ✓ published $crate"
         else
             echo "$output"
             if echo "$output" | grep -q "^error"; then
@@ -138,12 +134,15 @@ for i in "${!CRATES[@]}"; do
             fi
             echo "  ✓ published $crate"
         fi
-        if [ "$idx" -gt 5 ]; then
-            echo "  Rate limit cooldown: waiting 600s before next publish..."
-            sleep 600
+
+        PUBLISH_COUNT=$((PUBLISH_COUNT + 1))
+        if [ "$PUBLISH_COUNT" -ge "$BURST_LIMIT" ]; then
+            echo "  Burst limit ($BURST_LIMIT) reached. Waiting ${BURST_WAIT}s before next publish..."
+            sleep "$BURST_WAIT"
+            PUBLISH_COUNT=0
         else
-            echo "  Waiting 30s for crates.io index to update..."
-            sleep 30
+            echo "  Waiting ${INDEX_WAIT}s for crates.io index to update..."
+            sleep "$INDEX_WAIT"
         fi
     fi
 

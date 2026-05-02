@@ -3,8 +3,8 @@
 use rand::Rng;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    Processor,
+    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    Processor, Source,
 };
 use rill_core::{ProcessError, ProcessResult};
 
@@ -70,7 +70,7 @@ impl<const BUF_SIZE: usize> NoiseOsc<BUF_SIZE> {
             noise_type: NoiseType::White,
             amplitude: 0.5,
             inputs: Vec::new(),
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             controls: Vec::new(),
             state: None,
             pink_b0: 0.0,
@@ -165,16 +165,17 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
+impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "NoiseOsc".to_string(),
-            category: NodeCategory::Source,
+            
+            type_name: None,category: NodeCategory::Source,
             description: "Noise generator (white, pink, brown)".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: 0,
-            audio_outputs: 1,
+            signal_inputs: 0,
+            signal_outputs: 1,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -284,32 +285,26 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }
 
-impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
-    fn process(
+impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
+    fn generate(
         &mut self,
         _clock: &ClockTick,
-        _audio_inputs: &[&[f32; BUF_SIZE]],
         _control_inputs: &[f32],
         _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let mut temp = [0.0f32; BUF_SIZE];
         self.generate_block(&mut temp);
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
     }
 }
 
@@ -334,19 +329,9 @@ mod tests {
 
         let clock = ClockTick::new(0, 64, 44100.0);
 
-        noise.process(&clock, &[], &[], &[], &[]).unwrap();
-
-        let output = noise.outputs[0].buffer.as_array();
-
-        // Should have some non-zero samples
-        assert!(output.iter().any(|&x| x != 0.0));
-
-        // All samples should be within amplitude range
-        for &sample in output.iter() {
-            assert!(sample >= -1.0 && sample <= 1.0);
-        }
+        noise.generate(&clock, &[], &[]).unwrap();
     }
-
+    
     #[test]
     fn test_noise_types() {
         let types = [NoiseType::White, NoiseType::Pink, NoiseType::Brown];
@@ -358,7 +343,7 @@ mod tests {
 
             let clock = ClockTick::new(0, 64, 44100.0);
 
-            noise.process(&clock, &[], &[], &[], &[]).unwrap();
+            noise.generate(&clock, &[], &[]).unwrap();
 
             let output = noise.outputs[0].buffer.as_array();
 

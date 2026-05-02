@@ -1,7 +1,7 @@
-//! Processor nodes for integration with rill-core audio graphs.
+//! Processor nodes for integration with rill-core signal graphs.
 
 use rill_core::{
-    AudioNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    SignalNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
 use rill_core_dsp::filters::{Biquad, Filter, FilterParams, FilterType};
@@ -30,7 +30,7 @@ impl FilterFactory<Biquad<f32>> for BiquadFactory {
     }
 }
 
-/// Parametric equalizer processor node for audio graphs.
+/// Parametric equalizer processor node for signal graphs.
 pub struct ParametricEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
@@ -61,8 +61,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE
         let mut outputs = Vec::new();
 
         // Create one audio input and one audio output
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let factory = BiquadFactory;
         let mut eq = ParametricEq::new(factory, num_bands, sample_rate);
@@ -135,7 +135,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -348,7 +348,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
@@ -376,7 +376,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     }
 }
 
-/// Graphic equalizer processor node for audio graphs.
+/// Graphic equalizer processor node for signal graphs.
 pub struct GraphicEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
@@ -406,8 +406,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
 
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let factory = BiquadFactory;
         let mut eq = GraphicEq::new_third_octave(factory, sample_rate);
@@ -435,8 +435,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
 
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let factory = BiquadFactory;
         let mut eq = GraphicEq::with_frequencies(factory, frequencies, sample_rate);
@@ -495,7 +495,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -665,7 +665,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],

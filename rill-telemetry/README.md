@@ -11,7 +11,7 @@ Real-time telemetry probes and collectors for monitoring audio processing.
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Processor` trait, `CommandQueue`, `TelemetryQueue`
+- `rill-core` — `SignalNode`, `Processor` trait, `CommandQueue`, `TelemetryQueue`
 
 ## Links
 

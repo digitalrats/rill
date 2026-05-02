@@ -1,7 +1,7 @@
 //! Core node traits for the Rill ecosystem
 //!
-//! Defines the fundamental building blocks of the audio graph:
-//! - `AudioNode`: Base trait for all nodes
+//! Defines the fundamental building blocks of the signal graph:
+//! - `SignalNode`: Base trait for all nodes
 //! - `Source`: Active generator (has no inputs)
 //! - `Processor`: Passive processor (has inputs and outputs)
 //! - `Sink`: Active consumer (has no outputs)
@@ -121,6 +121,10 @@ pub struct NodeMetadata {
     /// Name of the node
     pub name: String,
 
+    /// Canonical type name used for serialization / factory lookup
+    /// (e.g. `Some("rill/sine_osc")`). When `None`, [`name`] is used instead.
+    pub type_name: Option<String>,
+
     /// Category of the node
     pub category: NodeCategory,
 
@@ -133,11 +137,11 @@ pub struct NodeMetadata {
     /// Version of the node
     pub version: String,
 
-    /// Number of audio input ports
-    pub audio_inputs: usize,
+    /// Number of signal input ports
+    pub signal_inputs: usize,
 
-    /// Number of audio output ports
-    pub audio_outputs: usize,
+    /// Number of signal output ports
+    pub signal_outputs: usize,
 
     /// Number of control input ports
     pub control_inputs: usize,
@@ -162,13 +166,14 @@ impl NodeMetadata {
     /// Create new node metadata with minimal info
     pub fn new(name: &str, category: NodeCategory) -> Self {
         Self {
+            type_name: None,
             name: name.to_string(),
             category,
             description: String::new(),
             author: String::new(),
             version: String::new(),
-            audio_inputs: 0,
-            audio_outputs: 0,
+            signal_inputs: 0,
+            signal_outputs: 0,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -235,7 +240,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 }
 
 // ============================================================================
-// AudioNode Trait (Base for all nodes)
+// SignalNode Trait (Base for all nodes)
 // ============================================================================
 
 /// Base trait for all audio nodes
@@ -249,7 +254,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 /// - `Source` for generators
 /// - `Processor` for processors with inputs/outputs
 /// - `Sink` for consumers
-pub trait AudioNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sync {
+pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sync {
     /// Get node metadata
     fn metadata(&self) -> NodeMetadata;
 
@@ -282,7 +287,7 @@ pub trait AudioNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send
         let value = T::from_f32(cmd.value);
         let port = match cmd.port.port_type() {
             PortType::Control => self.control_port_mut(cmd.port.index() as usize),
-            PortType::Audio => match cmd.port.direction() {
+            PortType::Signal => match cmd.port.direction() {
                 PortDirection::Input => self.input_port_mut(cmd.port.index() as usize),
                 PortDirection::Output => self.output_port_mut(cmd.port.index() as usize),
             },
@@ -341,13 +346,13 @@ pub trait AudioNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send
     // Port Counting (with defaults)
     // ========================================================================
 
-    /// Number of audio input ports
-    fn num_audio_inputs(&self) -> usize {
+    /// Number of signal input ports
+    fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    /// Number of audio output ports
-    fn num_audio_outputs(&self) -> usize {
+    /// Number of signal output ports
+    fn num_signal_outputs(&self) -> usize {
         0
     }
 
@@ -378,7 +383,7 @@ pub trait AudioNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send
 
     /// Total number of input ports
     fn num_inputs(&self) -> usize {
-        self.num_audio_inputs()
+        self.num_signal_inputs()
             + self.num_control_inputs()
             + self.num_clock_inputs()
             + self.num_feedback_ports()
@@ -386,7 +391,7 @@ pub trait AudioNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send
 
     /// Total number of output ports
     fn num_outputs(&self) -> usize {
-        self.num_audio_outputs() + self.num_control_outputs() + self.num_clock_outputs()
+        self.num_signal_outputs() + self.num_control_outputs() + self.num_clock_outputs()
     }
 }
 
@@ -394,11 +399,11 @@ pub trait AudioNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send
 // Source Trait (Active generators)
 // ============================================================================
 
-/// Active source of audio signals
+/// Active source of signals
 ///
 /// Sources generate audio from internal state. They have no audio inputs,
 /// but may have control and clock inputs for modulation.
-pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
+pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalNode<T, BUF_SIZE> {
     /// Generate the next block of audio
     ///
     /// # Arguments
@@ -416,7 +421,7 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: AudioNo
     ) -> ProcessResult<()>;
 
     /// Number of audio outputs (default 1)
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 
@@ -435,18 +440,18 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: AudioNo
 // Processor Trait (Passive processors)
 // ============================================================================
 
-/// Passive processor of audio signals
+/// Passive processor of signals
 ///
 /// Processors transform input signals into output signals.
 /// They have audio inputs and outputs, and may have control and clock ports.
 pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
-    AudioNode<T, BUF_SIZE>
+    SignalNode<T, BUF_SIZE>
 {
     /// Process a block of audio
     ///
     /// # Arguments
     /// * `clock` - Current clock tick
-    /// * `audio_inputs` - Audio input buffers (one per audio input)
+    /// * `signal_inputs` - Audio input buffers (one per audio input)
     /// * `control_inputs` - Control signal values (one per control input)
     /// * `clock_inputs` - Clock signal values (one per clock input)
     /// * `feedback_inputs` - Feedback values from previous blocks (one per feedback port)
@@ -456,7 +461,7 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
     fn process(
         &mut self,
         clock: &ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        signal_inputs: &[&[T; BUF_SIZE]],
         control_inputs: &[T],
         clock_inputs: &[ClockTick],
         feedback_inputs: &[&[T; BUF_SIZE]],
@@ -472,23 +477,23 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
 // Sink Trait (Active consumers)
 // ============================================================================
 
-/// Active sink of audio signals
+/// Active sink of signals
 ///
 /// Sinks consume audio and send it to external destinations.
 /// They have no audio outputs, but may have control and clock ports.
-pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: AudioNode<T, BUF_SIZE> {
+pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalNode<T, BUF_SIZE> {
     /// Consume a block of audio
     ///
     /// # Arguments
     /// * `clock` - Current clock tick
-    /// * `audio_inputs` - Audio input buffers (one per audio input)
+    /// * `signal_inputs` - Audio input buffers (one per audio input)
     /// * `control_inputs` - Control signal values (one per control input)
     /// * `clock_inputs` - Clock signal values (one per clock input)
     /// * `feedback_inputs` - Feedback values from previous blocks
     fn consume(
         &mut self,
         clock: &ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        signal_inputs: &[&[T; BUF_SIZE]],
         control_inputs: &[T],
         clock_inputs: &[ClockTick],
         feedback_inputs: &[&[T; BUF_SIZE]],
@@ -506,16 +511,17 @@ mod tests {
 
     struct TestNode;
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for TestNode {
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for TestNode {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 name: "Test".to_string(),
+                type_name: None,
                 category: NodeCategory::Utility,
                 description: "Test node".to_string(),
                 author: "Rill".to_string(),
                 version: "1.0".to_string(),
-                audio_inputs: 0,
-                audio_outputs: 0,
+                signal_inputs: 0,
+                signal_outputs: 0,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,

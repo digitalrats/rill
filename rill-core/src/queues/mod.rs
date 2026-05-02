@@ -8,7 +8,7 @@
 //! - [`SpscQueue`] — Single-producer single-consumer очередь (максимальная скорость)
 //! - [`RtQueueBase`] — базовый трейт для всех очередей
 //! - [`QueueError`] — ошибки операций с очередями (thiserror)
-//! - [`CommandQueue`] — команды из control thread в audio thread
+//! - [`CommandQueue`] — команды из control thread в signal thread
 //! - [`OverflowPolicy`] — политики поведения при переполнении
 //! - [`UnderflowPolicy`] — политики поведения при опустошении
 

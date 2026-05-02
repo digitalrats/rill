@@ -3,7 +3,7 @@
 use super::channel::{ChannelConfig, ChannelState};
 use super::send::{SendConfig, SendType};
 use rill_core::traits::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
+    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
     ParamRange, ParamType, ParamValue, ParameterId, Port, Processor,
 };
 use rill_core::ClockTick;
@@ -109,12 +109,12 @@ impl MixerNode {
 
     /// Number of audio inputs (channels)
     pub fn num_inputs(&self) -> usize {
-        self.num_audio_inputs()
+        self.num_signal_inputs()
     }
 
     /// Number of audio outputs (master L/R + buses)
     pub fn num_outputs(&self) -> usize {
-        self.num_audio_outputs()
+        self.num_signal_outputs()
     }
 
     /// Get parameter value by name (convenience wrapper)
@@ -233,7 +233,7 @@ impl MixerNode {
     }
 }
 
-impl rill_core::traits::AudioNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
+impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
     fn metadata(&self) -> NodeMetadata {
         let mut params = vec![ParamMetadata {
             name: "master_volume".to_string(),
@@ -295,6 +295,7 @@ impl rill_core::traits::AudioNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
 
         NodeMetadata {
             name: "Mixer".to_string(),
+            type_name: Some("rill/mixer".to_string()),
             category: NodeCategory::Processor,
             description: format!(
                 "Mixer with {} channels and {} buses",
@@ -303,8 +304,8 @@ impl rill_core::traits::AudioNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
             ),
             author: "Rill Mixer".to_string(),
             version: "0.2.0".to_string(),
-            audio_inputs: self.channels.len(),
-            audio_outputs: 2 + self.buses.len(),
+            signal_inputs: self.channels.len(),
+            signal_outputs: 2 + self.buses.len(),
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -454,11 +455,11 @@ impl rill_core::traits::AudioNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
         &mut self.state
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         self.channels.len()
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         2 + self.buses.len()
     }
 
@@ -488,7 +489,7 @@ impl rill_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
     fn process(
         &mut self,
         clock: &ClockTick,
-        _audio_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        _signal_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
         _control_inputs: &[f32],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],

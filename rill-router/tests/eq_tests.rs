@@ -1,5 +1,5 @@
 //! Basic tests for rill-router EQ module
-use rill_core::{AudioNode, ParamValue, ParameterId};
+use rill_core::{SignalNode, ParamValue, ParameterId};
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 use rill_router::{
     BandType, FilterFactory, GraphicEq, GraphicEqProcessor, ParametricEq, ParametricEqProcessor,

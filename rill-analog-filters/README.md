@@ -4,11 +4,11 @@ Analog-modeled filters using Wave Digital Filter (WDF) elements.
 
 ## Key components
 
-- **`WdfMoogLadderProcessor`** — `AudioNode` wrapper over the WDF MoogLadder 4-pole low-pass filter
+- **`WdfMoogLadderProcessor`** — `SignalNode` wrapper over the WDF MoogLadder 4-pole low-pass filter
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Processor` trait
+- `rill-core` — `SignalNode`, `Processor` trait
 - `rill-core-wdf` — WDF elements, adapters, and MoogLadder implementation
 
 ## Links

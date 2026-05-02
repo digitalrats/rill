@@ -20,6 +20,9 @@ mod envelope;
 mod fm;
 mod lfo;
 mod noise;
+mod reader;
+mod sample_player;
+mod wavetable;
 
 // Реэкспортируем всё из подмодулей
 pub use basic::*;
@@ -27,6 +30,9 @@ pub use envelope::*;
 pub use fm::*;
 pub use lfo::*;
 pub use noise::*;
+pub use reader::*;
+pub use sample_player::*;
+pub use wavetable::*;
 
 /// Базовый трейт для всех генераторов
 ///

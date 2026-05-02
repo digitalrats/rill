@@ -5,6 +5,13 @@
 //! and `f64`. The SIMD module (behind the `simd` feature) uses the
 //! [`rill_core_dsp`](https://docs.rs/rill-core-dsp) vector infrastructure.
 //!
+//! ## Modules
+//! - `macros` — WDF eDSL macros for defining elements and filters
+//! - `analysis` — frequency response and distortion analysis
+//! - `constants` — physical constants and tolerances
+//! - `filters` — WDF-based filter models
+//! - `simd` — SIMD-accelerated WDF processing (behind `simd` feature)
+//!
 //! # Design
 //!
 //! WDF elements are built around the [`WdfElement`] trait, which defines a

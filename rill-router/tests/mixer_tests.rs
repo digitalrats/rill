@@ -1,5 +1,5 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{AudioNode, Processor};
+use rill_core::traits::{SignalNode, Processor};
 use rill_core::{ClockTick, DEFAULT_BLOCK_SIZE};
 
 #[test]

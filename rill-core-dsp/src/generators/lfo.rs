@@ -177,7 +177,7 @@ impl<T: Transcendental> Algorithm<T> for LFO<T> {
                 match self.osc.frequency() {
                     _ if self.osc.frequency() < 1.0 => "Very low frequency",
                     _ if self.osc.frequency() < 10.0 => "Low frequency",
-                    _ => "Audio rate",
+                    _ => "Signal rate",
                 },
                 if self.bipolar { "bi" } else { "uni" }
             )

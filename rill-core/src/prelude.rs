@@ -6,7 +6,7 @@
 //!
 //! ## What's included
 //!
-//! - Core traits (`AudioNode`, `Source`, `Processor`, `Sink`)
+//! - Core traits (`SignalNode`, `Source`, `Processor`, `Sink`)
 //! - Node identification (`NodeId`, `NodeMetadata`, `NodeCategory`)
 //! - Parameter handling (`ParameterId`, `ParamValue`, `ParamType`)
 //! - Ports (`PortId`, `PortType`, `PortDirection`)
@@ -52,7 +52,7 @@ pub use crate::traits::{
     AlgorithmCategory,
     AlgorithmMetadata,
     // Core node traits
-    AudioNode,
+    SignalNode,
     ConnectionError,
     ConnectionResult,
     // Parameter conversion
@@ -62,6 +62,7 @@ pub use crate::traits::{
     // Node identification
     NodeId,
     NodeMetadata,
+    NodeParams,
     NodeState,
 
     NodeTypeId,
@@ -101,6 +102,8 @@ pub use crate::time::{ClockSource, ClockTick, SystemClock, TimeError, TimeResult
 // Math Abstractions
 // ============================================================================
 
+pub use crate::interpolate::Interpolate;
+
 pub use crate::math::Transcendental;
 
 // ============================================================================
@@ -134,7 +137,7 @@ pub use crate::buffer::{
     AtomicStats,
 
     // Core buffer trait
-    AudioBuffer,
+    SignalBuffer,
 
     // Port buffer
     Buffer,
@@ -193,10 +196,10 @@ pub use crate::{
 /// Default sample type (32-bit float)
 pub type Sample = f32;
 
-/// Mono audio block type
+/// Mono signal block type
 pub type MonoBlock<T, const N: usize> = [T; N];
 
-/// Stereo audio block type (left, right)
+/// Stereo signal block type (left, right)
 pub type StereoBlock<T, const N: usize> = [MonoBlock<T, N>; 2];
 
 /// Control signal value type
@@ -286,7 +289,7 @@ pub mod time_prelude {
 /// Prelude for working with buffers
 pub mod buffer_prelude {
     pub use crate::buffer::{
-        utils, AtomicCell, AtomicStats, AudioBuffer, BufferError, BufferResult, BufferStats,
+        utils, AtomicCell, AtomicStats, SignalBuffer, BufferError, BufferResult, BufferStats,
         DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
     };
 }
@@ -312,7 +315,7 @@ pub mod port_prelude {
 /// Prelude for working with nodes
 pub mod node_prelude {
     pub use crate::traits::{
-        AudioNode, NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, Sink, Source,
+        SignalNode, NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, Sink, Source,
     };
 }
 

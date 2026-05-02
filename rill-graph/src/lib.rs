@@ -1,6 +1,6 @@
-//! # Rill Graph — Static DAG Audio Graph
+//! # Rill Graph — Static DAG Signal Graph
 //!
-//! This crate provides an immutable audio graph with static topology.
+//! This crate provides an immutable signal graph with static topology.
 //! Build once with `GraphBuilder`. The graph is a pure topology description
 //! — processing is driven by port-level methods (`pre_process`,
 //! `snapshot_feedback`, `propagate`) called from external code.
@@ -19,10 +19,21 @@
 
 mod graph;
 
-pub use graph::{AudioGraph, BuildError, ConnectionKind, GraphBuilder};
+/// Real-time safe signal engine for driving an [`SignalGraph`].
+pub mod engine;
+
+/// Node factory and registry for constructing nodes by type name.
+pub mod registry;
+
+/// Graph serialization (JSON / CBOR). Feature-gated behind `serialization`.
+#[cfg(feature = "serialization")]
+pub mod serialization;
+
+pub use graph::{SignalGraph, BuildError, ConnectionKind, GraphBuilder};
+pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use crate::{AudioGraph, GraphBuilder};
+    pub use crate::{SignalGraph, GraphBuilder, NodeConstructor, NodeRegistry, RegistryError};
     pub use rill_core::prelude::*;
 }

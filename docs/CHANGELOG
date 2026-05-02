@@ -1,5 +1,98 @@
 # CHANGELOG
 
+## [0.4.0] — 2026-05-02
+
+### 💥 Breaking changes
+
+- **`Audio` → `Signal` rename** across the entire API surface:
+  - `AudioNode` → `SignalNode`
+  - `AudioBuffer` → `SignalBuffer`
+  - `AudioError` / `AudioResult` → `SignalError` / `SignalResult`
+  - `AudioGraph` → `SignalGraph`
+  - `AudioEngine` → `SignalEngine`
+  
+  All crates bumped to `0.4.0`. Only `rill-io::AudioBackend` keeps its name
+  (genuinely audio-specific trait).
+
+---
+
+## [0.3.2 / 0.3.1 / 0.3.1] — 2026-05-02
+
+### 🆕 Новые крейты
+
+| Крейт | Версия | Описание |
+|-------|--------|----------|
+| `rill-sampler` | 0.3.1 | Сэмплер + time-series reader (Source-узлы графа) |
+
+### ✨ rill-core (0.3.2)
+
+- **`Interpolate` trait** — дробно-индексное чтение `&[T]` с тремя стратегиями:
+  `interpolate_linear`, `interpolate_cubic` (Hermite), `interpolate_nearest`.
+  Blanket impl на `[T]` где `T: Transcendental + Copy` — работает для `Vec<T>`,
+  `Box<[T]>`, `[T; N]` через `Deref`.
+
+### ✨ rill-core-dsp (0.3.1)
+
+- **`InterpolatedReader<T>`** — heap-буфер с дробной позицией, rate-ом и
+  wrap-интерполяцией (clamp для семплов, periodic wrap для вейвтейблов).
+  Основа для SamplePlayer и WavetableOscillator.
+- **`WavetableOscillator<T, N>`** — переписан на `InterpolatedReader`.
+  Добавлены `set_cubic()` / `is_cubic()`. Методы `Generator<T>`:
+  frequency → rate, phase → normalized position, amplitude → gain.
+- **`SamplePlayer<T>`** — воспроизведение буфера с loop-режимами.
+  `LoopMode` (OneShot / Forward / PingPong), gate-управление, per-sample
+  boundary check. Методы `Generator<T>`: частота отображается в rate,
+  фаза — в normalized позицию.
+- **`LoopMode`** — публичный enum для выбора стратегии зацикливания.
+
+### ✨ rill-oscillators
+
+- **`WavetableOscNode<T, BUF_SIZE, WT_SIZE>`** — Source-узел графа,
+  обёртка над `WavetableOscillator`. Параметры: `"frequency"`,
+  `"amplitude"`, `"phase"`, `"interpolation"` (choice: linear / cubic).
+
+### ✨ rill-sampler (0.3.1)
+
+- **`SamplePlayerNode<T, BUF_SIZE>`** — Source-узел для воспроизведения
+  аудиосэмплов. Стерео (два output port — left/right). Параметры,
+  automatable через patchbay: `"gate"`, `"rate"`, `"loop_mode"`,
+  `"start"`, `"end"`, `"amplitude"`, `"interpolation"`, `"position"` (read-only).
+- **`SampleBuffer<T>`** — контейнер для загруженных сэмплов с метаданными
+  (sample_rate, channels, name). Mono / stereo deinterleaved.
+- **WAV loading** (feature `"wav"`) — 16-bit PCM, mono/stereo, через `hound`.
+- **`TimeSeriesReader<T>`** — читатель неравномерных временных рядов.
+  Бинарный поиск по `timestamps` → отображение времени на дробный индекс
+  → `Interpolate` trait. Три стратегии: Nearest, Linear, Cubic.
+- **`TimeSeriesNode<T, BUF_SIZE>`** — мультиканальный Source-узел
+  (N output ports, по одному на канал). Параметры: `"sample_rate"`
+  (виртуальная частота), `"interpolation"`, `"play"`, `"speed"`,
+  `"position"`. Заполняет блоки planar: `[ch0_s0, ch0_s1, ..., chN_sBUF-1]`.
+- **`from_csv()`** — загрузка `t,channel,value` → `TimeSeriesReader<f64>`.
+  Группировка по каналам, сортировка по времени, пропуск
+  непарсируемых строк.
+
+### 🏗️ Инфраструктура
+
+- `rill-sampler` добавлен в workspace и `rill-adrift` (feature `"sampler"`,
+  включён в default). Обновлён `scripts/publish.sh`.
+
+### 📦 Публикации на crates.io
+
+| Крейт | Версия |
+|-------|--------|
+| `rill-core` | 0.3.2 |
+| `rill-core-dsp` | 0.3.1 |
+| `rill-sampler` | 0.3.1 |
+
+### 📊 Статистика
+
+| Метрика | Значение |
+|---------|----------|
+| Крейтов в workspace | 17 активных |
+| Добавлено тестов | +46 |
+
+---
+
 ## [0.3.0] — 2026-04-27
 
 ### 🏗️ Фундаментальные изменения

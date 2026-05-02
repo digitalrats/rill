@@ -71,7 +71,7 @@ macro_rules! processor_node {
         }
 
         impl<$T: $audio_num, const $BUF: usize>
-            $crate::AudioNode<$T, $BUF> for $struct_name<$T, $BUF>
+            $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
             fn node_type_id(&self) -> $crate::NodeTypeId
@@ -179,7 +179,7 @@ macro_rules! processor_node {
             fn process(
                 &mut self,
                 clock: &$crate::ClockTick,
-                audio_inputs: &[&[$T; $BUF]],
+                signal_inputs: &[&[$T; $BUF]],
                 control_inputs: &[$T],
                 clock_inputs: &[$crate::ClockTick],
                 feedback_inputs: &[&[$T; $BUF]],

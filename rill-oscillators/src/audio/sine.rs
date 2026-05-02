@@ -2,8 +2,8 @@
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Processor,
+    ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ParameterId, Port, Processor, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -78,7 +78,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
             fm_amount: T::ZERO,
             use_fm: false,
             inputs: Vec::new(),
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             controls: Vec::new(),
             state: None,
             _phantom: PhantomData,
@@ -176,16 +176,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> 
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SineOsc".to_string(),
-            category: NodeCategory::Source,
+            
+            type_name: None,category: NodeCategory::Source,
             description: "Sine wave oscillator with FM".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: if self.use_fm { 1 } else { 0 },
-            audio_outputs: 1,
+            signal_inputs: if self.use_fm { 1 } else { 0 },
+            signal_outputs: 1,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -318,7 +319,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOs
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         if self.use_fm {
             1
         } else {
@@ -326,33 +327,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SineOs
         }
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
-    fn process(
+impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
+    fn generate(
         &mut self,
         clock: &ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let mut temp = [T::ZERO; BUF_SIZE];
-        if !self.inputs.is_empty() {
-            let input_buf = *self.inputs[0].buffer.as_array();
-            self.generate_block_with_fm(&mut temp, &input_buf, clock)?;
-        } else {
-            self.generate_block_no_fm(&mut temp, clock)?;
-        }
+        self.generate_block_no_fm(&mut temp, clock)?;
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
     }
 }
 
@@ -394,7 +384,7 @@ mod tests {
         osc.init(44100.0);
 
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+        osc.generate(&clock, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -416,7 +406,7 @@ mod tests {
         osc.init(44100.0);
 
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+        osc.generate(&clock, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -435,12 +425,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        // Populate FM input port
-        let fm_port = osc.input_port_mut(0).unwrap();
-        fm_port.buffer.as_mut_array().fill(0.5);
-
         let clock = ClockTick::new(0, 64, 44100.0);
-        osc.process(&clock, &[], &[], &[], &[]).unwrap();
+        osc.generate(&clock, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 

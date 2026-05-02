@@ -10,7 +10,7 @@ Graph nodes for digital filters — Biquad, OnePole, State Variable, Butterworth
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Processor` trait
+- `rill-core` — `SignalNode`, `Processor` trait
 - `rill-core-dsp` — filter algorithms from `filters/`
 
 ## Links

@@ -1,56 +1,47 @@
-//! Вейвтейбл генераторы
-
-use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use crate::math::{lerp, Transcendental};
-use crate::vector::{ScalarVector1, Vector};
+use crate::generators::{Generator, InterpolatedReader};
+use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::Transcendental;
 
-/// Вейвтейбл осциллятор
+/// Wavetable oscillator built on [`InterpolatedReader`].
+///
+/// The compile-time constant `SIZE` determines table resolution but the
+/// underlying storage is heap-allocated, sharing the same interpolation
+/// engine with [`SamplePlayer`](crate::generators::SamplePlayer).
 pub struct WavetableOscillator<T: Transcendental, const SIZE: usize> {
-    /// Вейвтейбл (таблица волны)
-    table: [T; SIZE],
-    /// Частота
+    reader: InterpolatedReader<T>,
     frequency: f32,
-    /// Амплитуда
     amplitude: ScalarVector1<T>,
-    /// Текущая фаза (в индексах таблицы)
-    phase: ScalarVector1<T>,
-    /// Инкремент фазы
-    phase_inc: ScalarVector1<T>,
-    /// Интерполяция (true = кубическая, false = линейная)
-    cubic_interp: bool,
-    /// Частота дискретизации
     sample_rate: f32,
 }
 
 impl<T: Transcendental, const SIZE: usize> WavetableOscillator<T, SIZE> {
-    /// Создать новый вейвтейбл осциллятор
+    /// Create from an explicit table.
     pub fn new(table: [T; SIZE], frequency: f32) -> Self {
+        let mut reader = InterpolatedReader::new(table.to_vec());
+        reader.set_wrap(true);
         let mut osc = Self {
-            table,
+            reader,
             frequency,
             amplitude: ScalarVector1::splat(T::from_f32(1.0)),
-            phase: ScalarVector1::splat(T::ZERO),
-            phase_inc: ScalarVector1::splat(T::ZERO),
-            cubic_interp: false,
             sample_rate: 44100.0,
         };
-        osc.update_phase_inc();
+        osc.update_rate();
         osc
     }
 
-    /// Создать из синусоиды
+    /// Create a sine wavetable.
     pub fn sine(frequency: f32) -> Self {
         let mut table = [T::ZERO; SIZE];
         for i in 0..SIZE {
-            let phase = (i as f32 / SIZE as f32) * 2.0 * std::f32::consts::PI;
+            let phase = (i as f32 / SIZE as f32) * 2.0 * core::f32::consts::PI;
             table[i] = T::from_f32(phase.sin());
         }
         Self::new(table, frequency)
     }
 
-    /// Создать из пилообразной волны
+    /// Create a sawtooth wavetable.
     pub fn saw(frequency: f32) -> Self {
         let mut table = [T::ZERO; SIZE];
         for i in 0..SIZE {
@@ -59,87 +50,49 @@ impl<T: Transcendental, const SIZE: usize> WavetableOscillator<T, SIZE> {
         Self::new(table, frequency)
     }
 
-    fn update_phase_inc(&mut self) {
-        self.phase_inc = ScalarVector1::splat(
-            T::from_f32(self.frequency / self.sample_rate).mul(T::from_f32(SIZE as f32)),
-        );
+    /// Replace the wavetable data.
+    pub fn set_table(&mut self, table: [T; SIZE]) {
+        self.reader.set_buffer(table.to_vec());
     }
 
-    /// Линейная интерполяция
-    #[inline(always)]
-    fn read_linear(&self, idx: T) -> T {
-        let idx_f = idx.to_f32();
-        let i0 = idx_f.floor() as usize % SIZE;
-        let i1 = (i0 + 1) % SIZE;
-        let frac = T::from_f32(idx_f.fract());
-
-        lerp(self.table[i0], self.table[i1], frac)
+    /// Enable cubic interpolation (default: linear).
+    pub fn set_cubic(&mut self, cubic: bool) {
+        self.reader.set_cubic(cubic);
     }
 
-    /// Кубическая интерполяция (Hermite)
-    #[inline(always)]
-    fn read_cubic(&self, idx: T) -> T {
-        let idx_f = idx.to_f32();
-        let i = idx_f.floor() as usize;
+    /// Whether cubic interpolation is enabled.
+    pub fn is_cubic(&self) -> bool {
+        self.reader.is_cubic()
+    }
 
-        let i0 = (i + SIZE - 1) % SIZE;
-        let i1 = i % SIZE;
-        let i2 = (i + 1) % SIZE;
-        let i3 = (i + 2) % SIZE;
-        let frac = T::from_f32(idx_f.fract());
-
-        // Hermite interpolation
-        let c0 = self.table[i1];
-        let c1 = self.table[i2].sub(self.table[i0]).mul(T::from_f32(0.5));
-        let c2 = self.table[i0]
-            .sub(self.table[i1])
-            .mul(T::from_f32(1.5))
-            .add(self.table[i2].sub(self.table[i3]).mul(T::from_f32(0.5)));
-        let c3 = self.table[i2]
-            .sub(self.table[i1])
-            .mul(T::from_f32(0.5))
-            .add(self.table[i3].sub(self.table[i0]).mul(T::from_f32(0.5)))
-            .sub(self.table[i1].sub(self.table[i2]).mul(T::from_f32(1.5)));
-
-        let f2 = frac.mul(frac);
-        let f3 = f2.mul(frac);
-
-        c0.add(c1.mul(frac)).add(c2.mul(f2)).add(c3.mul(f3))
+    fn update_rate(&mut self) {
+        let rate = self.frequency as f64 * SIZE as f64 / self.sample_rate as f64;
+        self.reader.set_rate(rate);
     }
 }
 
 impl<T: Transcendental, const SIZE: usize> Algorithm<T> for WavetableOscillator<T, SIZE> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
-        self.update_phase_inc();
-        self.phase = ScalarVector1::splat(T::ZERO);
+        self.update_rate();
+        self.reader.set_position(0.0);
     }
 
     fn reset(&mut self) {
-        self.phase = ScalarVector1::splat(T::ZERO);
+        self.reader.set_position(0.0);
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
-        let input = input.unwrap_or(&[]);
-        let len = input.len().min(output.len());
-
-        for i in 0..len {
-            // Игнорируем входной сигнал (генератор)
-            let _ = input[i];
-
-            let sample = if self.cubic_interp {
-                self.read_cubic(self.phase.extract(0))
-            } else {
-                self.read_linear(self.phase.extract(0))
-            }
-            .mul(self.amplitude.extract(0));
-
-            output[i] = sample;
-
-            // Обновляем фазу
-            self.phase = self.phase + self.phase_inc;
-            while self.phase.extract(0).to_f32() >= SIZE as f32 {
-                self.phase = self.phase - ScalarVector1::splat(T::from_f32(SIZE as f32));
+    fn process(
+        &mut self,
+        _input: Option<&[T]>,
+        output: &mut [T],
+        _ctx: &ActionContext,
+    ) -> ProcessResult<()> {
+        let amp = self.amplitude.extract(0);
+        self.reader.render_block(output);
+        if amp != T::from_f32(1.0) {
+            for s in output.iter_mut() {
+                *s = *s * amp;
             }
         }
         Ok(())
@@ -149,7 +102,7 @@ impl<T: Transcendental, const SIZE: usize> Algorithm<T> for WavetableOscillator<
         AlgorithmMetadata {
             name: "Wavetable Oscillator",
             category: AlgorithmCategory::Generator,
-            description: "Wavetable oscillator with interpolation".to_string(),
+            description: "Wavetable oscillator with linear / cubic interpolation".into(),
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }
@@ -158,15 +111,18 @@ impl<T: Transcendental, const SIZE: usize> Algorithm<T> for WavetableOscillator<
 
 impl<T: Transcendental, const SIZE: usize> Generator<T> for WavetableOscillator<T, SIZE> {
     fn phase(&self) -> T {
-        self.phase.extract(0).div(T::from_f32(SIZE as f32))
+        let pos = self.reader.position();
+        let len = SIZE as f64;
+        T::from_f64((pos % len) / len)
     }
 
     fn set_phase(&mut self, phase: T) {
-        self.phase = ScalarVector1::splat(
-            phase
-                .mul(T::from_f32(SIZE as f32))
-                .clamp(T::ZERO, T::from_f32(SIZE as f32)),
-        );
+        let p = phase.to_f64().clamp(0.0, 1.0);
+        self.reader.set_position(p * SIZE as f64);
+    }
+
+    fn reset_phase(&mut self) {
+        self.reader.set_position(0.0);
     }
 
     fn frequency(&self) -> f32 {
@@ -175,7 +131,7 @@ impl<T: Transcendental, const SIZE: usize> Generator<T> for WavetableOscillator<
 
     fn set_frequency(&mut self, freq: f32) {
         self.frequency = freq;
-        self.update_phase_inc();
+        self.update_rate();
     }
 
     fn amplitude(&self) -> T {

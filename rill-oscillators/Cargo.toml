@@ -1,6 +1,6 @@
 [package]
 name = "rill-oscillators"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Oscillators for Rill - using rill-core-dsp algorithms"
 license.workspace = true

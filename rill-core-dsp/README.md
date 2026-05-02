@@ -1,6 +1,6 @@
 # rill-core-dsp
 
-Core DSP infrastructure — vector abstractions, algorithms, and macros for audio processing.
+Core DSP infrastructure — vector abstractions, algorithms, and macros for signal processing (audio, sensor data, time series).
 
 ## Key components
 

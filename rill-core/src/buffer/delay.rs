@@ -1,7 +1,7 @@
 //! # Delay line for audio effects
 
 use super::array_from_fn;
-use crate::buffer::{AtomicCell, AtomicStats, AudioBuffer, BufferStats};
+use crate::buffer::{AtomicCell, AtomicStats, SignalBuffer, BufferStats};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
@@ -202,10 +202,10 @@ impl<T: Transcendental, const MAX_DELAY: usize> IndexMut<usize> for DelayLine<T,
 }
 
 // ============================================================================
-// AudioBuffer Implementation
+// SignalBuffer Implementation
 // ============================================================================
 
-impl<T: Transcendental, const MAX_DELAY: usize> AudioBuffer<T> for DelayLine<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> SignalBuffer<T> for DelayLine<T, MAX_DELAY> {
     fn capacity(&self) -> usize {
         MAX_DELAY
     }

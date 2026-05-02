@@ -1,18 +1,22 @@
 //! # Rill Core
 //!
 //! The core of the Rill ecosystem. Provides fundamental traits, types,
-//! and utilities for building real-time audio applications.
+//! and utilities for building real-time signal processing applications.
 //!
 //! ## Architecture Overview
 //!
 //! ```text
 //! rill-core/
-//! ├── traits/           # Core traits (AudioNode, Source, Processor, Sink, etc.)
+//! ├── traits/           # Core traits (SignalNode, Source, Processor, Sink, etc.)
 //! ├── math/             # Mathematical abstractions (Scalar, Transcendental, Vector)
 //! │   └── vector/       # Vector types, SIMD abstractions, slice operations
-//! ├── buffer/           # Lock-free audio buffers with AtomicCell safety
+//! ├── buffer/           # Lock-free signal buffers with AtomicCell safety
 //! ├── queues/           # Real-time safe command queues
-//! └── time/             # Time and clock abstractions (ClockTick, SystemClock)
+//! ├── time/             # Time and clock abstractions (ClockTick, SystemClock)
+//! ├── macros/           # Node creation macros (source_node!, processor_node!, etc.)
+//! ├── prelude           # Convenience prelude for common imports
+//! ├── interpolate       # Fractional-index interpolation trait
+//! └── executor/         # Graph executor for driving signal processing
 //! ```
 //!
 //! ## Key Concepts
@@ -20,7 +24,7 @@
 //! - **Scalar**: Base numeric trait for any type (floats and integers)
 //! - **Transcendental**: Float numeric abstraction with sin/cos/sqrt
 //! - **AtomicCell**: Safe atomic wrapper for lock-free data structures
-//! - **AudioNode**: Base trait for all nodes in the audio graph
+//! - **SignalNode**: Base trait for all nodes in the signal graph
 //! - **Source**: Active generators (oscillators, file readers)
 //! - **Processor**: Passive processors (filters, effects)
 //! - **Sink**: Active outputs (sound cards, file writers)
@@ -43,16 +47,17 @@
 //!     sample_rate: T,
 //! }
 //!
-//! impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
+//! impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn metadata(&self) -> NodeMetadata {
 //!         NodeMetadata {
 //!             name: "Sine".to_string(),
+//!             type_name: None,
 //!             category: NodeCategory::Source,
 //!             description: "Sine wave oscillator".to_string(),
 //!             author: "Rill".to_string(),
 //!             version: env!("CARGO_PKG_VERSION").to_string(),
-//!             audio_inputs: 0,
-//!             audio_outputs: 1,
+//!             signal_inputs: 0,
+//!             signal_outputs: 1,
 //!             control_inputs: 0,
 //!             control_outputs: 0,
 //!             clock_inputs: 1,
@@ -121,7 +126,7 @@
 //!         Ok(())
 //!     }
 //!     
-//!     fn num_audio_outputs(&self) -> usize { 1 }
+//!     fn num_signal_outputs(&self) -> usize { 1 }
 //!     fn num_control_inputs(&self) -> usize { 0 }
 //!     fn num_clock_inputs(&self) -> usize { 1 }
 //! }
@@ -140,10 +145,10 @@
 /// Core traits for the Rill ecosystem
 pub mod traits;
 
-/// Mathematical abstractions for audio processing
+/// Mathematical abstractions for signal processing
 pub mod math;
 
-/// Lock-free, real-time safe audio buffers
+/// Lock-free, real-time safe signal buffers
 pub mod buffer;
 
 /// Real-time safe command queues for automation
@@ -162,7 +167,10 @@ pub mod macros;
 /// Convenience prelude for importing common types
 pub mod prelude;
 
-/// Graph executor for driving audio processing
+/// Fractional-index interpolation trait for slice-like types
+pub mod interpolate;
+
+/// Graph executor for driving signal processing
 pub mod executor;
 
 // ============================================================================
@@ -179,9 +187,9 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    AudioNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
-    NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
-    ParameterError, ParameterId, ParameterResult, Port, PortDirection, PortError, PortId,
+    SignalNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
+    NodeMetadata, NodeParams, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType,
+    ParamValue, ParameterError, ParameterId, Port, PortDirection, PortError, PortId,
     PortResult, PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };
 
@@ -190,7 +198,7 @@ pub use math::{Scalar, Transcendental};
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
-    AtomicCell, AtomicCellError, AtomicStats, AudioBuffer, BufferError, BufferResult, BufferStats,
+    AtomicCell, AtomicCellError, AtomicStats, SignalBuffer, BufferError, BufferResult, BufferStats,
     DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
 };
 
@@ -216,7 +224,7 @@ pub const MIN_SAMPLE_RATE: f32 = 8_000.0;
 /// Default sample rate (44.1 kHz)
 pub const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
 
-/// Default block size for audio processing
+/// Default block size for signal processing
 pub const DEFAULT_BLOCK_SIZE: usize = 64;
 
 /// Maximum block size

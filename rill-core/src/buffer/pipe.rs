@@ -1,7 +1,7 @@
 //! # Point-to-point buffer for single producer, single consumer connections
 
 use super::array_from_fn;
-use crate::buffer::{AtomicCell, AtomicStats, AudioBuffer, BufferStats, CACHE_LINE_SIZE};
+use crate::buffer::{AtomicCell, AtomicStats, SignalBuffer, BufferStats, CACHE_LINE_SIZE};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -183,10 +183,10 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
 }
 
 // ============================================================================
-// AudioBuffer Implementation
+// SignalBuffer Implementation
 // ============================================================================
 
-impl<T: Transcendental, const N: usize> AudioBuffer<T> for PipeBuffer<T, N> {
+impl<T: Transcendental, const N: usize> SignalBuffer<T> for PipeBuffer<T, N> {
     fn capacity(&self) -> usize {
         N
     }

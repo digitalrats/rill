@@ -1,11 +1,11 @@
 //! Biquad filter implementation using rill-core-dsp
 //!
 //! This module provides a Processor wrapper around the `Biquad` filter from `rill-core-dsp`
-//! for use in audio graphs.
+//! for use in signal graphs.
 
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{
-    AudioNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    SignalNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
 use rill_core_dsp::algorithm::ParameterizedAlgorithm;
@@ -46,8 +46,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
         let mut outputs = Vec::new();
 
         // Create one audio input and one audio output
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let params = FilterParams {
             filter_type: FilterType::LowPass,
@@ -166,7 +166,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -280,7 +280,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Biquad
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],

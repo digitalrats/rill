@@ -3,7 +3,7 @@ use crate::traits::NodeId;
 
 /// Fixed-size telemetry frame for RT-safe ring buffer communication.
 ///
-/// Contains a full audio block plus computed metrics (peak, RMS, DC offset).
+/// Contains a full signal block plus computed metrics (peak, RMS, DC offset).
 /// Implements `Copy` + `Default`, compatible with `SpscQueue` (overwrite-oldest).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -24,7 +24,7 @@ pub struct TelemetryBlock<T: Transcendental, const BUF_SIZE: usize> {
     pub rms: T,
     /// DC offset (average) of the block
     pub dc_offset: T,
-    /// Full audio block data
+    /// Full signal block data
     pub data: [T; BUF_SIZE],
 }
 

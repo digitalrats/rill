@@ -53,16 +53,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Using the Audio Graph
 
-For more complex signal routing, use `rill-graph` with `GraphBuilder`:
+For complex signal routing, use `rill-graph::SignalEngine` with `GraphBuilder`:
 
 ```rust
-use rill_graph::GraphBuilder;
+use rill_graph::SignalEngine;
 use rill_oscillators::audio::SineOsc;
 
+// Build the graph
 let mut builder = GraphBuilder::<f32, 64>::new();
-let osc_id = builder.add_source(Box::new(
-    SineOsc::new(440.0, 44100.0)
-));
+let osc = builder.add_source(Box::new(SineOsc::new(440.0, 44100.0)));
+// ... add processors, sinks, connect ports ...
+let graph = builder.build(clock)?;
+
+// Create engine and process blocks
+let (nodes, topo, tick) = graph.into_parts();
+let mut engine = SignalEngine::new(nodes, topo, cmd_rx, tel_tx);
+engine.process_block(&tick)?;
 ```
 
 ## Audio I/O
@@ -80,3 +86,16 @@ rill-adrift = { version = "0.3", features = ["io", "alsa"] }
 ```
 
 Available backends: `alsa`, `cpal` (default), `pipewire`, `jack`.
+
+## Two-Thread Architecture
+
+Rill uses a two-thread architecture:
+
+- **Audio thread** (hard RT): runs `SignalEngine` — calls `process_tick()`
+  for clock boundary management, then iterates nodes in topological order.
+  Source/Sink nodes own I/O buffers.
+- **Control thread** (soft RT): runs `PatchbayManager` with automata
+  (LFO, envelopes), sensors, and servos. Communicates with the audio
+  thread via `CommandQueue` and `TelemetryQueue`.
+
+Push model (Source active) and pull model (Sink active) are both supported.

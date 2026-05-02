@@ -79,7 +79,7 @@ macro_rules! source_node {
         }
 
         impl<$T: $audio_num, const $BUF: usize>
-            $crate::AudioNode<$T, $BUF> for $struct_name<$T, $BUF>
+            $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
             fn node_type_id(&self) -> $crate::NodeTypeId
@@ -192,7 +192,7 @@ macro_rules! source_node {
                 Ok(())
             }
 
-            fn num_audio_outputs(&self) -> usize { 1 }
+            fn num_signal_outputs(&self) -> usize { 1 }
             fn num_control_inputs(&self) -> usize { 0 }
             fn num_clock_inputs(&self) -> usize { 0 }
         }

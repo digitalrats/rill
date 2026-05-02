@@ -1,9 +1,13 @@
 //! Parameter handling for audio nodes
 //!
-//! Parameters are values that can be changed at runtime,
-//! either by automation or direct user control.
+//! Defines the fundamental building blocks of the signal graph:
+//! - `SignalNode`: Base trait for all nodes
+//! - `Source`: Active generator (has no inputs)
+//! - `Processor`: Passive processor (has inputs and outputs)
+//! - `Sink`: Active consumer (has no outputs)
 
 use super::error::{ParameterError, ParameterResult};
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -132,6 +136,7 @@ impl fmt::Display for ParamType {
 
 /// Parameter value (can be of different types)
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParamValue {
     /// Floating point value
     Float(f32),
@@ -339,6 +344,97 @@ impl ParamMetadata {
     pub fn with_choices(mut self, choices: Vec<(String, f32)>) -> Self {
         self.choices = Some(choices);
         self
+    }
+}
+
+// ============================================================================
+// NodeParams — bag of parameters for factory-based node construction
+// ============================================================================
+
+/// A flexible set of parameters passed to a node constructor.
+///
+/// Uses `HashMap<String, ParamValue>` so any node type can extract
+/// whatever named parameters it supports. This is intentionally
+/// open-ended — no fixed schema, no required fields.
+///
+/// See [`NodeConstructor`] (in `rill-graph`) for how builder uses this.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NodeParams {
+    /// Sample rate the node will be initialized with.
+    pub sample_rate: f32,
+
+    /// Arbitrary named parameters.
+    pub parameters: HashMap<String, ParamValue>,
+}
+
+impl NodeParams {
+    /// Create params with a given sample rate.
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            parameters: HashMap::new(),
+        }
+    }
+
+    /// Builder-style: insert a parameter and return self.
+    pub fn with(mut self, key: impl Into<String>, value: ParamValue) -> Self {
+        self.parameters.insert(key.into(), value);
+        self
+    }
+
+    /// Get a parameter by name.
+    pub fn get(&self, key: &str) -> Option<&ParamValue> {
+        self.parameters.get(key)
+    }
+
+    /// Insert or overwrite a parameter.
+    pub fn insert(&mut self, key: impl Into<String>, value: ParamValue) -> Option<ParamValue> {
+        self.parameters.insert(key.into(), value)
+    }
+
+    /// Remove a parameter, returning its value if present.
+    pub fn remove(&mut self, key: &str) -> Option<ParamValue> {
+        self.parameters.remove(key)
+    }
+
+    /// Check whether a parameter exists.
+    pub fn contains(&self, key: &str) -> bool {
+        self.parameters.contains_key(key)
+    }
+
+    /// Number of stored parameters.
+    pub fn len(&self) -> usize {
+        self.parameters.len()
+    }
+
+    /// True when no parameters have been stored.
+    pub fn is_empty(&self) -> bool {
+        self.parameters.is_empty()
+    }
+
+    /// Get a float parameter by name, falling back to `default`.
+    pub fn get_f32(&self, key: &str, default: f32) -> f32 {
+        self.parameters
+            .get(key)
+            .and_then(|v| v.as_f32())
+            .unwrap_or(default)
+    }
+
+    /// Get an integer parameter by name.
+    pub fn get_i32(&self, key: &str, default: i32) -> i32 {
+        self.parameters
+            .get(key)
+            .and_then(|v| v.as_i32())
+            .unwrap_or(default)
+    }
+
+    /// Get a bool parameter by name.
+    pub fn get_bool(&self, key: &str, default: bool) -> bool {
+        self.parameters
+            .get(key)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(default)
     }
 }
 

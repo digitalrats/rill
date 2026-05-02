@@ -11,7 +11,7 @@ Graph nodes for oscillators — sine, saw, square, triangle, pulse, noise, LFO, 
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Source`/`Processor` traits
+- `rill-core` — `SignalNode`, `Source`/`Processor` traits
 - `rill-core-dsp` — DSP algorithms from `generators/`
 
 ## Links

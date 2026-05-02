@@ -1,6 +1,6 @@
 [package]
 name = "rill-analog-effects"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Analog circuit models: op-amps, tape decks, preamps"
 license.workspace = true

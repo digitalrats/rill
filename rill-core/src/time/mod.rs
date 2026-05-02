@@ -1,7 +1,7 @@
 //! # Time and clock abstractions for Rill
 //!
 //! This module provides timing and synchronization primitives for real-time
-//! audio processing. It includes clock sources, tick information, and
+//! signal processing. It includes clock sources, tick information, and
 //! utilities for sample-accurate timing.
 //!
 //! ## Key Components

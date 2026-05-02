@@ -4,7 +4,7 @@ use crate::delay::Delay;
 use rill_core::{
     buffer::DelayLine,
     math::Transcendental,
-    traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    traits::{SignalNode, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
@@ -100,8 +100,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
         let metadata = NodeMetadata::new("Limiter", NodeCategory::Processor);
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         Self {
             id: NodeId(0),
@@ -299,7 +299,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -434,7 +434,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limite
     fn process(
         &mut self,
         _clock: &ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],

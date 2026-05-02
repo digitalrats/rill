@@ -1,7 +1,7 @@
 //! # CommandQueue — неблокирующая очередь команд
 //!
 //! [`CommandQueue`] обеспечивает безопасную передачу команд
-//! из потока управления (control thread) в аудиопоток (audio thread)
+//! из потока управления (control thread) в аудиопоток (signal thread)
 //! через bounded crossbeam channel.
 
 use crossbeam_channel::{self, Receiver, Sender, TryRecvError, TrySendError};
@@ -34,7 +34,7 @@ impl<T: Send + 'static> CommandSender<T> {
     }
 }
 
-/// Потребитель команд (audio thread)
+/// Потребитель команд (signal thread)
 pub struct CommandReceiver<T> {
     rx: Receiver<T>,
 }
@@ -85,7 +85,7 @@ impl<T: Send + 'static> CommandQueue<T> {
         })
     }
 
-    /// Попытаться получить команду (из audio thread)
+    /// Попытаться получить команду (из signal thread)
     pub fn try_recv(&self) -> Result<T, super::QueueError> {
         self.rx.try_recv().map_err(|e| match e {
             TryRecvError::Empty => super::QueueError::QueueEmpty,

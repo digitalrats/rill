@@ -1,20 +1,34 @@
 # rill-graph
 
-Real-time audio graph with block processing and topological sort.
+Real-time signal graph (DAG) with block processing, topological sort, and
+the [`SignalEngine`] — a real-time safe graph engine.
 
 ## Key components
 
-- **`AudioGraph`** — immutable DAG container, topology is fixed at build time
+- **`SignalGraph`** — immutable DAG container, topology is fixed at build time
 - **`GraphBuilder`** — the only way to build a graph (`Source` → `Processor` → `Sink`)
 - **Kahn's algorithm** — topological sort with cycle detection
-- **Port routing** — connections and feedback buffers stored on ports
-- **Copy-based routing** — buffers copied between ports (zero-copy planned)
-- **Feedback support** — deferred feedback via `feedback_buffer`
-- **Port types** — `Audio`, `Control`, `Clock`, `Feedback`, `Param`
+- **`SignalEngine<T, BUF_SIZE>`** — drives the graph:
+  - `process_tick(tick)` — clock boundary: drains commands (anti-ack on
+    overwrite), runs `pre_process` (feedback mix), applies parameter changes
+  - `process_block(tick)` — convenience: `process_tick` + topo-order node
+    processing + snapshot + propagate
+  - `spawn()` — consumes the engine and runs it in a dedicated real-time thread
+  - `running_flag()` — `Arc<AtomicBool>` for cooperative shutdown
+- **Two-thread architecture** — real-time thread (hard RT) runs the engine,
+  control thread (soft RT) runs `PatchbayManager` via queues
+- **Zero-copy routing** — 1:1 и fan-out соединения читают напрямую из буфера
+  upstream-порта (`Port::upstream_buffer`). Копирование только при fan-in и feedback.
+- **SIMD-friendly** — фиксированное положение буфера в памяти на всё время жизни графа.
+- **Port routing** — соединения и буферы обратной связи хранятся на портах
+- **Feedback support** — deferred feedback via `port.pre_process` /
+  `port.snapshot_feedback`
+- **Port types** — `Signal`, `Control`, `Clock`, `Feedback`, `Param`
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`
+- `rill-core` — `SignalNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`,
+  `CommandQueue`, `TelemetryQueue`
 
 ## Links
 

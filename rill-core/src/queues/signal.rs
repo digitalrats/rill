@@ -7,7 +7,7 @@
 //! ## Иерархия команд
 //!
 //! - `Command` — общий тип-перечисление всех возможных команд
-//! - `SetParameter` — изменение параметра в AudioGraph
+//! - `SetParameter` — изменение параметра в SignalGraph
 //! - `AutomatonCommand` — управление автоматами
 //! - `SensorCommand` — управление сенсорами
 //! - `ServoCommand` — управление серво
@@ -475,6 +475,14 @@ impl CommandEnum {
             CommandEnum::Sensor(_) => CommandType::Sensor,
             CommandEnum::Servo(_) => CommandType::Servo,
             CommandEnum::System { .. } => CommandType::System,
+        }
+    }
+
+    /// Вернуть NodeId если команда адресована узлу графа (SetParameter).
+    pub fn target_node_id(&self) -> Option<crate::traits::NodeId> {
+        match self {
+            CommandEnum::SetParameter(cmd) => Some(cmd.port.node_id()),
+            _ => None,
         }
     }
 

@@ -1,5 +1,6 @@
 //! Basic oscillator example
-use rill_core::traits::{AudioNode, Processor};
+use rill_core::traits::SignalNode;
+use rill_core::traits::Source;
 use rill_core::ClockTick;
 use rill_oscillators::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
@@ -30,10 +31,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let clock = ClockTick::new(0, BLOCK_SIZE as u32, sample_rate);
 
-    // Process one block each
-    sine.process(&clock, &[], &[], &[], &[])?;
-    saw.process(&clock, &[], &[], &[], &[])?;
-    noise.process(&clock, &[], &[], &[], &[])?;
+    // Generate one block each
+    sine.generate(&clock, &[], &[])?;
+    saw.generate(&clock, &[], &[])?;
+    noise.generate(&clock, &[], &[])?;
 
     // Read from output ports
     let sine_output = sine.output_port(0).unwrap().buffer.as_array();

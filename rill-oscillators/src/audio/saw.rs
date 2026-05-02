@@ -2,8 +2,8 @@
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Processor,
+    ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ParameterId, Port, Processor, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -50,7 +50,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
             frequency: T::from_f32(440.0),
             amplitude: T::from_f32(0.5),
             inputs: Vec::new(),
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             controls: Vec::new(),
             state: None,
             _phantom: PhantomData,
@@ -106,16 +106,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SawOsc".to_string(),
-            category: NodeCategory::Source,
+            
+            type_name: None,category: NodeCategory::Source,
             description: "Sawtooth wave oscillator".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: 0,
-            audio_outputs: 1,
+            signal_inputs: 0,
+            signal_outputs: 1,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -210,31 +211,25 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for SawOsc
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
-    fn process(
+impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+    fn generate(
         &mut self,
         clock: &ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let mut temp = [T::ZERO; BUF_SIZE];
         self.generate_block(&mut temp, clock)?;
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
     }
 }

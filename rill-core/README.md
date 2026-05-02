@@ -1,8 +1,8 @@
 # rill-core
 
 Domain-agnostic foundation library: lock-free queues, generic vector math,
-atomic cells, and real-time safe primitives. Powers the Rill audio ecosystem,
-but applicable to IoT, robotics, embedded systems, and signal processing.
+atomic cells, and real-time safe primitives. Powers the Rill ecosystem for
+IoT, robotics, embedded systems, signal processing, and audio.
 
 ## The trait hierarchy
 
@@ -13,7 +13,7 @@ but applicable to IoT, robotics, embedded systems, and signal processing.
 
 ## Key components
 
-- **traits** — `AudioNode`, `ParameterId`, `PortId`, `Clock`, `Source`/`Processor`/`Sink`
+- **traits** — `SignalNode`, `ParameterId`, `PortId`, `Clock`, `Source`/`Processor`/`Sink`
 - **math** — `Scalar`, `Transcendental` traits; `lerp`, `db_to_linear`, `midi_to_freq`; **vector** submodule
 - **vector** — `Vector<T: Scalar, N>` trait and implementations:
   `ScalarVector1/2/4/8<T>`, SIMD types (`F32x4`, `F64x4`, etc.), slice operations
