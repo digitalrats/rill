@@ -11,7 +11,7 @@ Graph nodes for digital audio effects — Delay, Distortion, Limiter, and more.
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Processor` trait
+- `rill-core` — `SignalNode`, `Processor` trait
 - `rill-core-dsp` — delay algorithms from `delay/`
 - `rill-oscillators` (optional) — LFO modulation
 

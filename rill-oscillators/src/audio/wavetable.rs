@@ -1,6 +1,6 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    ActionContext, Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
     ParameterId, Port, Source,
 };
 use rill_core::Transcendental;
@@ -91,7 +91,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<T, BUF_SIZE>
     for WavetableOscNode<T, BUF_SIZE, WT_SIZE>
 {
     fn metadata(&self) -> NodeMetadata {

@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! rill-core/
-//! ├── traits/           # Core traits (AudioNode, Source, Processor, Sink, etc.)
+//! ├── traits/           # Core traits (SignalNode, Source, Processor, Sink, etc.)
 //! ├── math/             # Mathematical abstractions (Scalar, Transcendental, Vector)
 //! │   └── vector/       # Vector types, SIMD abstractions, slice operations
 //! ├── buffer/           # Lock-free audio buffers with AtomicCell safety
@@ -20,7 +20,7 @@
 //! - **Scalar**: Base numeric trait for any type (floats and integers)
 //! - **Transcendental**: Float numeric abstraction with sin/cos/sqrt
 //! - **AtomicCell**: Safe atomic wrapper for lock-free data structures
-//! - **AudioNode**: Base trait for all nodes in the audio graph
+//! - **SignalNode**: Base trait for all nodes in the audio graph
 //! - **Source**: Active generators (oscillators, file readers)
 //! - **Processor**: Passive processors (filters, effects)
 //! - **Sink**: Active outputs (sound cards, file writers)
@@ -43,7 +43,7 @@
 //!     sample_rate: T,
 //! }
 //!
-//! impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
+//! impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn metadata(&self) -> NodeMetadata {
 //!         NodeMetadata {
 //!             name: "Sine".to_string(),
@@ -183,7 +183,7 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    AudioNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
+    SignalNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
     NodeMetadata, NodeParams, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType,
     ParamValue, ParameterError, ParameterId, Port, PortDirection, PortError, PortId,
     PortResult, PortType, ProcessError, ProcessResult, Processor, Sink, Source,
@@ -194,7 +194,7 @@ pub use math::{Scalar, Transcendental};
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
-    AtomicCell, AtomicCellError, AtomicStats, AudioBuffer, BufferError, BufferResult, BufferStats,
+    AtomicCell, AtomicCellError, AtomicStats, SignalBuffer, BufferError, BufferResult, BufferStats,
     DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
 };
 

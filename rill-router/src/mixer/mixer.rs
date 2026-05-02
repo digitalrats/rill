@@ -3,7 +3,7 @@
 use super::channel::{ChannelConfig, ChannelState};
 use super::send::{SendConfig, SendType};
 use rill_core::traits::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
+    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
     ParamRange, ParamType, ParamValue, ParameterId, Port, Processor,
 };
 use rill_core::ClockTick;
@@ -233,7 +233,7 @@ impl MixerNode {
     }
 }
 
-impl rill_core::traits::AudioNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
+impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
     fn metadata(&self) -> NodeMetadata {
         let mut params = vec![ParamMetadata {
             name: "master_volume".to_string(),

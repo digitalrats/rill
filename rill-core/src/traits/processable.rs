@@ -14,7 +14,7 @@ use crate::traits::ProcessResult;
 /// Convenience structure that gathers all input buffers for a node.
 ///
 /// Nodes write their output directly into their own output port buffers
-/// (accessible via `AudioNode::output_port_mut`), so only input data
+/// (accessible via `SignalNode::output_port_mut`), so only input data
 /// is passed through this context.
 pub struct ProcessContext<'a, T: Transcendental, const BUF_SIZE: usize> {
     /// Current clock tick
@@ -115,7 +115,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for Node
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_SIZE>
     for NodeVariant<T, BUF_SIZE>
 {
     fn metadata(&self) -> crate::traits::NodeMetadata {
@@ -181,15 +181,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
     fn num_audio_inputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
                 n.num_audio_inputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_audio_inputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_audio_inputs()
             }
         }
@@ -198,15 +198,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
     fn num_audio_outputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
                 n.num_audio_outputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_audio_outputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_audio_outputs()
             }
         }
@@ -215,15 +215,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
     fn num_control_inputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
                 n.num_control_inputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_control_inputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_control_inputs()
             }
         }
@@ -232,15 +232,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
     fn num_control_outputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
                 n.num_control_outputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_control_outputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_control_outputs()
             }
         }
@@ -249,15 +249,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
     fn num_clock_inputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
                 n.num_clock_inputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_clock_inputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_clock_inputs()
             }
         }
@@ -266,15 +266,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
     fn num_clock_outputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
                 n.num_clock_outputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_clock_outputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_clock_outputs()
             }
         }
@@ -283,15 +283,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::AudioNode<T, BUF_S
     fn num_feedback_ports(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**src;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
                 n.num_feedback_ports()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_feedback_ports()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn crate::traits::AudioNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_feedback_ports()
             }
         }

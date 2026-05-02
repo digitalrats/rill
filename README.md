@@ -182,7 +182,7 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 
 Проект находится в стадии активной разработки. Все 17 крейтов workspace активны. Аналоговое моделирование представлено тремя крейтами: `rill-core-wdf` (WDF ядро), `rill-analog-filters` (WdfMoogLadder) и `rill-analog-effects` (операционники, ленточные деки). Интеграционные тесты живут в per-crate `tests/`. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
 
-Рефакторинг 0.3.0 завершён: все крейты переведены на единое ядро `rill-core` и блочную обработку. DSP-алгоритмы собраны в `rill-core-dsp` (трейт `Algorithm`, генераторы, фильтры, задержки, векторные операции). Специализированные крейты (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) предоставляют узлы графа (`AudioNode`), использующие эти алгоритмы. `rill-router` добавлен как единая точка входа для маршрутизации, микширования и эквализации аудиосигналов.
+Рефакторинг 0.3.0 завершён: все крейты переведены на единое ядро `rill-core` и блочную обработку. DSP-алгоритмы собраны в `rill-core-dsp` (трейт `Algorithm`, генераторы, фильтры, задержки, векторные операции). Специализированные крейты (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) предоставляют узлы графа (`SignalNode`), использующие эти алгоритмы. `rill-router` добавлен как единая точка входа для маршрутизации, микширования и эквализации аудиосигналов.
 
 ## 📊 Зависимости крейтов
 
@@ -239,7 +239,7 @@ rill-core/
 │   ├── graph.rs               # Базовые типы для графа
 │   ├── utils.rs               # Утилиты
 │   ├── traits/
-│   │   ├── mod.rs             # Трейты узлов (AudioNode, Source, Processor, Sink)
+│   │   ├── mod.rs             # Трейты узлов (SignalNode, Source, Processor, Sink)
 │   │   ├── node.rs            # Узлы и идентификаторы
 │   │   ├── port.rs            # Порты
 │   │   ├── param.rs           # Параметры
@@ -293,7 +293,7 @@ rill-core/
 
 #### buffer (буферы)
 
-Предоставляет типы буферов для передачи аудиоданных между узлами: `PipeBuffer` (однопоточный канал), `FanOutBuffer` (разветвление), `FanInBuffer` (суммирование), `DelayLine` (линия задержки), `RingBuffer` (кольцевой буфер). Все буферы реализуют трейт `AudioBuffer` и поддерживают статистику использования.
+Предоставляет типы буферов для передачи аудиоданных между узлами: `PipeBuffer` (однопоточный канал), `FanOutBuffer` (разветвление), `FanInBuffer` (суммирование), `DelayLine` (линия задержки), `RingBuffer` (кольцевой буфер). Все буферы реализуют трейт `SignalBuffer` и поддерживают статистику использования.
 
 ```rust
 use rill_core::buffer::{PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer};
@@ -361,12 +361,12 @@ clock.advance(64);
 
 #### error (ошибки)
 
-Крейт‑уровневые типы ошибок `AudioError` и `AudioResult`. Отделены от `traits/error.rs` (который содержит ошибки трейтов) и используются во всех публичных API ядра.
+Крейт‑уровневые типы ошибок `SignalError` и `SignalResult`. Отделены от `traits/error.rs` (который содержит ошибки трейтов) и используются во всех публичных API ядра.
 
 ```rust
-use rill_core::{AudioError, AudioResult};
+use rill_core::{SignalError, SignalResult};
 
-fn safe_process() -> AudioResult<()> {
+fn safe_process() -> SignalResult<()> {
     Ok(())
 }
 ```
@@ -377,7 +377,7 @@ fn safe_process() -> AudioResult<()> {
 
 ```rust
 use rill_core::prelude::*;
-// Теперь доступны AudioNode, Scalar, Transcendental, PipeBuffer, CommandQueue, Clock и др.
+// Теперь доступны SignalNode, Scalar, Transcendental, PipeBuffer, CommandQueue, Clock и др.
 ```
 
 ## 🧪 Тестирование
@@ -403,7 +403,7 @@ cargo test -p rill-digital-effects
 ## 🎮 Примеры
 
 ```bash
-# Базовый пример с AudioGraph
+# Базовый пример с SignalGraph
 cargo run --example final_demo
 
 # Lo-Fi эмуляция (NES, AY-3-8910)
@@ -682,7 +682,7 @@ fn alsa_callback() {
 
 ```rust
 // Единый интерфейс для всех узлов
-trait AudioNode<T: Transcendental, const BUF_SIZE: usize> {
+trait SignalNode<T: Transcendental, const BUF_SIZE: usize> {
     fn on_clock(
         &mut self,
         clock: &ClockTick,
@@ -786,7 +786,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Resona
 
 #### Простой синтезатор
 ```rust
-let mut graph = AudioGraph::with_sample_rate(44100.0);
+let mut graph = SignalGraph::with_sample_rate(44100.0);
 
 let osc = graph.add_source(SineOsc::new(440.0))?;
 let filter = graph.add_processor(LowPassFilter::new(1000.0))?;
@@ -819,7 +819,7 @@ graph.run_capture()?;
 
 ## 🤖 Мир автоматов (The World of Automata)
 
-**Rill Patchbay** — это не просто система управления. Это **мир**, в котором живут **автоматы** — загадочные существа, которые чувствуют окружающую среду и влияют на неё. Они общаются на языке сигналов, слышат звук через сенсоры и через серво воздействуют на AudioGraph.
+**Rill Patchbay** — это не просто система управления. Это **мир**, в котором живут **автоматы** — загадочные существа, которые чувствуют окружающую среду и влияют на неё. Они общаются на языке сигналов, слышат звук через сенсоры и через серво воздействуют на SignalGraph.
 
 ### 🧠 Архитектура мира
 
@@ -850,7 +850,7 @@ graph.run_capture()?;
 │  │                   ▼                              │ │
 │  │  ┌─────────────────────────────────────────┐   │ │
 │  │  │           СЕРВО (руки)                   │   │ │
-│  │  │    Применяют сигналы к AudioGraph       │   │ │
+│  │  │    Применяют сигналы к SignalGraph       │   │ │
 │  │  └─────────────────────────────────────────┘   │ │
 │  └──────────────────────┬──────────────────────────┘ │
 │                         │ Неблокирующие очереди      │
@@ -933,14 +933,14 @@ let mode = PhysicalSensor::switch("filter_mode")
 
 ### 🎯 Серво — руки (Servo)
 
-Серво — это **исполнительные механизмы** автоматов. Подчиняясь законам природы (неблокирующим очередям), они передают сигналы из мира автоматов в AudioGraph, изменяя параметры звука.
+Серво — это **исполнительные механизмы** автоматов. Подчиняясь законам природы (неблокирующим очередям), они передают сигналы из мира автоматов в SignalGraph, изменяя параметры звука.
 
 ```rust
 // Серво, управляющее частотой фильтра
 let filter_servo = Servo::new(
     "filter_servo",
     lfo_automaton,          // Какой автомат дает сигнал
-    filter_node_id,         // ID узла в AudioGraph
+    filter_node_id,         // ID узла в SignalGraph
     "cutoff",               // Имя параметра
     ParameterMapping::Linear,
     20.0, 20000.0           // Диапазон значений
@@ -951,8 +951,8 @@ let filter_servo = Servo::new(
 
 Мир автоматов и мир звука существуют параллельно. Они связаны **неблокирующими очередями**:
 
-- **Command Queue** — серво отправляют команды в AudioGraph
-- **Telemetry Queue** — сенсоры получают данные из AudioGraph
+- **Command Queue** — серво отправляют команды в SignalGraph
+- **Telemetry Queue** — сенсоры получают данные из SignalGraph
 
 Это позволяет автоматам "думать" в своем темпе, не мешая звуковому потоку.
 
@@ -974,7 +974,7 @@ control.add_lfo(
     "vibrato",              // Имя
     5.0, 0.5, 0.0,          // freq, amp, offset
     LfoWaveform::Sine,      // Форма волны
-    osc_node_id,            // Целевой узел AudioGraph
+    osc_node_id,            // Целевой узел SignalGraph
     "frequency",            // Целевой параметр
     400.0, 480.0,           // Диапазон
 );
@@ -1073,7 +1073,7 @@ let servo = Servo::new(
 
 Библиотека для построения и выполнения иммутабельных аудиографов со статической топологией DAG:
 
-- **Immutable-граф** — топология фиксируется при сборке, `AudioGraph` не имеет методов модификации
+- **Immutable-граф** — топология фиксируется при сборке, `SignalGraph` не имеет методов модификации
 - **`GraphBuilder`** — единственный способ построить граф (source → processor → sink)
 - **Алгоритм Кана** — топологическая сортировка с обнаружением циклов
 - **Port-маршрутизация** — соединения и буферы обратной связи хранятся на портах
@@ -1088,12 +1088,12 @@ let servo = Servo::new(
 │                    GraphBuilder                      │
 │  add_source() → idx  add_processor() → idx          │
 │  add_sink() → idx    connect_audio(from, to)        │
-│  connect_feedback(from, to)    build() → AudioGraph │
+│  connect_feedback(from, to)    build() → SignalGraph │
 └──────────────────────┬──────────────────────────────┘
                        │ consume
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│                    AudioGraph                        │
+│                    SignalGraph                        │
 │  ┌────────┐   ┌────────────┐   ┌────────┐          │
 │  │ Source │──►│ Processor  │──►│  Sink  │  ...      │
 │  └────────┘   └────────────┘   └────────┘          │
@@ -1115,8 +1115,8 @@ let servo = Servo::new(
 
 | Компонент | Назначение |
 |-----------|------------|
-| **`GraphBuilder`** | Mutable-строитель: добавляет узлы и соединения, собирает `AudioGraph` |
-| **`AudioGraph`** | Immutable-контейнер с топологией DAG, без методов обработки |
+| **`GraphBuilder`** | Mutable-строитель: добавляет узлы и соединения, собирает `SignalGraph` |
+| **`SignalGraph`** | Immutable-контейнер с топологией DAG, без методов обработки |
 | **`Port`** | Владение буфером, downstream-маршрутами и feedback-состоянием |
 | **`BuildError`** | `CycleDetected` — возвращается при обнаружении цикла |
 
@@ -1165,7 +1165,7 @@ builder.connect_feedback(processor_id, 0, source_id, 0);
 
 ### 🔄 Processing Loop (внешний)
 
-`AudioGraph` не содержит цикла обработки. Внешний код управляет им:
+`SignalGraph` не содержит цикла обработки. Внешний код управляет им:
 
 ```rust
 for &idx in graph.topo_order() {
@@ -1196,7 +1196,7 @@ for &idx in graph.topo_order() {
 
 ### 🔧 Интеграция с другими крейтами
 
-- **`rill-core`** — базовые трейты (`AudioNode`, `Source`, `Processor`, `Sink`), буферы, порты, типы времени
+- **`rill-core`** — базовые трейты (`SignalNode`, `Source`, `Processor`, `Sink`), буферы, порты, типы времени
 - **`rill-oscillators`** — готовые реализации `Source` (генераторы)
 - **`rill-digital-filters`** — готовые реализации `Processor` (фильтры)
 - **`rill-digital-effects`** — готовые реализации `Processor` (эффекты)

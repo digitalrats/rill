@@ -9,7 +9,7 @@ use crate::buffer::Buffer;
 use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::algorithm::Algorithm;
-use crate::traits::node::{AudioNode, NodeId};
+use crate::traits::node::{SignalNode, NodeId};
 use crate::traits::processable::NodeVariant;
 use crate::traits::PortError;
 use std::fmt;

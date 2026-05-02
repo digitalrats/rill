@@ -2,7 +2,7 @@
 
 use rill_core::{
     math::Transcendental,
-    traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    traits::{SignalNode, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
@@ -160,7 +160,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,

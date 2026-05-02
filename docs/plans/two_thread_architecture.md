@@ -2,14 +2,14 @@
 
 ## Overview
 
-Реализация двухпоточной модели поверх иммутабельного `AudioGraph`.
+Реализация двухпоточной модели поверх иммутабельного `SignalGraph`.
 Звуковой поток (hard RT) и поток мира автоматов (soft RT) общаются
 через неблокирующие очереди.
 
 ```
 [Control Thread (soft RT)]             [Audio Thread (hard RT)]
 ─────────────────────────────           ─────────────────────────
-  Automata (LFO, Env)                        AudioEngine
+  Automata (LFO, Env)                        SignalEngine
   Sensors (анализаторы)                        │
   Servos (приводы)                      Processing Loop:
        │                                 for idx in topo_order:
@@ -44,7 +44,7 @@
 | Sensors (acoustic, physical) | `rill-patchbay::sensor` | ✅ Implemented |
 | `PatchbayManager` | `rill-patchbay::manager` | ✅ Implemented, tested |
 | `GraphStats` | `rill-graph::graph` | ✅ Declared, unused |
-| **`AudioEngine` (two-thread)** | `rill-graph::engine` | ✅ Implemented — `process_tick()`, `process_block()`, `spawn()` |
+| **`SignalEngine` (two-thread)** | `rill-graph::engine` | ✅ Implemented — `process_tick()`, `process_block()`, `spawn()` |
 | **ControlWorld / integration glue** | app-level | ❌ Not implemented |
 | **`crossbeam-channel` + `parking_lot`** used in graph | `rill-graph/Cargo.toml` | ⚠️ Declared, unused |
 
@@ -65,10 +65,10 @@ The plan previously referenced `RtQueue` compilation bugs (`QueueStats` → `Que
 
 ## Current Implementation
 
-The `AudioEngine` is implemented in `rill-graph::engine`:
+The `SignalEngine` is implemented in `rill-graph::engine`:
 
 ```
-AudioEngine<T, BUF_SIZE>
+SignalEngine<T, BUF_SIZE>
 ├── process_tick(&mut self, tick)     — clock boundary (drain + anti-ack + pre_process + apply)
 ├── process_block(&mut self, tick)    — full cycle (topo-order process + snapshot + propagate)
 ├── spawn(self) -> JoinHandle         — consumes engine, runs in dedicated thread
@@ -84,7 +84,7 @@ Push model (Source active) and pull model (Sink active) are both supported.
 
 ### 2. Integration wiring
 
-The top-level application code that wires `PatchbayManager` → `CommandQueue` → `AudioEngine` → `TelemetryQueue` → `PatchbayManager` does not exist. This lives at the application level (e.g. in `drift` or a test harness), not in any library crate.
+The top-level application code that wires `PatchbayManager` → `CommandQueue` → `SignalEngine` → `TelemetryQueue` → `PatchbayManager` does not exist. This lives at the application level (e.g. in `drift` or a test harness), not in any library crate.
 
 ### 3. Telemetry emission from processing loop
 
@@ -92,18 +92,18 @@ Per-node peak value emission, parameter change notifications, and processing tim
 
 ## Action Items (in priority order)
 
-1. ✅ **`AudioEngine`** — implemented in `rill-graph::engine`
+1. ✅ **`SignalEngine`** — implemented in `rill-graph::engine`
 2. **Wire `crossbeam-channel` in `rill-graph`** — currently declared but unused in graph.rs
 3. **Connect `GraphStats`** to the actual processing loop
-4. **Integrate `PatchbayManager` with `AudioEngine`** via queues (app-level demo)
+4. **Integrate `PatchbayManager` with `SignalEngine`** via queues (app-level demo)
 5. **Remove unused dependencies** from `rill-graph/Cargo.toml` (crossbeam-channel, parking_lot)
 
 ## Thread Safety Summary
 
 | Component | Thread | Requirements |
 |-----------|--------|--------------|
-| `AudioEngine::process_block` | Audio (hard RT) | Topo-order propagate (O(n) where n = connections) |
-| `AudioEngine::start/stop` | Any | Atomic flags |
+| `SignalEngine::process_block` | Audio (hard RT) | Topo-order propagate (O(n) where n = connections) |
+| `SignalEngine::start/stop` | Any | Atomic flags |
 | `CommandQueue::send` | Control (soft RT) | Lock-free push |
 | `CommandQueue::try_recv` | Audio (hard RT) | Lock-free pop |
 | `TelemetryQueue::send` | Audio (hard RT) | Lock-free push |

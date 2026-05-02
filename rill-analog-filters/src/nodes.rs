@@ -52,7 +52,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZ
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for WdfMoogLadderProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> NodeTypeId

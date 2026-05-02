@@ -4,7 +4,7 @@
 //! calls node processing, and pushes data to output ports.
 //!
 //! This module provides a prototype implementation that demonstrates the active ports flow.
-//! A real implementation would integrate with a concrete graph (e.g., `rill_graph::AudioGraph`).
+//! A real implementation would integrate with a concrete graph (e.g., `rill_graph::SignalGraph`).
 //!
 //! # Example
 //! ```
@@ -25,7 +25,7 @@ use crate::traits::ActivePort;
 /// the executor would hold a concrete graph and iterate over its nodes.
 pub struct GraphExecutor<T: Transcendental, const BUF_SIZE: usize> {
     // Placeholder for the audio graph.
-    // In reality, this would be something like `graph: rill_graph::AudioGraph<T, BUF_SIZE>`.
+    // In reality, this would be something like `graph: rill_graph::SignalGraph<T, BUF_SIZE>`.
     _phantom: std::marker::PhantomData<T>,
 }
 

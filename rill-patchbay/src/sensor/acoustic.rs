@@ -202,7 +202,7 @@ impl Hearing for ZeroCrossing {
 pub struct AcousticSensor {
     name: String,
     hearing: Box<dyn Hearing>,
-    listen_to: Option<String>,  // ID узла в AudioGraph
+    listen_to: Option<String>,  // ID узла в SignalGraph
     last_value: f32,
     last_send: f32,
     threshold: f32,
@@ -230,7 +230,7 @@ impl AcousticSensor {
         self
     }
     
-    /// Обработать телеметрию из AudioGraph
+    /// Обработать телеметрию из SignalGraph
     pub fn process_telemetry(&mut self, telemetry: &Telemetry) -> Option<WorldSignal> {
         match telemetry {
             Telemetry::AudioData { node_id, data, .. } => {

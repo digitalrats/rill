@@ -38,12 +38,12 @@ impl Perception {
         self.time
     }
     
-    /// Обновить аудиовыход (вызывается из AudioGraph)
+    /// Обновить аудиовыход (вызывается из SignalGraph)
     pub fn update_audio(&mut self, node_id: String, audio: Vec<f32>) {
         self.audio_outputs.insert(node_id, audio);
     }
     
-    /// Обновить параметр (вызывается из AudioGraph)
+    /// Обновить параметр (вызывается из SignalGraph)
     pub fn update_parameter(&mut self, param_id: String, value: f32) {
         self.parameters.insert(param_id, value);
     }

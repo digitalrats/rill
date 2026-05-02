@@ -1,8 +1,8 @@
 use crate::{AutomationManager, SignalSender};
 use rill_core::traits::{
-    node::AudioNode,
+    node::SignalNode,
     param::ParamValue,
-    AudioError,
+    SignalError,
 };
 
 use rill_core::signal::{SignalDispatcher, AdvancedSignalDispatcher},
@@ -50,7 +50,7 @@ impl AutomationBuilder {
         }
     }
     
-    pub fn create_automated_node<N: AudioNode + 'static>(
+    pub fn create_automated_node<N: SignalNode + 'static>(
         &self,
         node: N,
         sample_rate: f32,

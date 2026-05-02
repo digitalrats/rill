@@ -22,7 +22,7 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 |---|---|
 | **Core** | `rill-core` — traits, math, buffers, queues, time, macros |
 | **DSP** | `rill-core-dsp` — algorithms, filters, generators, delay, vector ops |
-| **Graph** | `rill-graph` — static DAG audio graph, `AudioEngine` (process_tick, process_block, spawn) |
+| **Graph** | `rill-graph` — static DAG audio graph, `SignalEngine` (process_tick, process_block, spawn) |
 | **Effects** | `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router` |
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
 | **Analog** | `rill-core-wdf`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |

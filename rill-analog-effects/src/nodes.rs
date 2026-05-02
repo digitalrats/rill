@@ -59,7 +59,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for CassetteDeckProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> NodeTypeId

@@ -4,7 +4,7 @@ use crate::delay::Delay;
 use rill_core::{
     buffer::DelayLine,
     math::Transcendental,
-    traits::{AudioNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    traits::{SignalNode, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
@@ -299,7 +299,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,

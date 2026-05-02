@@ -217,7 +217,7 @@ impl fmt::Debug for AtomicStats {
 /// Buffer statistics snapshot for monitoring and debugging
 ///
 /// This struct provides a read-only snapshot of buffer performance metrics.
-/// It's typically obtained via `AudioBuffer::stats()`.
+/// It's typically obtained via `SignalBuffer::stats()`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BufferStats {
     /// Total number of successful write operations
@@ -268,7 +268,7 @@ impl BufferStats {
 }
 
 // ============================================================================
-// AudioBuffer Trait
+// SignalBuffer Trait
 // ============================================================================
 
 /// Common trait for all audio buffers
@@ -278,7 +278,7 @@ impl BufferStats {
 ///
 /// # Type Parameters
 /// - `T`: The sample type (must implement `Transcendental`)
-pub trait AudioBuffer<T: Transcendental> {
+pub trait SignalBuffer<T: Transcendental> {
     /// Get the total capacity of the buffer in samples
     ///
     /// For block-based buffers, this is the number of samples per block.
@@ -347,7 +347,7 @@ pub trait AudioBuffer<T: Transcendental> {
 pub struct ReadGuard<'a, T, B>
 where
     T: Transcendental,
-    B: AudioBuffer<T>,
+    B: SignalBuffer<T>,
 {
     buffer: &'a B,
     data: &'a [T],
@@ -357,7 +357,7 @@ where
 impl<'a, T, B> Deref for ReadGuard<'a, T, B>
 where
     T: Transcendental,
-    B: AudioBuffer<T>,
+    B: SignalBuffer<T>,
 {
     type Target = [T];
 
@@ -374,7 +374,7 @@ where
 pub struct WriteGuard<'a, T, B>
 where
     T: Transcendental,
-    B: AudioBuffer<T>,
+    B: SignalBuffer<T>,
 {
     buffer: &'a mut B,
     data: &'a mut [T],
@@ -384,7 +384,7 @@ where
 impl<'a, T, B> Deref for WriteGuard<'a, T, B>
 where
     T: Transcendental,
-    B: AudioBuffer<T>,
+    B: SignalBuffer<T>,
 {
     type Target = [T];
 
@@ -396,7 +396,7 @@ where
 impl<'a, T, B> DerefMut for WriteGuard<'a, T, B>
 where
     T: Transcendental,
-    B: AudioBuffer<T>,
+    B: SignalBuffer<T>,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data
@@ -522,7 +522,7 @@ pub mod prelude {
         AtomicCellError,
 
         // Core trait
-        AudioBuffer,
+        SignalBuffer,
 
         // Error types
         BufferError,

@@ -1,6 +1,6 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, Source,
 };
 use rill_core::Transcendental;
@@ -133,7 +133,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SamplePlayerNode<T, B
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for SamplePlayerNode<T, BUF_SIZE>
 {
     fn metadata(&self) -> NodeMetadata {

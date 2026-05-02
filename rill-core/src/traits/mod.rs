@@ -45,7 +45,7 @@ pub mod prelude {
     // Re-export from parent modules
     pub use super::{
         // Core traits
-        AudioNode,
+        SignalNode,
         NodeCategory,
         // Node types
         NodeId,

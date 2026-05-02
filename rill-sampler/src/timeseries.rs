@@ -1,7 +1,7 @@
 use rill_core::interpolate::Interpolate;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
+    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -267,7 +267,7 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Default
     }
 }
 
-impl<T: Transcendental + Copy, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental + Copy, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for TimeSeriesNode<T, BUF_SIZE>
 {
     fn metadata(&self) -> NodeMetadata {

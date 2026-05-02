@@ -59,7 +59,7 @@ macro_rules! sink_node {
         }
 
         impl<$T: $audio_num, const $BUF: usize>
-            $crate::AudioNode<$T, $BUF> for $struct_name<$T, $BUF>
+            $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
             fn node_type_id(&self) -> $crate::NodeTypeId

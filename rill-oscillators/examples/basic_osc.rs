@@ -1,5 +1,5 @@
 //! Basic oscillator example
-use rill_core::traits::AudioNode;
+use rill_core::traits::SignalNode;
 use rill_core::traits::Source;
 use rill_core::ClockTick;
 use rill_oscillators::{NoiseOsc, NoiseType, SawOsc, SineOsc};

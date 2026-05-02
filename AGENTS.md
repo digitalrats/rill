@@ -27,8 +27,8 @@ Cargo workspace — 17 active crates:
 Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
-- **`rill-graph`** — audio graph, depends on `rill-core` only (no DSP dependency). Contains `AudioEngine` — real-time safe graph engine with `process_tick()`, `process_block()`, and `spawn()`.
-- **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::AudioEngine` drives the graph in the I/O callback.
+- **`rill-graph`** — audio graph, depends on `rill-core` only (no DSP dependency). Contains `SignalEngine` — real-time safe graph engine with `process_tick()`, `process_block()`, and `spawn()`.
+- **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::SignalEngine` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
@@ -136,4 +136,4 @@ chmod +x .git/hooks/pre-commit
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: `rill-graph::AudioEngine` runs on the audio thread (hard RT), `rill-patchbay::PatchbayManager` runs on the control thread (soft RT). Communication via `CommandQueue`/`TelemetryQueue`. Source/Sink nodes own I/O buffers — the engine only orchestrates.
+- **Two-thread architecture**: `rill-graph::SignalEngine` runs on the audio thread (hard RT), `rill-patchbay::PatchbayManager` runs on the control thread (soft RT). Communication via `CommandQueue`/`TelemetryQueue`. Source/Sink nodes own I/O buffers — the engine only orchestrates.

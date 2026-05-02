@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{AudioNode, NodeId, NodeMetadata, NodeParams, NodeVariant, ParamValue};
+use rill_core::traits::{SignalNode, NodeId, NodeMetadata, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParamMetadata;
 use rill_core::ParameterId;
 
@@ -183,7 +183,7 @@ impl GraphDocument {
 }
 
 // ============================================================================
-// Export (AudioGraph → GraphDocument)
+// Export (SignalGraph → GraphDocument)
 // ============================================================================
 
 impl GraphDocument {
@@ -192,7 +192,7 @@ impl GraphDocument {
     /// Iterates every node, reads its metadata and current parameters,
     /// and reconstructs all connections from port routing state.
     pub fn from_graph<T: Transcendental, const B: usize>(
-        graph: &super::AudioGraph<T, B>,
+        graph: &super::SignalGraph<T, B>,
     ) -> Self {
         let entries = graph.node_entries();
         let sample_rate = graph.sample_rate();
@@ -360,7 +360,7 @@ impl GraphDocument {
 
 /// Serialise a graph to pretty-printed JSON.
 pub fn to_json<T: Transcendental, const B: usize>(
-    graph: &super::AudioGraph<T, B>,
+    graph: &super::SignalGraph<T, B>,
 ) -> Result<String, SerializationError> {
     let doc = GraphDocument::from_graph(graph);
     serde_json::to_string_pretty(&doc)
@@ -379,7 +379,7 @@ pub fn from_json<T: Transcendental, const B: usize>(
 
 /// Serialise a graph to CBOR binary.
 pub fn to_cbor<T: Transcendental, const B: usize>(
-    graph: &super::AudioGraph<T, B>,
+    graph: &super::SignalGraph<T, B>,
 ) -> Result<Vec<u8>, SerializationError> {
     let doc = GraphDocument::from_graph(graph);
     serde_cbor::to_vec(&doc)
@@ -403,7 +403,7 @@ pub fn from_cbor<T: Transcendental, const B: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::AudioGraph;
+    use crate::graph::SignalGraph;
     use crate::registry::NodeConstructor;
     use rill_core::buffer::Buffer;
     use rill_core::math::Transcendental;
@@ -467,7 +467,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const B: usize> AudioNode<T, B> for TestNode<T, B> {
+    impl<T: Transcendental, const B: usize> SignalNode<T, B> for TestNode<T, B> {
         fn metadata(&self) -> rill_core::traits::NodeMetadata {
             NodeMetadata {
                 name: "TestNode".to_string(),
@@ -564,7 +564,7 @@ mod tests {
         r
     }
 
-    fn build_small_graph(registry: &NodeRegistry<f32, 64>) -> AudioGraph<f32, 64> {
+    fn build_small_graph(registry: &NodeRegistry<f32, 64>) -> SignalGraph<f32, 64> {
         let mut b = GraphBuilder::new();
         let src = b.add_node(registry, "rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node(registry, "rill/test", &NodeParams::new(44100.0)).unwrap();
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn test_empty_graph_roundtrip() {
         let reg = empty_registry();
-        let graph = AudioGraph::<f32, 64>::with_sample_rate(44100.0);
+        let graph = SignalGraph::<f32, 64>::with_sample_rate(44100.0);
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains(r#""nodes": []"#));

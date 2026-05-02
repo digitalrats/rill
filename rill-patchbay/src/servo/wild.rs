@@ -4,8 +4,8 @@ use crate::control::Automaton;
 use crate::core::{ParameterTarget, SignalOrigin, WorldTime};
 use crate::servo::Servo;
 use rill_core::queues::MicroControlObserver;
-use rill_core::traits::{AudioNode, ParamValue, PortId};
-use rill_graph::AudioGraph;
+use rill_core::traits::{SignalNode, ParamValue, PortId};
+use rill_graph::SignalGraph;
 use std::sync::Arc;
 
 /// "Дикое" серво — работает напрямую с графом, нарушая законы природы
@@ -52,7 +52,7 @@ impl<A: Automaton> WildServo<A> {
     }
     
     /// Обновить значение (вызывается из audio-потока)
-    pub fn update(&mut self, time: WorldTime, graph: &mut AudioGraph) {
+    pub fn update(&mut self, time: WorldTime, graph: &mut SignalGraph) {
         let (new_state, _) = self.automaton.step(
             time.absolute,
             &A::Action::default(),

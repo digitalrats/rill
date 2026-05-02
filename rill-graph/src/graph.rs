@@ -2,7 +2,7 @@ use crate::registry::{NodeRegistry, RegistryError};
 use rill_core::buffer::Buffer;
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
-use rill_core::traits::{AudioNode, NodeId, NodeParams, NodeVariant, PortId};
+use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, PortId};
 use std::collections::VecDeque;
 
 // ============================================================================
@@ -211,11 +211,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Build the immutable AudioGraph.
+    /// Build the immutable SignalGraph.
     pub fn build(
         mut self,
         clock_source: Box<dyn ClockSource>,
-    ) -> Result<AudioGraph<T, BUF_SIZE>, BuildError> {
+    ) -> Result<SignalGraph<T, BUF_SIZE>, BuildError> {
         let num_nodes = self.nodes.len();
 
         // --- adjacency for Kahn (audio edges only; feedback is not a DAG edge) ---
@@ -284,7 +284,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let sample_rate = clock_source.sample_rate();
 
-        Ok(AudioGraph {
+        Ok(SignalGraph {
             nodes: self.nodes,
             topo_order: topo,
             clock_source,
@@ -294,7 +294,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 }
 
 // ============================================================================
-// AudioGraph (Static DAG)
+// SignalGraph (Static DAG)
 // ============================================================================
 
 /// Immutable audio graph with static DAG topology.
@@ -304,7 +304,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 /// port-level methods (`pre_process`, `snapshot_feedback`, `propagate`)
 /// called from external code (e.g. a real-time audio callback or an
 /// offline renderer).
-pub struct AudioGraph<T: Transcendental, const BUF_SIZE: usize> {
+pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     topo_order: Vec<usize>,
     #[allow(dead_code)]
@@ -312,7 +312,7 @@ pub struct AudioGraph<T: Transcendental, const BUF_SIZE: usize> {
     current_tick: ClockTick,
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
     /// Create an empty graph with the given clock source.
     pub fn new(clock_source: Box<dyn ClockSource>) -> Self {
         let sample_rate = clock_source.sample_rate();
@@ -385,7 +385,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioGraph<T, BUF_SIZE> {
         }
     }
 
-    /// Consume the graph and return its parts for the AudioEngine.
+    /// Consume the graph and return its parts for the SignalEngine.
     pub fn into_parts(
         self,
     ) -> (Vec<NodeVariant<T, BUF_SIZE>>, Vec<usize>, ClockTick) {
@@ -404,7 +404,7 @@ mod tests {
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
     use rill_core::traits::{
-        AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+        SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
         PortDirection, PortId, ProcessResult, Processor, Sink, Source,
     };
 
@@ -440,7 +440,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -530,7 +530,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -615,7 +615,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_graph_creation() {
-        let graph = AudioGraph::<f32, 64>::with_sample_rate(44100.0);
+        let graph = SignalGraph::<f32, 64>::with_sample_rate(44100.0);
         assert_eq!(graph.node_count(), 0);
     }
 

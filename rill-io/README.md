@@ -3,7 +3,7 @@
 Audio I/O backends — ALSA, CPAL, PipeWire, JACK.
 
 This crate provides only the hardware abstraction layer. Graph processing is
-handled by [`rill-graph::AudioEngine`](https://docs.rs/rill-graph) —
+handled by [`rill-graph::SignalEngine`](https://docs.rs/rill-graph) —
 this crate is purely about backend I/O.
 
 ## Key components
@@ -19,7 +19,7 @@ this crate is purely about backend I/O.
 
 Audio processing is separated into two threads:
 
-- **Audio thread** (hard RT): runs [`rill-graph::AudioEngine`] which calls
+- **Audio thread** (hard RT): runs [`rill-graph::SignalEngine`] which calls
   `process_tick()` for clock boundary and `process_block()` for graph
   processing. Source/Sink nodes own the I/O buffers.
 - **Control thread** (soft RT): runs `PatchbayManager` for automata,

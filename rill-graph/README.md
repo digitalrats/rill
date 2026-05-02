@@ -1,14 +1,14 @@
 # rill-graph
 
 Real-time audio graph with block processing, topological sort, and
-the [`AudioEngine`] — a real-time safe graph engine.
+the [`SignalEngine`] — a real-time safe graph engine.
 
 ## Key components
 
-- **`AudioGraph`** — immutable DAG container, topology is fixed at build time
+- **`SignalGraph`** — immutable DAG container, topology is fixed at build time
 - **`GraphBuilder`** — the only way to build a graph (`Source` → `Processor` → `Sink`)
 - **Kahn's algorithm** — topological sort with cycle detection
-- **`AudioEngine<T, BUF_SIZE>`** — drives the graph:
+- **`SignalEngine<T, BUF_SIZE>`** — drives the graph:
   - `process_tick(tick)` — clock boundary: drains commands (anti-ack on
     overwrite), runs `pre_process` (feedback mix), applies parameter changes
   - `process_block(tick)` — convenience: `process_tick` + topo-order node
@@ -27,7 +27,7 @@ the [`AudioEngine`] — a real-time safe graph engine.
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`,
+- `rill-core` — `SignalNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`,
   `CommandQueue`, `TelemetryQueue`
 
 ## Links
