@@ -30,7 +30,10 @@ pub mod macros;
 pub use algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 pub use context::DspContext;
 pub use filters::{Filter, FilterParams, FilterType};
-pub use generators::{EnvelopeGenerator, Generator, NoiseGenerator, LFO};
+pub use generators::{
+    EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator,
+    SamplePlayer, LFO, WavetableOscillator,
+};
 
 /// Prelude для удобного импорта
 pub mod prelude {
@@ -39,7 +42,10 @@ pub mod prelude {
     };
     pub use crate::context::DspContext;
     pub use crate::filters::{Filter, FilterParams, FilterType};
-    pub use crate::generators::{EnvelopeGenerator, Generator, NoiseGenerator, LFO};
+    pub use crate::generators::{
+        EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator,
+        SamplePlayer, LFO, WavetableOscillator,
+    };
     pub use crate::macros::prelude::*;
     pub use crate::mapping::{ControlMapper, MappingStrategy};
     pub use crate::math::*;

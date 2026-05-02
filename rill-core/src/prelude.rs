@@ -102,6 +102,8 @@ pub use crate::time::{ClockSource, ClockTick, SystemClock, TimeError, TimeResult
 // Math Abstractions
 // ============================================================================
 
+pub use crate::interpolate::Interpolate;
+
 pub use crate::math::Transcendental;
 
 // ============================================================================
