@@ -1,6 +1,6 @@
 # rill-adrift
 
-Umbrella crate re-exporting all [rill](https://github.com/DigitalRats/rill) crates for audio application development.
+Umbrella crate re-exporting all [rill](https://github.com/DigitalRats/rill) crates for signal processing application development.
 
 ```toml
 [dependencies]

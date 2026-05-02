@@ -8,7 +8,7 @@ Cargo workspace — 17 active crates:
 |---|---|
 | `rill-core` | Active — base traits, math, buffers, queues, time, macros, executor, interpolation |
 | `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops, sample player |
-| `rill-graph` | Active — audio graph with topological sort |
+| `rill-graph` | Active — signal graph (DAG) with topological sort |
 | `rill-oscillators` | Active — oscillators, LFO, envelopes, wavetable oscillator node |
 | `rill-digital-filters` | Active — Biquad, SVF, comb, MoogLadder filters |
 | `rill-digital-effects` | Active — Delay, Distortion, Limiter |
@@ -22,12 +22,12 @@ Cargo workspace — 17 active crates:
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
 | `rill-sampler` | Active — sample playback, time-series reader, WAV loading |
-| `rill-adrift` | Active — umbrella crate for audio applications |
+| `rill-adrift` | Active — umbrella crate for signal processing applications |
 
 Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
-- **`rill-graph`** — audio graph, depends on `rill-core` only (no DSP dependency). Contains `SignalEngine` — real-time safe graph engine with `process_tick()`, `process_block()`, and `spawn()`.
+- **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `SignalEngine` — real-time safe graph engine with `process_tick()`, `process_block()`, and `spawn()`.
 - **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::SignalEngine` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
@@ -148,4 +148,4 @@ chmod +x .git/hooks/pre-commit
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: `rill-graph::SignalEngine` runs on the audio thread (hard RT), `rill-patchbay::PatchbayManager` runs on the control thread (soft RT). Communication via `CommandQueue`/`TelemetryQueue`. Source/Sink nodes own I/O buffers — the engine only orchestrates.
+- **Two-thread architecture**: `rill-graph::SignalEngine` runs on the real-time thread (hard RT), `rill-patchbay::PatchbayManager` runs on the control thread (soft RT). Communication via `CommandQueue`/`TelemetryQueue`. Source/Sink nodes own I/O buffers — the engine only orchestrates.

@@ -1,8 +1,8 @@
 # rill-core
 
 Domain-agnostic foundation library: lock-free queues, generic vector math,
-atomic cells, and real-time safe primitives. Powers the Rill audio ecosystem,
-but applicable to IoT, robotics, embedded systems, and signal processing.
+atomic cells, and real-time safe primitives. Powers the Rill ecosystem for
+IoT, robotics, embedded systems, signal processing, and audio.
 
 ## The trait hierarchy
 

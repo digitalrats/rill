@@ -1,6 +1,6 @@
 # rill-graph
 
-Real-time audio graph with block processing, topological sort, and
+Real-time signal graph (DAG) with block processing, topological sort, and
 the [`SignalEngine`] — a real-time safe graph engine.
 
 ## Key components
@@ -13,9 +13,9 @@ the [`SignalEngine`] — a real-time safe graph engine.
     overwrite), runs `pre_process` (feedback mix), applies parameter changes
   - `process_block(tick)` — convenience: `process_tick` + topo-order node
     processing + snapshot + propagate
-  - `spawn()` — consumes the engine and runs it in a dedicated audio thread
+  - `spawn()` — consumes the engine and runs it in a dedicated real-time thread
   - `running_flag()` — `Arc<AtomicBool>` for cooperative shutdown
-- **Two-thread architecture** — audio thread (hard RT) runs the engine,
+- **Two-thread architecture** — real-time thread (hard RT) runs the engine,
   control thread (soft RT) runs `PatchbayManager` via queues
 - **Zero-copy routing** — 1:1 и fan-out соединения читают напрямую из буфера
   upstream-порта (`Port::upstream_buffer`). Копирование только при fan-in и feedback.
@@ -23,7 +23,7 @@ the [`SignalEngine`] — a real-time safe graph engine.
 - **Port routing** — соединения и буферы обратной связи хранятся на портах
 - **Feedback support** — deferred feedback via `port.pre_process` /
   `port.snapshot_feedback`
-- **Port types** — `Audio`, `Control`, `Clock`, `Feedback`, `Param`
+- **Port types** — `Signal`, `Control`, `Clock`, `Feedback`, `Param`
 
 ## Dependencies
 

@@ -1,6 +1,6 @@
 # rill-adrift — AGENTS.md
 
-Umbrella crate re-exporting all rill crates for audio application development. Owns the domain `rill-adrift.io`.
+Umbrella crate re-exporting all rill crates for signal processing application development. Owns the domain `rill-adrift.io`.
 
 ## Design
 
