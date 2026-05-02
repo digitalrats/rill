@@ -1,15 +1,15 @@
 # Crates
 
-The Rill workspace consists of 16 crates:
+The Rill workspace consists of 17 crates:
 
 | Crate | Version | Description |
 |-------|---------|-------------|
 | **rill-adrift** | 0.3.0 | Umbrella crate — re-exports all workspace crates |
-| **rill-core** | 0.3.0 | Core traits, math, buffers, queues, time, macros, executor |
-| **rill-core-dsp** | 0.3.0 | DSP algorithms, vector operations, filters, generators |
+| **rill-core** | 0.3.2 | Core traits, math, buffers, queues, time, macros, executor, interpolation |
+| **rill-core-dsp** | 0.3.1 | DSP algorithms, vector ops, filters, generators, sample player |
 | **rill-core-wdf** | 0.3.0 | Wave Digital Filter core — elements, adapters, analysis |
 | **rill-graph** | 0.3.0 | Static DAG audio graph with topological sort |
-| **rill-oscillators** | 0.3.0 | Oscillators — Sine, Saw, Square, Noise, LFO, Envelope |
+| **rill-oscillators** | 0.3.0 | Oscillators — Sine, Saw, Square, Noise, LFO, Envelope, Wavetable |
 | **rill-digital-filters** | 0.3.0 | Digital filters — Biquad, SVF, Comb, MoogLadder |
 | **rill-digital-effects** | 0.3.0 | Digital effects — Delay, Distortion, Limiter |
 | **rill-router** | 0.3.0 | EQ (graphic, parametric) + mixer (channels, sends, master) |
@@ -20,6 +20,7 @@ The Rill workspace consists of 16 crates:
 | **rill-analog-filters** | 0.3.0 | WDF-based analog filters — WdfMoogLadder |
 | **rill-analog-effects** | 0.3.0 | Analog circuit models — op-amp, tape deck, preamps |
 | **rill-osc** | 0.3.0 | OSC server — UDP, encode/decode, pattern dispatch |
+| **rill-sampler** | 0.3.1 | Sample playback + time-series reader + WAV loading |
 
 ## Dependency Graph
 
@@ -38,6 +39,8 @@ rill-core
 ├── rill-core-wdf
 │   ├── rill-analog-filters
 │   └── rill-analog-effects
+├── rill-sampler
+│   (depends on rill-core + rill-core-dsp)
 └── rill-osc (standalone)
 
 rill-adrift — umbrella, re-exports all of the above
@@ -52,4 +55,5 @@ rill-adrift — umbrella, re-exports all of the above
 | `rill-core-wdf` | `simd` |
 | `rill-digital-effects` | `modulation` (enables `rill-oscillators`) |
 | `rill-io` | `cpal` (default), `alsa`, `pipewire`, `jack`, `all-backends`, `graph` |
-| `rill-adrift` | `io`, `lofi`, `telemetry`, `osc` (default); `analog` (opt-in); backend passthrough `alsa`, `cpal`, `jack`, `pipewire` |
+| `rill-sampler` | `wav` (default, enables `hound`) |
+| `rill-adrift` | `io`, `lofi`, `telemetry`, `osc`, `sampler` (default); `analog` (opt-in); backend passthrough `alsa`, `cpal`, `jack`, `pipewire` |

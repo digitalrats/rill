@@ -2,14 +2,14 @@
 
 ## Workspace layout
 
-Cargo workspace — 16 active crates:
+Cargo workspace — 17 active crates:
 
 | Crate | Status |
 |---|---|
-| `rill-core` | Active — base traits, math, buffers, queues, time, macros, executor |
-| `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops |
+| `rill-core` | Active — base traits, math, buffers, queues, time, macros, executor, interpolation |
+| `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops, sample player |
 | `rill-graph` | Active — audio graph with topological sort |
-| `rill-oscillators` | Active — oscillators, LFO, envelopes |
+| `rill-oscillators` | Active — oscillators, LFO, envelopes, wavetable oscillator node |
 | `rill-digital-filters` | Active — Biquad, SVF, comb, MoogLadder filters |
 | `rill-digital-effects` | Active — Delay, Distortion, Limiter |
 | `rill-router` | Active — EQ + mixer + routing |
@@ -21,6 +21,7 @@ Cargo workspace — 16 active crates:
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
+| `rill-sampler` | Active — sample playback, time-series reader, WAV loading |
 | `rill-adrift` | Active — umbrella crate for audio applications |
 
 Dependency tree:
@@ -35,7 +36,8 @@ Dependency tree:
 - **`rill-core-wdf`** — WDF core, depends on `rill-core`
 - **`rill-analog-filters`** — depends on `rill-core` + `rill-core-wdf`
 - **`rill-analog-effects`** — depends on `rill-core` + `rill-core-wdf`
-- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`
+- **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
+- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`
 
 ## Commands
 
@@ -46,7 +48,7 @@ cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
 
 # publish order (leaf to root):
-./scripts/publish.sh              # all 16 crates to crates.io
+./scripts/publish.sh              # all 17 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
 # documentation site (mdBook):
@@ -78,7 +80,8 @@ mdbook serve docs/                # dev server at localhost:3000
 - `rill-core`: `serde`, `stats`
 - `rill-core-wdf`: `simd`
 - `rill-io`: `cpal` (default), `alsa`, `pipewire`, `jack`, `all-backends`
-- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc` (default), `analog` (opt-in); `alsa`, `cpal`, `jack`, `pipewire` (backends, forward to `rill-io`)
+- `rill-sampler`: `wav` (default, enables `hound`)
+- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler` (default), `analog` (opt-in); `alsa`, `cpal`, `jack`, `pipewire` (backends, forward to `rill-io`)
 
 ## Branching
 
