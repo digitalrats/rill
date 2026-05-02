@@ -2,6 +2,7 @@
 
 pub mod buffer;
 pub mod player;
+pub mod timeseries;
 
 #[cfg(feature = "wav")]
 pub mod wav;
