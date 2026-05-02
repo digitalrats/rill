@@ -1,8 +1,8 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests](https://img.shields.io/badge/tests-350%2B-passing)](https://github.com/DigitalRats/rill)
-[![version](https://img.shields.io/badge/version-0.3.2-blue)](https://github.com/DigitalRats/rill)
+[![tests](https://img.shields.io/badge/tests-400%2B-passing)](https://github.com/DigitalRats/rill)
+[![version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 **Модульная экосистема для обработки сигналов и построения аудиоприложений на Rust.**
