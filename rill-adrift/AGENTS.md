@@ -5,7 +5,7 @@ Umbrella crate re-exporting all rill crates for audio application development. O
 ## Design
 
 - **Always-on core** (no feature gate): `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-patchbay`
-- **Feature-gated**: `io`, `lofi`, `telemetry`, `osc` (all in default), `analog` (opt-in)
+- **Feature-gated**: `io`, `lofi`, `telemetry`, `osc`, `sampler` (all in default), `analog` (opt-in)
 - **Audio backend passthrough**: `alsa`, `cpal`, `jack`, `pipewire` forward to `rill-io`
 
 ## Usage

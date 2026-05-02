@@ -1,8 +1,8 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests](https://img.shields.io/badge/tests-300%2B-passing)](https://github.com/DigitalRats/rill)
-[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/DigitalRats/rill)
+[![tests](https://img.shields.io/badge/tests-350%2B-passing)](https://github.com/DigitalRats/rill)
+[![version](https://img.shields.io/badge/version-0.3.2-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 **Модульная экосистема для обработки сигналов и построения аудиоприложений на Rust.**
@@ -158,10 +158,10 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 
 | Крейт | Версия | Описание |
 |-------|--------|----------|
-| **rill-core** | 0.3.0 | ✅ **Единое ядро** (трейты, сигналы, буферы, очереди, математика) |
-| **rill-core-dsp** | 0.3.0 | ✅ **DSP инфраструктура** (векторные операции, алгоритмы, макросы) |
+| **rill-core** | 0.3.2 | ✅ **Единое ядро** (трейты, сигналы, буферы, очереди, математика, интерполяция) |
+| **rill-core-dsp** | 0.3.1 | ✅ **DSP инфраструктура** (векторные операции, алгоритмы, макросы, сэмплер) |
 | **rill-graph** | 0.3.0 | ✅ **DAG-граф** с топологической сортировкой (Dataflow pipeline) |
-| **rill-oscillators** | 0.3.0 | ✅ **Осцилляторы** (синус, пила, шум, LFO, огибающие) |
+| **rill-oscillators** | 0.3.0 | ✅ **Осцилляторы** (синус, пила, шум, LFO, огибающие, вейвтейбл) |
 | **rill-digital-filters** | 0.3.0 | ✅ **Цифровые фильтры** (биквадратные, SVF, гребенчатые, MoogLadder) |
 | **rill-digital-effects** | 0.3.0 | ✅ **Цифровые эффекты** (Delay, Distortion, Limiter) |
 | **rill-router** | 0.3.0 | ✅ **Роутер** (эквалайзеры + микшер + матричная маршрутизация) |
@@ -173,13 +173,14 @@ fn calculate_rms(signal: &[f32]) -> f32 {
 | **rill-analog-filters** | 0.3.0 | ✅ **Аналоговые фильтры** (WdfMoogLadder на WDF-элементах) |
 | **rill-analog-effects** | 0.3.0 | ✅ **Аналоговые эффекты** (операционники, ленточные деки, преампы) |
 | **rill-osc** | 0.3.0 | ✅ **OSC-сервер** (UDP, encode/decode, диспетчеризация) |
+| **rill-sampler** | 0.3.1 | ✅ **Сэмплер** (семплер, time-series reader, WAV loading) |
 
 
 *Примечание:* Крейт `rill-buffers` интегрирован в `rill-core`. Генераторы, фильтры и эффекты (ранее отдельные крейты `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) теперь являются частью `rill-core-dsp` и используют единую векторную инфраструктуру. Крейты `rill-eq` и `rill-mixer` объединены в `rill-router` (версия 0.3.0). WDF-моделирование аналоговых цепей выделено в три крейта: `rill-core-wdf` (ядро), `rill-analog-filters` (фильтры) и `rill-analog-effects` (эффекты).
 
 ## 📈 Состояние проекта
 
-Проект находится в стадии активной разработки. Все 15 крейтов workspace активны. Аналоговое моделирование представлено тремя крейтами: `rill-core-wdf` (WDF ядро), `rill-analog-filters` (WdfMoogLadder) и `rill-analog-effects` (операционники, ленточные деки). Интеграционные тесты живут в per-crate `tests/`. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
+Проект находится в стадии активной разработки. Все 17 крейтов workspace активны. Аналоговое моделирование представлено тремя крейтами: `rill-core-wdf` (WDF ядро), `rill-analog-filters` (WdfMoogLadder) и `rill-analog-effects` (операционники, ленточные деки). Интеграционные тесты живут в per-crate `tests/`. Актуальное состояние архитектуры и дорожная карта доступны в [architecture.md](architecture.md).
 
 Рефакторинг 0.3.0 завершён: все крейты переведены на единое ядро `rill-core` и блочную обработку. DSP-алгоритмы собраны в `rill-core-dsp` (трейт `Algorithm`, генераторы, фильтры, задержки, векторные операции). Специализированные крейты (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) предоставляют узлы графа (`AudioNode`), использующие эти алгоритмы. `rill-router` добавлен как единая точка входа для маршрутизации, микширования и эквализации аудиосигналов.
 
@@ -202,9 +203,12 @@ graph TD
     CORE --> CORE_WDF[rill-core-wdf]
     CORE --> ANALOG_FILTERS[rill-analog-filters]
     CORE --> ANALOG_EFFECTS[rill-analog-effects]
+    CORE --> SAMPLER[rill-sampler]
+    CORE_DSP --> SAMPLER
     CORE_WDF --> ANALOG_FILTERS
     CORE_WDF --> ANALOG_EFFECTS
     
+    SAMPLER --> ADRIFT[rill-adrift]
     style CORE fill:#90ee90
     style CORE_DSP fill:#90ee90
     style GRAPH fill:#90ee90
@@ -219,12 +223,7 @@ graph TD
     style CORE_WDF fill:#90ee90
     style ANALOG_FILTERS fill:#90ee90
     style ANALOG_EFFECTS fill:#90ee90
-    
-    %% Планируемые
-    SERVER[rill-osc<br/>(планируется)]
-    CORE -.-> SERVER
-    
-    style SERVER fill:#cccccc
+    style SAMPLER fill:#90ee90
 ```
 
 ## 🏗️ Архитектура ядра

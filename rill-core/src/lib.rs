@@ -163,6 +163,9 @@ pub mod macros;
 /// Convenience prelude for importing common types
 pub mod prelude;
 
+/// Fractional-index interpolation trait for slice-like types
+pub mod interpolate;
+
 /// Graph executor for driving audio processing
 pub mod executor;
 
