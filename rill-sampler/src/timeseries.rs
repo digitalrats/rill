@@ -278,8 +278,8 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
             description: "Unevenly-sampled time series reader with multiple output channels".into(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: 0,
-            audio_outputs: self.outputs.len(),
+            signal_inputs: 0,
+            signal_outputs: self.outputs.len(),
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -409,11 +409,11 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
 }

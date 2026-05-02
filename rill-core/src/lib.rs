@@ -52,8 +52,8 @@
 //!             description: "Sine wave oscillator".to_string(),
 //!             author: "Rill".to_string(),
 //!             version: env!("CARGO_PKG_VERSION").to_string(),
-//!             audio_inputs: 0,
-//!             audio_outputs: 1,
+//!             signal_inputs: 0,
+//!             signal_outputs: 1,
 //!             control_inputs: 0,
 //!             control_outputs: 0,
 //!             clock_inputs: 1,
@@ -122,7 +122,7 @@
 //!         Ok(())
 //!     }
 //!     
-//!     fn num_audio_outputs(&self) -> usize { 1 }
+//!     fn num_signal_outputs(&self) -> usize { 1 }
 //!     fn num_control_inputs(&self) -> usize { 0 }
 //!     fn num_clock_inputs(&self) -> usize { 1 }
 //! }

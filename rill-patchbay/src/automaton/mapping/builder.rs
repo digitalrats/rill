@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_builder_complex() {
-        let rule = MappingRuleBuilder::new("audio_in", "envelope_out")
+        let rule = MappingRuleBuilder::new("signal_in", "envelope_out")
             .envelope(0.01, 0.1)
             .range(0.0, 5.0)
             .channel(0)

@@ -225,7 +225,7 @@ mod tests {
 
         let audio_in = PortId::audio_in(node, 0);
         assert_eq!(audio_in.node_id(), node);
-        assert_eq!(audio_in.port_type(), PortType::Audio);
+        assert_eq!(audio_in.port_type(), PortType::Signal);
         assert_eq!(audio_in.direction(), PortDirection::Input);
         assert_eq!(audio_in.index(), 0);
         assert!(audio_in.is_input());
@@ -251,8 +251,8 @@ mod tests {
             description: "A test node".to_string(),
             author: "Rill".to_string(),
             version: "1.0".to_string(),
-            audio_inputs: 2,
-            audio_outputs: 2,
+            signal_inputs: 2,
+            signal_outputs: 2,
             control_inputs: 1,
             control_outputs: 0,
             clock_inputs: 1,
@@ -263,7 +263,7 @@ mod tests {
 
         assert_eq!(metadata.name, "TestNode");
         assert_eq!(metadata.category, NodeCategory::Processor);
-        assert_eq!(metadata.audio_inputs, 2);
+        assert_eq!(metadata.signal_inputs, 2);
     }
 
     #[test]

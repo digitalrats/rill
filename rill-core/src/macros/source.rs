@@ -192,7 +192,7 @@ macro_rules! source_node {
                 Ok(())
             }
 
-            fn num_audio_outputs(&self) -> usize { 1 }
+            fn num_signal_outputs(&self) -> usize { 1 }
             fn num_control_inputs(&self) -> usize { 0 }
             fn num_clock_inputs(&self) -> usize { 0 }
         }

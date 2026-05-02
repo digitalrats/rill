@@ -449,8 +449,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 0,
-                audio_outputs: 1,
+                signal_inputs: 0,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -510,7 +510,7 @@ mod tests {
             }
             Ok(())
         }
-        fn num_audio_outputs(&self) -> usize {
+        fn num_signal_outputs(&self) -> usize {
             1
         }
     }
@@ -539,8 +539,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 0,
-                audio_outputs: 0,
+                signal_inputs: 0,
+                signal_outputs: 0,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -591,7 +591,7 @@ mod tests {
         fn process(
             &mut self,
             _clock: &ClockTick,
-            _audio_inputs: &[&[T; BUF_SIZE]],
+            _signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],
@@ -624,8 +624,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 0,
-                audio_outputs: 0,
+                signal_inputs: 0,
+                signal_outputs: 0,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -676,7 +676,7 @@ mod tests {
         fn consume(
             &mut self,
             _clock: &ClockTick,
-            _audio_inputs: &[&[T; BUF_SIZE]],
+            _signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],

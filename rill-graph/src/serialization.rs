@@ -247,7 +247,7 @@ fn extract_connections<T: Transcendental, const B: usize>(
         let variant = &entry.node;
         let from_id = variant.id().inner();
 
-        let audio_outs = variant.metadata().audio_outputs;
+        let audio_outs = variant.metadata().signal_outputs;
         for from_port in 0..audio_outs {
             if let Some(port) = variant.output_port(from_port) {
                 for &(to_idx, to_port) in &port.downstream {
@@ -476,8 +476,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: String::new(),
-                audio_inputs: if self.cat == NodeCategory::Source { 0 } else { 1 },
-                audio_outputs: 1,
+                signal_inputs: if self.cat == NodeCategory::Source { 0 } else { 1 },
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,

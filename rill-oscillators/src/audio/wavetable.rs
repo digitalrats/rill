@@ -29,7 +29,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
             frequency,
             amplitude: T::from_f32(0.5),
             cubic: false,
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             state: None,
             _phantom: PhantomData,
         }
@@ -43,7 +43,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
             frequency,
             amplitude: T::from_f32(0.5),
             cubic: false,
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             state: None,
             _phantom: PhantomData,
         }
@@ -57,7 +57,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
             frequency,
             amplitude: T::from_f32(0.5),
             cubic: false,
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             state: None,
             _phantom: PhantomData,
         }
@@ -102,8 +102,8 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
             description: "Wavetable oscillator with linear/cubic interpolation".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: 0,
-            audio_outputs: 1,
+            signal_inputs: 0,
+            signal_outputs: 1,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -215,11 +215,11 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }

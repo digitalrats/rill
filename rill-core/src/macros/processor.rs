@@ -179,7 +179,7 @@ macro_rules! processor_node {
             fn process(
                 &mut self,
                 clock: &$crate::ClockTick,
-                audio_inputs: &[&[$T; $BUF]],
+                signal_inputs: &[&[$T; $BUF]],
                 control_inputs: &[$T],
                 clock_inputs: &[$crate::ClockTick],
                 feedback_inputs: &[&[$T; $BUF]],

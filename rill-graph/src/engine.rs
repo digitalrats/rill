@@ -105,7 +105,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
 
         // === 2. pre_process on all nodes (feedback mix — block boundary) ===
         for &idx in &self.topo_order {
-            let num_inputs = self.nodes[idx].num_audio_inputs();
+            let num_inputs = self.nodes[idx].num_signal_inputs();
             for pi in 0..num_inputs {
                 if let Some(port) = self.nodes[idx].input_port_mut(pi) {
                     port.pre_process(tick);
@@ -146,7 +146,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
             // - Copy-based ports: copy buffer into local storage
             let mut copy_bufs: Vec<[T; BUF_SIZE]> = Vec::new();
             let mut audio_refs: Vec<&[T; BUF_SIZE]> = Vec::new();
-            for pi in 0..self.nodes[idx].num_audio_inputs() {
+            for pi in 0..self.nodes[idx].num_signal_inputs() {
                 if let Some(port) = self.nodes[idx].input_port(pi) {
                     match port.upstream_buffer {
                         Some(ptr) => {
@@ -183,7 +183,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
 
             let mut ctx = rill_core::traits::processable::ProcessContext {
                 clock: tick,
-                audio_inputs: &audio_refs,
+                signal_inputs: &audio_refs,
                 control_inputs: &owned_control,
                 clock_inputs: &owned_clock,
                 feedback_inputs: &feedback_refs,
@@ -191,7 +191,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
 
             self.nodes[idx].process_block(&mut ctx)?;
 
-            let num_outputs = self.nodes[idx].num_audio_outputs();
+            let num_outputs = self.nodes[idx].num_signal_outputs();
             for po in 0..num_outputs {
                 if let Some(port) = self.nodes[idx].output_port_mut(po) {
                     port.snapshot_feedback();
@@ -366,8 +366,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 0,
-                audio_outputs: 1,
+                signal_inputs: 0,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -388,7 +388,7 @@ mod tests {
             self.id
         }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_outputs(&self) -> usize {
+        fn num_signal_outputs(&self) -> usize {
             1
         }
         fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -491,8 +491,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 1,
-                audio_outputs: 1,
+                signal_inputs: 1,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -513,10 +513,10 @@ mod tests {
             self.id
         }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_inputs(&self) -> usize {
+        fn num_signal_inputs(&self) -> usize {
             1
         }
-        fn num_audio_outputs(&self) -> usize {
+        fn num_signal_outputs(&self) -> usize {
             1
         }
         fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -551,13 +551,13 @@ mod tests {
         fn process(
             &mut self,
             _clock: &ClockTick,
-            audio_inputs: &[&[T; BUF_SIZE]],
+            signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],
         ) -> ProcessResult<()> {
             let output = self.outputs[0].buffer.as_mut_array();
-            if let Some(input) = audio_inputs.first() {
+            if let Some(input) = signal_inputs.first() {
                 output.copy_from_slice(*input);
             }
             Ok(())
@@ -613,8 +613,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 1,
-                audio_outputs: 0,
+                signal_inputs: 1,
+                signal_outputs: 0,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -635,7 +635,7 @@ mod tests {
             self.id
         }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_inputs(&self) -> usize {
+        fn num_signal_inputs(&self) -> usize {
             1
         }
         fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -670,12 +670,12 @@ mod tests {
         fn consume(
             &mut self,
             _clock: &ClockTick,
-            audio_inputs: &[&[T; BUF_SIZE]],
+            signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],
         ) -> ProcessResult<()> {
-            if let Some(input) = audio_inputs.first() {
+            if let Some(input) = signal_inputs.first() {
                 self.captured = input.to_vec();
             }
             Ok(())
@@ -874,8 +874,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 0,
-                audio_outputs: 1,
+                signal_inputs: 0,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -890,7 +890,7 @@ mod tests {
         fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
         fn id(&self) -> NodeId { self.id }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_outputs(&self) -> usize { 1 }
+        fn num_signal_outputs(&self) -> usize { 1 }
         fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> { self.outputs.get(index) }
         fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.outputs.get_mut(index) }
         fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
@@ -966,8 +966,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 1,
-                audio_outputs: 0,
+                signal_inputs: 1,
+                signal_outputs: 0,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -982,7 +982,7 @@ mod tests {
         fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
         fn id(&self) -> NodeId { self.id }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_inputs(&self) -> usize { 1 }
+        fn num_signal_inputs(&self) -> usize { 1 }
         fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> { self.inputs.get(index) }
         fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.inputs.get_mut(index) }
         fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
@@ -999,12 +999,12 @@ mod tests {
         fn consume(
             &mut self,
             _clock: &ClockTick,
-            audio_inputs: &[&[T; BUF_SIZE]],
+            signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],
         ) -> ProcessResult<()> {
-            if let Some(input) = audio_inputs.first() {
+            if let Some(input) = signal_inputs.first() {
                 self.captured.extend_from_slice(*input);
             }
             Ok(())

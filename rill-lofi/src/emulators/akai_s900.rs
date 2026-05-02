@@ -25,7 +25,7 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
         let id = NodeId(0);
         let state = NodeState::new(_sample_rate);
 
-        let outputs = vec![Port::output(id, 0, "audio_out")];
+        let outputs = vec![Port::output(id, 0, "signal_out")];
 
         Self {
             state,
@@ -37,8 +37,8 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
                 description: "Akai S900 sampler emulation".to_string(),
                 author: "Rill Lo-Fi".to_string(),
                 version: "1.0".to_string(),
-                audio_inputs: 0,
-                audio_outputs: 1,
+                signal_inputs: 0,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -192,10 +192,10 @@ impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for AkaiS900Emulator<BUF_S
         &mut self.state
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         0
     }
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }

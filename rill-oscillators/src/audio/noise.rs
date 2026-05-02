@@ -70,7 +70,7 @@ impl<const BUF_SIZE: usize> NoiseOsc<BUF_SIZE> {
             noise_type: NoiseType::White,
             amplitude: 0.5,
             inputs: Vec::new(),
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             controls: Vec::new(),
             state: None,
             pink_b0: 0.0,
@@ -174,8 +174,8 @@ impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
             description: "Noise generator (white, pink, brown)".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: 0,
-            audio_outputs: 1,
+            signal_inputs: 0,
+            signal_outputs: 1,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -285,11 +285,11 @@ impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }

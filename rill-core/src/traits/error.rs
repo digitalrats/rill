@@ -684,7 +684,7 @@ mod tests {
         let err = PortError::direction_mismatch(PortDirection::Input, PortDirection::Output);
         assert!(matches!(err, PortError::DirectionMismatch { .. }));
 
-        let err = PortError::type_mismatch(PortType::Audio, PortType::Control);
+        let err = PortError::type_mismatch(PortType::Signal, PortType::Control);
         assert!(matches!(err, PortError::TypeMismatch { .. }));
     }
 

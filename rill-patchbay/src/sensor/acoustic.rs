@@ -233,7 +233,7 @@ impl AcousticSensor {
     /// Обработать телеметрию из SignalGraph
     pub fn process_telemetry(&mut self, telemetry: &Telemetry) -> Option<WorldSignal> {
         match telemetry {
-            Telemetry::AudioData { node_id, data, .. } => {
+            Telemetry::SignalData { node_id, data, .. } => {
                 if Some(node_id.to_string()) == self.listen_to {
                     let value = self.hearing.process(data);
                     self.last_value = value;

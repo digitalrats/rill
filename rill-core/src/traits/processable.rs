@@ -20,7 +20,7 @@ pub struct ProcessContext<'a, T: Transcendental, const BUF_SIZE: usize> {
     /// Current clock tick
     pub clock: &'a ClockTick,
     /// Audio input buffers (slice of references to [T; BUF_SIZE])
-    pub audio_inputs: &'a [&'a [T; BUF_SIZE]],
+    pub signal_inputs: &'a [&'a [T; BUF_SIZE]],
     /// Control input values (slice of T)
     pub control_inputs: &'a [T],
     /// Clock input ticks
@@ -70,7 +70,7 @@ where
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
         self.as_mut().process(
             ctx.clock,
-            ctx.audio_inputs,
+            ctx.signal_inputs,
             ctx.control_inputs,
             ctx.clock_inputs,
             ctx.feedback_inputs,
@@ -86,7 +86,7 @@ where
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
         self.as_mut().consume(
             ctx.clock,
-            ctx.audio_inputs,
+            ctx.signal_inputs,
             ctx.control_inputs,
             ctx.clock_inputs,
             ctx.feedback_inputs,
@@ -178,36 +178,36 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         }
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
-                n.num_audio_inputs()
+                n.num_signal_inputs()
             }
             NodeVariant::Processor(proc) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
-                n.num_audio_inputs()
+                n.num_signal_inputs()
             }
             NodeVariant::Sink(sink) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
-                n.num_audio_inputs()
+                n.num_signal_inputs()
             }
         }
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**src;
-                n.num_audio_outputs()
+                n.num_signal_outputs()
             }
             NodeVariant::Processor(proc) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
-                n.num_audio_outputs()
+                n.num_signal_outputs()
             }
             NodeVariant::Sink(sink) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
-                n.num_audio_outputs()
+                n.num_signal_outputs()
             }
         }
     }

@@ -165,7 +165,7 @@ macro_rules! sink_node {
             fn consume(
                 &mut self,
                 clock: &$crate::ClockTick,
-                audio_inputs: &[&[$T; $BUF]],
+                signal_inputs: &[&[$T; $BUF]],
                 control_inputs: &[$T],
                 clock_inputs: &[$crate::ClockTick],
                 feedback_inputs: &[&[$T; $BUF]],

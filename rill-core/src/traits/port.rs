@@ -21,8 +21,8 @@ use std::fmt;
 /// Type of a port - what kind of signal it carries
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortType {
-    /// Audio signal port - carries sound (typically -1.0 to 1.0)
-    Audio,
+    /// Signal port - carries signal blocks (audio, sensor, etc.)
+    Signal,
 
     /// Control signal port - carries modulation/automation
     Control,
@@ -41,7 +41,7 @@ impl PortType {
     /// Get the name of the port type
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::Audio => "audio",
+            Self::Signal => "signal",
             Self::Control => "control",
             Self::Clock => "clock",
             Self::Feedback => "feedback",
@@ -51,7 +51,7 @@ impl PortType {
 
     /// Check if this port carries audio-rate signals
     pub const fn is_audio_rate(&self) -> bool {
-        matches!(self, Self::Audio)
+        matches!(self, Self::Signal)
     }
 
     /// Check if this port carries control-rate signals
@@ -146,12 +146,12 @@ impl PortId {
 
     /// Create a new audio input port
     pub const fn audio_in(node: NodeId, index: u16) -> Self {
-        Self::new(node, PortType::Audio, PortDirection::Input, index)
+        Self::new(node, PortType::Signal, PortDirection::Input, index)
     }
 
     /// Create a new audio output port
     pub const fn audio_out(node: NodeId, index: u16) -> Self {
-        Self::new(node, PortType::Audio, PortDirection::Output, index)
+        Self::new(node, PortType::Signal, PortDirection::Output, index)
     }
 
     // ========================================================================
@@ -245,7 +245,7 @@ impl PortId {
 
     /// Check if this is an audio port
     pub const fn is_audio(&self) -> bool {
-        matches!(self.port_type, PortType::Audio)
+        matches!(self.port_type, PortType::Signal)
     }
 
     /// Check if this is a control port
@@ -682,7 +682,7 @@ mod tests {
         let node = NodeId(42);
 
         let audio_in = PortId::audio_in(node, 0);
-        assert_eq!(audio_in.port_type(), PortType::Audio);
+        assert_eq!(audio_in.port_type(), PortType::Signal);
         assert!(audio_in.is_input());
 
         let clock_out = PortId::clock_out(node, 0);

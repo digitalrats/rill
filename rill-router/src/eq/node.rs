@@ -61,8 +61,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE
         let mut outputs = Vec::new();
 
         // Create one audio input and one audio output
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let factory = BiquadFactory;
         let mut eq = ParametricEq::new(factory, num_bands, sample_rate);
@@ -348,7 +348,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
@@ -406,8 +406,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
 
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let factory = BiquadFactory;
         let mut eq = GraphicEq::new_third_octave(factory, sample_rate);
@@ -435,8 +435,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
 
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let factory = BiquadFactory;
         let mut eq = GraphicEq::with_frequencies(factory, frequencies, sample_rate);
@@ -665,7 +665,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],

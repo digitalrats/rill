@@ -85,8 +85,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
         let mut outputs = Vec::new();
 
         // Create one audio input and one audio output
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         Self {
             id: NodeId(0),
@@ -281,7 +281,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distor
     fn process(
         &mut self,
         _clock: &ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],

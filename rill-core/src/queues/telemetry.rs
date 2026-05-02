@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum TelemetryKind {
     /// Значение параметра
     Parameter,
-    /// Аудио данные
-    Audio,
+    /// Сигнальные данные (аудио, сенсоры)
+    Signal,
     /// Пиковое значение
     Peak,
     /// Событие
@@ -24,7 +24,7 @@ impl fmt::Display for TelemetryKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TelemetryKind::Parameter => write!(f, "parameter"),
-            TelemetryKind::Audio => write!(f, "audio"),
+            TelemetryKind::Signal => write!(f, "signal"),
             TelemetryKind::Peak => write!(f, "peak"),
             TelemetryKind::Event => write!(f, "event"),
             TelemetryKind::Violation => write!(f, "violation"),
@@ -44,7 +44,7 @@ pub enum Telemetry {
     },
 
     /// Аудио данные
-    AudioData {
+    SignalData {
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
@@ -118,7 +118,7 @@ impl Telemetry {
 
     /// Создать телеметрию аудиоданных
     pub fn audio(node_id: NodeId, channel: usize, data: Vec<f32>) -> Self {
-        Telemetry::AudioData {
+        Telemetry::SignalData {
             node_id,
             channel,
             data,
@@ -134,7 +134,7 @@ impl Telemetry {
         data: Vec<f32>,
         sample_rate: f32,
     ) -> Self {
-        Telemetry::AudioData {
+        Telemetry::SignalData {
             node_id,
             channel,
             data,
@@ -210,7 +210,7 @@ impl Telemetry {
     pub fn kind(&self) -> TelemetryKind {
         match self {
             Telemetry::ParameterValue { .. } => TelemetryKind::Parameter,
-            Telemetry::AudioData { .. } => TelemetryKind::Audio,
+            Telemetry::SignalData { .. } => TelemetryKind::Signal,
             Telemetry::Peak { .. } => TelemetryKind::Peak,
             Telemetry::Event { .. } => TelemetryKind::Event,
             Telemetry::Violation { .. } => TelemetryKind::Violation,
@@ -221,7 +221,7 @@ impl Telemetry {
     pub fn timestamp(&self) -> u64 {
         match self {
             Telemetry::ParameterValue { timestamp, .. } => *timestamp,
-            Telemetry::AudioData { timestamp, .. } => *timestamp,
+            Telemetry::SignalData { timestamp, .. } => *timestamp,
             Telemetry::Peak { timestamp, .. } => *timestamp,
             Telemetry::Event { timestamp, .. } => *timestamp,
             Telemetry::Violation { timestamp, .. } => *timestamp,
@@ -244,7 +244,7 @@ impl fmt::Display for Telemetry {
                     timestamp, port, parameter, value
                 )
             }
-            Telemetry::AudioData {
+            Telemetry::SignalData {
                 node_id,
                 channel,
                 data,

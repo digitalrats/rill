@@ -78,7 +78,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
             fm_amount: T::ZERO,
             use_fm: false,
             inputs: Vec::new(),
-            outputs: vec![Port::output(NodeId(0), 0, "audio_out")],
+            outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             controls: Vec::new(),
             state: None,
             _phantom: PhantomData,
@@ -185,8 +185,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for SineO
             description: "Sine wave oscillator with FM".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: if self.use_fm { 1 } else { 0 },
-            audio_outputs: 1,
+            signal_inputs: if self.use_fm { 1 } else { 0 },
+            signal_outputs: 1,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -319,7 +319,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for SineO
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         if self.use_fm {
             1
         } else {
@@ -327,7 +327,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for SineO
         }
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }

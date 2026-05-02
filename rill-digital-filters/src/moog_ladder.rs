@@ -29,8 +29,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> 
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
 
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let mut algorithm = MoogLadder::new(1000.0, 0.0);
         algorithm.init(sample_rate);
@@ -167,7 +167,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &rill_core::ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[rill_core::ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
