@@ -1,7 +1,7 @@
 //! Processable trait for unified audio node processing.
 //!
 //! This module defines the `Processable` trait that unifies `generate`, `process`, and `consume`
-//! into a single `process_block` method, making it easier to build generic audio graphs.
+//! into a single `process_block` method, making it easier to build generic signal graphs.
 
 use crate::math::Transcendental;
 use crate::time::ClockTick;

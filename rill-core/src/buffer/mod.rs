@@ -1,6 +1,6 @@
 //! # Audio Buffers with Transcendental Support
 //!
-//! This module provides lock-free, real-time safe buffers for audio processing
+//! This module provides lock-free, real-time safe buffers for signal processing
 //! with full `Transcendental` support for both `f32` and `f64` sample types.
 //!
 //! ## Buffer Types
@@ -271,7 +271,7 @@ impl BufferStats {
 // SignalBuffer Trait
 // ============================================================================
 
-/// Common trait for all audio buffers
+/// Common trait for all signal buffers
 ///
 /// This trait defines the standard interface that all buffer types implement.
 /// It provides methods for querying capacity, current length, and statistics.

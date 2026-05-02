@@ -16,7 +16,7 @@ use rill_core::traits::Processor;
 ///
 /// # Type Parameters
 /// - `T` — sample type (f32/f64)
-/// - `BUF_SIZE` — audio block size
+/// - `BUF_SIZE` — signal block size
 /// - `QUEUE_CAP` — capacity of the telemetry ring buffer (must be power of two)
 ///
 /// # Design

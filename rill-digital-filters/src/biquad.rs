@@ -1,7 +1,7 @@
 //! Biquad filter implementation using rill-core-dsp
 //!
 //! This module provides a Processor wrapper around the `Biquad` filter from `rill-core-dsp`
-//! for use in audio graphs.
+//! for use in signal graphs.
 
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{

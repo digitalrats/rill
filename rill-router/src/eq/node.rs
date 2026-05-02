@@ -1,4 +1,4 @@
-//! Processor nodes for integration with rill-core audio graphs.
+//! Processor nodes for integration with rill-core signal graphs.
 
 use rill_core::{
     SignalNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
@@ -30,7 +30,7 @@ impl FilterFactory<Biquad<f32>> for BiquadFactory {
     }
 }
 
-/// Parametric equalizer processor node for audio graphs.
+/// Parametric equalizer processor node for signal graphs.
 pub struct ParametricEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,
@@ -376,7 +376,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     }
 }
 
-/// Graphic equalizer processor node for audio graphs.
+/// Graphic equalizer processor node for signal graphs.
 pub struct GraphicEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
     id: NodeId,

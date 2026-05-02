@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 // Internal routing metadata
 // ============================================================================
 
-/// Describes how an audio input port routes to an audio output port within a node.
+/// Describes how an signal input port routes to an signal output port within a node.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct InternalRoute {
@@ -60,7 +60,7 @@ pub(crate) struct NodeEntry<T: Transcendental, const BUF_SIZE: usize> {
 // GraphBuilder (Mutable Construction)
 // ============================================================================
 
-/// Mutable builder for an immutable audio graph.
+/// Mutable builder for an immutable signal graph.
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     audio_edges: Vec<(usize, usize, usize, usize)>,
@@ -161,9 +161,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.nodes.len()
     }
 
-    /// Connect audio output port `from_port` of node `from_node`
-    /// to audio input port `to_port` of node `to_node`.
-    pub fn connect_audio(
+    /// Connect signal output port `from_port` of node `from_node`
+    /// to signal input port `to_port` of node `to_node`.
+    pub fn connect_signal(
         &mut self,
         from_node: usize,
         from_port: usize,
@@ -297,12 +297,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 // SignalGraph (Static DAG)
 // ============================================================================
 
-/// Immutable audio graph with static DAG topology.
+/// Immutable signal graph with static DAG topology.
 ///
 /// Once built the graph cannot be modified. The graph owns no processing
 /// logic — it is a pure topology description. Processing is driven by
 /// port-level methods (`pre_process`, `snapshot_feedback`, `propagate`)
-/// called from external code (e.g. a real-time audio callback or an
+/// called from external code (e.g. a real-time signal callback or an
 /// offline renderer).
 pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
@@ -704,8 +704,8 @@ mod tests {
         let proc = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
         let sink = builder.add_sink(Box::new(NoopSink::new(44100.0)));
 
-        builder.connect_audio(src, 0, proc, 0);
-        builder.connect_audio(proc, 0, sink, 0);
+        builder.connect_signal(src, 0, proc, 0);
+        builder.connect_signal(proc, 0, sink, 0);
 
         let graph = builder
             .build(Box::new(SystemClock::with_sample_rate(44100.0)))
@@ -727,8 +727,8 @@ mod tests {
         let a = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
         let b = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
 
-        builder.connect_audio(a, 0, b, 0);
-        builder.connect_audio(b, 0, a, 0);
+        builder.connect_signal(a, 0, b, 0);
+        builder.connect_signal(b, 0, a, 0);
 
         let result = builder.build(Box::new(SystemClock::with_sample_rate(44100.0)));
         assert!(matches!(result, Err(BuildError::CycleDetected)));

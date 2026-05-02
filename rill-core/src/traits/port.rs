@@ -1,6 +1,6 @@
 //! Port types and identifiers for the Rill ecosystem
 //!
-//! Ports are the connection points between nodes in the audio graph.
+//! Ports are the connection points between nodes in the signal graph.
 //! Each output port owns a `Buffer<T, BUF_SIZE>` and an optional `Action`
 //! that defines how data is produced. Input ports are connection endpoints
 //! that receive data from upstream output ports.
@@ -144,12 +144,12 @@ impl PortId {
     // Audio Port Constructors
     // ========================================================================
 
-    /// Create a new audio input port
+    /// Create a new signal input port
     pub const fn audio_in(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Signal, PortDirection::Input, index)
     }
 
-    /// Create a new audio output port
+    /// Create a new signal output port
     pub const fn audio_out(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Signal, PortDirection::Output, index)
     }
@@ -350,7 +350,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> 
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
-    /// Create a new audio output port
+    /// Create a new signal output port
     pub fn output(node_id: NodeId, index: u16, name: &str) -> Self {
         Self {
             id: PortId::audio_out(node_id, index),
@@ -366,7 +366,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         }
     }
 
-    /// Create a new audio output port with an algorithm
+    /// Create a new signal output port with an algorithm
     pub fn output_with_action(
         node_id: NodeId,
         index: u16,
@@ -387,7 +387,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         }
     }
 
-    /// Create a new audio input port
+    /// Create a new signal input port
     pub fn input(node_id: NodeId, index: u16, name: &str) -> Self {
         Self {
             id: PortId::audio_in(node_id, index),

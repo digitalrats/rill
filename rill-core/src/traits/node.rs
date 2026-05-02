@@ -1,6 +1,6 @@
 //! Core node traits for the Rill ecosystem
 //!
-//! Defines the fundamental building blocks of the audio graph:
+//! Defines the fundamental building blocks of the signal graph:
 //! - `SignalNode`: Base trait for all nodes
 //! - `Source`: Active generator (has no inputs)
 //! - `Processor`: Passive processor (has inputs and outputs)
@@ -137,10 +137,10 @@ pub struct NodeMetadata {
     /// Version of the node
     pub version: String,
 
-    /// Number of audio input ports
+    /// Number of signal input ports
     pub signal_inputs: usize,
 
-    /// Number of audio output ports
+    /// Number of signal output ports
     pub signal_outputs: usize,
 
     /// Number of control input ports
@@ -346,12 +346,12 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     // Port Counting (with defaults)
     // ========================================================================
 
-    /// Number of audio input ports
+    /// Number of signal input ports
     fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    /// Number of audio output ports
+    /// Number of signal output ports
     fn num_signal_outputs(&self) -> usize {
         0
     }
@@ -399,7 +399,7 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
 // Source Trait (Active generators)
 // ============================================================================
 
-/// Active source of audio signals
+/// Active source of signals
 ///
 /// Sources generate audio from internal state. They have no audio inputs,
 /// but may have control and clock inputs for modulation.
@@ -440,7 +440,7 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalN
 // Processor Trait (Passive processors)
 // ============================================================================
 
-/// Passive processor of audio signals
+/// Passive processor of signals
 ///
 /// Processors transform input signals into output signals.
 /// They have audio inputs and outputs, and may have control and clock ports.
@@ -477,7 +477,7 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
 // Sink Trait (Active consumers)
 // ============================================================================
 
-/// Active sink of audio signals
+/// Active sink of signals
 ///
 /// Sinks consume audio and send it to external destinations.
 /// They have no audio outputs, but may have control and clock ports.

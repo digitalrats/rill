@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-/// Real-time safe audio engine for a static audio graph.
+/// Real-time safe signal engine for a static signal graph.
 ///
 /// Owns the mutable node state and provides:
 ///
@@ -22,7 +22,7 @@ use std::thread;
 ///    downstream nodes via pre-established port connections.
 /// 3. **Thread management** — [`start`](Self::start)/[`stop`](Self::stop)
 ///    manage a cooperative running flag; [`spawn`](Self::spawn) consumes
-///    the engine and runs it in a dedicated audio thread.
+///    the engine and runs it in a dedicated signal thread.
 ///
 /// A separate control thread communicates via command/telemetry queues.
 ///
@@ -255,7 +255,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// Spawn a dedicated audio thread that runs `process_block` in a loop.
+    /// Spawn a dedicated signal thread that runs `process_block` in a loop.
     /// The engine is moved into the thread; communication happens through
     /// command/telemetry queues.
     ///
@@ -266,7 +266,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
         running.store(true, Ordering::SeqCst);
 
         thread::Builder::new()
-            .name("rill-audio".into())
+            .name("rill-signal".into())
             .spawn(move || {
                 let mut tick = ClockTick::new(0, BUF_SIZE as u32, 44100.0);
                 while running.load(Ordering::SeqCst) {
@@ -277,7 +277,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
                     tick.advance(BUF_SIZE as u32);
                 }
             })
-            .expect("failed to spawn rill-audio thread")
+            .expect("failed to spawn rill-signal thread")
     }
 
     /// Clone of the running flag, for signaling shutdown from another thread.

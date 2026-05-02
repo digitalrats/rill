@@ -25,7 +25,7 @@ pub enum PlayState {
 ///
 /// Plays back a fixed buffer with variable rate, interpolation,
 /// and configurable looping. Implements [`Algorithm`] for use in
-/// audio graphs, and [`Generator`] for compatibility with the
+/// signal graphs, and [`Generator`] for compatibility with the
 /// oscillator trait hierarchy.
 ///
 /// # Generator parameter mapping

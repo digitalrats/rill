@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 /// A serialisable graph document.
 ///
-/// Contains everything needed to reconstruct an audio graph:
+/// Contains everything needed to reconstruct a signal graph:
 /// node definitions with parameters and the connections between them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphDocument {
@@ -92,7 +92,7 @@ pub struct ConnectionDef {
 /// Kind of signal carried by a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalKind {
-    Audio,
+    Signal,
     Control,
     Clock,
     Feedback,
@@ -253,7 +253,7 @@ fn extract_connections<T: Transcendental, const B: usize>(
                 for &(to_idx, to_port) in &port.downstream {
                     let to_id = entries[to_idx].node.id().inner();
                     conns.push(ConnectionDef {
-                        kind: SignalKind::Audio,
+                        kind: SignalKind::Signal,
                         from_node: from_id,
                         from_port,
                         to_node: to_id,
@@ -335,8 +335,8 @@ impl GraphDocument {
                 ))?;
 
             match conn.kind {
-                SignalKind::Audio => {
-                    builder.connect_audio(from, conn.from_port, to, conn.to_port);
+                SignalKind::Signal => {
+                    builder.connect_signal(from, conn.from_port, to, conn.to_port);
                 }
                 SignalKind::Control => {
                     builder.connect_control(from, conn.from_port, to, conn.to_port);
@@ -568,7 +568,7 @@ mod tests {
         let mut b = GraphBuilder::new();
         let src = b.add_node(registry, "rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node(registry, "rill/test", &NodeParams::new(44100.0)).unwrap();
-        b.connect_audio(src, 0, proc, 0);
+        b.connect_signal(src, 0, proc, 0);
         b.build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))
             .expect("build")
     }
@@ -691,7 +691,7 @@ mod tests {
         let mut b = GraphBuilder::new();
         let src = b.add_node(&reg, "rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node(&reg, "rill/test", &NodeParams::new(44100.0)).unwrap();
-        b.connect_audio(src, 0, proc, 0);
+        b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
         let graph = b
             .build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))
@@ -699,7 +699,7 @@ mod tests {
 
         let doc = GraphDocument::from_graph(&graph);
         let sigs: Vec<SignalKind> = doc.connections.iter().map(|c| c.kind).collect();
-        assert!(sigs.contains(&SignalKind::Audio));
+        assert!(sigs.contains(&SignalKind::Signal));
         assert!(sigs.contains(&SignalKind::Feedback));
         assert_eq!(doc.connections.len(), 2);
     }
@@ -763,7 +763,7 @@ mod tests {
             .unwrap();
         b.add_node_with_id(&reg, "rill/param", &NodeParams::new(44100.0), NodeId(200))
             .unwrap();
-        b.connect_audio(0, 0, 1, 0);
+        b.connect_signal(0, 0, 1, 0);
         let graph = b
             .build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))
             .expect("build");
@@ -790,8 +790,8 @@ mod tests {
         let s0 = b.add_node(&reg, "rill/test", &NodeParams::new(44100.0)).unwrap();
         let p1 = b.add_node(&reg, "rill/param", &NodeParams::new(44100.0)).unwrap();
         let p2 = b.add_node(&reg, "rill/param", &NodeParams::new(44100.0)).unwrap();
-        b.connect_audio(s0, 0, p1, 0);
-        b.connect_audio(p1, 0, p2, 0);
+        b.connect_signal(s0, 0, p1, 0);
+        b.connect_signal(p1, 0, p2, 0);
 
         let graph = b
             .build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))

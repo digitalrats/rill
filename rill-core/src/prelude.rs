@@ -196,10 +196,10 @@ pub use crate::{
 /// Default sample type (32-bit float)
 pub type Sample = f32;
 
-/// Mono audio block type
+/// Mono signal block type
 pub type MonoBlock<T, const N: usize> = [T; N];
 
-/// Stereo audio block type (left, right)
+/// Stereo signal block type (left, right)
 pub type StereoBlock<T, const N: usize> = [MonoBlock<T, N>; 2];
 
 /// Control signal value type

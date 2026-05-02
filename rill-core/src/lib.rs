@@ -1,7 +1,7 @@
 //! # Rill Core
 //!
 //! The core of the Rill ecosystem. Provides fundamental traits, types,
-//! and utilities for building real-time audio applications.
+//! and utilities for building real-time signal processing applications.
 //!
 //! ## Architecture Overview
 //!
@@ -10,7 +10,7 @@
 //! ├── traits/           # Core traits (SignalNode, Source, Processor, Sink, etc.)
 //! ├── math/             # Mathematical abstractions (Scalar, Transcendental, Vector)
 //! │   └── vector/       # Vector types, SIMD abstractions, slice operations
-//! ├── buffer/           # Lock-free audio buffers with AtomicCell safety
+//! ├── buffer/           # Lock-free signal buffers with AtomicCell safety
 //! ├── queues/           # Real-time safe command queues
 //! └── time/             # Time and clock abstractions (ClockTick, SystemClock)
 //! ```
@@ -20,7 +20,7 @@
 //! - **Scalar**: Base numeric trait for any type (floats and integers)
 //! - **Transcendental**: Float numeric abstraction with sin/cos/sqrt
 //! - **AtomicCell**: Safe atomic wrapper for lock-free data structures
-//! - **SignalNode**: Base trait for all nodes in the audio graph
+//! - **SignalNode**: Base trait for all nodes in the signal graph
 //! - **Source**: Active generators (oscillators, file readers)
 //! - **Processor**: Passive processors (filters, effects)
 //! - **Sink**: Active outputs (sound cards, file writers)
@@ -141,10 +141,10 @@
 /// Core traits for the Rill ecosystem
 pub mod traits;
 
-/// Mathematical abstractions for audio processing
+/// Mathematical abstractions for signal processing
 pub mod math;
 
-/// Lock-free, real-time safe audio buffers
+/// Lock-free, real-time safe signal buffers
 pub mod buffer;
 
 /// Real-time safe command queues for automation
@@ -166,7 +166,7 @@ pub mod prelude;
 /// Fractional-index interpolation trait for slice-like types
 pub mod interpolate;
 
-/// Graph executor for driving audio processing
+/// Graph executor for driving signal processing
 pub mod executor;
 
 // ============================================================================
@@ -220,7 +220,7 @@ pub const MIN_SAMPLE_RATE: f32 = 8_000.0;
 /// Default sample rate (44.1 kHz)
 pub const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
 
-/// Default block size for audio processing
+/// Default block size for signal processing
 pub const DEFAULT_BLOCK_SIZE: usize = 64;
 
 /// Maximum block size

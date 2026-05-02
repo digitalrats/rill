@@ -24,13 +24,13 @@ pub use processable::*;
 // Common Type Aliases
 // ============================================================================
 
-/// Default block size for audio processing
+/// Default block size for signal processing
 pub const DEFAULT_BLOCK_SIZE: usize = 64;
 
-/// Type alias for a mono audio block
+/// Type alias for a mono signal block
 pub type MonoBlock<T, const BUF_SIZE: usize> = [T; BUF_SIZE];
 
-/// Type alias for a stereo audio block (left, right)
+/// Type alias for a stereo signal block (left, right)
 pub type StereoBlock<T, const BUF_SIZE: usize> = [MonoBlock<T, BUF_SIZE>; 2];
 
 /// Type alias for a control signal value

@@ -1,4 +1,4 @@
-//! Graph executor for driving audio processing using the topology graph and active ports.
+//! Graph executor for driving signal processing using the topology graph and active ports.
 //!
 //! The `GraphExecutor` coordinates clock ticks, pulls data from input ports,
 //! calls node processing, and pushes data to output ports.
@@ -19,12 +19,12 @@
 use crate::math::Transcendental;
 use crate::traits::ActivePort;
 
-/// Executor for an audio graph that processes nodes in topological order.
+/// Executor for a signal graph that processes nodes in topological order.
 ///
 /// This is a prototype that outlines the structure. In a real implementation,
 /// the executor would hold a concrete graph and iterate over its nodes.
 pub struct GraphExecutor<T: Transcendental, const BUF_SIZE: usize> {
-    // Placeholder for the audio graph.
+    // Placeholder for the signal graph.
     // In reality, this would be something like `graph: rill_graph::SignalGraph<T, BUF_SIZE>`.
     _phantom: std::marker::PhantomData<T>,
 }

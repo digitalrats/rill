@@ -1,4 +1,4 @@
-//! # Clock tick - the heartbeat of audio processing
+//! # Clock tick - the heartbeat of signal processing
 //!
 //! A `ClockTick` represents a single moment in audio time, containing
 //! information about sample position, block size, and tempo.
@@ -7,7 +7,7 @@ use std::fmt;
 
 /// A tick of the audio clock
 ///
-/// Sent to nodes on every audio block to provide timing information
+/// Sent to nodes on every signal block to provide timing information
 /// and synchronize processing. This is the fundamental timing primitive
 /// in Rill.
 ///
