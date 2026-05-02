@@ -26,8 +26,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZ
 
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
-        inputs.push(Port::input(NodeId(0), 0, "audio_in"));
-        outputs.push(Port::output(NodeId(0), 0, "audio_out"));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         let pole = rill_core_wdf::filters::RcPole::new(0.0);
         let mut algorithm = MoogLadder::new(pole, 1000.0, 0.0, sample_rate as f64);
@@ -52,7 +52,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZ
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for WdfMoogLadderProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> NodeTypeId
@@ -145,11 +145,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
         None
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         1
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 
@@ -168,7 +168,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     fn process(
         &mut self,
         _clock: &ClockTick,
-        _audio_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],

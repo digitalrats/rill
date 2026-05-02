@@ -5,12 +5,12 @@ use rill_core::queues::telemetry::Telemetry;
 use rill_core::time::ClockTick;
 use rill_core::traits::processable::{NodeVariant, Processable};
 use rill_core::traits::port::Port;
-use rill_core::traits::{AudioNode, PortId, ProcessResult};
+use rill_core::traits::{SignalNode, PortId, ProcessResult};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-/// Real-time safe audio engine for a static audio graph.
+/// Real-time safe signal engine for a static signal graph.
 ///
 /// Owns the mutable node state and provides:
 ///
@@ -22,14 +22,14 @@ use std::thread;
 ///    downstream nodes via pre-established port connections.
 /// 3. **Thread management** — [`start`](Self::start)/[`stop`](Self::stop)
 ///    manage a cooperative running flag; [`spawn`](Self::spawn) consumes
-///    the engine and runs it in a dedicated audio thread.
+///    the engine and runs it in a dedicated signal thread.
 ///
 /// A separate control thread communicates via command/telemetry queues.
 ///
 /// # Type Parameters
 /// - `T` — floating-point type (`f32` or `f64`)
 /// - `BUF_SIZE` — block size (must match the graph)
-pub struct AudioEngine<T: Transcendental, const BUF_SIZE: usize> {
+pub struct SignalEngine<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeVariant<T, BUF_SIZE>>,
     topo_order: Vec<usize>,
     cmd_slots: Vec<Option<CommandEnum>>,
@@ -38,7 +38,7 @@ pub struct AudioEngine<T: Transcendental, const BUF_SIZE: usize> {
     running: Arc<AtomicBool>,
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioEngine<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
     /// Create a new engine from graph parts.
     pub fn new(
         nodes: Vec<NodeVariant<T, BUF_SIZE>>,
@@ -105,7 +105,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioEngine<T, BUF_SIZE> {
 
         // === 2. pre_process on all nodes (feedback mix — block boundary) ===
         for &idx in &self.topo_order {
-            let num_inputs = self.nodes[idx].num_audio_inputs();
+            let num_inputs = self.nodes[idx].num_signal_inputs();
             for pi in 0..num_inputs {
                 if let Some(port) = self.nodes[idx].input_port_mut(pi) {
                     port.pre_process(tick);
@@ -146,7 +146,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioEngine<T, BUF_SIZE> {
             // - Copy-based ports: copy buffer into local storage
             let mut copy_bufs: Vec<[T; BUF_SIZE]> = Vec::new();
             let mut audio_refs: Vec<&[T; BUF_SIZE]> = Vec::new();
-            for pi in 0..self.nodes[idx].num_audio_inputs() {
+            for pi in 0..self.nodes[idx].num_signal_inputs() {
                 if let Some(port) = self.nodes[idx].input_port(pi) {
                     match port.upstream_buffer {
                         Some(ptr) => {
@@ -183,7 +183,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioEngine<T, BUF_SIZE> {
 
             let mut ctx = rill_core::traits::processable::ProcessContext {
                 clock: tick,
-                audio_inputs: &audio_refs,
+                signal_inputs: &audio_refs,
                 control_inputs: &owned_control,
                 clock_inputs: &owned_clock,
                 feedback_inputs: &feedback_refs,
@@ -191,7 +191,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioEngine<T, BUF_SIZE> {
 
             self.nodes[idx].process_block(&mut ctx)?;
 
-            let num_outputs = self.nodes[idx].num_audio_outputs();
+            let num_outputs = self.nodes[idx].num_signal_outputs();
             for po in 0..num_outputs {
                 if let Some(port) = self.nodes[idx].output_port_mut(po) {
                     port.snapshot_feedback();
@@ -255,7 +255,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioEngine<T, BUF_SIZE> {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// Spawn a dedicated audio thread that runs `process_block` in a loop.
+    /// Spawn a dedicated signal thread that runs `process_block` in a loop.
     /// The engine is moved into the thread; communication happens through
     /// command/telemetry queues.
     ///
@@ -266,18 +266,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioEngine<T, BUF_SIZE> {
         running.store(true, Ordering::SeqCst);
 
         thread::Builder::new()
-            .name("rill-audio".into())
+            .name("rill-signal".into())
             .spawn(move || {
                 let mut tick = ClockTick::new(0, BUF_SIZE as u32, 44100.0);
                 while running.load(Ordering::SeqCst) {
                     if let Err(e) = self.process_block(&tick) {
-                        log::error!("AudioEngine error: {:?}", e);
+                        log::error!("SignalEngine error: {:?}", e);
                         break;
                     }
                     tick.advance(BUF_SIZE as u32);
                 }
             })
-            .expect("failed to spawn rill-audio thread")
+            .expect("failed to spawn rill-signal thread")
     }
 
     /// Clone of the running flag, for signaling shutdown from another thread.
@@ -318,7 +318,7 @@ mod tests {
     use rill_core::queues::signal::{AutomatonCommand, SetParameter, SignalSource};
     use rill_core::queues::CommandQueue;
     use rill_core::traits::{
-        AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+        SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
         PortDirection, PortId, ProcessResult, Processor, Sink, Source,
     };
 
@@ -356,7 +356,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         for ConstantSource<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
@@ -366,8 +366,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 0,
-                audio_outputs: 1,
+                signal_inputs: 0,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -388,7 +388,7 @@ mod tests {
             self.id
         }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_outputs(&self) -> usize {
+        fn num_signal_outputs(&self) -> usize {
             1
         }
         fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -481,7 +481,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         for NoopProcessor<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
@@ -491,8 +491,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 1,
-                audio_outputs: 1,
+                signal_inputs: 1,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -513,10 +513,10 @@ mod tests {
             self.id
         }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_inputs(&self) -> usize {
+        fn num_signal_inputs(&self) -> usize {
             1
         }
-        fn num_audio_outputs(&self) -> usize {
+        fn num_signal_outputs(&self) -> usize {
             1
         }
         fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -551,13 +551,13 @@ mod tests {
         fn process(
             &mut self,
             _clock: &ClockTick,
-            audio_inputs: &[&[T; BUF_SIZE]],
+            signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],
         ) -> ProcessResult<()> {
             let output = self.outputs[0].buffer.as_mut_array();
-            if let Some(input) = audio_inputs.first() {
+            if let Some(input) = signal_inputs.first() {
                 output.copy_from_slice(*input);
             }
             Ok(())
@@ -603,7 +603,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         for CaptureSink<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
@@ -613,8 +613,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 1,
-                audio_outputs: 0,
+                signal_inputs: 1,
+                signal_outputs: 0,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -635,7 +635,7 @@ mod tests {
             self.id
         }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_inputs(&self) -> usize {
+        fn num_signal_inputs(&self) -> usize {
             1
         }
         fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -670,12 +670,12 @@ mod tests {
         fn consume(
             &mut self,
             _clock: &ClockTick,
-            audio_inputs: &[&[T; BUF_SIZE]],
+            signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],
         ) -> ProcessResult<()> {
-            if let Some(input) = audio_inputs.first() {
+            if let Some(input) = signal_inputs.first() {
                 self.captured = input.to_vec();
             }
             Ok(())
@@ -697,7 +697,7 @@ mod tests {
             ConstantSource::new(NodeId(0), 1.0, 44100.0),
         ))];
 
-        let mut engine = AudioEngine::<f32, BUF>::new(nodes, vec![0], Some(cmd_rx), None);
+        let mut engine = SignalEngine::<f32, BUF>::new(nodes, vec![0], Some(cmd_rx), None);
 
         let cmd = CommandEnum::SetParameter(SetParameter::new(
             PortId::param(NodeId(0), 0),
@@ -723,7 +723,7 @@ mod tests {
             ConstantSource::new(NodeId(0), 1.0, 44100.0),
         ))];
 
-        let mut engine = AudioEngine::<f32, BUF>::new(
+        let mut engine = SignalEngine::<f32, BUF>::new(
             nodes,
             vec![0],
             Some(cmd_rx),
@@ -772,7 +772,7 @@ mod tests {
             ConstantSource::new(NodeId(0), 1.0, 44100.0),
         ))];
 
-        let mut engine = AudioEngine::<f32, BUF>::new(nodes, vec![0], Some(cmd_rx), None);
+        let mut engine = SignalEngine::<f32, BUF>::new(nodes, vec![0], Some(cmd_rx), None);
 
         let cmd = CommandEnum::Automaton(AutomatonCommand::SetEnabled {
             id: "test".into(),
@@ -793,7 +793,7 @@ mod tests {
             ConstantSource::new(NodeId(0), 1.0, 44100.0),
         ))];
 
-        let mut engine = AudioEngine::<f32, BUF>::new(nodes, vec![0], None, None);
+        let mut engine = SignalEngine::<f32, BUF>::new(nodes, vec![0], None, None);
 
         let result = engine.process_block(&tick).unwrap();
         assert_eq!(result, 0);
@@ -818,7 +818,7 @@ mod tests {
         nodes.push(NodeVariant::Sink(sink_node));
 
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
-        let mut engine = AudioEngine::<f32, BUF>::new(nodes, vec![0, 1, 2], None, None);
+        let mut engine = SignalEngine::<f32, BUF>::new(nodes, vec![0, 1, 2], None, None);
 
         engine.process_block(&tick).unwrap();
 
@@ -864,7 +864,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         for AdcSource<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
@@ -874,8 +874,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 0,
-                audio_outputs: 1,
+                signal_inputs: 0,
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -890,7 +890,7 @@ mod tests {
         fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
         fn id(&self) -> NodeId { self.id }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_outputs(&self) -> usize { 1 }
+        fn num_signal_outputs(&self) -> usize { 1 }
         fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> { self.outputs.get(index) }
         fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.outputs.get_mut(index) }
         fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
@@ -956,7 +956,7 @@ mod tests {
         fn captured(&self) -> &[T] { &self.captured }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         for DacSink<T, BUF_SIZE>
     {
         fn metadata(&self) -> NodeMetadata {
@@ -966,8 +966,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: "1.0".into(),
-                audio_inputs: 1,
-                audio_outputs: 0,
+                signal_inputs: 1,
+                signal_outputs: 0,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -982,7 +982,7 @@ mod tests {
         fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> { Ok(()) }
         fn id(&self) -> NodeId { self.id }
         fn set_id(&mut self, _id: NodeId) {}
-        fn num_audio_inputs(&self) -> usize { 1 }
+        fn num_signal_inputs(&self) -> usize { 1 }
         fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> { self.inputs.get(index) }
         fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.inputs.get_mut(index) }
         fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
@@ -999,12 +999,12 @@ mod tests {
         fn consume(
             &mut self,
             _clock: &ClockTick,
-            audio_inputs: &[&[T; BUF_SIZE]],
+            signal_inputs: &[&[T; BUF_SIZE]],
             _control_inputs: &[T],
             _clock_inputs: &[ClockTick],
             _feedback_inputs: &[&[T; BUF_SIZE]],
         ) -> ProcessResult<()> {
-            if let Some(input) = audio_inputs.first() {
+            if let Some(input) = signal_inputs.first() {
                 self.captured.extend_from_slice(*input);
             }
             Ok(())
@@ -1040,7 +1040,7 @@ mod tests {
         nodes.push(NodeVariant::Sink(dac));
 
         let mut tick = ClockTick::new(0, BUF as u32, 44100.0);
-        let mut engine = AudioEngine::<f32, BUF>::new(nodes, vec![0, 1, 2], None, None);
+        let mut engine = SignalEngine::<f32, BUF>::new(nodes, vec![0, 1, 2], None, None);
 
         // Process N blocks — each call is one hardware clock tick
         for _ in 0..NUM_BLOCKS {
@@ -1093,7 +1093,7 @@ mod tests {
         nodes.push(NodeVariant::Sink(dac));
 
         let mut tick = ClockTick::new(0, BUF as u32, 44100.0);
-        let mut engine = AudioEngine::<f32, BUF>::new(nodes, vec![0, 1, 2], None, None);
+        let mut engine = SignalEngine::<f32, BUF>::new(nodes, vec![0, 1, 2], None, None);
 
         // The clock fires — Sink is the active node in the pull model
         for _ in 0..NUM_BLOCKS {

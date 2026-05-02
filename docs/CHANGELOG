@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## [0.4.0] — 2026-05-02
+
+### 💥 Breaking changes
+
+- **`Audio` → `Signal` rename** across the entire API surface:
+  - `AudioNode` → `SignalNode`
+  - `AudioBuffer` → `SignalBuffer`
+  - `AudioError` / `AudioResult` → `SignalError` / `SignalResult`
+  - `AudioGraph` → `SignalGraph`
+  - `AudioEngine` → `SignalEngine`
+  
+  All crates bumped to `0.4.0`. Only `rill-io::AudioBackend` keeps its name
+  (genuinely audio-specific trait).
+
+---
+
 ## [0.3.2 / 0.3.1 / 0.3.1] — 2026-05-02
 
 ### 🆕 Новые крейты

@@ -12,7 +12,7 @@ Audio routing, mixing, and equalization — unified EQ + mixer crate.
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Processor` trait, port/parameter types
+- `rill-core` — `SignalNode`, `Processor` trait, port/parameter types
 - `rill-core-dsp` — Biquad and other filter algorithms
 
 ## Links

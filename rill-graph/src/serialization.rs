@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{AudioNode, NodeId, NodeMetadata, NodeParams, NodeVariant, ParamValue};
+use rill_core::traits::{SignalNode, NodeId, NodeMetadata, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParamMetadata;
 use rill_core::ParameterId;
 
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 /// A serialisable graph document.
 ///
-/// Contains everything needed to reconstruct an audio graph:
+/// Contains everything needed to reconstruct a signal graph:
 /// node definitions with parameters and the connections between them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphDocument {
@@ -92,7 +92,7 @@ pub struct ConnectionDef {
 /// Kind of signal carried by a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalKind {
-    Audio,
+    Signal,
     Control,
     Clock,
     Feedback,
@@ -183,7 +183,7 @@ impl GraphDocument {
 }
 
 // ============================================================================
-// Export (AudioGraph → GraphDocument)
+// Export (SignalGraph → GraphDocument)
 // ============================================================================
 
 impl GraphDocument {
@@ -192,7 +192,7 @@ impl GraphDocument {
     /// Iterates every node, reads its metadata and current parameters,
     /// and reconstructs all connections from port routing state.
     pub fn from_graph<T: Transcendental, const B: usize>(
-        graph: &super::AudioGraph<T, B>,
+        graph: &super::SignalGraph<T, B>,
     ) -> Self {
         let entries = graph.node_entries();
         let sample_rate = graph.sample_rate();
@@ -247,13 +247,13 @@ fn extract_connections<T: Transcendental, const B: usize>(
         let variant = &entry.node;
         let from_id = variant.id().inner();
 
-        let audio_outs = variant.metadata().audio_outputs;
+        let audio_outs = variant.metadata().signal_outputs;
         for from_port in 0..audio_outs {
             if let Some(port) = variant.output_port(from_port) {
                 for &(to_idx, to_port) in &port.downstream {
                     let to_id = entries[to_idx].node.id().inner();
                     conns.push(ConnectionDef {
-                        kind: SignalKind::Audio,
+                        kind: SignalKind::Signal,
                         from_node: from_id,
                         from_port,
                         to_node: to_id,
@@ -335,8 +335,8 @@ impl GraphDocument {
                 ))?;
 
             match conn.kind {
-                SignalKind::Audio => {
-                    builder.connect_audio(from, conn.from_port, to, conn.to_port);
+                SignalKind::Signal => {
+                    builder.connect_signal(from, conn.from_port, to, conn.to_port);
                 }
                 SignalKind::Control => {
                     builder.connect_control(from, conn.from_port, to, conn.to_port);
@@ -360,7 +360,7 @@ impl GraphDocument {
 
 /// Serialise a graph to pretty-printed JSON.
 pub fn to_json<T: Transcendental, const B: usize>(
-    graph: &super::AudioGraph<T, B>,
+    graph: &super::SignalGraph<T, B>,
 ) -> Result<String, SerializationError> {
     let doc = GraphDocument::from_graph(graph);
     serde_json::to_string_pretty(&doc)
@@ -379,7 +379,7 @@ pub fn from_json<T: Transcendental, const B: usize>(
 
 /// Serialise a graph to CBOR binary.
 pub fn to_cbor<T: Transcendental, const B: usize>(
-    graph: &super::AudioGraph<T, B>,
+    graph: &super::SignalGraph<T, B>,
 ) -> Result<Vec<u8>, SerializationError> {
     let doc = GraphDocument::from_graph(graph);
     serde_cbor::to_vec(&doc)
@@ -403,7 +403,7 @@ pub fn from_cbor<T: Transcendental, const B: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::AudioGraph;
+    use crate::graph::SignalGraph;
     use crate::registry::NodeConstructor;
     use rill_core::buffer::Buffer;
     use rill_core::math::Transcendental;
@@ -467,7 +467,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const B: usize> AudioNode<T, B> for TestNode<T, B> {
+    impl<T: Transcendental, const B: usize> SignalNode<T, B> for TestNode<T, B> {
         fn metadata(&self) -> rill_core::traits::NodeMetadata {
             NodeMetadata {
                 name: "TestNode".to_string(),
@@ -476,8 +476,8 @@ mod tests {
                 description: String::new(),
                 author: String::new(),
                 version: String::new(),
-                audio_inputs: if self.cat == NodeCategory::Source { 0 } else { 1 },
-                audio_outputs: 1,
+                signal_inputs: if self.cat == NodeCategory::Source { 0 } else { 1 },
+                signal_outputs: 1,
                 control_inputs: 0,
                 control_outputs: 0,
                 clock_inputs: 0,
@@ -564,11 +564,11 @@ mod tests {
         r
     }
 
-    fn build_small_graph(registry: &NodeRegistry<f32, 64>) -> AudioGraph<f32, 64> {
+    fn build_small_graph(registry: &NodeRegistry<f32, 64>) -> SignalGraph<f32, 64> {
         let mut b = GraphBuilder::new();
         let src = b.add_node(registry, "rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node(registry, "rill/test", &NodeParams::new(44100.0)).unwrap();
-        b.connect_audio(src, 0, proc, 0);
+        b.connect_signal(src, 0, proc, 0);
         b.build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))
             .expect("build")
     }
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn test_empty_graph_roundtrip() {
         let reg = empty_registry();
-        let graph = AudioGraph::<f32, 64>::with_sample_rate(44100.0);
+        let graph = SignalGraph::<f32, 64>::with_sample_rate(44100.0);
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains(r#""nodes": []"#));
@@ -691,7 +691,7 @@ mod tests {
         let mut b = GraphBuilder::new();
         let src = b.add_node(&reg, "rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node(&reg, "rill/test", &NodeParams::new(44100.0)).unwrap();
-        b.connect_audio(src, 0, proc, 0);
+        b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
         let graph = b
             .build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))
@@ -699,7 +699,7 @@ mod tests {
 
         let doc = GraphDocument::from_graph(&graph);
         let sigs: Vec<SignalKind> = doc.connections.iter().map(|c| c.kind).collect();
-        assert!(sigs.contains(&SignalKind::Audio));
+        assert!(sigs.contains(&SignalKind::Signal));
         assert!(sigs.contains(&SignalKind::Feedback));
         assert_eq!(doc.connections.len(), 2);
     }
@@ -763,7 +763,7 @@ mod tests {
             .unwrap();
         b.add_node_with_id(&reg, "rill/param", &NodeParams::new(44100.0), NodeId(200))
             .unwrap();
-        b.connect_audio(0, 0, 1, 0);
+        b.connect_signal(0, 0, 1, 0);
         let graph = b
             .build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))
             .expect("build");
@@ -790,8 +790,8 @@ mod tests {
         let s0 = b.add_node(&reg, "rill/test", &NodeParams::new(44100.0)).unwrap();
         let p1 = b.add_node(&reg, "rill/param", &NodeParams::new(44100.0)).unwrap();
         let p2 = b.add_node(&reg, "rill/param", &NodeParams::new(44100.0)).unwrap();
-        b.connect_audio(s0, 0, p1, 0);
-        b.connect_audio(p1, 0, p2, 0);
+        b.connect_signal(s0, 0, p1, 0);
+        b.connect_signal(p1, 0, p2, 0);
 
         let graph = b
             .build(Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)))

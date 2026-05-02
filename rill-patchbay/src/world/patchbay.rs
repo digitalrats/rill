@@ -109,7 +109,7 @@ impl Patchbay {
         }
         
         impl<A: Automaton> crate::servo::WildServoHandle for Wrapper<A> {
-            fn update(&mut self, time: WorldTime, graph: &mut rill_graph::AudioGraph) {
+            fn update(&mut self, time: WorldTime, graph: &mut rill_graph::SignalGraph) {
                 self.servo.update(time, graph);
             }
             

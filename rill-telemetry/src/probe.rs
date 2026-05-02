@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rill_core::math::Transcendental;
 use rill_core::prelude::{
-    AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     ProcessResult,
 };
 use rill_core::queues::spsc::SpscQueue;
@@ -16,7 +16,7 @@ use rill_core::traits::Processor;
 ///
 /// # Type Parameters
 /// - `T` — sample type (f32/f64)
-/// - `BUF_SIZE` — audio block size
+/// - `BUF_SIZE` — signal block size
 /// - `QUEUE_CAP` — capacity of the telemetry ring buffer (must be power of two)
 ///
 /// # Design
@@ -64,9 +64,9 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
         assert!(interval > 0, "interval must be positive");
 
         let id = NodeId(0);
-        let inputs = vec![Port::input(id, 0, "audio_in")];
+        let inputs = vec![Port::input(id, 0, "signal_in")];
 
-        let outputs = vec![Port::output(id, 0, "audio_out")];
+        let outputs = vec![Port::output(id, 0, "signal_out")];
 
         Self {
             id,
@@ -88,9 +88,9 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
     }
 }
 
-// ── AudioNode ──────────────────────────────────────────────────────────────
+// ── SignalNode ──────────────────────────────────────────────────────────────
 
-impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> SignalNode<T, BUF_SIZE>
     for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
     fn metadata(&self) -> NodeMetadata {
@@ -98,8 +98,8 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> AudioNode
         meta.description = "Pass-through telemetry probe".to_string();
         meta.author = "Rill".to_string();
         meta.version = env!("CARGO_PKG_VERSION").to_string();
-        meta.audio_inputs = self.inputs.len();
-        meta.audio_outputs = self.outputs.len();
+        meta.signal_inputs = self.inputs.len();
+        meta.signal_outputs = self.outputs.len();
         meta
     }
 
@@ -178,14 +178,14 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> Processor
     fn process(
         &mut self,
         _clock: &ClockTick,
-        audio_inputs: &[&[T; BUF_SIZE]],
+        signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         // ── Passthrough: copy input[0] → output[0] ──────────────────────
         let silence = [T::ZERO; BUF_SIZE];
-        let input = audio_inputs.first().copied().unwrap_or(&silence);
+        let input = signal_inputs.first().copied().unwrap_or(&silence);
         if let Some(port) = self.outputs.first_mut() {
             port.buffer.as_mut_array().copy_from_slice(input);
         }

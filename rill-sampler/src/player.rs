@@ -1,6 +1,6 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    Algorithm, AudioNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
+    Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, Source,
 };
 use rill_core::Transcendental;
@@ -133,7 +133,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SamplePlayerNode<T, B
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for SamplePlayerNode<T, BUF_SIZE>
 {
     fn metadata(&self) -> NodeMetadata {
@@ -144,8 +144,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
             description: "Sample playback node with loop modes and stereo".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            audio_inputs: 0,
-            audio_outputs: if self.right.is_some() { 2 } else { 1 },
+            signal_inputs: 0,
+            signal_outputs: if self.right.is_some() { 2 } else { 1 },
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -335,11 +335,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioNode<T, BUF_SIZE>
         self.state.as_mut().unwrap()
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         0
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
 }

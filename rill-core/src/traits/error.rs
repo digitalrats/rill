@@ -14,13 +14,13 @@ use thiserror::Error;
 // Core Process Error
 // ============================================================================
 
-/// Main error type for audio processing operations
+/// Main error type for signal processing operations
 ///
 /// This error can occur during node processing, parameter changes,
-/// or any other operation in the audio graph.
+/// or any other operation in the signal graph.
 #[derive(Error, Debug, Clone, PartialEq)]
 pub enum ProcessError {
-    /// Error during audio processing
+    /// Error during signal processing
     #[error("Processing error: {0}")]
     Processing(String),
 
@@ -96,7 +96,7 @@ pub enum ProcessError {
     Internal(String),
 }
 
-/// Result type for audio processing operations
+/// Result type for signal processing operations
 pub type ProcessResult<T> = Result<T, ProcessError>;
 
 impl ProcessError {
@@ -162,7 +162,7 @@ impl ProcessError {
 
     /// Check if this error is recoverable
     ///
-    /// Recoverable errors are those that don't require stopping the audio thread,
+    /// Recoverable errors are those that don't require stopping the signal thread,
     /// such as temporary buffer underflows or parameter errors.
     pub fn is_recoverable(&self) -> bool {
         match self {
@@ -684,7 +684,7 @@ mod tests {
         let err = PortError::direction_mismatch(PortDirection::Input, PortDirection::Output);
         assert!(matches!(err, PortError::DirectionMismatch { .. }));
 
-        let err = PortError::type_mismatch(PortType::Audio, PortType::Control);
+        let err = PortError::type_mismatch(PortType::Signal, PortType::Control);
         assert!(matches!(err, PortError::TypeMismatch { .. }));
     }
 

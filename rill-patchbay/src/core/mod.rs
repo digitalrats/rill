@@ -88,7 +88,7 @@ impl WorldSignal {
 /// Цель сигнала
 #[derive(Debug, Clone)]
 pub enum SignalTarget {
-    /// Параметр в AudioGraph
+    /// Параметр в SignalGraph
     Parameter(PortId, ParameterId),
     /// Другой автомат
     Automaton(String),

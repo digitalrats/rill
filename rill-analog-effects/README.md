@@ -10,7 +10,7 @@ Analog circuit models — operational amplifiers, tape decks, preamps.
 
 ## Dependencies
 
-- `rill-core` — `AudioNode`, `Processor` trait
+- `rill-core` — `SignalNode`, `Processor` trait
 - `rill-core-wdf` — WDF elements and analysis
 
 ## Links

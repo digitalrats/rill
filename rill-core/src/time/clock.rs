@@ -1,7 +1,7 @@
-//! Clock and time abstractions for audio processing
+//! Clock and time abstractions for signal processing
 //!
 //! Provides timing information for sample-accurate processing
-//! and synchronization between audio graph and control world.
+//! and synchronization between signal graph and control world.
 
 use super::tick;
 use std::fmt;
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A tick of the audio clock
 ///
-/// Sent to nodes on every audio block to provide timing information
+/// Sent to nodes on every signal block to provide timing information
 /// and synchronize processing.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
@@ -93,7 +93,7 @@ pub trait ClockSource: Send + Sync {
 
 /// High-precision system clock
 ///
-/// Provides sample-accurate timing for audio processing.
+/// Provides sample-accurate timing for signal processing.
 /// Uses atomic operations for thread safety without locks.
 pub struct SystemClock {
     pub sample_rate: f32,

@@ -33,8 +33,8 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
         let id = NodeId(0);
         let state = NodeState::new(44100.0);
 
-        let inputs = vec![Port::input(id, 0, "audio_in")];
-        let outputs = vec![Port::output(id, 0, "audio_out")];
+        let inputs = vec![Port::input(id, 0, "signal_in")];
+        let outputs = vec![Port::output(id, 0, "signal_out")];
 
         Self {
             state,
@@ -145,8 +145,8 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
             description,
             author: "Rill Lo-Fi".to_string(),
             version: "0.2.0".to_string(),
-            audio_inputs: 1,
-            audio_outputs: 1,
+            signal_inputs: 1,
+            signal_outputs: 1,
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -191,7 +191,7 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
+impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
@@ -367,11 +367,11 @@ impl<const BUF_SIZE: usize> AudioNode<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE>
         &mut self.state
     }
 
-    fn num_audio_inputs(&self) -> usize {
+    fn num_signal_inputs(&self) -> usize {
         1
     }
 
-    fn num_audio_outputs(&self) -> usize {
+    fn num_signal_outputs(&self) -> usize {
         1
     }
 }
@@ -380,16 +380,16 @@ impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE>
     fn process(
         &mut self,
         _clock: &ClockTick,
-        audio_inputs: &[&[f32; BUF_SIZE]],
+        signal_inputs: &[&[f32; BUF_SIZE]],
         _control_inputs: &[f32],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if audio_inputs.is_empty() {
+        if signal_inputs.is_empty() {
             return Ok(());
         }
 
-        let input = audio_inputs[0];
+        let input = signal_inputs[0];
         for (i, sample) in input.iter().enumerate() {
             self.outputs[0].buffer.as_mut_array()[i] = self.process_sample(*sample);
         }
@@ -590,8 +590,8 @@ mod tests {
     fn test_lofi_processor_metadata() {
         let processor = LofiProcessor::<64>::new(LofiConfig::default());
         let meta = processor.metadata();
-        assert_eq!(meta.audio_inputs, 1);
-        assert_eq!(meta.audio_outputs, 1);
+        assert_eq!(meta.signal_inputs, 1);
+        assert_eq!(meta.signal_outputs, 1);
         assert_eq!(meta.category, NodeCategory::Processor);
         assert!(!meta.name.is_empty());
     }
@@ -601,8 +601,8 @@ mod tests {
         let processor = LofiProcessor::<64>::for_system(ClassicSystem::Nes);
         let meta = processor.metadata();
         assert!(!meta.name.is_empty());
-        assert_eq!(meta.audio_inputs, 1);
-        assert_eq!(meta.audio_outputs, 1);
+        assert_eq!(meta.signal_inputs, 1);
+        assert_eq!(meta.signal_outputs, 1);
         let default_gain = processor
             .get_parameter(&build_param_id("output_gain"))
             .unwrap();

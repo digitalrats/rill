@@ -5,7 +5,7 @@ use std::collections::HashMap;
 /// Восприятие мира (то, что автоматы могут чувствовать)
 pub struct Perception {
     /// Аудиовыходы узлов (что можно услышать)
-    audio_outputs: HashMap<String, Vec<f32>>,
+    signal_outputs: HashMap<String, Vec<f32>>,
     
     /// Текущие значения параметров (что можно измерить)
     parameters: HashMap<String, f32>,
@@ -17,7 +17,7 @@ pub struct Perception {
 impl Perception {
     pub fn new() -> Self {
         Self {
-            audio_outputs: HashMap::new(),
+            signal_outputs: HashMap::new(),
             parameters: HashMap::new(),
             time: crate::core::WorldTime::new(),
         }
@@ -25,7 +25,7 @@ impl Perception {
     
     /// Услышать аудиовыход узла
     pub fn hear(&self, node_id: &str) -> Option<&[f32]> {
-        self.audio_outputs.get(node_id).map(|v| v.as_slice())
+        self.signal_outputs.get(node_id).map(|v| v.as_slice())
     }
     
     /// Измерить значение параметра
@@ -38,12 +38,12 @@ impl Perception {
         self.time
     }
     
-    /// Обновить аудиовыход (вызывается из AudioGraph)
-    pub fn update_audio(&mut self, node_id: String, audio: Vec<f32>) {
-        self.audio_outputs.insert(node_id, audio);
+    /// Обновить аудиовыход (вызывается из SignalGraph)
+    pub fn update_signal(&mut self, node_id: String, audio: Vec<f32>) {
+        self.signal_outputs.insert(node_id, audio);
     }
     
-    /// Обновить параметр (вызывается из AudioGraph)
+    /// Обновить параметр (вызывается из SignalGraph)
     pub fn update_parameter(&mut self, param_id: String, value: f32) {
         self.parameters.insert(param_id, value);
     }

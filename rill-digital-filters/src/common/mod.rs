@@ -1,7 +1,7 @@
 //! Common imports and utilities for tests
 
 pub use rill_digital_filters::{BiquadFilter, FilterType};
-pub use rill_core::traits::AudioNode;  // для init, reset, process
+pub use rill_core::traits::SignalNode;  // для init, reset, process
 pub use rill_core_dsp::filters::Filter;  // для cutoff, q, gain_db
 pub use float_cmp::approx_eq;
 

@@ -53,10 +53,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Using the Audio Graph
 
-For complex signal routing, use `rill-graph::AudioEngine` with `GraphBuilder`:
+For complex signal routing, use `rill-graph::SignalEngine` with `GraphBuilder`:
 
 ```rust
-use rill_graph::AudioEngine;
+use rill_graph::SignalEngine;
 use rill_oscillators::audio::SineOsc;
 
 // Build the graph
@@ -67,7 +67,7 @@ let graph = builder.build(clock)?;
 
 // Create engine and process blocks
 let (nodes, topo, tick) = graph.into_parts();
-let mut engine = AudioEngine::new(nodes, topo, cmd_rx, tel_tx);
+let mut engine = SignalEngine::new(nodes, topo, cmd_rx, tel_tx);
 engine.process_block(&tick)?;
 ```
 
@@ -91,7 +91,7 @@ Available backends: `alsa`, `cpal` (default), `pipewire`, `jack`.
 
 Rill uses a two-thread architecture:
 
-- **Audio thread** (hard RT): runs `AudioEngine` — calls `process_tick()`
+- **Audio thread** (hard RT): runs `SignalEngine` — calls `process_tick()`
   for clock boundary management, then iterates nodes in topological order.
   Source/Sink nodes own I/O buffers.
 - **Control thread** (soft RT): runs `PatchbayManager` with automata

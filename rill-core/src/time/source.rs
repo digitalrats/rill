@@ -1,18 +1,18 @@
 //! # Clock sources for audio timing
 //!
 //! This module defines the `ClockSource` trait and related types for
-//! providing timing information to the audio graph.
+//! providing timing information to the signal graph.
 
 use super::error::TimeError;
 use super::tick::ClockTick;
 use crate::time::SystemClock;
 use std::fmt;
 
-/// A source of clock ticks for audio processing
+/// A source of clock ticks for signal processing
 ///
 /// Implementations can be hardware-based (ALSA, JACK) or software-based
 /// (`SystemClock`). The clock source is responsible for providing
-/// accurate timing information to the audio graph.
+/// accurate timing information to the signal graph.
 ///
 /// # Example
 ///
@@ -37,7 +37,7 @@ pub trait ClockSource: Send + Sync + fmt::Debug {
 
     /// Start the clock
     ///
-    /// This is called when the audio graph starts processing.
+    /// This is called when the signal graph starts processing.
     /// Default implementation does nothing.
     fn start(&mut self) -> Result<(), TimeError> {
         Ok(())
@@ -45,7 +45,7 @@ pub trait ClockSource: Send + Sync + fmt::Debug {
 
     /// Stop the clock
     ///
-    /// This is called when the audio graph stops processing.
+    /// This is called when the signal graph stops processing.
     /// Default implementation does nothing.
     fn stop(&mut self) -> Result<(), TimeError> {
         Ok(())

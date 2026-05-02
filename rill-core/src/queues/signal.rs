@@ -7,7 +7,7 @@
 //! ## Иерархия команд
 //!
 //! - `Command` — общий тип-перечисление всех возможных команд
-//! - `SetParameter` — изменение параметра в AudioGraph
+//! - `SetParameter` — изменение параметра в SignalGraph
 //! - `AutomatonCommand` — управление автоматами
 //! - `SensorCommand` — управление сенсорами
 //! - `ServoCommand` — управление серво

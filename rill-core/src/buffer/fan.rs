@@ -1,7 +1,7 @@
 //! # Fan-out and fan-in buffers for complex routing
 
 use super::array_from_fn;
-use crate::buffer::{AtomicCell, AtomicStats, AudioBuffer, BufferStats, CACHE_LINE_SIZE};
+use crate::buffer::{AtomicCell, AtomicStats, SignalBuffer, BufferStats, CACHE_LINE_SIZE};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -137,7 +137,7 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
     }
 }
 
-impl<T: Transcendental, const N: usize, const CONSUMERS: usize> AudioBuffer<T>
+impl<T: Transcendental, const N: usize, const CONSUMERS: usize> SignalBuffer<T>
     for FanOutBuffer<T, N, CONSUMERS>
 {
     fn capacity(&self) -> usize {
@@ -328,7 +328,7 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
     }
 }
 
-impl<T: Transcendental, const N: usize, const PRODUCERS: usize> AudioBuffer<T>
+impl<T: Transcendental, const N: usize, const PRODUCERS: usize> SignalBuffer<T>
     for FanInBuffer<T, N, PRODUCERS>
 {
     fn capacity(&self) -> usize {
