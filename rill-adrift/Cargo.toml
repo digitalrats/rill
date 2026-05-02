@@ -36,6 +36,7 @@ telemetry = ["dep:rill-telemetry"]
 osc = ["dep:rill-osc"]
 analog = ["dep:rill-core-wdf", "dep:rill-analog-filters", "dep:rill-analog-effects"]
 sampler = ["dep:rill-sampler"]
+serialization = ["rill-graph/serialization"]
 
 # Audio backend passthrough
 alsa = ["rill-io/alsa"]
