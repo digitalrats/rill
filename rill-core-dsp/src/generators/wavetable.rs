@@ -55,6 +55,16 @@ impl<T: Transcendental, const SIZE: usize> WavetableOscillator<T, SIZE> {
         self.reader.set_buffer(table.to_vec());
     }
 
+    /// Enable cubic interpolation (default: linear).
+    pub fn set_cubic(&mut self, cubic: bool) {
+        self.reader.set_cubic(cubic);
+    }
+
+    /// Whether cubic interpolation is enabled.
+    pub fn is_cubic(&self) -> bool {
+        self.reader.is_cubic()
+    }
+
     fn update_rate(&mut self) {
         let rate = self.frequency as f64 * SIZE as f64 / self.sample_rate as f64;
         self.reader.set_rate(rate);
