@@ -30,6 +30,9 @@ pub use rill_analog_filters as analog_filters;
 #[cfg(feature = "analog")]
 pub use rill_analog_effects as analog_effects;
 
+#[cfg(feature = "sampler")]
+pub use rill_sampler as sampler;
+
 /// Prelude for convenient importing of commonly used types across all rill crates.
 pub mod prelude {
     pub use rill_core::prelude::*;

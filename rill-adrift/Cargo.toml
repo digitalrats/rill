@@ -25,15 +25,17 @@ rill-osc = { workspace = true, optional = true }
 rill-core-wdf = { workspace = true, optional = true }
 rill-analog-filters = { workspace = true, optional = true }
 rill-analog-effects = { workspace = true, optional = true }
+rill-sampler = { workspace = true, optional = true }
 
 [features]
-default = ["io", "lofi", "telemetry", "osc"]
+default = ["io", "lofi", "telemetry", "osc", "sampler"]
 
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi"]
 telemetry = ["dep:rill-telemetry"]
 osc = ["dep:rill-osc"]
 analog = ["dep:rill-core-wdf", "dep:rill-analog-filters", "dep:rill-analog-effects"]
+sampler = ["dep:rill-sampler"]
 
 # Audio backend passthrough
 alsa = ["rill-io/alsa"]

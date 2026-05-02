@@ -1,0 +1,18 @@
+[package]
+name = "rill-sampler"
+version = "0.3.0"
+edition = "2021"
+description = "Sample playback node for the Rill audio graph"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rill-core = { workspace = true }
+rill-core-dsp = { workspace = true }
+
+hound = { version = "3.5", optional = true }
+
+[features]
+default = ["wav"]
+wav = ["dep:hound"]
