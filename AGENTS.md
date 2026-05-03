@@ -156,29 +156,83 @@ chmod +x .git/hooks/pre-commit
 
 ## Threading model
 
-- **Hardware callback thread** (hard RT, single-threaded): the audio backend's
-  process callback (PipeWire ALSA, JACK) fires on its own real-time thread.
-  `AudioInput` (push model) or `AudioOutput` (pull model) wires a callback
-  that runs the entire signal graph:
-  1. Drain `MpscQueue<ParameterCommand>` (parameter changes from control thread)
-  2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
-  3. `Port::propagate()` — recursive DAG traversal through direct port pointers.
-  All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
-  `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside
-  this thread. No atomics, no locks — the graph is a single-threaded static DAG.
+### Hardware callback thread (hard RT)
 
-- **Control thread** (soft RT): `rill-patchbay::PatchbayManager` / `PatchbayControl`
-  runs automata and mappings. Communicates with the hardware callback thread
-  **only** through `rill-core::queues::MpscQueue<ParameterCommand>`. These queue
-  types use atomic operations and are the **sole** cross-thread bridge.
+The audio backend's process callback (PipeWire, ALSA, JACK) fires on its own
+real-time thread. `AudioInput` (push model) or `AudioOutput` (pull model) wires
+a callback that runs the entire signal graph:
 
-- **I/O backends** (`rill-io`) run in the hardware callback context, not in a
-  separate thread. The backend provides an `AudioIo` trait implementation;
-  `AudioInput` uses it to read input samples and write output samples.
+1. Drain `MpscQueue<ParameterCommand>` (parameter changes from control thread)
+2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
+3. `Port::propagate()` — recursive DAG traversal through direct port pointers.
 
-**Rule of thumb:** if data crosses threads, use `rill-core::queues`. Everything
-else is single-threaded within the signal graph running inside the hardware
-callback. No external engine loop — `Port::propagate` replaces
+All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
+`RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside
+this thread. No atomics, no locks — the graph is a single-threaded static DAG.
+
+### Control thread (soft RT) — green threads
+
+`rill-patchbay` runs four kinds of green threads (tokio tasks) for automation:
+
+| Type | Spawn | Source | Output |
+|---|---|---|---|
+| **LFO / Envelope** | `tokio::spawn` | `tokio::time::interval` | `mpsc::Sender<f64>` → PortCombiner |
+| **PortCombiner** | `tokio::spawn` | `mpsc::Receiver<f64>` + `mpsc::UnboundedReceiver<UiCommand>` | `MpscQueue<ParameterCommand>` |
+| **Sequencer** | `tokio::task::spawn_blocking` | `crossbeam_channel::Receiver<Telemetry>` (CLOCK_TICK) | `MpscQueue<ParameterCommand>` |
+| **Sync Servos** | (no thread, called inline) | `control.update(dt)` | `MpscQueue<ParameterCommand>` |
+
+**LFO/Envelope Automaton** — spawned via `tokio::spawn`. On each `tokio::time::interval`
+tick it calls `automaton.step(time, action, state)` and sends the resulting value
+through an `mpsc::Sender<f64>` to its paired PortCombiner. Each automaton has its
+own cancel channel (`watch::Receiver<bool>`).
+
+**PortCombiner** — spawned via `tokio::spawn`. Sits between the automaton and the
+audio thread. Uses `tokio::select!` to listen on three channels:
+- `mpsc::Receiver<f64>` — values from the automaton
+- `mpsc::UnboundedReceiver<UiCommand>` — UI/MIDI/OSC events from `handle_event()`
+- `watch::Receiver<bool>` — cancellation signal
+
+Applies `ControlStrategy` (Absolute / Modulation) and `ConflictStrategy`
+(TouchOverride / BasePlusModulation / LastWriteWins) to resolve conflicts
+between automaton and UI. Output: `MpscQueue<ParameterCommand>`.
+
+**Sequencer** — spawned via `tokio::task::spawn_blocking` (uses blocking
+`crossbeam_channel::Receiver::recv()`). Listens for `CLOCK_TICK` telemetry from
+the audio thread through a `crossbeam_channel::Receiver<Telemetry>`. Each tick
+contains `(sample_pos, sample_rate, tempo, beat_pos, is_new_beat, is_new_bar)`.
+`SnapshotSequencer::tick_ext()` decides whether to advance to the next step and
+returns `Vec<ParameterCommand>` which are pushed to `MpscQueue`. Controlled via
+`SequencerHandle` (start/stop/reset/set_pattern) over a crossbeam channel.
+
+### Communication channels
+
+```
+                               tokio / crossbeam                    MpscQueue
+Automaton ──── mpsc<f64> ───→ PortCombiner ──── ParameterCommand ──→ Audio
+UI/MIDI/OSC ── mpsc<UiCmd> ─→ PortCombiner ──── ParameterCommand ──→ Audio
+Sequencer ◀─── crossbeam<Telemetry> (CLOCK_TICK) ◀──── Audio thread
+Sequencer ──── ParameterCommand ──────────────────────────────────────→ Audio
+```
+
+All control → audio paths converge on `rill_core::queues::MpscQueue<ParameterCommand>`
+— a lock-free SPSC queue designed for safe cross-thread communication without
+blocking the real-time audio thread.
+
+### Sharded cancellation
+
+Each PortCombiner + automaton pair has an isolated `watch::Sender<bool>` /
+`watch::Receiver<bool>` pair. `stop_all()` sends `true` on each sender, which
+causes both the automaton loop and the combiner loop to exit. This per-port
+cancellation domain means stopping one LFO doesn't affect others.
+
+The sequencer is stopped via `JoinHandle::abort()` (or naturally when the
+telemetry channel closes on audio thread shutdown).
+
+### Rule of thumb
+
+If data crosses threads, use `rill_core::queues::MpscQueue<ParameterCommand>`.
+Everything else is single-threaded within the signal graph running inside the
+hardware callback. No external engine loop — `Port::propagate` replaces
 `SignalEngine::process_block()`.
 
 ## Known pitfalls
