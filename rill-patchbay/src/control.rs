@@ -11,18 +11,23 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rill_core::prelude::*;
 use rill_core::queues::MpscQueue;
 
 pub use crate::automaton::Range;
 use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
+use crate::automaton_task::spawn_automaton_task;
+use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
+use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
 // 1. Паттерны событий (из rill-control)
 // =============================================================================
 
 /// Паттерн для сопоставления событий
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventPattern {
     /// Любая кнопка
@@ -98,6 +103,7 @@ impl EventPattern {
 // =============================================================================
 
 /// Событие контроллера
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlEvent {
     /// Кнопка (нажата/отпущена)
@@ -218,6 +224,7 @@ impl Transform {
 // =============================================================================
 
 /// Целевой параметр узла
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Target {
     /// ID узла в графе
@@ -498,6 +505,7 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 // =============================================================================
 
 /// Команда изменения параметра (отправляется в аудиопоток)
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ParameterCommand {
     /// ID узла
@@ -527,12 +535,25 @@ impl ParameterCommand {
 ///
 /// Работает в **потоке управления** (soft RT) и отправляет команды
 /// в аудиопоток через `MpscQueue<ParameterCommand>`.
+///
+/// ## Режимы работы
+///
+/// - **Sync** (устаревший): `update(dt)` обходит все сервоприводы
+///   последовательно. Не требует tokio.
+/// - **Async** (рекомендуемый): автоматы запускаются как tokio tasks
+///   через `add_automaton_task()`. Требует активного tokio runtime.
 pub struct PatchbayControl {
     /// Маппинги событий
     mappings: Vec<Mapping>,
 
-    /// Сервоприводы (автоматы)
+    /// Сервоприводы (автоматы) — синхронный режим
     servos: HashMap<String, BoxedServo>,
+
+    /// PortCombiner для каждого активного порта (async режим)
+    port_combiners: HashMap<String, PortCombinerHandle>,
+
+    /// JoinHandle для задач автоматов (async режим)
+    automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
 
     /// Очередь для отправки команд в аудиопоток
     command_queue: Arc<MpscQueue<ParameterCommand>>,
@@ -547,6 +568,8 @@ impl PatchbayControl {
         Self {
             mappings: Vec::new(),
             servos: HashMap::new(),
+            port_combiners: HashMap::new(),
+            automaton_handles: HashMap::new(),
             command_queue,
             time: 0.0,
         }
@@ -555,6 +578,14 @@ impl PatchbayControl {
     /// Добавить маппинг события
     pub fn add_mapping(&mut self, mapping: Mapping) {
         self.mappings.push(mapping);
+    }
+
+    /// Add a pre-constructed boxed servo.
+    ///
+    /// Useful for automaton types not covered by `add_lfo` / `add_envelope`
+    /// (e.g. sequencers, named functions).
+    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) {
+        self.servos.insert(id, servo);
     }
 
     /// Добавить маппинг из строк (удобно для скриптов)
@@ -665,20 +696,148 @@ impl PatchbayControl {
         self.add_servo(servo);
     }
 
-    /// Обработать внешнее событие (MIDI/OSC)
+    // =========================================================================
+    // 8a. Async-автоматы (зелёные потоки)
+    // =========================================================================
+
+    /// Добавить автомат как green thread (tokio task).
+    ///
+    /// Требует активного tokio runtime. Порты с async-автоматами
+    /// получают `PortCombiner`, который разрешает конфликты UI ↔ automaton.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — уникальный идентификатор
+    /// * `automaton` — реализация `Automaton` trait
+    /// * `interval` — частота обновления (10 мс = 100 Гц, 1 мс = 1 кГц)
+    /// * `target` — (ID узла, имя параметра)
+    /// * `range` — (min, max) диапазон значений параметра
+    /// * `control` — стратегия управления
+    /// * `conflict` — стратегия разрешения конфликтов
+    pub fn add_automaton_task<A: Automaton + 'static>(
+        &mut self,
+        id: &str,
+        automaton: A,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        let key = target_key(target.0, &target.1);
+
+        // Создаём PortCombiner для этого порта
+        let combiner = spawn_combiner(
+            target,
+            range,
+            control,
+            conflict,
+            self.command_queue.clone(),
+        );
+
+        // Запускаем автомат как green thread
+        let task = spawn_automaton_task(
+            automaton,
+            interval,
+            combiner.automaton_tx.clone(),
+            combiner.cancel_rx(),
+        );
+
+        self.port_combiners.insert(key, combiner);
+        self.automaton_handles.insert(id.to_string(), task);
+    }
+
+    /// Добавить LFO как async-автомат
+    pub fn add_lfo_task(
+        &mut self,
+        id: &str,
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        waveform: LfoWaveform,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        let automaton = LfoAutomaton::new(id, frequency, amplitude, offset, waveform);
+        self.add_automaton_task(
+            format!("{}_auto", id).as_str(),
+            automaton,
+            interval,
+            target,
+            range,
+            control,
+            conflict,
+        );
+    }
+
+    /// Добавить огибающую как async-автомат
+    pub fn add_envelope_task(
+        &mut self,
+        id: &str,
+        attack: f64,
+        decay: f64,
+        sustain: f64,
+        release: f64,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        let automaton = EnvelopeAutomaton::adsr(id, attack, decay, sustain, release);
+        self.add_automaton_task(
+            format!("{}_auto", id).as_str(),
+            automaton,
+            interval,
+            target,
+            range,
+            control,
+            conflict,
+        );
+    }
+
+    /// Остановить все async-автоматы
+    pub fn stop_all(&mut self) {
+        for combiner in self.port_combiners.values() {
+            combiner.stop();
+        }
+        self.port_combiners.clear();
+        self.automaton_handles.clear();
+    }
+
+    // =========================================================================
+    // 9. Обработка событий
+    // =========================================================================
+
+    /// Обработать внешнее событие (MIDI/OSC).
+    ///
+    /// Если для целевого порта существует `PortCombiner`, событие
+    /// направляется туда (для разрешения конфликтов). Иначе —
+    /// отправляется напрямую в очередь (старое поведение).
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
-                let _ = self.command_queue.push(cmd);
+                let key = target_key(cmd.node_id, &cmd.param);
+                if let Some(combiner) = self.port_combiners.get(&key) {
+                    let _ = combiner.ui_tx.send(UiCommand::SetValue(cmd.value as f64));
+                } else {
+                    let _ = self.command_queue.push(cmd);
+                }
             }
         }
     }
 
-    /// Обновить состояние (вызывается регулярно из потока управления)
+    /// Обновить синхронные сервоприводы.
+    ///
+    /// Этот метод deprecated. Для новых проектов используйте
+    /// `add_automaton_task()` с green threads.
     pub fn update(&mut self, dt: f32) {
         self.time += dt as f64;
 
-        // Обновляем все сервоприводы
+        // Обновляем все сервоприводы (синхронный режим)
         for servo in self.servos.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
                 let _ = self.command_queue.push(cmd);
@@ -767,6 +926,15 @@ pub fn osc_address(
         max,
     };
     Mapping::new(pattern, target, transform)
+}
+
+// =============================================================================
+// 9b. Вспомогательные функции для PortCombiner
+// =============================================================================
+
+/// Ключ для поиска PortCombiner по (узел, параметр)
+fn target_key(node_id: NodeId, param_name: &str) -> String {
+    format!("{}:{}", node_id.0, param_name)
 }
 
 // =============================================================================

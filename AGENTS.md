@@ -141,6 +141,14 @@ HOOK
 chmod +x .git/hooks/pre-commit
 ```
 
+## Threading model
+
+- **Signal thread** (hard RT, single-threaded): `rill-graph::SignalEngine` processes the graph in a tight loop. All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`, `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside this thread by graph nodes. They are **not** thread-safe by design — no atomics, no locks.
+- **Control thread** (soft RT): `rill-patchbay::PatchbayManager` / `PatchbayControl` runs automata and mappings. Communicates with the signal thread **only** through `rill-core::queues` (`MpscQueue`, `CommandQueue`). These queue types use atomic operations and are the **sole** cross-thread bridge.
+- **I/O backends** (`rill-io`) run in the signal thread or a dedicated callback context, depending on the backend. They write directly into Source/Sink port buffers — no copying through queues.
+
+Rule of thumb: if data crosses threads, use `rill-core::queues`. Everything else is single-threaded within the signal graph.
+
 ## Known pitfalls
 
 - Root `examples/` were **stale** and have been removed. Use per-crate `examples/` for canonical usage.
@@ -148,4 +156,4 @@ chmod +x .git/hooks/pre-commit
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: `rill-graph::SignalEngine` runs on the real-time thread (hard RT), `rill-patchbay::PatchbayManager` runs on the control thread (soft RT). Communication via `CommandQueue`/`TelemetryQueue`. Source/Sink nodes own I/O buffers — the engine only orchestrates.
+- **Two-thread architecture**: `rill-graph::SignalEngine` runs on the signal thread (hard RT), `rill-patchbay::PatchbayManager` runs on the control thread (soft RT). Communication via `CommandQueue`/`TelemetryQueue`. Source/Sink nodes own I/O buffers — the engine only orchestrates.

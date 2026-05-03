@@ -1,13 +1,18 @@
-//! # Менеджер патчбэя — центральный координатор
+//! # Менеджер патчбэя — центральный координатор (DEPRECATED)
 //!
-//! `PatchbayManager` объединяет все компоненты патчбэя:
+//! `PatchbayManager` — legacy-компонент. Работает в отдельном `std::thread`
+//! с фиксированной частотой обновления. Заменён на async-модель:
+//! `PatchbayControl::add_automaton_task()` + tokio tasks.
+//!
+//! Старый функционал:
 //! - Автоматы (LFO, огибающие, секвенсоры)
 //! - Маппинги событий (MIDI/OSC)
 //! - Сервоприводы (связь с параметрами)
-//! - Очередь команд для аудиопотока
 //!
-//! Работает в **потоке управления** (soft RT) и отправляет
-//! команды в аудиопоток через `RtQueue<ParameterCommand>`.
+//! Рекомендуемая замена:
+//! - `PatchbayControl::add_lfo_task()`
+//! - `PatchbayControl::add_automaton_task()`
+//! - `PatchbayControl::handle_event()`
 
 use rill_core::prelude::*;
 use rill_core::queues::MpscQueue;

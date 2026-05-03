@@ -69,6 +69,22 @@ pub mod sensor;
 /// Утилиты и вспомогательные функции
 pub mod utils;
 
+/// Реестр именованных функций для сериализации
+pub mod function_registry;
+
+/// Стратегии управления автоматами
+pub mod strategy;
+
+/// PortCombiner — комбинирование автомата и UI на порт
+pub mod port_combiner;
+
+/// Обёртка Automaton в green thread (tokio task)
+pub mod automaton_task;
+
+/// Сериализация конфигурации управления
+#[cfg(feature = "serde")]
+pub mod document;
+
 // =============================================================================
 // Реэкспорты для удобства
 // =============================================================================
@@ -83,6 +99,9 @@ pub use control::{
     NoAction, ParameterCommand, ParameterMapping, PatchbayControl, Servo, Target, Transform,
 };
 pub use manager::PatchbayManager;
+pub use strategy::{ConflictStrategy, ControlStrategy};
+pub use port_combiner::{PortCombinerHandle, spawn_combiner};
+pub use automaton_task::spawn_automaton_task;
 
 // =============================================================================
 // Прелюдия для удобного импорта
@@ -94,6 +113,7 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::control::*;
     pub use crate::manager::*;
+    pub use crate::strategy::*;
     pub use crate::utils::*;
 
     // Реэкспорты из rill-core
