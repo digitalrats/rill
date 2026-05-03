@@ -2,15 +2,24 @@
 //!
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
 
+use std::cell::Cell;
+use std::sync::Arc;
+
 use rill_core::{
     math::{Scalar, Transcendental},
-    traits::{NodeCategory, NodeMetadata, NodeState, SignalNode, Source},
+    traits::{
+        algorithm::ActionContext,
+        node::SignalNode,
+        processable::{NodeVariant, ProcessContext, Processable},
+        NodeCategory, NodeMetadata, NodeState, Source,
+    },
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
 use crate::audio_io::{AudioIo, AudioIoPtr};
 
-/// Stereo audio input source.
+/// Stereo audio input source. Owns the processing callback that drives
+/// the entire DAG: drain commands → read backend → fill outputs → propagate.
 pub struct AudioInput<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
@@ -46,12 +55,55 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
         self.backend = ptr;
     }
 
-    /// Start the reactive stream: register the process callback
-    /// and begin. The caller provides the closure that drives the
-    /// engine (typically `|| engine.process_block(&tick)`).
-    pub fn start(&mut self, process_cb: Box<dyn Fn()>) {
+    /// Start the reactive stream. Creates and registers the processing
+    /// callback on the backend. The callback:
+    ///
+    /// 1. Calls `drain_fn()` — the host should drain the parameter queue there.
+    /// 2. Processes this node (`generate` → reads backend → fills ports).
+    /// 3. Propagates through the DAG via `Port::propagate`.
+    ///
+    /// `nodes_ptr` must point to the graph's node array (obtained from
+    /// `graph.into_parts().0.into_boxed_slice()`). Valid until `stop()`.
+    /// `source_idx` is this node's index in the array.
+    pub fn start(
+        &mut self,
+        nodes_ptr: *mut [NodeVariant<f32, BUF_SIZE>],
+        source_idx: usize,
+        drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF_SIZE>]) + Send>,
+        sample_rate: f32,
+    ) {
         if let Some(b) = self.backend.as_ref() {
-            b.set_process_callback(process_cb);
+            let sample_pos = Cell::new(0u64);
+
+            b.set_process_callback(Box::new(move || {
+                #[allow(unsafe_code)]
+                unsafe {
+                    let nodes = &mut *nodes_ptr;
+
+                    // 1. Drain parameter queue (host-provided closure)
+                    drain_fn(nodes);
+
+                    // 2. Clock tick
+                    let tick = ClockTick::new(
+                        sample_pos.get(), BUF_SIZE as u32, sample_rate,
+                    );
+
+                    // 3. Process this node (generate → read backend → fill ports)
+                    let mut ctx = ProcessContext { clock: &tick };
+                    let _ = nodes[source_idx].process_block(&mut ctx);
+
+                    // 4. Propagate from this node's output ports
+                    let action_ctx = ActionContext::new(&tick);
+                    for po in 0..nodes[source_idx].num_signal_outputs() {
+                        if let Some(port) = nodes[source_idx].output_port(po) {
+                            let _ = port.propagate(port.buffer(), &action_ctx);
+                        }
+                    }
+
+                    sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
+                }
+            }));
+
             let _ = b.start();
         }
     }

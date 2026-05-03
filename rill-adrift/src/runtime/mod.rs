@@ -308,6 +308,7 @@ impl Runtime {
         let handle = AudioHandle::start(
             builder,
             self.config.sample_rate,
+            self.queue.clone(),
         )
         .map_err(|e| RuntimeError::Audio(e))?;
 
