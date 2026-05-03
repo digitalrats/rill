@@ -205,7 +205,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
         let mut n = MixerNode::<BUF_SIZE>::new(4, 0);
         SignalNode::set_id(&mut n, id);
         SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
+        NodeVariant::Router(Box::new(n))
     });
 }
 

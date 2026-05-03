@@ -1,5 +1,5 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{SignalNode, Processor};
+use rill_core::traits::{Router, SignalNode};
 use rill_core::ClockTick;
 
 #[test]
@@ -32,7 +32,7 @@ fn test_mixer_basic_processing() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -75,7 +75,7 @@ fn test_mixer_pan() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -105,7 +105,7 @@ fn test_mixer_mute() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -162,7 +162,7 @@ fn test_mixer_sends() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
