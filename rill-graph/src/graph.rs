@@ -1131,4 +1131,75 @@ mod tests {
         // process: 3.0 × 2.0 = 6.0
         assert!((block2 - 6.0).abs() < 1e-6, "block2: (1+2)×2=6.0, got {}", block2);
     }
+
+    // ── Test: drain_fn pattern (as used by AudioInput) ──────────────
+
+    #[test]
+    fn test_drain_fn_before_propagate() {
+        use rill_core::queues::MpscQueue;
+        use rill_patchbay::control::ParameterCommand;
+
+        const BUF: usize = 64;
+        let queue: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let src = builder.add_source(Box::new(ConstantSource::new(5.0, 44100.0)));
+        let proc = builder.add_processor(Box::new(
+            GainProcessor::<f32, BUF>::new(NodeId(1), 44100.0, 1.0)));
+        let snk = builder.add_sink(Box::new(
+            TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
+        builder.connect_signal(src, 0, proc, 0);
+        builder.connect_signal(proc, 0, snk, 0);
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+        let (mut nodes, topo, _) = graph.into_parts();
+        let nodes_ptr: *mut [NodeVariant<f32, BUF>] = &mut *nodes;
+
+        // drain_fn — exactly as AudioInput creates it
+        let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>])> = {
+            let q = queue.clone();
+            Box::new(move |nd: &mut [NodeVariant<f32, BUF>]| {
+                while let Some(cmd) = q.pop() {
+                    let idx = cmd.node_id.inner() as usize;
+                    if idx < nd.len() {
+                        if let Ok(pid) = ParameterId::new(&cmd.param) {
+                            let _ = nd[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
+                        }
+                    }
+                }
+            })
+        };
+
+        // Push command BEFORE processing
+        queue.push(ParameterCommand::new(NodeId(1), "multiplier", 3.0));
+
+        // Processing cycle exactly as AudioInput callback does:
+        let tick = ClockTick::new(0, BUF as u32, 44100.0);
+
+        // Step 1: drain
+        #[allow(unsafe_code)]
+        unsafe { drain_fn(&mut *nodes_ptr); }
+
+        // Verify parameter applied
+        let pid = ParameterId::new("multiplier").unwrap();
+        #[allow(unsafe_code)]
+        let val = unsafe { (*nodes_ptr)[1].get_parameter(&pid).unwrap().as_f32().unwrap() };
+        assert!((val - 3.0).abs() < 1e-6, "multiplier should be 3.0, got {}", val);
+
+        // Step 2: source generate
+        let mut ctx = ProcessContext { clock: &tick };
+        #[allow(unsafe_code)]
+        unsafe { (*nodes_ptr)[topo[0]].process_block(&mut ctx).unwrap(); }
+
+        // Step 3: propagate
+        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        #[allow(unsafe_code)]
+        let out_port = unsafe { (*nodes_ptr)[topo[0]].output_port(0).unwrap() };
+        out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
+
+        // Verify: source(5) × gain(3) = 15
+        #[allow(unsafe_code)]
+        let sink_val = unsafe { (*nodes_ptr)[topo[2]].input_port(0).unwrap().buffer.as_array()[0] };
+        assert!((sink_val - 15.0).abs() < 1e-6,
+            "source(5)×gain(3)=15, got {}", sink_val);
+    }
 }
