@@ -1,5 +1,5 @@
 use crate::registry::{NodeRegistry, RegistryError};
-use rill_core::buffer::FixedBuffer;
+use rill_core::buffer::{BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
 use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, PortId};
@@ -329,7 +329,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let sample_rate = clock_source.sample_rate();
 
-        // Resources are reserved for future use through the resource registry.
+        // Allocate named buffers (tape loops, etc.) from resource definitions.
+        let mut buffers = BufferRegistry::new();
+        for r in &self.resources {
+            if r.kind == "tape" {
+                if let Some(tape) = TapeLoop::<T>::new(r.capacity) {
+                    buffers.register(&r.name, Box::new(tape));
+                }
+            }
+        }
         let allocated = self.resources.clone();
 
         Ok(SignalGraph {
@@ -338,6 +346,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             clock_source,
             resources: allocated,
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
+            buffers,
         })
     }
 }
@@ -359,8 +368,10 @@ pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
     #[allow(dead_code)]
     clock_source: Box<dyn ClockSource>,
     current_tick: ClockTick,
-    /// Named resources (tape loops, etc.) allocated during build.
+    /// Resource metadata (name, kind, capacity) for serialization.
     pub(crate) resources: Vec<GraphResource>,
+    /// Allocated buffer registry — named buffers shared between nodes.
+    pub buffers: BufferRegistry<T>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
@@ -373,6 +384,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
             clock_source,
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
             resources: Vec::new(),
+            buffers: BufferRegistry::new(),
         }
     }
 
