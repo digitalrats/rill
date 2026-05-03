@@ -335,6 +335,11 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// owns this port. Set after graph construction. Enables recursive
     /// signal propagation without a `nodes` slice.
     pub parent: *mut crate::traits::NodeVariant<T, BUF_SIZE>,
+    /// Direct pointer to upstream output buffer for zero-copy routing.
+    /// `Some` for input ports in 1:1 or fan-out connections (first upstream).
+    /// `None` for output ports, fan-in (second+ upstream), or unconnected.
+    /// Valid for the engine's lifetime.
+    pub upstream_buffer: Option<*const FixedBuffer<T, BUF_SIZE>>,
     /// Feedback edge targets from this output port (for serialization)
     pub feedback_downstream: Vec<(usize, usize)>,
 
@@ -374,10 +379,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             parent: std::ptr::null_mut(),
+            upstream_buffer: None,
         }
     }
 
-    /// Create a new input port
+    /// Create a new signal input port
     pub fn input(node_id: NodeId, index: u16, name: &str) -> Self {
         Self {
             id: PortId::audio_in(node_id, index),
@@ -392,29 +398,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             parent: std::ptr::null_mut(),
-        }
-    }
-
-    /// Create a new signal output port with an algorithm
-    pub fn output_with_action(
-        node_id: NodeId,
-        index: u16,
-        name: &str,
-        action: Box<dyn Algorithm<T>>,
-    ) -> Self {
-        Self {
-            id: PortId::audio_out(node_id, index),
-            name: name.to_string(),
-            direction: PortDirection::Output,
-            action: Some(action),
-            pending_command: None,
-            buffer: FixedBuffer::new(),
-            feedback_buffer: None,
-            downstream: Vec::new(),
-            feedback_downstream: Vec::new(),
-            feedback_ptrs: Vec::new(),
-            downstream_input_ptrs: Vec::new(),
-            parent: std::ptr::null_mut(),
+            upstream_buffer: None,
         }
     }
 
@@ -433,6 +417,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             parent: std::ptr::null_mut(),
+            upstream_buffer: None,
         }
     }
 
@@ -456,6 +441,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             parent: std::ptr::null_mut(),
+            upstream_buffer: None,
         }
     }
 
@@ -474,6 +460,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             parent: std::ptr::null_mut(),
+            upstream_buffer: None,
         }
     }
 
@@ -507,9 +494,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         &mut self.buffer
     }
 
-    /// Get the port's audio buffer.
-    pub fn audio_buffer(&self) -> &FixedBuffer<T, BUF_SIZE> {
-        &self.buffer
+    /// Get the effective signal buffer for this port.
+    ///
+    /// For zero-copy input ports returns the upstream output buffer.
+    /// For output ports and copy-based input ports returns the local buffer.
+    #[allow(unsafe_code)]
+    pub fn signal_buffer(&self) -> &FixedBuffer<T, BUF_SIZE> {
+        match self.upstream_buffer {
+            Some(ptr) => unsafe { &*ptr },
+            None => &self.buffer,
+        }
     }
 
     /// Pre-process this port before node DSP.
@@ -559,9 +553,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     ///
     /// `tick` is the current clock tick, available for future
     /// sample-accurate or time-varying port-level propagation.
-    /// Copy `buffer` into every downstream input port, run each port's
-    /// algorithm, then process the downstream node and recurse through
-    /// its output ports.
+    /// Copy `buffer` into every downstream input port (unless zero-copy),
+    /// run each port's algorithm, then process the downstream node and
+    /// recurse through its output ports.
+    ///
+    /// Zero-copy: ports with `upstream_buffer` already read directly
+    /// from the upstream output buffer — no copy needed.
     #[allow(unsafe_code)]
     pub fn propagate(
         &self,
@@ -571,7 +568,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         let mut seen: Vec<*mut crate::traits::NodeVariant<T, BUF_SIZE>> = Vec::new();
         for &ptr in &self.downstream_input_ptrs {
             unsafe {
-                (*ptr).buffer.copy_from(buffer.as_array());
+                // Zero-copy: skip copy for ports that read directly
+                // from upstream output buffer via upstream_buffer pointer.
+                if (*ptr).upstream_buffer.is_none() {
+                    (*ptr).buffer.copy_from(buffer.as_array());
+                }
                 (*ptr).run_action(Some(buffer.as_array()), ctx)?;
             }
             let parent = unsafe { (*ptr).parent };

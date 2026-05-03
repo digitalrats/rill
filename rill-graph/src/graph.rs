@@ -289,6 +289,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
+        // --- upstream_buffer: zero-copy routing for 1:1 and fan-out ---
+        for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
+            let upstream = self.nodes[from_n]
+                .node.output_port(from_p)
+                .map(|p| &p.buffer as *const FixedBuffer<T, BUF_SIZE>);
+            if let Some(port) = self.nodes[to_n].node.input_port_mut(to_p) {
+                if port.upstream_buffer.is_none() {
+                    // First upstream: set zero-copy pointer
+                    port.upstream_buffer = upstream;
+                } else {
+                    // Fan-in: copy-based fallback
+                    port.upstream_buffer = None;
+                }
+            }
+        }
+
         // --- enable feedback buffers on both output and input ports ---
         for &(from_n, from_p, to_n, to_p) in &self.feedback_edges {
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
