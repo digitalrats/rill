@@ -172,7 +172,46 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use super::*;
+    use crate::audio_io::AudioIo;
+    use crate::buffer::IoRingBuffer;
+    use rill_core::traits::Sink;
+
+    /// Mock AudioIo backed by IoRingBuffers for testing.
+    struct RingIo {
+        input_ring: Arc<parking_lot::RwLock<IoRingBuffer>>,
+        output_ring: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    }
+    impl AudioIo for RingIo {
+        fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+        fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+            let mut ring = self.input_ring.write();
+            let mut temp = vec![0.0f32; left.len().min(right.len()).saturating_mul(2)];
+            let n = ring.read(&mut temp);
+            drop(ring);
+            let frames = n / 2;
+            for i in 0..frames.min(left.len()).min(right.len()) {
+                left[i] = temp[i * 2];
+                right[i] = temp[i * 2 + 1];
+            }
+            frames
+        }
+        fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
+            let n = left.len().min(right.len());
+            let mut ring = self.output_ring.write();
+            let mut temp = vec![0.0f32; n * 2];
+            for i in 0..n {
+                temp[i * 2] = left[i];
+                temp[i * 2 + 1] = right[i];
+            }
+            ring.write(&temp) / 2
+        }
+        fn start(&self) -> crate::audio_io::IoResult<()> { Ok(()) }
+        fn stop(&self) -> crate::audio_io::IoResult<()> { Ok(()) }
+    }
+
+    use rill_core::traits::algorithm::ActionContext;
 
     #[test]
     fn test_audio_input_creation() {
@@ -186,5 +225,65 @@ mod tests {
         let mut inp = AudioInput::<f32, 64>::new();
         let clock = ClockTick::new(0, 64, 48000.0);
         assert!(inp.generate(&clock, &[], &[]).is_ok());
+    }
+
+    /// Round-trip test: AudioInput → AudioOutput through shared ring buffers.
+    #[test]
+    fn test_loopback_through_rings() {
+        const BUF_SZ: usize = 64;
+        let input_ring = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(512)));
+        let output_ring = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(512)));
+
+        let ring_io = Box::new(RingIo {
+            input_ring: input_ring.clone(),
+            output_ring: output_ring.clone(),
+        });
+        let ptr: *const dyn AudioIo = &*ring_io;
+        let io_ptr = AudioIoPtr::from_ref(&*ring_io);
+        std::mem::forget(ring_io); // leak: valid for test duration
+
+        let mut input = AudioInput::<f32, BUF_SZ>::new();
+        input.set_backend(io_ptr);
+
+        // Write test data into the input ring (as PW input callback would)
+        let test_val: f32 = 42.0;
+        let mut test_block = vec![0.0f32; BUF_SZ * 2];
+        for i in 0..BUF_SZ {
+            test_block[i * 2] = test_val;       // left
+            test_block[i * 2 + 1] = test_val;   // right
+        }
+        input_ring.write().write(&test_block);
+
+        // Run generate
+        let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
+        input.generate(&tick, &[], &[]).unwrap();
+
+        // Read output from input's ports
+        let l = input.output_port(0).unwrap().buffer.as_array();
+        let r = input.output_port(1).unwrap().buffer.as_array();
+        for i in 0..BUF_SZ {
+            assert!((l[i] - 42.0).abs() < 1e-6,
+                "left[{}] should be 42.0, got {}", i, l[i]);
+            assert!((r[i] - 42.0).abs() < 1e-6,
+                "right[{}] should be 42.0, got {}", i, r[i]);
+        }
+
+        // Now test AudioOutput → output ring
+        let mut output = crate::output::AudioOutput::<f32, BUF_SZ>::new();
+        output.set_backend(io_ptr);
+
+        let signal_inputs: [&[f32; BUF_SZ]; 2] = [l, r];
+        output.consume(&tick, &signal_inputs, &[], &[], &[]).unwrap();
+
+        // Read from output ring and verify
+        let mut readback = vec![0.0f32; BUF_SZ * 2];
+        let n = output_ring.write().read(&mut readback);
+        assert_eq!(n, BUF_SZ * 2, "should read full block");
+        for i in 0..BUF_SZ {
+            assert!((readback[i * 2] - 42.0).abs() < 1e-6,
+                "output ring left[{}] should be 42.0, got {}", i, readback[i * 2]);
+            assert!((readback[i * 2 + 1] - 42.0).abs() < 1e-6,
+                "output ring right[{}] should be 42.0, got {}", i, readback[i * 2 + 1]);
+        }
     }
 }
