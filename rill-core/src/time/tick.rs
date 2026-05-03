@@ -1,6 +1,6 @@
 //! # Clock tick - the heartbeat of signal processing
 //!
-//! A `ClockTick` represents a single moment in audio time, containing
+//! A `ClockTick` represents a single moment in signal time, containing
 //! information about sample position, block size, and tempo.
 
 use std::fmt;

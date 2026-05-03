@@ -280,8 +280,8 @@ fn extract_connections<T: Transcendental, const B: usize>(
         let variant = &entry.node;
         let from_id = variant.id().inner();
 
-        let audio_outs = variant.metadata().signal_outputs;
-        for from_port in 0..audio_outs {
+        let signal_outs = variant.metadata().signal_outputs;
+        for from_port in 0..signal_outs {
             if let Some(port) = variant.output_port(from_port) {
                 for &(to_idx, to_port) in &port.downstream {
                     let to_id = entries[to_idx].node.id().inner();

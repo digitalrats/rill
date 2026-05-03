@@ -56,7 +56,7 @@ pub struct GraphResource {
 /// Mutable builder for an immutable signal graph.
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
-    audio_edges: Vec<(usize, usize, usize, usize)>,
+    signal_edges: Vec<(usize, usize, usize, usize)>,
     control_edges: Vec<(usize, usize, usize, usize)>,
     clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
@@ -73,7 +73,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
-            audio_edges: Vec::new(),
+            signal_edges: Vec::new(),
             control_edges: Vec::new(),
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
@@ -182,7 +182,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         to_node: usize,
         to_port: usize,
     ) {
-        self.audio_edges
+        self.signal_edges
             .push((from_node, from_port, to_node, to_port));
     }
 
@@ -234,7 +234,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let mut in_degree = vec![0usize; num_nodes];
         let mut out_edges: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); num_nodes];
 
-        for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
+        for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
             in_degree[to_n] += 1;
             out_edges[from_n].push((from_p, to_n, to_p));
         }
@@ -264,7 +264,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
 
         // --- populate Port::downstream, downstream_input_ptrs, parent ---
-        for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
+        for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
             // downstream list (serialization)
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
                 port.downstream.push((to_n, to_p));
@@ -290,7 +290,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
 
         // --- upstream_buffer: zero-copy routing for 1:1 and fan-out ---
-        for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
+        for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
             let upstream = self.nodes[from_n]
                 .node.output_port(from_p)
                 .map(|p| &p.buffer as *const FixedBuffer<T, BUF_SIZE>);
@@ -498,7 +498,7 @@ mod tests {
         fn new(value: T, sample_rate: f32) -> Self {
             let mut outputs = Vec::with_capacity(1);
             outputs.push(Port {
-                id: PortId::audio_out(NodeId(0), 0),
+                id: PortId::signal_out(NodeId(0), 0),
                 name: "output".into(),
                 direction: PortDirection::Output,
                 action: None,

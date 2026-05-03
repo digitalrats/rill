@@ -8,7 +8,7 @@
 #[doc(hidden)]
 macro_rules! __init_ports {
     // Для Source (только выходы)
-    (ports { audio_out: $out:expr $(,)? }, $node:expr, $outputs:ident) => {
+    (ports { signal_out: $out:expr $(,)? }, $node:expr, $outputs:ident) => {
         for i in 0..$out {
             let port = $crate::Port::output($node.id, i as u16, &format!("out_{}", i));
             $node.$outputs.push(port);
@@ -16,7 +16,7 @@ macro_rules! __init_ports {
     };
 
     // Для Sink (только входы)
-    (ports { audio_in: $in:expr $(,)? }, $node:expr, $inputs:ident) => {
+    (ports { signal_in: $in:expr $(,)? }, $node:expr, $inputs:ident) => {
         for i in 0..$in {
             let port = $crate::Port::input($node.id, i as u16, &format!("in_{}", i));
             $node.$inputs.push(port);
@@ -24,7 +24,7 @@ macro_rules! __init_ports {
     };
 
     // Для Processor (входы и выходы)
-    (ports { audio_in: $in:expr, audio_out: $out:expr $(,)? }, $node:expr, $inputs:ident, $outputs:ident, $controls:ident) => {
+    (ports { signal_in: $in:expr, signal_out: $out:expr $(,)? }, $node:expr, $inputs:ident, $outputs:ident, $controls:ident) => {
         for i in 0..$in {
             let port = $crate::Port::input($node.id, i as u16, &format!("in_{}", i));
             $node.$inputs.push(port);
@@ -37,11 +37,11 @@ macro_rules! __init_ports {
     };
 
     // С управляющими портами
-    (ports { audio_in: $in:expr, audio_out: $out:expr, control: $ctrl:expr }, $node:expr, $inputs:ident, $outputs:ident, $controls:ident) => {
+    (ports { signal_in: $in:expr, signal_out: $out:expr, control: $ctrl:expr }, $node:expr, $inputs:ident, $outputs:ident, $controls:ident) => {
         $crate::__init_ports!(
             ports {
-                audio_in: $in,
-                audio_out: $out
+                signal_in: $in,
+                signal_out: $out
             },
             $node,
             $inputs,

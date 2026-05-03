@@ -159,8 +159,8 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию аудиоданных
-    pub fn audio(node_id: NodeId, channel: usize, data: Vec<f32>) -> Self {
+    /// Создать телеметрию сигнала
+    pub fn signal(node_id: NodeId, channel: usize, data: Vec<f32>) -> Self {
         Telemetry::SignalData {
             node_id,
             channel,
@@ -170,8 +170,8 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию аудиоданных с частотой дискретизации
-    pub fn audio_with_sample_rate(
+    /// Создать телеметрию сигнала с частотой дискретизации
+    pub fn signal_with_sample_rate(
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
@@ -374,13 +374,13 @@ pub trait TelemetryQueueExt {
         parameter: ParameterId,
         value: f32,
     ) -> Result<(), super::error::QueueError>;
-    fn send_audio(
+    fn send_signal(
         &self,
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError>;
-    fn send_audio_with_sample_rate(
+    fn send_signal_with_sample_rate(
         &self,
         node_id: NodeId,
         channel: usize,
@@ -427,24 +427,24 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
             .map_err(|e| e.into())
     }
 
-    fn send_audio(
+    fn send_signal(
         &self,
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError> {
-        self.send(Telemetry::audio(node_id, channel, data))
+        self.send(Telemetry::signal(node_id, channel, data))
             .map_err(|e| e.into())
     }
 
-    fn send_audio_with_sample_rate(
+    fn send_signal_with_sample_rate(
         &self,
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
         sample_rate: f32,
     ) -> Result<(), super::error::QueueError> {
-        self.send(Telemetry::audio_with_sample_rate(
+        self.send(Telemetry::signal_with_sample_rate(
             node_id,
             channel,
             data,

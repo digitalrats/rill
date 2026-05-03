@@ -5,7 +5,7 @@
 macro_rules! sink_node {
     (
         $(#[$meta:meta])*
-        $vis:vis $struct_name:ident<$T:ident: $audio_num:path, const $BUF:ident: usize>
+        $vis:vis $struct_name:ident<$T:ident: $signal_num:path, const $BUF:ident: usize>
         $(where $($bounds:tt)*)?
         {
             params { $($param_name:ident: $param_ty:ty = $param_default:expr),* $(,)? }
@@ -14,7 +14,7 @@ macro_rules! sink_node {
         }
     ) => {
         #[derive(Debug)]
-        $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
+        $vis struct $struct_name<$T: $signal_num, const $BUF: usize>
         $(where $($bounds)*)?
         {
             state: $crate::traits::node::NodeState<T,$BUF>,
@@ -26,7 +26,7 @@ macro_rules! sink_node {
             )*
         }
 
-        impl<$T: $audio_num, const $BUF: usize>
+        impl<$T: $signal_num, const $BUF: usize>
             $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
@@ -55,7 +55,7 @@ macro_rules! sink_node {
 
         }
 
-        impl<$T: $audio_num, const $BUF: usize>
+        impl<$T: $signal_num, const $BUF: usize>
             $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
@@ -155,7 +155,7 @@ macro_rules! sink_node {
             }
         }
 
-        impl<$T: $audio_num, const $BUF: usize>
+        impl<$T: $signal_num, const $BUF: usize>
             $crate::Sink<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {

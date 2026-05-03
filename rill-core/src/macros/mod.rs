@@ -18,9 +18,9 @@ mod sink;
 mod tests;
 
 // Реэкспорт макросов с верхнего уровня
-pub use crate::{audio_node, processor_node, sink_node, source_node, with_parameters};
+    pub use crate::{signal_node, processor_node, sink_node, source_node, with_parameters};
 
 /// Прелюдия для удобного импорта всех макросов
 pub mod prelude {
-    pub use crate::{audio_node, processor_node, sink_node, source_node, with_parameters};
+pub use crate::{signal_node, processor_node, sink_node, source_node, with_parameters};
 }

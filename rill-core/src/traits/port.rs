@@ -142,16 +142,16 @@ impl PortId {
     }
 
     // ========================================================================
-    // Audio Port Constructors
+    // Signal Port Constructors
     // ========================================================================
 
     /// Create a new signal input port
-    pub const fn audio_in(node: NodeId, index: u16) -> Self {
+    pub const fn signal_in(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Signal, PortDirection::Input, index)
     }
 
     /// Create a new signal output port
-    pub const fn audio_out(node: NodeId, index: u16) -> Self {
+    pub const fn signal_out(node: NodeId, index: u16) -> Self {
         Self::new(node, PortType::Signal, PortDirection::Output, index)
     }
 
@@ -245,7 +245,7 @@ impl PortId {
     }
 
     /// Check if this is an audio port
-    pub const fn is_audio(&self) -> bool {
+    pub const fn is_signal(&self) -> bool {
         matches!(self.port_type, PortType::Signal)
     }
 
@@ -367,7 +367,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// Create a new signal output port
     pub fn output(node_id: NodeId, index: u16, name: &str) -> Self {
         Self {
-            id: PortId::audio_out(node_id, index),
+            id: PortId::signal_out(node_id, index),
             name: name.to_string(),
             direction: PortDirection::Output,
             action: None,
@@ -386,7 +386,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// Create a new signal input port
     pub fn input(node_id: NodeId, index: u16, name: &str) -> Self {
         Self {
-            id: PortId::audio_in(node_id, index),
+            id: PortId::signal_in(node_id, index),
             name: name.to_string(),
             direction: PortDirection::Input,
             action: None,
@@ -721,7 +721,7 @@ mod tests {
     fn test_port_id_creation() {
         let node = NodeId(42);
 
-        let audio_in = PortId::audio_in(node, 0);
+        let audio_in = PortId::signal_in(node, 0);
         assert_eq!(audio_in.port_type(), PortType::Signal);
         assert!(audio_in.is_input());
 

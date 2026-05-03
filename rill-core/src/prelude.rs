@@ -390,7 +390,7 @@ mod tests {
     fn test_prelude_imports() {
         // Verify that all expected types are accessible
         let _node_id = NodeId(0);
-        let _port_id = PortId::audio_in(_node_id, 0);
+        let _port_id = PortId::signal_in(_node_id, 0);
         let _param_id = ParameterId::new("test").unwrap();
         let _clock = SystemClock::with_sample_rate(44100.0);
         let _tick = ClockTick::new(0, 64, 44100.0);
@@ -467,8 +467,8 @@ mod tests {
     fn test_port_prelude() {
         use port_prelude::*;
 
-        let port = PortId::audio_in(NodeId(0), 0);
-        assert!(port.is_audio());
+        let port = PortId::signal_in(NodeId(0), 0);
+        assert!(port.is_signal());
         assert!(port.is_input());
     }
 

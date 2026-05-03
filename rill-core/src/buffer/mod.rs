@@ -1,4 +1,4 @@
-//! # Audio Buffers for single-threaded signal processing
+//! # Signal Buffers for single-threaded signal processing
 //!
 //! This module provides real-time safe buffers used by graph nodes inside
 //! the signal thread. All buffers are **single-threaded** — they contain no

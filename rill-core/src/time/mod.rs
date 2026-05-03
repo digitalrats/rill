@@ -6,7 +6,7 @@
 //!
 //! ## Key Components
 //!
-//! - [`ClockTick`]: A single tick of the audio clock with timing information
+//! - [`ClockTick`]: A single tick of the signal clock with timing information
 //! - [`ClockSource`]: Trait for objects that can provide clock ticks
 //! - [`SystemClock`]: Software-based clock using system time
 //! - [`Clock`]: Legacy clock trait (deprecated, use `ClockSource`)

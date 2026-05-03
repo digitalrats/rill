@@ -19,7 +19,7 @@
 //! use rill_core::traits::*;
 //! #
 //! // Создаем очередь команд
-//! let queue: CommandQueue<CommandEnum> = CommandQueue::new("audio-control", 1024);
+//! let queue: CommandQueue<CommandEnum> = CommandQueue::new("signal-control", 1024);
 //!
 //! // Создаем идентификаторы
 //! let node = NodeId(1);

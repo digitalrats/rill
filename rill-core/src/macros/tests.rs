@@ -19,7 +19,7 @@ mod tests {
             }
 
             ports {
-                audio_out: 1,
+                signal_out: 1,
             }
 
             generate: |this: &mut TestSine<T, BUF_SIZE>| -> crate::ProcessResult<()> {
@@ -57,8 +57,8 @@ mod tests {
             }
 
             ports {
-                audio_in: 1,
-                audio_out: 1,
+                signal_in: 1,
+                signal_out: 1,
             }
 
             process: |this: &mut TestGain<T, BUF_SIZE>| -> crate::ProcessResult<()> {
@@ -85,7 +85,7 @@ mod tests {
             }
 
             ports {
-                audio_in: 1,
+                signal_in: 1,
             }
 
             consume: |_this: &mut TestSink<T, BUF_SIZE>| -> crate::ProcessResult<()> {
