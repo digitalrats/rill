@@ -19,9 +19,6 @@
 
 mod graph;
 
-/// Real-time safe signal engine for driving an [`SignalGraph`].
-pub mod engine;
-
 /// Node factory and registry for constructing nodes by type name.
 pub mod registry;
 

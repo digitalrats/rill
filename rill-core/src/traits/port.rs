@@ -10,6 +10,8 @@ use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::algorithm::Algorithm;
 use crate::traits::node::NodeId;
+use crate::traits::processable::Processable;
+use crate::traits::{ProcessResult, SignalNode};
 use crate::traits::PortError;
 use std::fmt;
 
@@ -557,17 +559,44 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     ///
     /// `tick` is the current clock tick, available for future
     /// sample-accurate or time-varying port-level propagation.
-    /// Copy `buffer` into every downstream input port.
-    ///
-    /// Uses [`downstream_input_ptrs`](Self::downstream_input_ptrs)
-    /// (filled by `GraphBuilder::build()`).
+    /// Copy `buffer` into every downstream input port, run each port's
+    /// algorithm, then process the downstream node and recurse through
+    /// its output ports.
     #[allow(unsafe_code)]
-    pub fn propagate(&self, buffer: &FixedBuffer<T, BUF_SIZE>) {
+    pub fn propagate(
+        &self,
+        buffer: &FixedBuffer<T, BUF_SIZE>,
+        ctx: &crate::traits::algorithm::ActionContext,
+    ) -> ProcessResult<()> {
+        let mut seen: Vec<*mut crate::traits::NodeVariant<T, BUF_SIZE>> = Vec::new();
         for &ptr in &self.downstream_input_ptrs {
-            // SAFETY: graph topology is static, single-threaded processing.
-            // Pointers are valid for the engine's lifetime.
-            unsafe { (*ptr).buffer.copy_from(buffer.as_array()); }
+            unsafe {
+                (*ptr).buffer.copy_from(buffer.as_array());
+                (*ptr).run_action(Some(buffer.as_array()), ctx)?;
+            }
+            let parent = unsafe { (*ptr).parent };
+            if !parent.is_null() && !seen.contains(&parent) {
+                seen.push(parent);
+            }
         }
+        let mut proc_ctx = crate::traits::processable::ProcessContext { clock: ctx.tick };
+        for &parent in &seen {
+            unsafe {
+                let nv = &mut *parent;
+                nv.process_block(&mut proc_ctx)?;
+                for po in 0..nv.num_signal_outputs() {
+                    if let Some(p) = nv.output_port_mut(po) {
+                        p.snapshot_feedback();
+                    }
+                }
+                for po in 0..nv.num_signal_outputs() {
+                    if let Some(p) = nv.output_port(po) {
+                        p.propagate(p.buffer(), ctx)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Run the port's algorithm.

@@ -1,12 +1,13 @@
-//! Audio engine — driven by the backend's hardware callback.
+//! Audio engine — owns the graph and drives processing via the backend
+//! callback. The callback is set by AudioInput after construction.
 
 use rill_core::time::{ClockTick, SystemClock};
-use rill_graph::engine::SignalEngine as RillEngine;
+use rill_core::traits::processable::NodeVariant;
 use rill_graph::GraphBuilder;
 
 pub const BUF_SIZE: usize = 256;
 
-/// Handle — keeps the backend alive.
+/// Handle — keeps the graph alive.
 pub struct AudioHandle;
 
 impl AudioHandle {
@@ -18,27 +19,14 @@ impl AudioHandle {
         let graph = builder
             .build(Box::new(clock))
             .map_err(|e| format!("graph build failed: {e:?}"))?;
-        let (nodes, topo_order, _) = graph.into_parts();
+        let (nodes, _topo, _) = graph.into_parts();
+        let _nodes_ptr: *mut [NodeVariant<f32, BUF_SIZE>] = Box::leak(nodes.into_boxed_slice());
 
-        let engine = Box::new(RillEngine::<f32, BUF_SIZE>::new(
-            nodes, topo_order, None, None,
-        ));
-        let engine_ptr: *mut RillEngine<f32, BUF_SIZE> = Box::leak(engine);
-
-        let backend = crate::registration::get_audio_backend();
-        if let Some(b) = backend.as_ref() {
-            let sample_pos = std::cell::Cell::new(0u64);
-            b.set_process_callback(Box::new(move || {
-                let tick = ClockTick::new(
-                    sample_pos.get(), BUF_SIZE as u32, sample_rate,
-                );
-                unsafe {
-                    let _ = (*engine_ptr).process_block(&tick);
-                }
-                sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-            }));
-            let _ = b.start();
-        }
+        // TODO: pass nodes_ptr to AudioInput::start()
+        // AudioInput will:
+        //   1. Drain param_queue from its own field
+        //   2. Read backend input
+        //   3. Call port.propagate() on each output
 
         Ok(AudioHandle)
     }
