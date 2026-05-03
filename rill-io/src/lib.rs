@@ -13,9 +13,13 @@ mod error;
 
 pub mod backends;
 
+/// MIDI event types for I/O backends.
+pub mod midi;
+
 pub use backend::{AudioBackend, BackendType, DeviceInfo};
 pub use config::AudioConfig;
 pub use error::{IoError, IoResult};
+pub use midi::MidiEvent;
 
 pub use backends::NullBackend;
 

@@ -1,6 +1,8 @@
 //! Конфигурация аудиоустройства
 
 use crate::backend::BackendType;
+use crate::midi::MidiEvent;
+use crossbeam_channel::Sender;
 
 /// Конфигурация аудиоустройства
 #[derive(Debug, Clone)]
@@ -29,6 +31,15 @@ pub struct AudioConfig {
 
     /// Тип бэкенда
     pub backend_type: BackendType,
+
+    /// Включить MIDI-вход через PipeWire
+    #[cfg_attr(feature = "serde-config", serde(default))]
+    pub midi_input: bool,
+
+    /// Канал для отправки MIDI-событий из бэкенда в приложение.
+    /// Если `None`, MIDI-события не обрабатываются.
+    #[cfg_attr(feature = "serde-config", serde(skip))]
+    pub midi_event_tx: Option<Sender<MidiEvent>>,
 }
 
 impl Default for AudioConfig {
@@ -42,6 +53,8 @@ impl Default for AudioConfig {
             input_device: None,
             output_device: None,
             backend_type: BackendType::Cpal,
+            midi_input: false,
+            midi_event_tx: None,
         }
     }
 }
@@ -86,6 +99,18 @@ impl AudioConfig {
     /// Установить тип бэкенда
     pub fn with_backend(mut self, backend: BackendType) -> Self {
         self.backend_type = backend;
+        self
+    }
+
+    /// Включить MIDI-вход
+    pub fn with_midi_input(mut self, enabled: bool) -> Self {
+        self.midi_input = enabled;
+        self
+    }
+
+    /// Установить канал для MIDI-событий
+    pub fn with_midi_tx(mut self, tx: Sender<MidiEvent>) -> Self {
+        self.midi_event_tx = Some(tx);
         self
     }
 
