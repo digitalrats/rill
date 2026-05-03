@@ -2,6 +2,7 @@ use crate::registry::{NodeRegistry, RegistryError};
 use rill_core::buffer::{BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
+use rill_core::traits::port::Port;
 use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
 use std::collections::VecDeque;
 
@@ -262,24 +263,28 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             return Err(BuildError::CycleDetected);
         }
 
-        // --- populate Port::downstream and Port::upstream_buffer ---
+        // --- populate Port::downstream, downstream_input_ptrs, parent ---
         for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
+            // downstream list (serialization)
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
                 port.downstream.push((to_n, to_p));
             }
-        }
-        // upstream_buffer: set on input ports for zero-copy 1:1 connections.
-        // Fan-in (multiple outputs → same input) falls back to copy-based.
-        for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
-            let upstream = self.nodes[from_n]
-                .node
-                .output_port(from_p)
-                .map(|p| &p.buffer as *const FixedBuffer<T, BUF_SIZE>);
-            if let Some(port) = self.nodes[to_n].node.input_port_mut(to_p) {
-                if port.upstream_buffer.is_none() {
-                    port.upstream_buffer = upstream;
-                } else {
-                    port.upstream_buffer = None;
+            // Prepare pointers (safe: distinct indices in static DAG).
+            let in_ptr: *mut Port<T, BUF_SIZE> = self.nodes[to_n]
+                .node.input_port_mut(to_p)
+                .map(|p| p as *mut Port<T, BUF_SIZE>)
+                .unwrap_or(std::ptr::null_mut());
+            let parent: *mut NodeVariant<T, BUF_SIZE> = &mut self.nodes[to_n].node;
+            let out_ptr: *mut Port<T, BUF_SIZE> = self.nodes[from_n]
+                .node.output_port_mut(from_p)
+                .map(|p| p as *mut Port<T, BUF_SIZE>)
+                .unwrap_or(std::ptr::null_mut());
+            // Assign (safe: pointers were obtained without overlapping borrows).
+            if !in_ptr.is_null() && !out_ptr.is_null() {
+                #[allow(unsafe_code)]
+                unsafe {
+                    (*in_ptr).parent = parent;
+                    (*out_ptr).downstream_input_ptrs.push(in_ptr);
                 }
             }
         }
@@ -454,9 +459,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
     use rill_core::traits::{
+        algorithm::ActionContext,
+        processable::{ProcessContext, Processable},
         SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
         PortDirection, PortId, ProcessResult, Processor, Sink, Source,
     };
@@ -483,8 +491,9 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
-            feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+                feedback_ptrs: Vec::new(),
+                downstream_input_ptrs: Vec::new(),
+                parent: std::ptr::null_mut(),
             });
             Self {
                 value,
@@ -798,5 +807,399 @@ mod tests {
             .expect("build failed");
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.topo_order(), &[idx]);
+    }
+
+    // ========================================================================
+    // Port-based propagation tests
+    // ========================================================================
+
+    /// Simple Sink that captures its first input port for inspection.
+    pub struct TestSink<T: Transcendental, const BUF_SIZE: usize> {
+        id: NodeId,
+        state: NodeState<T, BUF_SIZE>,
+        pub inputs: Vec<Port<T, BUF_SIZE>>,
+        last_value: T,
+    }
+
+    impl<T: Transcendental, const BUF_SIZE: usize> TestSink<T, BUF_SIZE> {
+        fn new(id: NodeId, sample_rate: f32) -> Self {
+            let mut inputs = Vec::new();
+            inputs.push(Port::input(id, 0, "in"));
+            Self {
+                id,
+                state: NodeState::new(sample_rate),
+                inputs,
+                last_value: T::ZERO,
+            }
+        }
+        fn last_value(&self) -> T { self.last_value }
+    }
+
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for TestSink<T, BUF_SIZE> {
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                type_name: None, name: "TestSink".into(), category: NodeCategory::Sink,
+                description: String::new(), author: String::new(), version: "1.0".into(),
+                signal_inputs: 1, signal_outputs: 0, control_inputs: 0, control_outputs: 0,
+                clock_inputs: 0, clock_outputs: 0, feedback_ports: 0, parameters: vec![],
+            }
+        }
+        fn init(&mut self, _: f32) {}
+        fn reset(&mut self) { self.state.sample_pos = 0; self.state.blocks_processed = 0; }
+        fn id(&self) -> NodeId { self.id } fn set_id(&mut self, id: NodeId) { self.id = id; }
+        fn get_parameter(&self, _: &ParameterId) -> Option<ParamValue> { None }
+        fn set_parameter(&mut self, _: &ParameterId, _: ParamValue) -> ProcessResult<()> { Ok(()) }
+        fn input_port(&self, i: usize) -> Option<&Port<T, BUF_SIZE>> { self.inputs.get(i) }
+        fn input_port_mut(&mut self, i: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.inputs.get_mut(i) }
+        fn output_port(&self, _: usize) -> Option<&Port<T, BUF_SIZE>> { None }
+        fn output_port_mut(&mut self, _: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
+        fn control_port(&self, _: usize) -> Option<&Port<T, BUF_SIZE>> { None }
+        fn control_port_mut(&mut self, _: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
+        fn num_signal_inputs(&self) -> usize { 1 } fn num_signal_outputs(&self) -> usize { 0 }
+        fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
+        fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
+    }
+
+    impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for TestSink<T, BUF_SIZE> {
+        fn consume(
+            &mut self, _clock: &ClockTick,
+            _signal_inputs: &[&[T; BUF_SIZE]], _control_inputs: &[T],
+            _clock_inputs: &[ClockTick], _feedback_inputs: &[&[T; BUF_SIZE]],
+        ) -> ProcessResult<()> {
+            if let Some(port) = self.inputs.first() {
+                self.last_value = port.buffer.as_array()[0];
+            }
+            self.state.advance();
+            Ok(())
+        }
+    }
+
+    /// Processor with a `multiplier` parameter. Output = input × multiplier.
+    pub struct GainProcessor<T: Transcendental, const BUF_SIZE: usize> {
+        id: NodeId,
+        state: NodeState<T, BUF_SIZE>,
+        pub inputs: Vec<Port<T, BUF_SIZE>>,
+        pub outputs: Vec<Port<T, BUF_SIZE>>,
+        pub multiplier: T,
+    }
+
+    impl<T: Transcendental, const BUF_SIZE: usize> GainProcessor<T, BUF_SIZE> {
+        fn new(id: NodeId, sample_rate: f32, multiplier: T) -> Self {
+            let mut inputs = Vec::new();
+            inputs.push(Port::input(id, 0, "in"));
+            let mut outputs = Vec::new();
+            outputs.push(Port::output(id, 0, "out"));
+            Self {
+                id, state: NodeState::new(sample_rate),
+                inputs, outputs, multiplier,
+            }
+        }
+    }
+
+    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for GainProcessor<T, BUF_SIZE> {
+        fn metadata(&self) -> NodeMetadata {
+            NodeMetadata {
+                type_name: None, name: "GainProcessor".into(), category: NodeCategory::Processor,
+                description: String::new(), author: String::new(), version: "1.0".into(),
+                signal_inputs: 1, signal_outputs: 1, control_inputs: 0, control_outputs: 0,
+                clock_inputs: 0, clock_outputs: 0, feedback_ports: 0, parameters: vec![],
+            }
+        }
+        fn init(&mut self, _: f32) {}
+        fn reset(&mut self) { self.state.sample_pos = 0; self.state.blocks_processed = 0; }
+        fn id(&self) -> NodeId { self.id } fn set_id(&mut self, id: NodeId) { self.id = id; }
+        fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+            match id.as_str() {
+                "multiplier" => Some(ParamValue::Float(self.multiplier.to_f32())),
+                _ => None,
+            }
+        }
+        fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+            match id.as_str() {
+                "multiplier" => {
+                    if let Some(v) = value.as_f32() {
+                        self.multiplier = T::from_f32(v);
+                        Ok(())
+                    } else { Err(rill_core::ProcessError::parameter("expected float")) }
+                }
+                _ => Err(rill_core::ProcessError::parameter("unknown")),
+            }
+        }
+        fn input_port(&self, i: usize) -> Option<&Port<T, BUF_SIZE>> { self.inputs.get(i) }
+        fn input_port_mut(&mut self, i: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.inputs.get_mut(i) }
+        fn output_port(&self, i: usize) -> Option<&Port<T, BUF_SIZE>> { self.outputs.get(i) }
+        fn output_port_mut(&mut self, i: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.outputs.get_mut(i) }
+        fn control_port(&self, _: usize) -> Option<&Port<T, BUF_SIZE>> { None }
+        fn control_port_mut(&mut self, _: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
+        fn num_signal_inputs(&self) -> usize { 1 } fn num_signal_outputs(&self) -> usize { 1 }
+        fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
+        fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
+    }
+
+    impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for GainProcessor<T, BUF_SIZE> {
+        fn process(
+            &mut self, _clock: &ClockTick,
+            _signal_inputs: &[&[T; BUF_SIZE]], _control_inputs: &[T],
+            _clock_inputs: &[ClockTick], _feedback_inputs: &[&[T; BUF_SIZE]],
+        ) -> ProcessResult<()> {
+            let inp = *self.inputs[0].buffer.as_array();
+            let out = self.outputs[0].buffer.as_mut_array();
+            for i in 0..BUF_SIZE {
+                out[i] = inp[i] * self.multiplier;
+            }
+            self.state.advance();
+            Ok(())
+        }
+        fn latency(&self) -> usize { 0 }
+    }
+
+    // ── Test: Source → Sink via GraphBuilder ────────────────────────
+
+    #[test]
+    fn test_graph_source_to_sink() {
+        const BUF: usize = 64;
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let src = builder.add_source(Box::new(ConstantSource::new(42.0, 44100.0)));
+        let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(1), 44100.0)));
+        builder.connect_signal(src, 0, snk, 0);
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+
+        let (mut nodes, topo, _) = graph.into_parts();
+        let tick = ClockTick::new(0, BUF as u32, 44100.0);
+
+        // Process source
+        let mut ctx = ProcessContext { clock: &tick };
+        let _ = nodes[topo[0]].process_block(&mut ctx);
+
+        // Propagate through builder-wired connections
+        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
+        out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
+
+        let sink_val = nodes[topo[1]].input_port(0).unwrap().buffer.as_array()[0];
+        assert_eq!(sink_val, 42.0, "sink should receive source value");
+    }
+
+    // ── Test: Source → Processor → Sink via GraphBuilder ────────────
+
+    #[test]
+    fn test_graph_source_proc_sink() {
+        const BUF: usize = 64;
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let src = builder.add_source(Box::new(ConstantSource::new(10.0, 44100.0)));
+        let proc = builder.add_processor(Box::new(
+            GainProcessor::<f32, BUF>::new(NodeId(1), 44100.0, 3.0)));
+        let snk = builder.add_sink(Box::new(
+            TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
+        builder.connect_signal(src, 0, proc, 0);
+        builder.connect_signal(proc, 0, snk, 0);
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+
+        let (mut nodes, topo, _) = graph.into_parts();
+        let tick = ClockTick::new(0, BUF as u32, 44100.0);
+
+        // Process source
+        let mut ctx = ProcessContext { clock: &tick };
+        let _ = nodes[topo[0]].process_block(&mut ctx);
+
+        // Propagate — should traverse source→processor→sink recursively
+        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
+        out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
+
+        let sink_val = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
+        assert!((sink_val - 30.0).abs() < 1e-6,
+            "source(10)×gain(3)=30, got {}", sink_val);
+    }
+
+    //     ── Test: Command queue drain ───────────────────────────────────
+
+    #[test]
+    fn test_command_queue_drain() {
+        use rill_core::queues::MpscQueue;
+        use rill_patchbay::control::ParameterCommand;
+
+        const BUF: usize = 64;
+        let queue: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        builder.add_processor(Box::new(
+            GainProcessor::<f32, BUF>::new(NodeId(0), 44100.0, 2.0)));
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+        let (mut nodes, _, _) = graph.into_parts();
+
+        queue.push(ParameterCommand::new(NodeId(0), "multiplier", 5.0));
+
+        while let Some(cmd) = queue.pop() {
+            let idx = cmd.node_id.inner() as usize;
+            let pid = ParameterId::new(&cmd.param).unwrap();
+            nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value)).unwrap();
+        }
+
+        let pid = ParameterId::new("multiplier").unwrap();
+        let val = nodes[0].get_parameter(&pid).unwrap().as_f32().unwrap();
+        assert!((val - 5.0).abs() < 1e-6, "multiplier should be 5.0, got {}", val);
+    }
+
+    // ── Test: Queue + propagate ─────────────────────────────────────
+
+    #[test]
+    fn test_command_then_propagate() {
+        use rill_core::queues::MpscQueue;
+        use rill_patchbay::control::ParameterCommand;
+
+        const BUF: usize = 64;
+        let queue: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let src = builder.add_source(Box::new(ConstantSource::new(7.0, 44100.0)));
+        let proc = builder.add_processor(Box::new(
+            GainProcessor::<f32, BUF>::new(NodeId(1), 44100.0, 2.0)));
+        let snk = builder.add_sink(Box::new(
+            TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
+        builder.connect_signal(src, 0, proc, 0);
+        builder.connect_signal(proc, 0, snk, 0);
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+        let (mut nodes, topo, _) = graph.into_parts();
+        let tick = ClockTick::new(0, BUF as u32, 44100.0);
+
+        // Push command and drain
+        queue.push(ParameterCommand::new(NodeId(1), "multiplier", 4.0));
+        while let Some(cmd) = queue.pop() {
+            let idx = cmd.node_id.inner() as usize;
+            let pid = ParameterId::new(&cmd.param).unwrap();
+            nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value)).unwrap();
+        }
+
+        // Verify multiplier changed
+        let pid = ParameterId::new("multiplier").unwrap();
+        let val = nodes[1].get_parameter(&pid).unwrap().as_f32().unwrap();
+        assert!((val - 4.0).abs() < 1e-6);
+
+        // Process + propagate
+        let mut ctx = ProcessContext { clock: &tick };
+        let _ = nodes[topo[0]].process_block(&mut ctx);
+        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
+        out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
+
+        let sink_val = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
+        assert!((sink_val - 28.0).abs() < 1e-6,
+            "source(7)×gain(4)=28, got {}", sink_val);
+    }
+
+    // ── Test: Feedback propagation ──────────────────────────────────
+
+    #[test]
+    fn test_feedback_propagation() {
+        use rill_core::traits::algorithm::ActionContext;
+
+        const BUF: usize = 64;
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let src = builder.add_source(Box::new(ConstantSource::new(1.0, 44100.0)));
+        let proc = builder.add_processor(Box::new(
+            GainProcessor::<f32, BUF>::new(NodeId(1), 44100.0, 2.0)));
+        let snk = builder.add_sink(Box::new(
+            TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
+        // Signal path: source → processor → sink
+        builder.connect_signal(src, 0, proc, 0);
+        builder.connect_signal(proc, 0, snk, 0);
+        // Feedback: processor output → processor input
+        builder.connect_feedback(proc, 0, proc, 0);
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+        let (mut nodes, topo, _) = graph.into_parts();
+
+        // ── Block 1: no feedback yet ──
+        let tick1 = ClockTick::new(0, BUF as u32, 44100.0);
+        let mut ctx = ProcessContext { clock: &tick1 };
+        let _ = nodes[topo[0]].process_block(&mut ctx);  // source generates
+        let ctx1 = ActionContext::new(&tick1);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
+        out_port.propagate(out_port.buffer(), &ctx1).unwrap();
+        let block1 = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
+        assert!((block1 - 2.0).abs() < 1e-6, "block1: 1.0×2.0=2.0, got {}", block1);
+
+        // ── Block 2: feedback from block1 should be mixed in ──
+        let tick2 = ClockTick::new(BUF as u64, BUF as u32, 44100.0);
+        let mut ctx = ProcessContext { clock: &tick2 };
+        let _ = nodes[topo[0]].process_block(&mut ctx);  // source generates again
+        let ctx2 = ActionContext::new(&tick2);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
+        out_port.propagate(out_port.buffer(), &ctx2).unwrap();
+        let block2 = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
+        // pre_process: input = 1.0 (source) + 2.0 (feedback from block1) = 3.0
+        // process: 3.0 × 2.0 = 6.0
+        assert!((block2 - 6.0).abs() < 1e-6, "block2: (1+2)×2=6.0, got {}", block2);
+    }
+
+    // ── Test: drain_fn pattern (as used by AudioInput) ──────────────
+
+    #[test]
+    fn test_drain_fn_before_propagate() {
+        use rill_core::queues::MpscQueue;
+        use rill_patchbay::control::ParameterCommand;
+
+        const BUF: usize = 64;
+        let queue: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let src = builder.add_source(Box::new(ConstantSource::new(5.0, 44100.0)));
+        let proc = builder.add_processor(Box::new(
+            GainProcessor::<f32, BUF>::new(NodeId(1), 44100.0, 1.0)));
+        let snk = builder.add_sink(Box::new(
+            TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
+        builder.connect_signal(src, 0, proc, 0);
+        builder.connect_signal(proc, 0, snk, 0);
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+        let (mut nodes, topo, _) = graph.into_parts();
+        let nodes_ptr: *mut [NodeVariant<f32, BUF>] = &mut *nodes;
+
+        // drain_fn — exactly as AudioInput creates it
+        let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>])> = {
+            let q = queue.clone();
+            Box::new(move |nd: &mut [NodeVariant<f32, BUF>]| {
+                while let Some(cmd) = q.pop() {
+                    let idx = cmd.node_id.inner() as usize;
+                    if idx < nd.len() {
+                        if let Ok(pid) = ParameterId::new(&cmd.param) {
+                            let _ = nd[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
+                        }
+                    }
+                }
+            })
+        };
+
+        // Push command BEFORE processing
+        queue.push(ParameterCommand::new(NodeId(1), "multiplier", 3.0));
+
+        // Processing cycle exactly as AudioInput callback does:
+        let tick = ClockTick::new(0, BUF as u32, 44100.0);
+
+        // Step 1: drain
+        #[allow(unsafe_code)]
+        unsafe { drain_fn(&mut *nodes_ptr); }
+
+        // Verify parameter applied
+        let pid = ParameterId::new("multiplier").unwrap();
+        #[allow(unsafe_code)]
+        let val = unsafe { (*nodes_ptr)[1].get_parameter(&pid).unwrap().as_f32().unwrap() };
+        assert!((val - 3.0).abs() < 1e-6, "multiplier should be 3.0, got {}", val);
+
+        // Step 2: source generate
+        let mut ctx = ProcessContext { clock: &tick };
+        #[allow(unsafe_code)]
+        unsafe { (*nodes_ptr)[topo[0]].process_block(&mut ctx).unwrap(); }
+
+        // Step 3: propagate
+        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        #[allow(unsafe_code)]
+        let out_port = unsafe { (*nodes_ptr)[topo[0]].output_port(0).unwrap() };
+        out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
+
+        // Verify: source(5) × gain(3) = 15
+        #[allow(unsafe_code)]
+        let sink_val = unsafe { (*nodes_ptr)[topo[2]].input_port(0).unwrap().buffer.as_array()[0] };
+        assert!((sink_val - 15.0).abs() < 1e-6,
+            "source(5)×gain(3)=15, got {}", sink_val);
     }
 }

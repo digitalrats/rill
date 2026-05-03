@@ -16,10 +16,28 @@ pub mod backends;
 /// MIDI event types for I/O backends.
 pub mod midi;
 
+/// Audio output sink node (stereo, bridge to hardware).
+pub mod output;
+
+/// Audio input source node (stereo, bridge from hardware).
+pub mod input;
+
+/// Abstract audio I/O backend + registry.
+pub mod audio_io;
+
+/// Shared ring buffers and downcast helpers for I/O nodes.
+pub mod rings;
+
+/// Global PipeWire context (lazily initialised, shared by I/O nodes).
+pub mod pw;
+
 pub use backend::{AudioBackend, BackendType, DeviceInfo};
 pub use config::AudioConfig;
 pub use error::{IoError, IoResult};
 pub use midi::MidiEvent;
+pub use output::AudioOutput;
+pub use input::AudioInput;
+pub use rings::PwBuffers;
 
 pub use backends::NullBackend;
 

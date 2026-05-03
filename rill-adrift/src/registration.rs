@@ -17,6 +17,33 @@ use std::sync::Mutex;
 use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
 use rill_graph::{node_ctor, NodeRegistry};
 
+#[cfg(feature = "io")]
+use crate::io::output::AudioOutput;
+#[cfg(feature = "io")]
+use crate::io::input::AudioInput;
+#[cfg(feature = "io")]
+use crate::io::audio_io::{AudioIo, AudioIoPtr};
+
+#[cfg(feature = "io")]
+static BACKEND_PTR: Mutex<[usize; 2]> = Mutex::new([0; 2]);
+
+#[cfg(feature = "io")]
+pub fn set_audio_backend(ptr: *const dyn AudioIo) {
+    let words = AudioIoPtr::from_ref(unsafe { &*ptr });
+    *BACKEND_PTR.lock().unwrap() = words.0;
+}
+
+#[cfg(feature = "io")]
+pub fn clear_audio_backend() {
+    *BACKEND_PTR.lock().unwrap() = [0; 2];
+}
+
+#[cfg(feature = "io")]
+pub fn get_audio_backend() -> AudioIoPtr {
+    let words = *BACKEND_PTR.lock().unwrap();
+    AudioIoPtr(words)
+}
+
 
 /// Return a lazily-initialized global registry for the given block size.
 ///
@@ -63,6 +90,37 @@ pub fn register_all<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_
     register_oscillators(registry);
     register_digital_filters(registry);
     register_digital_effects(registry);
+    register_io(registry);
+}
+
+#[cfg(feature = "io")]
+fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>) {
+    node_ctor!(registry, "rill/output", |id: NodeId, params: &NodeParams| {
+        let mut n = AudioOutput::<f32, BUF_SIZE>::new();
+        let ptr = get_audio_backend();
+        if !ptr.is_null() {
+            n.set_backend(ptr);
+        }
+        SignalNode::set_id(&mut n, id);
+        SignalNode::init(&mut n, params.sample_rate);
+        NodeVariant::Sink(Box::new(n))
+    });
+
+    node_ctor!(registry, "rill/input", |id: NodeId, params: &NodeParams| {
+        let mut n = AudioInput::<f32, BUF_SIZE>::new();
+        let ptr = get_audio_backend();
+        if !ptr.is_null() {
+            n.set_backend(ptr);
+        }
+        SignalNode::set_id(&mut n, id);
+        SignalNode::init(&mut n, params.sample_rate);
+        NodeVariant::Source(Box::new(n))
+    });
+}
+
+#[cfg(not(feature = "io"))]
+fn register_io<const BUF_SIZE: usize>(_registry: &mut NodeRegistry<f32, BUF_SIZE>) {
+    // No I/O nodes available without "io" feature.
 }
 
 // ============================================================================

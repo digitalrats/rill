@@ -15,11 +15,13 @@ use pw::properties::properties;
 use pw::spa;
 use pw::spa::sys as spa_sys;
 
+use crate::audio_io::{AudioIo, IoResult as AudioIoResult};
 use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use crate::midi::MidiEvent;
+use crate::PwBuffers;
 
 // ============================================================================
 // Команды для PW потока
@@ -40,6 +42,7 @@ pub struct PipewireBackend {
     command_tx: Sender<PwCommand>,
     input_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
     output_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    process_cb: *mut Option<Box<dyn Fn()>>,
     thread_handle: Option<thread::JoinHandle<()>>,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
@@ -55,6 +58,7 @@ impl fmt::Debug for PipewireBackend {
 }
 
 impl PipewireBackend {
+    /// Create a new PipeWire backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(target_os = "linux") {
             return Err(IoError::Unsupported(
@@ -71,6 +75,9 @@ impl PipewireBackend {
         let input_buffer = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(buf_cap)));
         let output_buffer = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(buf_cap)));
 
+        // Allocate a slot for the process callback. Leaked — reclaimed on drop.
+        let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
+
         let t_xruns = xruns.clone();
         let t_input = input_buffer.clone();
         let t_output = output_buffer.clone();
@@ -81,7 +88,7 @@ impl PipewireBackend {
         let handle = thread::Builder::new()
             .name("drift-pipewire".into())
             .spawn(move || {
-                run_pipewire_thread(command_rx, t_xruns, t_input, t_output, t_config, t_running, t_midi_tx);
+                run_pipewire_thread(command_rx, t_xruns, t_input, t_output, process_cb, t_config, t_running, t_midi_tx);
             })
             .map_err(|e| IoError::Backend(e.to_string()))?;
 
@@ -90,10 +97,68 @@ impl PipewireBackend {
             command_tx,
             input_buffer,
             output_buffer,
+            process_cb,
             thread_handle: Some(handle),
             xruns,
             running,
         })
+    }
+
+    /// Return shared ring buffers for injection into AudioInput/AudioOutput.
+    pub fn rings(&self) -> Arc<PwBuffers> {
+        Arc::new(PwBuffers {
+            input: self.input_buffer.clone(),
+            output: self.output_buffer.clone(),
+        })
+    }
+}
+
+// ============================================================================
+// AudioIo impl
+// ============================================================================
+
+impl AudioIo for PipewireBackend {
+    fn set_process_callback(&self, cb: Box<dyn Fn()>) {
+        unsafe { *self.process_cb = Some(cb); }
+    }
+
+    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+        let mut buf = self.input_buffer.write();
+        let mut temp = [0.0f32; 512]; // max BUF_SIZE*2
+        let n = buf.read(&mut temp[..left.len().min(right.len()).min(256).saturating_mul(2)]);
+        drop(buf);
+        let frames = n / 2;
+        for i in 0..frames.min(left.len()).min(right.len()) {
+            left[i] = temp[i * 2];
+            right[i] = temp[i * 2 + 1];
+        }
+        frames
+    }
+
+    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
+        let n = left.len().min(right.len());
+        let mut buf = self.output_buffer.write();
+        let mut temp = [0.0f32; 512];
+        let len = n.min(256);
+        for i in 0..len {
+            temp[i * 2] = left[i];
+            temp[i * 2 + 1] = right[i];
+        }
+        let written = buf.write(&temp[..len * 2]);
+        drop(buf);
+        written / 2
+    }
+
+    fn start(&self) -> AudioIoResult<()> {
+        self.running.store(true, Ordering::Release);
+        self.command_tx.send(PwCommand::Start)
+            .map_err(|e| format!("PW start: {e}"))
+    }
+
+    fn stop(&self) -> AudioIoResult<()> {
+        self.running.store(false, Ordering::Release);
+        self.command_tx.send(PwCommand::Stop)
+            .map_err(|e| format!("PW stop: {e}"))
     }
 }
 
@@ -106,6 +171,7 @@ fn run_pipewire_thread(
     xruns: Arc<AtomicU32>,
     input_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
     output_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    process_cb: *mut Option<Box<dyn Fn()>>,
     config: AudioConfig,
     running: Arc<AtomicBool>,
     midi_event_tx: Option<Sender<MidiEvent>>,
@@ -175,6 +241,13 @@ fn run_pipewire_thread(
     let _out_listener = match out_stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
+            // 1. Call process callback (drives the signal graph)
+            unsafe {
+                if let Some(ref cb) = *process_cb {
+                    cb();
+                }
+            }
+            // 2. Read from output ring → DMA buffer
             process_output(stream, &obuf, &oxruns, out_channels);
         })
         .register()

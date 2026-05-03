@@ -19,6 +19,7 @@ serde_cbor = { version = "0.11", optional = true }
 
 [dev-dependencies]
 rill-core-dsp = { workspace = true }
+rill-patchbay = { workspace = true }
 
 [features]
 default = []

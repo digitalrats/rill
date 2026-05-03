@@ -171,6 +171,32 @@ impl ControlEvent {
 }
 
 // =============================================================================
+// 2b. OSC Surface — OSC → EventPattern bridge
+// =============================================================================
+
+/// Maps an OSC address pattern to an internal [`EventPattern`].
+///
+/// One patchbay configuration can have a single canonical surface.
+/// For alternate MIDI layouts, use separate `mappings` slices with
+/// different `EventPattern::MidiControl` entries.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
+pub struct OscSurfaceEntry {
+    /// OSC address pattern, e.g. `"/delay/time"`.
+    pub osc_path: String,
+
+    /// Abstract controller identifier that `mappings` expect.
+    pub event_pattern: EventPattern,
+
+    /// Optional human‑readable label (ignored by the engine).
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub label: Option<String>,
+}
+
+/// A list of [`OscSurfaceEntry`] entries.
+pub type OscSurface = Vec<OscSurfaceEntry>;
+
+// =============================================================================
 // 3. Трансформации значений (из rill-control)
 // =============================================================================
 

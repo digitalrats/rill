@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use rill_core::NodeId;
 
-use crate::automaton::lfo::{LfoAutomaton, LfoWaveform};
+use crate::automaton::lfo::LfoWaveform;
 use crate::automaton::envelope::{EnvelopeAutomaton, EnvelopeType};
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
-use crate::control::{BoxedServo, Mapping, PatchbayControl, Servo, ParameterMapping, Target, Transform, EventPattern};
+use crate::control::{BoxedServo, Mapping, OscSurface, PatchbayControl, Servo, ParameterMapping, Target, Transform};
+pub use crate::control::EventPattern;
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 
@@ -188,6 +189,11 @@ pub struct PatchbayDocument {
     pub servos: Vec<ServoDef>,
     pub mappings: Vec<MappingDef>,
 
+    /// OSC → EventPattern bridge (see [`OscSurfaceEntry`]).
+    /// Consumed by the host runtime to register user‑facing OSC handlers.
+    #[serde(default)]
+    pub osc_surface: OscSurface,
+
     /// Optional human-readable description (attribution, preset notes, …).
     /// Not interpreted by the engine; preserved through serialisation round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +206,7 @@ impl PatchbayDocument {
             automata: Vec::new(),
             servos: Vec::new(),
             mappings: Vec::new(),
+            osc_surface: Vec::new(),
             description: None,
         }
     }
@@ -449,6 +456,7 @@ mod tests {
                 },
             ],
             mappings: vec![],
+            osc_surface: vec![],
             description: None,
         }
     }
@@ -499,6 +507,7 @@ mod tests {
                 conflict_strategy: None,
             }],
             mappings: vec![],
+            osc_surface: vec![],
             description: None,
         };
         let q = Arc::new(MpscQueue::new());
@@ -532,6 +541,7 @@ mod tests {
                 conflict_strategy: Some(ConflictStrategy::LastWriteWins),
             }],
             mappings: vec![],
+            osc_surface: vec![],
             description: None,
         };
 
@@ -571,6 +581,7 @@ mod tests {
                 conflict_strategy: Some(ConflictStrategy::LastWriteWins),
             }],
             mappings: vec![],
+            osc_surface: vec![],
             description: None,
         };
 
