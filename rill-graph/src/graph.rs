@@ -523,6 +523,7 @@ mod tests {
                 downstream_input_ptrs: Vec::new(),
                 downstream_nodes: Vec::new(),
                 parent: std::ptr::null_mut(),
+                upstream_buffer: None,
             });
             Self {
                 value,
