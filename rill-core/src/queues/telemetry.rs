@@ -5,6 +5,41 @@ use crate::traits::{NodeId, ParameterId, PortId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Константы для телеметрии часов (clock)
+pub const CLOCK_TICK: &str = "clock_tick";
+pub const CLOCK_TEMPO: &str = "clock_tempo";
+
+/// Лёгкая обёртка над отправителем телеметрии.
+///
+/// Хранится в узлах, которые хотят пушить телеметрию из `generate()` /
+/// `process()` / `consume()`. Неблокирующий `try_send` безопасен
+/// для audio thread.
+#[derive(Clone)]
+pub struct TelemetryTx {
+    inner: Option<crossbeam_channel::Sender<Telemetry>>,
+}
+
+impl TelemetryTx {
+    pub const fn empty() -> Self {
+        Self { inner: None }
+    }
+
+    pub fn new(tx: crossbeam_channel::Sender<Telemetry>) -> Self {
+        Self { inner: Some(tx) }
+    }
+
+    pub fn try_send(&self, event: Telemetry) {
+        if let Some(ref tx) = self.inner {
+            let _ = tx.try_send(event);
+        }
+    }
+
+    /// Get a reference to the inner sender, if present.
+    pub fn sender(&self) -> Option<&crossbeam_channel::Sender<Telemetry>> {
+        self.inner.as_ref()
+    }
+}
+
 /// Тип телеметрии (для идентификации)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TelemetryKind {

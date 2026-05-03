@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use rill_core::math::Transcendental;
 use rill_core::queues::signal::CommandEnum;
-use rill_core::queues::telemetry::Telemetry;
+use rill_core::queues::telemetry::{Telemetry, TelemetryTx};
 use rill_core::time::ClockTick;
 use rill_core::traits::processable::{NodeVariant, Processable};
 use rill_core::traits::port::Port;
@@ -181,12 +181,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
                 .collect();
             let feedback_refs: Vec<&[T; BUF_SIZE]> = owned_feedback.iter().collect();
 
+            let tel = self.tel_tx.as_ref().map(|s| TelemetryTx::new(s.clone()));
+            let tel_ref = tel.as_ref();
+
             let mut ctx = rill_core::traits::processable::ProcessContext {
                 clock: tick,
                 signal_inputs: &audio_refs,
                 control_inputs: &owned_control,
                 clock_inputs: &owned_clock,
                 feedback_inputs: &feedback_refs,
+                telemetry_tx: tel_ref,
             };
 
             self.nodes[idx].process_block(&mut ctx)?;
@@ -291,8 +295,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
     }
 
     /// Attach a telemetry sender after construction.
+    ///
+    /// Also distributes [`TelemetryTx`] to all nodes that have opted into
+    /// telemetry via [`SignalNode::set_telemetry_tx`].
     pub fn attach_telemetry_tx(&mut self, tx: Sender<Telemetry>) {
+        let wrapped = TelemetryTx::new(tx.clone());
         self.tel_tx = Some(tx);
+        for node in &mut self.nodes {
+            node.set_telemetry_tx(wrapped.clone());
+        }
     }
 
     /// Borrow the command slots (for external processing that needs to check

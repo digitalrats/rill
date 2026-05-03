@@ -250,6 +250,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 /// - Port counting
 /// - Parameter access
 /// - Initialization and reset
+/// - Optional telemetry sender
 ///
 /// The actual processing is split into specialized traits:
 /// - `Source` for generators
@@ -393,6 +394,15 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     /// Total number of output ports
     fn num_outputs(&self) -> usize {
         self.num_signal_outputs() + self.num_control_outputs() + self.num_clock_outputs()
+    }
+
+    /// Attach a telemetry sender to this node.
+    ///
+    /// Nodes that push telemetry (e.g. clock tick from a hardware source)
+    /// should store this sender and use it from their `generate()` /
+    /// `process()` / `consume()` methods via `TelemetryTx::try_send`.
+    /// Default is no-op — override only in nodes that produce telemetry.
+    fn set_telemetry_tx(&mut self, _tx: crate::queues::telemetry::TelemetryTx) {
     }
 }
 

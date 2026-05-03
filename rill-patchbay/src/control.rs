@@ -845,6 +845,11 @@ impl PatchbayControl {
         }
     }
 
+    /// Получить комбайнер по ключу (формат: "node_id:param_name")
+    pub fn get_combiner(&self, key: &str) -> Option<&crate::port_combiner::PortCombinerHandle> {
+        self.port_combiners.get(key)
+    }
+
     /// Получить все маппинги
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
@@ -865,10 +870,11 @@ impl PatchbayControl {
         self.servos.remove(id).is_some()
     }
 
-    /// Очистить все маппинги и сервоприводы
+    /// Очистить все маппинги, сервоприводы и async-автоматы
     pub fn clear(&mut self) {
         self.mappings.clear();
         self.servos.clear();
+        self.stop_all();
     }
 
     /// Сбросить время

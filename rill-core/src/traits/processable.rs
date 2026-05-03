@@ -4,8 +4,10 @@
 //! into a single `process_block` method, making it easier to build generic signal graphs.
 
 use crate::math::Transcendental;
+use crate::queues::telemetry::{Telemetry, TelemetryTx, CLOCK_TICK};
 use crate::time::ClockTick;
 use crate::traits::ProcessResult;
+use crate::traits::SignalNode;
 
 // ============================================================================
 // ProcessContext
@@ -27,6 +29,11 @@ pub struct ProcessContext<'a, T: Transcendental, const BUF_SIZE: usize> {
     pub clock_inputs: &'a [ClockTick],
     /// Feedback input buffers (slice of references to [T; BUF_SIZE])
     pub feedback_inputs: &'a [&'a [T; BUF_SIZE]],
+    /// Optional telemetry sender available to all nodes.
+    /// Nodes can push events (clock tick, peaks, status) from their
+    /// `generate()` / `process()` / `consume()` methods without
+    /// storing a sender locally.
+    pub telemetry_tx: Option<&'a TelemetryTx>,
 }
 
 // ============================================================================
@@ -57,6 +64,19 @@ where
     T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
+        // Push clock tick telemetry — every Source runs on a fixed block
+        // length whether driven by hardware or internal timing.
+        if let Some(tx) = ctx.telemetry_tx {
+            tx.try_send(Telemetry::event(
+                "source",
+                CLOCK_TICK,
+                vec![
+                    ctx.clock.sample_pos as f32,
+                    ctx.clock.sample_rate,
+                    ctx.clock.tempo.unwrap_or(0.0),
+                ],
+            ));
+        }
         self.as_mut()
             .generate(ctx.clock, ctx.control_inputs, ctx.clock_inputs)
     }
@@ -124,6 +144,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
             NodeVariant::Source(src) => src.set_tape(ptr),
             NodeVariant::Processor(proc) => proc.set_tape(ptr),
             NodeVariant::Sink(sink) => sink.set_tape(ptr),
+        }
+    }
+
+    /// Attach a telemetry sender to this node.
+    pub fn set_telemetry_tx(&mut self, tx: TelemetryTx) {
+        match self {
+            NodeVariant::Source(src) => SignalNode::set_telemetry_tx(src.as_mut(), tx),
+            NodeVariant::Processor(proc) => SignalNode::set_telemetry_tx(proc.as_mut(), tx),
+            NodeVariant::Sink(sink) => SignalNode::set_telemetry_tx(sink.as_mut(), tx),
         }
     }
 }

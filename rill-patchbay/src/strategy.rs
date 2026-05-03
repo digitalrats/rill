@@ -4,6 +4,7 @@
 //! разрешаются конфликты между автоматическим и ручным управлением.
 
 /// Как автомат воздействует на целевой параметр
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ControlStrategy {
     /// Автомат задаёт значение параметра напрямую.
@@ -24,6 +25,7 @@ pub enum ControlStrategy {
 }
 
 /// Стратегия разрешения конфликта между UI и автоматом
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConflictStrategy {
     /// Касание UI замораживает автомат для этого порта.

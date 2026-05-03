@@ -81,6 +81,9 @@ pub mod port_combiner;
 /// Обёртка Automaton в green thread (tokio task)
 pub mod automaton_task;
 
+/// Референсный оркестратор — high-level API над green threads
+pub mod engine;
+
 /// Сериализация конфигурации управления
 #[cfg(feature = "serde")]
 pub mod document;
@@ -99,9 +102,10 @@ pub use control::{
     NoAction, ParameterCommand, ParameterMapping, PatchbayControl, Servo, Target, Transform,
 };
 pub use manager::PatchbayManager;
-pub use strategy::{ConflictStrategy, ControlStrategy};
+pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 pub use port_combiner::{PortCombinerHandle, spawn_combiner};
 pub use automaton_task::spawn_automaton_task;
+pub use engine::PatchbayEngine;
 
 // =============================================================================
 // Прелюдия для удобного импорта
@@ -114,6 +118,9 @@ pub mod prelude {
     pub use crate::control::*;
     pub use crate::manager::*;
     pub use crate::strategy::*;
+    pub use crate::port_combiner::*;
+    pub use crate::automaton_task::*;
+    pub use crate::engine::*;
     pub use crate::utils::*;
 
     // Реэкспорты из rill-core
