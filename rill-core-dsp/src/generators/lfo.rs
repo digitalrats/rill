@@ -155,11 +155,10 @@ impl<T: Transcendental> Algorithm<T> for LFO<T> {
 
     fn process(
         &mut self,
-        input: Option<&[T]>,
+        _input: Option<&[T]>,
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             *out = self.modulate();
         }

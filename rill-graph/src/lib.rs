@@ -33,7 +33,7 @@ pub mod serialization;
 #[cfg(feature = "dot")]
 pub mod dot;
 
-pub use graph::{SignalGraph, BuildError, ConnectionKind, GraphBuilder, GraphResource};
+pub use graph::{SignalGraph, BuildError, GraphBuilder, GraphResource};
 pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
 
 /// Prelude for convenient imports

@@ -3,7 +3,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Processor, Source,
+    ParameterId, Port, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};

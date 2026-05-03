@@ -5,7 +5,7 @@ use rill_core::queues::telemetry::{Telemetry, TelemetryTx};
 use rill_core::time::ClockTick;
 use rill_core::traits::processable::{NodeVariant, Processable};
 use rill_core::traits::port::Port;
-use rill_core::traits::{SignalNode, PortId, ProcessResult};
+use rill_core::traits::{SignalNode, ProcessResult};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;

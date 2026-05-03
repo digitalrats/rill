@@ -4,7 +4,7 @@ use rand::Rng;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    Processor, Source,
+    Source,
 };
 use rill_core::{ProcessError, ProcessResult};
 

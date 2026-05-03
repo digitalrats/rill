@@ -2,31 +2,12 @@ use crate::registry::{NodeRegistry, RegistryError};
 use rill_core::buffer::{BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
-use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, PortId};
+use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
 use std::collections::VecDeque;
 
 // ============================================================================
 // Internal routing metadata
 // ============================================================================
-
-/// Describes how an signal input port routes to an signal output port within a node.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct InternalRoute {
-    pub from: PortId,
-    pub to: PortId,
-}
-
-// ============================================================================
-// Connection classification (auto-detected by the builder)
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionKind {
-    Direct,
-    FanOut,
-    FanIn,
-}
 
 // ============================================================================
 // Build Errors
@@ -420,10 +401,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
 
     // ── pub(crate) accessors for serialization ─────────────────────
 
+    #[allow(dead_code)]
     pub(crate) fn node_entries(&self) -> &[NodeEntry<T, BUF_SIZE>] {
         &self.nodes
     }
 
+    #[allow(dead_code)]
     pub(crate) fn sample_rate(&self) -> f32 {
         self.current_tick.sample_rate
     }

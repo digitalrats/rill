@@ -1,8 +1,6 @@
 /// Diode clipper with anti-parallel diodes as a single nonlinear element.
-use crate::constants::{BOLTZMANN, ELECTRON_CHARGE, NEWTON_TOLERANCE};
+use crate::constants::NEWTON_TOLERANCE;
 use crate::elements::Resistor;
-use crate::WdfElement;
-use rill_core::Transcendental;
 
 crate::wdf_element! {
     name: AntiParallelDiode<T>,
@@ -43,6 +41,7 @@ crate::wdf_compose! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::{BOLTZMANN, ELECTRON_CHARGE};
     use crate::WdfElement;
 
     fn make_clipper() -> DiodeClipper<f64> {

@@ -144,11 +144,10 @@ impl<T: Transcendental> Algorithm<T> for SimpleFmSynth<T> {
 
     fn process(
         &mut self,
-        input: Option<&[T]>,
+        _input: Option<&[T]>,
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Получаем модулирующий сигнал
             let mod_signal = self.modulator.generate().extract(0);
@@ -347,11 +346,10 @@ impl<T: Transcendental, const N: usize> Algorithm<T> for FmSynth<T, N> {
 
     fn process(
         &mut self,
-        input: Option<&[T]>,
+        _input: Option<&[T]>,
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             // Сохраняем текущие значения всех операторов
             let mut values = [T::ZERO; N];

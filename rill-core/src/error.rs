@@ -481,98 +481,6 @@ macro_rules! context {
 // Специализированные типы ошибок для разных компонентов
 // =============================================================================
 
-/// Ошибки буферов
-pub mod buffer {
-    use super::*;
-    #[allow(dead_code)]
-    pub fn full() -> Error {
-        Error::new(ErrorCode::BufferFull, "Buffer is full")
-    }
-    #[allow(dead_code)]
-    pub fn empty() -> Error {
-        Error::new(ErrorCode::BufferEmpty, "Buffer is empty")
-    }
-    #[allow(dead_code)]
-    pub fn invalid_size(expected: usize, got: usize) -> Error {
-        error!(
-            ErrorCode::InvalidBufferSize,
-            "Invalid buffer size: expected {}, got {}", expected, got
-        )
-    }
-    #[allow(dead_code)]
-    pub fn misaligned(required: usize, actual: usize) -> Error {
-        error!(
-            ErrorCode::BufferMisaligned,
-            "Buffer misaligned: required {} byte alignment, actual {}", required, actual
-        )
-    }
-    #[allow(dead_code)]
-    pub fn not_initialized() -> Error {
-        Error::new(ErrorCode::BufferNotInitialized, "Buffer not initialized")
-    }
-}
-
-/// Ошибки очередей
-pub mod queue {
-    use super::*;
-
-    pub fn full() -> Error {
-        Error::new(ErrorCode::QueueFull, "Queue is full")
-    }
-
-    pub fn empty() -> Error {
-        Error::new(ErrorCode::QueueEmpty, "Queue is empty")
-    }
-
-    pub fn closed() -> Error {
-        Error::new(ErrorCode::QueueClosed, "Queue is closed")
-    }
-
-    pub fn invalid_index(idx: usize, max: usize) -> Error {
-        error!(
-            ErrorCode::InvalidQueueIndex,
-            "Invalid queue index: {} (max {})", idx, max
-        )
-    }
-}
-
-/// Ошибки графа
-pub mod graph {
-    use super::*;
-    use crate::traits::NodeId;
-    use crate::traits::PortId;
-
-    pub fn node_not_found(id: NodeId) -> Error {
-        error!(ErrorCode::NodeNotFound, "Node not found: {}", id)
-    }
-
-    pub fn port_not_found(id: PortId) -> Error {
-        error!(ErrorCode::PortNotFound, "Port not found: {}", id)
-    }
-
-    pub fn invalid_connection(from: PortId, to: PortId) -> Error {
-        error!(
-            ErrorCode::InvalidConnection,
-            "Invalid connection: {} -> {}", from, to
-        )
-    }
-
-    pub fn cycle_detected() -> Error {
-        Error::new(ErrorCode::CycleDetected, "Cycle detected in graph")
-    }
-
-    pub fn node_already_exists(id: NodeId) -> Error {
-        error!(ErrorCode::NodeAlreadyExists, "Node already exists: {}", id)
-    }
-
-    pub fn port_already_connected(port: PortId) -> Error {
-        error!(
-            ErrorCode::PortAlreadyConnected,
-            "Port already connected: {}", port
-        )
-    }
-}
-
 /// Ошибки ввода-вывода
 pub mod io {
     use super::*;
@@ -687,7 +595,6 @@ pub mod runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prelude::NodeId;
 
     #[test]
     fn test_error_creation() {
@@ -717,13 +624,6 @@ mod tests {
 
     #[test]
     fn test_specialized_errors() {
-        let err = buffer::full();
-        assert_eq!(err.code, ErrorCode::BufferFull);
-
-        let err = graph::node_not_found(NodeId(42));
-        assert_eq!(err.code, ErrorCode::NodeNotFound);
-        assert!(err.message.contains("42"));
-
         let err = io::device_not_found("hw:0");
         assert_eq!(err.code, ErrorCode::DeviceNotFound);
         assert!(err.message.contains("hw:0"));
@@ -744,11 +644,9 @@ mod tests {
 
     #[test]
     fn test_realtime_critical() {
-        assert!(buffer::full().is_realtime_critical());
         assert!(io::xrun().is_realtime_critical());
         assert!(runtime::realtime_violation("test").is_realtime_critical());
 
-        assert!(!graph::node_not_found(NodeId(1)).is_realtime_critical());
         assert!(!config::not_found("test").is_realtime_critical());
     }
 }

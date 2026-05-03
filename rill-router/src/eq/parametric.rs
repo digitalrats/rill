@@ -19,8 +19,6 @@ pub struct ParametricEq<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Se
     sample_rate: f32,
     /// Output gain
     output_gain: f32,
-    /// Band names for automation
-    band_names: Vec<String>,
 }
 
 impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
@@ -33,7 +31,6 @@ impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static
             bands: Vec::with_capacity(num_bands),
             sample_rate,
             output_gain: 1.0,
-            band_names: (0..num_bands).map(|i| format!("band_{}", i)).collect(),
         };
 
         // Initialize bands with reasonable default frequencies

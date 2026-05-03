@@ -4,16 +4,6 @@ use rill_core::{
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
-/// Simple dry/wet stereo mix utility.
-///
-/// # Signal ports
-/// - 2 audio inputs (dry, wet) — mono
-/// - 2 audio outputs (L, R) — stereo
-///
-/// # Parameters
-/// - `dry`    (0.0 – 1.0)
-/// - `wet`    (0.0 – 1.0)
-/// - `master` (0.0 – 2.0)
 pub struct DryWetMix<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
@@ -27,7 +17,6 @@ pub struct DryWetMix<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
-    /// Create a new dry/wet mix node.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("DryWetMix", NodeCategory::Processor);
         metadata.parameters = vec![

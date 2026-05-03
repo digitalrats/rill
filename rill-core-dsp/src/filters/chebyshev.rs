@@ -1,6 +1,6 @@
 //! # Фильтры Чебышева (Chebyshev Filters)
 
-use super::{FilterParams, FilterType};
+use super::FilterParams;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
@@ -13,6 +13,7 @@ use std::f64::consts::PI as PI64;
 // -----------------------------------------------------------------------------
 
 /// Полином Чебышева первого рода T_n(x)
+#[cfg(test)]
 fn chebyshev_poly_t(n: usize, x: f64) -> f64 {
     match n {
         0 => 1.0,

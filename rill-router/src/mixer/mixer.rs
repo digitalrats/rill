@@ -3,7 +3,7 @@
 use super::channel::{ChannelConfig, ChannelState};
 use super::send::{SendConfig, SendType};
 use rill_core::traits::{
-    Router, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
+    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
     ParamRange, ParamType, ParamValue, ParameterId, Port,
 };
 use rill_core::ClockTick;
@@ -490,7 +490,7 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
         clock: &ClockTick,
         _inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let num_buses = self.buses.len();
+        let _num_buses = self.buses.len();
         let buffer_size = BUF_SIZE;
 
         // Update state with clock

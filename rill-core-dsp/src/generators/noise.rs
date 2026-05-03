@@ -199,11 +199,10 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenerator<T> {
 
     fn process(
         &mut self,
-        input: Option<&[T]>,
+        _input: Option<&[T]>,
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             *out = match self.noise_type {
                 NoiseType::White => self.generate_white().extract(0),

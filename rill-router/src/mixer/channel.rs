@@ -1,7 +1,5 @@
 //! Mixer channel implementation
 
-use rill_core::traits::ParamValue;
-use rill_core::ProcessError;
 
 /// Channel mode (mono or stereo)
 #[derive(Debug, Clone, Copy, PartialEq)]

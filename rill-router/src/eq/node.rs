@@ -4,7 +4,7 @@ use rill_core::{
     SignalNode, Transcendental, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
     Port, ProcessError, ProcessResult, Processor,
 };
-use rill_core_dsp::filters::{Biquad, Filter, FilterParams, FilterType};
+use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 use super::{BandType, FilterFactory, GraphicEq, ParametricEq};
 

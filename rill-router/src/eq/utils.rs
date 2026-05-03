@@ -1,21 +1,5 @@
 //! Utility functions for EQ
 
-/// Parse band parameter string like "band_0_freq" -> (0, "freq")
-pub fn parse_band_param(name: &str) -> Option<(usize, &str)> {
-    if name.starts_with("band_") {
-        let rest = &name[5..];
-        if let Some(underscore) = rest.find('_') {
-            let (idx_str, param) = rest.split_at(underscore);
-            let param = &param[1..]; // remove '_'
-
-            if let Ok(idx) = idx_str.parse::<usize>() {
-                return Some((idx, param));
-            }
-        }
-    }
-    None
-}
-
 /// Calculate logarithmic frequency spacing
 pub fn log_spaced_frequencies(start_hz: f32, end_hz: f32, num_bands: usize) -> Vec<f32> {
     if num_bands == 0 {
@@ -34,15 +18,6 @@ pub fn log_spaced_frequencies(start_hz: f32, end_hz: f32, num_bands: usize) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_band_param() {
-        assert_eq!(parse_band_param("band_0_freq"), Some((0, "freq")));
-        assert_eq!(parse_band_param("band_5_gain"), Some((5, "gain")));
-        assert_eq!(parse_band_param("band_10_q"), Some((10, "q")));
-        assert_eq!(parse_band_param("band_0"), None);
-        assert_eq!(parse_band_param("output_gain"), None);
-    }
 
     #[test]
     fn test_log_spaced_frequencies() {

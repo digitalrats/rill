@@ -40,10 +40,6 @@ pub enum TimeError {
     Timing(String),
 }
 
-/// Result type for time operations
-#[allow(dead_code)]
-pub type TimeResult<T> = Result<T, TimeError>;
-
 impl TimeError {
     /// Create a new hardware error
     pub fn hardware(msg: impl Into<String>) -> Self {

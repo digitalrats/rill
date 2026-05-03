@@ -183,11 +183,11 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
 
     fn set_id(&mut self, _id: NodeId) {}
 
-    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
         None
     }
 
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         None
     }
 
@@ -199,11 +199,11 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
         self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
         None
     }
 
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         None
     }
 

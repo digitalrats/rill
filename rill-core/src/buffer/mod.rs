@@ -24,8 +24,6 @@
 //! - **Statistically monitored** - Track performance metrics
 //! - **Type-safe** - Generic over `Transcendental` (f32/f64)
 
-use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::fmt;
 
@@ -338,75 +336,6 @@ pub trait SignalBuffer<T: Transcendental> {
 /// # Safety
 /// This type uses `UnsafeCell` for interior mutability and `MaybeUninit`
 /// for uninitialized data. Users must ensure proper initialization before reading.
-
-// ============================================================================
-// Buffer Read/Write Guards
-// ============================================================================
-
-/// Read guard for buffer access
-///
-/// Provides RAII-style access to buffer data for reading.
-/// The guard releases any locks when dropped.
-
-#[allow(dead_code)]
-pub struct ReadGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    buffer: &'a B,
-    data: &'a [T],
-    _marker: PhantomData<B>,
-}
-
-impl<'a, T, B> Deref for ReadGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        self.data
-    }
-}
-
-/// Write guard for buffer access
-///
-/// Provides RAII-style access to buffer data for writing.
-/// The guard releases any locks and commits changes when dropped.
-#[allow(dead_code)]
-pub struct WriteGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    buffer: &'a mut B,
-    data: &'a mut [T],
-    _marker: PhantomData<B>,
-}
-
-impl<'a, T, B> Deref for WriteGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        self.data
-    }
-}
-
-impl<'a, T, B> DerefMut for WriteGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.data
-    }
-}
 
 // ============================================================================
 // Utility Functions

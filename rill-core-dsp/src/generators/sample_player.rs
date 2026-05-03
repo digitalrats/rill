@@ -152,9 +152,6 @@ impl<T: Transcendental> SamplePlayer<T> {
         self.reader.rate()
     }
 
-    fn playable_len(&self) -> f64 {
-        (self.loop_end - self.loop_start).max(1.0)
-    }
 }
 
 impl<T: Transcendental> Algorithm<T> for SamplePlayer<T> {

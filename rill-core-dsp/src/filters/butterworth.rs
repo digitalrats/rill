@@ -1,6 +1,6 @@
 //! # Фильтры Баттерворта (Butterworth Filters)
 
-use super::{Filter, FilterParams, FilterType};
+use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
@@ -213,8 +213,8 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
         }
     }
 
-    fn compute_gain(&self, analog_poles: &[Complex64], warp_cutoff: f64) -> ScalarVector1<T> {
-        let n = self.order;
+    fn compute_gain(&self, analog_poles: &[Complex64], _warp_cutoff: f64) -> ScalarVector1<T> {
+        let _n = self.order;
 
         let mut analog_gain = 1.0;
         for pole in analog_poles {

@@ -5,7 +5,7 @@
 //! - Простых low-pass/high-pass фильтров
 //! - Envelope followers
 
-use super::{Filter, FilterParams, FilterType};
+use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use core::f32::consts::PI;

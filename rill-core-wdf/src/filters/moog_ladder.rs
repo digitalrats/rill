@@ -3,17 +3,17 @@ use rill_core::traits::{
 };
 use rill_core::Transcendental;
 
-/// First-order WDF lowpass section.
-///
-/// Models an RC pole in the wave digital domain.
-/// The parameter `alpha` = π·fc/fs / (1 + π·fc/fs) controls the cutoff.
-///
-/// This is functionally equivalent to `Series<Resistor, Capacitor>`
-/// where the capacitor's scattering has been simplified into a single
-/// coefficient. The compose macro (`wdf_compose!`) handles static
-/// Series/Parallel networks correctly, but for filters with memory
-/// (capacitors, inductors) the explicit scattering form is needed
-/// for correct state tracking.
+// First-order WDF lowpass section.
+//
+// Models an RC pole in the wave digital domain.
+// The parameter `alpha` = π·fc/fs / (1 + π·fc/fs) controls the cutoff.
+//
+// This is functionally equivalent to `Series<Resistor, Capacitor>`
+// where the capacitor's scattering has been simplified into a single
+// coefficient. The compose macro (`wdf_compose!`) handles static
+// Series/Parallel networks correctly, but for filters with memory
+// (capacitors, inductors) the explicit scattering form is needed
+// for correct state tracking.
 crate::wdf_element! {
     name: RcPole<T>,
     params: { alpha: T },

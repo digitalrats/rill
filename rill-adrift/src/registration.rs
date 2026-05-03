@@ -14,14 +14,9 @@
 
 use std::sync::Mutex;
 
-use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, Source, Processor};
+use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
 use rill_graph::{node_ctor, NodeRegistry};
 
-// Global registries, one per block size. Lazily initialized on first access.
-static REGISTRY_64: Mutex<Option<NodeRegistry<f32, 64>>> = Mutex::new(None);
-static REGISTRY_128: Mutex<Option<NodeRegistry<f32, 128>>> = Mutex::new(None);
-static REGISTRY_256: Mutex<Option<NodeRegistry<f32, 256>>> = Mutex::new(None);
-static REGISTRY_512: Mutex<Option<NodeRegistry<f32, 512>>> = Mutex::new(None);
 
 /// Return a lazily-initialized global registry for the given block size.
 ///
@@ -138,10 +133,10 @@ fn register_digital_filters<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
 
 fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>) {
     use rill_digital_effects::{
-        Delay, Distortion, DistortionType, Limiter, DryWetMix,
+        Delay, Distortion, DistortionType, Limiter,
         WriteHead, ReadHead,
     };
-    use rill_router::MixerNode;
+    use rill_router::{DryWetMix, MixerNode};
 
     node_ctor!(registry, "rill/delay", |id: NodeId, params: &NodeParams| {
         let mut n = Delay::<f32, BUF_SIZE>::with_params(
