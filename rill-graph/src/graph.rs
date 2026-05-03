@@ -1087,4 +1087,48 @@ mod tests {
         assert!((sink_val - 28.0).abs() < 1e-6,
             "source(7)×gain(4)=28, got {}", sink_val);
     }
+
+    // ── Test: Feedback propagation ──────────────────────────────────
+
+    #[test]
+    fn test_feedback_propagation() {
+        use rill_core::traits::algorithm::ActionContext;
+
+        const BUF: usize = 64;
+        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let src = builder.add_source(Box::new(ConstantSource::new(1.0, 44100.0)));
+        let proc = builder.add_processor(Box::new(
+            GainProcessor::<f32, BUF>::new(NodeId(1), 44100.0, 2.0)));
+        let snk = builder.add_sink(Box::new(
+            TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
+        // Signal path: source → processor → sink
+        builder.connect_signal(src, 0, proc, 0);
+        builder.connect_signal(proc, 0, snk, 0);
+        // Feedback: processor output → processor input
+        builder.connect_feedback(proc, 0, proc, 0);
+        let graph = builder.build(Box::new(SystemClock::with_sample_rate(44100.0))).unwrap();
+        let (mut nodes, topo, _) = graph.into_parts();
+
+        // ── Block 1: no feedback yet ──
+        let tick1 = ClockTick::new(0, BUF as u32, 44100.0);
+        let mut ctx = ProcessContext { clock: &tick1 };
+        let _ = nodes[topo[0]].process_block(&mut ctx);  // source generates
+        let ctx1 = ActionContext::new(&tick1);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
+        out_port.propagate(out_port.buffer(), &ctx1).unwrap();
+        let block1 = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
+        assert!((block1 - 2.0).abs() < 1e-6, "block1: 1.0×2.0=2.0, got {}", block1);
+
+        // ── Block 2: feedback from block1 should be mixed in ──
+        let tick2 = ClockTick::new(BUF as u64, BUF as u32, 44100.0);
+        let mut ctx = ProcessContext { clock: &tick2 };
+        let _ = nodes[topo[0]].process_block(&mut ctx);  // source generates again
+        let ctx2 = ActionContext::new(&tick2);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
+        out_port.propagate(out_port.buffer(), &ctx2).unwrap();
+        let block2 = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
+        // pre_process: input = 1.0 (source) + 2.0 (feedback from block1) = 3.0
+        // process: 3.0 × 2.0 = 6.0
+        assert!((block2 - 6.0).abs() < 1e-6, "block2: (1+2)×2=6.0, got {}", block2);
+    }
 }

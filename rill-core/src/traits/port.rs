@@ -583,6 +583,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         for &parent in &seen {
             unsafe {
                 let nv = &mut *parent;
+                // Pre-process input ports (feedback mix from previous block)
+                for pi in 0..nv.num_signal_inputs() {
+                    if let Some(p) = nv.input_port_mut(pi) {
+                        p.pre_process(ctx.tick);
+                    }
+                }
                 nv.process_block(&mut proc_ctx)?;
                 for po in 0..nv.num_signal_outputs() {
                     if let Some(p) = nv.output_port_mut(po) {
