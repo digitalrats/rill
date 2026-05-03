@@ -14,12 +14,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rill_core::prelude::*;
+use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
 use rill_core::queues::MpscQueue;
+
+use crossbeam_channel::Receiver as CrossbeamReceiver;
 
 pub use crate::automaton::Range;
 use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
 use crate::automaton_task::spawn_automaton_task;
 use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
+use crate::sequencer::{SequencerCommand, SequencerHandle, SnapshotSequencer};
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
@@ -555,6 +559,12 @@ pub struct PatchbayControl {
     /// JoinHandle для задач автоматов (async режим)
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
 
+    /// Handle for controlling the sequencer (if attached).
+    sequencer_handle: Option<SequencerHandle>,
+
+    /// Handle for the sequencer's blocking tokio task.
+    sequencer_task: Option<tokio::task::JoinHandle<()>>,
+
     /// Очередь для отправки команд в аудиопоток
     command_queue: Arc<MpscQueue<ParameterCommand>>,
 
@@ -570,6 +580,8 @@ impl PatchbayControl {
             servos: HashMap::new(),
             port_combiners: HashMap::new(),
             automaton_handles: HashMap::new(),
+            sequencer_handle: None,
+            sequencer_task: None,
             command_queue,
             time: 0.0,
         }
@@ -799,13 +811,111 @@ impl PatchbayControl {
         );
     }
 
-    /// Остановить все async-автоматы
+    // =========================================================================
+    // 8b. Секвенсор (параметр-локи через CLOCK_TICK телеметрию)
+    // =========================================================================
+
+    /// Attach a parameter-lock sequencer driven by audio-thread clock ticks.
+    ///
+    /// Spawns a `tokio::task::spawn_blocking` task that:
+    /// 1. Reads `CLOCK_TICK` telemetry from the audio thread's crossbeam
+    ///    channel.
+    /// 2. Feeds each tick to [`SnapshotSequencer::tick`].
+    /// 3. Pushes returned `ParameterCommand` batches to the command queue.
+    ///
+    /// Returns a [`SequencerHandle`] that can be shared across threads to
+    /// start, stop, and switch patterns on the running sequencer.
+    ///
+    /// # Panics
+    ///
+    /// If a sequencer is already attached (use `detach_sequencer()` first).
+    pub fn attach_sequencer(
+        &mut self,
+        tel_rx: CrossbeamReceiver<Telemetry>,
+        sequencer: SnapshotSequencer,
+    ) -> SequencerHandle {
+        assert!(
+            self.sequencer_task.is_none(),
+            "sequencer already attached — detach first"
+        );
+
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<SequencerCommand>();
+        let queue = self.command_queue.clone();
+
+        let task = tokio::task::spawn_blocking(move || {
+            let mut seq = sequencer;
+
+            loop {
+                // Drain pending control commands.
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(SequencerCommand::Start) => seq.start(),
+                        Ok(SequencerCommand::Stop) => seq.stop(),
+                        Ok(SequencerCommand::Reset { sample_pos }) => seq.reset(sample_pos),
+                        Ok(SequencerCommand::SetPattern(id)) => seq.set_active_pattern(&id),
+                        Err(crossbeam_channel::TryRecvError::Empty) => break,
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => return,
+                    }
+                }
+
+                // Block on the next telemetry event.
+                match tel_rx.recv() {
+                    Ok(Telemetry::Event { kind, data, .. }) if kind == CLOCK_TICK => {
+                        if data.len() >= 3 {
+                            let sample_pos = data[0] as u64;
+                            let sample_rate = data[1];
+                            let tempo = data[2];
+
+                            // Extended beat info (added in 0.4.0).
+                            // Forward-compatible: optional fields 3..6.
+                            let beat_pos = data.get(3).copied().unwrap_or(0.0);
+                            let new_beat = data.get(4).copied().unwrap_or(0.0) > 0.5;
+                            let new_bar = data.get(5).copied().unwrap_or(0.0) > 0.5;
+
+                            let cmds = seq.tick_ext(
+                                sample_pos, sample_rate, tempo,
+                                beat_pos, new_beat, new_bar,
+                            );
+                            for cmd in cmds {
+                                let _ = queue.push(cmd);
+                            }
+                        }
+                    }
+                    // Channel closed — exit the task.
+                    Err(_) => return,
+                    _ => {}
+                }
+            }
+        });
+
+        let handle = SequencerHandle::new(cmd_tx);
+        self.sequencer_handle = Some(handle.clone());
+        self.sequencer_task = Some(task);
+
+        handle
+    }
+
+    /// Detach the sequencer: abort its task and drop the handle.
+    pub fn detach_sequencer(&mut self) {
+        if let Some(task) = self.sequencer_task.take() {
+            task.abort();
+        }
+        self.sequencer_handle = None;
+    }
+
+    /// Get a reference to the sequencer handle, if attached.
+    pub fn sequencer_handle(&self) -> Option<&SequencerHandle> {
+        self.sequencer_handle.as_ref()
+    }
+
+    /// Остановить все async-автоматы и секвенсер
     pub fn stop_all(&mut self) {
         for combiner in self.port_combiners.values() {
             combiner.stop();
         }
         self.port_combiners.clear();
         self.automaton_handles.clear();
+        self.detach_sequencer();
     }
 
     // =========================================================================

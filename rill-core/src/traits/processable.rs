@@ -67,6 +67,9 @@ where
         // Push clock tick telemetry — every Source runs on a fixed block
         // length whether driven by hardware or internal timing.
         if let Some(tx) = ctx.telemetry_tx {
+            let beat = ctx.clock.beat_position().map(|b| b as f32).unwrap_or(0.0);
+            let new_beat = if ctx.clock.is_new_beat() { 1.0 } else { 0.0 };
+            let new_bar = if ctx.clock.is_new_bar() { 1.0 } else { 0.0 };
             tx.try_send(Telemetry::event(
                 "source",
                 CLOCK_TICK,
@@ -74,6 +77,9 @@ where
                     ctx.clock.sample_pos as f32,
                     ctx.clock.sample_rate,
                     ctx.clock.tempo.unwrap_or(0.0),
+                    beat,
+                    new_beat,
+                    new_bar,
                 ],
             ));
         }

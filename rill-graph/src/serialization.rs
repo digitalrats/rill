@@ -64,6 +64,11 @@ pub struct GraphDocument {
 
     /// Connection wiring.
     pub connections: Vec<ConnectionDef>,
+
+    /// Optional human-readable description (attribution, preset notes, …).
+    /// Not interpreted by the engine; preserved through serialisation round-trips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// A single node in the serialised graph.
@@ -163,6 +168,7 @@ impl GraphDocument {
             resources: Vec::new(),
             nodes: Vec::new(),
             connections: Vec::new(),
+            description: None,
         }
     }
 
@@ -233,6 +239,7 @@ impl GraphDocument {
             resources,
             nodes,
             connections,
+            description: None,
         }
     }
 }
@@ -865,6 +872,7 @@ mod tests {
                 parameters: HashMap::new(),
             }],
             connections: vec![],
+            description: None,
         };
         let result = doc.into_builder(&reg);
         assert!(result.is_err());
@@ -893,6 +901,7 @@ mod tests {
                 },
             ],
             connections: vec![],
+            description: None,
         };
         match doc.into_builder(&reg) {
             Err(SerializationError::DuplicateNodeId(id)) => assert_eq!(id, 0),
@@ -909,6 +918,7 @@ mod tests {
             resources: vec![],
             nodes: vec![],
             connections: vec![],
+            description: None,
         };
         let r = NodeRegistry::<f32, 256>::new();
         match doc.into_builder(&r) {

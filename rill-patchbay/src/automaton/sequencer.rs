@@ -15,6 +15,7 @@ pub struct Step {
     /// Длительность в долях такта
     pub duration: f64,
     /// Кривая перехода к следующему шагу
+    #[cfg_attr(feature = "serde", serde(default))]
     pub curve: Option<f64>,
 }
 

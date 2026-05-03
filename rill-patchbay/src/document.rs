@@ -65,6 +65,8 @@ impl AutomatonDef {
 pub struct StepDef {
     pub value: f64,
     pub duration: f64,
+    /// Curve for transition to the next step. CBOR-roundtrip safe.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub curve: Option<f64>,
 }
 
@@ -185,6 +187,11 @@ pub struct PatchbayDocument {
     pub automata: Vec<AutomatonDef>,
     pub servos: Vec<ServoDef>,
     pub mappings: Vec<MappingDef>,
+
+    /// Optional human-readable description (attribution, preset notes, …).
+    /// Not interpreted by the engine; preserved through serialisation round-trips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl PatchbayDocument {
@@ -193,6 +200,7 @@ impl PatchbayDocument {
             automata: Vec::new(),
             servos: Vec::new(),
             mappings: Vec::new(),
+            description: None,
         }
     }
 
@@ -441,6 +449,7 @@ mod tests {
                 },
             ],
             mappings: vec![],
+            description: None,
         }
     }
 
@@ -490,6 +499,7 @@ mod tests {
                 conflict_strategy: None,
             }],
             mappings: vec![],
+            description: None,
         };
         let q = Arc::new(MpscQueue::new());
         let mut control = PatchbayControl::new(q);
@@ -522,6 +532,7 @@ mod tests {
                 conflict_strategy: Some(ConflictStrategy::LastWriteWins),
             }],
             mappings: vec![],
+            description: None,
         };
 
         let json = to_json(&doc).unwrap();
@@ -560,6 +571,7 @@ mod tests {
                 conflict_strategy: Some(ConflictStrategy::LastWriteWins),
             }],
             mappings: vec![],
+            description: None,
         };
 
         let q: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());

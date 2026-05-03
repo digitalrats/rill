@@ -84,6 +84,9 @@ pub mod automaton_task;
 /// Референсный оркестратор — high-level API над green threads
 pub mod engine;
 
+/// Parameter-lock step sequencer
+pub mod sequencer;
+
 /// Сериализация конфигурации управления
 #[cfg(feature = "serde")]
 pub mod document;
@@ -107,6 +110,14 @@ pub use port_combiner::{PortCombinerHandle, spawn_combiner};
 pub use automaton_task::spawn_automaton_task;
 pub use engine::PatchbayEngine;
 
+// Sequencer re-exports
+pub use sequencer::{
+    ParameterTarget, Pattern, SequenceStep, SequencerHandle, Snapshot, SnapshotSequencer,
+    StepPlayMode,
+};
+#[cfg(feature = "serde")]
+pub use sequencer::SequencerDocument;
+
 // =============================================================================
 // Прелюдия для удобного импорта
 // =============================================================================
@@ -121,6 +132,7 @@ pub mod prelude {
     pub use crate::port_combiner::*;
     pub use crate::automaton_task::*;
     pub use crate::engine::*;
+    pub use crate::sequencer::*;
     pub use crate::utils::*;
 
     // Реэкспорты из rill-core

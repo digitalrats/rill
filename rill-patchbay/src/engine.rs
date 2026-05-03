@@ -41,15 +41,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crossbeam_channel::Receiver as CrossbeamReceiver;
+use rill_core::queues::telemetry::Telemetry;
 use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
 
 use crate::automaton::LfoWaveform;
-use crate::control::{ControlEvent, Mapping, ParameterCommand, PatchbayControl, Transform};
+use crate::control::{ControlEvent, Mapping, ParameterCommand, PatchbayControl};
 #[cfg(feature = "serde")]
 use crate::document::PatchbayDocument;
 #[cfg(feature = "serde")]
 use crate::function_registry::FunctionRegistry;
+use crate::sequencer::{SequencerHandle, SnapshotSequencer};
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 
 /// High-level orchestrator for the patchbay system.
@@ -150,6 +153,41 @@ impl PatchbayEngine {
     /// it goes directly to the command queue.
     pub fn handle_event(&mut self, event: ControlEvent) {
         self.control.handle_event(event);
+    }
+
+    /// Attach a parameter-lock sequencer driven by audio-thread clock ticks.
+    ///
+    /// See [`PatchbayControl::attach_sequencer`] for details.
+    pub fn attach_sequencer(
+        &mut self,
+        tel_rx: CrossbeamReceiver<Telemetry>,
+        sequencer: SnapshotSequencer,
+    ) -> SequencerHandle {
+        self.control.attach_sequencer(tel_rx, sequencer)
+    }
+
+    /// Load a serialised sequencer document and attach it.
+    ///
+    /// Convenience wrapper: deserialises the document into a
+    /// [`SnapshotSequencer`], then calls [`attach_sequencer`](Self::attach_sequencer).
+    #[cfg(feature = "serde")]
+    pub fn load_sequencer_document(
+        &mut self,
+        tel_rx: CrossbeamReceiver<Telemetry>,
+        doc: crate::sequencer::SequencerDocument,
+    ) -> SequencerHandle {
+        let seq = doc.into_sequencer();
+        self.attach_sequencer(tel_rx, seq)
+    }
+
+    /// Detach the sequencer: abort its task and drop the handle.
+    pub fn detach_sequencer(&mut self) {
+        self.control.detach_sequencer();
+    }
+
+    /// Get a reference to the sequencer handle, if attached.
+    pub fn sequencer_handle(&self) -> Option<&SequencerHandle> {
+        self.control.sequencer_handle()
     }
 
     /// Stop all automaton green threads and clear mappings.

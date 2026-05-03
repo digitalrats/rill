@@ -6,6 +6,14 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Константы для телеметрии часов (clock)
+///
+/// Формат `CLOCK_TICK` (Telemetry::Event с kind="clock_tick"):
+/// - `data[0]` — `sample_pos` (абсолютная позиция сэмпла, f32)
+/// - `data[1]` — `sample_rate` (частота дискретизации, Hz)
+/// - `data[2]` — `tempo` (BPM, 0.0 если неизвестен)
+/// - `data[3]` — `beat_position` (дробная позиция бита, 0.0 если нет темпа)
+/// - `data[4]` — `is_new_beat` (1.0 если это начало нового бита, иначе 0.0)
+/// - `data[5]` — `is_new_bar` (1.0 если это начало нового такта, иначе 0.0)
 pub const CLOCK_TICK: &str = "clock_tick";
 pub const CLOCK_TEMPO: &str = "clock_tempo";
 
