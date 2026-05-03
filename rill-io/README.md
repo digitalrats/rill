@@ -2,30 +2,32 @@
 
 Audio I/O backends — ALSA, CPAL, PipeWire, JACK.
 
-This crate provides only the hardware abstraction layer. Graph processing is
-handled by [`rill-graph::SignalEngine`](https://docs.rs/rill-graph) —
-this crate is purely about backend I/O.
+This crate provides I/O backends and the `AudioInput`/`AudioOutput` graph
+nodes that own the reactive stream (PipeWire callback or similar).
 
 ## Key components
 
-- **`AudioBackend` trait** — common interface for all I/O backends
+- **`AudioIo` trait** — abstract reactive stream backend (`read_input`,
+  `write_output`, `set_process_callback`, `start`, `stop`)
+- **`BackendRegistry`** — global map `name → AudioIo`, populated during graph
+  construction by the node factory
+- **`AudioInput`** — `Source` node that owns the processing callback:
+  1. Drain command queue into graph nodes
+  2. `read_input()` from backend → fill output ports
+  3. `Port::propagate()` recursively processes the DAG
+- **`AudioOutput`** — `Sink` node, writes processed data via `write_output()`
 - **Backends** (each behind a feature flag):
-  - `cpal` — cross-platform audio I/O via CPAL (default)
+  - `pipewire` — PipeWire backend (primary, tested with virtual devices)
+  - `cpal` — cross-platform audio I/O via CPAL (legacy)
   - `alsa` — Linux ALSA backend
-  - `pipewire` — PipeWire backend
   - `jack` — JACK Audio Connection Kit backend
 
-## Two-thread architecture
+## Processing model
 
-Audio processing is separated into two threads:
-
-- **Audio thread** (hard RT): runs [`rill-graph::SignalEngine`] which calls
-  `process_tick()` for clock boundary and `process_block()` for graph
-  processing. Source/Sink nodes own the I/O buffers.
-- **Control thread** (soft RT): runs `PatchbayManager` for automata,
-  sensors, and servos. Communicates via `CommandQueue`/`TelemetryQueue`.
-
-See [`rill-graph` documentation](https://docs.rs/rill-graph) for details.
+No external engine. `AudioInput` creates the backend callback, which:
+1. Drains `MpscQueue<ParameterCommand>` into graph nodes
+2. Calls `Source::generate()` (reads backend → fills output ports)
+3. Calls `Port::propagate()` → recursively cascades through the DAG
 
 ## Links
 

@@ -154,13 +154,20 @@ HOOK
 chmod +x .git/hooks/pre-commit
 ```
 
-## Threading model
+## Processing model
 
-- **Signal thread** (hard RT, single-threaded): `rill-graph::SignalEngine` processes the graph in a tight loop. All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`, `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside this thread by graph nodes. They are **not** thread-safe by design — no atomics, no locks.
-- **Control thread** (soft RT): `rill-patchbay::PatchbayManager` / `PatchbayControl` runs automata and mappings. Communicates with the signal thread **only** through `rill-core::queues` (`MpscQueue`, `CommandQueue`). These queue types use atomic operations and are the **sole** cross-thread bridge.
-- **I/O backends** (`rill-io`) run in the signal thread or a dedicated callback context, depending on the backend. They write directly into Source/Sink port buffers — no copying through queues.
-
-Rule of thumb: if data crosses threads, use `rill-core::queues`. Everything else is single-threaded within the signal graph.
+- **No external engine.** The graph is a pure static DAG. Signal propagation
+  happens through `Port::propagate` — a recursive chain: copy → `run_action`
+  → `pre_process` (feedback) → `process_block` → `snapshot_feedback` → recurse.
+- **Source owns the clock.** `AudioInput` (push model) or `AudioOutput`
+  (pull model) creates the backend callback that drives the graph.
+  The callback drains the command queue, generates/processes/consumes,
+  and calls `Port::propagate` to cascade through downstream nodes.
+- **Control thread** (soft RT): `rill-patchbay::PatchbayManager` / runs
+  automata and mappings. Pushes `ParameterCommand` values into an
+  `MpscQueue` consumed by the source node's callback.
+- **I/O backends** (`rill-io`) provide `AudioIo` trait. The backend's
+  process callback (PipeWire, etc.) is wired by the source node.
 
 ## Known pitfalls
 
@@ -169,4 +176,6 @@ Rule of thumb: if data crosses threads, use `rill-core::queues`. Everything else
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: `rill-graph::SignalEngine` runs on the signal thread (hard RT), `rill-patchbay::PatchbayManager` runs on the control thread (soft RT). Communication via `CommandQueue`/`TelemetryQueue`. Source/Sink nodes own I/O buffers — the engine only orchestrates.
+- **Port-based propagation**: `Port::propagate` replaces `SignalEngine::process_block`.
+  No external engine loop — the DAG propagates through direct port-to-port pointers
+  (`downstream_input_ptrs`) and parent node references.
