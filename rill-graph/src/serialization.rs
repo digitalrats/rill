@@ -15,8 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{SignalNode, NodeId, NodeMetadata, NodeParams, NodeVariant, ParamValue};
-use rill_core::ParamMetadata;
+use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParameterId;
 
 use crate::graph::{GraphBuilder, NodeEntry};

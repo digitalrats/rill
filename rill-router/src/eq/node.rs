@@ -391,7 +391,7 @@ pub struct GraphicEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node state
     state: NodeState<T, BUF_SIZE>,
     /// Inner graphic equalizer (works with f32)
-    eq: GraphicEq<Biquad<f32>, BiquadFactory>,
+    eq: GraphicEq<Biquad<f32>>,
     /// Output gain (linear)
     pub output_gain: f32,
     /// Number of bands
@@ -485,12 +485,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
     }
 
     /// Get reference to inner equalizer.
-    pub fn eq(&self) -> &GraphicEq<Biquad<f32>, BiquadFactory> {
+    pub fn eq(&self) -> &GraphicEq<Biquad<f32>> {
         &self.eq
     }
 
     /// Get mutable reference to inner equalizer.
-    pub fn eq_mut(&mut self) -> &mut GraphicEq<Biquad<f32>, BiquadFactory> {
+    pub fn eq_mut(&mut self) -> &mut GraphicEq<Biquad<f32>> {
         &mut self.eq
     }
 }

@@ -5,7 +5,7 @@
 //!
 //! ## Использование
 //!
-//! ```ignore
+//! ```no_run
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //! use rill_core::queues::MpscQueue;

@@ -2,7 +2,7 @@
 use rill_core::{SignalNode, ParamValue, ParameterId};
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 use rill_router::{
-    BandType, FilterFactory, GraphicEq, GraphicEqProcessor, ParametricEq, ParametricEqProcessor,
+    FilterFactory, GraphicEq, GraphicEqProcessor, ParametricEq, ParametricEqProcessor,
 };
 
 /// Custom factory for Biquad<f32> that implements FilterFactory

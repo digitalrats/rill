@@ -4,11 +4,9 @@
 mod tests {
     use crate::math::Transcendental;
     use crate::prelude::*;
-    use crate::traits::IntoParamValue;
     use std::f32::consts::PI;
 
     // Импортируем макросы
-    use crate::{processor_node, sink_node, source_node, with_parameters};
 
     // Тестовый источник
     source_node! {

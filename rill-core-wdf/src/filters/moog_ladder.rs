@@ -96,7 +96,7 @@ mod tests {
     use super::*;
     use rill_core::prelude::ClockTick;
 
-    fn make_context(tick: &ClockTick) -> ActionContext {
+    fn make_context(tick: &ClockTick) -> ActionContext<'_> {
         ActionContext::new(tick)
     }
 

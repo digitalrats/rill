@@ -184,9 +184,9 @@ macro_rules! source_node {
         {
             fn generate(
                 &mut self,
-                clock: &$crate::ClockTick,
-                control_inputs: &[$T],
-                clock_inputs: &[$crate::ClockTick],
+                _clock: &$crate::ClockTick,
+                _control_inputs: &[$T],
+                _clock_inputs: &[$crate::ClockTick],
             ) -> $crate::ProcessResult<()> {
                 ($generate)(self)?;
                 Ok(())

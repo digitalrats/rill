@@ -53,9 +53,6 @@ macro_rules! sink_node {
                 node
             }
 
-            pub fn sample_rate(&self) -> f32 {
-                self.state.sample_rate
-            }
         }
 
         impl<$T: $audio_num, const $BUF: usize>
@@ -164,11 +161,11 @@ macro_rules! sink_node {
         {
             fn consume(
                 &mut self,
-                clock: &$crate::ClockTick,
-                signal_inputs: &[&[$T; $BUF]],
-                control_inputs: &[$T],
-                clock_inputs: &[$crate::ClockTick],
-                feedback_inputs: &[&[$T; $BUF]],
+                _clock: &$crate::ClockTick,
+                _signal_inputs: &[&[$T; $BUF]],
+                _control_inputs: &[$T],
+                _clock_inputs: &[$crate::ClockTick],
+                _feedback_inputs: &[&[$T; $BUF]],
             ) -> $crate::ProcessResult<()> {
                 ($consume)(self)?;
                 Ok(())

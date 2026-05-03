@@ -134,8 +134,6 @@ impl AutomatonComparison {
 
 #[cfg(test)]
 mod tests {
-    use crate::control::Automaton as _;
-
     #[test]
     fn test_automaton_types_are_debug() {
         // Проверяем, что все типы автоматов реализуют Debug (нужно для трейта)

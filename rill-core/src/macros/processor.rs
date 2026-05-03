@@ -57,17 +57,6 @@ macro_rules! processor_node {
                 node
             }
 
-            pub fn sample_rate(&self) -> f32 {
-                self.state.sample_rate
-            }
-
-            pub fn state(&self) -> &$crate::traits::node::NodeState<T,$BUF> {
-                &self.state
-            }
-
-            pub fn state_mut(&mut self) -> &mut $crate::traits::node::NodeState<T,$BUF> {
-                &mut self.state
-            }
         }
 
         impl<$T: $audio_num, const $BUF: usize>
@@ -178,11 +167,11 @@ macro_rules! processor_node {
         {
             fn process(
                 &mut self,
-                clock: &$crate::ClockTick,
-                signal_inputs: &[&[$T; $BUF]],
-                control_inputs: &[$T],
-                clock_inputs: &[$crate::ClockTick],
-                feedback_inputs: &[&[$T; $BUF]],
+                _clock: &$crate::ClockTick,
+                _signal_inputs: &[&[$T; $BUF]],
+                _control_inputs: &[$T],
+                _clock_inputs: &[$crate::ClockTick],
+                _feedback_inputs: &[&[$T; $BUF]],
             ) -> $crate::ProcessResult<()> {
                 ($process)(self)?;
                 Ok(())

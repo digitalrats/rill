@@ -970,6 +970,7 @@ mod tests {
                 captured: Vec::new(),
             }
         }
+        #[allow(dead_code)]
         fn captured(&self) -> &[T] { &self.captured }
     }
 

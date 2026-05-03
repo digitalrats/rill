@@ -277,8 +277,6 @@ impl OperationGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queues::telemetry::TelemetryQueue;
-
     #[test]
     fn test_observer_creation() {
         let (tx, _rx) = crossbeam_channel::unbounded();
