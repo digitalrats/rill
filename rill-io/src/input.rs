@@ -3,10 +3,9 @@
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
 
 use std::cell::Cell;
-use std::sync::Arc;
 
 use rill_core::{
-    math::{Scalar, Transcendental},
+    math::Transcendental,
     traits::{
         algorithm::ActionContext,
         node::SignalNode,
@@ -16,7 +15,7 @@ use rill_core::{
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
-use crate::audio_io::{AudioIo, AudioIoPtr};
+use crate::audio_io::AudioIoPtr;
 
 /// Stereo audio input source. Owns the processing callback that drives
 /// the entire DAG: drain commands → read backend → fill outputs → propagate.

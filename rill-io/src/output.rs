@@ -3,12 +3,12 @@
 //! Registered as `"rill/output"` with `NodeVariant::Sink`.
 
 use rill_core::{
-    math::{Scalar, Transcendental},
+    math::Transcendental,
     traits::{NodeCategory, NodeMetadata, NodeState, SignalNode, Sink},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
-use crate::audio_io::{AudioIo, AudioIoPtr};
+use crate::audio_io::AudioIoPtr;
 
 /// Stereo audio output sink. Writes to backend's output buffer in `consume()`.
 pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
