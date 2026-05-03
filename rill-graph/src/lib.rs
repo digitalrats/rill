@@ -29,6 +29,10 @@ pub mod registry;
 #[cfg(feature = "serialization")]
 pub mod serialization;
 
+/// DOT graph visualization (Graphviz). Feature-gated behind `dot`.
+#[cfg(feature = "dot")]
+pub mod dot;
+
 pub use graph::{SignalGraph, BuildError, ConnectionKind, GraphBuilder, GraphResource};
 pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
 

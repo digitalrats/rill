@@ -87,6 +87,10 @@ pub mod engine;
 /// Parameter-lock step sequencer
 pub mod sequencer;
 
+/// DOT patchbay visualization (Graphviz)
+#[cfg(feature = "serde")]
+pub mod dot;
+
 /// Сериализация конфигурации управления
 #[cfg(feature = "serde")]
 pub mod document;

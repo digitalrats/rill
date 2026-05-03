@@ -24,3 +24,4 @@ rill-core-dsp = { workspace = true }
 [features]
 default = []
 serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "rill-core/serde"]
+dot = []
