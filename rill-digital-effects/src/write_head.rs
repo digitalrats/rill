@@ -15,8 +15,8 @@ unsafe impl<T: Transcendental, const B: usize> Sync for WriteHead<T, B> {}
 /// shared [`TapeLoop`] that [`ReadHead`](crate::read_head::ReadHead) nodes
 /// read from.
 ///
-/// The tape loop is allocated by the graph's resource registry and passed
-/// via [`set_tape`](Self::set_tape) during graph construction.
+/// The tape loop is allocated by the graph's resource registry during
+/// node initialization.
 ///
 /// # Signal ports
 /// - 1 audio input (dry)
@@ -80,10 +80,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for WriteHead<T, BUF_SIZE>
 {
-    fn set_tape(&mut self, ptr: *const TapeLoop<T>) {
-        self.tape = ptr as *mut TapeLoop<T>;
-    }
-
     fn process(
         &mut self,
         _clock: &ClockTick,
@@ -177,16 +173,5 @@ mod tests {
         let mut wh = WriteHead::<f32, 64>::new(44100.0);
         wh.set_parameter(&ParameterId::new("feedback").unwrap(), ParamValue::Float(0.5)).unwrap();
         assert!((wh.feedback - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_write_head_set_tape() {
-        let mut wh = WriteHead::<f32, 64>::new(44100.0);
-        let tape = Box::new(TapeLoop::<f32>::new(1024).unwrap());
-        let ptr = Box::into_raw(tape) as *const TapeLoop<f32>;
-        Processor::set_tape(&mut wh, ptr);
-        assert!(!wh.tape.is_null());
-        // reclaim the tape to avoid leak
-        unsafe { let _ = Box::from_raw(ptr as *mut TapeLoop<f32>); }
     }
 }

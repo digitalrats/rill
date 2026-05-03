@@ -10,6 +10,7 @@ pub mod node;
 pub mod param;
 pub mod port;
 pub mod processable;
+pub mod router;
 
 // Re-export all public items
 pub use action::*;
@@ -19,6 +20,7 @@ pub use node::*;
 pub use param::*;
 pub use port::*;
 pub use processable::*;
+pub use router::*;
 
 // ============================================================================
 // Common Type Aliases
@@ -73,6 +75,7 @@ pub mod prelude {
         // Error types
         ProcessResult,
         Processor,
+        Router,
         Sink,
 
         Source,

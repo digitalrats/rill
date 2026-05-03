@@ -1,7 +1,8 @@
 //! Processable trait for unified audio node processing.
 //!
-//! This module defines the `Processable` trait that unifies `generate`, `process`, and `consume`
-//! into a single `process_block` method, making it easier to build generic signal graphs.
+//! This module defines the `Processable` trait that unifies `generate`, `process`,
+//! `route`, and `consume` into a single `process_block` method, making it easier
+//! to build generic signal graphs.
 
 use crate::math::Transcendental;
 use crate::queues::telemetry::{Telemetry, TelemetryTx, CLOCK_TICK};
@@ -42,9 +43,9 @@ pub struct ProcessContext<'a, T: Transcendental, const BUF_SIZE: usize> {
 
 /// Unified trait for processing audio nodes.
 ///
-/// This trait is implemented for all `Source`, `Processor`, and `Sink` types,
+/// This trait is implemented for all `Source`, `Processor`, `Router`, and `Sink` types,
 /// providing a single method that dispatches to the appropriate underlying
-/// method (`generate`, `process`, or `consume`).
+/// method (`generate`, `process`, `route`, or `consume`).
 pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
     /// Process a single block of audio.
     ///
@@ -120,14 +121,32 @@ where
     }
 }
 
+impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
+    for Box<dyn crate::traits::Router<T, BUF_SIZE>>
+where
+    T: Transcendental,
+{
+    fn process_block(&mut self, ctx: &mut ProcessContext<T, BUF_SIZE>) -> ProcessResult<()> {
+        let inputs: Vec<&[T; BUF_SIZE]> = (0..ctx.signal_inputs.len())
+            .map(|i| ctx.signal_inputs[i])
+            .collect();
+        (**self).route(ctx.clock, &inputs)
+    }
+}
+
 // ============================================================================
 // NodeVariant Enum
 // ============================================================================
 
 /// Enum that holds any kind of audio node.
 pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
+    /// Source node: generates audio (no inputs, outputs only).
     Source(Box<dyn crate::traits::Source<T, BUF_SIZE>>),
+    /// Processor node: transforms audio (inputs → DSP → outputs).
     Processor(Box<dyn crate::traits::Processor<T, BUF_SIZE>>),
+    /// Router node: redistributes audio (N inputs → configurable → M outputs).
+    Router(Box<dyn crate::traits::Router<T, BUF_SIZE>>),
+    /// Sink node: consumes audio (inputs only, no outputs).
     Sink(Box<dyn crate::traits::Sink<T, BUF_SIZE>>),
 }
 
@@ -136,28 +155,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for Node
         match self {
             NodeVariant::Source(src) => src.process_block(ctx),
             NodeVariant::Processor(proc) => proc.process_block(ctx),
+            NodeVariant::Router(rt) => rt.process_block(ctx),
             NodeVariant::Sink(sink) => sink.process_block(ctx),
         }
     }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
-    /// Set a pointer to a shared tape loop.
-    /// Delegates to the concrete node type (no-op on most nodes).
-    #[allow(unsafe_code)]
-    pub fn set_tape(&mut self, ptr: *const crate::buffer::TapeLoop<T>) {
-        match self {
-            NodeVariant::Source(src) => src.set_tape(ptr),
-            NodeVariant::Processor(proc) => proc.set_tape(ptr),
-            NodeVariant::Sink(sink) => sink.set_tape(ptr),
-        }
-    }
-
     /// Attach a telemetry sender to this node.
     pub fn set_telemetry_tx(&mut self, tx: TelemetryTx) {
         match self {
             NodeVariant::Source(src) => SignalNode::set_telemetry_tx(src.as_mut(), tx),
             NodeVariant::Processor(proc) => SignalNode::set_telemetry_tx(proc.as_mut(), tx),
+            NodeVariant::Router(rt) => SignalNode::set_telemetry_tx(rt.as_mut(), tx),
             NodeVariant::Sink(sink) => SignalNode::set_telemetry_tx(sink.as_mut(), tx),
         }
     }
@@ -170,6 +180,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.metadata(),
             NodeVariant::Processor(proc) => proc.metadata(),
+            NodeVariant::Router(rt) => rt.metadata(),
             NodeVariant::Sink(sink) => sink.metadata(),
         }
     }
@@ -178,6 +189,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.init(sample_rate),
             NodeVariant::Processor(proc) => proc.init(sample_rate),
+            NodeVariant::Router(rt) => rt.init(sample_rate),
             NodeVariant::Sink(sink) => sink.init(sample_rate),
         }
     }
@@ -186,6 +198,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.reset(),
             NodeVariant::Processor(proc) => proc.reset(),
+            NodeVariant::Router(rt) => rt.reset(),
             NodeVariant::Sink(sink) => sink.reset(),
         }
     }
@@ -194,6 +207,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.get_parameter(id),
             NodeVariant::Processor(proc) => proc.get_parameter(id),
+            NodeVariant::Router(rt) => rt.get_parameter(id),
             NodeVariant::Sink(sink) => sink.get_parameter(id),
         }
     }
@@ -206,6 +220,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.set_parameter(id, value),
             NodeVariant::Processor(proc) => proc.set_parameter(id, value),
+            NodeVariant::Router(rt) => rt.set_parameter(id, value),
             NodeVariant::Sink(sink) => sink.set_parameter(id, value),
         }
     }
@@ -214,6 +229,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.id(),
             NodeVariant::Processor(proc) => proc.id(),
+            NodeVariant::Router(rt) => rt.id(),
             NodeVariant::Sink(sink) => sink.id(),
         }
     }
@@ -222,6 +238,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.set_id(id),
             NodeVariant::Processor(proc) => proc.set_id(id),
+            NodeVariant::Router(rt) => rt.set_id(id),
             NodeVariant::Sink(sink) => sink.set_id(id),
         }
     }
@@ -234,6 +251,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
             }
             NodeVariant::Processor(proc) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_signal_inputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**rt;
                 n.num_signal_inputs()
             }
             NodeVariant::Sink(sink) => {
@@ -253,6 +274,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_signal_outputs()
             }
+            NodeVariant::Router(rt) => {
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_signal_outputs()
+            }
             NodeVariant::Sink(sink) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_signal_outputs()
@@ -268,6 +293,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
             }
             NodeVariant::Processor(proc) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_control_inputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**rt;
                 n.num_control_inputs()
             }
             NodeVariant::Sink(sink) => {
@@ -287,6 +316,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_control_outputs()
             }
+            NodeVariant::Router(rt) => {
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_control_outputs()
+            }
             NodeVariant::Sink(sink) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_control_outputs()
@@ -302,6 +335,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
             }
             NodeVariant::Processor(proc) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_clock_inputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**rt;
                 n.num_clock_inputs()
             }
             NodeVariant::Sink(sink) => {
@@ -321,6 +358,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_clock_outputs()
             }
+            NodeVariant::Router(rt) => {
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_clock_outputs()
+            }
             NodeVariant::Sink(sink) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_clock_outputs()
@@ -338,6 +379,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**proc;
                 n.num_feedback_ports()
             }
+            NodeVariant::Router(rt) => {
+                let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_feedback_ports()
+            }
             NodeVariant::Sink(sink) => {
                 let n: &dyn crate::traits::SignalNode<T, BUF_SIZE> = &**sink;
                 n.num_feedback_ports()
@@ -349,6 +394,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.input_port(index),
             NodeVariant::Processor(proc) => proc.input_port(index),
+            NodeVariant::Router(rt) => rt.input_port(index),
             NodeVariant::Sink(sink) => sink.input_port(index),
         }
     }
@@ -360,6 +406,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.input_port_mut(index),
             NodeVariant::Processor(proc) => proc.input_port_mut(index),
+            NodeVariant::Router(rt) => rt.input_port_mut(index),
             NodeVariant::Sink(sink) => sink.input_port_mut(index),
         }
     }
@@ -368,6 +415,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.output_port(index),
             NodeVariant::Processor(proc) => proc.output_port(index),
+            NodeVariant::Router(rt) => rt.output_port(index),
             NodeVariant::Sink(sink) => sink.output_port(index),
         }
     }
@@ -379,6 +427,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.output_port_mut(index),
             NodeVariant::Processor(proc) => proc.output_port_mut(index),
+            NodeVariant::Router(rt) => rt.output_port_mut(index),
             NodeVariant::Sink(sink) => sink.output_port_mut(index),
         }
     }
@@ -387,6 +436,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.control_port(index),
             NodeVariant::Processor(proc) => proc.control_port(index),
+            NodeVariant::Router(rt) => rt.control_port(index),
             NodeVariant::Sink(sink) => sink.control_port(index),
         }
     }
@@ -398,6 +448,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.control_port_mut(index),
             NodeVariant::Processor(proc) => proc.control_port_mut(index),
+            NodeVariant::Router(rt) => rt.control_port_mut(index),
             NodeVariant::Sink(sink) => sink.control_port_mut(index),
         }
     }
@@ -406,6 +457,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.state(),
             NodeVariant::Processor(proc) => proc.state(),
+            NodeVariant::Router(rt) => rt.state(),
             NodeVariant::Sink(sink) => sink.state(),
         }
     }
@@ -414,6 +466,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         match self {
             NodeVariant::Source(src) => src.state_mut(),
             NodeVariant::Processor(proc) => proc.state_mut(),
+            NodeVariant::Router(rt) => rt.state_mut(),
             NodeVariant::Sink(sink) => sink.state_mut(),
         }
     }

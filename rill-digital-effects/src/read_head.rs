@@ -9,8 +9,8 @@ use rill_core::{
 /// fixed delay. Mono output. Level and pan are handled by a downstream
 /// [`SumNode`](crate::sum_node::SumNode) with per-channel gains.
 ///
-/// The tape pointer is set via [`set_tape`](Self::set_tape) by the graph's
-/// resource registry during construction.
+/// The tape loop is obtained through the graph's resource registry during
+/// node initialization.
 ///
 /// # Signal ports
 /// - 1 audio output (mono), no inputs
@@ -61,8 +61,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
     for ReadHead<T, BUF_SIZE>
 {
-    fn set_tape(&mut self, ptr: *const TapeLoop<T>) { self.tape = ptr; }
-
     fn generate(
         &mut self,
         _clock: &ClockTick,

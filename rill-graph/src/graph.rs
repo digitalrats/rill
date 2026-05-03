@@ -1,5 +1,5 @@
 use crate::registry::{NodeRegistry, RegistryError};
-use rill_core::buffer::{Buffer, TapeLoop};
+use rill_core::buffer::Buffer;
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
 use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, PortId};
@@ -127,6 +127,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let idx = self.nodes.len();
         self.nodes.push(NodeEntry {
             node: NodeVariant::Sink(sink),
+        });
+        idx
+    }
+
+    /// Add a Router node (N→M configurable routing, no DSP).
+    pub fn add_router(
+        &mut self,
+        router: Box<dyn rill_core::traits::Router<T, BUF_SIZE>>,
+    ) -> usize {
+        let idx = self.nodes.len();
+        self.nodes.push(NodeEntry {
+            node: NodeVariant::Router(router),
         });
         idx
     }
@@ -317,18 +329,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let sample_rate = clock_source.sample_rate();
 
-        // ── allocate tape resources and bind tape pointer to all nodes ──
-        // Every node receives the pointer; only ReadHead/WriteHead use it.
-        for r in &self.resources {
-            if r.kind == "tape" {
-                let tape = Box::new(TapeLoop::<T>::new(r.capacity)
-                    .expect("tape allocation failed"));
-                let ptr: *const TapeLoop<T> = Box::leak(tape) as *const TapeLoop<T>;
-                for entry in self.nodes.iter_mut() {
-                    entry.node.set_tape(ptr);
-                }
-            }
-        }
+        // Resources are reserved for future use through the resource registry.
         let allocated = self.resources.clone();
 
         Ok(SignalGraph {
