@@ -75,6 +75,19 @@ mdbook serve docs/                # dev server at localhost:3000
     - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.
+
+- **Zero-copy data flow:**
+    Data copying across node ports is **forbidden** except in these cases:
+    1. **Branching (fan-out)** — one source feeds multiple destinations; the router copies.
+    2. **Accumulation for delay / feedback** — delay lines, feedback loops.
+    3. **External API boundary** — when the external API's buffer layout cannot be
+       directly wrapped by a `Port<T, BUF_SIZE>` (e.g. PipeWire's byte-interleaved
+       DMA buffers must be deinterleaved into mono port buffers).
+    
+    Source/Sink nodes **own the I/O buffer** — they must expose it directly as
+    a `Port<T, BUF_SIZE>` output/input rather than copying through an intermediary.
+    The graph engine routes port buffers by pointer; if data passes through a port,
+    it should be read/written in place, not memcpy'd.
 - **Dependencies:** 
     - Do not add new external crates to `Cargo.toml` without explicit confirmation.
     - Prefer internal workspace tools over bringing in new third-party dependencies.

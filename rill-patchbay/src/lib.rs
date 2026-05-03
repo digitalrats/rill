@@ -95,6 +95,9 @@ pub mod dot;
 #[cfg(feature = "serde")]
 pub mod document;
 
+#[cfg(feature = "serde")]
+pub use document::PatchbayDocument;
+
 // =============================================================================
 // Реэкспорты для удобства
 // =============================================================================
@@ -106,7 +109,8 @@ pub use automaton::{
 };
 pub use control::{
     midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
-    NoAction, ParameterCommand, ParameterMapping, PatchbayControl, Servo, Target, Transform,
+    NoAction, OscSurface, OscSurfaceEntry, ParameterCommand, ParameterMapping, PatchbayControl,
+    Servo, Target, Transform,
 };
 pub use manager::PatchbayManager;
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};

@@ -135,36 +135,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
     /// Note: copies port buffers to build input slices for `ProcessContext`.
     /// Production I/O callbacks should call `process_tick` and handle data
     /// propagation themselves for zero-copy processing.
-    #[allow(unsafe_code)]
     pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<usize> {
         let applied = self.process_tick(tick);
 
         for &idx in &self.topo_order {
-            // Build audio input references:
-            // - Zero-copy ports: deref upstream_buffer directly via `Port::upstream_ref`
-            //   (no borrow of self.nodes[idx], no lifetime conflict)
-            // - Copy-based ports: copy buffer into local storage
-            let mut copy_bufs: Vec<[T; BUF_SIZE]> = Vec::new();
-            let mut audio_refs: Vec<&[T; BUF_SIZE]> = Vec::new();
-            for pi in 0..self.nodes[idx].num_signal_inputs() {
-                if let Some(port) = self.nodes[idx].input_port(pi) {
-                    match port.upstream_buffer {
-                        Some(ptr) => {
-                            // SAFETY: the graph is static, single-threaded,
-                            // upstream is processed before downstream.
-                            let buf = unsafe { Port::upstream_ref(ptr) };
-                            audio_refs.push(buf.as_array());
-                        }
-                        None => {
-                            copy_bufs.push(*port.buffer.as_array());
-                        }
-                    }
-                }
-            }
-            // Extend audio_refs with owned copies (no borrow of self.nodes)
-            for buf in &copy_bufs {
-                audio_refs.push(buf);
-            }
+            // Copy input buffers (avoids borrow conflict with output_port_mut below).
+            let owned_inputs: Vec<[T; BUF_SIZE]> = (0..self.nodes[idx].num_signal_inputs())
+                .filter_map(|pi| self.nodes[idx].input_port(pi))
+                .map(|p| *p.buffer.as_array())
+                .collect();
+            let audio_refs: Vec<&[T; BUF_SIZE]> = owned_inputs.iter().collect();
 
             let owned_control: Vec<T> = (0..self.nodes[idx].num_control_inputs())
                 .filter_map(|ci| self.nodes[idx].control_port(ci))
@@ -200,26 +180,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalEngine<T, BUF_SIZE> {
                 if let Some(port) = self.nodes[idx].output_port_mut(po) {
                     port.snapshot_feedback();
                 }
-            }
-
-            // Propagate outputs to downstream nodes (only for ports
-            // without upstream — upstream ports read zero-copy directly)
-            for po in 0..num_outputs {
-                let (downstream, data) = match self.nodes[idx].output_port(po) {
-                    Some(port) if !port.downstream.is_empty() => {
-                        (port.downstream.clone(), *port.buffer.as_array())
-                    }
-                    _ => continue,
-                };
-                for &(to_n, to_p) in &downstream {
-                    if let Some(port) = self.nodes[to_n].input_port_mut(to_p) {
-                        if port.upstream_buffer.is_some() {
-                            // Zero-copy: skip propagate, node reads directly
-                            // from upstream output buffer.
-                            continue;
+                // Propagate output buffer to all downstream input ports.
+                if let Some(port) = self.nodes[idx].output_port(po) {
+                    if !port.downstream_input_ptrs.is_empty() {
+                        port.propagate(port.buffer());
+                    } else {
+                        // Fallback for tests that set `downstream` manually.
+                        let data = *port.buffer.as_array();
+                        let targets: Vec<(usize, usize)> = port.downstream.clone();
+                        for &(to_n, to_p) in &targets {
+                            if let Some(p) = self.nodes[to_n].input_port_mut(to_p) {
+                                *p.buffer.as_mut_array() = data;
+                            }
                         }
-                        let buf = port.buffer.as_mut_array();
-                        *buf = data;
                     }
                 }
             }
@@ -357,7 +330,8 @@ mod tests {
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
                 feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
             });
             Self {
                 id,
@@ -470,7 +444,8 @@ mod tests {
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
                 feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
             });
             let mut outputs = Vec::with_capacity(1);
             outputs.push(Port {
@@ -484,7 +459,8 @@ mod tests {
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
                 feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
             });
             Self {
                 id,
@@ -602,7 +578,8 @@ mod tests {
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
                 feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
             });
             Self {
                 id,
@@ -869,7 +846,8 @@ mod tests {
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
                 feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
             });
             Self {
                 id,
@@ -961,7 +939,8 @@ mod tests {
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
                 feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
             });
             Self {
                 id,

@@ -2,6 +2,7 @@ use crate::registry::{NodeRegistry, RegistryError};
 use rill_core::buffer::{BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
+use rill_core::traits::port::Port;
 use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
 use std::collections::VecDeque;
 
@@ -262,24 +263,28 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             return Err(BuildError::CycleDetected);
         }
 
-        // --- populate Port::downstream and Port::upstream_buffer ---
+        // --- populate Port::downstream, downstream_input_ptrs, parent ---
         for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
+            // downstream list (serialization)
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
                 port.downstream.push((to_n, to_p));
             }
-        }
-        // upstream_buffer: set on input ports for zero-copy 1:1 connections.
-        // Fan-in (multiple outputs → same input) falls back to copy-based.
-        for &(from_n, from_p, to_n, to_p) in &self.audio_edges {
-            let upstream = self.nodes[from_n]
-                .node
-                .output_port(from_p)
-                .map(|p| &p.buffer as *const FixedBuffer<T, BUF_SIZE>);
-            if let Some(port) = self.nodes[to_n].node.input_port_mut(to_p) {
-                if port.upstream_buffer.is_none() {
-                    port.upstream_buffer = upstream;
-                } else {
-                    port.upstream_buffer = None;
+            // Prepare pointers (safe: distinct indices in static DAG).
+            let in_ptr: *mut Port<T, BUF_SIZE> = self.nodes[to_n]
+                .node.input_port_mut(to_p)
+                .map(|p| p as *mut Port<T, BUF_SIZE>)
+                .unwrap_or(std::ptr::null_mut());
+            let parent: *mut NodeVariant<T, BUF_SIZE> = &mut self.nodes[to_n].node;
+            let out_ptr: *mut Port<T, BUF_SIZE> = self.nodes[from_n]
+                .node.output_port_mut(from_p)
+                .map(|p| p as *mut Port<T, BUF_SIZE>)
+                .unwrap_or(std::ptr::null_mut());
+            // Assign (safe: pointers were obtained without overlapping borrows).
+            if !in_ptr.is_null() && !out_ptr.is_null() {
+                #[allow(unsafe_code)]
+                unsafe {
+                    (*in_ptr).parent = parent;
+                    (*out_ptr).downstream_input_ptrs.push(in_ptr);
                 }
             }
         }
@@ -483,8 +488,9 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
-            feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+                feedback_ptrs: Vec::new(),
+                downstream_input_ptrs: Vec::new(),
+                parent: std::ptr::null_mut(),
             });
             Self {
                 value,

@@ -36,7 +36,8 @@ pub use rill_sampler as sampler;
 /// Centralised node type registration for the Rill ecosystem.
 pub mod registration;
 
-/// Prelude for convenient importing of commonly used types across all rill crates.
+pub mod runtime;
+
 pub mod prelude {
     pub use rill_core::prelude::*;
 }

@@ -9,8 +9,7 @@ use crate::buffer::{Buffer, FixedBuffer};
 use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::algorithm::Algorithm;
-use crate::traits::node::{SignalNode, NodeId};
-use crate::traits::processable::NodeVariant;
+use crate::traits::node::NodeId;
 use crate::traits::PortError;
 use std::fmt;
 
@@ -322,16 +321,18 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     pub buffer: FixedBuffer<T, BUF_SIZE>,
     /// Delayed feedback state (None if not on a feedback edge)
     pub feedback_buffer: Option<FixedBuffer<T, BUF_SIZE>>,
-    /// Downstream audio connections: (target_node_index, target_port_index)
+    /// Downstream audio connections: (target_node_index, target_port_index).
+    /// Used for serialization and by `GraphBuilder::build()`.
     pub downstream: Vec<(usize, usize)>,
-    /// Direct pointer to upstream output buffer for zero-copy routing.
-    /// `Some` for input ports with exactly one upstream (1:1 connection).
-    /// `None` for output ports, fan-in, feedback, or unconnected input ports.
-    ///
-    /// # Safety
-    /// Valid for the engine's lifetime: the graph topology is static and
-    /// processing is single-threaded in topological order.
-    pub upstream_buffer: Option<*const FixedBuffer<T, BUF_SIZE>>,
+    /// Direct pointers to downstream input ports. Filled by
+    /// `GraphBuilder::build()`. The recursive propagation function
+    /// follows these to copy data and call `process_block` on the
+    /// downstream node through each input port's [`parent`](Self::parent).
+    pub downstream_input_ptrs: Vec<*mut Port<T, BUF_SIZE>>,
+    /// Pointer to the [`NodeVariant`](crate::traits::NodeVariant) that
+    /// owns this port. Set after graph construction. Enables recursive
+    /// signal propagation without a `nodes` slice.
+    pub parent: *mut crate::traits::NodeVariant<T, BUF_SIZE>,
     /// Feedback edge targets from this output port (for serialization)
     pub feedback_downstream: Vec<(usize, usize)>,
 
@@ -369,7 +370,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
         }
     }
 
@@ -386,7 +388,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
         }
     }
 
@@ -408,7 +411,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
         }
     }
 
@@ -425,7 +429,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
         }
     }
 
@@ -447,7 +452,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
         }
     }
 
@@ -464,7 +470,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
-            upstream_buffer: None,
+            downstream_input_ptrs: Vec::new(),
+            parent: std::ptr::null_mut(),
         }
     }
 
@@ -498,39 +505,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         &mut self.buffer
     }
 
-    /// Get the effective audio buffer for an input port.
-    ///
-    /// Returns a reference to the upstream output buffer when this port has
-    /// a direct 1:1 connection (zero-copy), or the port's own buffer for
-    /// fan-in/feedback/unconnected ports (copy-based).
-    ///
-    /// # Safety
-    /// The upstream pointer is valid because the graph topology is static
-    /// and processing is single-threaded in topological order. The upstream
-    /// output buffer is owned by another port in the same graph and lives
-    /// for the entire processing session.
+    /// Get the port's audio buffer.
     pub fn audio_buffer(&self) -> &FixedBuffer<T, BUF_SIZE> {
-        match self.upstream_buffer {
-            Some(ptr) => {
-                #[allow(unsafe_code)]
-                unsafe {
-                    &*ptr
-                }
-            }
-            None => &self.buffer,
-        }
-    }
-
-    /// Directly dereference an upstream buffer pointer to a `&Buffer`.
-    /// Used by the engine to avoid borrowing `self` (and thus the node)
-    /// when building audio input references for zero-copy processing.
-    ///
-    /// # Safety
-    /// `ptr` must be a valid, aligned pointer to a `FixedBuffer<T, BUF_SIZE>`
-    /// that lives for the entire processing session.
-    #[allow(unsafe_code)]
-    pub unsafe fn upstream_ref(ptr: *const FixedBuffer<T, BUF_SIZE>) -> &'static FixedBuffer<T, BUF_SIZE> {
-        &*ptr
+        &self.buffer
     }
 
     /// Pre-process this port before node DSP.
@@ -580,11 +557,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     ///
     /// `tick` is the current clock tick, available for future
     /// sample-accurate or time-varying port-level propagation.
-    pub fn propagate(&self, _tick: &ClockTick, nodes: &mut [NodeVariant<T, BUF_SIZE>]) {
-        for &(target_node, target_port) in &self.downstream {
-            if let Some(p) = nodes[target_node].input_port_mut(target_port) {
-                p.buffer.copy_from(self.buffer.as_array());
-            }
+    /// Copy `buffer` into every downstream input port.
+    ///
+    /// Uses [`downstream_input_ptrs`](Self::downstream_input_ptrs)
+    /// (filled by `GraphBuilder::build()`).
+    #[allow(unsafe_code)]
+    pub fn propagate(&self, buffer: &FixedBuffer<T, BUF_SIZE>) {
+        for &ptr in &self.downstream_input_ptrs {
+            // SAFETY: graph topology is static, single-threaded processing.
+            // Pointers are valid for the engine's lifetime.
+            unsafe { (*ptr).buffer.copy_from(buffer.as_array()); }
         }
     }
 

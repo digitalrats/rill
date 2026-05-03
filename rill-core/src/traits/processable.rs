@@ -8,7 +8,6 @@ use crate::math::Transcendental;
 use crate::queues::telemetry::{Telemetry, TelemetryTx, CLOCK_TICK};
 use crate::time::ClockTick;
 use crate::traits::ProcessResult;
-use crate::traits::SignalNode;
 
 // ============================================================================
 // ProcessContext
@@ -165,10 +164,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
     /// Attach a telemetry sender to this node.
     pub fn set_telemetry_tx(&mut self, tx: TelemetryTx) {
         match self {
-            NodeVariant::Source(src) => SignalNode::set_telemetry_tx(src.as_mut(), tx),
-            NodeVariant::Processor(proc) => SignalNode::set_telemetry_tx(proc.as_mut(), tx),
-            NodeVariant::Router(rt) => SignalNode::set_telemetry_tx(rt.as_mut(), tx),
-            NodeVariant::Sink(sink) => SignalNode::set_telemetry_tx(sink.as_mut(), tx),
+            NodeVariant::Source(src) => crate::traits::SignalNode::set_telemetry_tx(src.as_mut(), tx),
+            NodeVariant::Processor(proc) => crate::traits::SignalNode::set_telemetry_tx(proc.as_mut(), tx),
+            NodeVariant::Router(rt) => crate::traits::SignalNode::set_telemetry_tx(rt.as_mut(), tx),
+            NodeVariant::Sink(sink) => crate::traits::SignalNode::set_telemetry_tx(sink.as_mut(), tx),
         }
     }
 }
@@ -471,3 +470,5 @@ impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_
         }
     }
 }
+
+
