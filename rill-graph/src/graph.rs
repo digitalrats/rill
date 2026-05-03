@@ -289,6 +289,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
+        // --- downstream_nodes: unique downstream node pointers ---
+        for &(from_n, from_p, to_n, _) in &self.signal_edges {
+            let parent: *mut NodeVariant<T, BUF_SIZE> = &mut self.nodes[to_n].node;
+            if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
+                let ptr_val = parent as usize;
+                let already = port.downstream_nodes.iter().any(|&p| p as usize == ptr_val);
+                if !already {
+                    port.downstream_nodes.push(parent);
+                }
+            }
+        }
+
         // --- upstream_buffer: zero-copy routing for 1:1 and fan-out ---
         for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
             let upstream = self.nodes[from_n]
@@ -509,6 +521,7 @@ mod tests {
                 feedback_downstream: Vec::new(),
                 feedback_ptrs: Vec::new(),
                 downstream_input_ptrs: Vec::new(),
+                downstream_nodes: Vec::new(),
                 parent: std::ptr::null_mut(),
             });
             Self {

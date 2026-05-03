@@ -327,10 +327,12 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Used for serialization and by `GraphBuilder::build()`.
     pub downstream: Vec<(usize, usize)>,
     /// Direct pointers to downstream input ports. Filled by
-    /// `GraphBuilder::build()`. The recursive propagation function
-    /// follows these to copy data and call `process_block` on the
-    /// downstream node through each input port's [`parent`](Self::parent).
+    /// `GraphBuilder::build()`. Used by `propagate` to copy data.
     pub downstream_input_ptrs: Vec<*mut Port<T, BUF_SIZE>>,
+    /// Unique downstream nodes (one per target, deduplicated at build time).
+    /// Filled by `GraphBuilder::build()`. Used by `propagate` to recurse
+    /// into downstream nodes — no runtime deduplication needed.
+    pub downstream_nodes: Vec<*mut crate::traits::NodeVariant<T, BUF_SIZE>>,
     /// Pointer to the [`NodeVariant`](crate::traits::NodeVariant) that
     /// owns this port. Set after graph construction. Enables recursive
     /// signal propagation without a `nodes` slice.
@@ -378,6 +380,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
+            downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
         }
@@ -397,6 +400,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
+            downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
         }
@@ -416,6 +420,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
+            downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
         }
@@ -440,6 +445,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
+            downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
         }
@@ -459,6 +465,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_downstream: Vec::new(),
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
+            downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
         }
@@ -557,31 +564,23 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// run each port's algorithm, then process the downstream node and
     /// recurse through its output ports.
     ///
-    /// Zero-copy: ports with `upstream_buffer` already read directly
-    /// from the upstream output buffer — no copy needed.
+    /// No heap allocations — `downstream_nodes` is pre‑filled at build time.
     #[allow(unsafe_code)]
     pub fn propagate(
         &self,
         buffer: &FixedBuffer<T, BUF_SIZE>,
         ctx: &crate::traits::algorithm::ActionContext,
     ) -> ProcessResult<()> {
-        let mut seen: Vec<*mut crate::traits::NodeVariant<T, BUF_SIZE>> = Vec::new();
         for &ptr in &self.downstream_input_ptrs {
             unsafe {
-                // Zero-copy: skip copy for ports that read directly
-                // from upstream output buffer via upstream_buffer pointer.
                 if (*ptr).upstream_buffer.is_none() {
                     (*ptr).buffer.copy_from(buffer.as_array());
                 }
                 (*ptr).run_action(Some(buffer.as_array()), ctx)?;
             }
-            let parent = unsafe { (*ptr).parent };
-            if !parent.is_null() && !seen.contains(&parent) {
-                seen.push(parent);
-            }
         }
         let mut proc_ctx = crate::traits::processable::ProcessContext { clock: ctx.tick };
-        for &parent in &seen {
+        for &parent in &self.downstream_nodes {
             unsafe {
                 let nv = &mut *parent;
                 // Pre-process input ports (feedback mix from previous block)

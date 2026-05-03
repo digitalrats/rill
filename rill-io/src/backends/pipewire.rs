@@ -557,13 +557,17 @@ fn process_output(
     let n_frames = slice.len() / stride;
     let n_samples = n_frames * channels;
 
-    let mut temp = vec![0.0f32; n_samples];
-    let mut obuf = output_buffer.write();
-    let read = obuf.read(&mut temp);
-    drop(obuf);
+    // Fixed stack buffer — no heap alloc. Max 256 frames × 2 ch = 512 f32.
+    let mut temp = [0.0f32; 512];
+    let read = {
+        let mut obuf = output_buffer.write();
+        let n = obuf.read(&mut temp[..n_samples.min(512)]);
+        drop(obuf);
+        n
+    };
 
-    for frame in 0..n_frames {
-        for ch in 0..channels {
+    for frame in 0..n_frames.min(256) {
+        for ch in 0..channels.min(2) {
             let idx = frame * channels + ch;
             let offset = idx * 4;
             if offset + 4 <= slice.len() {
@@ -608,18 +612,20 @@ fn process_input(
     let n_frames = slice.len() / stride;
     let n_samples = n_frames * channels;
 
-    let mut temp = vec![0.0f32; n_samples];
-    for (i, sample) in temp.iter_mut().enumerate() {
+    // Fixed stack buffer — no heap alloc.
+    let mut temp = [0.0f32; 512];
+    let len = n_samples.min(512);
+    for i in 0..len {
         let offset = i * 4;
         if offset + 4 <= slice.len() {
             let mut bytes = [0u8; 4];
             bytes.copy_from_slice(&slice[offset..offset + 4]);
-            *sample = f32::from_le_bytes(bytes);
+            temp[i] = f32::from_le_bytes(bytes);
         }
     }
 
     let mut ibuf = input_buffer.write();
-    ibuf.write(&temp);
+    ibuf.write(&temp[..len]);
     drop(ibuf);
 
     let chunk = data.chunk_mut();
