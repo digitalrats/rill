@@ -29,7 +29,7 @@ pub mod registry;
 #[cfg(feature = "serialization")]
 pub mod serialization;
 
-pub use graph::{SignalGraph, BuildError, ConnectionKind, GraphBuilder};
+pub use graph::{SignalGraph, BuildError, ConnectionKind, GraphBuilder, GraphResource};
 pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
 
 /// Prelude for convenient imports

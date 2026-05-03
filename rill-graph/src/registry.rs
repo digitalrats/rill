@@ -179,6 +179,36 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeConstructor<T, BUF_SIZE>
 }
 
 // ============================================================================
+// Node Ctor Macro
+// ============================================================================
+
+/// Register a node constructor by type name.
+///
+/// Shorthand for [`NodeRegistry::register_fn`]. Emits a call to
+/// `registry.register_fn(type_name, closure)`.
+///
+/// # Example
+///
+/// ```rust
+/// use rill_graph::{node_ctor, NodeRegistry};
+/// use rill_core::traits::{NodeId, NodeParams, NodeVariant, Source, SignalNode};
+///
+/// // Inside a function that has access to a &mut NodeRegistry<f32, 64>:
+/// fn register(registry: &mut NodeRegistry<f32, 64>) {
+///     node_ctor!(registry, "test/my_source", |id, params| {
+///         // construct and return NodeVariant
+///         todo!()
+///     });
+/// }
+/// ```
+#[macro_export]
+macro_rules! node_ctor {
+    ($registry:expr, $type_name:expr, $ctor:expr) => {
+        $registry.register_fn($type_name, $ctor);
+    };
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

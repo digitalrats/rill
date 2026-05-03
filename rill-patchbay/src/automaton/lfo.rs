@@ -7,6 +7,7 @@ use crate::control::{Automaton, Range, Time};
 use std::f64::consts::PI;
 
 /// Форма волны LFO
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LfoWaveform {
     /// Синусоида (гладкая)
@@ -95,6 +96,7 @@ impl LfoWaveform {
 }
 
 /// Состояние LFO
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct LfoState {
     /// Текущая фаза (0.0 - 1.0)
@@ -182,6 +184,7 @@ impl LfoAutomaton {
 }
 
 /// Действие для LFO
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
 pub enum LfoAction {
     #[default]

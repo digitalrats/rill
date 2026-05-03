@@ -1,5 +1,5 @@
 use crate::registry::{NodeRegistry, RegistryError};
-use rill_core::buffer::Buffer;
+use rill_core::buffer::{Buffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
 use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, PortId};
@@ -60,6 +60,17 @@ pub(crate) struct NodeEntry<T: Transcendental, const BUF_SIZE: usize> {
 // GraphBuilder (Mutable Construction)
 // ============================================================================
 
+/// A named resource (tape loop) shared between nodes in the graph.
+#[derive(Clone)]
+pub struct GraphResource {
+    /// Unique name referenced by node parameters.
+    pub name: String,
+    /// Resource kind string (`"tape"`).
+    pub kind: String,
+    /// Capacity in samples (for `"tape"` kind).
+    pub capacity: usize,
+}
+
 /// Mutable builder for an immutable signal graph.
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
@@ -67,6 +78,7 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     control_edges: Vec<(usize, usize, usize, usize)>,
     clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
+    resources: Vec<GraphResource>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
@@ -83,7 +95,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             control_edges: Vec::new(),
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
+            resources: Vec::new(),
         }
+    }
+
+    /// Register a named resource.
+    pub fn add_resource(&mut self, resource: GraphResource) {
+        self.resources.push(resource);
     }
 
     pub fn add_source(&mut self, source: Box<dyn rill_core::traits::Source<T, BUF_SIZE>>) -> usize {
@@ -273,21 +291,51 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        // --- enable feedback buffers and populate Port::feedback_downstream ---
+        // --- enable feedback buffers on both output and input ports ---
         for &(from_n, from_p, to_n, to_p) in &self.feedback_edges {
-            // mark the source output port as a feedback provider
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
                 port.feedback_buffer = Some(Buffer::new());
                 port.feedback_downstream.push((to_n, to_p));
+            }
+            if let Some(port) = self.nodes[to_n].node.input_port_mut(to_p) {
+                port.feedback_buffer = Some(Buffer::new());
+            }
+        }
+        // --- populate Port::feedback_ptrs on output ports ---
+        for &(from_n, from_p, to_n, to_p) in &self.feedback_edges {
+            let ptr = self.nodes[to_n]
+                .node
+                .input_port(to_p)
+                .map(|p| &p.feedback_buffer as *const Option<Buffer<T, BUF_SIZE>>)
+                .map(|r| r as *mut Option<Buffer<T, BUF_SIZE>>);
+            if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
+                if let Some(p) = ptr {
+                    port.feedback_ptrs.push(p);
+                }
             }
         }
 
         let sample_rate = clock_source.sample_rate();
 
+        // ── allocate tape resources and bind tape pointer to all nodes ──
+        // Every node receives the pointer; only ReadHead/WriteHead use it.
+        for r in &self.resources {
+            if r.kind == "tape" {
+                let tape = Box::new(TapeLoop::<T>::new(r.capacity)
+                    .expect("tape allocation failed"));
+                let ptr: *const TapeLoop<T> = Box::leak(tape) as *const TapeLoop<T>;
+                for entry in self.nodes.iter_mut() {
+                    entry.node.set_tape(ptr);
+                }
+            }
+        }
+        let allocated = self.resources.clone();
+
         Ok(SignalGraph {
             nodes: self.nodes,
             topo_order: topo,
             clock_source,
+            resources: allocated,
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
         })
     }
@@ -310,6 +358,8 @@ pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
     #[allow(dead_code)]
     clock_source: Box<dyn ClockSource>,
     current_tick: ClockTick,
+    /// Named resources (tape loops, etc.) allocated during build.
+    pub(crate) resources: Vec<GraphResource>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
@@ -321,6 +371,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
             topo_order: Vec::new(),
             clock_source,
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
+            resources: Vec::new(),
         }
     }
 
@@ -362,6 +413,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
 
     pub(crate) fn sample_rate(&self) -> f32 {
         self.current_tick.sample_rate
+    }
+
+    /// Access the named resources (tape loops, etc.) allocated for this graph.
+    #[allow(dead_code)]
+    pub fn resources(&self) -> &[GraphResource] {
+        &self.resources
     }
 
     // ── Dispatch ──────────────────────────────────────────────────
@@ -430,6 +487,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+            feedback_ptrs: Vec::new(),
             upstream_buffer: None,
             });
             Self {

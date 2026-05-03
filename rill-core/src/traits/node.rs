@@ -18,6 +18,7 @@ use std::fmt;
 // ============================================================================
 
 /// Unique identifier for a node in the graph
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u32);
 
@@ -434,6 +435,10 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalN
     fn num_clock_inputs(&self) -> usize {
         0
     }
+
+    /// Set a pointer to a shared tape loop.
+    /// Default is no-op. Override in tape-aware nodes.
+    fn set_tape(&mut self, _ptr: *const crate::buffer::TapeLoop<T>) {}
 }
 
 // ============================================================================
@@ -471,6 +476,10 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
     fn latency(&self) -> usize {
         0
     }
+
+    /// Set a pointer to a shared tape loop.
+    /// Default is no-op. Override in tape-aware nodes.
+    fn set_tape(&mut self, _ptr: *const crate::buffer::TapeLoop<T>) {}
 }
 
 // ============================================================================
@@ -498,6 +507,10 @@ pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalNod
         clock_inputs: &[ClockTick],
         feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()>;
+
+    /// Set a pointer to a shared tape loop.
+    /// Default is no-op. Override in tape-aware nodes.
+    fn set_tape(&mut self, _ptr: *const crate::buffer::TapeLoop<T>) {}
 }
 
 // ============================================================================

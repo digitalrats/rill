@@ -332,8 +332,14 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Valid for the engine's lifetime: the graph topology is static and
     /// processing is single-threaded in topological order.
     pub upstream_buffer: Option<*const Buffer<T, BUF_SIZE>>,
-    /// Feedback edge targets from this output port
+    /// Feedback edge targets from this output port (for serialization)
     pub feedback_downstream: Vec<(usize, usize)>,
+
+    /// Direct pointers to `feedback_buffer` on downstream input ports.
+    ///
+    /// Set by `GraphBuilder::build()` for feedback edges.
+    /// `snapshot_feedback()` copies its buffer into each target.
+    pub feedback_ptrs: Vec<*mut Option<Buffer<T, BUF_SIZE>>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
@@ -362,6 +368,24 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            feedback_ptrs: Vec::new(),
+            upstream_buffer: None,
+        }
+    }
+
+    /// Create a new input port
+    pub fn input(node_id: NodeId, index: u16, name: &str) -> Self {
+        Self {
+            id: PortId::audio_in(node_id, index),
+            name: name.to_string(),
+            direction: PortDirection::Input,
+            action: None,
+            pending_command: None,
+            buffer: Buffer::new(),
+            feedback_buffer: None,
+            downstream: Vec::new(),
+            feedback_downstream: Vec::new(),
+            feedback_ptrs: Vec::new(),
             upstream_buffer: None,
         }
     }
@@ -383,22 +407,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
-            upstream_buffer: None,
-        }
-    }
-
-    /// Create a new signal input port
-    pub fn input(node_id: NodeId, index: u16, name: &str) -> Self {
-        Self {
-            id: PortId::audio_in(node_id, index),
-            name: name.to_string(),
-            direction: PortDirection::Input,
-            action: None,
-            pending_command: None,
-            buffer: Buffer::new(),
-            feedback_buffer: None,
-            downstream: Vec::new(),
-            feedback_downstream: Vec::new(),
+            feedback_ptrs: Vec::new(),
             upstream_buffer: None,
         }
     }
@@ -415,6 +424,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            feedback_ptrs: Vec::new(),
             upstream_buffer: None,
         }
     }
@@ -436,6 +446,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            feedback_ptrs: Vec::new(),
             upstream_buffer: None,
         }
     }
@@ -452,6 +463,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
+            feedback_ptrs: Vec::new(),
             upstream_buffer: None,
         }
     }
@@ -539,14 +551,24 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         }
     }
 
-    /// Snapshot the buffer into `feedback_buffer` after node DSP.
+    /// Snapshot the buffer into `feedback_buffer` and propagate to
+    /// downstream input ports via `feedback_ptrs`.
     ///
     /// For output ports on a feedback edge, saves the current buffer
-    /// so it can be used as delayed feedback in the next block.
+    /// so it can be used as delayed feedback in the next block, then
+    /// copies it into each target input port's `feedback_buffer`.
     /// No-op when `feedback_buffer` is `None`.
+    #[allow(unsafe_code)]
     pub fn snapshot_feedback(&mut self) {
         if let Some(ref mut fb) = self.feedback_buffer {
             fb.copy_from(self.buffer.as_array());
+            for &ptr in &self.feedback_ptrs {
+                unsafe {
+                    if let Some(ref mut target) = *ptr {
+                        target.copy_from(fb.as_array());
+                    }
+                }
+            }
         }
     }
 

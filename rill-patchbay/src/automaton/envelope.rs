@@ -6,6 +6,7 @@
 use crate::control::{Automaton, Range, Time};
 
 /// Тип огибающей
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EnvelopeType {
     /// ADSR: Attack, Decay, Sustain, Release
@@ -19,6 +20,7 @@ pub enum EnvelopeType {
 }
 
 /// Стадия огибающей
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EnvelopeStage {
     Attack,
@@ -267,6 +269,7 @@ impl EnvelopeAutomaton {
 }
 
 /// Действие для огибающей
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
 pub enum EnvelopeAction {
     #[default]

@@ -28,6 +28,7 @@ use std::fmt::Debug;
 // =============================================================================
 
 /// Режим синхронизации автомата
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SyncMode {
     Free,
@@ -36,6 +37,7 @@ pub enum SyncMode {
 }
 
 /// Диапазон значений автомата
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct Range {
     pub min: f64,

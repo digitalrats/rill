@@ -7,12 +7,11 @@ use rill_core::traits::{
     ParamRange, ParamType, ParamValue, ParameterId, Port, Processor,
 };
 use rill_core::ClockTick;
-use rill_core::{ProcessError, ProcessResult, DEFAULT_BLOCK_SIZE};
+use rill_core::{ProcessError, ProcessResult};
 use std::collections::HashMap;
 
 /// Mixer node with multiple channels and aux sends
-/// Mixer node with multiple channels and aux sends
-pub struct MixerNode {
+pub struct MixerNode<const BUF_SIZE: usize> {
     /// Master volume (0.0 - 2.0)
     pub master_volume: f32,
     /// Smoothing factor (0.0 - 1.0)
@@ -40,16 +39,16 @@ pub struct MixerNode {
     /// Node ID
     pub id: NodeId,
     /// Audio input ports
-    pub input_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    pub input_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Audio output ports
-    pub output_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    pub output_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Control ports
-    pub control_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    pub control_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Node state
-    pub state: NodeState<f32, DEFAULT_BLOCK_SIZE>,
+    pub state: NodeState<f32, BUF_SIZE>,
 }
 
-impl MixerNode {
+impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
     /// Create a new mixer with specified number of channels and buses
     pub fn new(num_channels: usize, num_buses: usize) -> Self {
         let mut channels = Vec::with_capacity(num_channels);
@@ -233,7 +232,7 @@ impl MixerNode {
     }
 }
 
-impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
+impl<const BUF_SIZE: usize> rill_core::traits::SignalNode<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         let mut params = vec![ParamMetadata {
             name: "master_volume".to_string(),
@@ -423,35 +422,35 @@ impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
         self.id = id;
     }
 
-    fn input_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn input_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.input_ports.get(index)
     }
 
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
         self.input_ports.get_mut(index)
     }
 
-    fn output_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn output_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.output_ports.get(index)
     }
 
-    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
         self.output_ports.get_mut(index)
     }
 
-    fn control_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn control_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.control_ports.get(index)
     }
 
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
         self.control_ports.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<f32, DEFAULT_BLOCK_SIZE> {
+    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<f32, DEFAULT_BLOCK_SIZE> {
+    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
         &mut self.state
     }
 
@@ -485,17 +484,17 @@ impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
 }
 
 // Override Processor trait methods for dynamic I/O and custom parameters
-impl rill_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
+impl<const BUF_SIZE: usize> rill_core::traits::Processor<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
     fn process(
         &mut self,
         clock: &ClockTick,
-        _signal_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        _signal_inputs: &[&[f32; BUF_SIZE]],
         _control_inputs: &[f32],
         _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        _feedback_inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let num_buses = self.buses.len();
-        let buffer_size = DEFAULT_BLOCK_SIZE;
+        let buffer_size = BUF_SIZE;
 
         // Update state with clock
         self.state.sample_pos = clock.sample_pos;

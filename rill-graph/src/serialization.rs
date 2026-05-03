@@ -29,10 +29,21 @@ use serde::{Deserialize, Serialize};
 // Document structure
 // ============================================================================
 
+/// A named resource (e.g. a tape loop) shared between graph nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceDef {
+    /// Unique name referenced by node parameters (e.g. `"tape_0"`).
+    pub name: String,
+    /// Resource kind: `"tape"` for a [`TapeLoop`](rill_core::buffer::TapeLoop).
+    pub kind: String,
+    /// Capacity in samples (for `"tape"` kind).
+    pub capacity: usize,
+}
+
 /// A serialisable graph document.
 ///
 /// Contains everything needed to reconstruct a signal graph:
-/// node definitions with parameters and the connections between them.
+/// node definitions with parameters, named resources, and connections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphDocument {
     /// Format identifier for forward compatibility (e.g. `"rill/1"`).
@@ -43,6 +54,10 @@ pub struct GraphDocument {
 
     /// Block / buffer size.
     pub block_size: usize,
+
+    /// Named resources shared between nodes (tape loops, etc.).
+    #[serde(default)]
+    pub resources: Vec<ResourceDef>,
 
     /// Node definitions.
     pub nodes: Vec<NodeDef>,
@@ -145,6 +160,7 @@ impl GraphDocument {
             format_version: "rill/1".to_string(),
             sample_rate,
             block_size,
+            resources: Vec::new(),
             nodes: Vec::new(),
             connections: Vec::new(),
         }
@@ -200,10 +216,21 @@ impl GraphDocument {
         let nodes: Vec<NodeDef> = entries.iter().map(|entry| node_to_def(&entry.node)).collect();
         let connections = extract_connections(entries);
 
+        let resources = graph
+            .resources()
+            .iter()
+            .map(|r| ResourceDef {
+                name: r.name.clone(),
+                kind: r.kind.clone(),
+                capacity: r.capacity,
+            })
+            .collect();
+
         Self {
             format_version: "rill/1".to_string(),
             sample_rate,
             block_size: B as usize,
+            resources,
             nodes,
             connections,
         }
@@ -307,6 +334,15 @@ impl GraphDocument {
         }
 
         let mut builder = GraphBuilder::new();
+
+        // ── register resources ──
+        for rd in &self.resources {
+            builder.add_resource(crate::graph::GraphResource {
+                name: rd.name.clone(),
+                kind: rd.kind.clone(),
+                capacity: rd.capacity,
+            });
+        }
 
         // ── construct nodes ──
         for nd in &self.nodes {
@@ -821,6 +857,7 @@ mod tests {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 64,
+            resources: vec![],
             nodes: vec![NodeDef {
                 id: 0,
                 type_name: "rill/nonexistent".to_string(),
@@ -840,6 +877,7 @@ mod tests {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 64,
+            resources: vec![],
             nodes: vec![
                 NodeDef {
                     id: 0,
@@ -868,6 +906,7 @@ mod tests {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 128,
+            resources: vec![],
             nodes: vec![],
             connections: vec![],
         };

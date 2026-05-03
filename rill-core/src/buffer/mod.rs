@@ -1,7 +1,9 @@
-//! # Audio Buffers with Transcendental Support
+//! # Audio Buffers for single-threaded signal processing
 //!
-//! This module provides lock-free, real-time safe buffers for signal processing
-//! with full `Transcendental` support for both `f32` and `f64` sample types.
+//! This module provides real-time safe buffers used by graph nodes inside
+//! the signal thread. All buffers are **single-threaded** — they contain no
+//! atomics or locks. Cross-thread communication goes through
+//! [`rill_core::queues`](crate::queues).
 //!
 //! ## Buffer Types
 //!
@@ -12,16 +14,15 @@
 //! | [`FanInBuffer`] | Multiple producers, one consumer | Mix multiple signals |
 //! | [`DelayLine`] | Circular buffer with delay | Effects like echo, reverb |
 //! | [`RingBuffer`] | Multi-producer, multi-consumer | Generic queue for any scenario |
+//! | [`TapeLoop`] | Heap-allocated circular buffer | Tape delay with large capacity |
 //!
 //! ## Features
 //!
-//! - **Lock-free** - All buffers use atomic operations, no mutexes
-//! - **Wait-free** - Bounded number of steps per operation
-//! - **Cache-line aligned** - Prevents false sharing between threads
 //! - **Real-time safe** - No allocations, no blocking, no system calls
+//! - **Single-threaded** - No atomics, no locks, minimal overhead
+//! - **Cache-line aligned** - Prevents false sharing
 //! - **Statistically monitored** - Track performance metrics
 //! - **Type-safe** - Generic over `Transcendental` (f32/f64)
-//! - **Const generics** - Sizes checked at compile time
 
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
@@ -40,6 +41,7 @@ mod pipe;
 mod port_buffer;
 mod ring;
 mod storage;
+mod tape;
 
 // ============================================================================
 // Re-exports
@@ -51,6 +53,7 @@ pub use pipe::PipeBuffer;
 pub use port_buffer::Buffer;
 pub use ring::RingBuffer;
 pub use storage::{AtomicCell, AtomicCellError};
+pub use tape::TapeLoop;
 
 // ============================================================================
 // Constants

@@ -345,6 +345,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+                feedback_ptrs: Vec::new(),
             upstream_buffer: None,
             });
             Self {
@@ -457,6 +458,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+                feedback_ptrs: Vec::new(),
             upstream_buffer: None,
             });
             let mut outputs = Vec::with_capacity(1);
@@ -470,6 +472,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+                feedback_ptrs: Vec::new(),
             upstream_buffer: None,
             });
             Self {
@@ -587,6 +590,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+                feedback_ptrs: Vec::new(),
             upstream_buffer: None,
             });
             Self {
@@ -853,6 +857,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+                feedback_ptrs: Vec::new(),
             upstream_buffer: None,
             });
             Self {
@@ -944,6 +949,7 @@ mod tests {
                 feedback_buffer: None,
                 downstream: Vec::new(),
                 feedback_downstream: Vec::new(),
+                feedback_ptrs: Vec::new(),
             upstream_buffer: None,
             });
             Self {

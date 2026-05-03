@@ -115,6 +115,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for Node
     }
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
+    /// Set a pointer to a shared tape loop.
+    /// Delegates to the concrete node type (no-op on most nodes).
+    #[allow(unsafe_code)]
+    pub fn set_tape(&mut self, ptr: *const crate::buffer::TapeLoop<T>) {
+        match self {
+            NodeVariant::Source(src) => src.set_tape(ptr),
+            NodeVariant::Processor(proc) => proc.set_tape(ptr),
+            NodeVariant::Sink(sink) => sink.set_tape(ptr),
+        }
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> crate::traits::SignalNode<T, BUF_SIZE>
     for NodeVariant<T, BUF_SIZE>
 {
