@@ -23,6 +23,10 @@ use crate::error::{IoError, IoResult};
 use crate::midi::MidiEvent;
 use crate::PwBuffers;
 
+/// Maximum stereo block in samples (256 frames × 2 channels).
+/// Stack-allocated in RT callbacks — no heap allocation.
+const MAX_BLOCK_SAMPLES: usize = 512;
+
 // ============================================================================
 // Команды для PW потока
 // ============================================================================
@@ -124,7 +128,7 @@ impl AudioIo for PipewireBackend {
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
         let mut buf = self.input_buffer.write();
-        let mut temp = [0.0f32; 512]; // max BUF_SIZE*2
+        let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
         let n = buf.read(&mut temp[..left.len().min(right.len()).min(256).saturating_mul(2)]);
         drop(buf);
         let frames = n / 2;
@@ -138,7 +142,7 @@ impl AudioIo for PipewireBackend {
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
         let n = left.len().min(right.len());
         let mut buf = self.output_buffer.write();
-        let mut temp = [0.0f32; 512];
+        let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
         let len = n.min(256);
         for i in 0..len {
             temp[i * 2] = left[i];
@@ -557,11 +561,10 @@ fn process_output(
     let n_frames = slice.len() / stride;
     let n_samples = n_frames * channels;
 
-    // Fixed stack buffer — no heap alloc. Max 256 frames × 2 ch = 512 f32.
-    let mut temp = [0.0f32; 512];
+    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
     let read = {
         let mut obuf = output_buffer.write();
-        let n = obuf.read(&mut temp[..n_samples.min(512)]);
+        let n = obuf.read(&mut temp[..n_samples.min(MAX_BLOCK_SAMPLES)]);
         drop(obuf);
         n
     };
@@ -613,8 +616,8 @@ fn process_input(
     let n_samples = n_frames * channels;
 
     // Fixed stack buffer — no heap alloc.
-    let mut temp = [0.0f32; 512];
-    let len = n_samples.min(512);
+    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
+    let len = n_samples.min(MAX_BLOCK_SAMPLES);
     for i in 0..len {
         let offset = i * 4;
         if offset + 4 <= slice.len() {

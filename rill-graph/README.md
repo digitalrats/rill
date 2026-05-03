@@ -18,6 +18,11 @@ Processing is driven by `Port::propagate` (not an external engine).
   6. Recurse through output ports' `downstream_input_ptrs`
 - **Zero-copy routing** — 1:1 and fan-out connections read directly from upstream
   output buffer via `upstream_buffer`. Copy only for fan-in and feedback.
+- **Hard-RT safe** — no heap allocations, no locks, no syscalls in the
+  signal path. All `Port::propagate` data structures are pre-allocated at
+  graph construction time (`downstream_nodes`, `downstream_input_ptrs`).
+  Communication with the control thread is exclusively through
+  lock-free `MpscQueue<ParameterCommand>`.
 - **SIMD-friendly** — fixed buffer position in memory for the graph's lifetime
 - **Port routing** — connections and feedback buffers live on ports
 - **Feedback support** — `port.pre_process` / `port.snapshot_feedback`

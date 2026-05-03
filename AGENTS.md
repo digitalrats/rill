@@ -98,6 +98,27 @@ mdbook serve docs/                # dev server at localhost:3000
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
 
+## Hard-RT safety
+
+The signal graph runs entirely on the hardware callback thread (PipeWire ALSA,
+JACK RT thread). The following rules **must** be maintained:
+
+| Rule | Rationale |
+|---|---|
+| **No heap allocation in RT path** | `Vec::new()`, `Box::new()`, `format!()` inside `propagate`/`generate`/`process`/`consume` will cause xruns. All buffers must be stack-allocated or pre-allocated at graph construction. |
+| **No locks in RT path** | `Mutex::lock()`, `RwLock::write()` (even parking_lot) may spin. Communication with the control thread uses only `rill_core::queues::MpscQueue` (lock‑free SPSC). |
+| **No syscalls in RT path** | No file I/O, no socket operations, no `thread::sleep` in the callback chain. |
+| **`downstream_nodes` is pre‑filled** | `Port::downstream_nodes` is populated once by `GraphBuilder::build()` and iterated at runtime without deduplication or allocation. |
+| **Fixed‑size stack buffers** | PipeWire backend callbacks use `[f32; MAX_BLOCK_SAMPLES]` (512) instead of `vec![]`. |
+
+**Allowed exceptions:**
+- `MpscQueue::pop()` — lock‑free atomic, OK on RT.
+- `AtomicU32::fetch_add()` / `AtomicBool::store()` — OK on RT.
+- Raw pointer dereference (`*mut`, `*const`) — single‑threaded DAG, guaranteed valid.
+
+**Testing:** any new RT path code must be verified with `cargo test --release`
+under `pw‑loopback` or similar virtual device to detect xruns.
+
 ## Feature flags (non-default)
 
 - `rill-core-dsp`: `simd`, `f64`, `fast_math`, `unstable`
