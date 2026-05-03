@@ -154,20 +154,32 @@ HOOK
 chmod +x .git/hooks/pre-commit
 ```
 
-## Processing model
+## Threading model
 
-- **No external engine.** The graph is a pure static DAG. Signal propagation
-  happens through `Port::propagate` — a recursive chain: copy → `run_action`
-  → `pre_process` (feedback) → `process_block` → `snapshot_feedback` → recurse.
-- **Source owns the clock.** `AudioInput` (push model) or `AudioOutput`
-  (pull model) creates the backend callback that drives the graph.
-  The callback drains the command queue, generates/processes/consumes,
-  and calls `Port::propagate` to cascade through downstream nodes.
-- **Control thread** (soft RT): `rill-patchbay::PatchbayManager` / runs
-  automata and mappings. Pushes `ParameterCommand` values into an
-  `MpscQueue` consumed by the source node's callback.
-- **I/O backends** (`rill-io`) provide `AudioIo` trait. The backend's
-  process callback (PipeWire, etc.) is wired by the source node.
+- **Hardware callback thread** (hard RT, single-threaded): the audio backend's
+  process callback (PipeWire ALSA, JACK) fires on its own real-time thread.
+  `AudioInput` (push model) or `AudioOutput` (pull model) wires a callback
+  that runs the entire signal graph:
+  1. Drain `MpscQueue<ParameterCommand>` (parameter changes from control thread)
+  2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
+  3. `Port::propagate()` — recursive DAG traversal through direct port pointers.
+  All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
+  `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside
+  this thread. No atomics, no locks — the graph is a single-threaded static DAG.
+
+- **Control thread** (soft RT): `rill-patchbay::PatchbayManager` / `PatchbayControl`
+  runs automata and mappings. Communicates with the hardware callback thread
+  **only** through `rill-core::queues::MpscQueue<ParameterCommand>`. These queue
+  types use atomic operations and are the **sole** cross-thread bridge.
+
+- **I/O backends** (`rill-io`) run in the hardware callback context, not in a
+  separate thread. The backend provides an `AudioIo` trait implementation;
+  `AudioInput` uses it to read input samples and write output samples.
+
+**Rule of thumb:** if data crosses threads, use `rill-core::queues`. Everything
+else is single-threaded within the signal graph running inside the hardware
+callback. No external engine loop — `Port::propagate` replaces
+`SignalEngine::process_block()`.
 
 ## Known pitfalls
 
@@ -176,6 +188,8 @@ chmod +x .git/hooks/pre-commit
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Port-based propagation**: `Port::propagate` replaces `SignalEngine::process_block`.
-  No external engine loop — the DAG propagates through direct port-to-port pointers
-  (`downstream_input_ptrs`) and parent node references.
+- **Two-thread architecture**: the hardware callback thread (hard RT) runs
+  `AudioInput`'s callback which drives the entire signal graph. The control
+  thread (soft RT) runs `rill-patchbay::PatchbayManager`. Communication via
+  `MpscQueue<ParameterCommand>`. Source/Sink nodes own I/O buffers — no
+  external engine loop, `Port::propagate` replaces `SignalEngine::process_block`.
