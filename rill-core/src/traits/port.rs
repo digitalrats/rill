@@ -1,11 +1,11 @@
 //! Port types and identifiers for the Rill ecosystem
 //!
 //! Ports are the connection points between nodes in the signal graph.
-//! Each output port owns a `Buffer<T, BUF_SIZE>` and an optional `Action`
+//! Each output port owns a `FixedBuffer<T, BUF_SIZE>` and an optional `Action`
 //! that defines how data is produced. Input ports are connection endpoints
 //! that receive data from upstream output ports.
 
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, FixedBuffer};
 use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::algorithm::Algorithm;
@@ -288,7 +288,7 @@ impl fmt::Display for PortId {
 
 /// A port on a node.
 ///
-/// Each port has an owned `Buffer<T, BUF_SIZE>` for its data and an optional
+/// Each port has an owned `FixedBuffer<T, BUF_SIZE>` for its data and an optional
 /// `Action` that defines per-port processing. Output ports typically have
 /// an action; input ports may have one for preprocessing.
 ///
@@ -319,9 +319,9 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Pending command value from the control path
     pub pending_command: Option<T>,
     /// Owned audio buffer (for output ports and input ports without upstream)
-    pub buffer: Buffer<T, BUF_SIZE>,
+    pub buffer: FixedBuffer<T, BUF_SIZE>,
     /// Delayed feedback state (None if not on a feedback edge)
-    pub feedback_buffer: Option<Buffer<T, BUF_SIZE>>,
+    pub feedback_buffer: Option<FixedBuffer<T, BUF_SIZE>>,
     /// Downstream audio connections: (target_node_index, target_port_index)
     pub downstream: Vec<(usize, usize)>,
     /// Direct pointer to upstream output buffer for zero-copy routing.
@@ -331,7 +331,7 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// # Safety
     /// Valid for the engine's lifetime: the graph topology is static and
     /// processing is single-threaded in topological order.
-    pub upstream_buffer: Option<*const Buffer<T, BUF_SIZE>>,
+    pub upstream_buffer: Option<*const FixedBuffer<T, BUF_SIZE>>,
     /// Feedback edge targets from this output port (for serialization)
     pub feedback_downstream: Vec<(usize, usize)>,
 
@@ -339,7 +339,7 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     ///
     /// Set by `GraphBuilder::build()` for feedback edges.
     /// `snapshot_feedback()` copies its buffer into each target.
-    pub feedback_ptrs: Vec<*mut Option<Buffer<T, BUF_SIZE>>>,
+    pub feedback_ptrs: Vec<*mut Option<FixedBuffer<T, BUF_SIZE>>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
@@ -364,7 +364,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             direction: PortDirection::Output,
             action: None,
             pending_command: None,
-            buffer: Buffer::new(),
+            buffer: FixedBuffer::new(),
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
@@ -381,7 +381,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             direction: PortDirection::Input,
             action: None,
             pending_command: None,
-            buffer: Buffer::new(),
+            buffer: FixedBuffer::new(),
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
@@ -403,7 +403,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             direction: PortDirection::Output,
             action: Some(action),
             pending_command: None,
-            buffer: Buffer::new(),
+            buffer: FixedBuffer::new(),
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
@@ -420,7 +420,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             direction: PortDirection::Output,
             action: None,
             pending_command: None,
-            buffer: Buffer::new(),
+            buffer: FixedBuffer::new(),
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
@@ -442,7 +442,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             direction: PortDirection::Output,
             action: Some(action),
             pending_command: None,
-            buffer: Buffer::new(),
+            buffer: FixedBuffer::new(),
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
@@ -459,7 +459,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             direction: PortDirection::Input,
             action: None,
             pending_command: None,
-            buffer: Buffer::new(),
+            buffer: FixedBuffer::new(),
             feedback_buffer: None,
             downstream: Vec::new(),
             feedback_downstream: Vec::new(),
@@ -489,12 +489,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     }
 
     /// Get a reference to the buffer
-    pub fn buffer(&self) -> &Buffer<T, BUF_SIZE> {
+    pub fn buffer(&self) -> &FixedBuffer<T, BUF_SIZE> {
         &self.buffer
     }
 
     /// Get a mutable reference to the buffer
-    pub fn buffer_mut(&mut self) -> &mut Buffer<T, BUF_SIZE> {
+    pub fn buffer_mut(&mut self) -> &mut FixedBuffer<T, BUF_SIZE> {
         &mut self.buffer
     }
 
@@ -509,7 +509,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// and processing is single-threaded in topological order. The upstream
     /// output buffer is owned by another port in the same graph and lives
     /// for the entire processing session.
-    pub fn audio_buffer(&self) -> &Buffer<T, BUF_SIZE> {
+    pub fn audio_buffer(&self) -> &FixedBuffer<T, BUF_SIZE> {
         match self.upstream_buffer {
             Some(ptr) => {
                 #[allow(unsafe_code)]
@@ -526,10 +526,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// when building audio input references for zero-copy processing.
     ///
     /// # Safety
-    /// `ptr` must be a valid, aligned pointer to a `Buffer<T, BUF_SIZE>`
+    /// `ptr` must be a valid, aligned pointer to a `FixedBuffer<T, BUF_SIZE>`
     /// that lives for the entire processing session.
     #[allow(unsafe_code)]
-    pub unsafe fn upstream_ref(ptr: *const Buffer<T, BUF_SIZE>) -> &'static Buffer<T, BUF_SIZE> {
+    pub unsafe fn upstream_ref(ptr: *const FixedBuffer<T, BUF_SIZE>) -> &'static FixedBuffer<T, BUF_SIZE> {
         &*ptr
     }
 
@@ -666,7 +666,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<
     #[inline]
     fn push(&mut self, data: [T; BUF_SIZE]) -> Result<(), PortError> {
         if self.is_output() {
-            self.buffer = Buffer::from_array(data);
+            self.buffer = FixedBuffer::from_array(data);
             Ok(())
         } else {
             Err(PortError::NotFound(self.id.to_string()))

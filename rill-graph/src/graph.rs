@@ -1,5 +1,5 @@
 use crate::registry::{NodeRegistry, RegistryError};
-use rill_core::buffer::Buffer;
+use rill_core::buffer::FixedBuffer;
 use rill_core::math::Transcendental;
 use rill_core::time::{ClockSource, ClockTick, SystemClock};
 use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, PortId};
@@ -293,7 +293,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             let upstream = self.nodes[from_n]
                 .node
                 .output_port(from_p)
-                .map(|p| &p.buffer as *const Buffer<T, BUF_SIZE>);
+                .map(|p| &p.buffer as *const FixedBuffer<T, BUF_SIZE>);
             if let Some(port) = self.nodes[to_n].node.input_port_mut(to_p) {
                 if port.upstream_buffer.is_none() {
                     port.upstream_buffer = upstream;
@@ -306,11 +306,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         // --- enable feedback buffers on both output and input ports ---
         for &(from_n, from_p, to_n, to_p) in &self.feedback_edges {
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
-                port.feedback_buffer = Some(Buffer::new());
+                port.feedback_buffer = Some(FixedBuffer::new());
                 port.feedback_downstream.push((to_n, to_p));
             }
             if let Some(port) = self.nodes[to_n].node.input_port_mut(to_p) {
-                port.feedback_buffer = Some(Buffer::new());
+                port.feedback_buffer = Some(FixedBuffer::new());
             }
         }
         // --- populate Port::feedback_ptrs on output ports ---
@@ -318,8 +318,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             let ptr = self.nodes[to_n]
                 .node
                 .input_port(to_p)
-                .map(|p| &p.feedback_buffer as *const Option<Buffer<T, BUF_SIZE>>)
-                .map(|r| r as *mut Option<Buffer<T, BUF_SIZE>>);
+                .map(|p| &p.feedback_buffer as *const Option<FixedBuffer<T, BUF_SIZE>>)
+                .map(|r| r as *mut Option<FixedBuffer<T, BUF_SIZE>>);
             if let Some(port) = self.nodes[from_n].node.output_port_mut(from_p) {
                 if let Some(p) = ptr {
                     port.feedback_ptrs.push(p);

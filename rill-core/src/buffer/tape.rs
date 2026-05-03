@@ -1,4 +1,5 @@
 use crate::math::Transcendental;
+use crate::buffer::Buffer;
 
 /// Heap-allocated ring buffer for tape delay — single-threaded.
 ///
@@ -21,6 +22,7 @@ use crate::math::Transcendental;
 /// tape.write(0.5);
 /// let sample = tape.read(100);
 /// ```
+#[derive(Debug)]
 pub struct TapeLoop<T> {
     buffer: Box<[T]>,
     capacity: usize,
@@ -109,6 +111,39 @@ impl<T: Transcendental> TapeLoop<T> {
             *slot = T::ZERO;
         }
         self.write_pos = 0;
+    }
+}
+
+// ── Buffer trait impl ──────────────────────────────────────────────
+
+impl<T: Transcendental> Buffer<T> for TapeLoop<T> {
+    fn len(&self) -> usize {
+        self.capacity
+    }
+
+    fn as_slice(&self) -> &[T] {
+        &self.buffer
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.buffer
+    }
+
+    fn fill(&mut self, value: T)
+    where
+        T: Copy,
+    {
+        for slot in self.buffer.iter_mut() {
+            *slot = value;
+        }
+    }
+
+    fn copy_from(&mut self, src: &[T])
+    where
+        T: Copy,
+    {
+        let len = src.len().min(self.capacity);
+        self.buffer[..len].copy_from_slice(&src[..len]);
     }
 }
 
