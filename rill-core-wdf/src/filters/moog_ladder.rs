@@ -1,4 +1,3 @@
-#![allow(clippy::unnecessary_braces)]
 use rill_core::traits::{
     ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult,
 };
@@ -19,7 +18,7 @@ crate::wdf_element! {
     name: RcPole<T>,
     params: { alpha: T },
     state: { state: T },
-    port_resistance: |_s| { T::ONE },
+    port_resistance: |_s| T::ONE,
     scattering: |s, a| {
         let b = s.state + s.alpha * (a - s.state);
         s.state = b + s.alpha * (a - b);

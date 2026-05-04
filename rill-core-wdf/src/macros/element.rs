@@ -8,10 +8,10 @@ macro_rules! wdf_element {
         name: $name:ident<T>,
         params: { $($pname:ident: $ptype:ty),* },
         state: { $($sname:ident: $stype:ty),* },
-        port_resistance: |$pr_self:ident| $pr:tt,
-        scattering: |$p:ident, $a:ident| $scatter:tt,
-        update: |$u:ident| $update:tt,
-        reset: |$r:ident| $reset:tt,
+        port_resistance: |$pr_self:ident| $pr:expr,
+        scattering: |$p:ident, $a:ident| $scatter:expr,
+        update: |$u:ident| $update:expr,
+        reset: |$r:ident| $reset:expr,
     ) => {
         /// A single WDF element.
         ///

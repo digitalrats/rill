@@ -6,7 +6,7 @@ crate::wdf_element! {
     name: AntiParallelDiode<T>,
     params: { is: T, vt: T },
     state: { rp: T },
-    port_resistance: |s| { s.rp },
+    port_resistance: |s| s.rp,
     scattering: |s, a| {
         let tolerance = T::from_f64(NEWTON_TOLERANCE);
         let guess = s.vt * (T::ONE + a.abs() / (T::from_f32(2.0) * s.rp * s.is)).ln();
