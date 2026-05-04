@@ -1,6 +1,8 @@
 //! # AudioInput — Stereo Source Node (push model)
 //!
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
+//!
+//! Owns the backend (`Box<dyn AudioIo>`). Output nodes borrow via `AudioIoPtr`.
 
 use std::cell::Cell;
 
@@ -15,16 +17,40 @@ use rill_core::{
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
-use crate::audio_io::AudioIoPtr;
+use crate::audio_io::{AudioIo, AudioIoPtr};
+
+/// Wrapper for `AudioInput`'s backend field.
+///
+/// `SignalNode` requires `Send + Sync`. `AudioIo` is only `Send`.
+/// `Sync` is sound because the RT protocol guarantees `stop()` is
+/// called after the RT thread has been joined — no concurrent
+/// `read_input`/`write_output`.
+struct BackendField(Option<Box<dyn AudioIo>>);
+unsafe impl Sync for BackendField {}
+
+impl std::ops::Deref for BackendField {
+    type Target = Option<Box<dyn AudioIo>>;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+impl std::ops::DerefMut for BackendField {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+}
+impl BackendField {
+    fn none() -> Self { Self(None) }
+    fn set(&mut self, backend: Box<dyn AudioIo>) { self.0 = Some(backend); }
+}
 
 /// Stereo audio input source. Owns the processing callback that drives
 /// the entire DAG: drain commands → read backend → fill outputs → propagate.
+///
+/// Owns the audio backend (`Box<dyn AudioIo>`). The backend lives as long
+/// as this node lives — dropped together with the node.
 pub struct AudioInput<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: AudioIoPtr,
+    backend: BackendField,
     buf_l: [f32; BUF_SIZE],
     buf_r: [f32; BUF_SIZE],
 }
@@ -44,14 +70,23 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
             metadata,
             outputs,
             state: NodeState::new(44100.0),
-            backend: AudioIoPtr::null(),
+            backend: BackendField::none(),
             buf_l: [0.0; BUF_SIZE],
             buf_r: [0.0; BUF_SIZE],
         }
     }
 
-    pub fn set_backend(&mut self, ptr: AudioIoPtr) {
-        self.backend = ptr;
+    /// Take ownership of a backend.
+    pub fn set_backend(&mut self, backend: Box<dyn AudioIo>) {
+        self.backend.set(backend);
+    }
+
+    /// Return a borrowed pointer for output nodes.
+    pub fn backend_ptr(&self) -> AudioIoPtr {
+        match self.backend.as_ref() {
+            Some(b) => AudioIoPtr::from_ref(&**b),
+            None => AudioIoPtr::null(),
+        }
     }
 
     /// Start the reactive stream. Creates and registers the processing
@@ -113,7 +148,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
         }
     }
 
-    pub fn has_backend(&self) -> bool { !self.backend.is_null() }
+    pub fn has_backend(&self) -> bool { self.backend.is_some() }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
@@ -234,16 +269,14 @@ mod tests {
         let input_ring = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(512)));
         let output_ring = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(512)));
 
-        let ring_io = Box::new(RingIo {
+        let backend = Box::new(RingIo {
             input_ring: input_ring.clone(),
             output_ring: output_ring.clone(),
         });
-        let ptr: *const dyn AudioIo = &*ring_io;
-        let io_ptr = AudioIoPtr::from_ref(&*ring_io);
-        std::mem::forget(ring_io); // leak: valid for test duration
+        let io_ptr = AudioIoPtr::from_ref(&*backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
-        input.set_backend(io_ptr);
+        input.set_backend(backend);
 
         // Write test data into the input ring (as PW input callback would)
         let test_val: f32 = 42.0;

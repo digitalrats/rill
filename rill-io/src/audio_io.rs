@@ -3,7 +3,13 @@ use std::collections::HashMap;
 pub type IoResult<T> = Result<T, String>;
 
 /// Abstract audio I/O backend.
-pub trait AudioIo {
+///
+/// Only `Send` — no `Sync`. The RT thread calls `read_input`/`write_output`
+/// concurrently with the control thread calling `stop`, but the protocol
+/// guarantees: `stop()` is called after the RT thread has been joined,
+/// so `&self` is never used from two threads at once for conflicting
+/// operations.
+pub trait AudioIo: Send {
     fn set_process_callback(&self, cb: Box<dyn Fn()>);
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize;
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize;

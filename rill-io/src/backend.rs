@@ -46,7 +46,7 @@ impl BackendType {
 }
 
 /// Трейт аудио бэкенда
-pub trait AudioBackend: Send + Sync + Debug {
+pub trait AudioBackend: Debug {
     /// Получить тип бэкенда
     fn backend_type(&self) -> BackendType;
 

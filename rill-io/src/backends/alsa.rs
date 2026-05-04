@@ -121,112 +121,165 @@ impl AlsaBackend {
 fn run_alsa_thread(
     command_rx: Receiver<AlsaCommand>,
     xruns: Arc<RwLock<u32>>,
-    _input_buffer: Arc<RwLock<IoRingBuffer>>,
+    input_buffer: Arc<RwLock<IoRingBuffer>>,
     output_buffer: Arc<RwLock<IoRingBuffer>>,
     state: Arc<RwLock<AlsaState>>,
     config: AudioConfig,
     device_name: Arc<RwLock<String>>,
 ) {
-    let mut pcm_handle: Option<PCM> = None;
-
     while let Ok(cmd) = command_rx.recv() {
         match cmd {
             AlsaCommand::Start => {
-                if pcm_handle.is_none() {
-                    // Получаем имя устройства
-                    let dev_name = device_name.read().clone();
+                let dev_name = device_name.read().clone();
 
-                    // Открываем PCM устройство
-                    match PCM::new(&dev_name, Direction::Playback, false) {
-                        Ok(pcm) => {
-                            pcm_handle = Some(pcm);
-                        }
+                // Открываем PCM playback устройство
+                let pcm_playback = match PCM::new(&dev_name, Direction::Playback, false) {
+                    Ok(pcm) => pcm,
+                    Err(e) => {
+                        eprintln!("Failed to open ALSA playback device {}: {}", dev_name, e);
+                        *state.write() = AlsaState::Error;
+                        continue;
+                    }
+                };
+
+                // Открываем PCM capture устройство (если нужны входные каналы)
+                let pcm_capture: Option<PCM> = if config.input_channels > 0 {
+                    match PCM::new(&dev_name, Direction::Capture, false) {
+                        Ok(pcm) => Some(pcm),
                         Err(e) => {
-                            eprintln!("Failed to open ALSA device {}: {}", dev_name, e);
-                            *state.write() = AlsaState::Error;
-                            continue;
+                            log::warn!("Failed to open ALSA capture device {}: {} — capture disabled", dev_name, e);
+                            None
                         }
+                    }
+                } else {
+                    None
+                };
+
+                // Настраиваем параметры playback
+                if let Err(e) = configure_alsa_pcm(&pcm_playback, config.output_channels, &config) {
+                    eprintln!("Failed to configure ALSA playback: {}", e);
+                    *state.write() = AlsaState::Error;
+                    continue;
+                }
+
+                // Настраиваем параметры capture
+                if let Some(ref pcm) = pcm_capture {
+                    if let Err(e) = configure_alsa_pcm(pcm, config.input_channels, &config) {
+                        log::warn!("Failed to configure ALSA capture: {} — capture disabled", e);
+                        // Продолжаем без захвата
                     }
                 }
 
-                if let Some(pcm) = &mut pcm_handle {
-                    // Настраиваем параметры
-                    if let Err(e) = configure_alsa_pcm(pcm, &config) {
-                        eprintln!("Failed to configure ALSA: {}", e);
-                        *state.write() = AlsaState::Error;
-                        continue;
-                    }
+                // Запускаем воспроизведение
+                if let Err(e) = pcm_playback.start() {
+                    eprintln!("Failed to start ALSA playback: {}", e);
+                    *state.write() = AlsaState::Error;
+                    continue;
+                }
 
-                    // Запускаем воспроизведение
+                // Запускаем захват
+                if let Some(ref pcm) = pcm_capture {
                     if let Err(e) = pcm.start() {
-                        eprintln!("Failed to start ALSA: {}", e);
-                        *state.write() = AlsaState::Error;
-                        continue;
+                        log::warn!("Failed to start ALSA capture: {} — capture disabled", e);
                     }
+                }
 
-                    let mut running = true;
-                    *state.write() = AlsaState::Running;
+                let mut running = true;
+                *state.write() = AlsaState::Running;
 
-                    // Запускаем цикл обработки
-                    let buffer_size = (config.buffer_size * config.output_channels) as usize;
-                    let mut playback_buffer = vec![0i16; buffer_size]; // ALSA обычно использует i16
+                let out_buffer_size = (config.buffer_size * config.output_channels) as usize;
+                let in_buffer_size = (config.buffer_size * config.input_channels) as usize;
+                let mut playback_buffer = vec![0i16; out_buffer_size];
+                let mut capture_buffer = vec![0i16; in_buffer_size.max(1)];
 
-                    while running {
-                        // Читаем из выходного буфера
-                        let mut output = output_buffer.write();
-                        let mut temp = vec![0.0f32; buffer_size];
-                        output.read(&mut temp);
-                        drop(output); // Освобождаем блокировку
-
-                        // Конвертируем f32 в i16 для ALSA
-                        for (i, sample) in playback_buffer.iter_mut().enumerate() {
-                            *sample = (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16;
-                        }
-
-                        // Записываем в ALSA
+                while running {
+                    // ── Capture: читаем из ALSA → input ring ────────────────
+                    if let Some(ref pcm) = pcm_capture {
                         match pcm.io_i16() {
                             Ok(io) => {
-                                match io.writei(&playback_buffer) {
-                                    Ok(_) => {}
+                                match io.readi(&mut capture_buffer) {
+                                    Ok(n_read) => {
+                                        let n = n_read * config.input_channels as usize;
+                                        let mut temp = vec![0.0f32; n];
+                                        for (i, sample) in capture_buffer[..n].iter().enumerate() {
+                                            temp[i] = *sample as f32 / 32768.0;
+                                        }
+                                        let mut input = input_buffer.write();
+                                        input.write(&temp);
+                                        drop(input);
+                                    }
                                     Err(e) => {
-                                        eprintln!("ALSA write error: {}", e);
+                                        eprintln!("ALSA capture error: {}", e);
                                         *xruns.write() += 1;
-
-                                        // Пытаемся восстановиться
                                         if let Err(recover_err) = pcm.try_recover(e, true) {
-                                            eprintln!("Failed to recover ALSA: {}", recover_err);
-                                            running = false;
+                                            eprintln!("Failed to recover ALSA capture: {}", recover_err);
                                         }
                                     }
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Failed to get ALSA IO: {}", e);
+                                eprintln!("Failed to get ALSA capture IO: {}", e);
                                 *xruns.write() += 1;
                             }
                         }
-
-                        // Проверяем команды без блокировки
-                        while let Ok(cmd) = command_rx.try_recv() {
-                            match cmd {
-                                AlsaCommand::Stop => {
-                                    running = false;
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        thread::sleep(Duration::from_micros(1000));
                     }
 
+                    // ── Playback: читаем из output ring → ALSA ──────────────
+                    {
+                        let mut output = output_buffer.write();
+                        let mut temp = vec![0.0f32; out_buffer_size];
+                        let n = output.read(&mut temp);
+                        drop(output);
+
+                        for (i, sample) in playback_buffer.iter_mut().enumerate() {
+                            *sample = if i < n {
+                                (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16
+                            } else {
+                                0
+                            };
+                        }
+                    }
+
+                    match pcm_playback.io_i16() {
+                        Ok(io) => {
+                            match io.writei(&playback_buffer) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("ALSA playback error: {}", e);
+                                    *xruns.write() += 1;
+                                    if let Err(recover_err) = pcm_playback.try_recover(e, true) {
+                                        eprintln!("Failed to recover ALSA playback: {}", recover_err);
+                                        running = false;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to get ALSA playback IO: {}", e);
+                            *xruns.write() += 1;
+                        }
+                    }
+
+                    // Проверяем команды без блокировки
+                    while let Ok(cmd) = command_rx.try_recv() {
+                        match cmd {
+                            AlsaCommand::Stop => {
+                                running = false;
+                            }
+                            AlsaCommand::Start => {}
+                        }
+                    }
+
+                    thread::sleep(Duration::from_micros(1000));
+                }
+
+                let _ = pcm_playback.drain();
+                if let Some(ref pcm) = pcm_capture {
                     let _ = pcm.drain();
                 }
             }
 
             AlsaCommand::Stop => {
-                if let Some(pcm) = &mut pcm_handle {
-                    let _ = pcm.drain();
-                }
                 *state.write() = AlsaState::Stopped;
             }
         }
@@ -234,7 +287,7 @@ fn run_alsa_thread(
 }
 
 // Настройка параметров ALSA PCM
-fn configure_alsa_pcm(pcm: &mut PCM, config: &AudioConfig) -> IoResult<()> {
+fn configure_alsa_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()> {
     let hw_params = HwParams::any(pcm).map_err(|e| IoError::Config(e.to_string()))?;
 
     // Устанавливаем параметры
@@ -247,11 +300,11 @@ fn configure_alsa_pcm(pcm: &mut PCM, config: &AudioConfig) -> IoResult<()> {
         .map_err(|e| IoError::Config(e.to_string()))?;
 
     hw_params
-        .set_rate(config.sample_rate as u32, ValueOr::Nearest)
+        .set_rate(config.sample_rate, ValueOr::Nearest)
         .map_err(|e| IoError::Config(e.to_string()))?;
 
     hw_params
-        .set_channels(config.output_channels as u32)
+        .set_channels(channels)
         .map_err(|e| IoError::Config(e.to_string()))?;
 
     // Устанавливаем размер буфера
