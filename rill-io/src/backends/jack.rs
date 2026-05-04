@@ -176,6 +176,15 @@ fn run_jack_thread(
         Err(e) => { log::error!("JACK activate: {e:?}"); return; }
     };
 
+    // Auto-connect output port to JACK system playback ports.
+    let jack_client = active_client.as_client();
+    let out_port_name = format!("{}:output", client_name);
+    for target in &["system:playback_1", "system:playback_2"] {
+        if let Err(e) = jack_client.connect_ports_by_name(&out_port_name, target) {
+            log::info!("JACK connect {} → {}: {}", out_port_name, target, e);
+        }
+    }
+
     while running.load(Ordering::Acquire) {
         thread::park();
     }
