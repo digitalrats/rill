@@ -8,9 +8,9 @@
 
 mod channel;
 #[allow(clippy::module_name_repetitions)]
-mod mixer;
+mod node;
 mod send;
 
 pub use channel::{ChannelConfig, ChannelMode, ChannelState};
-pub use mixer::MixerNode;
+pub use node::MixerNode;
 pub use send::{SendConfig, SendType};

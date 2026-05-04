@@ -32,6 +32,7 @@ use crate::io::AudioConfig;
 ///
 /// # Panics
 /// Panics if `BUF_SIZE` is not one of: 64, 128, 256, 512.
+#[allow(clippy::missing_transmute_annotations)]
 pub fn registry<const BUF_SIZE: usize>() -> &'static NodeRegistry<f32, BUF_SIZE> {
     // Static registries per block size. Initialized lazily on first call.
     static R64: Mutex<Option<NodeRegistry<f32, 64>>> = Mutex::new(None);

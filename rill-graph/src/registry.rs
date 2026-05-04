@@ -161,6 +161,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeRegistry<T, BUF_SIZE> {
 // Internal: closure-based constructor wrapper
 // ============================================================================
 
+#[allow(clippy::type_complexity)]
 struct ClosureCtor<T: Transcendental, const BUF_SIZE: usize> {
     type_name: &'static str,
     f: Box<dyn Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + Send + Sync>,

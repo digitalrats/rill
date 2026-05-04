@@ -879,27 +879,27 @@ impl PatchbayControl {
                 }
 
                 match tel_rx.recv() {
-                    Ok(Telemetry::Event { kind, data, .. }) if kind == CLOCK_TICK => {
-                        if data.len() >= 3 {
-                            let sample_pos = data[0] as u64;
-                            let sample_rate = data[1];
-                            let tempo = data[2];
+                    Ok(Telemetry::Event { kind, data, .. })
+                        if kind == CLOCK_TICK && data.len() >= 3 =>
+                    {
+                        let sample_pos = data[0] as u64;
+                        let sample_rate = data[1];
+                        let tempo = data[2];
 
-                            let beat_pos = data.get(3).copied().unwrap_or(0.0);
-                            let new_beat = data.get(4).copied().unwrap_or(0.0) > 0.5;
-                            let new_bar = data.get(5).copied().unwrap_or(0.0) > 0.5;
+                        let beat_pos = data.get(3).copied().unwrap_or(0.0);
+                        let new_beat = data.get(4).copied().unwrap_or(0.0) > 0.5;
+                        let new_bar = data.get(5).copied().unwrap_or(0.0) > 0.5;
 
-                            let cmds = seq.tick_ext(
-                                sample_pos,
-                                sample_rate,
-                                tempo,
-                                beat_pos,
-                                new_beat,
-                                new_bar,
-                            );
-                            for cmd in cmds {
-                                let _ = queue.push(cmd);
-                            }
+                        let cmds = seq.tick_ext(
+                            sample_pos,
+                            sample_rate,
+                            tempo,
+                            beat_pos,
+                            new_beat,
+                            new_bar,
+                        );
+                        for cmd in cmds {
+                            let _ = queue.push(cmd);
                         }
                     }
                     Err(_) => return,

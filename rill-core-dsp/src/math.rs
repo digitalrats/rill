@@ -302,6 +302,7 @@ impl<T: Transcendental> Smoother<T> {
     }
 
     /// Получить текущее сглаженное значение (и обновить)
+    #[allow(clippy::should_implement_trait)]
     #[inline(always)]
     pub fn next(&mut self) -> T {
         self.current = self

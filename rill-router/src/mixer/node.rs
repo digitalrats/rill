@@ -516,13 +516,16 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
             let channel_volume = channel.config().volume;
 
             // Process per sample
-            for i in 0..buffer_size {
-                let sample = input_buf[i];
-
+            for (i, ((&sample, left), right)) in input_buf
+                .iter()
+                .zip(master_left.iter_mut())
+                .zip(master_right.iter_mut())
+                .enumerate()
+            {
                 let (left_out, right_out) = channel.process_mono(sample);
 
-                master_left[i] += left_out;
-                master_right[i] += right_out;
+                *left += left_out;
+                *right += right_out;
 
                 for send in &self.sends[ch_idx] {
                     if send.bus_index < self.buses.len() {
@@ -549,9 +552,13 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
             let (first, rest) = self.output_ports.split_at_mut(1);
             let out_l = first[0].buffer.as_mut_array();
             let out_r = rest[0].buffer.as_mut_array();
-            for i in 0..buffer_size {
-                out_l[i] = master_left[i] * master_gain;
-                out_r[i] = master_right[i] * master_gain;
+            for ((master_l, master_r), (out_l, out_r)) in master_left
+                .iter()
+                .zip(master_right.iter())
+                .zip(out_l.iter_mut().zip(out_r.iter_mut()))
+            {
+                *out_l = master_l * master_gain;
+                *out_r = master_r * master_gain;
             }
         }
 

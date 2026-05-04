@@ -209,8 +209,8 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
             if self.valid[producer] && self.write_seq[producer] > current_seq {
                 any_valid = true;
                 active_producers += 1;
-                for i in 0..N {
-                    result[i] += self.storage[producer][i];
+                for (res, &val) in result.iter_mut().zip(self.storage[producer].iter()) {
+                    *res += val;
                 }
             }
         }

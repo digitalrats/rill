@@ -67,6 +67,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ReadHead<T, BUF_SIZE> {
+    #[allow(clippy::needless_range_loop)]
     fn generate(
         &mut self,
         _clock: &ClockTick,

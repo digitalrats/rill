@@ -55,128 +55,66 @@ impl<T: Scalar> Vector<T, 4> for ScalarVector4<T> {
     }
 
     fn add(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] + other.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] + other.0[i]))
     }
 
     fn sub(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] - other.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] - other.0[i]))
     }
 
     fn mul(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] * other.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] * other.0[i]))
     }
 
     fn div(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] / other.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] / other.0[i]))
     }
 
     fn rem(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] % other.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] % other.0[i]))
     }
 
     fn neg(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = -self.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| -self.0[i]))
     }
 
     fn abs(&self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].abs();
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].abs()))
     }
 
     fn min(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].min(other.0[i]);
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].min(other.0[i])))
     }
 
     fn max(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].max(other.0[i]);
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].max(other.0[i])))
     }
 
     fn clamp(&self, min: &Self, max: &Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].clamp(min.0[i], max.0[i]);
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| {
+            self.0[i].clamp(min.0[i], max.0[i])
+        }))
     }
 }
 
 impl<T: Transcendental> VectorTranscendental<T, 4> for ScalarVector4<T> {
     fn sqrt(&self) -> Self {
-        let mut a = [T::ZERO; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].sqrt();
-        }
-        ScalarVector4(a)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].sqrt()))
     }
     fn exp(&self) -> Self {
-        let mut a = [T::ZERO; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].exp();
-        }
-        ScalarVector4(a)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].exp()))
     }
     fn ln(&self) -> Self {
-        let mut a = [T::ZERO; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].ln();
-        }
-        ScalarVector4(a)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].ln()))
     }
     fn sin(&self) -> Self {
-        let mut a = [T::ZERO; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].sin();
-        }
-        ScalarVector4(a)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].sin()))
     }
     fn cos(&self) -> Self {
-        let mut a = [T::ZERO; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].cos();
-        }
-        ScalarVector4(a)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].cos()))
     }
     fn tan(&self) -> Self {
-        let mut a = [T::ZERO; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].tan();
-        }
-        ScalarVector4(a)
+        ScalarVector4(core::array::from_fn(|i| self.0[i].tan()))
     }
 }
 
@@ -339,128 +277,66 @@ impl<T: Scalar> Vector<T, 2> for ScalarVector2<T> {
     }
 
     fn add(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] + other.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] + other.0[i]))
     }
 
     fn sub(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] - other.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] - other.0[i]))
     }
 
     fn mul(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] * other.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] * other.0[i]))
     }
 
     fn div(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] / other.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] / other.0[i]))
     }
 
     fn rem(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] % other.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] % other.0[i]))
     }
 
     fn neg(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = -self.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| -self.0[i]))
     }
 
     fn abs(&self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].abs();
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].abs()))
     }
 
     fn min(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].min(other.0[i]);
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].min(other.0[i])))
     }
 
     fn max(&self, other: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].max(other.0[i]);
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].max(other.0[i])))
     }
 
     fn clamp(&self, min: &Self, max: &Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i].clamp(min.0[i], max.0[i]);
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| {
+            self.0[i].clamp(min.0[i], max.0[i])
+        }))
     }
 }
 
 impl<T: Transcendental> VectorTranscendental<T, 2> for ScalarVector2<T> {
     fn sqrt(&self) -> Self {
-        let mut a = [T::ZERO; 2];
-        for i in 0..2 {
-            a[i] = self.0[i].sqrt();
-        }
-        ScalarVector2(a)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].sqrt()))
     }
     fn exp(&self) -> Self {
-        let mut a = [T::ZERO; 2];
-        for i in 0..2 {
-            a[i] = self.0[i].exp();
-        }
-        ScalarVector2(a)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].exp()))
     }
     fn ln(&self) -> Self {
-        let mut a = [T::ZERO; 2];
-        for i in 0..2 {
-            a[i] = self.0[i].ln();
-        }
-        ScalarVector2(a)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].ln()))
     }
     fn sin(&self) -> Self {
-        let mut a = [T::ZERO; 2];
-        for i in 0..2 {
-            a[i] = self.0[i].sin();
-        }
-        ScalarVector2(a)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].sin()))
     }
     fn cos(&self) -> Self {
-        let mut a = [T::ZERO; 2];
-        for i in 0..2 {
-            a[i] = self.0[i].cos();
-        }
-        ScalarVector2(a)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].cos()))
     }
     fn tan(&self) -> Self {
-        let mut a = [T::ZERO; 2];
-        for i in 0..2 {
-            a[i] = self.0[i].tan();
-        }
-        ScalarVector2(a)
+        ScalarVector2(core::array::from_fn(|i| self.0[i].tan()))
     }
 }
 
@@ -480,11 +356,7 @@ impl<T: Scalar> Add for ScalarVector4<T> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] + rhs.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] + rhs.0[i]))
     }
 }
 
@@ -492,11 +364,7 @@ impl<T: Scalar> Sub for ScalarVector4<T> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] - rhs.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] - rhs.0[i]))
     }
 }
 
@@ -504,11 +372,7 @@ impl<T: Scalar> Mul for ScalarVector4<T> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] * rhs.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] * rhs.0[i]))
     }
 }
 
@@ -516,11 +380,7 @@ impl<T: Scalar> Div for ScalarVector4<T> {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] / rhs.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] / rhs.0[i]))
     }
 }
 
@@ -528,11 +388,7 @@ impl<T: Scalar> Rem for ScalarVector4<T> {
     type Output = Self;
 
     fn rem(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] % rhs.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| self.0[i] % rhs.0[i]))
     }
 }
 
@@ -540,11 +396,7 @@ impl<T: Scalar> Neg for ScalarVector4<T> {
     type Output = Self;
 
     fn neg(self) -> Self {
-        let mut arr = [T::ZERO; 4];
-        for i in 0..4 {
-            arr[i] = -self.0[i];
-        }
-        ScalarVector4(arr)
+        ScalarVector4(core::array::from_fn(|i| -self.0[i]))
     }
 }
 
@@ -552,11 +404,7 @@ impl<T: Scalar> Add for ScalarVector2<T> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] + rhs.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] + rhs.0[i]))
     }
 }
 
@@ -564,11 +412,7 @@ impl<T: Scalar> Sub for ScalarVector2<T> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] - rhs.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] - rhs.0[i]))
     }
 }
 
@@ -576,11 +420,7 @@ impl<T: Scalar> Mul for ScalarVector2<T> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] * rhs.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] * rhs.0[i]))
     }
 }
 
@@ -588,11 +428,7 @@ impl<T: Scalar> Div for ScalarVector2<T> {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] / rhs.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] / rhs.0[i]))
     }
 }
 
@@ -600,11 +436,7 @@ impl<T: Scalar> Rem for ScalarVector2<T> {
     type Output = Self;
 
     fn rem(self, rhs: Self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = self.0[i] % rhs.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| self.0[i] % rhs.0[i]))
     }
 }
 
@@ -612,11 +444,7 @@ impl<T: Scalar> Neg for ScalarVector2<T> {
     type Output = Self;
 
     fn neg(self) -> Self {
-        let mut arr = [T::ZERO; 2];
-        for i in 0..2 {
-            arr[i] = -self.0[i];
-        }
-        ScalarVector2(arr)
+        ScalarVector2(core::array::from_fn(|i| -self.0[i]))
     }
 }
 

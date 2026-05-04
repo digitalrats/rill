@@ -164,7 +164,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
     /// `nodes_ptr` must point to the graph's node array (obtained from
     /// `graph.into_parts().0.into_boxed_slice()`). Valid until `stop()`.
     /// `source_idx` is this node's index in the array.
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref, clippy::type_complexity)]
     pub fn start(
         &mut self,
         nodes_ptr: *mut [NodeVariant<f32, BUF_SIZE>],
@@ -293,14 +293,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for AudioInpu
                 let frames = n.min(BUF_SIZE);
                 if let Some(left) = self.outputs.get_mut(0) {
                     let l = left.buffer_mut().as_mut_array();
-                    for i in 0..frames {
-                        l[i] = T::from_f32(self.buf_l[i]);
+                    for (dst, &src) in l[..frames].iter_mut().zip(self.buf_l[..frames].iter()) {
+                        *dst = T::from_f32(src);
                     }
                 }
                 if let Some(right) = self.outputs.get_mut(1) {
                     let r = right.buffer_mut().as_mut_array();
-                    for i in 0..frames {
-                        r[i] = T::from_f32(self.buf_r[i]);
+                    for (dst, &src) in r[..frames].iter_mut().zip(self.buf_r[..frames].iter()) {
+                        *dst = T::from_f32(src);
                     }
                 }
             }

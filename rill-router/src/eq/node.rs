@@ -357,15 +357,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         let output_buf = self.outputs[0].buffer.as_mut_array();
 
         let mut input_f32 = [0.0f32; BUF_SIZE];
-        for i in 0..BUF_SIZE {
-            input_f32[i] = input_buf[i].to_f32();
+        for (dest, &src) in input_f32.iter_mut().zip(input_buf.iter()) {
+            *dest = src.to_f32();
         }
 
         let mut output_f32 = [0.0f32; BUF_SIZE];
         self.eq.process_block(&input_f32, &mut output_f32);
 
-        for i in 0..BUF_SIZE {
-            output_buf[i] = T::from_f32(output_f32[i]);
+        for (dest, &src) in output_buf.iter_mut().zip(output_f32.iter()) {
+            *dest = T::from_f32(src);
         }
 
         Ok(())
@@ -674,15 +674,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         let output_buf = self.outputs[0].buffer.as_mut_array();
 
         let mut input_f32 = [0.0f32; BUF_SIZE];
-        for i in 0..BUF_SIZE {
-            input_f32[i] = input_buf[i].to_f32();
+        for (dest, &src) in input_f32.iter_mut().zip(input_buf.iter()) {
+            *dest = src.to_f32();
         }
 
         let mut output_f32 = [0.0f32; BUF_SIZE];
         self.eq.process_block(&input_f32, &mut output_f32);
 
-        for i in 0..BUF_SIZE {
-            output_buf[i] = T::from_f32(output_f32[i]);
+        for (dest, &src) in output_buf.iter_mut().zip(output_f32.iter()) {
+            *dest = T::from_f32(src);
         }
 
         Ok(())

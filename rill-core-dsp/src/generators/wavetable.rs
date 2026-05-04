@@ -34,9 +34,9 @@ impl<T: Transcendental, const SIZE: usize> WavetableOscillator<T, SIZE> {
     /// Create a sine wavetable.
     pub fn sine(frequency: f32) -> Self {
         let mut table = [T::ZERO; SIZE];
-        for i in 0..SIZE {
+        for (i, tbl) in table.iter_mut().enumerate() {
             let phase = (i as f32 / SIZE as f32) * 2.0 * core::f32::consts::PI;
-            table[i] = T::from_f32(phase.sin());
+            *tbl = T::from_f32(phase.sin());
         }
         Self::new(table, frequency)
     }
@@ -44,8 +44,8 @@ impl<T: Transcendental, const SIZE: usize> WavetableOscillator<T, SIZE> {
     /// Create a sawtooth wavetable.
     pub fn saw(frequency: f32) -> Self {
         let mut table = [T::ZERO; SIZE];
-        for i in 0..SIZE {
-            table[i] = T::from_f32(2.0 * i as f32 / SIZE as f32 - 1.0);
+        for (i, tbl) in table.iter_mut().enumerate() {
+            *tbl = T::from_f32(2.0 * i as f32 / SIZE as f32 - 1.0);
         }
         Self::new(table, frequency)
     }

@@ -88,8 +88,8 @@ impl<T: Transcendental> TapeLoop<T> {
     #[inline(always)]
     pub fn write_block(&mut self, block: &[T]) {
         let len = block.len().min(self.capacity);
-        for i in 0..len {
-            self.buffer[(self.write_pos + i) % self.capacity] = block[i];
+        for (i, &b) in block.iter().enumerate().take(len) {
+            self.buffer[(self.write_pos + i) % self.capacity] = b;
         }
         self.write_pos = (self.write_pos + len) % self.capacity;
     }
@@ -99,8 +99,8 @@ impl<T: Transcendental> TapeLoop<T> {
     pub fn read_block(&self, delay: usize, output: &mut [T]) {
         let len = output.len().min(self.capacity);
         let d = delay.min(self.capacity - 1);
-        for i in 0..len {
-            output[i] = self.read(d + len - 1 - i);
+        for (i, out) in output.iter_mut().enumerate().take(len) {
+            *out = self.read(d + len - 1 - i);
         }
     }
 

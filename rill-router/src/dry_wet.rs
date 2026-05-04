@@ -191,10 +191,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for DryWet
         let wet_gain = T::from_f32(self.wet);
         let master_gain = T::from_f32(self.master);
 
-        for i in 0..BUF_SIZE {
-            let sig = dry_buf[i] * dry_gain + wet_buf[i] * wet_gain;
-            out_l[i] = sig * master_gain;
-            out_r[i] = sig * master_gain;
+        for (((&dry, &wet), out_l), out_r) in dry_buf
+            .iter()
+            .zip(wet_buf.iter())
+            .zip(out_l.iter_mut())
+            .zip(out_r.iter_mut())
+        {
+            let sig = dry * dry_gain + wet * wet_gain;
+            *out_l = sig * master_gain;
+            *out_r = sig * master_gain;
         }
 
         self.state.advance();

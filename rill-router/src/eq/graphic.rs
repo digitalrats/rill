@@ -139,12 +139,12 @@ impl<F: Filter<f32> + 'static> GraphicEq<F> {
     /// Process a block of samples
     pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         assert_eq!(input.len(), output.len());
-        for i in 0..input.len() {
+        for (dest, &src) in output.iter_mut().zip(input.iter()) {
             let mut sample = 0.0;
             for band in &mut self.bands {
-                sample += band.process(input[i]);
+                sample += band.process(src);
             }
-            output[i] = (sample / self.bands.len() as f32) * self.output_gain;
+            *dest = (sample / self.bands.len() as f32) * self.output_gain;
         }
     }
 }

@@ -161,14 +161,14 @@ impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static
     /// Process a block of samples
     pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         assert_eq!(input.len(), output.len());
-        for i in 0..input.len() {
-            let mut sample = input[i];
+        for (dest, &src) in output.iter_mut().zip(input.iter()) {
+            let mut sample = src;
             for band in &mut self.bands {
                 if band.is_enabled() {
                     sample = band.process(sample);
                 }
             }
-            output[i] = sample * self.output_gain;
+            *dest = sample * self.output_gain;
         }
     }
 }
