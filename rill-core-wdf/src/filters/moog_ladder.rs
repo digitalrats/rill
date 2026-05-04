@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_braces)]
 use rill_core::traits::{
     ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult,
 };

@@ -14,7 +14,7 @@
 //! | [`FanInBuffer`] | Multiple producers, one consumer | Mix multiple signals |
 //! | [`DelayLine`] | Circular buffer with delay | Effects like echo, reverb |
 //! | [`RingBuffer`] | Multi-producer, multi-consumer | Generic queue for any scenario |
-//! | [`TapeLoop`] | Heap-allocated circular buffer | Tape delay with large capacity |
+//! | [`TapeLoop`](crate::buffer::TapeLoop) | Heap-allocated circular buffer | Tape delay with large capacity |
 //!
 //! ## Features
 //!

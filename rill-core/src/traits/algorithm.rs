@@ -12,7 +12,7 @@ use crate::traits::ProcessResult;
 // ActionContext
 // ============================================================================
 
-/// Context provided to an [`Algorithm`](crate::traits::Algorithm) during processing.
+/// Context provided to an [`Algorithm`] during processing.
 pub struct ActionContext<'a> {
     /// Current clock tick providing sample-accurate timing.
     pub tick: &'a ClockTick,
@@ -57,7 +57,7 @@ impl AlgorithmCategory {
     }
 }
 
-/// Descriptive metadata for an [`Algorithm`](crate::traits::Algorithm) implementation.
+/// Descriptive metadata for an [`Algorithm`] implementation.
 #[derive(Debug, Clone)]
 pub struct AlgorithmMetadata {
     /// Short name (e.g. "Biquad", "OnePole", "ParamSmoother").

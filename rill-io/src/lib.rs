@@ -2,7 +2,7 @@
 //!
 //! This crate provides a unified interface to various audio backends
 //! (ALSA, CPAL, PipeWire, JACK). Graph processing is handled by
-//! [`rill_graph::engine::SignalEngine`] — this crate is purely about hardware I/O.
+//! `rill-graph` — this crate is purely about hardware I/O.
 
 #![warn(missing_docs)]
 

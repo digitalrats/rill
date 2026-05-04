@@ -8,7 +8,7 @@ use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 use super::{BandType, FilterFactory, GraphicEq, ParametricEq};
 
-/// Default factory that creates Biquad<f32> filters.
+/// Default factory that creates `Biquad<f32>` filters.
 #[derive(Debug, Clone, Default)]
 pub struct BiquadFactory;
 

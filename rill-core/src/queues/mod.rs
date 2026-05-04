@@ -5,12 +5,12 @@
 //!
 //! ## Components
 //!
-//! - [`SpscQueue`] — Single-producer single-consumer queue (maximum throughput)
-//! - [`RtQueueBase`] — Base trait for all queues
-//! - [`QueueError`] — Queue operation error type
-//! - [`CommandQueue`] — Commands from control thread to signal thread
-//! - [`OverflowPolicy`] — Overflow behaviour policies
-//! - [`UnderflowPolicy`] — Underflow behaviour policies
+//! - [`SpscQueue`](crate::queues::SpscQueue) — Single-producer single-consumer queue (maximum throughput)
+//! - [`RtQueueBase`](crate::queues::RtQueueBase) — Base trait for all queues
+//! - [`QueueError`](crate::queues::QueueError) — Queue operation error type
+//! - [`CommandQueue`](crate::queues::CommandQueue) — Commands from control thread to signal thread
+//! - [`OverflowPolicy`](crate::queues::OverflowPolicy) — Overflow behaviour policies
+//! - [`UnderflowPolicy`](crate::queues::UnderflowPolicy) — Underflow behaviour policies
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};

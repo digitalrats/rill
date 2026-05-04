@@ -5,11 +5,11 @@
 //!
 //! ## Доступные макросы
 //!
-//! - [`simple_algorithm!`] - для простых алгоритмов без параметров
-//! - [`parameterized_algorithm!`] - для алгоритмов с параметрами
-//! - [`filter_algorithm!`] - для фильтров (с коэффициентами)
-//! - [`effect_algorithm!`] - для эффектов (с dry/wet)
-//! - [`generator_algorithm!`] - для генераторов
+//! - `simple_algorithm!` - для простых алгоритмов без параметров
+//! - `parameterized_algorithm!` - для алгоритмов с параметрами
+//! - `filter_algorithm!` - для фильтров (с коэффициентами)
+//! - `effect_algorithm!` - для эффектов (с dry/wet)
+//! - `generator_algorithm!` - для генераторов
 //!
 //! ## Пример
 //!

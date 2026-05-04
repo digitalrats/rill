@@ -2,8 +2,8 @@
 //!
 //! Creates a fully configured "rill world" from serialised documents:
 //!
-//! * [`GraphDocument`] — signal topology (nodes, connections, resources)
-//! * [`PatchbayDocument`] — control system (LFO, envelope, mappings)
+//! * GraphDocument — signal topology (nodes, connections, resources)
+//! * PatchbayDocument — control system (LFO, envelope, mappings)
 //!   including the [`OscSurface`] that maps OSC paths to controller IDs
 //!
 //! ## Feature gates
@@ -107,7 +107,7 @@ pub enum RuntimeError {
 /// Fully data-driven signal processing host.
 ///
 /// Create via [`Runtime::new`], start subsystems individually with
-/// [`start`](Runtime::start), or use the free function [`run`] for
+/// start, or use the free function run for
 /// the all-in-one lifecycle.
 pub struct Runtime {
     /// Lock-free command queue (control → audio thread).

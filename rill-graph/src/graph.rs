@@ -127,7 +127,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Add a node by type name via the registry.
     ///
     /// Looks up the type name in `registry`, calls its
-    /// [`NodeConstructor::construct`], and pushes the resulting
+    /// NodeConstructor::construct, and pushes the resulting
     /// [`NodeVariant`] into the graph. The node's [`NodeId`] is
     /// automatically assigned from its position in the graph.
     ///

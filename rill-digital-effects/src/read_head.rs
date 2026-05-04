@@ -7,7 +7,7 @@ use rill_core::{
 
 /// Read head — pure tape reader. Reads from the shared [`TapeLoop`] at a
 /// fixed delay. Mono output. Level and pan are handled by a downstream
-/// [`SumNode`](crate::sum_node::SumNode) with per-channel gains.
+/// SumNode with per-channel gains.
 ///
 /// The tape loop is obtained through the graph's resource registry during
 /// node initialization.

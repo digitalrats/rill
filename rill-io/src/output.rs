@@ -19,7 +19,7 @@ use crate::audio_io::AudioIoPtr;
 
 /// Stereo audio output sink. Writes to backend's output buffer in `consume()`.
 ///
-/// In pull model (active Sink), [`source_idx`](Self::set_source_idx) must be
+/// In pull model (active Sink), [`set_active`](AudioOutput::set_active) must be
 /// set to the graph index of the Source node that drives the processing.
 /// Then [`start`](Self::start) drives the graph from that Source.
 pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
