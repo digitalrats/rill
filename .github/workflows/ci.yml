@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'release/**']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install ALSA deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install PipeWire deps
+        run: sudo apt-get install -y libpipewire-0.3-dev
+      - name: Install JACK deps
+        run: sudo apt-get install -y libjack-jackd2-dev
+      - run: cargo test --workspace
+
+  test-minimal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install ALSA deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo test -p rill-core -p rill-core-dsp -p rill-core-wdf
+      - run: cargo test -p rill-graph -p rill-patchbay -p rill-router
+      - run: cargo test -p rill-oscillators -p rill-digital-filters -p rill-digital-effects
+      - run: cargo test -p rill-sampler -p rill-lofi
+
+  doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install ALSA deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install PipeWire deps
+        run: sudo apt-get install -y libpipewire-0.3-dev
+      - name: Install JACK deps
+        run: sudo apt-get install -y libjack-jackd2-dev
+      - run: cargo doc --workspace --no-deps
