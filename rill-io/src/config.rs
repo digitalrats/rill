@@ -2,7 +2,7 @@
 
 use crate::backend::BackendType;
 use crate::midi::MidiEvent;
-use crossbeam_channel::Sender;
+use std::sync::mpsc::Sender;
 
 /// Конфигурация аудиоустройства
 #[derive(Debug, Clone)]

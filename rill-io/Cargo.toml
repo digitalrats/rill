@@ -11,7 +11,6 @@ repository.workspace = true
 rill-core = { workspace = true }
 thiserror = "1.0"
 log = "0.4"
-crossbeam-channel = "0.5"
 
 cpal = { version = "0.15", optional = true }
 alsa = { version = "0.9", optional = true }

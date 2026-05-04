@@ -1,9 +1,8 @@
 //! JACK бэкенд
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -17,14 +16,17 @@ use crate::error::{IoError, IoResult};
 
 const MAX_JACK_SAMPLES: usize = 4096;
 
-/// Wrapper to make `*mut` `Send` for cross-thread AudioIo access.
-struct SendPtr(*mut Option<Box<dyn Fn()>>);
-unsafe impl Send for SendPtr {}
+/// Callback slot — `*mut Option<Box<dyn Fn()>>` as `usize` (Send-friendly).
+#[derive(Copy, Clone)]
+struct CbSlot(usize);
+unsafe impl Send for CbSlot {}
+unsafe impl Sync for CbSlot {}
 
-#[derive(Debug)]
-enum JackCommand {
-    Start,
-    Stop,
+impl CbSlot {
+    fn new() -> Self { Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize) }
+    unsafe fn set(&self, cb: Box<dyn Fn()>) { (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb); }
+    unsafe fn call(&self) { if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) { cb(); } }
+    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>)); }
 }
 
 /// JACK audio backend.
@@ -34,14 +36,16 @@ enum JackCommand {
 /// for cross-thread communication with the control/application thread.
 pub struct JackBackend {
     config: AudioConfig,
-    command_tx: Sender<JackCommand>,
+    process_cb: CbSlot,
     input_buffer: Arc<IoRingBuffer>,
     output_buffer: Arc<IoRingBuffer>,
-    process_cb: SendPtr,
     thread_handle: Option<thread::JoinHandle<()>>,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
 }
+
+unsafe impl Send for JackBackend {}
+unsafe impl Sync for JackBackend {}
 
 impl fmt::Debug for JackBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -64,7 +68,6 @@ impl JackBackend {
         }
 
         let buf_cap = (config.buffer_size * config.output_channels.max(1) * 4) as usize;
-        let (command_tx, command_rx) = unbounded();
 
         let xruns = Arc::new(AtomicU32::new(0));
         let running = Arc::new(AtomicBool::new(false));
@@ -72,28 +75,27 @@ impl JackBackend {
         let input_buffer = Arc::new(IoRingBuffer::new(buf_cap));
         let output_buffer = Arc::new(IoRingBuffer::new(buf_cap));
 
-        let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
+        let process_cb = CbSlot::new();
 
         let t_xruns = xruns.clone();
         let t_input = input_buffer.clone();
         let t_output = output_buffer.clone();
         let t_config = config.clone();
         let t_running = running.clone();
-        let t_process_cb = SendPtr(process_cb);
+        let t_process_cb = process_cb;
 
         let handle = thread::Builder::new()
             .name("rill-jack".into())
             .spawn(move || {
-                run_jack_thread(command_rx, t_xruns, t_input, t_output, t_process_cb, t_config, t_running);
+                run_jack_thread(t_xruns, t_input, t_output, t_process_cb, t_config, t_running);
             })
             .map_err(|e| IoError::Backend(e.to_string()))?;
 
         Ok(Self {
             config,
-            command_tx,
+            process_cb,
             input_buffer,
             output_buffer,
-            process_cb: SendPtr(process_cb),
             thread_handle: Some(handle),
             xruns,
             running,
@@ -104,15 +106,13 @@ impl JackBackend {
 // ─── Custom ProcessHandler (Send-safe, no closure Send requirement) ─────
 
 struct JackProcessHandler {
-    process_cb: *mut Option<Box<dyn Fn()>>,
+    process_cb: CbSlot,
     in_port: Option<Port<AudioIn>>,
     out_port: Port<AudioOut>,
     ibuf: Arc<IoRingBuffer>,
     obuf: Arc<IoRingBuffer>,
     _xruns: Arc<AtomicU32>,
 }
-
-unsafe impl Send for JackProcessHandler {}
 
 impl ProcessHandler for JackProcessHandler {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
@@ -125,11 +125,7 @@ impl ProcessHandler for JackProcessHandler {
         }
 
         // 2. Call process callback (drives signal graph)
-        unsafe {
-            if let Some(ref cb) = *self.process_cb {
-                cb();
-            }
-        }
+        unsafe { self.process_cb.call(); }
 
         // 3. Read from output ring → JACK output buffers
         let out = self.out_port.as_mut_slice(ps);
@@ -144,18 +140,20 @@ impl ProcessHandler for JackProcessHandler {
 }
 
 fn run_jack_thread(
-    command_rx: Receiver<JackCommand>,
     xruns: Arc<AtomicU32>,
     input_buffer: Arc<IoRingBuffer>,
     output_buffer: Arc<IoRingBuffer>,
-    process_cb: SendPtr,
+    process_cb: CbSlot,
     config: AudioConfig,
     running: Arc<AtomicBool>,
 ) {
-    while let Ok(cmd) = command_rx.recv() {
-        if matches!(cmd, JackCommand::Start) {
+    // Wait for start signal; exit immediately if unparked but !running (e.g. drop without start)
+    loop {
+        thread::park();
+        if running.load(Ordering::Acquire) {
             break;
         }
+        return;
     }
 
     let client_name = config
@@ -192,7 +190,7 @@ fn run_jack_thread(
     };
 
     let handler = JackProcessHandler {
-        process_cb: process_cb.0,
+        process_cb,
         in_port,
         out_port,
         ibuf: input_buffer.clone(),
@@ -208,15 +206,11 @@ fn run_jack_thread(
         }
     };
 
-    running.store(true, Ordering::Release);
-
-    while let Ok(cmd) = command_rx.recv() {
-        if matches!(cmd, JackCommand::Stop) {
-            break;
-        }
+    // Main loop: park and wait for stop
+    while running.load(Ordering::Acquire) {
+        thread::park();
     }
 
-    running.store(false, Ordering::Release);
     drop(active_client);
 }
 
@@ -226,7 +220,7 @@ fn run_jack_thread(
 
 impl AudioIo for JackBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { *self.process_cb.0 = Some(cb); }
+        unsafe { self.process_cb.set(cb); }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
@@ -253,16 +247,18 @@ impl AudioIo for JackBackend {
 
     fn start(&self) -> AudioIoResult<()> {
         self.running.store(true, Ordering::Release);
-        self.command_tx
-            .send(JackCommand::Start)
-            .map_err(|e| format!("JACK start: {e}"))
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
+        Ok(())
     }
 
     fn stop(&self) -> AudioIoResult<()> {
         self.running.store(false, Ordering::Release);
-        self.command_tx
-            .send(JackCommand::Stop)
-            .map_err(|e| format!("JACK stop: {e}"))
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
+        Ok(())
     }
 }
 
@@ -289,14 +285,17 @@ impl AudioBackend for JackBackend {
 
     fn start(&mut self) -> IoResult<()> {
         self.running.store(true, Ordering::Release);
-        self.command_tx
-            .send(JackCommand::Start)
-            .map_err(|e| IoError::Backend(e.to_string()))
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
+        Ok(())
     }
 
     fn stop(&mut self) -> IoResult<()> {
         self.running.store(false, Ordering::Release);
-        let _ = self.command_tx.send(JackCommand::Stop);
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
         thread::sleep(Duration::from_millis(50));
         Ok(())
     }
@@ -332,9 +331,13 @@ impl AudioBackend for JackBackend {
 
 impl Drop for JackBackend {
     fn drop(&mut self) {
-        let _ = self.command_tx.send(JackCommand::Stop);
+        self.running.store(false, Ordering::Release);
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
+        unsafe { self.process_cb.drop_box(); }
     }
 }

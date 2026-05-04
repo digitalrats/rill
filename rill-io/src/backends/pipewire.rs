@@ -4,10 +4,10 @@
 //! Потоковая архитектура: отдельный std::thread с PW main loop,
 //! процесс-колбэки работают через `IoRingBuffer`.
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 
 use pipewire as pw;
@@ -27,18 +27,31 @@ use crate::PwBuffers;
 /// Stack-allocated in RT callbacks — no heap allocation.
 const MAX_BLOCK_SAMPLES: usize = 512;
 
-/// Wrapper to make `*mut` `Send` for cross-thread AudioIo access.
-struct SendPtr(*mut Option<Box<dyn Fn()>>);
-unsafe impl Send for SendPtr {}
+/// Callback slot — stores a `*mut Option<Box<dyn Fn()>>` as `usize`
+/// so the field type itself is `Send`.
+#[derive(Copy, Clone)]
+struct CbSlot(usize);
+unsafe impl Send for CbSlot {}
+unsafe impl Sync for CbSlot {}
 
-// ============================================================================
-// Команды для PW потока
-// ============================================================================
+impl CbSlot {
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+    }
 
-#[derive(Debug, Clone)]
-enum PwCommand {
-    Start,
-    Stop,
+    unsafe fn set(&self, cb: Box<dyn Fn()>) {
+        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    }
+
+    unsafe fn call(&self) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
+            cb();
+        }
+    }
+
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+    }
 }
 
 // ============================================================================
@@ -47,11 +60,10 @@ enum PwCommand {
 
 pub struct PipewireBackend {
     config: AudioConfig,
-    command_tx: Sender<PwCommand>,
     input_buffer: Arc<IoRingBuffer>,
     output_buffer: Arc<IoRingBuffer>,
-    process_cb: SendPtr,
-    thread_handle: Option<thread::JoinHandle<()>>,
+    process_cb: CbSlot,
+    thread_handle: Mutex<Option<thread::JoinHandle<()>>>,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
 }
@@ -60,7 +72,7 @@ impl fmt::Debug for PipewireBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PipewireBackend")
             .field("config", &self.config)
-            .field("thread_handle", &self.thread_handle.is_some())
+            .field("thread_handle", &self.thread_handle.lock().map(|g| g.is_some()).unwrap_or(false))
             .finish()
     }
 }
@@ -75,7 +87,6 @@ impl PipewireBackend {
         }
 
         let buf_cap = (config.buffer_size * config.output_channels.max(1) * 4) as usize;
-        let (command_tx, command_rx) = unbounded();
 
         let xruns = Arc::new(AtomicU32::new(0));
         let running = Arc::new(AtomicBool::new(false));
@@ -83,9 +94,7 @@ impl PipewireBackend {
         let input_buffer = Arc::new(IoRingBuffer::new(buf_cap));
         let output_buffer = Arc::new(IoRingBuffer::new(buf_cap));
 
-        // Allocate a slot for the process callback. Leaked — reclaimed on drop.
-        let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
-        let process_cb_ptr = SendPtr(process_cb);
+        let process_cb = CbSlot::new();
 
         let t_xruns = xruns.clone();
         let t_input = input_buffer.clone();
@@ -93,21 +102,24 @@ impl PipewireBackend {
         let t_midi_tx = config.midi_event_tx.clone();
         let t_config = config.clone();
         let t_running = running.clone();
+        let t_process_cb = process_cb;
+
+        let thread_handle = Mutex::new(None);
 
         let handle = thread::Builder::new()
             .name("drift-pipewire".into())
             .spawn(move || {
-                run_pipewire_thread(command_rx, t_xruns, t_input, t_output, process_cb_ptr, t_config, t_running, t_midi_tx);
+                thread_handle.lock().unwrap().replace(thread::current());
+                run_pipewire_thread(t_xruns, t_input, t_output, t_process_cb, t_config, t_running, t_midi_tx);
             })
             .map_err(|e| IoError::Backend(e.to_string()))?;
 
         Ok(Self {
             config,
-            command_tx,
             input_buffer,
             output_buffer,
-            process_cb: SendPtr(process_cb),
-            thread_handle: Some(handle),
+            process_cb,
+            thread_handle: Mutex::new(Some(handle)),
             xruns,
             running,
         })
@@ -128,7 +140,7 @@ impl PipewireBackend {
 
 impl AudioIo for PipewireBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { *self.process_cb.0 = Some(cb); }
+        unsafe { self.process_cb.set(cb); }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
@@ -155,14 +167,22 @@ impl AudioIo for PipewireBackend {
 
     fn start(&self) -> AudioIoResult<()> {
         self.running.store(true, Ordering::Release);
-        self.command_tx.send(PwCommand::Start)
-            .map_err(|e| format!("PW start: {e}"))
+        if let Ok(guard) = self.thread_handle.lock() {
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
+        }
+        Ok(())
     }
 
     fn stop(&self) -> AudioIoResult<()> {
         self.running.store(false, Ordering::Release);
-        self.command_tx.send(PwCommand::Stop)
-            .map_err(|e| format!("PW stop: {e}"))
+        if let Ok(guard) = self.thread_handle.lock() {
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -171,20 +191,17 @@ impl AudioIo for PipewireBackend {
 // ============================================================================
 
 fn run_pipewire_thread(
-    command_rx: Receiver<PwCommand>,
     xruns: Arc<AtomicU32>,
     input_buffer: Arc<IoRingBuffer>,
     output_buffer: Arc<IoRingBuffer>,
-    process_cb: SendPtr,
+    process_cb: CbSlot,
     config: AudioConfig,
     running: Arc<AtomicBool>,
-    midi_event_tx: Option<Sender<MidiEvent>>,
+    midi_event_tx: Option<std::sync::mpsc::Sender<MidiEvent>>,
 ) {
-    // Ждём команду Start
-    while let Ok(cmd) = command_rx.recv() {
-        if matches!(cmd, PwCommand::Start) {
-            break;
-        }
+    // Wait for start signal
+    while !running.load(Ordering::Acquire) {
+        thread::park();
     }
 
     pw::init();
@@ -246,11 +263,7 @@ fn run_pipewire_thread(
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
             // 1. Call process callback (drives the signal graph)
-            unsafe {
-                if let Some(ref cb) = *process_cb.0 {
-                    cb();
-                }
-            }
+            unsafe { process_cb.call(); }
             // 2. Read from output ring → DMA buffer
             process_output(stream, &obuf, &oxruns, out_channels);
         })
@@ -461,24 +474,20 @@ fn run_pipewire_thread(
 
     // ── Main loop: iterate with 1 ms timeout ─────────────────────────
     loop {
-        while let Ok(cmd) = command_rx.try_recv() {
-            match cmd {
-                PwCommand::Stop => {
-                    let _ = out_stream.disconnect();
-                    if let Some(ref s) = in_stream {
-                        let _ = s.disconnect();
-                    }
-                    if let Some(ref s) = midi_stream {
-                        let _ = s.disconnect();
-                    }
-                    running.store(false, Ordering::Release);
-                    mainloop.quit();
-                    return;
-                }
-                PwCommand::Start => {}
-            }
-        }
         mainloop.loop_().iterate(std::time::Duration::from_millis(1));
+        if !running.load(Ordering::Acquire) {
+            mainloop.quit();
+            break;
+        }
+    }
+
+    // Cleanup
+    let _ = out_stream.disconnect();
+    if let Some(ref s) = in_stream {
+        let _ = s.disconnect();
+    }
+    if let Some(ref s) = midi_stream {
+        let _ = s.disconnect();
     }
 }
 
@@ -486,7 +495,7 @@ fn run_pipewire_thread(
 /// send them through the channel.
 fn process_midi_input(
     stream: &pw::stream::Stream,
-    event_tx: &Option<Sender<MidiEvent>>,
+    event_tx: &Option<std::sync::mpsc::Sender<MidiEvent>>,
 ) {
     let tx = match event_tx {
         Some(t) => t,
@@ -522,7 +531,7 @@ fn process_midi_input(
 
         let end = (i + msg_len).min(slice.len());
         if let Some(ev) = MidiEvent::from_bytes(&slice[i..end]) {
-            let _ = tx.try_send(ev);
+            let _ = tx.send(ev);
         }
         i = end;
     }
@@ -653,14 +662,21 @@ impl AudioBackend for PipewireBackend {
 
     fn start(&mut self) -> IoResult<()> {
         self.running.store(true, Ordering::Release);
-        self.command_tx
-            .send(PwCommand::Start)
-            .map_err(|e| IoError::Backend(e.to_string()))
+        if let Ok(guard) = self.thread_handle.lock() {
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
+        }
+        Ok(())
     }
 
     fn stop(&mut self) -> IoResult<()> {
         self.running.store(false, Ordering::Release);
-        let _ = self.command_tx.send(PwCommand::Stop);
+        if let Ok(guard) = self.thread_handle.lock() {
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
+        }
         thread::sleep(std::time::Duration::from_millis(50));
         Ok(())
     }
@@ -696,9 +712,18 @@ impl AudioBackend for PipewireBackend {
 
 impl Drop for PipewireBackend {
     fn drop(&mut self) {
-        let _ = self.command_tx.send(PwCommand::Stop);
-        if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
+        self.running.store(false, Ordering::Release);
+        // Unpark to let thread exit
+        if let Ok(guard) = self.thread_handle.lock() {
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
         }
+        // Take handle and join
+        let handle = self.thread_handle.lock().ok().and_then(|mut g| g.take());
+        if let Some(h) = handle {
+            let _ = h.join();
+        }
+        unsafe { self.process_cb.drop_box(); }
     }
 }
