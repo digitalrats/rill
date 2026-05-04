@@ -8,6 +8,7 @@ use rill_core::Transcendental;
 use std::f32::consts::PI;
 
 /// Биквадратный фильтр
+#[allow(clippy::type_complexity)]
 pub struct Biquad<T: Transcendental> {
     params: FilterParams,
     coeffs: (

@@ -89,6 +89,7 @@ impl Automaton for FunctionAutomaton {
 
 /// Функциональный автомат с состоянием
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct StatefulFunctionAutomaton<S> {
     /// Имя автомата
     name: String,
