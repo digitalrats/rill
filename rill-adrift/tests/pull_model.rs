@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+#[cfg(feature = "serialization")]
 use rill_adrift::registration;
 use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_core::traits::processable::NodeVariant;
