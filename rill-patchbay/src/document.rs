@@ -1,3 +1,6 @@
+#![allow(missing_docs)]
+//! Serializable patchbay document types (de)serialised from JSON/CBOR.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

@@ -111,9 +111,13 @@ pub struct ConnectionDef {
 /// Kind of signal carried by a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalKind {
+    /// Audio-rate signal data.
     Signal,
+    /// Low-frequency control signal (one value per block).
     Control,
+    /// Clock/timing signal.
     Clock,
+    /// Feedback loop signal (delay/state).
     Feedback,
 }
 

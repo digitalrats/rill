@@ -75,6 +75,7 @@ impl fmt::Debug for AlsaBackend {
 }
 
 impl AlsaBackend {
+    /// Create a new ALSA backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         let buffer_size = (config.buffer_size * config.output_channels * 4) as usize;
         let xruns = Arc::new(AtomicU32::new(0));

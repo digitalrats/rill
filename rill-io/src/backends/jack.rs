@@ -98,6 +98,7 @@ impl fmt::Debug for JackBackend {
 }
 
 impl JackBackend {
+    /// Create a new JACK backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(any(target_os = "linux", target_os = "macos")) {
             return Err(IoError::Unsupported(
