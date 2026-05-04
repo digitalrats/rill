@@ -2,8 +2,8 @@
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
 [![tests](https://img.shields.io/badge/tests-491-green)](https://github.com/DigitalRats/rill)
-[![version](https://img.shields.io/badge/version-0.5.0-beta.1-blue)](https://github.com/DigitalRats/rill)
-[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE.md)
+[![version](https://img.shields.io/badge/version-0.5.0--beta.1-blue)](https://github.com/DigitalRats/rill)
+[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 Modular signal-processing ecosystem for Rust. 17 crates, from lock-free
 queues and generic vector math to real-time audio I/O and analog circuit
