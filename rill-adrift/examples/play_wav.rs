@@ -22,6 +22,50 @@ use rill_adrift::rill_digital_filters::BiquadProcessor;
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
+fn create_backend(name: &str, config: AudioConfig) -> Box<dyn AudioIo> {
+    match name {
+        "null" => Box::new(rill_adrift::io::NullBackend::new(config)),
+        #[cfg(feature = "cpal")]
+        "cpal" => {
+            let mut b = rill_adrift::io::CpalBackend::new(config).expect("CpalBackend::new");
+            b.init().expect("CpalBackend::init");
+            Box::new(b)
+        }
+        #[cfg(feature = "alsa")]
+        "alsa" => {
+            let mut b = rill_adrift::io::AlsaBackend::new(config).expect("AlsaBackend::new");
+            b.init().expect("AlsaBackend::init");
+            Box::new(b)
+        }
+        #[cfg(feature = "pipewire")]
+        "pipewire" => {
+            let b = rill_adrift::io::PipewireBackend::new(config).expect("PipewireBackend::new");
+            Box::new(b)
+        }
+        #[cfg(feature = "jack")]
+        "jack" => {
+            let b = rill_adrift::io::JackBackend::new(config).expect("JackBackend::new");
+            Box::new(b)
+        }
+        other => {
+            let hint = match other {
+                "alsa" => " (enable --features alsa)",
+                "pipewire" => " (enable --features pipewire)",
+                "jack" => " (enable --features jack)",
+                _ => "",
+            };
+            eprintln!("Unknown backend: {other}{hint}");
+            eprintln!("Available:");
+            eprintln!("  null           # always available");
+            eprintln!("  cpal           # default");
+            eprintln!("  alsa           # --features alsa");
+            eprintln!("  pipewire       # --features pipewire");
+            eprintln!("  jack           # --features jack");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args.get(1).map(|s| s.as_str()).unwrap_or("cpal");
@@ -29,51 +73,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "ESW Aura Inst - LoFi Steel - C.wav",
     );
 
+    let config = AudioConfig::default()
+        .with_sample_rate(RATE as u32)
+        .with_buffer_size(BUF as u32)
+        .with_channels(2);
+    let backend = create_backend(backend_name, config);
+    let backend_ptr = AudioIoPtr::from_ref(&*backend);
+
     // ── Load WAV ──────────────────────────────────────────────────────────
     let sample = load_wav(wav_path)?;
     println!(
         "Loaded: {} ({} ch, {} Hz, {} samples)",
         sample.name, sample.channels, sample.sample_rate, sample.len()
     );
-
-    // ── Create backend ────────────────────────────────────────────────────
-    let config = AudioConfig::default()
-        .with_sample_rate(RATE as u32)
-        .with_buffer_size(BUF as u32)
-        .with_channels(2);
-
-    let backend: Box<dyn AudioIo> = match backend_name {
-        "null" => Box::new(rill_adrift::io::NullBackend::new(config)),
-        #[cfg(feature = "cpal")]
-        "cpal" => {
-            let mut b = rill_adrift::io::CpalBackend::new(config)?;
-            b.init()?;
-            Box::new(b)
-        }
-        #[cfg(feature = "alsa")]
-        "alsa" => {
-            let mut b = rill_adrift::io::AlsaBackend::new(config)?;
-            b.init()?;
-            Box::new(b)
-        }
-        #[cfg(feature = "pipewire")]
-        "pipewire" => {
-            let b = rill_adrift::io::PipewireBackend::new(config)?;
-            Box::new(b)
-        }
-        #[cfg(feature = "jack")]
-        "jack" => {
-            let b = rill_adrift::io::JackBackend::new(config)?;
-            Box::new(b)
-        }
-        other => {
-            eprintln!("Unknown backend: {other}");
-            eprintln!("Available: null, cpal, alsa, pipewire, jack");
-            std::process::exit(1);
-        }
-    };
-
-    let backend_ptr = AudioIoPtr::from_ref(&*backend);
 
     // ── Build graph: SamplePlayer → Biquad → AudioOutput ─────────────────
     let mut builder = GraphBuilder::<f32, BUF>::new();
