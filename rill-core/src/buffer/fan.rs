@@ -1,5 +1,5 @@
 use super::array_from_fn;
-use crate::buffer::{AtomicStats, SignalBuffer, BufferStats, CACHE_LINE_SIZE};
+use crate::buffer::{AtomicStats, BufferStats, SignalBuffer, CACHE_LINE_SIZE};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use std::fmt;
@@ -26,7 +26,10 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
     /// # Panics
     /// Panics if `CONSUMERS` is 0.
     pub fn new() -> Self {
-        assert!(CONSUMERS > 0, "FanOutBuffer must have at least one consumer");
+        assert!(
+            CONSUMERS > 0,
+            "FanOutBuffer must have at least one consumer"
+        );
         Self {
             storage: array_from_fn(|_| T::ZERO),
             version: 0,
@@ -71,12 +74,20 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
     }
 
     /// Number of consumers (const generic parameter).
-    pub const fn consumer_count(&self) -> usize { CONSUMERS }
+    pub const fn consumer_count(&self) -> usize {
+        CONSUMERS
+    }
     /// Current write version.
-    pub fn current_version(&self) -> usize { self.version }
+    pub fn current_version(&self) -> usize {
+        self.version
+    }
     /// Version last read by a consumer, or `None` if consumer ID is invalid.
     pub fn last_read_version(&self, consumer_id: usize) -> Option<usize> {
-        if consumer_id >= CONSUMERS { None } else { Some(self.read_versions[consumer_id]) }
+        if consumer_id >= CONSUMERS {
+            None
+        } else {
+            Some(self.read_versions[consumer_id])
+        }
     }
 
     /// Reset to initial state (invalid, all consumers at version 0).
@@ -90,23 +101,41 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
 impl<T: Transcendental, const N: usize, const CONSUMERS: usize> SignalBuffer<T>
     for FanOutBuffer<T, N, CONSUMERS>
 {
-    fn capacity(&self) -> usize { N }
-    fn len(&self) -> usize { if self.valid { 1 } else { 0 } }
-    fn is_empty(&self) -> bool { !self.valid }
-    fn is_full(&self) -> bool { self.valid }
-    fn clear(&mut self) { self.reset(); }
+    fn capacity(&self) -> usize {
+        N
+    }
+    fn len(&self) -> usize {
+        if self.valid {
+            1
+        } else {
+            0
+        }
+    }
+    fn is_empty(&self) -> bool {
+        !self.valid
+    }
+    fn is_full(&self) -> bool {
+        self.valid
+    }
+    fn clear(&mut self) {
+        self.reset();
+    }
     fn stats(&self) -> BufferStats {
         let mut stats = self.stats.snapshot();
         stats.fill_level = if self.valid { 1.0 } else { 0.0 };
         stats
     }
-    fn reset_stats(&mut self) { self.stats.reset(); }
+    fn reset_stats(&mut self) {
+        self.stats.reset();
+    }
 }
 
 impl<T: Transcendental, const N: usize, const CONSUMERS: usize> Default
     for FanOutBuffer<T, N, CONSUMERS>
 {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Transcendental + fmt::Debug, const N: usize, const CONSUMERS: usize> fmt::Debug
@@ -160,7 +189,9 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
     /// Write a block of data from one producer.
     #[inline(always)]
     pub fn write(&mut self, producer_id: usize, data: &[T; N]) {
-        if producer_id >= PRODUCERS { return; }
+        if producer_id >= PRODUCERS {
+            return;
+        }
         self.storage[producer_id].copy_from_slice(data);
         self.valid[producer_id] = true;
         self.write_seq[producer_id] += 1;
@@ -195,19 +226,29 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
     }
 
     /// Number of producers (const generic parameter).
-    pub const fn producer_count(&self) -> usize { PRODUCERS }
+    pub const fn producer_count(&self) -> usize {
+        PRODUCERS
+    }
 
     /// Whether a specific producer has unread data.
     pub fn producer_has_data(&self, producer_id: usize) -> bool {
-        if producer_id >= PRODUCERS { return false; }
+        if producer_id >= PRODUCERS {
+            return false;
+        }
         self.write_seq[producer_id] > self.read_seq && self.valid[producer_id]
     }
 
     /// Current read sequence counter.
-    pub fn read_seq(&self) -> usize { self.read_seq }
+    pub fn read_seq(&self) -> usize {
+        self.read_seq
+    }
     /// Write sequence counter for a specific producer, or `None` if ID is invalid.
     pub fn write_seq(&self, producer_id: usize) -> Option<usize> {
-        if producer_id >= PRODUCERS { None } else { Some(self.write_seq[producer_id]) }
+        if producer_id >= PRODUCERS {
+            None
+        } else {
+            Some(self.write_seq[producer_id])
+        }
     }
 
     /// Reset all producers and the read counter.
@@ -230,7 +271,9 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
 impl<T: Transcendental, const N: usize, const PRODUCERS: usize> SignalBuffer<T>
     for FanInBuffer<T, N, PRODUCERS>
 {
-    fn capacity(&self) -> usize { N * PRODUCERS }
+    fn capacity(&self) -> usize {
+        N * PRODUCERS
+    }
     fn len(&self) -> usize {
         let mut count = 0;
         for producer in 0..PRODUCERS {
@@ -240,19 +283,31 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> SignalBuffer<T>
         }
         count
     }
-    fn is_empty(&self) -> bool { self.len() == 0 }
-    fn is_full(&self) -> bool { self.len() == PRODUCERS }
-    fn clear(&mut self) { self.reset(); }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn is_full(&self) -> bool {
+        self.len() == PRODUCERS
+    }
+    fn clear(&mut self) {
+        self.reset();
+    }
     fn stats(&self) -> BufferStats {
         let mut stats = self.stats.snapshot();
         stats.fill_level = self.len() as f32 / PRODUCERS as f32;
         stats
     }
-    fn reset_stats(&mut self) { self.stats.reset(); }
+    fn reset_stats(&mut self) {
+        self.stats.reset();
+    }
 }
 
-impl<T: Transcendental, const N: usize, const PRODUCERS: usize> Default for FanInBuffer<T, N, PRODUCERS> {
-    fn default() -> Self { Self::new() }
+impl<T: Transcendental, const N: usize, const PRODUCERS: usize> Default
+    for FanInBuffer<T, N, PRODUCERS>
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Transcendental + fmt::Debug, const N: usize, const PRODUCERS: usize> fmt::Debug

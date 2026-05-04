@@ -1,5 +1,5 @@
-use std::fmt;
 use crate::math::Transcendental;
+use std::fmt;
 
 /// Fixed-size ring buffer (power-of-two size). Single-threaded.
 ///
@@ -51,7 +51,10 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
     }
 
     /// Write multiple samples in sequence.
-    pub fn write_slice(&mut self, samples: &[T]) where T: Copy {
+    pub fn write_slice(&mut self, samples: &[T])
+    where
+        T: Copy,
+    {
         for &sample in samples {
             self.write(sample);
         }
@@ -89,7 +92,11 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
             return self.read_delayed(delay_int);
         }
         let s1: f32 = self.read_delayed(delay_int).into();
-        let prev = if delay_int == 0 { self.len() - 1 } else { delay_int - 1 };
+        let prev = if delay_int == 0 {
+            self.len() - 1
+        } else {
+            delay_int - 1
+        };
         let s2: f32 = self.read_delayed(prev).into();
         T::from(s1 * (1.0 - frac) + s2 * frac)
     }
@@ -113,17 +120,27 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
 
     /// Number of samples currently stored.
     pub fn len(&self) -> usize {
-        if self.full { N }
-        else if self.head >= self.tail { self.head - self.tail }
-        else { N - self.tail + self.head }
+        if self.full {
+            N
+        } else if self.head >= self.tail {
+            self.head - self.tail
+        } else {
+            N - self.tail + self.head
+        }
     }
 
     /// Maximum capacity (const generic parameter).
-    pub const fn capacity(&self) -> usize { N }
+    pub const fn capacity(&self) -> usize {
+        N
+    }
     /// Whether the buffer has no samples.
-    pub fn is_empty(&self) -> bool { self.head == self.tail && !self.full }
+    pub fn is_empty(&self) -> bool {
+        self.head == self.tail && !self.full
+    }
     /// Whether the buffer is completely full.
-    pub fn is_full(&self) -> bool { self.full }
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
 
     /// Clear all samples and reset cursors.
     pub fn clear(&mut self) {
@@ -142,13 +159,17 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
 }
 
 impl<T: Transcendental, const N: usize> Default for RingBuffer<T, N> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut preview = Vec::with_capacity(4);
-        for i in 0..4.min(N) { preview.push(self.data[i]); }
+        for i in 0..4.min(N) {
+            preview.push(self.data[i]);
+        }
         f.debug_struct("RingBuffer")
             .field("head", &self.head)
             .field("tail", &self.tail)
@@ -175,16 +196,27 @@ impl<'a, T: Transcendental, const N: usize> RingBufferIter<'a, T, N> {
     fn new(buffer: &'a RingBuffer<T, N>) -> Self {
         let tail = buffer.tail;
         let head = buffer.head;
-        let len = if buffer.full { N } else if head >= tail { head - tail } else { N - tail + head };
-        Self { buffer, pos: tail, end: tail + len }
+        let len = if buffer.full {
+            N
+        } else if head >= tail {
+            head - tail
+        } else {
+            N - tail + head
+        };
+        Self {
+            buffer,
+            pos: tail,
+            end: tail + len,
+        }
     }
 }
 
 impl<'a, T: Transcendental, const N: usize> Iterator for RingBufferIter<'a, T, N> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.end { None }
-        else {
+        if self.pos >= self.end {
+            None
+        } else {
             let idx = self.pos & self.buffer.mask;
             let value = self.buffer.data[idx];
             self.pos += 1;
@@ -194,7 +226,9 @@ impl<'a, T: Transcendental, const N: usize> Iterator for RingBufferIter<'a, T, N
 }
 
 impl<'a, T: Transcendental, const N: usize> ExactSizeIterator for RingBufferIter<'a, T, N> {
-    fn len(&self) -> usize { self.end - self.pos }
+    fn len(&self) -> usize {
+        self.end - self.pos
+    }
 }
 
 impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
@@ -215,7 +249,10 @@ mod tests {
     #[test]
     fn test_ring_buffer_basic() {
         let mut buffer = RingBuffer::<f32, 4>::new();
-        buffer.write(1.0); buffer.write(2.0); buffer.write(3.0); buffer.write(4.0);
+        buffer.write(1.0);
+        buffer.write(2.0);
+        buffer.write(3.0);
+        buffer.write(4.0);
         assert!(buffer.is_full());
         assert_eq!(buffer.len(), 4);
         assert_eq!(buffer.read(), Some(1.0));
@@ -229,7 +266,9 @@ mod tests {
     #[test]
     fn test_ring_buffer_wraparound() {
         let mut buffer = RingBuffer::<f32, 4>::new();
-        for i in 0..10 { buffer.write(i as f32); }
+        for i in 0..10 {
+            buffer.write(i as f32);
+        }
         assert_eq!(buffer.read_delayed(0), 9.0);
         assert_eq!(buffer.read_delayed(1), 8.0);
         assert_eq!(buffer.read_delayed(2), 7.0);
@@ -239,7 +278,10 @@ mod tests {
     #[test]
     fn test_ring_buffer_interpolated() {
         let mut buffer = RingBuffer::<f32, 4>::new();
-        buffer.write(1.0); buffer.write(2.0); buffer.write(3.0); buffer.write(4.0);
+        buffer.write(1.0);
+        buffer.write(2.0);
+        buffer.write(3.0);
+        buffer.write(4.0);
         let val = buffer.read_interpolated(1.5);
         assert!((val - 3.5).abs() < 0.001);
     }
@@ -247,7 +289,8 @@ mod tests {
     #[test]
     fn test_ring_buffer_clear() {
         let mut buffer = RingBuffer::<f32, 4>::new();
-        buffer.write(1.0); buffer.write(2.0);
+        buffer.write(1.0);
+        buffer.write(2.0);
         assert!(!buffer.is_empty());
         buffer.clear();
         assert!(buffer.is_empty());
@@ -256,7 +299,10 @@ mod tests {
     #[test]
     fn test_ring_buffer_iterator() {
         let mut buffer = RingBuffer::<f32, 4>::new();
-        buffer.write(1.0); buffer.write(2.0); buffer.write(3.0); buffer.write(4.0);
+        buffer.write(1.0);
+        buffer.write(2.0);
+        buffer.write(3.0);
+        buffer.write(4.0);
         let collected: Vec<f32> = buffer.iter().collect();
         assert_eq!(collected, vec![1.0, 2.0, 3.0, 4.0]);
     }
@@ -264,7 +310,10 @@ mod tests {
     #[test]
     fn test_ring_buffer_read_sequence() {
         let mut buffer = RingBuffer::<f32, 4>::new();
-        buffer.write(1.0); buffer.write(2.0); buffer.write(3.0); buffer.write(4.0);
+        buffer.write(1.0);
+        buffer.write(2.0);
+        buffer.write(3.0);
+        buffer.write(4.0);
         let mut output = [0.0; 4];
         buffer.read_sequence_interpolated(0.0, &mut output);
         assert_eq!(output, [4.0, 3.0, 2.0, 1.0]);

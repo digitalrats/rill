@@ -7,8 +7,8 @@
 mod graph_jack_it {
     use std::time::Duration;
 
-    use rill_core::ClockTick;
     use rill_core::traits::{SignalNode, Sink, Source};
+    use rill_core::ClockTick;
     use rill_io::audio_io::{AudioIo, AudioIoPtr};
     use rill_io::{AudioConfig, AudioInput, AudioOutput, JackBackend};
 
@@ -57,7 +57,9 @@ mod graph_jack_it {
         let l = input.output_port(0).unwrap().buffer.as_array();
         let r = input.output_port(1).unwrap().buffer.as_array();
         let signal_inputs: [&[f32; BUF_SZ]; 2] = [l, r];
-        output.consume(&tick, &signal_inputs, &[], &[], &[]).unwrap();
+        output
+            .consume(&tick, &signal_inputs, &[], &[], &[])
+            .unwrap();
 
         input.stop();
     }
@@ -92,7 +94,9 @@ mod graph_jack_it {
             let l = input.output_port(0).unwrap().buffer.as_array();
             let r = input.output_port(1).unwrap().buffer.as_array();
             let signal_inputs: [&[f32; BUF_SZ]; 2] = [l, r];
-            output.consume(&tick, &signal_inputs, &[], &[], &[]).unwrap();
+            output
+                .consume(&tick, &signal_inputs, &[], &[], &[])
+                .unwrap();
         }
 
         input.stop();

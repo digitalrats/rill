@@ -133,16 +133,51 @@ impl<T: Scalar> Vector<T, 4> for ScalarVector4<T> {
         }
         ScalarVector4(arr)
     }
-
 }
 
 impl<T: Transcendental> VectorTranscendental<T, 4> for ScalarVector4<T> {
-    fn sqrt(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].sqrt(); } ScalarVector4(a) }
-    fn exp(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].exp(); } ScalarVector4(a) }
-    fn ln(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].ln(); } ScalarVector4(a) }
-    fn sin(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].sin(); } ScalarVector4(a) }
-    fn cos(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].cos(); } ScalarVector4(a) }
-    fn tan(&self) -> Self { let mut a = [T::ZERO; 4]; for i in 0..4 { a[i] = self.0[i].tan(); } ScalarVector4(a) }
+    fn sqrt(&self) -> Self {
+        let mut a = [T::ZERO; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].sqrt();
+        }
+        ScalarVector4(a)
+    }
+    fn exp(&self) -> Self {
+        let mut a = [T::ZERO; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].exp();
+        }
+        ScalarVector4(a)
+    }
+    fn ln(&self) -> Self {
+        let mut a = [T::ZERO; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].ln();
+        }
+        ScalarVector4(a)
+    }
+    fn sin(&self) -> Self {
+        let mut a = [T::ZERO; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].sin();
+        }
+        ScalarVector4(a)
+    }
+    fn cos(&self) -> Self {
+        let mut a = [T::ZERO; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].cos();
+        }
+        ScalarVector4(a)
+    }
+    fn tan(&self) -> Self {
+        let mut a = [T::ZERO; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].tan();
+        }
+        ScalarVector4(a)
+    }
 }
 
 impl<T: Scalar> Default for ScalarVector4<T> {
@@ -235,16 +270,39 @@ impl<T: Scalar> Vector<T, 1> for ScalarVector1<T> {
         arr[0] = self.0[0].clamp(min.0[0], max.0[0]);
         ScalarVector1(arr)
     }
-
 }
 
 impl<T: Transcendental> VectorTranscendental<T, 1> for ScalarVector1<T> {
-    fn sqrt(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].sqrt(); ScalarVector1(a) }
-    fn exp(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].exp(); ScalarVector1(a) }
-    fn ln(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].ln(); ScalarVector1(a) }
-    fn sin(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].sin(); ScalarVector1(a) }
-    fn cos(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].cos(); ScalarVector1(a) }
-    fn tan(&self) -> Self { let mut a = [T::ZERO; 1]; a[0] = self.0[0].tan(); ScalarVector1(a) }
+    fn sqrt(&self) -> Self {
+        let mut a = [T::ZERO; 1];
+        a[0] = self.0[0].sqrt();
+        ScalarVector1(a)
+    }
+    fn exp(&self) -> Self {
+        let mut a = [T::ZERO; 1];
+        a[0] = self.0[0].exp();
+        ScalarVector1(a)
+    }
+    fn ln(&self) -> Self {
+        let mut a = [T::ZERO; 1];
+        a[0] = self.0[0].ln();
+        ScalarVector1(a)
+    }
+    fn sin(&self) -> Self {
+        let mut a = [T::ZERO; 1];
+        a[0] = self.0[0].sin();
+        ScalarVector1(a)
+    }
+    fn cos(&self) -> Self {
+        let mut a = [T::ZERO; 1];
+        a[0] = self.0[0].cos();
+        ScalarVector1(a)
+    }
+    fn tan(&self) -> Self {
+        let mut a = [T::ZERO; 1];
+        a[0] = self.0[0].tan();
+        ScalarVector1(a)
+    }
 }
 
 impl<T: Scalar> Default for ScalarVector1<T> {
@@ -359,16 +417,51 @@ impl<T: Scalar> Vector<T, 2> for ScalarVector2<T> {
         }
         ScalarVector2(arr)
     }
-
 }
 
 impl<T: Transcendental> VectorTranscendental<T, 2> for ScalarVector2<T> {
-    fn sqrt(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].sqrt(); } ScalarVector2(a) }
-    fn exp(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].exp(); } ScalarVector2(a) }
-    fn ln(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].ln(); } ScalarVector2(a) }
-    fn sin(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].sin(); } ScalarVector2(a) }
-    fn cos(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].cos(); } ScalarVector2(a) }
-    fn tan(&self) -> Self { let mut a = [T::ZERO; 2]; for i in 0..2 { a[i] = self.0[i].tan(); } ScalarVector2(a) }
+    fn sqrt(&self) -> Self {
+        let mut a = [T::ZERO; 2];
+        for i in 0..2 {
+            a[i] = self.0[i].sqrt();
+        }
+        ScalarVector2(a)
+    }
+    fn exp(&self) -> Self {
+        let mut a = [T::ZERO; 2];
+        for i in 0..2 {
+            a[i] = self.0[i].exp();
+        }
+        ScalarVector2(a)
+    }
+    fn ln(&self) -> Self {
+        let mut a = [T::ZERO; 2];
+        for i in 0..2 {
+            a[i] = self.0[i].ln();
+        }
+        ScalarVector2(a)
+    }
+    fn sin(&self) -> Self {
+        let mut a = [T::ZERO; 2];
+        for i in 0..2 {
+            a[i] = self.0[i].sin();
+        }
+        ScalarVector2(a)
+    }
+    fn cos(&self) -> Self {
+        let mut a = [T::ZERO; 2];
+        for i in 0..2 {
+            a[i] = self.0[i].cos();
+        }
+        ScalarVector2(a)
+    }
+    fn tan(&self) -> Self {
+        let mut a = [T::ZERO; 2];
+        for i in 0..2 {
+            a[i] = self.0[i].tan();
+        }
+        ScalarVector2(a)
+    }
 }
 
 impl<T: Scalar> Default for ScalarVector2<T> {

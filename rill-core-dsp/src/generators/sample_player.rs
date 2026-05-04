@@ -175,7 +175,6 @@ impl<T: Transcendental> SamplePlayer<T> {
     pub fn playback_rate(&self) -> f64 {
         self.reader.rate()
     }
-
 }
 
 impl<T: Transcendental> Algorithm<T> for SamplePlayer<T> {
@@ -310,7 +309,9 @@ mod tests {
 
     fn process(player: &mut SamplePlayer<f64>, out: &mut [f64]) {
         let tick = ClockTick::new(0, 0, 44100.0);
-        player.process(None, out, &ActionContext::new(&tick)).unwrap();
+        player
+            .process(None, out, &ActionContext::new(&tick))
+            .unwrap();
     }
 
     #[test]
@@ -320,7 +321,10 @@ mod tests {
         player.set_gate(true);
         let mut out = [0.0f64; 6];
         process(&mut player, &mut out[..3]);
-        assert!(player.play_state() == PlayState::Playing, "still playing after 3/4");
+        assert!(
+            player.play_state() == PlayState::Playing,
+            "still playing after 3/4"
+        );
         process(&mut player, &mut out[3..]);
         assert_eq!(out[0..4], [1.0, 2.0, 3.0, 4.0], "all samples read");
         assert_eq!(out[4..6], [0.0, 0.0], "silence after end");
@@ -374,11 +378,17 @@ mod tests {
         let mut player = SamplePlayer::new(buf);
         player.init(44100.0);
         let freq_at_unit_rate = player.frequency();
-        assert!((freq_at_unit_rate - 44100.0 / 4.0).abs() < 1.0,
-            "expected ~11025 Hz at rate=1, got {}", freq_at_unit_rate);
+        assert!(
+            (freq_at_unit_rate - 44100.0 / 4.0).abs() < 1.0,
+            "expected ~11025 Hz at rate=1, got {}",
+            freq_at_unit_rate
+        );
         player.set_frequency(freq_at_unit_rate * 2.0);
-        assert!((player.playback_rate() - 2.0).abs() < 1e-6,
-            "expected rate=2.0, got {}", player.playback_rate());
+        assert!(
+            (player.playback_rate() - 2.0).abs() < 1e-6,
+            "expected rate=2.0, got {}",
+            player.playback_rate()
+        );
     }
 
     #[test]

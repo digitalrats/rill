@@ -103,8 +103,13 @@ mod tests {
         let buf: [f64; 6] = [0.0, 0.5, 1.0, 0.8, 0.3, 0.0];
         for i in 1..=3 {
             let v = buf.interpolate_cubic(i as f64);
-            assert!((v - buf[i]).abs() < 1e-10,
-                "cubic should pass through knot {}: got {}, expected {}", i, v, buf[i]);
+            assert!(
+                (v - buf[i]).abs() < 1e-10,
+                "cubic should pass through knot {}: got {}, expected {}",
+                i,
+                v,
+                buf[i]
+            );
         }
     }
 
@@ -114,8 +119,12 @@ mod tests {
         for i in 0..=10 {
             let t = 1.0 + i as f64 / 10.0;
             let v = buf.interpolate_cubic(t);
-            assert!(v >= -0.1 && v <= 1.1,
-                "cubic range violated at t={}: got {}", t, v);
+            assert!(
+                v >= -0.1 && v <= 1.1,
+                "cubic range violated at t={}: got {}",
+                t,
+                v
+            );
         }
     }
 

@@ -33,6 +33,7 @@ use crate::math::Transcendental;
 // Submodules
 // ============================================================================
 
+mod buffer_trait;
 mod delay;
 mod fan;
 mod pipe;
@@ -40,7 +41,6 @@ mod registry;
 mod ring;
 mod storage;
 mod tape;
-mod buffer_trait;
 
 // ============================================================================
 // Re-exports
@@ -454,9 +454,6 @@ pub mod prelude {
         AtomicCell,
         AtomicCellError,
 
-        // Core trait
-        SignalBuffer,
-
         // Error types
         BufferError,
         BufferResult,
@@ -470,6 +467,9 @@ pub mod prelude {
         // Buffer types
         PipeBuffer,
         RingBuffer,
+
+        // Core trait
+        SignalBuffer,
 
         // Constants
         CACHE_LINE_SIZE,

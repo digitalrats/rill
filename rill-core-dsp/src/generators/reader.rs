@@ -9,7 +9,11 @@ use rill_core::Transcendental;
 
 fn len_remainder(pos: f64, len: f64) -> f64 {
     let r = pos % len;
-    if r < 0.0 { r + len } else { r }
+    if r < 0.0 {
+        r + len
+    } else {
+        r
+    }
 }
 
 /// Heap-allocated buffer reader with fractional-position interpolation.
@@ -278,8 +282,16 @@ mod tests {
         reader.set_position(3.5);
         let mut out = [0.0f64; 2];
         reader.render_block(&mut out);
-        assert!((out[0] - 1.5).abs() < 1e-10, "wrap 3.5 -> 1.5, got {}", out[0]);
-        assert!((out[1] - 0.5).abs() < 1e-10, "wrap 4.5 -> 0.5, got {}", out[1]);
+        assert!(
+            (out[0] - 1.5).abs() < 1e-10,
+            "wrap 3.5 -> 1.5, got {}",
+            out[0]
+        );
+        assert!(
+            (out[1] - 0.5).abs() < 1e-10,
+            "wrap 4.5 -> 0.5, got {}",
+            out[1]
+        );
     }
 
     #[test]
@@ -291,7 +303,11 @@ mod tests {
         reader.set_position(0.0);
         let mut out = [0.0f64; 1];
         reader.render_block(&mut out);
-        assert!((out[0] - 0.0).abs() < 1e-10, "cubic wrap at 0 -> 0, got {}", out[0]);
+        assert!(
+            (out[0] - 0.0).abs() < 1e-10,
+            "cubic wrap at 0 -> 0, got {}",
+            out[0]
+        );
     }
 
     #[test]

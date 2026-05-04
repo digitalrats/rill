@@ -216,7 +216,10 @@ pub struct OscSurfaceEntry {
     pub event_pattern: EventPattern,
 
     /// Optional human-readable label (ignored by the engine).
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub label: Option<String>,
 }
 
@@ -772,13 +775,7 @@ impl PatchbayControl {
     ) {
         let key = target_key(target.0, &target.1);
 
-        let combiner = spawn_combiner(
-            target,
-            range,
-            control,
-            conflict,
-            self.command_queue.clone(),
-        );
+        let combiner = spawn_combiner(target, range, control, conflict, self.command_queue.clone());
 
         let task = spawn_automaton_task(
             automaton,
@@ -893,8 +890,12 @@ impl PatchbayControl {
                             let new_bar = data.get(5).copied().unwrap_or(0.0) > 0.5;
 
                             let cmds = seq.tick_ext(
-                                sample_pos, sample_rate, tempo,
-                                beat_pos, new_beat, new_bar,
+                                sample_pos,
+                                sample_rate,
+                                tempo,
+                                beat_pos,
+                                new_beat,
+                                new_bar,
                             );
                             for cmd in cmds {
                                 let _ = queue.push(cmd);
@@ -1128,8 +1129,7 @@ mod tests {
 
         control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
 
-        if let Some(_servo) = control.get_servo_mut("test_env") {
-        }
+        if let Some(_servo) = control.get_servo_mut("test_env") {}
 
         control.update(0.05);
         control.update(0.05);

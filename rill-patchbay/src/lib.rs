@@ -107,24 +107,24 @@ pub use automaton::{
     EnvelopeAutomaton, EnvelopeStage, EnvelopeType, FunctionAutomaton, LfoAutomaton, LfoWaveform,
     PlayMode, Range, SequencerAutomaton, StatefulFunctionAutomaton, Step, SyncMode,
 };
+pub use automaton_task::spawn_automaton_task;
 pub use control::{
     midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
     NoAction, OscSurface, OscSurfaceEntry, ParameterCommand, ParameterMapping, PatchbayControl,
     Servo, Target, Transform,
 };
-pub use manager::PatchbayManager;
-pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
-pub use port_combiner::{PortCombinerHandle, spawn_combiner};
-pub use automaton_task::spawn_automaton_task;
 pub use engine::PatchbayEngine;
+pub use manager::PatchbayManager;
+pub use port_combiner::{spawn_combiner, PortCombinerHandle};
+pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // Sequencer re-exports
+#[cfg(feature = "serde")]
+pub use sequencer::SequencerDocument;
 pub use sequencer::{
     ParameterTarget, Pattern, SequenceStep, SequencerHandle, Snapshot, SnapshotSequencer,
     StepPlayMode,
 };
-#[cfg(feature = "serde")]
-pub use sequencer::SequencerDocument;
 
 // =============================================================================
 // Прелюдия для удобного импорта
@@ -134,13 +134,13 @@ pub use sequencer::SequencerDocument;
 pub mod prelude {
     // Основные типы
     pub use crate::automaton::*;
-    pub use crate::control::*;
-    pub use crate::manager::*;
-    pub use crate::strategy::*;
-    pub use crate::port_combiner::*;
     pub use crate::automaton_task::*;
+    pub use crate::control::*;
     pub use crate::engine::*;
+    pub use crate::manager::*;
+    pub use crate::port_combiner::*;
     pub use crate::sequencer::*;
+    pub use crate::strategy::*;
     pub use crate::utils::*;
 
     // Реэкспорты из rill-core

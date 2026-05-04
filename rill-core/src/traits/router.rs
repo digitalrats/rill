@@ -15,10 +15,10 @@
 //! | Топология | Известна на этапе сборки | Может меняться runtime |
 //! | Визуализация | Прямоугольник (Р-схема) | Ромб (Р-схема, условие) |
 
+use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::node::SignalNode;
 use crate::traits::ProcessResult;
-use crate::math::Transcendental;
 
 /// Маршрутизатор сигналов — N входов, M выходов, конфигурируемая матрица.
 ///
@@ -33,11 +33,7 @@ pub trait Router<T: Transcendental, const BUF_SIZE: usize>: SignalNode<T, BUF_SI
     ///
     /// Реализация должна прочитать сигналы из `inputs` и записать
     /// результаты в свои выходные порты (через `self.output_port_mut(i)`).
-    fn route(
-        &mut self,
-        clock: &ClockTick,
-        inputs: &[&[T; BUF_SIZE]],
-    ) -> ProcessResult<()>;
+    fn route(&mut self, clock: &ClockTick, inputs: &[&[T; BUF_SIZE]]) -> ProcessResult<()>;
 
     /// Количество входных портов для маршрутизации.
     fn num_route_inputs(&self) -> usize;

@@ -48,12 +48,22 @@ crate::wdf_cascade! {
 }
 
 impl<T: Transcendental> crate::WdfElement<T> for MoogLadder<T> {
-    fn port_resistance(&self) -> T { T::ONE }
-    fn process_incident(&mut self, a: T) -> T { self.process_sample(a) }
+    fn port_resistance(&self) -> T {
+        T::ONE
+    }
+    fn process_incident(&mut self, a: T) -> T {
+        self.process_sample(a)
+    }
     fn update_state(&mut self) {}
-    fn voltage(&self) -> T { self.feedback_prev }
-    fn current(&self) -> T { T::ZERO }
-    fn reset(&mut self) { self.reset(); }
+    fn voltage(&self) -> T {
+        self.feedback_prev
+    }
+    fn current(&self) -> T {
+        T::ZERO
+    }
+    fn reset(&mut self) {
+        self.reset();
+    }
 }
 
 impl<T: Transcendental> Algorithm<T> for MoogLadder<T> {
@@ -132,7 +142,9 @@ mod tests {
         let mut filter = make_filter(44100.0);
         filter.set_cutoff(100.0);
         let mut out = 0.0_f64;
-        for _ in 0..5000 { out = filter.process_sample(1.0_f64); }
+        for _ in 0..5000 {
+            out = filter.process_sample(1.0_f64);
+        }
         assert!((out - 1.0_f64).abs() < 0.01, "DC gain should be near 1.0");
     }
 

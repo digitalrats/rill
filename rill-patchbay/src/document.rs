@@ -4,11 +4,13 @@ use std::time::Duration;
 
 use rill_core::NodeId;
 
-use crate::automaton::lfo::LfoWaveform;
 use crate::automaton::envelope::{EnvelopeAutomaton, EnvelopeType};
+use crate::automaton::lfo::LfoWaveform;
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
-use crate::control::{BoxedServo, Mapping, OscSurface, PatchbayControl, Servo, ParameterMapping, Target, Transform};
 pub use crate::control::EventPattern;
+use crate::control::{
+    BoxedServo, Mapping, OscSurface, ParameterMapping, PatchbayControl, Servo, Target, Transform,
+};
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 
@@ -237,31 +239,74 @@ impl PatchbayDocument {
             let mapping = s.mapping.to_parameter_mapping();
 
             match def {
-                AutomatonDef::Lfo { id, frequency, amplitude, offset, waveform } => {
+                AutomatonDef::Lfo {
+                    id,
+                    frequency,
+                    amplitude,
+                    offset,
+                    waveform,
+                } => {
                     control.add_lfo(
-                        id, *frequency, *amplitude, *offset, *waveform,
-                        nid, &s.target_param, s.min, s.max,
+                        id,
+                        *frequency,
+                        *amplitude,
+                        *offset,
+                        *waveform,
+                        nid,
+                        &s.target_param,
+                        s.min,
+                        s.max,
                     );
                 }
-                AutomatonDef::Envelope { id, envelope_type, attack, decay, sustain, release, curve } => {
-                    let automaton = EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
-                        .with_curve(*curve);
-                    let servo: BoxedServo = Box::new(
-                        Servo::new(id, automaton, nid, &s.target_param, mapping, s.min, s.max),
-                    );
+                AutomatonDef::Envelope {
+                    id,
+                    envelope_type,
+                    attack,
+                    decay,
+                    sustain,
+                    release,
+                    curve,
+                } => {
+                    let automaton =
+                        EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
+                            .with_curve(*curve);
+                    let servo: BoxedServo = Box::new(Servo::new(
+                        id,
+                        automaton,
+                        nid,
+                        &s.target_param,
+                        mapping,
+                        s.min,
+                        s.max,
+                    ));
                     control.add_boxed_servo(id.clone(), servo);
                 }
-                AutomatonDef::Sequencer { id, steps, play_mode, tempo } => {
+                AutomatonDef::Sequencer {
+                    id,
+                    steps,
+                    play_mode,
+                    tempo,
+                } => {
                     let seq_steps: Vec<Step> = steps
                         .iter()
-                        .map(|sd| Step { value: sd.value, duration: sd.duration, curve: sd.curve })
+                        .map(|sd| Step {
+                            value: sd.value,
+                            duration: sd.duration,
+                            curve: sd.curve,
+                        })
                         .collect();
                     let automaton = SequencerAutomaton::new(id, seq_steps)
                         .with_mode(*play_mode)
                         .with_tempo(*tempo);
-                    let servo: BoxedServo = Box::new(
-                        Servo::new(id, automaton, nid, &s.target_param, mapping, s.min, s.max),
-                    );
+                    let servo: BoxedServo = Box::new(Servo::new(
+                        id,
+                        automaton,
+                        nid,
+                        &s.target_param,
+                        mapping,
+                        s.min,
+                        s.max,
+                    ));
                     control.add_boxed_servo(id.clone(), servo);
                 }
                 AutomatonDef::NamedFunction { id, .. } => {
@@ -323,45 +368,100 @@ impl PatchbayDocument {
             let range = (s.min, s.max);
 
             match def {
-                AutomatonDef::Lfo { id, frequency, amplitude, offset, waveform } => {
+                AutomatonDef::Lfo {
+                    id,
+                    frequency,
+                    amplitude,
+                    offset,
+                    waveform,
+                } => {
                     if let Some(interval_ms) = s.async_interval_ms {
                         let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                        let control_strategy = s.control_strategy.unwrap_or(ControlStrategy::Absolute);
-                        let conflict_strategy = s.conflict_strategy.unwrap_or(ConflictStrategy::LastWriteWins);
+                        let control_strategy =
+                            s.control_strategy.unwrap_or(ControlStrategy::Absolute);
+                        let conflict_strategy = s
+                            .conflict_strategy
+                            .unwrap_or(ConflictStrategy::LastWriteWins);
                         control.add_lfo_task(
-                            id, *frequency, *amplitude, *offset, *waveform,
-                            interval, target, range,
-                            control_strategy, conflict_strategy,
+                            id,
+                            *frequency,
+                            *amplitude,
+                            *offset,
+                            *waveform,
+                            interval,
+                            target,
+                            range,
+                            control_strategy,
+                            conflict_strategy,
                         );
                     } else {
                         control.add_lfo(
-                            id, *frequency, *amplitude, *offset, *waveform,
-                            nid, &s.target_param, s.min, s.max,
+                            id,
+                            *frequency,
+                            *amplitude,
+                            *offset,
+                            *waveform,
+                            nid,
+                            &s.target_param,
+                            s.min,
+                            s.max,
                         );
                     }
                 }
-                AutomatonDef::Envelope { id, attack, decay, sustain, release, curve, .. } => {
+                AutomatonDef::Envelope {
+                    id,
+                    attack,
+                    decay,
+                    sustain,
+                    release,
+                    curve,
+                    ..
+                } => {
                     if let Some(interval_ms) = s.async_interval_ms {
                         let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                        let control_strategy = s.control_strategy.unwrap_or(ControlStrategy::Absolute);
-                        let conflict_strategy = s.conflict_strategy.unwrap_or(ConflictStrategy::LastWriteWins);
+                        let control_strategy =
+                            s.control_strategy.unwrap_or(ControlStrategy::Absolute);
+                        let conflict_strategy = s
+                            .conflict_strategy
+                            .unwrap_or(ConflictStrategy::LastWriteWins);
                         control.add_envelope_task(
-                            id, *attack, *decay, *sustain, *release,
-                            interval, target, range,
-                            control_strategy, conflict_strategy,
+                            id,
+                            *attack,
+                            *decay,
+                            *sustain,
+                            *release,
+                            interval,
+                            target,
+                            range,
+                            control_strategy,
+                            conflict_strategy,
                         );
                     } else {
-                        let automaton = EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
-                            .with_curve(*curve);
+                        let automaton =
+                            EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
+                                .with_curve(*curve);
                         let mapping = s.mapping.to_parameter_mapping();
-                        let servo: BoxedServo = Box::new(
-                            Servo::new(id, automaton, nid, &s.target_param, mapping, s.min, s.max),
-                        );
+                        let servo: BoxedServo = Box::new(Servo::new(
+                            id,
+                            automaton,
+                            nid,
+                            &s.target_param,
+                            mapping,
+                            s.min,
+                            s.max,
+                        ));
                         control.add_boxed_servo(id.clone(), servo);
                     }
                 }
-                AutomatonDef::Sequencer { id, steps, play_mode, tempo } => {
-                    log::warn!("Sequencer sync mode not fully wired in apply_to_async; use manual setup");
+                AutomatonDef::Sequencer {
+                    id,
+                    steps,
+                    play_mode,
+                    tempo,
+                } => {
+                    log::warn!(
+                        "Sequencer sync mode not fully wired in apply_to_async; use manual setup"
+                    );
                     let _ = (id, steps, play_mode, tempo, nid, s);
                 }
                 AutomatonDef::NamedFunction { id, .. } => {
@@ -432,29 +532,25 @@ mod tests {
 
     fn sample_doc() -> PatchbayDocument {
         PatchbayDocument {
-            automata: vec![
-                AutomatonDef::Lfo {
-                    id: "lfo1".into(),
-                    frequency: 0.3,
-                    amplitude: 1.0,
-                    offset: 0.0,
-                    waveform: LfoWaveform::Sine,
-                },
-            ],
-            servos: vec![
-                ServoDef {
-                    automaton_id: "lfo1".into(),
-                    target_node: 1,
-                    target_param: "delay_time".into(),
-                    mapping: MappingType::Linear,
-                    min: 0.01,
-                    max: 0.5,
-                    enabled: true,
-                    async_interval_ms: None,
-                    control_strategy: None,
-                    conflict_strategy: None,
-                },
-            ],
+            automata: vec![AutomatonDef::Lfo {
+                id: "lfo1".into(),
+                frequency: 0.3,
+                amplitude: 1.0,
+                offset: 0.0,
+                waveform: LfoWaveform::Sine,
+            }],
+            servos: vec![ServoDef {
+                automaton_id: "lfo1".into(),
+                target_node: 1,
+                target_param: "delay_time".into(),
+                mapping: MappingType::Linear,
+                min: 0.01,
+                max: 0.5,
+                enabled: true,
+                async_interval_ms: None,
+                control_strategy: None,
+                conflict_strategy: None,
+            }],
             mappings: vec![],
             osc_surface: vec![],
             description: None,
@@ -519,15 +615,13 @@ mod tests {
     #[test]
     fn test_apply_to_async_roundtrip() {
         let doc = PatchbayDocument {
-            automata: vec![
-                AutomatonDef::Lfo {
-                    id: "lfo1".into(),
-                    frequency: 1.0,
-                    amplitude: 1.0,
-                    offset: 0.0,
-                    waveform: LfoWaveform::Sine,
-                },
-            ],
+            automata: vec![AutomatonDef::Lfo {
+                id: "lfo1".into(),
+                frequency: 1.0,
+                amplitude: 1.0,
+                offset: 0.0,
+                waveform: LfoWaveform::Sine,
+            }],
             servos: vec![ServoDef {
                 automaton_id: "lfo1".into(),
                 target_node: 1,
@@ -549,8 +643,14 @@ mod tests {
         let restored = from_json(&json).unwrap();
         assert_eq!(restored.servos.len(), 1);
         assert_eq!(restored.servos[0].async_interval_ms, Some(10.0));
-        assert_eq!(restored.servos[0].control_strategy, Some(ControlStrategy::Absolute));
-        assert_eq!(restored.servos[0].conflict_strategy, Some(ConflictStrategy::LastWriteWins));
+        assert_eq!(
+            restored.servos[0].control_strategy,
+            Some(ControlStrategy::Absolute)
+        );
+        assert_eq!(
+            restored.servos[0].conflict_strategy,
+            Some(ConflictStrategy::LastWriteWins)
+        );
     }
 
     #[tokio::test]
@@ -559,15 +659,13 @@ mod tests {
         use rill_core::queues::MpscQueue;
 
         let doc = PatchbayDocument {
-            automata: vec![
-                AutomatonDef::Lfo {
-                    id: "lfo1".into(),
-                    frequency: 10.0,
-                    amplitude: 1.0,
-                    offset: 0.0,
-                    waveform: LfoWaveform::Sine,
-                },
-            ],
+            automata: vec![AutomatonDef::Lfo {
+                id: "lfo1".into(),
+                frequency: 10.0,
+                amplitude: 1.0,
+                offset: 0.0,
+                waveform: LfoWaveform::Sine,
+            }],
             servos: vec![ServoDef {
                 automaton_id: "lfo1".into(),
                 target_node: 1,

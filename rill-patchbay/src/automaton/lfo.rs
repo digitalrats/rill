@@ -80,13 +80,9 @@ impl LfoWaveform {
                 }
             }
 
-            LfoWaveform::SampleAndHold => {
-                phase
-            }
+            LfoWaveform::SampleAndHold => phase,
 
-            LfoWaveform::RandomWalk => {
-                phase
-            }
+            LfoWaveform::RandomWalk => phase,
         }
     }
 }

@@ -1,5 +1,5 @@
 use super::array_from_fn;
-use crate::buffer::{AtomicStats, SignalBuffer, BufferStats, CACHE_LINE_SIZE};
+use crate::buffer::{AtomicStats, BufferStats, SignalBuffer, CACHE_LINE_SIZE};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use std::fmt;
@@ -83,15 +83,25 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
     }
 
     /// Whether data is available for reading.
-    pub fn has_data(&self) -> bool { self.valid }
+    pub fn has_data(&self) -> bool {
+        self.valid
+    }
     /// Number of writes performed.
-    pub fn write_seq(&self) -> usize { self.write_seq }
+    pub fn write_seq(&self) -> usize {
+        self.write_seq
+    }
     /// Number of reads performed.
-    pub fn read_seq(&self) -> usize { self.read_seq }
+    pub fn read_seq(&self) -> usize {
+        self.read_seq
+    }
     /// Whether all writes have been consumed by reads.
-    pub fn is_caught_up(&self) -> bool { self.write_seq == self.read_seq }
+    pub fn is_caught_up(&self) -> bool {
+        self.write_seq == self.read_seq
+    }
     /// Number of times the buffer was overwritten before being read.
-    pub fn overwrites(&self) -> usize { self.write_seq.saturating_sub(self.read_seq + 1) }
+    pub fn overwrites(&self) -> usize {
+        self.write_seq.saturating_sub(self.read_seq + 1)
+    }
 
     /// Reset to initial empty state.
     pub fn reset(&mut self) {
@@ -101,21 +111,40 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
 }
 
 impl<T: Transcendental, const N: usize> SignalBuffer<T> for PipeBuffer<T, N> {
-    fn capacity(&self) -> usize { N }
-    fn len(&self) -> usize { if self.valid { 1 } else { 0 } }
-    fn is_empty(&self) -> bool { !self.valid }
-    fn is_full(&self) -> bool { self.valid }
-    fn clear(&mut self) { self.valid = false; self.stats.reset(); }
+    fn capacity(&self) -> usize {
+        N
+    }
+    fn len(&self) -> usize {
+        if self.valid {
+            1
+        } else {
+            0
+        }
+    }
+    fn is_empty(&self) -> bool {
+        !self.valid
+    }
+    fn is_full(&self) -> bool {
+        self.valid
+    }
+    fn clear(&mut self) {
+        self.valid = false;
+        self.stats.reset();
+    }
     fn stats(&self) -> BufferStats {
         let mut stats = self.stats.snapshot();
         stats.fill_level = if self.valid { 1.0 } else { 0.0 };
         stats
     }
-    fn reset_stats(&mut self) { self.stats.reset(); }
+    fn reset_stats(&mut self) {
+        self.stats.reset();
+    }
 }
 
 impl<T: Transcendental, const N: usize> Default for PipeBuffer<T, N> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for PipeBuffer<T, N> {

@@ -87,8 +87,9 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
             id,
             metadata: NodeMetadata {
                 name: "NES Sound Chip".to_string(),
-                
-            type_name: None,category: NodeCategory::Source,
+
+                type_name: None,
+                category: NodeCategory::Source,
                 description: "Nintendo Entertainment System 2A03 sound chip emulation".to_string(),
                 author: "Rill Lo-Fi".to_string(),
                 version: "1.0".to_string(),

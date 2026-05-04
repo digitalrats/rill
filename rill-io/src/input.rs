@@ -32,14 +32,22 @@ unsafe impl Sync for BackendField {}
 
 impl std::ops::Deref for BackendField {
     type Target = Option<Box<dyn AudioIo>>;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 impl std::ops::DerefMut for BackendField {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 impl BackendField {
-    fn none() -> Self { Self(None) }
-    fn set(&mut self, backend: Box<dyn AudioIo>) { self.0 = Some(backend); }
+    fn none() -> Self {
+        Self(None)
+    }
+    fn set(&mut self, backend: Box<dyn AudioIo>) {
+        self.0 = Some(backend);
+    }
 }
 
 /// Stereo audio input source. Owns the processing callback that drives
@@ -58,7 +66,9 @@ pub struct AudioInput<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for AudioInput<T, BUF_SIZE> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
@@ -174,9 +184,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
                     drain_fn(nodes);
 
                     // 2. Clock tick
-                    let tick = ClockTick::new(
-                        sample_pos.get(), BUF_SIZE as u32, sample_rate,
-                    );
+                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, sample_rate);
 
                     // 3. Process this node (generate → read backend → fill ports)
                     let mut ctx = ProcessContext { clock: &tick };
@@ -206,38 +214,73 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
     }
 
     /// Check whether a backend has been attached.
-    pub fn has_backend(&self) -> bool { self.backend.is_some() }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-    for AudioInput<T, BUF_SIZE>
-{
-    fn node_type_id(&self) -> rill_core::NodeTypeId
-    where Self: 'static + Sized { rill_core::NodeTypeId::of::<Self>() }
-    fn id(&self) -> NodeId { self.id }
-    fn set_id(&mut self, id: NodeId) { self.id = id; }
-    fn metadata(&self) -> NodeMetadata { self.metadata.clone() }
-    fn init(&mut self, _sample_rate: f32) {}
-    fn reset(&mut self) { self.state.sample_pos = 0; self.state.blocks_processed = 0; }
-    fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
-    fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
-        Err(rill_core::ProcessError::parameter("AudioInput has no parameters"))
+    pub fn has_backend(&self) -> bool {
+        self.backend.is_some()
     }
-    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> { self.outputs.get(index) }
-    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.outputs.get_mut(index) }
-    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-    fn num_signal_inputs(&self) -> usize { 0 }
-    fn num_signal_outputs(&self) -> usize { 2 }
-    fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
-    for AudioInput<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for AudioInput<T, BUF_SIZE> {
+    fn node_type_id(&self) -> rill_core::NodeTypeId
+    where
+        Self: 'static + Sized,
+    {
+        rill_core::NodeTypeId::of::<Self>()
+    }
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
+    fn metadata(&self) -> NodeMetadata {
+        self.metadata.clone()
+    }
+    fn init(&mut self, _sample_rate: f32) {}
+    fn reset(&mut self) {
+        self.state.sample_pos = 0;
+        self.state.blocks_processed = 0;
+    }
+    fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
+        None
+    }
+    fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
+        Err(rill_core::ProcessError::parameter(
+            "AudioInput has no parameters",
+        ))
+    }
+    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.outputs.get(index)
+    }
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.outputs.get_mut(index)
+    }
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+    fn num_signal_inputs(&self) -> usize {
+        0
+    }
+    fn num_signal_outputs(&self) -> usize {
+        2
+    }
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for AudioInput<T, BUF_SIZE> {
     fn generate(
         &mut self,
         _clock: &ClockTick,
@@ -250,11 +293,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
                 let frames = n.min(BUF_SIZE);
                 if let Some(left) = self.outputs.get_mut(0) {
                     let l = left.buffer_mut().as_mut_array();
-                    for i in 0..frames { l[i] = T::from_f32(self.buf_l[i]); }
+                    for i in 0..frames {
+                        l[i] = T::from_f32(self.buf_l[i]);
+                    }
                 }
                 if let Some(right) = self.outputs.get_mut(1) {
                     let r = right.buffer_mut().as_mut_array();
-                    for i in 0..frames { r[i] = T::from_f32(self.buf_r[i]); }
+                    for i in 0..frames {
+                        r[i] = T::from_f32(self.buf_r[i]);
+                    }
                 }
             }
         }
@@ -265,11 +312,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use super::*;
     use crate::audio_io::AudioIo;
     use crate::buffer::IoRingBuffer;
     use rill_core::traits::Sink;
+    use std::sync::Arc;
 
     /// Mock AudioIo backed by IoRingBuffers for testing.
     struct RingIo {
@@ -297,8 +344,12 @@ mod tests {
             }
             self.output_ring.write(&temp) / 2
         }
-        fn start(&self) -> crate::audio_io::IoResult<()> { Ok(()) }
-        fn stop(&self) -> crate::audio_io::IoResult<()> { Ok(()) }
+        fn start(&self) -> crate::audio_io::IoResult<()> {
+            Ok(())
+        }
+        fn stop(&self) -> crate::audio_io::IoResult<()> {
+            Ok(())
+        }
     }
 
     use rill_core::traits::algorithm::ActionContext;
@@ -337,8 +388,8 @@ mod tests {
         let test_val: f32 = 42.0;
         let mut test_block = vec![0.0f32; BUF_SZ * 2];
         for i in 0..BUF_SZ {
-            test_block[i * 2] = test_val;       // left
-            test_block[i * 2 + 1] = test_val;   // right
+            test_block[i * 2] = test_val; // left
+            test_block[i * 2 + 1] = test_val; // right
         }
         input_ring.write(&test_block);
 
@@ -350,10 +401,18 @@ mod tests {
         let l = input.output_port(0).unwrap().buffer.as_array();
         let r = input.output_port(1).unwrap().buffer.as_array();
         for i in 0..BUF_SZ {
-            assert!((l[i] - 42.0).abs() < 1e-6,
-                "left[{}] should be 42.0, got {}", i, l[i]);
-            assert!((r[i] - 42.0).abs() < 1e-6,
-                "right[{}] should be 42.0, got {}", i, r[i]);
+            assert!(
+                (l[i] - 42.0).abs() < 1e-6,
+                "left[{}] should be 42.0, got {}",
+                i,
+                l[i]
+            );
+            assert!(
+                (r[i] - 42.0).abs() < 1e-6,
+                "right[{}] should be 42.0, got {}",
+                i,
+                r[i]
+            );
         }
 
         // Verify data flows: AudioInput.generate() reads from input ring,

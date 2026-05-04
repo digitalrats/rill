@@ -62,20 +62,33 @@ pub fn load_wav(path: &str) -> Result<SampleBuffer<Sample>, WavError> {
 
     match bits_per_sample {
         16 => {
-            let samples: Vec<i16> = reader.samples::<i16>()
+            let samples: Vec<i16> = reader
+                .samples::<i16>()
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?;
-            Ok(samples_to_buffer(samples.into_iter().map(|s| s as f32 / 32768.0), channels, sample_rate, name))
+            Ok(samples_to_buffer(
+                samples.into_iter().map(|s| s as f32 / 32768.0),
+                channels,
+                sample_rate,
+                name,
+            ))
         }
         24 => {
-            let samples: Vec<i32> = reader.samples::<i32>()
+            let samples: Vec<i32> = reader
+                .samples::<i32>()
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?;
             const SCALE: f32 = 1.0 / 8388608.0; // 2^23
-            Ok(samples_to_buffer(samples.into_iter().map(|s| s as f32 * SCALE), channels, sample_rate, name))
+            Ok(samples_to_buffer(
+                samples.into_iter().map(|s| s as f32 * SCALE),
+                channels,
+                sample_rate,
+                name,
+            ))
         }
         other => Err(WavError::Format(format!(
-            "Only 16/24-bit PCM supported, got {}-bit", other
+            "Only 16/24-bit PCM supported, got {}-bit",
+            other
         ))),
     }
 }

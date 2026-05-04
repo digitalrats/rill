@@ -1,5 +1,5 @@
 use rill_core::math::Transcendental;
-use rill_core::traits::{SignalNode, NodeId, NodeMetadata, NodeParams, NodeVariant};
+use rill_core::traits::{NodeId, NodeMetadata, NodeParams, NodeVariant, SignalNode};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -215,13 +215,13 @@ macro_rules! node_ctor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::traits::Source;
-    use rill_core::traits::Processor;
     use rill_core::time::ClockTick;
-    use rill_core::traits::{ParamValue, ProcessResult};
     use rill_core::traits::node::NodeState;
     use rill_core::traits::port::Port;
     use rill_core::traits::NodeCategory;
+    use rill_core::traits::Processor;
+    use rill_core::traits::Source;
+    use rill_core::traits::{ParamValue, ProcessResult};
 
     // ── Test helpers ────────────────────────────────────────────────
 
@@ -254,38 +254,90 @@ mod tests {
         fn metadata(&self) -> rill_core::traits::NodeMetadata {
             rill_core::traits::NodeMetadata::new(self.meta_name, self.meta_cat)
         }
-        fn init(&mut self, sample_rate: f32) { self.state.sample_rate = sample_rate; }
+        fn init(&mut self, sample_rate: f32) {
+            self.state.sample_rate = sample_rate;
+        }
         fn reset(&mut self) {}
-        fn get_parameter(&self, _: &rill_core::traits::ParameterId) -> Option<rill_core::traits::ParamValue> { None }
-        fn set_parameter(&mut self, _: &rill_core::traits::ParameterId, _: rill_core::traits::ParamValue) -> ProcessResult<()> { Ok(()) }
-        fn id(&self) -> NodeId { self.id }
-        fn set_id(&mut self, id: NodeId) { self.id = id; }
-        fn input_port(&self, _: usize) -> Option<&Port<T, B>> { None }
-        fn input_port_mut(&mut self, _: usize) -> Option<&mut Port<T, B>> { None }
+        fn get_parameter(
+            &self,
+            _: &rill_core::traits::ParameterId,
+        ) -> Option<rill_core::traits::ParamValue> {
+            None
+        }
+        fn set_parameter(
+            &mut self,
+            _: &rill_core::traits::ParameterId,
+            _: rill_core::traits::ParamValue,
+        ) -> ProcessResult<()> {
+            Ok(())
+        }
+        fn id(&self) -> NodeId {
+            self.id
+        }
+        fn set_id(&mut self, id: NodeId) {
+            self.id = id;
+        }
+        fn input_port(&self, _: usize) -> Option<&Port<T, B>> {
+            None
+        }
+        fn input_port_mut(&mut self, _: usize) -> Option<&mut Port<T, B>> {
+            None
+        }
         fn output_port(&self, index: usize) -> Option<&Port<T, B>> {
-            if index == 0 { Some(&self.output) } else { None }
+            if index == 0 {
+                Some(&self.output)
+            } else {
+                None
+            }
         }
         fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, B>> {
-            if index == 0 { Some(&mut self.output) } else { None }
+            if index == 0 {
+                Some(&mut self.output)
+            } else {
+                None
+            }
         }
-        fn control_port(&self, _: usize) -> Option<&Port<T, B>> { None }
-        fn control_port_mut(&mut self, _: usize) -> Option<&mut Port<T, B>> { None }
-        fn state(&self) -> &NodeState<T, B> { &self.state }
-        fn state_mut(&mut self) -> &mut NodeState<T, B> { &mut self.state }
+        fn control_port(&self, _: usize) -> Option<&Port<T, B>> {
+            None
+        }
+        fn control_port_mut(&mut self, _: usize) -> Option<&mut Port<T, B>> {
+            None
+        }
+        fn state(&self) -> &NodeState<T, B> {
+            &self.state
+        }
+        fn state_mut(&mut self) -> &mut NodeState<T, B> {
+            &mut self.state
+        }
     }
 
     impl<T: Transcendental, const B: usize> Source<T, B> for TestSource<T, B> {
-        fn generate(&mut self, _: &ClockTick, _: &[T], _: &[ClockTick]) -> ProcessResult<()> { Ok(()) }
+        fn generate(&mut self, _: &ClockTick, _: &[T], _: &[ClockTick]) -> ProcessResult<()> {
+            Ok(())
+        }
     }
 
     impl<T: Transcendental, const B: usize> Processor<T, B> for TestSource<T, B> {
-        fn process(&mut self, _: &ClockTick, _: &[&[T; B]], _: &[T], _: &[ClockTick], _: &[&[T; B]]) -> ProcessResult<()> { Ok(()) }
-        fn latency(&self) -> usize { 0 }
+        fn process(
+            &mut self,
+            _: &ClockTick,
+            _: &[&[T; B]],
+            _: &[T],
+            _: &[ClockTick],
+            _: &[&[T; B]],
+        ) -> ProcessResult<()> {
+            Ok(())
+        }
+        fn latency(&self) -> usize {
+            0
+        }
     }
 
     struct TestSourceCtor;
     impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for TestSourceCtor {
-        fn type_name(&self) -> &'static str { "test/source" }
+        fn type_name(&self) -> &'static str {
+            "test/source"
+        }
         fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, B> {
             let mut node = TestSource::<T, B>::new();
             node.set_id_and_init(id, params.sample_rate);
@@ -295,7 +347,9 @@ mod tests {
 
     struct TestProcessorCtor;
     impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for TestProcessorCtor {
-        fn type_name(&self) -> &'static str { "test/processor" }
+        fn type_name(&self) -> &'static str {
+            "test/processor"
+        }
         fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, B> {
             let mut node = TestSource::<T, B>::new();
             node.meta_name = "Noop";
@@ -323,7 +377,8 @@ mod tests {
         assert_eq!(registry.len(), 1);
 
         let params = NodeParams::new(48000.0);
-        let variant = registry.construct("test/source", NodeId(42), &params)
+        let variant = registry
+            .construct("test/source", NodeId(42), &params)
             .expect("should construct");
 
         match &variant {
@@ -359,7 +414,8 @@ mod tests {
 
         assert!(registry.contains("test/fn_ctor"));
         let params = NodeParams::new(44100.0);
-        let variant = registry.construct("test/fn_ctor", NodeId(1), &params)
+        let variant = registry
+            .construct("test/fn_ctor", NodeId(1), &params)
             .expect("should construct from fn");
         match variant {
             NodeVariant::Source(_) => {}

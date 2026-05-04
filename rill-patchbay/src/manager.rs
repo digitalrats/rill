@@ -645,8 +645,7 @@ impl AnyServo for TestServo {
         &self.id
     }
 
-    fn set_enabled(&mut self, _enabled: bool) {
-    }
+    fn set_enabled(&mut self, _enabled: bool) {}
 }
 
 // =============================================================================

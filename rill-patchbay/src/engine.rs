@@ -108,7 +108,9 @@ impl PatchbayEngine {
         control: ControlStrategy,
         conflict: ConflictStrategy,
     ) {
-        self.control.add_lfo_task(id, frequency, amplitude, offset, waveform, interval, target, range, control, conflict);
+        self.control.add_lfo_task(
+            id, frequency, amplitude, offset, waveform, interval, target, range, control, conflict,
+        );
     }
 
     /// Add an ADSR envelope as a green thread.
@@ -125,7 +127,9 @@ impl PatchbayEngine {
         control: ControlStrategy,
         conflict: ConflictStrategy,
     ) {
-        self.control.add_envelope_task(id, attack, decay, sustain, release, interval, target, range, control, conflict);
+        self.control.add_envelope_task(
+            id, attack, decay, sustain, release, interval, target, range, control, conflict,
+        );
     }
 
     /// Add an event mapping (MIDI/OSC → parameter).

@@ -102,7 +102,7 @@ pub use crate::vec_map;
 #[cfg(test)]
 mod tests {
     use super::*;
-        use crate::math::vector::scalar::ScalarVector4;
+    use crate::math::vector::scalar::ScalarVector4;
 
     #[test]
     fn test_vec_map_f32() {

@@ -1,7 +1,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Source,
+    ActionContext, Algorithm, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ParameterId, Port, SignalNode, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -142,7 +142,9 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
             "frequency" => Some(Self::t_to_param(self.frequency)),
             "amplitude" => Some(Self::t_to_param(self.amplitude)),
             "phase" => Some(Self::t_to_param(self.osc.phase())),
-            "interpolation" => Some(ParamValue::Choice(if self.cubic { "cubic" } else { "linear" }.into())),
+            "interpolation" => Some(ParamValue::Choice(
+                if self.cubic { "cubic" } else { "linear" }.into(),
+            )),
             _ => None,
         }
     }
@@ -183,7 +185,10 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
                     Err(ProcessError::Parameter("Expected choice".into()))
                 }
             }
-            _ => Err(ProcessError::Parameter(format!("Unknown parameter: {}", id))),
+            _ => Err(ProcessError::Parameter(format!(
+                "Unknown parameter: {}",
+                id
+            ))),
         }
     }
 
@@ -275,7 +280,10 @@ mod tests {
         let clock = ClockTick::new(0, 64, 44100.0);
         osc.generate(&clock, &[], &[]).unwrap();
         let output = osc.outputs[0].buffer.as_array();
-        assert!(output.iter().any(|&x| x != 0.0), "should produce non-zero output");
+        assert!(
+            output.iter().any(|&x| x != 0.0),
+            "should produce non-zero output"
+        );
         for &s in output.iter() {
             assert!(s >= -0.5 && s <= 0.5, "amplitude within bounds");
         }
@@ -287,7 +295,8 @@ mod tests {
         osc.init(44100.0);
 
         let freq_id = ParameterId::new("frequency").unwrap();
-        osc.set_parameter(&freq_id, ParamValue::Float(880.0)).unwrap();
+        osc.set_parameter(&freq_id, ParamValue::Float(880.0))
+            .unwrap();
         assert!(approx_eq!(f32, osc.frequency, 880.0));
 
         let amp_id = ParameterId::new("amplitude").unwrap();
@@ -295,7 +304,8 @@ mod tests {
         assert!(approx_eq!(f32, osc.amplitude, 0.3));
 
         let interp_id = ParameterId::new("interpolation").unwrap();
-        osc.set_parameter(&interp_id, ParamValue::Choice("cubic".into())).unwrap();
+        osc.set_parameter(&interp_id, ParamValue::Choice("cubic".into()))
+            .unwrap();
         assert!(osc.cubic);
     }
 }

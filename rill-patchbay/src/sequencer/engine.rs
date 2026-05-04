@@ -62,10 +62,7 @@ impl SnapshotSequencer {
     /// Create a sequencer pre-loaded with snapshots and patterns.
     ///
     /// The first pattern in the vec becomes the active pattern.
-    pub fn with_lib(
-        snapshots: Vec<Snapshot>,
-        patterns: Vec<Pattern>,
-    ) -> Self {
+    pub fn with_lib(snapshots: Vec<Snapshot>, patterns: Vec<Pattern>) -> Self {
         let mut s = Self::new();
         for snap in snapshots {
             s.add_snapshot(snap);
@@ -197,12 +194,7 @@ impl SnapshotSequencer {
     /// Convenience wrapper around [`tick_ext`](Self::tick_ext) that passes
     /// default beat info (beat_position=0, no beat/bar boundaries).
     /// Prefer `tick_ext` when beat-aware CLOCK_TICK telemetry is available.
-    pub fn tick(
-        &mut self,
-        sample_pos: u64,
-        sample_rate: f32,
-        tempo: f32,
-    ) -> Vec<ParameterCommand> {
+    pub fn tick(&mut self, sample_pos: u64, sample_rate: f32, tempo: f32) -> Vec<ParameterCommand> {
         self.tick_ext(sample_pos, sample_rate, tempo, 0.0, false, false)
     }
 
@@ -240,7 +232,11 @@ impl SnapshotSequencer {
                 _ => return Vec::new(),
             };
             let step = &pat.steps[self.current_step];
-            (pat.steps.len(), pat.play_mode, step.duration_samples(tempo, sample_rate))
+            (
+                pat.steps.len(),
+                pat.play_mode,
+                step.duration_samples(tempo, sample_rate),
+            )
         };
 
         let elapsed = sample_pos.saturating_sub(self.step_start_sample);
@@ -297,8 +293,8 @@ impl SnapshotSequencer {
                 use rand::Rng;
                 let mut rng = rand::thread_rng();
                 let offset: isize = rng.gen_range(-1..=1);
-                (self.current_step as isize + offset)
-                    .clamp(0, len.saturating_sub(1) as isize) as usize
+                (self.current_step as isize + offset).clamp(0, len.saturating_sub(1) as isize)
+                    as usize
             }
         }
     }
@@ -359,9 +355,7 @@ impl SequencerHandle {
 
     /// Reset the sequencer to the given sample position.
     pub fn reset(&self, sample_pos: u64) {
-        let _ = self
-            .cmd_tx
-            .try_send(SequencerCommand::Reset { sample_pos });
+        let _ = self.cmd_tx.try_send(SequencerCommand::Reset { sample_pos });
     }
 
     /// Switch to a different pattern by ID.
@@ -447,11 +441,15 @@ mod tests {
     fn test_sequencer_pingpong() {
         let mut seq = SnapshotSequencer::with_lib(
             vec![],
-            vec![Pattern::new("p1", vec![
-                make_step(0.0, 1.0),
-                make_step(0.5, 1.0),
-                make_step(1.0, 1.0),
-            ]).with_mode(StepPlayMode::PingPong)],
+            vec![Pattern::new(
+                "p1",
+                vec![
+                    make_step(0.0, 1.0),
+                    make_step(0.5, 1.0),
+                    make_step(1.0, 1.0),
+                ],
+            )
+            .with_mode(StepPlayMode::PingPong)],
         );
         seq.start();
 
@@ -470,10 +468,8 @@ mod tests {
         let mut seq = SnapshotSequencer::with_lib(
             vec![],
             vec![
-                Pattern::new("p1", vec![
-                    make_step(0.0, 1.0),
-                    make_step(0.5, 1.0),
-                ]).with_mode(StepPlayMode::OneShot),
+                Pattern::new("p1", vec![make_step(0.0, 1.0), make_step(0.5, 1.0)])
+                    .with_mode(StepPlayMode::OneShot),
             ],
         );
         seq.start();
@@ -545,18 +541,22 @@ mod tests {
         assert_eq!(rx.try_recv(), Ok(SequencerCommand::Stop));
 
         handle.set_pattern("foo");
-        assert_eq!(rx.try_recv(), Ok(SequencerCommand::SetPattern("foo".into())));
+        assert_eq!(
+            rx.try_recv(),
+            Ok(SequencerCommand::SetPattern("foo".into()))
+        );
 
         handle.reset(12345);
-        assert_eq!(rx.try_recv(), Ok(SequencerCommand::Reset { sample_pos: 12345 }));
+        assert_eq!(
+            rx.try_recv(),
+            Ok(SequencerCommand::Reset { sample_pos: 12345 })
+        );
     }
 
     #[test]
     fn test_tick_ext_stores_beat_info() {
         let mut seq = SnapshotSequencer::new();
-        let pat = Pattern::new("p1", vec![
-            SequenceStep::single(NodeId(1), "p", 0.5, 1.0),
-        ]);
+        let pat = Pattern::new("p1", vec![SequenceStep::single(NodeId(1), "p", 0.5, 1.0)]);
         seq.add_pattern(pat);
         seq.set_active_pattern("p1");
         seq.start();

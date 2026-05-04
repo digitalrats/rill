@@ -89,7 +89,9 @@ impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, M
     }
 }
 
-impl<T: Transcendental, const MAX_DELAY: usize> ParameterizedAlgorithm<T> for CombFilter<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> ParameterizedAlgorithm<T>
+    for CombFilter<T, MAX_DELAY>
+{
     type Params = FilterParams;
 
     fn params(&self) -> &Self::Params {

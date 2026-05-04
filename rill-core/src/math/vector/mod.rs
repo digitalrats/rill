@@ -75,5 +75,7 @@ pub mod prelude {
     pub use crate::math::vector::simd::*;
 
     /// Scalar (non-SIMD) vector types.
-    pub use crate::math::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
+    pub use crate::math::vector::scalar::{
+        ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8,
+    };
 }

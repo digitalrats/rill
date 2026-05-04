@@ -46,7 +46,9 @@ macro_rules! wdf_compose {
             fn voltage(&self) -> T {
                 self.left.voltage() + self.right.voltage()
             }
-            fn current(&self) -> T { self.left.current() }
+            fn current(&self) -> T {
+                self.left.current()
+            }
             fn reset(&mut self) {
                 self.left.reset();
                 self.right.reset();
@@ -101,7 +103,9 @@ macro_rules! wdf_compose {
                 self.left.update_state();
                 self.right.update_state();
             }
-            fn voltage(&self) -> T { self.left.voltage() }
+            fn voltage(&self) -> T {
+                self.left.voltage()
+            }
             fn current(&self) -> T {
                 self.left.current() + self.right.current()
             }

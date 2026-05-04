@@ -11,9 +11,9 @@
 
 #[cfg(feature = "pipewire")]
 mod pipewire_it {
+    use rill_io::{AudioBackend, AudioConfig, BackendType, PipewireBackend};
     use std::process::Command;
     use std::time::Duration;
-    use rill_io::{AudioBackend, AudioConfig, BackendType, PipewireBackend};
 
     const VIRTUAL_SINK: &str = "rill_test_sink";
 

@@ -64,11 +64,21 @@ unsafe impl Send for OutputSlot {}
 unsafe impl Sync for OutputSlot {}
 
 impl OutputSlot {
-    fn new() -> Self { Self(Box::into_raw(Box::new(None))) }
-    unsafe fn set(&self, w: OutputWindow) { *self.0 = Some(w); }
-    unsafe fn clear(&self) { *self.0 = None; }
-    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> { (*self.0).as_mut() }
-    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0)); }
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None)))
+    }
+    unsafe fn set(&self, w: OutputWindow) {
+        *self.0 = Some(w);
+    }
+    unsafe fn clear(&self) {
+        *self.0 = None;
+    }
+    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
+        (*self.0).as_mut()
+    }
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0));
+    }
 }
 
 /// CPAL бэкенд.
@@ -116,8 +126,15 @@ impl CpalBackend {
 
     fn build_streams(&self) -> IoResult<cpal::Stream> {
         let host = cpal::default_host();
-        let output_device = self.config.output_device.as_deref()
-            .and_then(|name| host.output_devices().ok()?.find(|d| d.name().ok().as_deref() == Some(name)))
+        let output_device = self
+            .config
+            .output_device
+            .as_deref()
+            .and_then(|name| {
+                host.output_devices()
+                    .ok()?
+                    .find(|d| d.name().ok().as_deref() == Some(name))
+            })
             .or_else(|| host.default_output_device())
             .ok_or_else(|| IoError::DeviceNotFound("No output device available".into()))?;
 
@@ -131,30 +148,32 @@ impl CpalBackend {
         let cb_addr = self.process_cb.0;
         let oslot = self.output_slot;
 
-        let stream = output_device.build_output_stream(
-            &stream_config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                let chunk = 256;  // BUF_SIZE
-                let mut off = 0usize;
+        let stream = output_device
+            .build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    let chunk = 256; // BUF_SIZE
+                    let mut off = 0usize;
 
-                while off + chunk * 2 <= data.len() {
-                    unsafe {
-                        oslot.set(OutputWindow::new(data.as_mut_ptr().add(off), chunk * 2));
-                        CbSlot(cb_addr).call();
-                        oslot.clear();
+                    while off + chunk * 2 <= data.len() {
+                        unsafe {
+                            oslot.set(OutputWindow::new(data.as_mut_ptr().add(off), chunk * 2));
+                            CbSlot(cb_addr).call();
+                            oslot.clear();
+                        }
+                        off += chunk * 2;
                     }
-                    off += chunk * 2;
-                }
-                if off < data.len() {
-                    data[off..].fill(0.0);
-                }
-            },
-            move |err| {
-                eprintln!("CPAL output stream error: {}", err);
-                xruns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            },
-            None,
-        ).map_err(|e| IoError::Backend(format!("CPAL output: {e}")))?;
+                    if off < data.len() {
+                        data[off..].fill(0.0);
+                    }
+                },
+                move |err| {
+                    eprintln!("CPAL output stream error: {}", err);
+                    xruns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                },
+                None,
+            )
+            .map_err(|e| IoError::Backend(format!("CPAL output: {e}")))?;
 
         Ok(stream)
     }
@@ -225,7 +244,9 @@ impl AudioBackend for CpalBackend {
 
 impl AudioIo for CpalBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { self.process_cb.set(cb); }
+        unsafe {
+            self.process_cb.set(cb);
+        }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
@@ -266,7 +287,9 @@ impl AudioIo for CpalBackend {
             Err(e) => return Err(format!("CPAL build: {e}")),
         };
         stream.play().map_err(|e| format!("CPAL play: {e}"))?;
-        unsafe { *self.stream.get() = Some(stream); }
+        unsafe {
+            *self.stream.get() = Some(stream);
+        }
         Ok(())
     }
 

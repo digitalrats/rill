@@ -402,8 +402,7 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     /// should store this sender and use it from their `generate()` /
     /// `process()` / `consume()` methods via `TelemetryTx::try_send`.
     /// Default is no-op — override only in nodes that produce telemetry.
-    fn set_telemetry_tx(&mut self, _tx: crate::queues::telemetry::TelemetryTx) {
-    }
+    fn set_telemetry_tx(&mut self, _tx: crate::queues::telemetry::TelemetryTx) {}
 }
 
 // ============================================================================
@@ -414,7 +413,9 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
 ///
 /// Sources generate audio from internal state. They have no audio inputs,
 /// but may have control and clock inputs for modulation.
-pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalNode<T, BUF_SIZE> {
+pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>:
+    SignalNode<T, BUF_SIZE>
+{
     /// Generate the next block of audio
     ///
     /// # Arguments
@@ -492,7 +493,9 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
 ///
 /// Sinks consume audio and send it to external destinations.
 /// They have no audio outputs, but may have control and clock ports.
-pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalNode<T, BUF_SIZE> {
+pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>:
+    SignalNode<T, BUF_SIZE>
+{
     /// Consume a block of audio
     ///
     /// # Arguments

@@ -1,7 +1,7 @@
 use rill_core::{
     buffer::TapeLoop,
     math::Transcendental,
-    traits::{SignalNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    traits::{NodeCategory, NodeMetadata, NodeState, Processor, SignalNode},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
@@ -44,10 +44,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     pub fn new(sample_rate: f32) -> Self {
         let mut metadata = NodeMetadata::new("WriteHead", NodeCategory::Processor);
         metadata.parameters = vec![
-            rill_core::ParamMetadata::new("delay_time", rill_core::ParamType::Float, ParamValue::Float(0.5))
-                .with_range(0.01, 2.0, 0.01),
-            rill_core::ParamMetadata::new("feedback", rill_core::ParamType::Float, ParamValue::Float(0.3))
-                .with_range(0.0, 0.99, 0.01),
+            rill_core::ParamMetadata::new(
+                "delay_time",
+                rill_core::ParamType::Float,
+                ParamValue::Float(0.5),
+            )
+            .with_range(0.01, 2.0, 0.01),
+            rill_core::ParamMetadata::new(
+                "feedback",
+                rill_core::ParamType::Float,
+                ParamValue::Float(0.3),
+            )
+            .with_range(0.0, 0.99, 0.01),
         ];
 
         let mut inputs = Vec::new();
@@ -78,9 +86,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
 
 // ── Processor trait ──────────────────────────────────────────────────────
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
-    for WriteHead<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteHead<T, BUF_SIZE> {
     fn process(
         &mut self,
         _clock: &ClockTick,
@@ -101,26 +107,45 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
             tape.write(input_buf[i] + fb_buf[i] * fb_gain);
         }
 
-        self.outputs[0].buffer.as_mut_array().copy_from_slice(&input_buf);
+        self.outputs[0]
+            .buffer
+            .as_mut_array()
+            .copy_from_slice(&input_buf);
         self.state.advance();
         Ok(())
     }
 
-    fn latency(&self) -> usize { 0 }
+    fn latency(&self) -> usize {
+        0
+    }
 }
 
 // ── SignalNode trait ─────────────────────────────────────────────────────
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-    for WriteHead<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for WriteHead<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
-    where Self: 'static + Sized { rill_core::NodeTypeId::of::<Self>() }
-    fn id(&self) -> NodeId { self.id }
-    fn set_id(&mut self, id: NodeId) { self.id = id; }
-    fn metadata(&self) -> NodeMetadata { self.metadata.clone() }
-    fn init(&mut self, sample_rate: f32) { self.sample_rate = sample_rate; self.state.sample_rate = sample_rate; }
-    fn reset(&mut self) { self.state.sample_pos = 0; self.state.blocks_processed = 0; }
+    where
+        Self: 'static + Sized,
+    {
+        rill_core::NodeTypeId::of::<Self>()
+    }
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
+    fn metadata(&self) -> NodeMetadata {
+        self.metadata.clone()
+    }
+    fn init(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+        self.state.sample_rate = sample_rate;
+    }
+    fn reset(&mut self) {
+        self.state.sample_pos = 0;
+        self.state.blocks_processed = 0;
+    }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
         match id.as_str() {
@@ -134,26 +159,57 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         let name = id.as_str();
         if let Some(v) = value.as_f32() {
             match name {
-                "delay_time" => { self.delay_time = v.clamp(0.01, 2.0); Ok(()) }
-                "feedback" => { self.feedback = v.clamp(0.0, 0.99); Ok(()) }
-                _ => Err(ProcessError::parameter(format!("Unknown parameter: {}", name))),
+                "delay_time" => {
+                    self.delay_time = v.clamp(0.01, 2.0);
+                    Ok(())
+                }
+                "feedback" => {
+                    self.feedback = v.clamp(0.0, 0.99);
+                    Ok(())
+                }
+                _ => Err(ProcessError::parameter(format!(
+                    "Unknown parameter: {}",
+                    name
+                ))),
             }
         } else {
             Err(ProcessError::parameter("Expected float value"))
         }
     }
 
-    fn input_port(&self, i: usize) -> Option<&Port<T, BUF_SIZE>> { self.inputs.get(i) }
-    fn input_port_mut(&mut self, i: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.inputs.get_mut(i) }
-    fn output_port(&self, i: usize) -> Option<&Port<T, BUF_SIZE>> { self.outputs.get(i) }
-    fn output_port_mut(&mut self, i: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.outputs.get_mut(i) }
-    fn control_port(&self, _: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-    fn control_port_mut(&mut self, _: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-    fn num_signal_inputs(&self) -> usize { 2 }
-    fn num_signal_outputs(&self) -> usize { 1 }
-    fn num_feedback_ports(&self) -> usize { 0 }
-    fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
+    fn input_port(&self, i: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.inputs.get(i)
+    }
+    fn input_port_mut(&mut self, i: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.inputs.get_mut(i)
+    }
+    fn output_port(&self, i: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.outputs.get(i)
+    }
+    fn output_port_mut(&mut self, i: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.outputs.get_mut(i)
+    }
+    fn control_port(&self, _: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+    fn control_port_mut(&mut self, _: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+    fn num_signal_inputs(&self) -> usize {
+        2
+    }
+    fn num_signal_outputs(&self) -> usize {
+        1
+    }
+    fn num_feedback_ports(&self) -> usize {
+        0
+    }
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
+    }
 }
 
 #[cfg(test)]
@@ -172,7 +228,11 @@ mod tests {
     #[test]
     fn test_write_head_params() {
         let mut wh = WriteHead::<f32, 64>::new(44100.0);
-        wh.set_parameter(&ParameterId::new("feedback").unwrap(), ParamValue::Float(0.5)).unwrap();
+        wh.set_parameter(
+            &ParameterId::new("feedback").unwrap(),
+            ParamValue::Float(0.5),
+        )
+        .unwrap();
         assert!((wh.feedback - 0.5).abs() < 1e-6);
     }
 }

@@ -16,7 +16,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rill_core::NodeId;
-use rill_patchbay::control::{ControlEvent, EventPattern, OscSurface, ParameterCommand, PatchbayControl};
+use rill_patchbay::control::{
+    ControlEvent, EventPattern, OscSurface, ParameterCommand, PatchbayControl,
+};
 
 use crate::osc::osc::{OscMessage, OscType};
 use crate::osc::server::OscServer;
@@ -96,11 +98,7 @@ impl OscHandle {
                 } else {
                     log::warn!("OSC surface: control lock failed");
                     if let Some(normalized) = event.normalized_value() {
-                        let _ = q.push(ParameterCommand::new(
-                            NodeId(0),
-                            &path,
-                            normalized,
-                        ));
+                        let _ = q.push(ParameterCommand::new(NodeId(0), &path, normalized));
                     }
                 }
             });
@@ -134,7 +132,10 @@ fn pattern_to_event(pattern: &EventPattern, value: f32) -> ControlEvent {
             value,
             normalized: value,
         },
-        EventPattern::MidiControl { channel, controller } => ControlEvent::MidiControl {
+        EventPattern::MidiControl {
+            channel,
+            controller,
+        } => ControlEvent::MidiControl {
             channel: channel.unwrap_or(0),
             controller: *controller,
             value: (value * 127.0) as u8,

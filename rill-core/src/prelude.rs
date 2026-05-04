@@ -51,8 +51,6 @@ pub use crate::traits::{
     Algorithm,
     AlgorithmCategory,
     AlgorithmMetadata,
-    // Core node traits
-    SignalNode,
     ConnectionError,
     ConnectionResult,
     // Parameter conversion
@@ -87,6 +85,8 @@ pub use crate::traits::{
     // Error handling
     ProcessResult,
     Processor,
+    // Core node traits
+    SignalNode,
     Sink,
 
     Source,
@@ -111,8 +111,8 @@ pub use crate::math::Transcendental;
 // ============================================================================
 
 pub use crate::math::vector::math::{
-    abs_slice, clamp_slice, cos_slice, exp_slice, ln_slice,
-    max_slice, min_slice, sin_slice, sqrt_slice, tan_slice,
+    abs_slice, clamp_slice, cos_slice, exp_slice, ln_slice, max_slice, min_slice, sin_slice,
+    sqrt_slice, tan_slice,
 };
 pub use crate::math::vector::ops::{
     add_scalar_slice, add_slices, div_slices, mul_scalar_slice, mul_slices, sub_slices,
@@ -136,9 +136,6 @@ pub use crate::buffer::{
     AtomicCellError,
     AtomicStats,
 
-    // Core buffer trait
-    SignalBuffer,
-
     // Port buffer
     Buffer,
 
@@ -155,6 +152,8 @@ pub use crate::buffer::{
     // Buffer implementations
     PipeBuffer,
     RingBuffer,
+    // Core buffer trait
+    SignalBuffer,
 };
 
 // ============================================================================
@@ -289,8 +288,8 @@ pub mod time_prelude {
 /// Prelude for working with buffers
 pub mod buffer_prelude {
     pub use crate::buffer::{
-        utils, AtomicCell, AtomicStats, SignalBuffer, BufferError, BufferResult, BufferStats,
-        DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
+        utils, AtomicCell, AtomicStats, BufferError, BufferResult, BufferStats, DelayLine,
+        FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer, SignalBuffer,
     };
 }
 
@@ -315,7 +314,7 @@ pub mod port_prelude {
 /// Prelude for working with nodes
 pub mod node_prelude {
     pub use crate::traits::{
-        SignalNode, NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, Sink, Source,
+        NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, SignalNode, Sink, Source,
     };
 }
 

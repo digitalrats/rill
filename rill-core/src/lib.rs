@@ -158,7 +158,7 @@ pub mod queues;
 pub mod time;
 
 #[doc(hidden)]
-pub use math::vector as vector;
+pub use math::vector;
 
 /// Macros for node creation and boilerplate reduction
 #[macro_use]
@@ -187,10 +187,10 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    SignalNode, ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId,
-    NodeMetadata, NodeParams, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType,
-    ParamValue, ParameterError, ParameterId, Port, PortDirection, PortError, PortId,
-    PortResult, PortType, ProcessError, ProcessResult, Processor, Sink, Source,
+    ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId, NodeMetadata,
+    NodeParams, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
+    ParameterError, ParameterId, Port, PortDirection, PortError, PortId, PortResult, PortType,
+    ProcessError, ProcessResult, Processor, SignalNode, Sink, Source,
 };
 
 // Re-export math abstractions
@@ -198,8 +198,8 @@ pub use math::{Scalar, Transcendental};
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
-    AtomicCell, AtomicCellError, AtomicStats, SignalBuffer, BufferError, BufferResult, BufferStats,
-    DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
+    AtomicCell, AtomicCellError, AtomicStats, BufferError, BufferResult, BufferStats, DelayLine,
+    FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer, SignalBuffer,
 };
 
 // Re-export queue types (from rill-patchbay integration)

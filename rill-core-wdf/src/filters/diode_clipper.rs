@@ -58,7 +58,11 @@ mod tests {
         WdfElement::process_incident(&mut c, 10.0);
         c.update_state();
         let v: f64 = c.right.voltage();
-        assert!(v > 0.0 && v < 1.0, "should clip positive to ~0.6V: got {}", v);
+        assert!(
+            v > 0.0 && v < 1.0,
+            "should clip positive to ~0.6V: got {}",
+            v
+        );
     }
 
     #[test]
@@ -67,7 +71,11 @@ mod tests {
         WdfElement::process_incident(&mut c, -10.0);
         c.update_state();
         let v: f64 = c.right.voltage();
-        assert!(v < 0.0 && v > -1.0, "should clip negative to ~-0.6V: got {}", v);
+        assert!(
+            v < 0.0 && v > -1.0,
+            "should clip negative to ~-0.6V: got {}",
+            v
+        );
     }
 
     #[test]

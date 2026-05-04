@@ -31,12 +31,7 @@ pub fn spawn_automaton_task<A>(
 where
     A: Automaton + 'static,
 {
-    tokio::spawn(automaton_loop(
-        automaton,
-        interval,
-        value_tx,
-        cancel_rx,
-    ))
+    tokio::spawn(automaton_loop(automaton, interval, value_tx, cancel_rx))
 }
 
 async fn automaton_loop<A>(
@@ -93,20 +88,11 @@ mod tests {
         let (value_tx, mut value_rx) = mpsc::channel::<f64>(16);
         let (cancel_tx, cancel_rx) = watch::channel(false);
 
-        let _handle = spawn_automaton_task(
-            lfo,
-            Duration::from_millis(10),
-            value_tx,
-            cancel_rx,
-        );
+        let _handle = spawn_automaton_task(lfo, Duration::from_millis(10), value_tx, cancel_rx);
 
         // Должны получить несколько значений
         for _ in 0..3 {
-            let val = tokio::time::timeout(
-                Duration::from_millis(50),
-                value_rx.recv(),
-            )
-            .await;
+            let val = tokio::time::timeout(Duration::from_millis(50), value_rx.recv()).await;
             assert!(val.is_ok(), "task should produce values");
             let v = val.unwrap().unwrap();
             assert!(v >= -1.0 && v <= 1.0, "value {} out of range", v);
@@ -121,16 +107,10 @@ mod tests {
         let (value_tx, _value_rx) = mpsc::channel::<f64>(16);
         let (cancel_tx, cancel_rx) = watch::channel(false);
 
-        let handle = spawn_automaton_task(
-            lfo,
-            Duration::from_millis(10),
-            value_tx,
-            cancel_rx,
-        );
+        let handle = spawn_automaton_task(lfo, Duration::from_millis(10), value_tx, cancel_rx);
 
         let _ = cancel_tx.send(true);
-        let result = tokio::time::timeout(Duration::from_millis(100), handle)
-            .await;
+        let result = tokio::time::timeout(Duration::from_millis(100), handle).await;
         assert!(result.is_ok(), "task should stop on cancel");
     }
 }

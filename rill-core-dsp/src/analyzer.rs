@@ -1,16 +1,16 @@
 //! Трейты для анализаторов сигнала
 
-use rill_core::Transcendental;
 use crate::algorithm::Algorithm;
+use rill_core::Transcendental;
 
 /// Базовый трейт для анализаторов
 pub trait Analyzer<T: Transcendental>: Algorithm<T> {
     /// Тип результата анализа
     type Output;
-    
+
     /// Получить результат анализа
     fn result(&self) -> &Self::Output;
-    
+
     /// Сбросить накопленные данные
     fn reset_analysis(&mut self);
 }
@@ -19,10 +19,10 @@ pub trait Analyzer<T: Transcendental>: Algorithm<T> {
 pub trait PeakMeter<T: Transcendental>: Analyzer<T, Output = T> {
     /// Скорость спада (0.0-1.0)
     fn decay(&self) -> f32;
-    
+
     /// Установить скорость спада
     fn set_decay(&mut self, decay: f32);
-    
+
     /// Текущий пик (для отображения)
     fn peak(&self) -> T {
         *self.result()
@@ -33,13 +33,13 @@ pub trait PeakMeter<T: Transcendental>: Analyzer<T, Output = T> {
 pub trait EnvelopeFollower<T: Transcendental>: Analyzer<T, Output = T> {
     /// Время атаки в секундах
     fn attack(&self) -> f32;
-    
+
     /// Время спада в секундах
     fn release(&self) -> f32;
-    
+
     /// Установить времена
     fn set_attack_release(&mut self, attack: f32, release: f32);
-    
+
     /// Текущая огибающая
     fn envelope(&self) -> T {
         *self.result()
@@ -50,15 +50,15 @@ pub trait EnvelopeFollower<T: Transcendental>: Analyzer<T, Output = T> {
 pub trait FrequencyDetector<T: Transcendental>: Analyzer<T, Output = f32> {
     /// Минимальная частота детектирования
     fn min_freq(&self) -> f32;
-    
+
     /// Максимальная частота детектирования
     fn max_freq(&self) -> f32;
-    
+
     /// Текущая частота
     fn frequency(&self) -> f32 {
         *self.result()
     }
-    
+
     /// Ближайшая MIDI нота
     fn closest_midi_note(&self) -> u8 {
         let freq = self.frequency();
@@ -74,12 +74,12 @@ pub trait FrequencyDetector<T: Transcendental>: Analyzer<T, Output = f32> {
 pub trait SpectrumAnalyzer<T: Transcendental>: Analyzer<T, Output = Vec<f32>> {
     /// Размер FFT
     fn fft_size(&self) -> usize;
-    
+
     /// Получить спектр
     fn spectrum(&self) -> &[f32] {
         self.result()
     }
-    
+
     /// Получить амплитуду на конкретной частоте
     fn amplitude_at(&self, freq: f32, sample_rate: f32) -> f32 {
         let bin = (freq * self.fft_size() as f32 / sample_rate) as usize;

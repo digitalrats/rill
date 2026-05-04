@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rill_core::math::Transcendental;
 use rill_core::prelude::{
-    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    ProcessResult,
+    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessResult,
+    SignalNode,
 };
 use rill_core::queues::spsc::SpscQueue;
 use rill_core::queues::TelemetryBlock;

@@ -2,8 +2,8 @@
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Source,
+    ActionContext, Algorithm, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ParameterId, Port, SignalNode, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -152,8 +152,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for SineO
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SineOsc".to_string(),
-            
-            type_name: None,category: NodeCategory::Source,
+
+            type_name: None,
+            category: NodeCategory::Source,
             description: "Sine wave oscillator with FM".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),

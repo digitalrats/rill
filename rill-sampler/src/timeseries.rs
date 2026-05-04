@@ -1,7 +1,8 @@
 use rill_core::interpolate::Interpolate;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
+    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, SignalNode,
+    Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -128,7 +129,10 @@ impl<T: Transcendental + Copy> TimeSeriesReader<T> {
 
     /// Total time span across all channels (union of ranges).
     pub fn duration(&self) -> f64 {
-        self.channels.iter().map(|c| c.duration()).fold(0.0, f64::max)
+        self.channels
+            .iter()
+            .map(|c| c.duration())
+            .fold(0.0, f64::max)
     }
 
     /// Read value from a single channel at an arbitrary timestamp.
@@ -141,7 +145,10 @@ impl<T: Transcendental + Copy> TimeSeriesReader<T> {
         }
 
         // Binary search for the segment containing t
-        let idx = match ch.timestamps.binary_search_by(|&ts| ts.partial_cmp(&t).unwrap()) {
+        let idx = match ch
+            .timestamps
+            .binary_search_by(|&ts| ts.partial_cmp(&t).unwrap())
+        {
             Ok(i) => {
                 // Exact match: return the value directly
                 return ch.values[i];
@@ -275,9 +282,7 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> TimeSeriesNode<T, BUF_SIZE
     }
 }
 
-impl<T: Transcendental + Copy, const BUF_SIZE: usize> Default
-    for TimeSeriesNode<T, BUF_SIZE>
-{
+impl<T: Transcendental + Copy, const BUF_SIZE: usize> Default for TimeSeriesNode<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
@@ -518,9 +523,7 @@ pub fn from_csv<T: Transcendental + Copy>(input: &str) -> TimeSeriesReader<T> {
             None => continue,
         };
 
-        raw.entry(name)
-            .or_default()
-            .push((t, T::from_f64(value)));
+        raw.entry(name).or_default().push((t, T::from_f64(value)));
     }
 
     let mut reader = TimeSeriesReader::new();

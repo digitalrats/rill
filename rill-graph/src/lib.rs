@@ -30,11 +30,11 @@ pub mod serialization;
 #[cfg(feature = "dot")]
 pub mod dot;
 
-pub use graph::{SignalGraph, BuildError, GraphBuilder, GraphResource};
+pub use graph::{BuildError, GraphBuilder, GraphResource, SignalGraph};
 pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use crate::{SignalGraph, GraphBuilder, NodeConstructor, NodeRegistry, RegistryError};
+    pub use crate::{GraphBuilder, NodeConstructor, NodeRegistry, RegistryError, SignalGraph};
     pub use rill_core::prelude::*;
 }
