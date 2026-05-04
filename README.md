@@ -34,7 +34,7 @@ processing context.
 
 ```toml
 [dependencies]
-rill-adrift = "0.4"
+rill-adrift = "0.5.0--beta.1"
 ```
 
 Enable optional features as needed (see table below).
