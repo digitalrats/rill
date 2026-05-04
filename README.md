@@ -59,6 +59,7 @@ let osc = builder.add_source(
 |-------|-------------|
 | **rill-core** | Foundation: traits, math, buffers, queues, time, macros |
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
+| **rill-core-wdf** | Wave Digital Filter elements and adapters |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
 | **rill-oscillators** | Sine, saw, noise, LFO, envelope graph nodes |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
@@ -68,7 +69,6 @@ let osc = builder.add_source(
 | **rill-lofi** | Lo-fi emulation (NES, AY-3-8910, Akai S900) |
 | **rill-io** | Audio I/O: ALSA, CPAL, PipeWire, JACK |
 | **rill-telemetry** | Real-time probes and collectors |
-| **rill-core-wdf** | Wave Digital Filter elements and adapters |
 | **rill-analog-filters** | WDF-based analog filters (MoogLadder) |
 | **rill-analog-effects** | Op-amp, tape deck, preamp models |
 | **rill-osc** | OSC server and networking |
