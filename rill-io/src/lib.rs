@@ -5,6 +5,7 @@
 //! `rill-graph` — this crate is purely about hardware I/O.
 
 #![warn(missing_docs)]
+#![allow(clippy::needless_range_loop)]
 
 mod backend;
 pub mod buffer;

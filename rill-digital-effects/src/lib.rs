@@ -9,6 +9,7 @@
 //! - More to come: Chorus, Flanger, Phaser, Reverb, Compressor
 
 #![warn(missing_docs)]
+#![allow(clippy::needless_range_loop)]
 
 /// Delay effect with configurable time, feedback, and mix.
 pub mod delay;

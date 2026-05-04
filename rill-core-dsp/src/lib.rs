@@ -20,6 +20,7 @@
 //! - SIMD acceleration behind `simd` feature flag
 
 #![warn(missing_docs)]
+#![allow(clippy::needless_range_loop)]
 #![deny(unsafe_code)]
 // Для сложных const expr (опционально)
 #![cfg_attr(feature = "unstable", feature(generic_const_exprs))]
