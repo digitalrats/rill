@@ -18,6 +18,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: cargo fmt --check
       - run: cargo clippy --workspace
 
@@ -27,26 +29,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
-      - name: Install ALSA deps
+      - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Install PipeWire deps
-        run: sudo apt-get install -y libpipewire-0.3-dev
-      - name: Install JACK deps
-        run: sudo apt-get install -y libjack-jackd2-dev
-      - run: cargo test --workspace
-
-  test-minimal:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
-      - name: Install ALSA deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - run: cargo test -p rill-core -p rill-core-dsp -p rill-core-wdf
-      - run: cargo test -p rill-graph -p rill-patchbay -p rill-router
-      - run: cargo test -p rill-oscillators -p rill-digital-filters -p rill-digital-effects
-      - run: cargo test -p rill-sampler -p rill-lofi
+      - run: cargo test --workspace --lib
+      - run: cargo test --workspace --doc
 
   doc:
     runs-on: ubuntu-latest
@@ -54,10 +40,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
-      - name: Install ALSA deps
+      - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Install PipeWire deps
-        run: sudo apt-get install -y libpipewire-0.3-dev
-      - name: Install JACK deps
-        run: sudo apt-get install -y libjack-jackd2-dev
       - run: cargo doc --workspace --no-deps
