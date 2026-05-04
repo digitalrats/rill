@@ -97,6 +97,8 @@ impl OutputSlot {
 // PipewireBackend
 // ============================================================================
 
+/// PipeWire audio backend — processes audio via PW stream callbacks,
+/// output goes directly to PW DMA buffer through `OutputWindow`.
 pub struct PipewireBackend {
     config: AudioConfig,
     input_buffer: Arc<IoRingBuffer>,
@@ -126,6 +128,7 @@ impl fmt::Debug for PipewireBackend {
 }
 
 impl PipewireBackend {
+    /// Create a new PipeWire backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(target_os = "linux") {
             return Err(IoError::Unsupported(
@@ -176,6 +179,7 @@ impl PipewireBackend {
         })
     }
 
+    /// Return shared ring buffers for injection into AudioInput/AudioOutput.
     pub fn rings(&self) -> Arc<PwBuffers> {
         Arc::new(PwBuffers {
             input: self.input_buffer.clone(),
