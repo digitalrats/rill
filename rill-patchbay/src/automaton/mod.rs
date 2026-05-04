@@ -1,11 +1,9 @@
-//! # Автоматы — генеративные источники управления
+//! Automata — generative control-signal sources.
 //!
-//! Модуль предоставляет различные типы автоматов для генерации
-//! управляющих сигналов в реальном времени.
-//!
-//! Автомат — это алгоритм с внутренним состоянием: он принимает
-//! время и текущее состояние, возвращает новое состояние и значение.
-//! Внешние воздействия на состояние не предполагаются.
+//! This module provides various automaton types for generating real-time
+//! control signals. An automaton is an algorithm with internal state:
+//! given time and the current state, it produces a new state and an
+//! optional output value. External state mutation is not required.
 
 pub mod cellular;
 pub mod envelope;
@@ -23,36 +21,40 @@ pub use sequencer::*;
 
 use std::fmt::Debug;
 
-// =============================================================================
-// Вспомогательные типы
-// =============================================================================
-
-/// Режим синхронизации автомата
+/// Synchronisation mode for an automaton.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SyncMode {
+    /// Free-running at the automaton's own rate.
     Free,
+    /// Synchronised to an external clock.
     Sync,
+    /// Run once and stop.
     OneShot,
 }
 
-/// Диапазон значений автомата
+/// A numeric range with min/max bounds.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct Range {
+    /// Lower bound of the range.
     pub min: f64,
+    /// Upper bound of the range.
     pub max: f64,
 }
 
 impl Range {
+    /// Create a new range with the given bounds.
     pub const fn new(min: f64, max: f64) -> Self {
         Self { min, max }
     }
 
+    /// Return a unipolar range [0.0, 1.0].
     pub const fn unipolar() -> Self {
         Self { min: 0.0, max: 1.0 }
     }
 
+    /// Return a bipolar range [-1.0, 1.0].
     pub const fn bipolar() -> Self {
         Self {
             min: -1.0,
@@ -60,83 +62,77 @@ impl Range {
         }
     }
 
+    /// Clamp a value to lie within this range.
     pub fn clamp(&self, value: f64) -> f64 {
         value.clamp(self.min, self.max)
     }
 
+    /// Normalize a value to [0.0, 1.0] based on this range.
     pub fn normalize(&self, value: f64) -> f64 {
         (value - self.min) / (self.max - self.min)
     }
 
+    /// Denormalize a [0.0, 1.0] value back into this range.
     pub fn denormalize(&self, norm: f64) -> f64 {
         self.min + norm * (self.max - self.min)
     }
 }
 
-// =============================================================================
-// Сравнение автоматов
-// =============================================================================
-
-/// Сводка характеристик автоматов
+/// Summary of available automaton types and their characteristics.
 #[derive(Debug)]
 pub struct AutomatonComparison;
 
 impl AutomatonComparison {
-    /// Сравнение типов автоматов
+    /// Print a table of automaton types and their applications.
     pub fn types() -> &'static str {
-        "Типы автоматов:\n\
+        "Automaton types:\n\
          ┌─────────────────┬─────────────────────────────┬─────────────────┐\n\
-         │ Автомат         │ Характеристики              │ Применение      │\n\
+         │ Automaton       │ Characteristics              │ Application    │\n\
          ├─────────────────┼─────────────────────────────┼─────────────────┤\n\
-         │ LFO             │ Гармонические/релаксационные│ Вибрато, тремоло│\n\
-         │ Envelope        │ ADSR, AR, ASR               │ Амплитудные ог. │\n\
-         │ Function        │ Произвольная функция времени│ Сложные модуляции│\n\
-         │ Sequencer       │ Паттерны, ступени           │ Ритмические     │\n\
-         │ RandomWalk      │ Случайные блуждания         │ Генеративные    │\n\
-         │ Chaos           │ Детерминированный хаос      │ Непредсказуемые │\n\
-         │ Cellular        │ Клеточные автоматы          │ Органические    │\n\
+         │ LFO             │ Harmonic/relaxation          │ Vibrato, tremolo│\n\
+         │ Envelope        │ ADSR, AR, ASR               │ Amplitude env.  │\n\
+         │ Function        │ Arbitrary time function      │ Complex mod.    │\n\
+         │ Sequencer       │ Patterns, steps              │ Rhythmic        │\n\
+         │ RandomWalk      │ Random walks                 │ Generative      │\n\
+         │ Chaos           │ Deterministic chaos          │ Unpredictable   │\n\
+         │ Cellular        │ Cellular automata            │ Organic         │\n\
          └─────────────────┴─────────────────────────────┴─────────────────┘"
     }
 
-    /// Руководство по выбору автомата
+    /// Guide for choosing the right automaton.
     pub fn selection_guide() -> &'static str {
-        "Как выбрать автомат:\n\n\
-         🎯 **Периодическая модуляция**:\n\
+        "How to choose an automaton:\n\n\
+         Periodic modulation:\n\
          → LFO (Sine, Triangle, Saw, Square)\n\n\
-         🎯 **Однократные события**:\n\
+         One-shot events:\n\
          → Envelope (ADSR, AR, ASR)\n\n\
-         🎯 **Сложные функции**:\n\
-         → Function с произвольным замыканием\n\n\
-         🎯 **Ритмические паттерны**:\n\
-         → Sequencer с шагами и длительностями\n\n\
-         🎯 **Генеративные процессы**:\n\
+         Complex functions:\n\
+         → Function with arbitrary closure\n\n\
+         Rhythmic patterns:\n\
+         → Sequencer with steps and durations\n\n\
+         Generative processes:\n\
          → RandomWalk, Chaos, Cellular\n\n\
-         🎯 **Случайные значения**:\n\
-         → Sample & Hold (LFO в режиме S&H)"
+         Random values:\n\
+         → Sample & Hold (LFO in S&H mode)"
     }
 
-    /// Производительность автоматов
+    /// Relative performance characteristics of each automaton type.
     pub fn performance_guide() -> &'static str {
-        "Производительность (относительная):\n\
-         ⚡ **Function** - 1x (простые функции)\n\
-         ⚡⚡ **LFO** - 2x (тригонометрия)\n\
-         ⚡⚡⚡ **Envelope** - 3x (логика переходов)\n\
-         ⚡⚡⚡ **RandomWalk** - 3x (RNG)\n\
-         ⚡⚡⚡⚡ **Sequencer** - 4x (паттерны)\n\
-         ⚡⚡⚡⚡ **Chaos** - 4x (итерации)\n\
-         ⚡⚡⚡⚡⚡ **Cellular** - 5x (соседи)"
+        "Relative performance:\n\
+         **Function** — fastest (simple functions)\n\
+         **LFO** — moderate (trigonometry)\n\
+         **Envelope** — moderate (transition logic)\n\
+         **RandomWalk** — moderate (RNG)\n\
+         **Sequencer** — slower (patterns)\n\
+         **Chaos** — slower (iterations)\n\
+         **Cellular** — slowest (neighbour lookups)"
     }
 }
-
-// =============================================================================
-// Тесты
-// =============================================================================
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn test_automaton_types_are_debug() {
-        // Проверяем, что все типы автоматов реализуют Debug (нужно для трейта)
         fn assert_debug<T: std::fmt::Debug>(_: &T) {}
         let lfo = super::LfoAutomaton::new("test", 1.0, 1.0, 0.0, super::LfoWaveform::Sine);
         assert_debug(&lfo);

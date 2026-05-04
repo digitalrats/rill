@@ -12,7 +12,7 @@ use std::f64::consts::PI as PI64;
 // Вспомогательные функции
 // -----------------------------------------------------------------------------
 
-/// Полином Чебышева первого рода T_n(x)
+/// Chebyshev polynomial of the first kind T_n(x).
 #[cfg(test)]
 fn chebyshev_poly_t(n: usize, x: f64) -> f64 {
     match n {
@@ -34,7 +34,7 @@ fn chebyshev_poly_t(n: usize, x: f64) -> f64 {
     }
 }
 
-/// Вычислить полюса фильтра Чебышева типа I
+/// Compute the analog poles for a Chebyshev Type I filter.
 fn chebyshev_type_i_poles(n: usize, ripple_db: f64) -> Vec<Complex64> {
     let eps = (10.0_f64.powf(ripple_db / 10.0) - 1.0).sqrt();
     let a = (1.0 / eps + (1.0 + 1.0 / (eps * eps)).sqrt()).asinh() / n as f64;
@@ -52,7 +52,7 @@ fn chebyshev_type_i_poles(n: usize, ripple_db: f64) -> Vec<Complex64> {
     poles
 }
 
-/// Вычислить полюса и нули фильтра Чебышева типа II
+/// Compute the analog poles and zeros for a Chebyshev Type II filter.
 fn chebyshev_type_ii_poles_zeros(n: usize, ripple_db: f64) -> (Vec<Complex64>, Vec<Complex64>) {
     let eps = 1.0 / (10.0_f64.powf(ripple_db / 10.0) - 1.0).sqrt();
     let a = (1.0 / eps + (1.0 + 1.0 / (eps * eps)).sqrt()).asinh() / n as f64;
@@ -147,20 +147,29 @@ impl<T: Transcendental> BiquadSection<T> {
 }
 
 // -----------------------------------------------------------------------------
-// Параметры фильтра Чебышева
+// Chebyshev filter parameters
 // -----------------------------------------------------------------------------
 
+/// Runtime parameters for a Chebyshev filter.
 #[derive(Debug, Clone)]
 pub struct ChebyshevParams {
+    /// Base filter parameters (filter type, cutoff, Q, gain).
     pub filter_params: FilterParams,
+    /// Filter order (1–8 recommended for numerical stability).
     pub order: usize,
+    /// Passband ripple in dB (Type I) / stopband ripple in dB (Type II).
     pub ripple_db: f32,
 }
 
 // -----------------------------------------------------------------------------
-// Фильтр Чебышева типа I
+// Chebyshev Type I filter
 // -----------------------------------------------------------------------------
 
+/// Chebyshev Type I filter — equiripple in the passband, monotonic in the stopband.
+///
+/// Designed via bilinear transform of analog poles. The `MAX_SECTIONS` const
+/// generic controls the maximum number of cascaded biquad sections (typically
+/// `(order + 1) / 2`).
 pub struct ChebyshevI<T: Transcendental, const MAX_SECTIONS: usize> {
     params: ChebyshevParams,
     sections: [BiquadSection<T>; MAX_SECTIONS],
@@ -170,6 +179,10 @@ pub struct ChebyshevI<T: Transcendental, const MAX_SECTIONS: usize> {
 }
 
 impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
+    /// Create a new Chebyshev Type I filter.
+    ///
+    /// `params` provides the base filter type, cutoff, Q, and gain.
+    /// `order` is the filter order. `ripple_db` is the passband ripple.
     pub fn new(params: FilterParams, order: usize, ripple_db: f32) -> Self {
         let mut filter = Self {
             params: ChebyshevParams {
@@ -186,6 +199,11 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
         filter
     }
 
+    /// (Re)design the filter coefficients based on current parameters.
+    ///
+    /// Called automatically during construction and when parameters change.
+    /// Computes analog poles via `chebyshev_type_i_poles`, applies the
+    /// bilinear transform, and sets the biquad section coefficients.
     pub fn design(&mut self) {
         let n = self.params.order;
         let ripple = self.params.ripple_db as f64;
@@ -294,9 +312,14 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
 }
 
 // -----------------------------------------------------------------------------
-// Фильтр Чебышева типа II
+// Chebyshev Type II filter
 // -----------------------------------------------------------------------------
 
+/// Chebyshev Type II filter — monotonic in the passband, equiripple in the stopband.
+///
+/// Also known as the "inverse Chebyshev" filter. Designed via bilinear transform
+/// of analog poles and zeros. The `MAX_SECTIONS` const generic controls the
+/// maximum number of cascaded biquad sections.
 pub struct ChebyshevII<T: Transcendental, const MAX_SECTIONS: usize> {
     params: ChebyshevParams,
     sections: [BiquadSection<T>; MAX_SECTIONS],
@@ -306,6 +329,7 @@ pub struct ChebyshevII<T: Transcendental, const MAX_SECTIONS: usize> {
 }
 
 impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> {
+    /// Create a new Chebyshev Type II (inverse Chebyshev) filter.
     pub fn new(params: FilterParams, order: usize, ripple_db: f32) -> Self {
         let mut filter = Self {
             params: ChebyshevParams {
@@ -322,6 +346,8 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> 
         filter
     }
 
+    /// (Re)design the filter coefficients based on current parameters.
+    /// Called automatically during construction and when parameters change.
     pub fn design(&mut self) {
         let n = self.params.order;
         let ripple = self.params.ripple_db as f64;

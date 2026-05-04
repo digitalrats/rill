@@ -106,6 +106,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
         }
     }
 
+    /// Stop playback (sets gate to false).
     pub fn stop(&mut self) {
         self.gate = false;
         self.left.set_gate(false);

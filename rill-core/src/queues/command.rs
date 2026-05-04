@@ -1,19 +1,22 @@
-//! # CommandQueue — неблокирующая очередь команд
+//! # CommandQueue — non-blocking command queue
 //!
-//! [`CommandQueue`] обеспечивает безопасную передачу команд
-//! из потока управления (control thread) в аудиопоток (signal thread)
-//! через bounded crossbeam channel.
+//! [`CommandQueue`] provides safe command transfer from the control thread
+//! to the audio signal thread via a bounded crossbeam channel.
 
 use crossbeam_channel::{self, Receiver, Sender, TryRecvError, TrySendError};
 use std::fmt;
 
-/// Базовый трейт для всех команд
+/// Base trait for all commands.
 ///
-/// Любой тип, реализующий этот трейт, может передаваться через очередь.
+/// Any type implementing this trait can be sent through a command queue.
 pub trait Command: Send + 'static + fmt::Debug {}
 
-/// Две половинки CommandQueue
+/// Sender half of a command queue.
+///
+/// Cloned to share among multiple producer threads. Each clone references
+/// the same underlying crossbeam channel.
 pub struct CommandSender<T> {
+    /// The underlying crossbeam channel sender.
     tx: Sender<T>,
 }
 
@@ -26,6 +29,11 @@ impl<T> Clone for CommandSender<T> {
 }
 
 impl<T: Send + 'static> CommandSender<T> {
+    /// Try to send a value into the queue.
+    ///
+    /// # Errors
+    /// Returns `QueueFull` if the queue is at capacity, or
+    /// `ChannelDisconnected` if the receiver has been dropped.
     pub fn send(&self, value: T) -> Result<(), super::QueueError> {
         self.tx.try_send(value).map_err(|e| match e {
             TrySendError::Full(_) => super::QueueError::QueueFull,
@@ -34,12 +42,18 @@ impl<T: Send + 'static> CommandSender<T> {
     }
 }
 
-/// Потребитель команд (signal thread)
+/// Receiver half of a command queue (consumed by the signal thread).
 pub struct CommandReceiver<T> {
+    /// The underlying crossbeam channel receiver.
     rx: Receiver<T>,
 }
 
 impl<T: Send + 'static> CommandReceiver<T> {
+    /// Try to receive a value from the queue without blocking.
+    ///
+    /// # Errors
+    /// Returns `QueueEmpty` if no value is available, or
+    /// `ChannelDisconnected` if the sender has been dropped.
     pub fn try_recv(&self) -> Result<T, super::QueueError> {
         self.rx.try_recv().map_err(|e| match e {
             TryRecvError::Empty => super::QueueError::QueueEmpty,
@@ -48,9 +62,12 @@ impl<T: Send + 'static> CommandReceiver<T> {
     }
 }
 
-/// Неблокирующая bounded очередь команд
+/// Non-blocking bounded command queue.
 ///
-/// # Пример
+/// Provides safe, lock-free transfer of commands from the control thread
+/// to the audio signal thread via a bounded crossbeam channel.
+///
+/// # Example
 /// ```
 /// use rill_core::queues::CommandQueue;
 ///
@@ -59,14 +76,18 @@ impl<T: Send + 'static> CommandReceiver<T> {
 /// assert_eq!(queue.try_recv(), Ok(42));
 /// ```
 pub struct CommandQueue<T> {
+    /// Inner crossbeam sender.
     tx: Sender<T>,
+    /// Inner crossbeam receiver.
     rx: Receiver<T>,
+    /// Human-readable queue name for debugging.
     name: String,
+    /// Fixed capacity of the bounded channel.
     capacity: usize,
 }
 
 impl<T: Send + 'static> CommandQueue<T> {
-    /// Создать новую очередь с фиксированной ёмкостью
+    /// Create a new bounded queue with the given capacity.
     pub fn new(name: &str, capacity: usize) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(capacity);
         Self {
@@ -77,7 +98,11 @@ impl<T: Send + 'static> CommandQueue<T> {
         }
     }
 
-    /// Отправить команду (из control thread)
+    /// Try to send a value into the queue (from the control thread).
+    ///
+    /// # Errors
+    /// Returns `QueueFull` if the queue is at capacity, or
+    /// `ChannelDisconnected` if the receiver has been dropped.
     pub fn send(&self, value: T) -> Result<(), super::QueueError> {
         self.tx.try_send(value).map_err(|e| match e {
             TrySendError::Full(_) => super::QueueError::QueueFull,
@@ -85,7 +110,11 @@ impl<T: Send + 'static> CommandQueue<T> {
         })
     }
 
-    /// Попытаться получить команду (из signal thread)
+    /// Try to receive a value from the queue (from the signal thread).
+    ///
+    /// # Errors
+    /// Returns `QueueEmpty` if no value is available, or
+    /// `ChannelDisconnected` if the sender has been dropped.
     pub fn try_recv(&self) -> Result<T, super::QueueError> {
         self.rx.try_recv().map_err(|e| match e {
             TryRecvError::Empty => super::QueueError::QueueEmpty,
@@ -93,32 +122,32 @@ impl<T: Send + 'static> CommandQueue<T> {
         })
     }
 
-    /// Получить отправителя
+    /// Get a clone of the inner crossbeam sender.
     pub fn sender(&self) -> Sender<T> {
         self.tx.clone()
     }
 
-    /// Получить получателя
+    /// Get a clone of the inner crossbeam receiver.
     pub fn receiver(&self) -> Receiver<T> {
         self.rx.clone()
     }
 
-    /// Имя очереди
+    /// Return the human-readable queue name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Ёмкость
+    /// Return the fixed capacity of the queue.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// Текущий размер
+    /// Return the number of elements currently in the queue.
     pub fn len(&self) -> usize {
         self.rx.len()
     }
 
-    /// Пуста ли
+    /// Return true if the queue is currently empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

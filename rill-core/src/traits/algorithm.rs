@@ -12,13 +12,14 @@ use crate::traits::ProcessResult;
 // ActionContext
 // ============================================================================
 
-/// Context provided to an `Algorithm` during processing.
+/// Context provided to an [`Algorithm`](crate::traits::Algorithm) during processing.
 pub struct ActionContext<'a> {
-    /// Current clock tick
+    /// Current clock tick providing sample-accurate timing.
     pub tick: &'a ClockTick,
 }
 
 impl<'a> ActionContext<'a> {
+    /// Create a new action context from a clock tick reference.
     pub fn new(tick: &'a ClockTick) -> Self {
         Self { tick }
     }
@@ -28,18 +29,18 @@ impl<'a> ActionContext<'a> {
 // Algorithm Metadata
 // ============================================================================
 
-/// Category of an algorithm (for introspection / UI)
+/// Functional category of an algorithm (for introspection / UI).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AlgorithmCategory {
-    /// Signal generator (oscillator, noise, etc.)
+    /// Signal generator (oscillator, noise, etc.).
     Generator,
-    /// Audio filter (biquad, SVF, etc.)
+    /// Audio filter (biquad, SVF, etc.).
     Filter,
-    /// Audio effect (delay, distortion, etc.)
+    /// Audio effect (delay, distortion, etc.).
     Effect,
-    /// Signal analyzer (meter, scope, etc.)
+    /// Signal analyzer (meter, scope, etc.).
     Analyzer,
-    /// Utility / helper (smoother, mapper, etc.)
+    /// Utility / helper (smoother, mapper, etc.).
     Utility,
 }
 
@@ -56,23 +57,23 @@ impl AlgorithmCategory {
     }
 }
 
-/// Descriptive metadata for an `Algorithm` implementation.
+/// Descriptive metadata for an [`Algorithm`](crate::traits::Algorithm) implementation.
 #[derive(Debug, Clone)]
 pub struct AlgorithmMetadata {
-    /// Short name (e.g. "Biquad", "OnePole", "ParamSmoother")
+    /// Short name (e.g. "Biquad", "OnePole", "ParamSmoother").
     pub name: &'static str,
-    /// Functional category
+    /// Functional category.
     pub category: AlgorithmCategory,
-    /// One-line description
+    /// One-line description.
     pub description: &'static str,
-    /// Author name
+    /// Author name.
     pub author: &'static str,
-    /// Version string
+    /// Version string.
     pub version: &'static str,
 }
 
 impl AlgorithmMetadata {
-    /// Minimal default metadata (Utility category, no name).
+    /// Minimal default metadata with `Utility` category and empty fields.
     pub const fn empty() -> Self {
         Self {
             name: "",

@@ -1,3 +1,9 @@
+//! Fractional-position buffer reader with interpolation.
+//!
+//! Provides [`InterpolatedReader`] for reading from heap-allocated sample
+//! buffers with linear or cubic interpolation, wrap/clamp boundary modes,
+//! and variable playback rate.
+
 use rill_core::interpolate::Interpolate;
 use rill_core::Transcendental;
 
@@ -19,6 +25,9 @@ pub struct InterpolatedReader<T> {
 }
 
 impl<T: Transcendental + Copy> InterpolatedReader<T> {
+    /// Create a new reader from a `Vec<T>`.
+    ///
+    /// The reader starts at position 0 with unit rate and linear interpolation.
     pub fn new(buffer: Vec<T>) -> Self {
         Self {
             buffer: buffer.into_boxed_slice(),
@@ -29,6 +38,7 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
         }
     }
 
+    /// Create a new reader from a pre-allocated `Box<[T]>`.
     pub fn from_boxed(buffer: Box<[T]>) -> Self {
         Self {
             buffer,
@@ -39,61 +49,73 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
         }
     }
 
+    /// Return the number of samples in the buffer.
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
 
+    /// Returns `true` if the buffer is empty.
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
+    /// Current read position in samples (fractional).
     #[inline(always)]
     pub fn position(&self) -> f64 {
         self.position
     }
 
+    /// Set the read position (in samples).
     #[inline(always)]
     pub fn set_position(&mut self, pos: f64) {
         self.position = pos;
     }
 
+    /// Playback rate in samples per output sample (1.0 = normal speed).
     #[inline(always)]
     pub fn rate(&self) -> f64 {
         self.rate
     }
 
+    /// Set the playback rate.
     #[inline(always)]
     pub fn set_rate(&mut self, rate: f64) {
         self.rate = rate;
     }
 
+    /// Returns `true` if cubic Hermite interpolation is enabled.
     #[inline(always)]
     pub fn is_cubic(&self) -> bool {
         self.cubic
     }
 
+    /// Enable (`true`) or disable (`false`) cubic Hermite interpolation.
     #[inline(always)]
     pub fn set_cubic(&mut self, cubic: bool) {
         self.cubic = cubic;
     }
 
+    /// Returns `true` when the read position wraps at buffer boundaries.
     #[inline(always)]
     pub fn is_wrap(&self) -> bool {
         self.wrap
     }
 
+    /// Enable (`true`) or disable (`false`) wrap mode (periodic / wavetable).
     #[inline(always)]
     pub fn set_wrap(&mut self, wrap: bool) {
         self.wrap = wrap;
     }
 
+    /// Replace the internal buffer and reset the position to 0.
     pub fn set_buffer(&mut self, buffer: Vec<T>) {
         self.buffer = buffer.into_boxed_slice();
         self.position = 0.0;
     }
 
+    /// Return the internal buffer as an immutable slice.
     #[inline(always)]
     pub fn as_slice(&self) -> &[T] {
         &self.buffer

@@ -1,46 +1,49 @@
-//! # Buffer registry — поименованные буферы
+//! # Buffer registry — named buffers
 //!
-//! [`BufferRegistry`] — временный реестр на этапе сборки графа.
-//! Каждый узел, использующий ресурсный буфер, получает указатель
-//! на него через реестр во время `GraphBuilder::build()`.
-//! После сборки реестр сохраняется в `SignalGraph` для управления
-//! временем жизни буферов.
+//! [`BufferRegistry`] — a temporary registry used during graph assembly.
+//! Each node that requires a resource buffer receives a pointer through
+//! the registry during `GraphBuilder::build()`.
+//! After assembly the registry is retained in `SignalGraph` to manage
+//! buffer lifetimes.
 
 use std::collections::HashMap;
 
 use super::Buffer;
 
-/// Реестр поименованных буферов.
+/// Registry of named buffers.
 ///
-/// Используется в `GraphBuilder::build()` для аллокации ресурсов
-/// и раздачи указателей узлам графа.
+/// Used in `GraphBuilder::build()` to allocate resources and distribute
+/// pointers to graph nodes.
 pub struct BufferRegistry<T> {
     buffers: HashMap<String, Box<dyn Buffer<T>>>,
 }
 
 impl<T> BufferRegistry<T> {
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self {
             buffers: HashMap::new(),
         }
     }
 
-    /// Зарегистрировать именованный буфер.
+    /// Register a named buffer.
     pub fn register(&mut self, name: impl Into<String>, buffer: Box<dyn Buffer<T>>) {
         self.buffers.insert(name.into(), buffer);
     }
 
-    /// Получить сырой указатель на буфер по имени.
-    /// Используется для раздачи указателей узлам.
+    /// Get a raw pointer to a buffer by name.
+    ///
+    /// Used to distribute pointers to graph nodes during build.
     pub fn get_ptr(&self, name: &str) -> Option<*const dyn Buffer<T>> {
         self.buffers.get(name).map(|b| &**b as *const dyn Buffer<T>)
     }
 
-    /// Количество зарегистрированных буферов.
+    /// Number of registered buffers.
     pub fn len(&self) -> usize {
         self.buffers.len()
     }
 
+    /// Whether no buffers are registered.
     pub fn is_empty(&self) -> bool {
         self.buffers.is_empty()
     }

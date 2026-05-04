@@ -1,37 +1,43 @@
-//! # Огибающие (Envelope) автоматы
+//! Envelope automata for amplitude, filter, and parameter modulation over time.
 //!
-//! Генераторы огибающих для управления амплитудой, фильтрами и другими
-//! параметрами во времени. Поддерживаются ADSR, AR, ASR и другие типы.
+//! Supports ADSR, AR, ASR, and AHDSR envelope types.
 
 use crate::control::{Automaton, Range, Time};
 
-/// Тип огибающей
+/// Envelope shape type.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EnvelopeType {
-    /// ADSR: Attack, Decay, Sustain, Release
+    /// Attack, Decay, Sustain, Release.
     ADSR,
-    /// AR: Attack, Release (для перкуссии)
+    /// Attack, Release (suitable for percussion).
     AR,
-    /// ASR: Attack, Sustain, Release (для органных звуков)
+    /// Attack, Sustain, Release (suitable for organ sounds).
     ASR,
-    /// AHDSR: Attack, Hold, Decay, Sustain, Release
+    /// Attack, Hold, Decay, Sustain, Release.
     AHDSR,
 }
 
-/// Стадия огибающей
+/// Phase of the envelope lifecycle.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EnvelopeStage {
+    /// The signal is rising toward the peak level.
     Attack,
+    /// The signal holds at the peak level (AHDSR only).
     Hold,
+    /// The signal falls from the peak to the sustain level.
     Decay,
+    /// The signal remains at the sustain level while gate is on.
     Sustain,
+    /// The signal falls to zero after gate-off.
     Release,
+    /// The envelope is silent.
     Off,
 }
 
 impl EnvelopeStage {
+    /// Return the human-readable name of this stage.
     pub fn name(&self) -> &'static str {
         match self {
             EnvelopeStage::Attack => "Attack",
@@ -44,50 +50,47 @@ impl EnvelopeStage {
     }
 }
 
-/// Состояние огибающей
+/// Runtime state of an envelope automaton.
+///
+/// Tracks the current stage, output level, timing information, and gate status.
 #[derive(Debug, Clone)]
 pub struct EnvelopeState {
-    /// Текущая стадия
+    /// Current envelope phase.
     pub stage: EnvelopeStage,
-    /// Текущий уровень (0.0 - 1.0)
+    /// Current output level (0.0 – 1.0).
     pub level: f64,
-    /// Время начала текущей стадии
+    /// Time when the current stage began.
     pub stage_start_time: Time,
-    /// Уровень в начале стадии
+    /// Output level at the start of the current stage.
     pub stage_start_level: f64,
-    /// Целевой уровень стадии
+    /// Target level of the current stage.
     pub stage_target_level: f64,
-    /// Длительность стадии в секундах
+    /// Duration of the current stage in seconds.
     pub stage_duration: f64,
-    /// Запущена ли огибающая
+    /// Whether the gate is on (triggered).
     pub gate: bool,
 }
 
-/// Огибающая автомат
+/// An envelope automaton that generates time-varying control signals.
+///
+/// The envelope progresses through stages (Attack, Decay, Sustain, Release, etc.)
+/// and outputs a value that can be mapped to a parameter. The stage curve
+/// controls the shape: 1.0 = linear, >1.0 = exponential, <1.0 = logarithmic.
 #[derive(Debug, Clone)]
 pub struct EnvelopeAutomaton {
-    /// Имя автомата
     name: String,
-    /// Тип огибающей
     env_type: EnvelopeType,
-    /// Время атаки (секунды)
     attack: f64,
-    /// Время удержания (секунды) - для AHDSR
     hold: f64,
-    /// Время спада (секунды)
     decay: f64,
-    /// Уровень удержания (0.0 - 1.0)
     sustain: f64,
-    /// Время отпускания (секунды)
     release: f64,
-    /// Диапазон выходных значений
     range: Range,
-    /// Кривая стадий (1.0 = линейная, >1.0 = экспоненциальная, <1.0 = логарифмическая)
     curve: f64,
 }
 
 impl EnvelopeAutomaton {
-    /// Создать новую ADSR огибающую
+    /// Create a new ADSR envelope.
     pub fn adsr(name: &str, attack: f64, decay: f64, sustain: f64, release: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -102,7 +105,7 @@ impl EnvelopeAutomaton {
         }
     }
 
-    /// Создать новую AR огибающую (для перкуссии)
+    /// Create a new AR envelope (suitable for percussion).
     pub fn ar(name: &str, attack: f64, release: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -117,7 +120,7 @@ impl EnvelopeAutomaton {
         }
     }
 
-    /// Создать новую ASR огибающую (для органных звуков)
+    /// Create a new ASR envelope (suitable for organ sounds).
     pub fn asr(name: &str, attack: f64, sustain: f64, release: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -132,7 +135,7 @@ impl EnvelopeAutomaton {
         }
     }
 
-    /// Создать новую AHDSR огибающую
+    /// Create a new AHDSR envelope with an additional hold stage.
     pub fn ahdsr(
         name: &str,
         attack: f64,
@@ -154,19 +157,19 @@ impl EnvelopeAutomaton {
         }
     }
 
-    /// Установить кривую стадий
+    /// Set the stage curve exponent (1.0 = linear).
     pub fn with_curve(mut self, curve: f64) -> Self {
         self.curve = curve.max(0.1);
         self
     }
 
-    /// Установить диапазон
+    /// Set the output range.
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
 
-    /// Вычислить значение с учётом кривой
+    /// Compute the curved interpolation factor.
     fn apply_curve(&self, t: f64) -> f64 {
         if self.curve == 1.0 {
             t
@@ -175,14 +178,13 @@ impl EnvelopeAutomaton {
         }
     }
 
-    /// Обновить стадию на основе времени
+    /// Advance the envelope stage based on elapsed time.
     fn update_stage(&self, state: &mut EnvelopeState, time: Time) {
         let elapsed = time - state.stage_start_time;
 
         match state.stage {
             EnvelopeStage::Attack => {
                 if elapsed >= self.attack {
-                    // Переход к следующей стадии
                     match self.env_type {
                         EnvelopeType::ADSR => {
                             state.stage = EnvelopeStage::Decay;
@@ -268,16 +270,18 @@ impl EnvelopeAutomaton {
     }
 }
 
-/// Действие для огибающей
+/// Control action for an envelope automaton.
+///
+/// Use `GateOn` to trigger the attack phase and `GateOff` to start the release.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
 pub enum EnvelopeAction {
     #[default]
-    /// Удержание (None/Off)
+    /// No action — the envelope continues its current stage.
     None,
-    /// Запуск атаки
+    /// Start the attack phase.
     GateOn,
-    /// Запуск отпускания
+    /// Start the release phase.
     GateOff,
 }
 
@@ -293,7 +297,6 @@ impl Automaton for EnvelopeAutomaton {
     ) -> (Self::State, Option<f64>) {
         let mut new_state = state.clone();
 
-        // Обработка действия Gate
         match action {
             EnvelopeAction::GateOn => {
                 new_state.gate = true;
@@ -351,18 +354,15 @@ mod tests {
 
         assert_eq!(state.stage, EnvelopeStage::Off);
 
-        // Gate on — start attack
         let (_s, _value) = env.step(0.0, &EnvelopeAction::GateOn, &state);
         state = _s;
         assert_eq!(state.stage, EnvelopeStage::Attack);
 
-        // Step at time 0.05 (during attack) — no new gate action
         let (s, value) = env.step(0.05, &EnvelopeAction::None, &state);
         state = s;
         assert!(value.unwrap() > 0.0);
         assert!(value.unwrap() < 1.0);
 
-        // Gate off — start release
         let (s, _) = env.step(0.5, &EnvelopeAction::GateOff, &state);
         assert_eq!(s.stage, EnvelopeStage::Release);
     }

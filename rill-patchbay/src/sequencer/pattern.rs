@@ -26,7 +26,6 @@ impl StepPlayMode {
             StepPlayMode::OneShot => current.min(len.saturating_sub(1)),
             StepPlayMode::Loop => (current + 1) % len,
             StepPlayMode::PingPong => {
-                // direction is stored externally — see engine
                 current
             }
             StepPlayMode::Random => {
@@ -49,12 +48,16 @@ impl StepPlayMode {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Pattern {
+    /// Unique pattern identifier.
     pub id: String,
+    /// Ordered list of steps in this pattern.
     pub steps: Vec<SequenceStep>,
+    /// Playback mode for the pattern.
     pub play_mode: StepPlayMode,
 }
 
 impl Pattern {
+    /// Create a new pattern with the given ID and steps (defaults to `Loop` mode).
     pub fn new(id: impl Into<String>, steps: Vec<SequenceStep>) -> Self {
         Self {
             id: id.into(),
@@ -63,15 +66,18 @@ impl Pattern {
         }
     }
 
+    /// Set the playback mode.
     pub fn with_mode(mut self, mode: StepPlayMode) -> Self {
         self.play_mode = mode;
         self
     }
 
+    /// Whether the pattern has zero steps.
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
 
+    /// Number of steps in this pattern.
     pub fn len(&self) -> usize {
         self.steps.len()
     }

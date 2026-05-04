@@ -4,24 +4,29 @@
 /// Channel mode (mono or stereo)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChannelMode {
+    /// Single-channel input (summed to stereo with pan).
     Mono,
+    /// Two-channel input (left/right).
     Stereo,
 }
 
-/// Configuration for a mixer channel
+/// Configuration for a mixer channel.
+///
+/// Controls the channel name, mono/stereo mode, volume (0.0–1.0),
+/// pan (-1.0 left, 0.0 center, 1.0 right), mute, and solo state.
 #[derive(Debug, Clone)]
 pub struct ChannelConfig {
-    /// Channel name (for identification)
+    /// Display name for the channel.
     pub name: String,
-    /// Channel mode
+    /// Mono or stereo channel mode.
     pub mode: ChannelMode,
-    /// Volume (0.0 - 1.0, default 1.0)
+    /// Volume (0.0 = silence, 1.0 = unity).
     pub volume: f32,
-    /// Pan (-1.0 left, 0.0 center, 1.0 right)
+    /// Pan (-1.0 = full left, 0.0 = center, 1.0 = full right).
     pub pan: f32,
-    /// Mute state
+    /// Whether the channel is muted.
     pub muted: bool,
-    /// Solo state
+    /// Whether the channel is soloed (overrides mute).
     pub soloed: bool,
 }
 

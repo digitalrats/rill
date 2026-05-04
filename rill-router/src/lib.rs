@@ -7,8 +7,11 @@
 
 #![warn(missing_docs)]
 
+/// Dry/wet mix utility node.
 pub mod dry_wet;
+/// Equalizer modules (graphic and parametric).
 pub mod eq;
+/// Multi-channel audio mixer with aux sends.
 pub mod mixer;
 
 // Re-export common types

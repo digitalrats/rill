@@ -46,7 +46,9 @@ impl<T: Transcendental> TapeLoop<T> {
         })
     }
 
+    /// Maximum capacity in samples.
     pub fn capacity(&self) -> usize { self.capacity }
+    /// Current write cursor position.
     pub fn write_pos(&self) -> usize { self.write_pos }
 
     /// Write a single sample and advance the write cursor.

@@ -324,22 +324,18 @@ pub fn version_info() -> VersionInfo {
     }
 }
 
-/// Detailed version information
+/// Detailed version information for the rill-core crate.
 #[derive(Debug, Clone)]
 pub struct VersionInfo {
-    /// Crate version
+    /// Crate version string (from `CARGO_PKG_VERSION`).
     pub version: &'static str,
-
-    /// Crate name
+    /// Crate name (from `CARGO_PKG_NAME`).
     pub crate_name: &'static str,
-
-    /// Authors
+    /// Author list (from `CARGO_PKG_AUTHORS`).
     pub authors: &'static str,
-
-    /// Description
+    /// Crate description (from `CARGO_PKG_DESCRIPTION`).
     pub description: &'static str,
-
-    /// Repository URL
+    /// Repository URL (from `CARGO_PKG_REPOSITORY`).
     pub repository: &'static str,
 }
 

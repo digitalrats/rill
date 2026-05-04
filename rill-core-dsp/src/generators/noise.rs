@@ -7,17 +7,23 @@ use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
-/// Тип шума
+/// Noise colour / spectral shape.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NoiseType {
-    White,  // Равномерный спектр
-    Pink,   // 3dB/октава (1/f)
-    Brown,  // 6dB/октава (1/f²)
-    Blue,   // +3dB/октава
-    Violet, // +6dB/октава
+    /// Equal energy per Hz (flat spectrum).
+    White,
+    /// Equal energy per octave (3 dB/oct roll-off, 1/f).
+    Pink,
+    /// Brownian motion (6 dB/oct roll-off, 1/f²).
+    Brown,
+    /// Increasing with frequency (3 dB/oct rise).
+    Blue,
+    /// Strongly increasing (6 dB/oct rise).
+    Violet,
 }
 
 impl NoiseType {
+    /// Human-readable name of the noise type.
     pub fn name(&self) -> &'static str {
         match self {
             NoiseType::White => "White Noise",
@@ -28,6 +34,7 @@ impl NoiseType {
         }
     }
 
+    /// Short description of the noise type's spectral characteristic.
     pub fn description(&self) -> &'static str {
         match self {
             NoiseType::White => "Equal energy per Hz",
@@ -39,28 +46,24 @@ impl NoiseType {
     }
 }
 
-/// Генератор шума (Xorshift RNG)
+/// Coloured noise generator (white, pink, brown, blue, violet).
+///
+/// Uses a Xorshift RNG for the white noise source and applies
+/// filtering / integration for the coloured variants.
 pub struct NoiseGenerator<T: Transcendental> {
-    /// Тип шума
     noise_type: NoiseType,
-    /// Амплитуда
     amplitude: ScalarVector1<T>,
-    /// Состояние RNG (Xorshift) - храним как u32 для битовых операций
     state: u32,
-    /// Фильтры для окраски
     pink_filters: [OnePole<T>; 6],
     brown_state: ScalarVector1<T>,
-    /// Частота дискретизации
     sample_rate: f32,
-    /// Для синего шума
     last_white: ScalarVector1<T>,
-    /// Для фиолетового шума
     last_white1: ScalarVector1<T>,
     last_white2: ScalarVector1<T>,
 }
 
 impl<T: Transcendental> NoiseGenerator<T> {
-    /// Создать новый генератор шума
+    /// Create a new noise generator with the given colour and amplitude.
     pub fn new(noise_type: NoiseType, amplitude: T) -> Self {
         // Создаем OnePole фильтры через new с правильными параметрами
         let filter_params = FilterParams {

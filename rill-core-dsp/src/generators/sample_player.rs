@@ -1,3 +1,9 @@
+//! Sample-playback algorithm with loop modes.
+//!
+//! Provides [`SamplePlayer`] for playing back fixed buffers with variable
+//! rate, interpolation, and configurable looping (one-shot, forward,
+//! ping-pong).
+
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, InterpolatedReader};
 use rill_core::traits::{ActionContext, ProcessResult};
@@ -17,7 +23,9 @@ pub enum LoopMode {
 /// Playback state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlayState {
+    /// No samples are being output.
     Stopped,
+    /// Actively reading and outputting samples.
     Playing,
 }
 
@@ -47,6 +55,7 @@ pub struct SamplePlayer<T: Transcendental> {
 }
 
 impl<T: Transcendental> SamplePlayer<T> {
+    /// Create a new `SamplePlayer` from a sample buffer.
     pub fn new(buffer: Vec<T>) -> Self {
         let len = buffer.len() as f64;
         Self {
@@ -61,6 +70,7 @@ impl<T: Transcendental> SamplePlayer<T> {
         }
     }
 
+    /// Create a new `SamplePlayer` from a pre-allocated boxed slice.
     pub fn from_boxed(buffer: Box<[T]>) -> Self {
         let len = buffer.len() as f64;
         Self {
@@ -75,39 +85,48 @@ impl<T: Transcendental> SamplePlayer<T> {
         }
     }
 
+    /// Number of samples in the buffer.
     pub fn len(&self) -> usize {
         self.reader.len()
     }
 
+    /// Returns `true` if the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.reader.is_empty()
     }
 
+    /// Current loop mode.
     pub fn loop_mode(&self) -> LoopMode {
         self.loop_mode
     }
 
+    /// Set the loop behaviour.
     pub fn set_loop_mode(&mut self, mode: LoopMode) {
         self.loop_mode = mode;
     }
 
+    /// Loop start position in samples.
     pub fn loop_start(&self) -> f64 {
         self.loop_start
     }
 
+    /// Set the loop start position.
     pub fn set_loop_start(&mut self, start: f64) {
         self.loop_start = start.clamp(0.0, self.reader.len() as f64);
     }
 
+    /// Loop end position in samples.
     pub fn loop_end(&self) -> f64 {
         self.loop_end
     }
 
+    /// Set the loop end position.
     pub fn set_loop_end(&mut self, end: f64) {
         let max = self.reader.len() as f64;
         self.loop_end = end.clamp(0.0, max);
     }
 
+    /// Whether the player is gated (playing).
     pub fn gate(&self) -> bool {
         self.gate
     }
@@ -125,6 +144,7 @@ impl<T: Transcendental> SamplePlayer<T> {
         self.gate = gate;
     }
 
+    /// Current playback state (stopped or playing).
     pub fn play_state(&self) -> PlayState {
         self.state
     }
@@ -136,18 +156,22 @@ impl<T: Transcendental> SamplePlayer<T> {
         self.loop_start = 0.0;
     }
 
+    /// Enable (`true`) or disable (`false`) cubic Hermite interpolation.
     pub fn set_cubic(&mut self, cubic: bool) {
         self.reader.set_cubic(cubic);
     }
 
+    /// Returns `true` if cubic interpolation is enabled.
     pub fn is_cubic(&self) -> bool {
         self.reader.is_cubic()
     }
 
+    /// Set the playback rate in samples per output sample.
     pub fn set_playback_rate(&mut self, rate: f64) {
         self.reader.set_rate(rate);
     }
 
+    /// Current playback rate.
     pub fn playback_rate(&self) -> f64 {
         self.reader.rate()
     }

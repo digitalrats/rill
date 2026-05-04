@@ -8,8 +8,11 @@ use rill_core::prelude::Sample;
 /// Errors that can occur during WAV loading.
 #[derive(Debug)]
 pub enum WavError {
+    /// An I/O error occurred while reading the file.
     Io(std::io::Error),
+    /// The WAV file could not be decoded by the `hound` crate.
     Hound(String),
+    /// The WAV format is unsupported (not 16-bit PCM or not mono/stereo).
     Format(String),
 }
 

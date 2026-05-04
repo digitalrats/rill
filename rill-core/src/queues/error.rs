@@ -1,38 +1,32 @@
-//! Ошибки, связанные с очередями
+//! Queue operation error types.
 
 use thiserror::Error;
 
-/// Результат операций с очередями
+/// Result type alias for queue operations.
 pub type QueueResult<T> = Result<T, QueueError>;
 
-/// Ошибки очередей
+/// Errors that can occur during queue operations.
 #[derive(Error, Debug, PartialEq)]
 pub enum QueueError {
-    /// Очередь переполнена (при попытке отправить в ограниченную очередь)
+    /// The queue is full and cannot accept more elements.
     #[error("Queue is full")]
     QueueFull,
-
-    /// Очередь пуста (при попытке получить из пустой очереди)
+    /// The queue is empty and has no elements to pop.
     #[error("Queue is empty")]
     QueueEmpty,
-
-    /// Канал отключен (все отправители/получатели уничтожены)
+    /// The channel has been disconnected (all senders/receivers dropped).
     #[error("Channel disconnected")]
     ChannelDisconnected,
-
-    /// Таймаут при ожидании
+    /// A queue operation timed out.
     #[error("Operation timed out")]
     Timeout,
-
-    /// Неподдерживаемая операция для данного типа очереди
+    /// The requested operation is not supported by this queue type.
     #[error("Operation not supported: {0}")]
     Unsupported(String),
-
-    /// Ошибка отправки с потерей данных
+    /// Failed to send data through the queue.
     #[error("Send failed: {0}")]
     SendFailed(String),
-
-    /// Ошибка получения
+    /// Failed to receive data from the queue.
     #[error("Receive failed: {0}")]
     ReceiveFailed(String),
 }

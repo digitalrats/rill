@@ -8,19 +8,62 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiEvent {
     /// Note Off (channel, note, velocity).
-    NoteOff { channel: u8, note: u8, velocity: u8 },
+    NoteOff {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Note number (0–127).
+        note: u8,
+        /// Release velocity (0–127).
+        velocity: u8,
+    },
     /// Note On (channel, note, velocity; velocity 0 = Note Off).
-    NoteOn { channel: u8, note: u8, velocity: u8 },
+    NoteOn {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Note number (0–127).
+        note: u8,
+        /// Velocity (0–127).
+        velocity: u8,
+    },
     /// Polyphonic Key Pressure / Aftertouch.
-    PolyphonicKeyPressure { channel: u8, note: u8, pressure: u8 },
+    PolyphonicKeyPressure {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Note number (0–127).
+        note: u8,
+        /// Pressure value (0–127).
+        pressure: u8,
+    },
     /// Control Change / MIDI CC (channel, controller, value).
-    ControlChange { channel: u8, controller: u8, value: u8 },
+    ControlChange {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Controller number (0–127).
+        controller: u8,
+        /// Controller value (0–127).
+        value: u8,
+    },
     /// Program Change (channel, program).
-    ProgramChange { channel: u8, program: u8 },
+    ProgramChange {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Program number (0–127).
+        program: u8,
+    },
     /// Channel Pressure (channel, pressure).
-    ChannelPressure { channel: u8, pressure: u8 },
+    ChannelPressure {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Pressure value (0–127).
+        pressure: u8,
+    },
     /// Pitch Bend (channel, bend; 0–16383, centre 8192).
-    PitchBend { channel: u8, bend: u16 },
+    PitchBend {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Bend value (0–16383, centre 8192).
+        bend: u16,
+    },
 }
 
 impl MidiEvent {

@@ -34,6 +34,7 @@ unsafe impl<T: Transcendental, const B: usize> Send for ReadHead<T, B> {}
 unsafe impl<T: Transcendental, const B: usize> Sync for ReadHead<T, B> {}
 
 impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
+    /// Create a new `ReadHead` with default delay of 0.5 seconds.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("ReadHead", NodeCategory::Source);
         metadata.parameters = vec![

@@ -20,6 +20,7 @@ pub struct PipeBuffer<T: Transcendental, const N: usize> {
 }
 
 impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
+    /// Create a new empty pipe buffer.
     pub fn new() -> Self {
         let storage = array_from_fn(|_| T::ZERO);
         Self {
@@ -32,6 +33,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
         }
     }
 
+    /// Write a block of data. Subsequent reads will return this data.
     #[inline(always)]
     pub fn write(&mut self, data: &[T; N]) {
         for i in 0..N {
@@ -43,6 +45,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
         self.stats.update_peak(1);
     }
 
+    /// Read the latest written data (non-destructive).
     #[inline(always)]
     pub fn read(&mut self) -> Option<[T; N]> {
         if !self.valid {
@@ -57,6 +60,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
         Some(result)
     }
 
+    /// Read the latest written data (destructive — clears the valid flag).
     #[inline(always)]
     pub fn try_read(&mut self) -> Option<[T; N]> {
         if !self.valid {
@@ -74,6 +78,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
         Some(result)
     }
 
+    /// Busy-wait until data is available, then read destructively.
     pub fn read_blocking(&mut self) -> [T; N] {
         loop {
             if let Some(data) = self.try_read() {
@@ -83,12 +88,18 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
         }
     }
 
+    /// Whether data is available for reading.
     pub fn has_data(&self) -> bool { self.valid }
+    /// Number of writes performed.
     pub fn write_seq(&self) -> usize { self.write_seq }
+    /// Number of reads performed.
     pub fn read_seq(&self) -> usize { self.read_seq }
+    /// Whether all writes have been consumed by reads.
     pub fn is_caught_up(&self) -> bool { self.write_seq == self.read_seq }
+    /// Number of times the buffer was overwritten before being read.
     pub fn overwrites(&self) -> usize { self.write_seq.saturating_sub(self.read_seq + 1) }
 
+    /// Reset to initial empty state.
     pub fn reset(&mut self) {
         self.valid = false;
         self.stats.reset();

@@ -1,16 +1,16 @@
-//! Типы сигналов и команд для очередей
+//! Signal and command types for queues.
 //!
-//! Этот модуль определяет все типы команд, которые могут передаваться
-//! через очереди между компонентами Rill. Каждый тип команды
-//! представляет определенное действие или событие в системе.
+//! This module defines all command types that can be sent through queues
+//! between Rill components. Each command type represents a specific
+//! action or event in the system.
 //!
-//! ## Иерархия команд
+//! ## Command hierarchy
 //!
-//! - `Command` — общий тип-перечисление всех возможных команд
-//! - `SetParameter` — изменение параметра в SignalGraph
-//! - `AutomatonCommand` — управление автоматами
-//! - `SensorCommand` — управление сенсорами
-//! - `ServoCommand` — управление серво
+//! - `CommandEnum` — top-level enum wrapping all command variants
+//! - `SetParameter` — parameter change for a signal graph node
+//! - `AutomatonCommand` — automaton control
+//! - `SensorCommand` — sensor control
+//! - `ServoCommand` — servo control
 //!
 //! ## Пример
 //!
@@ -48,22 +48,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // SignalSource — источник сигнала
 //==============================================================================
 
-/// Источник сигнала (откуда пришла команда)
+/// Origin of a signal or command.
 ///
-/// Используется для отслеживания происхождения команд и телеметрии.
-/// Позволяет реализовать защиту от обратной связи и отладку.
-/// Типы сигналов и команд для очередей
+/// Used for tracking command provenance, feedback-loop prevention,
+/// and telemetry attribution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SignalSource {
+    /// Command from an automaton (LFO, envelope, sequencer).
     Automaton(String),
+    /// Command from a sensor (physical input device).
     Sensor(String),
+    /// Command from a servo (physical output device).
     Servo(String),
+    /// Command from an external source (OSC, MIDI, etc.).
     External(String),
+    /// Manual user interaction (UI slider, button, etc.).
     Manual,
+    /// Command from a script.
     Script,
 }
 
 impl SignalSource {
+    /// Return the human-readable name of this source.
     pub fn name(&self) -> &str {
         match self {
             SignalSource::Automaton(name) => name,
@@ -75,6 +81,7 @@ impl SignalSource {
         }
     }
 
+    /// Return the type category of this source (e.g. "automaton", "sensor").
     pub fn kind(&self) -> &'static str {
         match self {
             SignalSource::Automaton(_) => "automaton",
@@ -102,17 +109,23 @@ impl fmt::Display for SignalSource {
 
 // ===== SetParameter =====
 
-/// Команда изменения параметра
+/// Command to change a parameter value on a signal graph node.
 #[derive(Debug, Clone)]
 pub struct SetParameter {
+    /// Target port.
     pub port: PortId,
+    /// Target parameter identifier.
     pub parameter: ParameterId,
+    /// New parameter value.
     pub value: f32,
+    /// Origin of this command.
     pub source: SignalSource,
+    /// Unix timestamp (microseconds).
     pub timestamp: u64,
 }
 
 impl SetParameter {
+    /// Create a new parameter-change command with the current timestamp.
     pub fn new(port: PortId, parameter: ParameterId, value: f32, source: SignalSource) -> Self {
         Self {
             port,
@@ -123,6 +136,7 @@ impl SetParameter {
         }
     }
 
+    /// Create a new parameter-change command with an explicit timestamp.
     pub fn with_timestamp(
         port: PortId,
         parameter: ParameterId,
@@ -139,6 +153,7 @@ impl SetParameter {
         }
     }
 
+    /// Return the current Unix time in microseconds.
     pub fn now() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -171,40 +186,64 @@ impl Command for SetParameter {}
 
 // ===== AutomatonCommand =====
 
+/// Commands for controlling automata (LFOs, envelopes, sequencers).
 #[derive(Debug, Clone)]
 pub enum AutomatonCommand {
+    /// Enable or disable an automaton by ID.
     SetEnabled {
+        /// Automaton identifier.
         id: String,
+        /// Whether the automaton should be enabled.
         enabled: bool,
     },
+    /// Set a named parameter on an automaton.
     SetParameter {
+        /// Automaton identifier.
         id: String,
+        /// Parameter name.
         name: String,
+        /// Parameter value.
         value: f32,
     },
+    /// Reset an automaton to its initial state.
     Reset {
+        /// Automaton identifier.
         id: String,
     },
+    /// Connect an automaton output to another automaton input.
     Connect {
+        /// Source automaton identifier.
         from: String,
+        /// Destination automaton identifier.
         to: String,
+        /// Connection gain.
         gain: f32,
     },
+    /// Disconnect two automata.
     Disconnect {
+        /// Source automaton identifier.
         from: String,
+        /// Destination automaton identifier.
         to: String,
     },
+    /// Create a new automaton instance.
     Create {
+        /// Automaton type (e.g. "lfo", "envelope").
         kind: String,
+        /// New automaton identifier.
         id: String,
+        /// Initial parameter values.
         params: Vec<(String, f32)>,
     },
+    /// Destroy an automaton by ID.
     Destroy {
+        /// Automaton identifier to remove.
         id: String,
     },
 }
 
 impl AutomatonCommand {
+    /// Return the target automaton ID, if applicable.
     pub fn automaton_id(&self) -> Option<&str> {
         match self {
             AutomatonCommand::SetEnabled { id, .. } => Some(id),
@@ -256,11 +295,16 @@ impl Command for AutomatonCommand {}
 
 // ===== SensorCommand =====
 
+/// Type of sensor calibration to perform.
 #[derive(Debug, Clone)]
 pub enum CalibrationKind {
+    /// Automatically determine min/max from signal range.
     Auto,
+    /// Set the current sensor reading as the minimum value.
     SetCurrentAsMin,
+    /// Set the current sensor reading as the maximum value.
     SetCurrentAsMax,
+    /// Reset calibration to factory defaults.
     Reset,
 }
 
@@ -275,16 +319,46 @@ impl fmt::Display for CalibrationKind {
     }
 }
 
+/// Commands for controlling sensors (physical input devices).
 #[derive(Debug, Clone)]
 pub enum SensorCommand {
-    StartListening { id: String, source: String },
-    StopListening { id: String },
-    SetSensitivity { id: String, value: f32 },
-    Calibrate { id: String, kind: CalibrationKind },
-    SetEnabled { id: String, enabled: bool },
+    /// Start listening to a sensor data source.
+    StartListening {
+        /// Sensor identifier.
+        id: String,
+        /// Data source to listen to.
+        source: String,
+    },
+    /// Stop listening to a sensor.
+    StopListening {
+        /// Sensor identifier.
+        id: String,
+    },
+    /// Set sensor sensitivity.
+    SetSensitivity {
+        /// Sensor identifier.
+        id: String,
+        /// Sensitivity value.
+        value: f32,
+    },
+    /// Calibrate a sensor.
+    Calibrate {
+        /// Sensor identifier.
+        id: String,
+        /// Calibration type.
+        kind: CalibrationKind,
+    },
+    /// Enable or disable a sensor.
+    SetEnabled {
+        /// Sensor identifier.
+        id: String,
+        /// Whether the sensor should be enabled.
+        enabled: bool,
+    },
 }
 
 impl SensorCommand {
+    /// Return the target sensor ID.
     pub fn sensor_id(&self) -> &str {
         match self {
             SensorCommand::StartListening { id, .. } => id,
@@ -322,12 +396,18 @@ impl Command for SensorCommand {}
 
 // ===== ServoCommand =====
 
+/// Mapping function type for servo output value transformation.
 #[derive(Debug, Clone)]
 pub enum MappingType {
+    /// Linear mapping (identity).
     Linear,
+    /// Exponential mapping.
     Exponential,
+    /// Logarithmic mapping.
     Logarithmic,
+    /// Inverted (reverse) mapping.
     Inverted,
+    /// Custom named mapping function.
     Custom(String),
 }
 
@@ -343,36 +423,57 @@ impl fmt::Display for MappingType {
     }
 }
 
+/// Commands for controlling servos (physical output devices).
 #[derive(Debug, Clone)]
 pub enum ServoCommand {
+    /// Bind a servo to follow an automaton output.
     BindToAutomaton {
+        /// Servo identifier.
         servo_id: String,
+        /// Automaton identifier to bind to.
         automaton_id: String,
     },
+    /// Bind a servo directly to a signal graph parameter.
     BindToParameter {
+        /// Servo identifier.
         servo_id: String,
+        /// Target port.
         port: PortId,
+        /// Target parameter.
         parameter: ParameterId,
     },
+    /// Unbind a servo from all sources.
     Unbind {
+        /// Servo identifier.
         servo_id: String,
     },
+    /// Set the output range of a servo.
     SetRange {
+        /// Servo identifier.
         servo_id: String,
+        /// Minimum output value.
         min: f32,
+        /// Maximum output value.
         max: f32,
     },
+    /// Set the value mapping function for a servo.
     SetMapping {
+        /// Servo identifier.
         servo_id: String,
+        /// Mapping type.
         mapping: MappingType,
     },
+    /// Enable or disable a servo.
     SetEnabled {
+        /// Servo identifier.
         servo_id: String,
+        /// Whether the servo should be enabled.
         enabled: bool,
     },
 }
 
 impl ServoCommand {
+    /// Return the target servo ID.
     pub fn servo_id(&self) -> &str {
         match self {
             ServoCommand::BindToAutomaton { servo_id, .. } => servo_id,
@@ -421,18 +522,18 @@ impl Command for ServoCommand {}
 
 // ===== CommandType (бывшее Command) — общий тип команды =====
 
-/// Тип команды (для идентификации в рантайме)
+/// Runtime command type identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandType {
-    /// Изменение параметра
+    /// Parameter change command.
     SetParameter,
-    /// Управление автоматом
+    /// Automaton control command.
     Automaton,
-    /// Управление сенсором
+    /// Sensor control command.
     Sensor,
-    /// Управление серво
+    /// Servo control command.
     Servo,
-    /// Системная команда
+    /// System command.
     System,
 }
 
@@ -448,26 +549,31 @@ impl fmt::Display for CommandType {
     }
 }
 
-/// Общий тип команды, объединяющий все возможные команды
+/// Universal command enum combining all possible command types.
 ///
-/// Полезен, когда нужно использовать одну очередь для всех типов команд,
-/// или когда тип команды неизвестен заранее.
+/// Useful when a single queue must transport multiple command types,
+/// or when the command type is not known ahead of time.
 #[derive(Debug, Clone)]
 pub enum CommandEnum {
-    /// Изменение параметра
+    /// Parameter change command.
     SetParameter(SetParameter),
-    /// Управление автоматом
+    /// Automaton control command.
     Automaton(AutomatonCommand),
-    /// Управление сенсором
+    /// Sensor control command.
     Sensor(SensorCommand),
-    /// Управление серво
+    /// Servo control command.
     Servo(ServoCommand),
-    /// Системная команда
-    System { kind: String, data: Vec<u8> },
+    /// System-level command with opaque payload.
+    System {
+        /// System command kind.
+        kind: String,
+        /// Opaque command data.
+        data: Vec<u8>,
+    },
 }
 
 impl CommandEnum {
-    /// Получить тип команды
+    /// Return the runtime type tag of this command.
     pub fn command_type(&self) -> CommandType {
         match self {
             CommandEnum::SetParameter(_) => CommandType::SetParameter,
@@ -478,7 +584,7 @@ impl CommandEnum {
         }
     }
 
-    /// Вернуть NodeId если команда адресована узлу графа (SetParameter).
+    /// If this is a `SetParameter` command, return the target `NodeId`.
     pub fn target_node_id(&self) -> Option<crate::traits::NodeId> {
         match self {
             CommandEnum::SetParameter(cmd) => Some(cmd.port.node_id()),
@@ -486,7 +592,7 @@ impl CommandEnum {
         }
     }
 
-    /// Получить временную метку (если есть)
+    /// Return the timestamp if the command carries one.
     pub fn timestamp(&self) -> Option<u64> {
         match self {
             CommandEnum::SetParameter(cmd) => Some(cmd.timestamp),
@@ -494,7 +600,7 @@ impl CommandEnum {
         }
     }
 
-    /// Попытаться преобразовать в SetParameter
+    /// Try to downcast to `SetParameter`.
     pub fn as_set_parameter(&self) -> Option<&SetParameter> {
         match self {
             CommandEnum::SetParameter(cmd) => Some(cmd),
@@ -502,7 +608,7 @@ impl CommandEnum {
         }
     }
 
-    /// Попытаться преобразовать в AutomatonCommand
+    /// Try to downcast to `AutomatonCommand`.
     pub fn as_automaton(&self) -> Option<&AutomatonCommand> {
         match self {
             CommandEnum::Automaton(cmd) => Some(cmd),
@@ -510,7 +616,7 @@ impl CommandEnum {
         }
     }
 
-    /// Попытаться преобразовать в SensorCommand
+    /// Try to downcast to `SensorCommand`.
     pub fn as_sensor(&self) -> Option<&SensorCommand> {
         match self {
             CommandEnum::Sensor(cmd) => Some(cmd),
@@ -518,7 +624,7 @@ impl CommandEnum {
         }
     }
 
-    /// Попытаться преобразовать в ServoCommand
+    /// Try to downcast to `ServoCommand`.
     pub fn as_servo(&self) -> Option<&ServoCommand> {
         match self {
             CommandEnum::Servo(cmd) => Some(cmd),
@@ -546,21 +652,21 @@ impl Command for CommandEnum {}
 
 // ===== Преобразования =====
 
-/// Маркерный трейт для типов, которые могут быть преобразованы в команду
+/// Marker trait for types that can be converted into a command.
 pub trait ToCommand: Send + 'static {
-    /// Тип команды, в которую преобразуется
+    /// The command type this type converts into.
     type Command: Into<CommandEnum>;
 
-    /// Преобразовать в команду
+    /// Convert self into a command.
     fn to_command(self) -> Self::Command;
 }
 
-/// Маркерный трейт для типов, которые могут быть созданы из команды
+/// Marker trait for types that can be constructed from a command.
 pub trait FromCommand: Sized {
-    /// Тип команды, из которой создается
+    /// The command type this type is constructed from.
     type Command: TryInto<Self> + Clone;
 
-    /// Попытаться создать из команды
+    /// Try to construct from a command.
     fn from_command(cmd: Self::Command) -> Option<Self>;
 }
 

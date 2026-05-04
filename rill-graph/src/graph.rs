@@ -14,8 +14,10 @@ use std::collections::VecDeque;
 // Build Errors
 // ============================================================================
 
+/// Errors that can occur during graph construction.
 #[derive(Debug, Clone)]
 pub enum BuildError {
+    /// A cycle was detected in the signal edge graph.
     CycleDetected,
 }
 
@@ -23,10 +25,14 @@ pub enum BuildError {
 // Graph Builder
 // ============================================================================
 
+/// Runtime statistics for the signal graph.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GraphStats {
+    /// Total number of blocks processed since the graph started.
     pub blocks_processed: u64,
+    /// Maximum wall-clock time spent processing a single block (nanoseconds).
     pub max_process_time_ns: u64,
+    /// Average wall-clock time per block (nanoseconds).
     pub avg_process_time_ns: f64,
 }
 
@@ -70,6 +76,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_S
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
+    /// Create a new empty graph builder.
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -86,6 +93,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.resources.push(resource);
     }
 
+    /// Add a source node and return its index.
     pub fn add_source(&mut self, source: Box<dyn rill_core::traits::Source<T, BUF_SIZE>>) -> usize {
         let idx = self.nodes.len();
         self.nodes.push(NodeEntry {
@@ -94,6 +102,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         idx
     }
 
+    /// Add a processor node and return its index.
     pub fn add_processor(
         &mut self,
         processor: Box<dyn rill_core::traits::Processor<T, BUF_SIZE>>,
@@ -105,6 +114,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         idx
     }
 
+    /// Add a sink node and return its index.
     pub fn add_sink(&mut self, sink: Box<dyn rill_core::traits::Sink<T, BUF_SIZE>>) -> usize {
         let idx = self.nodes.len();
         self.nodes.push(NodeEntry {
@@ -133,6 +143,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// automatically assigned from its position in the graph.
     ///
     /// Returns the index of the newly added node.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the type name is not registered or
+    /// construction fails.
     pub fn add_node(
         &mut self,
         registry: &NodeRegistry<T, BUF_SIZE>,
@@ -150,6 +165,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// where external references (e.g. patchbay bindings) depend on exact IDs.
     ///
     /// Returns the index (position) of the newly added node.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the type name is not registered or
+    /// construction fails.
     ///
     /// # Panics
     ///
@@ -224,6 +244,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     }
 
     /// Build the immutable SignalGraph.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BuildError::CycleDetected` if the signal edges contain a cycle.
     pub fn build(
         mut self,
         clock_source: Box<dyn ClockSource>,
@@ -420,14 +444,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
     // Accessors
     // ========================================================================
 
+    /// Return the current clock tick.
     pub fn current_tick(&self) -> ClockTick {
         self.current_tick
     }
 
+    /// Return the number of nodes in the graph.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Return the topological ordering of node indices.
     pub fn topo_order(&self) -> &[usize] {
         &self.topo_order
     }

@@ -1,10 +1,10 @@
 use core::fmt;
 use core::ops::*;
 
-/// Базовый числовой трейт для любых скалярных типов.
+/// Base numeric trait for all scalar types.
 ///
-/// Включает арифметику, min/max/clamp, abs.
-/// Реализован для f32, f64 и всех целых типов (i8/i16/i32/i64, u8/u16/u32/u64).
+/// Includes arithmetic, min/max/clamp, and abs operations.
+/// Implemented for f32, f64 and all integer types (i8/i16/i32/i64, u8/u16/u32/u64).
 pub trait Scalar:
     Copy
     + Clone
@@ -25,40 +25,59 @@ pub trait Scalar:
     + DivAssign
     + fmt::Debug
 {
+    /// Additive identity (zero).
     const ZERO: Self;
+    /// Multiplicative identity (one).
     const ONE: Self;
+    /// Minimum value typically used in normalized ranges (e.g. -1.0 for floats).
     const MIN: Self;
+    /// Maximum value typically used in normalized ranges (e.g. 1.0 for floats).
     const MAX: Self;
 
+    /// Compute the absolute value.
     fn abs(self) -> Self;
+    /// Return the smaller of two values.
     fn min(self, other: Self) -> Self;
+    /// Return the larger of two values.
     fn max(self, other: Self) -> Self;
+    /// Constrain a value to the inclusive range `[min, max]`.
     fn clamp(self, min: Self, max: Self) -> Self;
 }
 
-/// Трансцендентные операции (sin, cos, sqrt, exp, ln).
+/// Transcendental operations (sin, cos, sqrt, exp, ln).
 ///
-/// Расширяет `Scalar` функциями, доступными только для типов
-/// с плавающей точкой (f32, f64).
+/// Extends `Scalar` with functions available only for floating-point
+/// types (f32, f64).
 pub trait Transcendental: Scalar {
+    /// The constant π (3.14159...).
     const PI: Self;
 
+    /// Convert to f32.
     fn to_f32(self) -> f32;
+    /// Create from an f32 value.
     fn from_f32(value: f32) -> Self;
 
+    /// Convert to f64.
     fn to_f64(self) -> f64 {
         self.to_f32() as f64
     }
 
+    /// Create from an f64 value.
     fn from_f64(value: f64) -> Self {
         Self::from_f32(value as f32)
     }
 
+    /// Compute the square root.
     fn sqrt(self) -> Self;
+    /// Compute e raised to the power of `self`.
     fn exp(self) -> Self;
+    /// Compute the natural logarithm.
     fn ln(self) -> Self;
+    /// Compute the sine (input in radians).
     fn sin(self) -> Self;
+    /// Compute the cosine (input in radians).
     fn cos(self) -> Self;
+    /// Compute the tangent (input in radians).
     fn tan(self) -> Self;
 }
 

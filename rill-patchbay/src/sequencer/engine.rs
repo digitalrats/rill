@@ -7,9 +7,10 @@ use crate::control::ParameterCommand;
 /// The core sequencer state machine.
 ///
 /// Driven by incoming CLOCK_TICK telemetry from the audio thread.  Call
-/// [`tick`](Self::tick) every time a clock sample-position arrives; the
-/// sequencer checks whether the current step's duration has elapsed and
-/// advances if so, returning the p-lock parameter commands for the new step.
+/// [`tick`](Self::tick) or [`tick_ext`](Self::tick_ext) every time a clock
+/// sample-position arrives; the sequencer checks whether the current step's
+/// duration has elapsed and advances if so, returning the p-lock parameter
+/// commands for the new step.
 ///
 /// # Thread safety
 ///
@@ -33,7 +34,6 @@ pub struct SnapshotSequencer {
     direction: i8,
     /// Whether the sequencer is running.
     running: bool,
-
     /// Latest beat position received from telemetry.
     latest_beat_position: f32,
     /// Whether the latest tick was a new beat boundary.
@@ -60,6 +60,8 @@ impl SnapshotSequencer {
     }
 
     /// Create a sequencer pre-loaded with snapshots and patterns.
+    ///
+    /// The first pattern in the vec becomes the active pattern.
     pub fn with_lib(
         snapshots: Vec<Snapshot>,
         patterns: Vec<Pattern>,
@@ -160,16 +162,20 @@ impl SnapshotSequencer {
         self.direction = 1;
     }
 
+    /// Whether the sequencer is running.
     pub fn is_running(&self) -> bool {
         self.running
     }
 
+    /// Index of the current step within the active pattern.
     pub fn current_step(&self) -> usize {
         self.current_step
     }
 
     /// Latest beat position received via [`tick_ext`](Self::tick_ext).
-    /// Updated on every clock tick; 0.0 if no tempo or [`tick`](Self::tick) used.
+    ///
+    /// Updated on every clock tick; `0.0` if no tempo data or
+    /// [`tick`](Self::tick) is used.
     pub fn latest_beat_position(&self) -> f32 {
         self.latest_beat_position
     }
@@ -228,7 +234,6 @@ impl SnapshotSequencer {
             return Vec::new();
         }
 
-        // Extract the info we need from the pattern, then drop the borrow.
         let (len, play_mode, step_dur) = {
             let pat = match self.patterns.get(&self.active_pattern) {
                 Some(p) if !p.steps.is_empty() => p,
@@ -244,7 +249,6 @@ impl SnapshotSequencer {
             self.current_step = self.advance_step(len, play_mode);
             self.step_start_sample = sample_pos;
 
-            // Re-borrow to read the new step's p-locks.
             if let Some(pat) = self.patterns.get(&self.active_pattern) {
                 if self.current_step < pat.steps.len() {
                     let new_step = &pat.steps[self.current_step];
@@ -264,9 +268,7 @@ impl SnapshotSequencer {
         Vec::new()
     }
 
-    // ── Internal ─────────────────────────────────────────────────────
-
-    /// Pick the next step index and update `self.direction` for PingPong.
+    /// Pick the next step index and update direction for PingPong mode.
     fn advance_step(&mut self, len: usize, play_mode: StepPlayMode) -> usize {
         if len == 0 {
             return 0;
@@ -315,9 +317,16 @@ impl Default for SnapshotSequencer {
 /// Commands sent to a running sequencer from another thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SequencerCommand {
+    /// Start playback.
     Start,
+    /// Stop playback.
     Stop,
-    Reset { sample_pos: u64 },
+    /// Reset to the given sample position.
+    Reset {
+        /// Target sample position for the reset.
+        sample_pos: u64,
+    },
+    /// Switch to a named pattern.
     SetPattern(String),
 }
 
@@ -338,20 +347,24 @@ impl SequencerHandle {
         }
     }
 
+    /// Start the sequencer.
     pub fn start(&self) {
         let _ = self.cmd_tx.try_send(SequencerCommand::Start);
     }
 
+    /// Stop the sequencer.
     pub fn stop(&self) {
         let _ = self.cmd_tx.try_send(SequencerCommand::Stop);
     }
 
+    /// Reset the sequencer to the given sample position.
     pub fn reset(&self, sample_pos: u64) {
         let _ = self
             .cmd_tx
             .try_send(SequencerCommand::Reset { sample_pos });
     }
 
+    /// Switch to a different pattern by ID.
     pub fn set_pattern(&self, id: &str) {
         let _ = self
             .cmd_tx
@@ -390,16 +403,13 @@ mod tests {
         let mut seq = SnapshotSequencer::with_lib(vec![], vec![simple_pattern()]);
         seq.start();
 
-        // Tick through a few steps
         let sr = 48000.0;
         let tempo = 120.0;
 
-        // Step 0 lasts 1 quarter = 24000 samples at 120 BPM
         let cmds = seq.tick(24000, sr, tempo);
         assert!(!cmds.is_empty(), "should advance to step 1");
         assert_eq!(seq.current_step, 1);
 
-        // Another quarter
         let cmds = seq.tick(48000, sr, tempo);
         assert!(!cmds.is_empty());
         assert_eq!(seq.current_step, 2);
@@ -408,7 +418,6 @@ mod tests {
         assert!(!cmds.is_empty());
         assert_eq!(seq.current_step, 3);
 
-        // Should wrap around (loop)
         let cmds = seq.tick(96000, sr, tempo);
         assert!(!cmds.is_empty());
         assert_eq!(seq.current_step, 0);
@@ -417,7 +426,6 @@ mod tests {
     #[test]
     fn test_sequencer_not_running() {
         let mut seq = SnapshotSequencer::with_lib(vec![], vec![simple_pattern()]);
-        // Don't start — should not advance
         let cmds = seq.tick(24000, 48000.0, 120.0);
         assert!(cmds.is_empty());
         assert_eq!(seq.current_step, 0);
@@ -447,16 +455,12 @@ mod tests {
         );
         seq.start();
 
-        // 0 → 1
         seq.tick(24000, 48000.0, 120.0);
         assert_eq!(seq.current_step, 1);
-        // 1 → 2
         seq.tick(48000, 48000.0, 120.0);
         assert_eq!(seq.current_step, 2);
-        // 2 → 1 (reverse)
         seq.tick(72000, 48000.0, 120.0);
         assert_eq!(seq.current_step, 1);
-        // 1 → 0
         seq.tick(96000, 48000.0, 120.0);
         assert_eq!(seq.current_step, 0);
     }
@@ -476,7 +480,6 @@ mod tests {
 
         seq.tick(24000, 48000.0, 120.0);
         assert_eq!(seq.current_step, 1);
-        // Should stay on last step
         seq.tick(48000, 48000.0, 120.0);
         assert_eq!(seq.current_step, 1);
     }
@@ -490,7 +493,6 @@ mod tests {
                 Pattern::new("b", vec![make_step(0.0, 1.0), make_step(0.5, 1.0)]),
             ],
         );
-        // Explicitly set to "a" (HashMap doesn't guarantee insertion order)
         seq.set_active_pattern("a");
         seq.start();
 
@@ -504,7 +506,6 @@ mod tests {
         assert!(!cmds.is_empty());
         assert_eq!(seq.current_step, 1);
 
-        // Loop back
         let cmds = seq.tick(48000, 48000.0, 120.0);
         assert!(!cmds.is_empty());
         assert_eq!(seq.current_step, 0);
@@ -512,12 +513,12 @@ mod tests {
 
     #[test]
     fn test_step_duration_samples() {
-        let step = make_step(0.5, 1.0); // 1 quarter
+        let step = make_step(0.5, 1.0);
         assert_eq!(step.duration_samples(120.0, 48000.0), 24000);
         assert_eq!(step.duration_samples(120.0, 44100.0), 22050);
         assert_eq!(step.duration_samples(60.0, 48000.0), 48000);
 
-        let eighth = make_step(0.5, 0.5); // eighth note
+        let eighth = make_step(0.5, 0.5);
         assert_eq!(eighth.duration_samples(120.0, 48000.0), 12000);
 
         let sixteenth = make_step(0.5, 0.25);
@@ -560,19 +561,16 @@ mod tests {
         seq.set_active_pattern("p1");
         seq.start();
 
-        // tick_ext with beat info
         let _ = seq.tick_ext(0, 48000.0, 120.0, 0.0, true, true);
         assert!((seq.latest_beat_position() - 0.0).abs() < 1e-6);
         assert!(seq.is_new_beat());
         assert!(seq.is_new_bar());
 
-        // tick (basic) resets beat info to defaults
         let _ = seq.tick(24000, 48000.0, 120.0);
         assert!((seq.latest_beat_position() - 0.0).abs() < 1e-6);
         assert!(!seq.is_new_beat());
         assert!(!seq.is_new_bar());
 
-        // tick_ext with non-boundary beat
         let _ = seq.tick_ext(48000, 48000.0, 120.0, 2.5, false, false);
         assert!((seq.latest_beat_position() - 2.5).abs() < 1e-6);
         assert!(!seq.is_new_beat());

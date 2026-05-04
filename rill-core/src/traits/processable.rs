@@ -11,7 +11,9 @@ use crate::traits::SignalNode;
 // ProcessContext
 // ============================================================================
 
+/// Processing context provided during signal graph execution.
 pub struct ProcessContext<'a> {
+    /// Current clock tick with sample-accurate timing information.
     pub clock: &'a ClockTick,
 }
 
@@ -19,7 +21,16 @@ pub struct ProcessContext<'a> {
 // Processable Trait
 // ============================================================================
 
+/// A node or component that can process a block of audio.
+///
+/// This is the main execution trait for the signal graph. Each node type
+/// (Source, Processor, Router, Sink) implements this via blanket impls
+/// that delegate to their respective `generate`/`process`/`route`/`consume`.
 pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
+    /// Process one block of audio samples.
+    ///
+    /// # Errors
+    /// Returns a [`ProcessError`](crate::traits::ProcessError) if processing fails.
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()>;
 }
 
@@ -67,10 +78,17 @@ where T: Transcendental,
 // NodeVariant
 // ============================================================================
 
+/// A type-erased node that wraps any of the four node roles.
+///
+/// Dispatches `process_block` and `SignalNode` methods to the inner node.
 pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
+    /// Signal source node (generates audio).
     Source(Box<dyn crate::traits::Source<T, BUF_SIZE>>),
+    /// Signal processor node (processes audio in-place).
     Processor(Box<dyn crate::traits::Processor<T, BUF_SIZE>>),
+    /// Signal router node (routes signals between ports).
     Router(Box<dyn crate::traits::Router<T, BUF_SIZE>>),
+    /// Signal sink node (consumes audio).
     Sink(Box<dyn crate::traits::Sink<T, BUF_SIZE>>),
 }
 
@@ -86,6 +104,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for Node
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
+    /// Set the telemetry sender for the wrapped node.
     pub fn set_telemetry_tx(&mut self, tx: TelemetryTx) {
         match self {
             NodeVariant::Source(src) => SignalNode::set_telemetry_tx(src.as_mut(), tx),

@@ -58,6 +58,7 @@ pub struct AudioInput<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
+    /// Create a new `AudioInput` with no backend attached.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("AudioInput", NodeCategory::Source);
         metadata.signal_inputs = 0;
@@ -88,6 +89,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
     /// Supported names: `"null"`, `"alsa"`, `"cpal"`, `"pipewire"`, `"jack"`.
     /// Each backend is available only when its cargo feature is enabled.
     /// `"null"` is always available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IoError::Unsupported` if the name is not recognised, or
+    /// a backend-specific error if the device cannot be opened.
     pub fn init_backend(&mut self, name: &str, config: AudioConfig) -> IoResult<()> {
         match name {
             "null" | "Null" => {
@@ -187,12 +193,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
         }
     }
 
+    /// Stop the audio backend.
     pub fn stop(&mut self) {
         if let Some(b) = self.backend.as_ref() {
             let _ = b.stop();
         }
     }
 
+    /// Check whether a backend has been attached.
     pub fn has_backend(&self) -> bool { self.backend.is_some() }
 }
 

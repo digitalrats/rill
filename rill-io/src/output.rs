@@ -35,6 +35,7 @@ pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
+    /// Create a new `AudioOutput` with no backend attached.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("AudioOutput", NodeCategory::Sink);
         metadata.signal_inputs = 2;
@@ -55,6 +56,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
         }
     }
 
+    /// Attach a borrowed backend pointer.
     pub fn set_backend(&mut self, backend: AudioIoPtr) {
         self.backend = backend;
     }

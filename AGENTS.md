@@ -93,6 +93,7 @@ mdbook serve docs/                # dev server at localhost:3000
     - Prefer internal workspace tools over bringing in new third-party dependencies.
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
+- **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
 - **Versioning:** crates version synchronously (all at 0.4.0). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 

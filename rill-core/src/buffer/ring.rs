@@ -1,10 +1,12 @@
 use std::fmt;
 use crate::math::Transcendental;
 
-/// Кольцевой буфер с фиксированным размером (степень двойки).
-/// Single-threaded — для использования внутри графа обработки сигнала.
+/// Fixed-size ring buffer (power-of-two size). Single-threaded.
 ///
-/// # Пример
+/// Used inside the signal graph for delay effects and sample buffering.
+/// Size must be a power of two.
+///
+/// # Example
 /// ```
 /// use rill_core::buffer::RingBuffer;
 ///
@@ -23,8 +25,10 @@ pub struct RingBuffer<T: Transcendental, const N: usize> {
 }
 
 impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
-    /// Создать новый кольцевой буфер.
-    /// Паникует, если N не является степенью двойки.
+    /// Create a new ring buffer.
+    ///
+    /// # Panics
+    /// Panics if `N` is not a power of two.
     pub fn new() -> Self {
         assert!(N.is_power_of_two(), "RingBuffer size must be power of two");
         Self {
@@ -36,6 +40,7 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    /// Write a single sample, advancing the head cursor.
     pub fn write(&mut self, sample: T) {
         self.data[self.head] = sample;
         let next_head = (self.head + 1) & self.mask;
@@ -45,12 +50,14 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    /// Write multiple samples in sequence.
     pub fn write_slice(&mut self, samples: &[T]) where T: Copy {
         for &sample in samples {
             self.write(sample);
         }
     }
 
+    /// Read the oldest sample, or `None` if empty.
     pub fn read(&mut self) -> Option<T> {
         if self.tail == self.head && !self.full {
             return None;
@@ -61,12 +68,17 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
         Some(sample)
     }
 
+    /// Read a sample at `delay` samples behind head (0 = most recent).
+    ///
+    /// # Panics
+    /// Panics if `delay >= len()`.
     pub fn read_delayed(&self, delay: usize) -> T {
         assert!(delay < self.len(), "Delay must be less than buffer length");
         let read_pos = (self.head + self.capacity() - delay - 1) & self.mask;
         self.data[read_pos]
     }
 
+    /// Read with linear interpolation between samples at fractional delay.
     pub fn read_interpolated(&self, delay_frac: f32) -> T
     where
         T: From<f32> + Into<f32>,
@@ -82,6 +94,8 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
         T::from(s1 * (1.0 - frac) + s2 * frac)
     }
 
+    /// Read a sequence of interpolated samples into the output buffer,
+    /// starting at `start_delay` samples behind head.
     pub fn read_sequence_interpolated(&self, start_delay: f32, output: &mut [T])
     where
         T: From<f32> + Into<f32>,
@@ -97,16 +111,21 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    /// Number of samples currently stored.
     pub fn len(&self) -> usize {
         if self.full { N }
         else if self.head >= self.tail { self.head - self.tail }
         else { N - self.tail + self.head }
     }
 
+    /// Maximum capacity (const generic parameter).
     pub const fn capacity(&self) -> usize { N }
+    /// Whether the buffer has no samples.
     pub fn is_empty(&self) -> bool { self.head == self.tail && !self.full }
+    /// Whether the buffer is completely full.
     pub fn is_full(&self) -> bool { self.full }
 
+    /// Clear all samples and reset cursors.
     pub fn clear(&mut self) {
         self.data.fill(T::ZERO);
         self.head = 0;
@@ -114,6 +133,7 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
         self.full = false;
     }
 
+    /// Reset cursors without zeroing the data.
     pub fn reset(&mut self) {
         self.head = 0;
         self.tail = 0;
@@ -144,6 +164,7 @@ impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T
 // Итератор
 // =============================================================================
 
+/// Iterator over the contents of a [`RingBuffer`], from oldest to newest.
 pub struct RingBufferIter<'a, T: Transcendental, const N: usize> {
     buffer: &'a RingBuffer<T, N>,
     pos: usize,
@@ -177,6 +198,7 @@ impl<'a, T: Transcendental, const N: usize> ExactSizeIterator for RingBufferIter
 }
 
 impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
+    /// Iterate over buffered samples from oldest to newest.
     pub fn iter(&self) -> RingBufferIter<'_, T, N> {
         RingBufferIter::new(self)
     }

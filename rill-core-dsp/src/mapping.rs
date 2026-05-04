@@ -13,7 +13,11 @@ pub enum MappingStrategy {
     /// Linear mapping: `min + value * (max - min)`
     Linear,
     /// Exponential mapping: `min + value^exp * (max - min)`
-    Exponential { exponent: f32 },
+    Exponential {
+        /// Exponent for the exponential curve. Values > 1 emphasize the upper
+        /// end; values < 1 emphasize the lower end.
+        exponent: f32,
+    },
     /// Logarithmic mapping: `min + log(1 + value * (e - 1)) / log(e) * (max - min)`
     Logarithmic,
     /// Inverted linear mapping: `max - value * (max - min)`
