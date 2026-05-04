@@ -6,6 +6,7 @@ description = "Core DSP abstractions and algorithms for Rill"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-core-dsp"
 
 [dependencies]
 rill-core = { workspace = true }

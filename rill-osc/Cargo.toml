@@ -6,6 +6,7 @@ description = "OSC server and networking for Rill audio graph"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-osc"
 
 [dependencies]
 log = { workspace = true }

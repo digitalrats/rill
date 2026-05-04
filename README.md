@@ -1,7 +1,7 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests](https://img.shields.io/badge/tests-491-passing)](https://github.com/DigitalRats/rill)
+[![tests](https://img.shields.io/badge/tests-491-green)](https://github.com/DigitalRats/rill)
 [![version](https://img.shields.io/badge/version-0.5.0-beta.1-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 

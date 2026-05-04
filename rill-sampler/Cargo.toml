@@ -6,6 +6,7 @@ description = "Sample playback node for the Rill audio graph"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-sampler"
 
 [dependencies]
 rill-core = { workspace = true }

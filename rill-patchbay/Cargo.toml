@@ -6,6 +6,7 @@ description = "The world where Automata live - control system for Rill"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-patchbay"
 
 [dependencies]
 rill-core = { workspace = true }

@@ -6,6 +6,7 @@ description = "Audio routing, mixing, and equalization for Rill"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-router"
 
 [dependencies]
 rill-core = { workspace = true }

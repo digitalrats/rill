@@ -6,6 +6,7 @@ description = "Analog-modeled filters using Wave Digital Filter elements"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-analog-filters"
 
 [dependencies]
 rill-core = { workspace = true }

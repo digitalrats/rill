@@ -6,6 +6,7 @@ description = "Oscillators for Rill - using rill-core-dsp algorithms"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-oscillators"
 
 [dependencies]
 rill-core = { workspace = true }

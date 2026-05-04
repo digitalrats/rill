@@ -6,6 +6,7 @@ description = "Umbrella crate re-exporting all rill crates for audio application
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-adrift"
 
 [dev-dependencies]
 parking_lot = "0.12"

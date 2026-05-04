@@ -6,6 +6,7 @@ description = "Digital filters for Rill - Biquad, OnePole, StateVariable, etc."
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-digital-filters"
 
 [dependencies]
 rill-core = { workspace = true }

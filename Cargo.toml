@@ -25,6 +25,9 @@ license = "Apache-2.0"
 authors = ["Digital Rats / Rill Team"]
 edition = "2021"
 repository = "https://github.com/DigitalRats/rill"
+documentation = "https://docs.rs/rill-adrift"
+keywords = ["audio", "signal-processing", "dsp"]
+categories = ["multimedia::audio", "science::robotics"]
 
 [workspace.dependencies]
 parking_lot = "0.12"
