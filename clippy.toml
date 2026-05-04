@@ -1,6 +1,0 @@
-# Workspace-level clippy configuration.
-# Individual lint overrides for the whole project.
-
-# SIMD and math loops use index-based iteration for readability.
-# Converting to .iter().enumerate() would reduce clarity.
-needless_range_loop = "allow"
