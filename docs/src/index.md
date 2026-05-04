@@ -6,7 +6,7 @@ One dependency brings in the entire ecosystem:
 
 ```toml
 [dependencies]
-rill-adrift = "0.3"
+rill-adrift = "0.4"
 ```
 
 ```rust
@@ -39,7 +39,7 @@ The foundation (`rill-core`) provides lock-free queues, `no_std`-compatible math
 
 ## Project Status
 
-Active development — 16 crates, 0.3.0, 300+ tests.
+Active development — 17 crates, 0.4.0, 300+ tests.
 
 - [GitHub](https://github.com/DigitalRats/rill)
 - [crates.io](https://crates.io/crates/rill-adrift)

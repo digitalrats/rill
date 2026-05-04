@@ -10,11 +10,21 @@ use std::time::Duration;
 use alsa::pcm::{Access, Format, HwParams};
 use alsa::{Direction, ValueOr, PCM};
 
+use crate::audio_io::AudioIo;
 use crate::buffer::IoRingBuffer;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+
+/// Wrapper to make `*mut` `Send` for cross-thread AudioIo access.
+struct SendPtr(*mut Option<Box<dyn Fn()>>);
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
+impl Copy for SendPtr {}
+impl Clone for SendPtr {
+    fn clone(&self) -> Self { *self }
+}
 
 /// Команды для ALSA потока
 #[derive(Debug)]
@@ -35,6 +45,7 @@ pub(crate) enum AlsaState {
 pub struct AlsaBackend {
     config: AudioConfig,
     command_tx: Sender<AlsaCommand>,
+    process_cb: SendPtr,
     xruns: Arc<RwLock<u32>>,
     input_buffer: Arc<RwLock<IoRingBuffer>>,
     output_buffer: Arc<RwLock<IoRingBuffer>>,
@@ -61,6 +72,7 @@ impl AlsaBackend {
         let buffer_size = (config.buffer_size * config.output_channels * 4) as usize;
         let (command_tx, command_rx) = unbounded();
 
+        let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
         let xruns = Arc::new(RwLock::new(0));
         let input_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
         let output_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
@@ -72,6 +84,7 @@ impl AlsaBackend {
                 .unwrap_or_else(|| "default".to_string()),
         ));
 
+        let thread_cb = SendPtr(process_cb);
         let thread_xruns = xruns.clone();
         let thread_input = input_buffer.clone();
         let thread_output = output_buffer.clone();
@@ -83,6 +96,7 @@ impl AlsaBackend {
         let handle = thread::spawn(move || {
             run_alsa_thread(
                 command_rx,
+                thread_cb,
                 thread_xruns,
                 thread_input,
                 thread_output,
@@ -95,6 +109,7 @@ impl AlsaBackend {
         Ok(Self {
             config,
             command_tx,
+            process_cb: SendPtr(process_cb),
             xruns,
             input_buffer,
             output_buffer,
@@ -120,6 +135,7 @@ impl AlsaBackend {
 // Функция, выполняющаяся в отдельном потоке
 fn run_alsa_thread(
     command_rx: Receiver<AlsaCommand>,
+    process_cb: SendPtr,
     xruns: Arc<RwLock<u32>>,
     input_buffer: Arc<RwLock<IoRingBuffer>>,
     output_buffer: Arc<RwLock<IoRingBuffer>>,
@@ -193,6 +209,20 @@ fn run_alsa_thread(
                 let mut capture_buffer = vec![0i16; in_buffer_size.max(1)];
 
                 while running {
+                    // Wait until playback needs more data (event-driven, no sleep).
+                    match pcm_playback.wait(None) {
+                        Ok(true) => {}
+                        Ok(false) => continue,  // spurious wake, retry
+                        Err(e) => {
+                            eprintln!("ALSA playback wait error: {}", e);
+                            if let Err(recover_err) = pcm_playback.try_recover(e, true) {
+                                eprintln!("Failed to recover ALSA playback: {}", recover_err);
+                                running = false;
+                            }
+                            continue;
+                        }
+                    }
+
                     // ── Capture: читаем из ALSA → input ring ────────────────
                     if let Some(ref pcm) = pcm_capture {
                         match pcm.io_i16() {
@@ -222,6 +252,11 @@ fn run_alsa_thread(
                                 *xruns.write() += 1;
                             }
                         }
+                    }
+
+                    // ── Process callback: drives the signal graph ────────────
+                    if let Some(ref cb) = unsafe { &*process_cb.0 } {
+                        cb();
                     }
 
                     // ── Playback: читаем из output ring → ALSA ──────────────
@@ -269,8 +304,6 @@ fn run_alsa_thread(
                             AlsaCommand::Start => {}
                         }
                     }
-
-                    thread::sleep(Duration::from_micros(1000));
                 }
 
                 let _ = pcm_playback.drain();
@@ -405,11 +438,58 @@ impl AudioBackend for AlsaBackend {
     }
 }
 
+impl AudioIo for AlsaBackend {
+    fn set_process_callback(&self, cb: Box<dyn Fn()>) {
+        unsafe { *self.process_cb.0 = Some(cb); }
+    }
+
+    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+        let frames = left.len().min(right.len());
+        let mut buf = self.input_buffer.write();
+        let mut temp = vec![0.0f32; frames * 2];
+        let n = buf.read(&mut temp);
+        drop(buf);
+        let frames_out = n / 2;
+        for i in 0..frames_out.min(frames) {
+            left[i] = temp[i * 2];
+            right[i] = temp[i * 2 + 1];
+        }
+        frames_out
+    }
+
+    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
+        let frames = left.len().min(right.len());
+        let mut temp = vec![0.0f32; frames * 2];
+        for i in 0..frames {
+            temp[i * 2] = left[i];
+            temp[i * 2 + 1] = right[i];
+        }
+        let mut buf = self.output_buffer.write();
+        buf.write(&temp) / 2
+    }
+
+    fn start(&self) -> crate::audio_io::IoResult<()> {
+        self.command_tx
+            .send(AlsaCommand::Start)
+            .map_err(|e| format!("{e}"))?;
+        Ok(())
+    }
+
+    fn stop(&self) -> crate::audio_io::IoResult<()> {
+        self.command_tx
+            .send(AlsaCommand::Stop)
+            .map_err(|e| format!("{e}"))?;
+        Ok(())
+    }
+}
+
 impl Drop for AlsaBackend {
     fn drop(&mut self) {
         let _ = self.command_tx.send(AlsaCommand::Stop);
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
+        // Free the heap-allocated callback slot.
+        unsafe { drop(Box::from_raw(self.process_cb.0)); }
     }
 }

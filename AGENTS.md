@@ -27,7 +27,7 @@ Cargo workspace — 17 active crates:
 Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
-- **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `SignalEngine` — real-time safe graph engine with `process_tick()`, `process_block()`, and `spawn()`.
+- **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `SignalGraph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
 - **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::SignalEngine` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
@@ -93,28 +93,51 @@ mdbook serve docs/                # dev server at localhost:3000
     - Prefer internal workspace tools over bringing in new third-party dependencies.
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
-- **Versioning:** crates version synchronously (all at 0.3.0). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
+- **Versioning:** crates version synchronously (all at 0.4.0). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
 
-## Hard-RT safety
+## Real-time safety
 
-The signal graph runs entirely on the hardware callback thread (PipeWire ALSA,
-JACK RT thread). The following rules **must** be maintained:
+### Two backend models
+
+The signal graph runs wherever the `AudioIo` process callback fires. The
+constraints depend on the backend model:
+
+| Model | Backends | RT guarantee |
+|---|---|---|
+| **Callback‑driven** | PipeWire, JACK | Hard RT — callback fires on the audio device's real‑time thread. No syscalls, no allocation, no locks. |
+| **Poll‑driven** | ALSA, CPAL | Soft RT — the backend's own thread loops polling the audio device. The thread **must not** use `thread::sleep()` to pace iterations. Use `poll()` / `epoll()` on audio FDs instead. |
+
+### Rules for the RT path (applies to both models)
+
+Any code reached from the process callback — `generate()`, `process()`,
+`consume()`, `propagate()`, and everything they call — **must** obey:
 
 | Rule | Rationale |
 |---|---|
 | **No heap allocation in RT path** | `Vec::new()`, `Box::new()`, `format!()` inside `propagate`/`generate`/`process`/`consume` will cause xruns. All buffers must be stack-allocated or pre-allocated at graph construction. |
 | **No locks in RT path** | `Mutex::lock()`, `RwLock::write()` (even parking_lot) may spin. Communication with the control thread uses only `rill_core::queues::MpscQueue` (lock‑free SPSC). |
-| **No syscalls in RT path** | No file I/O, no socket operations, no `thread::sleep` in the callback chain. |
+| **No `thread::sleep()` in RT path** | `thread::sleep()` is a syscall — it blocks the calling thread, introduces timing jitter, and makes deterministic scheduling impossible. Even in poll‑driven backends (ALSA, CPAL) the processing loop must wait on audio FDs (`poll`/`epoll`), not on `sleep`. |
+| **No file I/O, no socket I/O in RT path** | Any syscall (open, read, write, send, recv) can block unpredictably. |
 | **`downstream_nodes` is pre‑filled** | `Port::downstream_nodes` is populated once by `GraphBuilder::build()` and iterated at runtime without deduplication or allocation. |
-| **Fixed‑size stack buffers** | PipeWire backend callbacks use `[f32; MAX_BLOCK_SAMPLES]` (512) instead of `vec![]`. |
+| **Fixed‑size stack buffers** | Backend callbacks must use `[f32; MAX_BLOCK_SAMPLES]` (512) instead of `vec![]`. |
 
 **Allowed exceptions:**
 - `MpscQueue::pop()` — lock‑free atomic, OK on RT.
 - `AtomicU32::fetch_add()` / `AtomicBool::store()` — OK on RT.
 - Raw pointer dereference (`*mut`, `*const`) — single‑threaded DAG, guaranteed valid.
+- `IoRingBuffer::read()` / `write()` — lock‑free atomic SPSC, OK on RT (used inside backends only, not in graph nodes).
+
+### Known issues
+
+1. **ALSA backend (`run_alsa_thread`)** uses `thread::sleep(1000μs)` to pace the
+   poll loop. This must be replaced with `poll()` on `snd_pcm_poll_descriptors()`.
+2. **CPAL backend** uses `thread::sleep(interval)` in the same way. Must be
+   replaced with an event‑driven wait (CPAL stream callbacks already fire on
+   their own thread — the processing callback should be driven from the output
+   stream callback, not a timer).
 
 **Testing:** any new RT path code must be verified with `cargo test --release`
 under `pw‑loopback` or similar virtual device to detect xruns.
@@ -177,11 +200,18 @@ chmod +x .git/hooks/pre-commit
 
 ## Threading model
 
-### Hardware callback thread (hard RT)
+### Audio I/O thread (where the process callback runs)
 
-The audio backend's process callback (PipeWire, ALSA, JACK) fires on its own
-real-time thread. `AudioInput` (push model) or `AudioOutput` (pull model) wires
-a callback that runs the entire signal graph:
+The `AudioIo::start()` callback fires on the backend's own thread. The nature
+of this thread depends on the backend:
+
+- **PipeWire / JACK** — the callback fires on the audio device's real‑time
+  thread (SCHED_FIFO). This is **hard RT**.
+- **ALSA / CPAL** — the callback fires on a dedicated polling thread managed
+  by the backend. This is **soft RT**; `thread::sleep()` is **not** an
+  acceptable wait primitive (see "Real-time safety" above).
+
+In all cases the callback runs:
 
 1. Drain `MpscQueue<ParameterCommand>` (parameter changes from control thread)
 2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
@@ -189,7 +219,7 @@ a callback that runs the entire signal graph:
 
 All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
 `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside
-this thread. No atomics, no locks — the graph is a single-threaded static DAG.
+this path. No atomics, no locks — the graph is a single-threaded static DAG.
 
 ### Control thread (soft RT) — green threads
 
@@ -253,8 +283,8 @@ telemetry channel closes on audio thread shutdown).
 
 If data crosses threads, use `rill_core::queues::MpscQueue<ParameterCommand>`.
 Everything else is single-threaded within the signal graph running inside the
-hardware callback. No external engine loop — `Port::propagate` replaces
-`SignalEngine::process_block()`.
+I/O callback (see "Audio I/O thread" above). No external engine loop —
+`Port::propagate` replaces `SignalEngine::process_block()`.
 
 ## Known pitfalls
 
@@ -263,8 +293,9 @@ hardware callback. No external engine loop — `Port::propagate` replaces
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: the hardware callback thread (hard RT) runs
-  `AudioInput`'s callback which drives the entire signal graph. The control
-  thread (soft RT) runs `rill-patchbay::PatchbayManager`. Communication via
-  `MpscQueue<ParameterCommand>`. Source/Sink nodes own I/O buffers — no
-  external engine loop, `Port::propagate` replaces `SignalEngine::process_block`.
+- **Two-thread architecture**: the audio I/O thread (see "Audio I/O thread"
+  above) runs `AudioInput`'s callback which drives the entire signal graph.
+  The control thread (soft RT) runs `rill-patchbay::PatchbayManager`.
+  Communication via `MpscQueue<ParameterCommand>`. Source/Sink nodes own
+  I/O buffers — no external engine loop, `Port::propagate` replaces
+  `SignalEngine::process_block`.
