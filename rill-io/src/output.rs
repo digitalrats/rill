@@ -94,6 +94,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
     ///
     /// `nodes_ptr` must point to the graph's node array (obtained from
     /// `graph.into_parts().0.into_boxed_slice()`). Valid until `stop()`.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn start(
         &mut self,
         nodes_ptr: *mut [NodeVariant<f32, BUF_SIZE>],

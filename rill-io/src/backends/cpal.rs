@@ -73,6 +73,7 @@ impl OutputSlot {
     unsafe fn clear(&self) {
         *self.0 = None;
     }
+    #[allow(clippy::mut_from_ref)]
     unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
         (*self.0).as_mut()
     }
