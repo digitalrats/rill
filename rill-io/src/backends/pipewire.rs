@@ -27,6 +27,10 @@ use crate::PwBuffers;
 /// Stack-allocated in RT callbacks — no heap allocation.
 const MAX_BLOCK_SAMPLES: usize = 512;
 
+/// Wrapper to make `*mut` `Send` for cross-thread AudioIo access.
+struct SendPtr(*mut Option<Box<dyn Fn()>>);
+unsafe impl Send for SendPtr {}
+
 // ============================================================================
 // Команды для PW потока
 // ============================================================================
@@ -46,7 +50,7 @@ pub struct PipewireBackend {
     command_tx: Sender<PwCommand>,
     input_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
     output_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
-    process_cb: *mut Option<Box<dyn Fn()>>,
+    process_cb: SendPtr,
     thread_handle: Option<thread::JoinHandle<()>>,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
@@ -81,6 +85,7 @@ impl PipewireBackend {
 
         // Allocate a slot for the process callback. Leaked — reclaimed on drop.
         let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
+        let process_cb_ptr = SendPtr(process_cb);
 
         let t_xruns = xruns.clone();
         let t_input = input_buffer.clone();
@@ -92,7 +97,7 @@ impl PipewireBackend {
         let handle = thread::Builder::new()
             .name("drift-pipewire".into())
             .spawn(move || {
-                run_pipewire_thread(command_rx, t_xruns, t_input, t_output, process_cb, t_config, t_running, t_midi_tx);
+                run_pipewire_thread(command_rx, t_xruns, t_input, t_output, process_cb_ptr, t_config, t_running, t_midi_tx);
             })
             .map_err(|e| IoError::Backend(e.to_string()))?;
 
@@ -101,7 +106,7 @@ impl PipewireBackend {
             command_tx,
             input_buffer,
             output_buffer,
-            process_cb,
+            process_cb: SendPtr(process_cb),
             thread_handle: Some(handle),
             xruns,
             running,
@@ -123,7 +128,7 @@ impl PipewireBackend {
 
 impl AudioIo for PipewireBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { *self.process_cb = Some(cb); }
+        unsafe { *self.process_cb.0 = Some(cb); }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
@@ -175,7 +180,7 @@ fn run_pipewire_thread(
     xruns: Arc<AtomicU32>,
     input_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
     output_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
-    process_cb: *mut Option<Box<dyn Fn()>>,
+    process_cb: SendPtr,
     config: AudioConfig,
     running: Arc<AtomicBool>,
     midi_event_tx: Option<Sender<MidiEvent>>,
@@ -247,7 +252,7 @@ fn run_pipewire_thread(
         .process(move |stream, _| {
             // 1. Call process callback (drives the signal graph)
             unsafe {
-                if let Some(ref cb) = *process_cb {
+                if let Some(ref cb) = *process_cb.0 {
                     cb();
                 }
             }

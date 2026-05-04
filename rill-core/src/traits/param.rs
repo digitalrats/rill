@@ -195,6 +195,14 @@ impl ParamValue {
             _ => None,
         }
     }
+
+    /// Return the string value if this is a `String` or `Choice` variant.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) | Self::Choice(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
 }
 
 // ============================================================================

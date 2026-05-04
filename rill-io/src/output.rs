@@ -2,21 +2,36 @@
 //!
 //! Registered as `"rill/output"` with `NodeVariant::Sink`.
 
+use std::cell::Cell;
+
 use rill_core::{
     math::Transcendental,
-    traits::{NodeCategory, NodeMetadata, NodeState, SignalNode, Sink},
+    traits::{
+        algorithm::ActionContext,
+        node::SignalNode,
+        processable::{NodeVariant, ProcessContext, Processable},
+        NodeCategory, NodeMetadata, NodeState, Sink,
+    },
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
 use crate::audio_io::AudioIoPtr;
 
 /// Stereo audio output sink. Writes to backend's output buffer in `consume()`.
+///
+/// In pull model (active Sink), [`source_idx`](Self::set_source_idx) must be
+/// set to the graph index of the Source node that drives the processing.
+/// Then [`start`](Self::start) drives the graph from that Source.
 pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
     backend: AudioIoPtr,
+    /// Pull‑model mode: when `true`, [`start()`] drives the graph by calling
+    /// `process_block` on the node at `source_idx` (the passive Source).
+    active: bool,
+    source_idx: usize,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
@@ -35,11 +50,83 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
             inputs,
             state: NodeState::new(44100.0),
             backend: AudioIoPtr::null(),
+            active: false,
+            source_idx: 0,
         }
     }
 
     pub fn set_backend(&mut self, backend: AudioIoPtr) {
         self.backend = backend;
+    }
+
+    /// Activate pull model and set the source node that drives the graph.
+    ///
+    /// When active, [`start()`](Self::start) drives the DAG by calling
+    /// `process_block` on `source_idx`, then propagating from its output
+    /// ports — the same pattern as push model (`AudioInput::start()`).
+    ///
+    /// `source_idx` is the index of the passive Source node in the graph's
+    /// node array (typically `topo_order[0]`).
+    pub fn set_active(&mut self, source_idx: usize) {
+        self.active = true;
+        self.source_idx = source_idx;
+    }
+
+    /// Start the reactive stream (pull model — active sink drives processing).
+    ///
+    /// Only drives the graph when [`set_active`](Self::set_active) was called
+    /// (pull model).  Otherwise behaves as a passive sink — `consume()` is
+    /// reached via `Port::propagate` from an upstream source.
+    ///
+    /// Callback sequence when active:
+    /// 1. `drain_fn()` — drain `MpscQueue<ParameterCommand>` into graph nodes
+    /// 2. `process_block()` on the source (`source_idx` in `nodes_ptr`)
+    /// 3. `Port::propagate()` — recursive DAG traversal ending at `consume()`
+    ///
+    /// `nodes_ptr` must point to the graph's node array (obtained from
+    /// `graph.into_parts().0.into_boxed_slice()`). Valid until `stop()`.
+    pub fn start(
+        &mut self,
+        nodes_ptr: *mut [NodeVariant<f32, BUF_SIZE>],
+        drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF_SIZE>]) + Send>,
+        sample_rate: f32,
+    ) {
+        if self.active {
+            let idx = self.source_idx;
+            if let Some(backend) = self.backend.as_ref() {
+                let sample_pos = Cell::new(0u64);
+
+                backend.set_process_callback(Box::new(move || {
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        let nodes = &mut *nodes_ptr;
+
+                        // 1. Drain parameter queue
+                        drain_fn(nodes);
+
+                        // 2. Clock tick
+                        let tick = ClockTick::new(
+                            sample_pos.get(), BUF_SIZE as u32, sample_rate,
+                        );
+
+                        // 3. Process source node (generate → fills output ports)
+                        let mut ctx = ProcessContext { clock: &tick };
+                        let _ = nodes[idx].process_block(&mut ctx);
+
+                        // 4. Propagate from source's output ports (walks DAG)
+                        let action_ctx = ActionContext::new(&tick);
+                        for po in 0..nodes[idx].num_signal_outputs() {
+                            if let Some(port) = nodes[idx].output_port(po) {
+                                let _ = port.propagate(port.buffer(), &action_ctx);
+                            }
+                        }
+
+                        sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
+                    }
+                }));
+                let _ = backend.start();
+            }
+        }
     }
 }
 
@@ -78,13 +165,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE>
     fn consume(
         &mut self,
         _clock: &ClockTick,
-        signal_inputs: &[&[T; BUF_SIZE]],
+        _signal_inputs: &[&[T; BUF_SIZE]],  // empty when called through propagate
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         if let Some(backend) = self.backend.as_ref() {
-            if let (Some(l_buf), Some(r_buf)) = (signal_inputs.first(), signal_inputs.get(1)) {
+            if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
+                let l_buf = lp.buffer.as_array();
+                let r_buf = rp.buffer.as_array();
                 let mut out_l = [0.0f32; BUF_SIZE];
                 let mut out_r = [0.0f32; BUF_SIZE];
                 for i in 0..BUF_SIZE {

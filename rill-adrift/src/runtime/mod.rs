@@ -45,15 +45,6 @@ use rill_patchbay::engine::PatchbayEngine;
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
 
-#[cfg(all(feature = "io", feature = "serialization"))]
-use crate::registration;
-
-#[cfg(all(feature = "io", feature = "serialization"))]
-use crate::io::audio_io::AudioIo;
-
-#[cfg(all(feature = "io", feature = "serialization", feature = "pipewire"))]
-use crate::io::PipewireBackend;
-
 #[cfg(feature = "serialization")]
 use rill_graph::serialization::GraphDocument;
 #[cfg(feature = "serialization")]
@@ -61,14 +52,6 @@ use rill_patchbay::document::PatchbayDocument;
 
 mod config;
 pub use config::RuntimeConfig;
-
-#[cfg(feature = "io")]
-mod engine;
-#[cfg(feature = "io")]
-#[cfg(feature = "io")]
-use engine::AudioHandle;
-#[cfg(all(feature = "io", feature = "serialization"))]
-use engine::BUF_SIZE;
 
 #[cfg(feature = "osc")]
 mod dispatch;
@@ -112,9 +95,6 @@ pub enum RuntimeError {
     /// Patchbay document could not be loaded or applied.
     #[cfg(feature = "serialization")]
     Patchbay(String),
-    /// Audio engine / backend error.
-    #[cfg(feature = "io")]
-    Audio(String),
     /// OSC server error.
     #[cfg(feature = "osc")]
     Osc(String),
@@ -130,10 +110,12 @@ pub enum RuntimeError {
 /// [`start`](Runtime::start), or use the free function [`run`] for
 /// the all-in-one lifecycle.
 pub struct Runtime {
-    config: RuntimeConfig,
-
     /// Lock-free command queue (control → audio thread).
     pub(crate) queue: Arc<MpscQueue<ParameterCommand>>,
+
+    /// Host configuration (stored for serialized graph/patchbay loading).
+    #[cfg(feature = "serialization")]
+    config: RuntimeConfig,
 
     /// Current graph document (loaded, not yet built).
     #[cfg(feature = "serialization")]
@@ -150,10 +132,6 @@ pub struct Runtime {
     #[cfg(feature = "osc")]
     osc_surface: OscSurface,
 
-    /// Running audio engine (audio thread).
-    #[cfg(feature = "io")]
-    audio: Option<AudioHandle>,
-
     /// Running OSC server + dispatch task.
     #[cfg(feature = "osc")]
     osc: Option<OscHandle>,
@@ -161,10 +139,11 @@ pub struct Runtime {
 
 impl Runtime {
     /// Create a new (stopped) runtime with the given configuration.
-    pub fn new(config: RuntimeConfig) -> Self {
+    pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
         Self {
             queue: Arc::new(MpscQueue::new()),
             control: None,
+            #[cfg(feature = "serialization")]
             config,
             #[cfg(feature = "serialization")]
             graph_doc: None,
@@ -172,8 +151,6 @@ impl Runtime {
             control_shared: None,
             #[cfg(feature = "osc")]
             osc_surface: Vec::new(),
-            #[cfg(feature = "io")]
-            audio: None,
             #[cfg(feature = "osc")]
             osc: None,
         }
@@ -259,70 +236,15 @@ impl Runtime {
 
     // ─── Lifecycle ─────────────────────────────────────────────────
 
-    /// Start audio, control, and OSC subsystems according to configuration.
+    /// Start control and OSC subsystems according to configuration.
     #[cfg(feature = "serialization")]
     pub async fn start(&mut self) -> Result<(), RuntimeError> {
-        #[cfg(feature = "io")]
-        if let Some(ref backend) = self.config.audio_backend.clone() {
-            let doc = self.graph_doc.take().ok_or(RuntimeError::Graph(
-                "no graph document loaded".into(),
-            ))?;
-            self.start_audio(&doc, backend)?;
-        }
-
         #[cfg(feature = "osc")]
         if let Some(ref bind) = self.config.osc_bind.clone() {
             self.start_osc(bind).await?;
         }
 
         Ok(())
-    }
-
-    /// Start the audio engine.
-    #[cfg(all(feature = "io", feature = "serialization"))]
-    pub fn start_audio(
-        &mut self,
-        doc: &GraphDocument,
-        backend: &str,
-    ) -> Result<(), RuntimeError> {
-        if self.audio.is_some() {
-            return Err(RuntimeError::Audio("already running".into()));
-        }
-
-        // Register backend before graph construction (node constructors read it).
-        let _reg = create_and_register_backend(
-            backend,
-            self.config.sample_rate as u32,
-            self.config.audio_input.as_deref(),
-            self.config.audio_output.as_deref(),
-        )?;
-
-        let registry = registration::registry::<BUF_SIZE>();
-        let builder = doc
-            .clone()
-            .into_builder::<f32, BUF_SIZE>(registry)
-            .map_err(|e| RuntimeError::Graph(format!("into_builder: {e}")))?;
-
-        registration::clear_audio_backend();
-
-        let handle = AudioHandle::start(
-            builder,
-            self.config.sample_rate,
-            self.queue.clone(),
-        )
-        .map_err(|e| RuntimeError::Audio(e))?;
-
-        self.audio = Some(handle);
-        log::info!("audio engine started ({backend})");
-        Ok(())
-    }
-
-    /// Stop the audio engine.
-    #[cfg(feature = "io")]
-    pub fn stop_audio(&mut self) {
-        if self.audio.take().is_some() {
-            log::info!("audio engine stopped");
-        }
     }
 
     /// Start the OSC server with system and user surface handlers.
@@ -359,9 +281,6 @@ impl Runtime {
             pe.stop();
         }
 
-        #[cfg(feature = "io")]
-        self.stop_audio();
-
         log::info!("runtime stopped");
     }
 }
@@ -372,39 +291,4 @@ impl Drop for Runtime {
     }
 }
 
-// ─── Backend factory ─────────────────────────────────────────────
 
-/// Create and register a backend. The pointer is read by node constructors.
-#[cfg(all(feature = "io", feature = "serialization"))]
-fn create_and_register_backend(
-    name: &str,
-    sample_rate: u32,
-    input_device: Option<&str>,
-    output_device: Option<&str>,
-) -> Result<(), RuntimeError> {
-    use crate::io::AudioConfig;
-
-    let mut config = AudioConfig::new()
-        .with_sample_rate(sample_rate)
-        .with_buffer_size(engine::BUF_SIZE as u32)
-        .with_channels(2);
-    if let Some(d) = input_device {
-        config = config.with_input_device(d);
-    }
-    if let Some(d) = output_device {
-        config = config.with_output_device(d);
-    }
-
-    #[cfg(feature = "pipewire")]
-    if name == "pipewire" {
-        let backend = Box::new(
-            PipewireBackend::new(config).map_err(|e| RuntimeError::Audio(e.to_string()))?,
-        );
-        let ptr: *const dyn AudioIo = &*backend;
-        registration::set_audio_backend(ptr);
-        std::mem::forget(backend);
-        return Ok(());
-    }
-
-    Err(RuntimeError::Audio(format!("unsupported backend: {name}")))
-}

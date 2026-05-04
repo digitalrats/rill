@@ -9,11 +9,21 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+use crate::audio_io::AudioIo;
 use crate::buffer::IoRingBuffer;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+
+/// Wrapper to make `*mut` `Send` for cross-thread AudioIo access.
+struct SendPtr(*mut Option<Box<dyn Fn()>>);
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
+impl Copy for SendPtr {}
+impl Clone for SendPtr {
+    fn clone(&self) -> Self { *self }
+}
 
 // Команды для потока
 #[derive(Debug)]
@@ -41,6 +51,7 @@ pub struct CpalBackend {
     host: Arc<cpal::Host>,
     command_tx: Sender<Command>,
     status_rx: Receiver<Status>,
+    process_cb: SendPtr,
     xruns: Arc<RwLock<u32>>,
     input_buffer: Arc<RwLock<IoRingBuffer>>,
     output_buffer: Arc<RwLock<IoRingBuffer>>,
@@ -61,15 +72,17 @@ impl CpalBackend {
     /// Создать новый CPAL бэкенд
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         let host = Arc::new(cpal::default_host());
-        let buffer_size = (config.buffer_size * config.output_channels * 4) as usize;
+        let buffer_size = (config.buffer_size * config.output_channels.max(config.input_channels).max(1) * 4) as usize;
 
         let (command_tx, command_rx) = unbounded();
         let (status_tx, status_rx) = unbounded();
 
+        let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
         let xruns = Arc::new(RwLock::new(0));
         let input_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
         let output_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
 
+        let thread_cb = SendPtr(process_cb);
         let thread_host = host.clone();
         let thread_input = input_buffer.clone();
         let thread_output = output_buffer.clone();
@@ -81,6 +94,7 @@ impl CpalBackend {
             run_cpal_thread(
                 command_rx,
                 status_tx,
+                thread_cb,
                 thread_host,
                 thread_config,
                 thread_input,
@@ -94,6 +108,7 @@ impl CpalBackend {
             host,
             command_tx,
             status_rx,
+            process_cb: SendPtr(process_cb),
             xruns,
             input_buffer,
             output_buffer,
@@ -117,15 +132,17 @@ impl CpalBackend {
 fn run_cpal_thread(
     command_rx: Receiver<Command>,
     status_tx: Sender<Status>,
+    process_cb: SendPtr,
     host: Arc<cpal::Host>,
     config: AudioConfig,
     input_buffer: Arc<RwLock<IoRingBuffer>>,
     output_buffer: Arc<RwLock<IoRingBuffer>>,
     xruns: Arc<RwLock<u32>>,
 ) {
-    let mut _input_device: Option<cpal::Device> = None;
+    let mut input_device: Option<cpal::Device> = None;
     let mut output_device: Option<cpal::Device> = None;
-    let mut stream: Option<cpal::Stream> = None;
+    let mut output_stream: Option<cpal::Stream> = None;
+    let mut input_stream: Option<cpal::Stream> = None;
 
     while let Ok(cmd) = command_rx.recv() {
         match cmd {
@@ -133,7 +150,7 @@ fn run_cpal_thread(
                 input_device: in_name,
                 output_device: out_name,
             } => {
-                _input_device = find_device(&host, in_name.as_deref(), true).ok().flatten();
+                input_device = find_device(&host, in_name.as_deref(), true).ok().flatten();
                 output_device = find_device(&host, out_name.as_deref(), false)
                     .ok()
                     .flatten();
@@ -148,6 +165,7 @@ fn run_cpal_thread(
             }
 
             Command::Start => {
+                // ── Выходной (playback) поток ───────────────────────────────
                 if let Some(dev) = &output_device {
                     let out_buf = output_buffer.clone();
                     let xruns_clone = xruns.clone();
@@ -162,31 +180,98 @@ fn run_cpal_thread(
                         &stream_config,
                         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                             let mut out_buf_lock = out_buf.write();
-                            let mut temp = vec![0.0f32; data.len()];
-                            out_buf_lock.read(&mut temp);
-                            data.copy_from_slice(&temp[..data.len()]);
+                            let n = out_buf_lock.read(data);
+                            drop(out_buf_lock);
+                            if n < data.len() {
+                                data[n..].fill(0.0);
+                            }
                         },
                         move |err| {
-                            eprintln!("Stream error: {}", err);
+                            eprintln!("Output stream error: {}", err);
                             *xruns_clone.write() += 1;
                         },
                         None,
                     ) {
                         Ok(s) => {
                             if s.play().is_ok() {
-                                stream = Some(s);
-                                let _ = status_tx.send(Status::Started);
+                                output_stream = Some(s);
+                            } else {
+                                let _ = status_tx.send(Status::Error("Failed to play output stream".into()));
+                                continue;
                             }
                         }
                         Err(e) => {
-                            let _ = status_tx.send(Status::Error(e.to_string()));
+                            let _ = status_tx.send(Status::Error(format!("Output stream build: {e}")));
+                            continue;
                         }
                     }
+                }
+
+                // ── Входной (capture) поток ─────────────────────────────────
+                if let Some(dev) = &input_device {
+                    let in_buf = input_buffer.clone();
+                    let xruns_clone = xruns.clone();
+
+                    let stream_config = cpal::StreamConfig {
+                        channels: config.input_channels as u16,
+                        sample_rate: cpal::SampleRate(config.sample_rate),
+                        buffer_size: cpal::BufferSize::Fixed(config.buffer_size),
+                    };
+
+                    match dev.build_input_stream(
+                        &stream_config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            let mut in_buf_lock = in_buf.write();
+                            in_buf_lock.write(data);
+                            drop(in_buf_lock);
+                        },
+                        move |err| {
+                            eprintln!("Input stream error: {}", err);
+                            *xruns_clone.write() += 1;
+                        },
+                        None,
+                    ) {
+                        Ok(s) => {
+                            if s.play().is_ok() {
+                                input_stream = Some(s);
+                            } else {
+                                log::warn!("Failed to play input stream — capture may be inactive");
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Input stream build: {e} — capture disabled");
+                        }
+                    }
+                }
+
+                let _ = status_tx.send(Status::Started);
+
+                // Processing loop: call the graph callback at buffer-sized intervals.
+                let interval = Duration::from_micros(
+                    (config.buffer_size as u64 * 1_000_000 / config.sample_rate as u64).max(1),
+                );
+                let mut running = true;
+                while running {
+                    if let Some(ref cb) = unsafe { &*process_cb.0 } {
+                        cb();
+                    }
+
+                    // Check for stop command (non-blocking).
+                    while let Ok(cmd) = command_rx.try_recv() {
+                        if matches!(cmd, Command::Stop) {
+                            running = false;
+                        }
+                    }
+
+                    thread::sleep(interval);
                 }
             }
 
             Command::Stop => {
-                if let Some(s) = stream.take() {
+                if let Some(s) = output_stream.take() {
+                    let _ = s.pause();
+                }
+                if let Some(s) = input_stream.take() {
                     let _ = s.pause();
                 }
                 let _ = status_tx.send(Status::Stopped);
@@ -216,12 +301,10 @@ fn find_device(
             }
         }
         Ok(None)
+    } else if is_input {
+        Ok(host.default_input_device())
     } else {
-        if is_input {
-            Ok(host.default_input_device())
-        } else {
-            Ok(host.default_output_device())
-        }
+        Ok(host.default_output_device())
     }
 }
 
@@ -302,11 +385,59 @@ impl AudioBackend for CpalBackend {
     }
 }
 
+impl AudioIo for CpalBackend {
+    fn set_process_callback(&self, cb: Box<dyn Fn()>) {
+        unsafe { *self.process_cb.0 = Some(cb); }
+    }
+
+    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+        let frames = left.len().min(right.len());
+        let mut buf = self.input_buffer.write();
+        let mut temp = vec![0.0f32; frames * 2];
+        let n = buf.read(&mut temp);
+        drop(buf);
+        let frames_out = n / 2;
+        for i in 0..frames_out.min(frames) {
+            left[i] = temp[i * 2];
+            right[i] = temp[i * 2 + 1];
+        }
+        frames_out
+    }
+
+    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
+        let frames = left.len().min(right.len());
+        let mut temp = vec![0.0f32; frames * 2];
+        for i in 0..frames {
+            temp[i * 2] = left[i];
+            temp[i * 2 + 1] = right[i];
+        }
+        let mut buf = self.output_buffer.write();
+        buf.write(&temp) / 2
+    }
+
+    fn start(&self) -> crate::audio_io::IoResult<()> {
+        self.command_tx
+            .send(Command::Start)
+            .map_err(|e| format!("{e}"))?;
+        self.wait_for_status(Status::Started)
+            .map_err(|e| format!("{e}"))?;
+        Ok(())
+    }
+
+    fn stop(&self) -> crate::audio_io::IoResult<()> {
+        self.command_tx
+            .send(Command::Stop)
+            .map_err(|e| format!("{e}"))?;
+        Ok(())
+    }
+}
+
 impl Drop for CpalBackend {
     fn drop(&mut self) {
+        let _ = self.command_tx.send(Command::Stop);
         if let Some(handle) = self.thread_handle.take() {
-            let _ = self.command_tx.send(Command::Stop);
             let _ = handle.join();
         }
+        unsafe { drop(Box::from_raw(self.process_cb.0)); }
     }
 }

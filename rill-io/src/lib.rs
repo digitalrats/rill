@@ -7,7 +7,7 @@
 #![warn(missing_docs)]
 
 mod backend;
-mod buffer;
+pub mod buffer;
 mod config;
 mod error;
 

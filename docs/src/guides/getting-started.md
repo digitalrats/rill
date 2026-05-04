@@ -4,14 +4,14 @@ Add `rill-adrift` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rill-adrift = "0.3"
+rill-adrift = "0.4"
 ```
 
 For individual crates (if you don't need the full ecosystem):
 
 ```toml
 [dependencies]
-rill-core-dsp = "0.3"
+rill-core-dsp = "0.4"
 ```
 
 ## Minimal DSP Pipeline
@@ -76,13 +76,13 @@ engine.process_block(&tick)?;
 Enable the `io` feature on `rill-adrift` (default) or add `rill-io` directly:
 
 ```toml
-rill-adrift = { version = "0.3", features = ["io"] }
+rill-adrift = { version = "0.4", features = ["io"] }
 ```
 
 Backends are feature-gated:
 
 ```toml
-rill-adrift = { version = "0.3", features = ["io", "alsa"] }
+rill-adrift = { version = "0.4", features = ["io", "alsa"] }
 ```
 
 Available backends: `alsa`, `cpal` (default), `pipewire`, `jack`.

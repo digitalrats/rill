@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[dev-dependencies]
+parking_lot = "0.12"
+
 [dependencies]
 rill-core = { workspace = true }
 rill-core-dsp = { workspace = true }
