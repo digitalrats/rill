@@ -23,9 +23,9 @@ use crate::error::{IoError, IoResult};
 use crate::midi::MidiEvent;
 use crate::PwBuffers;
 
-/// Maximum stereo block in samples (1024 frames × 2 channels).
+/// Maximum stereo block in samples (4096 frames × 2 channels).
 /// Stack-allocated in RT callbacks — no heap allocation.
-const MAX_BLOCK_SAMPLES: usize = 2048;
+const MAX_BLOCK_SAMPLES: usize = 8192;
 
 /// Callback slot — stores a `*mut Option<Box<dyn Fn()>>` as `usize`
 /// so the field type itself is `Send`.
@@ -86,7 +86,7 @@ impl PipewireBackend {
             ));
         }
 
-        let buf_cap = (config.buffer_size * config.output_channels.max(1) * 4) as usize;
+        let buf_cap = (config.buffer_size * config.output_channels.max(1) * 16) as usize;
 
         let xruns = Arc::new(AtomicU32::new(0));
         let running = Arc::new(AtomicBool::new(false));
@@ -144,25 +144,28 @@ impl AudioIo for PipewireBackend {
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+        let n = left.len().min(right.len());
+        let max_s = n.saturating_mul(2).min(MAX_BLOCK_SAMPLES);
         let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-        let n = self.input_buffer.read(&mut temp[..left.len().min(right.len()).min(256).saturating_mul(2)]);
-        let frames = n / 2;
-        for i in 0..frames.min(left.len()).min(right.len()) {
+        let n_read = self.input_buffer.read(&mut temp[..max_s]);
+        let frames = n_read / 2;
+        let out = frames.min(n);
+        for i in 0..out {
             left[i] = temp[i * 2];
             right[i] = temp[i * 2 + 1];
         }
-        frames
+        out
     }
 
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
         let n = left.len().min(right.len());
+        let max_s = n.saturating_mul(2).min(MAX_BLOCK_SAMPLES);
         let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-        let len = n.min(256);
-        for i in 0..len {
+        for i in 0..(max_s / 2) {
             temp[i * 2] = left[i];
             temp[i * 2 + 1] = right[i];
         }
-        self.output_buffer.write(&temp[..len * 2]) / 2
+        self.output_buffer.write(&temp[..max_s]) / 2
     }
 
     fn start(&self) -> AudioIoResult<()> {
@@ -262,60 +265,8 @@ fn run_pipewire_thread(
     let _out_listener = match out_stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
-            // 1. Dequeue the PW DMA buffer to know required frame count
-            let mut pw_buf = match stream.dequeue_buffer() {
-                Some(b) => b,
-                None => {
-                    oxruns.fetch_add(1, Ordering::Relaxed);
-                    return;
-                }
-            };
-            let datas = pw_buf.datas_mut();
-            if datas.is_empty() {
-                return;
-            }
-            let data = &mut datas[0];
-            let slice = match data.data() {
-                Some(s) => s,
-                None => return,
-            };
-
-            let stride = out_channels * 4;
-            let n_frames = slice.len() / stride;
-            let needed = n_frames * out_channels;
-
-            // 2. Process enough blocks to fill the DMA buffer.
-            //    Each process_cb.call() produces BUF_SIZE frames.
-            //    Loop until the ring buffer has enough data.
-            let mut safety = 32;
-            while obuf.len() < needed && safety > 0 {
-                unsafe { process_cb.call(); }
-                safety -= 1;
-            }
-
-            // 3. Read from output ring → DMA buffer
-            let samples_to_write = needed.min(MAX_BLOCK_SAMPLES);
-            let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-            let read = obuf.read(&mut temp[..samples_to_write]);
-            for i in 0..samples_to_write {
-                let offset = i * 4;
-                if offset + 4 <= slice.len() {
-                    let val = if i < read { temp[i] } else { 0.0 };
-                    slice[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
-                }
-            }
-            // Zero out any remaining DMA buffer beyond what we filled
-            for i in samples_to_write..(n_frames * out_channels) {
-                let offset = i * 4;
-                if offset + 4 <= slice.len() {
-                    slice[offset..offset + 4].copy_from_slice(&0.0f32.to_le_bytes());
-                }
-            }
-
-            let chunk = data.chunk_mut();
-            *chunk.offset_mut() = 0;
-            *chunk.stride_mut() = stride as i32;
-            *chunk.size_mut() = (stride * n_frames) as u32;
+            unsafe { process_cb.call(); }
+            process_output(stream, &obuf, &oxruns, out_channels);
         })
         .register()
     {
@@ -590,6 +541,53 @@ fn process_midi_input(
 // ============================================================================
 // Process callbacks (RT-safe, called from PipeWire audio thread)
 // ============================================================================
+
+fn process_output(
+    stream: &pw::stream::Stream,
+    output_buffer: &IoRingBuffer,
+    xruns: &AtomicU32,
+    channels: usize,
+) {
+    let mut buffer = match stream.dequeue_buffer() {
+        Some(b) => b,
+        None => {
+            xruns.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+    let datas = buffer.datas_mut();
+    if datas.is_empty() {
+        return;
+    }
+    let data = &mut datas[0];
+    let slice = match data.data() {
+        Some(s) => s,
+        None => return,
+    };
+    let stride = channels * 4;
+    let n_frames = slice.len() / stride;
+    let n_samples = n_frames * channels;
+    let max_s = n_samples.min(MAX_BLOCK_SAMPLES);
+    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
+    let read = output_buffer.read(&mut temp[..max_s]);
+    for i in 0..max_s {
+        let offset = i * 4;
+        if offset + 4 <= slice.len() {
+            let val = if i < read { temp[i] } else { 0.0 };
+            slice[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+        }
+    }
+    for i in max_s..n_samples {
+        let offset = i * 4;
+        if offset + 4 <= slice.len() {
+            slice[offset..offset + 4].copy_from_slice(&0.0f32.to_le_bytes());
+        }
+    }
+    let chunk = data.chunk_mut();
+    *chunk.offset_mut() = 0;
+    *chunk.stride_mut() = stride as i32;
+    *chunk.size_mut() = (stride * n_frames) as u32;
+}
 
 fn process_input(
     stream: &pw::stream::Stream,
