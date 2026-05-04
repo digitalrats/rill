@@ -1,5 +1,67 @@
 # CHANGELOG
 
+## [0.5.0-beta.1] — 2026-05-04
+
+### 🎉 First beta release
+
+All 17 crates published on crates.io at `0.5.0-beta.1`.
+
+### ✨ New
+
+- **WAV playback example** (`rill-adrift/examples/play_wav.rs`) — full pipeline
+  from file to speaker: load WAV → SamplePlayer → BiquadFilter → AudioOutput
+- **CLI backend selection** — `cargo run --example play_wav -- [backend] [file]`
+- **24-bit WAV support** — `rill-sampler` now handles 24-bit PCM in addition to 16-bit
+
+### 🔧 Improvements
+
+- **All 4 audio backends produce clean audio**: CPAL, ALSA, PipeWire, JACK
+- **OutputWindow pattern** — `write_output()` writes directly into DMA buffer,
+  eliminating intermediate ring buffers and associated sizing issues (CPAL, PW, JACK)
+- **Lock-free `IoRingBuffer`** — rewritten with `UnsafeCell` interior mutability,
+  all methods take `&self`, no `Mutex`/`RwLock` in the RT path
+- **No `thread::sleep` in any backend** — all backends are event-driven or
+  callback-driven
+- **WDF macros accept bare expressions** — `$pr:expr` replaces `$pr:tt`,
+  no more unnecessary braces
+
+### 🧹 Dependencies removed
+
+- `parking_lot` — removed from `rill-io` dependencies (all uses replaced with
+  `std::sync::Mutex`/`AtomicU32` or lock-free patterns)
+- `crossbeam-channel` — removed from `rill-io` dependencies (start/stop via
+  `AtomicBool` + `thread::park`/`unpark`, MIDI events via `std::sync::mpsc`)
+
+### 🏗️ Infrastructure
+
+- **CI** — GitHub Actions with 4 jobs: lint, test, test-minimal, doc
+- **Pre-commit hook** — rejects direct commits to `develop`/`main`/`master`
+- **`clippy.toml`** — workspace-level lint configuration (later removed,
+  `needless_range_loop` allowed at workspace level)
+- **491 tests** — all passing, 0 clippy warnings (excluding intentional
+  `needless_range_loop` in SIMD code)
+
+### 📚 Documentation
+
+- **Root README**: 1270 → 154 lines, English only, no duplication
+- **6 new mdBook chapters**: `core`, `graph`, `real-time-safety`,
+  `world-of-automatons`, `git-flow`, overhauled `getting-started`
+- **Doc comments** on all public API items — 0 missing-docs warnings
+- **Doc link warnings**: 48 → 0
+- **All 17 crate READMEs** present and up to date
+- **`rill-sampler/README.md`** written from scratch
+- **`rill-patchbay/README.md`** rewritten with green thread architecture
+- **`rill-adrift/README.md`** expanded with feature flags table
+- **`CHANGELOG.md`**, **`MANIFESTO.md`** moved to repository root
+
+### 🧪 Quality
+
+- `cargo clippy --workspace`: **0 warnings** (down from 755)
+- `cargo doc --workspace --no-deps`: **0 warnings** (down from 48)
+- `cargo test --workspace`: **491 passed, 0 failed**
+
+---
+
 ## [0.4.0] — 2026-05-02
 
 ### 💥 Breaking changes

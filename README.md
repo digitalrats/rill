@@ -117,7 +117,7 @@ graph TD
 - **mdBook guide** — [rill-adrift.io](https://rill-adrift.io) (build locally: `mdbook build docs/`)
 - **API docs** — [docs.rs/rill-adrift](https://docs.rs/rill-adrift)
 - **Architecture** — `docs/src/architecture/` (core, graph, overview)
-- **Changelog** — [docs/CHANGELOG](docs/CHANGELOG)
+- **Changelog** — [CHANGELOG.md](CHANGELOG.md)
 
 ## Testing
 
