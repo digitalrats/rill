@@ -6,6 +6,7 @@ description = "Wave Digital Filter core — elements, adapters, and analysis for
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-core-wdf"
 
 [dependencies]
 rill-core = { workspace = true }

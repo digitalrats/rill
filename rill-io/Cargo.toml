@@ -6,6 +6,7 @@ description = "Audio I/O backends for Rill - CPAL, ALSA, PipeWire, JACK"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-io"
 
 [dependencies]
 rill-core = { workspace = true }

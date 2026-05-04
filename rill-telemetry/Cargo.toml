@@ -6,6 +6,7 @@ description = "Real-time telemetry probe and collector for Rill audio graph"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-telemetry"
 
 [dependencies]
 rill-core = { workspace = true }

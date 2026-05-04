@@ -6,6 +6,7 @@ description = "Digital audio effects for Rill - Delay, Distortion, Chorus, Rever
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-digital-effects"
 
 [dependencies]
 rill-core = { workspace = true }

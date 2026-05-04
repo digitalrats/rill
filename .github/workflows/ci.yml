@@ -17,6 +17,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
 
@@ -25,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Install ALSA deps
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Install PipeWire deps
@@ -38,6 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Install ALSA deps
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: cargo test -p rill-core -p rill-core-dsp -p rill-core-wdf
@@ -50,6 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Install ALSA deps
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Install PipeWire deps

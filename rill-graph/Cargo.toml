@@ -6,6 +6,7 @@ description = "Real-time audio graph with block processing"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-graph"
 
 [dependencies]
 rill-core = { workspace = true }

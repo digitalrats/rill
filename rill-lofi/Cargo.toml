@@ -6,6 +6,7 @@ description = "Lo-fi audio emulation: 8-bit, 12-bit, NES, AY-3-8910, Akai S900"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/rill-lofi"
 
 [dependencies]
 rill-core = { workspace = true }
