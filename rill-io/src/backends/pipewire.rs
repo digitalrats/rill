@@ -23,9 +23,9 @@ use crate::error::{IoError, IoResult};
 use crate::midi::MidiEvent;
 use crate::PwBuffers;
 
-/// Maximum stereo block in samples (256 frames × 2 channels).
+/// Maximum stereo block in samples (1024 frames × 2 channels).
 /// Stack-allocated in RT callbacks — no heap allocation.
-const MAX_BLOCK_SAMPLES: usize = 512;
+const MAX_BLOCK_SAMPLES: usize = 2048;
 
 /// Callback slot — stores a `*mut Option<Box<dyn Fn()>>` as `usize`
 /// so the field type itself is `Send`.
@@ -262,10 +262,55 @@ fn run_pipewire_thread(
     let _out_listener = match out_stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
-            // 1. Call process callback (drives the signal graph)
-            unsafe { process_cb.call(); }
-            // 2. Read from output ring → DMA buffer
-            process_output(stream, &obuf, &oxruns, out_channels);
+            // 1. Dequeue the PW DMA buffer to know required frame count
+            let mut pw_buf = match stream.dequeue_buffer() {
+                Some(b) => b,
+                None => {
+                    oxruns.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
+            let datas = pw_buf.datas_mut();
+            if datas.is_empty() {
+                return;
+            }
+            let data = &mut datas[0];
+            let slice = match data.data() {
+                Some(s) => s,
+                None => return,
+            };
+
+            let stride = out_channels * 4;
+            let n_frames = slice.len() / stride;
+            let needed = n_frames * out_channels;
+
+            // 2. Process enough blocks to fill the DMA buffer.
+            //    Each process_cb.call() produces BUF_SIZE frames.
+            //    Loop until the ring buffer has enough data.
+            let mut safety = 32;
+            while obuf.len() < needed && safety > 0 {
+                unsafe { process_cb.call(); }
+                safety -= 1;
+            }
+
+            // 3. Read from output ring → DMA buffer
+            let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
+            let read = obuf.read(&mut temp[..needed.min(MAX_BLOCK_SAMPLES)]);
+            for frame in 0..n_frames.min(256) {
+                for ch in 0..out_channels.min(2) {
+                    let idx = frame * out_channels + ch;
+                    let offset = idx * 4;
+                    if offset + 4 <= slice.len() {
+                        let val = if idx < read { temp[idx] } else { 0.0 };
+                        slice[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                    }
+                }
+            }
+
+            let chunk = data.chunk_mut();
+            *chunk.offset_mut() = 0;
+            *chunk.stride_mut() = stride as i32;
+            *chunk.size_mut() = (stride * n_frames) as u32;
         })
         .register()
     {
@@ -540,55 +585,6 @@ fn process_midi_input(
 // ============================================================================
 // Process callbacks (RT-safe, called from PipeWire audio thread)
 // ============================================================================
-
-fn process_output(
-    stream: &pw::stream::Stream,
-    output_buffer: &IoRingBuffer,
-    xruns: &AtomicU32,
-    channels: usize,
-) {
-    let mut buffer = match stream.dequeue_buffer() {
-        Some(b) => b,
-        None => {
-            xruns.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-    };
-
-    let datas = buffer.datas_mut();
-    if datas.is_empty() {
-        return;
-    }
-
-    let data = &mut datas[0];
-    let slice = match data.data() {
-        Some(s) => s,
-        None => return,
-    };
-
-    let stride = channels * 4;
-    let n_frames = slice.len() / stride;
-    let n_samples = n_frames * channels;
-
-    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-    let read = output_buffer.read(&mut temp[..n_samples.min(MAX_BLOCK_SAMPLES)]);
-
-    for frame in 0..n_frames.min(256) {
-        for ch in 0..channels.min(2) {
-            let idx = frame * channels + ch;
-            let offset = idx * 4;
-            if offset + 4 <= slice.len() {
-                let val = if idx < read { temp[idx] } else { 0.0 };
-                slice[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
-            }
-        }
-    }
-
-    let chunk = data.chunk_mut();
-    *chunk.offset_mut() = 0;
-    *chunk.stride_mut() = stride as i32;
-    *chunk.size_mut() = (stride * n_frames) as u32;
-}
 
 fn process_input(
     stream: &pw::stream::Stream,
