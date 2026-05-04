@@ -39,7 +39,7 @@ tokio = { workspace = true, optional = true, features = ["signal"] }
 serde_json = { version = "1.0", optional = true }
 
 [features]
-default = ["io", "lofi", "telemetry", "osc", "sampler"]
+default = ["io", "lofi", "telemetry", "osc", "sampler", "cpal"]
 
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi"]
