@@ -294,16 +294,21 @@ fn run_pipewire_thread(
             }
 
             // 3. Read from output ring → DMA buffer
+            let samples_to_write = needed.min(MAX_BLOCK_SAMPLES);
             let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-            let read = obuf.read(&mut temp[..needed.min(MAX_BLOCK_SAMPLES)]);
-            for frame in 0..n_frames.min(256) {
-                for ch in 0..out_channels.min(2) {
-                    let idx = frame * out_channels + ch;
-                    let offset = idx * 4;
-                    if offset + 4 <= slice.len() {
-                        let val = if idx < read { temp[idx] } else { 0.0 };
-                        slice[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
-                    }
+            let read = obuf.read(&mut temp[..samples_to_write]);
+            for i in 0..samples_to_write {
+                let offset = i * 4;
+                if offset + 4 <= slice.len() {
+                    let val = if i < read { temp[i] } else { 0.0 };
+                    slice[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                }
+            }
+            // Zero out any remaining DMA buffer beyond what we filled
+            for i in samples_to_write..(n_frames * out_channels) {
+                let offset = i * 4;
+                if offset + 4 <= slice.len() {
+                    slice[offset..offset + 4].copy_from_slice(&0.0f32.to_le_bytes());
                 }
             }
 
