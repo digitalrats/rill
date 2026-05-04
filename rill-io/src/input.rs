@@ -315,7 +315,6 @@ mod tests {
     use super::*;
     use crate::audio_io::AudioIo;
     use crate::buffer::IoRingBuffer;
-    use rill_core::traits::Sink;
     use std::sync::Arc;
 
     /// Mock AudioIo backed by IoRingBuffers for testing.
@@ -352,8 +351,6 @@ mod tests {
         }
     }
 
-    use rill_core::traits::algorithm::ActionContext;
-
     #[test]
     fn test_audio_input_creation() {
         let inp = AudioInput::<f32, 64>::new();
@@ -379,8 +376,6 @@ mod tests {
             input_ring: input_ring.clone(),
             output_ring: output_ring.clone(),
         });
-        let io_ptr = AudioIoPtr::from_ref(&*backend);
-
         let mut input = AudioInput::<f32, BUF_SZ>::new();
         input.set_backend(backend);
 
