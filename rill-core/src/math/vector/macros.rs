@@ -28,6 +28,7 @@
 use crate::math::vector::scalar::ScalarVector4;
 use crate::math::vector::traits::Vector;
 
+/// Map over SIMD vector chunks of size 4, applying a closure to each chunk.
 #[macro_export]
 macro_rules! vec_map {
     ($input:expr, $output:expr, |$x:ident| $($body:tt)*) => {{
