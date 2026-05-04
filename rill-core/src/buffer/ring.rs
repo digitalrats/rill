@@ -108,9 +108,9 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
         T: From<f32> + Into<f32>,
     {
         let len = self.len();
-        for i in 0..output.len() {
+        for (i, out) in output.iter_mut().enumerate() {
             let delay = start_delay + i as f32;
-            output[i] = if delay < len as f32 {
+            *out = if delay < len as f32 {
                 self.read_interpolated(delay)
             } else {
                 T::ZERO

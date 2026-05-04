@@ -73,128 +73,66 @@ impl Vector<f32, 4> for F32x4 {
     }
 
     fn add(&self, other: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] + other.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] + other.0[i]))
     }
 
     fn sub(&self, other: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] - other.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] - other.0[i]))
     }
 
     fn mul(&self, other: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] * other.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] * other.0[i]))
     }
 
     fn div(&self, other: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] / other.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] / other.0[i]))
     }
 
     fn rem(&self, other: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] % other.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] % other.0[i]))
     }
 
     fn neg(&self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = -self.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| -self.0[i]))
     }
 
     fn abs(&self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].abs();
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i].abs()))
     }
 
     fn min(&self, other: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].min(other.0[i]);
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i].min(other.0[i])))
     }
 
     fn max(&self, other: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].max(other.0[i]);
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i].max(other.0[i])))
     }
 
     fn clamp(&self, min: &Self, max: &Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i].clamp(min.0[i], max.0[i]);
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| {
+            self.0[i].clamp(min.0[i], max.0[i])
+        }))
     }
 }
 
 impl VectorTranscendental<f32, 4> for F32x4 {
     fn sqrt(&self) -> Self {
-        let mut a = [0.0; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].sqrt();
-        }
-        F32x4(a)
+        F32x4(core::array::from_fn(|i| self.0[i].sqrt()))
     }
     fn exp(&self) -> Self {
-        let mut a = [0.0; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].exp();
-        }
-        F32x4(a)
+        F32x4(core::array::from_fn(|i| self.0[i].exp()))
     }
     fn ln(&self) -> Self {
-        let mut a = [0.0; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].ln();
-        }
-        F32x4(a)
+        F32x4(core::array::from_fn(|i| self.0[i].ln()))
     }
     fn sin(&self) -> Self {
-        let mut a = [0.0; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].sin();
-        }
-        F32x4(a)
+        F32x4(core::array::from_fn(|i| self.0[i].sin()))
     }
     fn cos(&self) -> Self {
-        let mut a = [0.0; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].cos();
-        }
-        F32x4(a)
+        F32x4(core::array::from_fn(|i| self.0[i].cos()))
     }
     fn tan(&self) -> Self {
-        let mut a = [0.0; 4];
-        for i in 0..4 {
-            a[i] = self.0[i].tan();
-        }
-        F32x4(a)
+        F32x4(core::array::from_fn(|i| self.0[i].tan()))
     }
 }
 
@@ -207,11 +145,7 @@ impl Add for F32x4 {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] + rhs.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] + rhs.0[i]))
     }
 }
 
@@ -219,11 +153,7 @@ impl Sub for F32x4 {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] - rhs.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] - rhs.0[i]))
     }
 }
 
@@ -231,11 +161,7 @@ impl Mul for F32x4 {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] * rhs.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] * rhs.0[i]))
     }
 }
 
@@ -243,11 +169,7 @@ impl Div for F32x4 {
     type Output = Self;
 
     fn div(self, rhs: Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] / rhs.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] / rhs.0[i]))
     }
 }
 
@@ -255,11 +177,7 @@ impl Rem for F32x4 {
     type Output = Self;
 
     fn rem(self, rhs: Self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = self.0[i] % rhs.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| self.0[i] % rhs.0[i]))
     }
 }
 
@@ -267,11 +185,7 @@ impl Neg for F32x4 {
     type Output = Self;
 
     fn neg(self) -> Self {
-        let mut arr = [0.0; 4];
-        for i in 0..4 {
-            arr[i] = -self.0[i];
-        }
-        F32x4(arr)
+        F32x4(core::array::from_fn(|i| -self.0[i]))
     }
 }
 

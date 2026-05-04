@@ -61,6 +61,7 @@ impl IoRingBuffer {
         let available = cap - (w.wrapping_sub(r) & self.mask) - 1;
         let to_write = data.len().min(available);
         let buf = unsafe { &mut *self.buffer.get() };
+        #[allow(clippy::needless_range_loop)]
         for i in 0..to_write {
             let idx = (w + i) & self.mask;
             buf[idx] = data[i];
@@ -77,6 +78,7 @@ impl IoRingBuffer {
         let available = w.wrapping_sub(r) & self.mask;
         let to_read = data.len().min(available);
         let buf = unsafe { &*self.buffer.get() };
+        #[allow(clippy::needless_range_loop)]
         for i in 0..to_read {
             let idx = (r + i) & self.mask;
             data[i] = buf[idx];

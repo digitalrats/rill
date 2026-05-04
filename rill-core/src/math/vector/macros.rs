@@ -48,6 +48,7 @@ macro_rules! vec_map {
         let chunks = input.len() / N;
         let remainder = input.len() % N;
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..chunks {
             let start = i * N;
             let x = <ScalarVector4<_>>::load(&input[start..start + N]);
@@ -58,11 +59,13 @@ macro_rules! vec_map {
         if remainder > 0 {
             let start = chunks * N;
             let mut temp_input = [Default::default(); 4];
+            #[allow(clippy::needless_range_loop)]
             for i in 0..remainder {
                 temp_input[i] = input[start + i];
             }
             let x = <ScalarVector4<_>>::load(&temp_input[0..4]);
             let y = closure(x);
+            #[allow(clippy::needless_range_loop)]
             for i in 0..remainder {
                 output[start + i] = y.extract(i);
             }

@@ -133,7 +133,6 @@
 //! ```
 
 #![warn(missing_docs)]
-#![allow(clippy::needless_range_loop)]
 #![allow(clippy::doc_lazy_continuation)]
 #![deny(unsafe_code)]
 #![cfg_attr(not(test), deny(unused))]

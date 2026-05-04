@@ -525,8 +525,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         if let Some(ref fb) = self.feedback_buffer {
             let arr = self.buffer.as_mut_array();
             let fb_arr = fb.as_array();
-            for i in 0..BUF_SIZE {
-                arr[i] += fb_arr[i];
+            for (v, &s) in arr.iter_mut().zip(fb_arr.iter()) {
+                *v += s;
             }
         }
     }

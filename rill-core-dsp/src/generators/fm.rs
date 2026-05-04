@@ -352,25 +352,22 @@ impl<T: Transcendental, const N: usize> Algorithm<T> for FmSynth<T, N> {
     ) -> ProcessResult<()> {
         for out in output.iter_mut() {
             // Сохраняем текущие значения всех операторов
-            let mut values = [T::ZERO; N];
-            for i in 0..N {
-                values[i] = self.operators[i].generate().extract(0);
-            }
+            let values: [_; N] = core::array::from_fn(|i| self.operators[i].generate().extract(0));
 
             // Применяем модуляцию согласно алгоритму
-            for i in 0..N {
+            for (i, op) in self.operators.iter_mut().enumerate() {
                 let mut mod_sum = T::ZERO;
 
                 // Суммируем все модуляции для этого оператора
-                for j in 0..N {
-                    if self.algorithm[i][j] {
+                for (j, &is_mod) in self.algorithm[i].iter().enumerate() {
+                    if is_mod {
                         mod_sum += values[j] * self.modulation_indices[j].extract(0);
                     }
                 }
 
                 // Применяем модуляцию, если есть
                 if mod_sum != T::ZERO {
-                    self.operators[i].modulate_frequency(mod_sum);
+                    op.modulate_frequency(mod_sum);
                 }
             }
 
