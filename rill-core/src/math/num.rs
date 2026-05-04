@@ -92,47 +92,73 @@ impl Scalar for f32 {
     const MAX: f32 = 1.0;
 
     #[inline(always)]
-    fn abs(self) -> f32 { self.abs() }
+    fn abs(self) -> f32 {
+        self.abs()
+    }
 
     #[inline(always)]
-    fn min(self, other: f32) -> f32 { self.min(other) }
+    fn min(self, other: f32) -> f32 {
+        self.min(other)
+    }
 
     #[inline(always)]
-    fn max(self, other: f32) -> f32 { self.max(other) }
+    fn max(self, other: f32) -> f32 {
+        self.max(other)
+    }
 
     #[inline(always)]
-    fn clamp(self, min: f32, max: f32) -> f32 { self.clamp(min, max) }
+    fn clamp(self, min: f32, max: f32) -> f32 {
+        self.clamp(min, max)
+    }
 }
 
 impl Transcendental for f32 {
     const PI: f32 = std::f32::consts::PI;
 
     #[inline(always)]
-    fn to_f32(self) -> f32 { self }
+    fn to_f32(self) -> f32 {
+        self
+    }
 
     #[inline(always)]
-    fn from_f32(value: f32) -> f32 { value }
+    fn from_f32(value: f32) -> f32 {
+        value
+    }
 
     #[inline(always)]
-    fn from_f64(value: f64) -> f32 { value as f32 }
+    fn from_f64(value: f64) -> f32 {
+        value as f32
+    }
 
     #[inline(always)]
-    fn sqrt(self) -> f32 { self.sqrt() }
+    fn sqrt(self) -> f32 {
+        self.sqrt()
+    }
 
     #[inline(always)]
-    fn exp(self) -> f32 { self.exp() }
+    fn exp(self) -> f32 {
+        self.exp()
+    }
 
     #[inline(always)]
-    fn ln(self) -> f32 { self.ln() }
+    fn ln(self) -> f32 {
+        self.ln()
+    }
 
     #[inline(always)]
-    fn sin(self) -> f32 { self.sin() }
+    fn sin(self) -> f32 {
+        self.sin()
+    }
 
     #[inline(always)]
-    fn cos(self) -> f32 { self.cos() }
+    fn cos(self) -> f32 {
+        self.cos()
+    }
 
     #[inline(always)]
-    fn tan(self) -> f32 { self.tan() }
+    fn tan(self) -> f32 {
+        self.tan()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -146,47 +172,73 @@ impl Scalar for f64 {
     const MAX: f64 = 1.0;
 
     #[inline(always)]
-    fn abs(self) -> f64 { self.abs() }
+    fn abs(self) -> f64 {
+        self.abs()
+    }
 
     #[inline(always)]
-    fn min(self, other: f64) -> f64 { self.min(other) }
+    fn min(self, other: f64) -> f64 {
+        self.min(other)
+    }
 
     #[inline(always)]
-    fn max(self, other: f64) -> f64 { self.max(other) }
+    fn max(self, other: f64) -> f64 {
+        self.max(other)
+    }
 
     #[inline(always)]
-    fn clamp(self, min: f64, max: f64) -> f64 { self.clamp(min, max) }
+    fn clamp(self, min: f64, max: f64) -> f64 {
+        self.clamp(min, max)
+    }
 }
 
 impl Transcendental for f64 {
     const PI: f64 = std::f64::consts::PI;
 
     #[inline(always)]
-    fn to_f32(self) -> f32 { self as f32 }
+    fn to_f32(self) -> f32 {
+        self as f32
+    }
 
     #[inline(always)]
-    fn from_f32(value: f32) -> f64 { value as f64 }
+    fn from_f32(value: f32) -> f64 {
+        value as f64
+    }
 
     #[inline(always)]
-    fn from_f64(value: f64) -> f64 { value }
+    fn from_f64(value: f64) -> f64 {
+        value
+    }
 
     #[inline(always)]
-    fn sqrt(self) -> f64 { self.sqrt() }
+    fn sqrt(self) -> f64 {
+        self.sqrt()
+    }
 
     #[inline(always)]
-    fn exp(self) -> f64 { self.exp() }
+    fn exp(self) -> f64 {
+        self.exp()
+    }
 
     #[inline(always)]
-    fn ln(self) -> f64 { self.ln() }
+    fn ln(self) -> f64 {
+        self.ln()
+    }
 
     #[inline(always)]
-    fn sin(self) -> f64 { self.sin() }
+    fn sin(self) -> f64 {
+        self.sin()
+    }
 
     #[inline(always)]
-    fn cos(self) -> f64 { self.cos() }
+    fn cos(self) -> f64 {
+        self.cos()
+    }
 
     #[inline(always)]
-    fn tan(self) -> f64 { self.tan() }
+    fn tan(self) -> f64 {
+        self.tan()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -202,16 +254,28 @@ macro_rules! impl_scalar_int {
             const MAX: $ty = $max;
 
             #[inline(always)]
-            fn abs(self) -> $ty { if self >= 0 { self } else { -self } }
+            fn abs(self) -> $ty {
+                if self >= 0 {
+                    self
+                } else {
+                    -self
+                }
+            }
 
             #[inline(always)]
-            fn min(self, other: $ty) -> $ty { core::cmp::Ord::min(self, other) }
+            fn min(self, other: $ty) -> $ty {
+                core::cmp::Ord::min(self, other)
+            }
 
             #[inline(always)]
-            fn max(self, other: $ty) -> $ty { core::cmp::Ord::max(self, other) }
+            fn max(self, other: $ty) -> $ty {
+                core::cmp::Ord::max(self, other)
+            }
 
             #[inline(always)]
-            fn clamp(self, lo: $ty, hi: $ty) -> $ty { core::cmp::Ord::clamp(self, lo, hi) }
+            fn clamp(self, lo: $ty, hi: $ty) -> $ty {
+                core::cmp::Ord::clamp(self, lo, hi)
+            }
         }
     };
 }

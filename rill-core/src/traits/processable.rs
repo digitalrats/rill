@@ -40,7 +40,8 @@ pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
 
 impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for Box<dyn crate::traits::Source<T, BUF_SIZE>>
-where T: Transcendental,
+where
+    T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
         self.as_mut().generate(ctx.clock, &[], &[])
@@ -49,7 +50,8 @@ where T: Transcendental,
 
 impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for Box<dyn crate::traits::Processor<T, BUF_SIZE>>
-where T: Transcendental,
+where
+    T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
         self.as_mut().process(ctx.clock, &[], &[], &[], &[])
@@ -58,7 +60,8 @@ where T: Transcendental,
 
 impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for Box<dyn crate::traits::Sink<T, BUF_SIZE>>
-where T: Transcendental,
+where
+    T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
         self.as_mut().consume(ctx.clock, &[], &[], &[], &[])
@@ -67,7 +70,8 @@ where T: Transcendental,
 
 impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for Box<dyn crate::traits::Router<T, BUF_SIZE>>
-where T: Transcendental,
+where
+    T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
         (**self).route(ctx.clock, &[])
@@ -92,7 +96,9 @@ pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
     Sink(Box<dyn crate::traits::Sink<T, BUF_SIZE>>),
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE> for NodeVariant<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
+    for NodeVariant<T, BUF_SIZE>
+{
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
         match self {
             NodeVariant::Source(src) => src.process_block(ctx),
@@ -119,9 +125,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
 // SignalNode for NodeVariant
 // ============================================================================
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for NodeVariant<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+    for NodeVariant<T, BUF_SIZE>
+{
     fn node_type_id(&self) -> crate::traits::NodeTypeId
-    where Self: 'static + Sized { unreachable!() }
+    where
+        Self: 'static + Sized,
+    {
+        unreachable!()
+    }
     fn id(&self) -> crate::traits::NodeId {
         match self {
             NodeVariant::Source(src) => src.id(),
@@ -170,7 +182,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for NodeV
             NodeVariant::Sink(sink) => sink.get_parameter(id),
         }
     }
-    fn set_parameter(&mut self, id: &crate::traits::ParameterId, value: crate::traits::ParamValue) -> ProcessResult<()> {
+    fn set_parameter(
+        &mut self,
+        id: &crate::traits::ParameterId,
+        value: crate::traits::ParamValue,
+    ) -> ProcessResult<()> {
         match self {
             NodeVariant::Source(src) => src.set_parameter(id, value),
             NodeVariant::Processor(proc) => proc.set_parameter(id, value),
@@ -228,58 +244,142 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for NodeV
     }
     fn num_signal_inputs(&self) -> usize {
         match self {
-            NodeVariant::Source(src) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**src; n.num_signal_inputs() }
-            NodeVariant::Processor(proc) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**proc; n.num_signal_inputs() }
-            NodeVariant::Router(rt) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**rt; n.num_signal_inputs() }
-            NodeVariant::Sink(sink) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**sink; n.num_signal_inputs() }
+            NodeVariant::Source(src) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                n.num_signal_inputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_signal_inputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_signal_inputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                n.num_signal_inputs()
+            }
         }
     }
     fn num_signal_outputs(&self) -> usize {
         match self {
-            NodeVariant::Source(src) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**src; n.num_signal_outputs() }
-            NodeVariant::Processor(proc) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**proc; n.num_signal_outputs() }
-            NodeVariant::Router(rt) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**rt; n.num_signal_outputs() }
-            NodeVariant::Sink(sink) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**sink; n.num_signal_outputs() }
+            NodeVariant::Source(src) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                n.num_signal_outputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_signal_outputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_signal_outputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                n.num_signal_outputs()
+            }
         }
     }
     fn num_control_inputs(&self) -> usize {
         match self {
-            NodeVariant::Source(src) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**src; n.num_control_inputs() }
-            NodeVariant::Processor(proc) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**proc; n.num_control_inputs() }
-            NodeVariant::Router(rt) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**rt; n.num_control_inputs() }
-            NodeVariant::Sink(sink) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**sink; n.num_control_inputs() }
+            NodeVariant::Source(src) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                n.num_control_inputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_control_inputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_control_inputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                n.num_control_inputs()
+            }
         }
     }
     fn num_control_outputs(&self) -> usize {
         match self {
-            NodeVariant::Source(src) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**src; n.num_control_outputs() }
-            NodeVariant::Processor(proc) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**proc; n.num_control_outputs() }
-            NodeVariant::Router(rt) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**rt; n.num_control_outputs() }
-            NodeVariant::Sink(sink) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**sink; n.num_control_outputs() }
+            NodeVariant::Source(src) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                n.num_control_outputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_control_outputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_control_outputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                n.num_control_outputs()
+            }
         }
     }
     fn num_clock_inputs(&self) -> usize {
         match self {
-            NodeVariant::Source(src) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**src; n.num_clock_inputs() }
-            NodeVariant::Processor(proc) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**proc; n.num_clock_inputs() }
-            NodeVariant::Router(rt) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**rt; n.num_clock_inputs() }
-            NodeVariant::Sink(sink) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**sink; n.num_clock_inputs() }
+            NodeVariant::Source(src) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                n.num_clock_inputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_clock_inputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_clock_inputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                n.num_clock_inputs()
+            }
         }
     }
     fn num_clock_outputs(&self) -> usize {
         match self {
-            NodeVariant::Source(src) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**src; n.num_clock_outputs() }
-            NodeVariant::Processor(proc) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**proc; n.num_clock_outputs() }
-            NodeVariant::Router(rt) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**rt; n.num_clock_outputs() }
-            NodeVariant::Sink(sink) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**sink; n.num_clock_outputs() }
+            NodeVariant::Source(src) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                n.num_clock_outputs()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_clock_outputs()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_clock_outputs()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                n.num_clock_outputs()
+            }
         }
     }
     fn num_feedback_ports(&self) -> usize {
         match self {
-            NodeVariant::Source(src) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**src; n.num_feedback_ports() }
-            NodeVariant::Processor(proc) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**proc; n.num_feedback_ports() }
-            NodeVariant::Router(rt) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**rt; n.num_feedback_ports() }
-            NodeVariant::Sink(sink) => { let n: &dyn SignalNode<T, BUF_SIZE> = &**sink; n.num_feedback_ports() }
+            NodeVariant::Source(src) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                n.num_feedback_ports()
+            }
+            NodeVariant::Processor(proc) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                n.num_feedback_ports()
+            }
+            NodeVariant::Router(rt) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                n.num_feedback_ports()
+            }
+            NodeVariant::Sink(sink) => {
+                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                n.num_feedback_ports()
+            }
         }
     }
     fn state(&self) -> &crate::traits::NodeState<T, BUF_SIZE> {

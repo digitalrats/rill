@@ -34,9 +34,9 @@ pub mod pw;
 pub use backend::{AudioBackend, BackendType, DeviceInfo};
 pub use config::AudioConfig;
 pub use error::{IoError, IoResult};
+pub use input::AudioInput;
 pub use midi::MidiEvent;
 pub use output::AudioOutput;
-pub use input::AudioInput;
 pub use rings::PwBuffers;
 
 pub use backends::NullBackend;

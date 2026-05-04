@@ -3,8 +3,8 @@
 use super::channel::{ChannelConfig, ChannelState};
 use super::send::{SendConfig, SendType};
 use rill_core::traits::{
-    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
-    ParamRange, ParamType, ParamValue, ParameterId, Port,
+    NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange,
+    ParamType, ParamValue, ParameterId, Port, SignalNode,
 };
 use rill_core::ClockTick;
 use rill_core::{ProcessError, ProcessResult};
@@ -485,11 +485,7 @@ impl<const BUF_SIZE: usize> rill_core::traits::SignalNode<f32, BUF_SIZE> for Mix
 
 // ── Router trait — N→M конфигурируемая маршрутизация ────────────────
 impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
-    fn route(
-        &mut self,
-        clock: &ClockTick,
-        _inputs: &[&[f32; BUF_SIZE]],
-    ) -> ProcessResult<()> {
+    fn route(&mut self, clock: &ClockTick, _inputs: &[&[f32; BUF_SIZE]]) -> ProcessResult<()> {
         let _num_buses = self.buses.len();
         let buffer_size = BUF_SIZE;
 
@@ -593,18 +589,18 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
             // Aux bus: add/update a send
             let bus_idx = to - 2;
             // Check if a send to this bus already exists
-            if let Some(existing) = self.sends[from]
-                .iter_mut()
-                .find(|s| s.bus_index == bus_idx)
-            {
+            if let Some(existing) = self.sends[from].iter_mut().find(|s| s.bus_index == bus_idx) {
                 existing.level = gain.clamp(0.0, 1.0);
                 Ok(())
             } else {
-                self.add_send(from, SendConfig {
-                    bus_index: bus_idx,
-                    level: gain.clamp(0.0, 1.0),
-                    send_type: SendType::PostFader,
-                })
+                self.add_send(
+                    from,
+                    SendConfig {
+                        bus_index: bus_idx,
+                        level: gain.clamp(0.0, 1.0),
+                        send_type: SendType::PostFader,
+                    },
+                )
             }
         } else {
             Err(ProcessError::Parameter("Output index out of range".into()))

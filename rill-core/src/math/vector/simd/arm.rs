@@ -7,8 +7,8 @@
 #![allow(dead_code)]
 
 use super::super::traits::*;
-use crate::Transcendental;
 use crate::math::vector::traits::VectorTranscendental;
+use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
 // SIMD типы
@@ -132,16 +132,51 @@ impl Vector<f32, 4> for F32x4 {
         }
         F32x4(arr)
     }
-
 }
 
 impl VectorTranscendental<f32, 4> for F32x4 {
-    fn sqrt(&self) -> Self { let mut a = [0.0; 4]; for i in 0..4 { a[i] = self.0[i].sqrt(); } F32x4(a) }
-    fn exp(&self) -> Self { let mut a = [0.0; 4]; for i in 0..4 { a[i] = self.0[i].exp(); } F32x4(a) }
-    fn ln(&self) -> Self { let mut a = [0.0; 4]; for i in 0..4 { a[i] = self.0[i].ln(); } F32x4(a) }
-    fn sin(&self) -> Self { let mut a = [0.0; 4]; for i in 0..4 { a[i] = self.0[i].sin(); } F32x4(a) }
-    fn cos(&self) -> Self { let mut a = [0.0; 4]; for i in 0..4 { a[i] = self.0[i].cos(); } F32x4(a) }
-    fn tan(&self) -> Self { let mut a = [0.0; 4]; for i in 0..4 { a[i] = self.0[i].tan(); } F32x4(a) }
+    fn sqrt(&self) -> Self {
+        let mut a = [0.0; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].sqrt();
+        }
+        F32x4(a)
+    }
+    fn exp(&self) -> Self {
+        let mut a = [0.0; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].exp();
+        }
+        F32x4(a)
+    }
+    fn ln(&self) -> Self {
+        let mut a = [0.0; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].ln();
+        }
+        F32x4(a)
+    }
+    fn sin(&self) -> Self {
+        let mut a = [0.0; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].sin();
+        }
+        F32x4(a)
+    }
+    fn cos(&self) -> Self {
+        let mut a = [0.0; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].cos();
+        }
+        F32x4(a)
+    }
+    fn tan(&self) -> Self {
+        let mut a = [0.0; 4];
+        for i in 0..4 {
+            a[i] = self.0[i].tan();
+        }
+        F32x4(a)
+    }
 }
 
 impl Default for F32x4 {

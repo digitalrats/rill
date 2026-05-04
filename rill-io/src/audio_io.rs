@@ -86,12 +86,18 @@ pub struct BackendRegistry {
 }
 
 impl Default for BackendRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BackendRegistry {
     /// Create an empty registry.
-    pub fn new() -> Self { Self { backends: HashMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            backends: HashMap::new(),
+        }
+    }
 
     /// Register a backend and return a pointer stable until registry is modified.
     pub fn register(&mut self, name: impl Into<String>, backend: Box<dyn AudioIo>) -> AudioIoPtr {

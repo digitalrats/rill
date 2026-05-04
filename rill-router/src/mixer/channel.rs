@@ -1,6 +1,5 @@
 //! Mixer channel implementation
 
-
 /// Channel mode (mono or stereo)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChannelMode {

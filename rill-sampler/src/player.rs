@@ -1,7 +1,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId,
-    Port, Source,
+    Algorithm, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    SignalNode, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -69,13 +69,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
         self.loop_start = 0.0;
 
         self.left.set_buffer(sample.data);
-        self.left
-            .set_loop_start(self.loop_start);
+        self.left.set_loop_start(self.loop_start);
         self.left.set_loop_end(self.loop_end);
-        self.left
-            .set_loop_mode(self.loop_mode);
-        self.left
-            .set_playback_rate(self.rate);
+        self.left.set_loop_mode(self.loop_mode);
+        self.left.set_playback_rate(self.rate);
         self.left.set_cubic(self.cubic);
 
         if let Some(right_data) = sample.right {
@@ -88,8 +85,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
             self.right = Some(right_player);
 
             if self.outputs.len() < 2 {
-                self.outputs
-                    .push(Port::output(NodeId(0), 1, "right"));
+                self.outputs.push(Port::output(NodeId(0), 1, "right"));
             }
         } else {
             self.right = None;
@@ -357,8 +353,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
         let amp = self.amplitude;
 
         let mut temp = [T::ZERO; BUF_SIZE];
-        self.left
-            .process(None, &mut temp[..], &rill_core::traits::ActionContext::new(clock))?;
+        self.left.process(
+            None,
+            &mut temp[..],
+            &rill_core::traits::ActionContext::new(clock),
+        )?;
         if amp != T::from_f32(1.0) {
             for s in temp.iter_mut() {
                 *s *= amp;
@@ -368,8 +367,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 
         if let Some(ref mut right_player) = self.right {
             let mut right_temp = [T::ZERO; BUF_SIZE];
-            right_player
-                .process(None, &mut right_temp[..], &rill_core::traits::ActionContext::new(clock))?;
+            right_player.process(
+                None,
+                &mut right_temp[..],
+                &rill_core::traits::ActionContext::new(clock),
+            )?;
             if amp != T::from_f32(1.0) {
                 for s in right_temp.iter_mut() {
                     *s *= amp;

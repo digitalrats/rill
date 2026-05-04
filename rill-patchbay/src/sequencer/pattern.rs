@@ -25,9 +25,7 @@ impl StepPlayMode {
         match self {
             StepPlayMode::OneShot => current.min(len.saturating_sub(1)),
             StepPlayMode::Loop => (current + 1) % len,
-            StepPlayMode::PingPong => {
-                current
-            }
+            StepPlayMode::PingPong => current,
             StepPlayMode::Random => {
                 use rand::Rng;
                 let mut rng = rand::thread_rng();

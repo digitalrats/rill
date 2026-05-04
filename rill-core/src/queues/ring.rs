@@ -24,7 +24,9 @@ pub struct RingQueue<T: Copy, const CAP: usize> {
 }
 
 impl<T: Copy + Default, const CAP: usize> Default for RingQueue<T, CAP> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {

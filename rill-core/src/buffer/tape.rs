@@ -1,5 +1,5 @@
-use crate::math::Transcendental;
 use crate::buffer::Buffer;
+use crate::math::Transcendental;
 
 /// Heap-allocated ring buffer for tape delay — single-threaded.
 ///
@@ -47,9 +47,13 @@ impl<T: Transcendental> TapeLoop<T> {
     }
 
     /// Maximum capacity in samples.
-    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
     /// Current write cursor position.
-    pub fn write_pos(&self) -> usize { self.write_pos }
+    pub fn write_pos(&self) -> usize {
+        self.write_pos
+    }
 
     /// Write a single sample and advance the write cursor.
     #[inline(always)]
@@ -167,7 +171,9 @@ mod tests {
     #[test]
     fn test_tape_wraparound() {
         let mut tape = TapeLoop::<f32>::new(4).unwrap();
-        for i in 0..10 { tape.write(i as f32); }
+        for i in 0..10 {
+            tape.write(i as f32);
+        }
         assert_eq!(tape.read(0), 9.0);
         assert_eq!(tape.read(1), 8.0);
         assert_eq!(tape.read(2), 7.0);

@@ -3,7 +3,7 @@
 use rand::Rng;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, SignalNode,
     Source,
 };
 use rill_core::{ProcessError, ProcessResult};
@@ -169,8 +169,9 @@ impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "NoiseOsc".to_string(),
-            
-            type_name: None,category: NodeCategory::Source,
+
+            type_name: None,
+            category: NodeCategory::Source,
             description: "Noise generator (white, pink, brown)".to_string(),
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -331,7 +332,7 @@ mod tests {
 
         noise.generate(&clock, &[], &[]).unwrap();
     }
-    
+
     #[test]
     fn test_noise_types() {
         let types = [NoiseType::White, NoiseType::Pink, NoiseType::Brown];

@@ -43,7 +43,9 @@ pub struct SimdDetector {
 }
 
 impl Default for SimdDetector {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SimdDetector {

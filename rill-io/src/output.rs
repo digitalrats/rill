@@ -35,7 +35,9 @@ pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for AudioOutput<T, BUF_SIZE> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
@@ -112,9 +114,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
                         drain_fn(nodes);
 
                         // 2. Clock tick
-                        let tick = ClockTick::new(
-                            sample_pos.get(), BUF_SIZE as u32, sample_rate,
-                        );
+                        let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, sample_rate);
 
                         // 3. Process source node (generate → fills output ports)
                         let mut ctx = ProcessContext { clock: &tick };
@@ -141,38 +141,73 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     for AudioOutput<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
-    where Self: 'static + Sized { rill_core::NodeTypeId::of::<Self>() }
-
-    fn id(&self) -> NodeId { self.id }
-    fn set_id(&mut self, id: NodeId) { self.id = id; }
-    fn metadata(&self) -> NodeMetadata { self.metadata.clone() }
-    fn init(&mut self, _sample_rate: f32) {}
-    fn reset(&mut self) { self.state.sample_pos = 0; self.state.blocks_processed = 0; }
-
-    fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> { None }
-    fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
-        Err(rill_core::ProcessError::parameter("AudioOutput has no parameters"))
+    where
+        Self: 'static + Sized,
+    {
+        rill_core::NodeTypeId::of::<Self>()
     }
 
-    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> { self.inputs.get(index) }
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> { self.inputs.get_mut(index) }
-    fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-    fn num_signal_inputs(&self) -> usize { 2 }
-    fn num_signal_outputs(&self) -> usize { 0 }
-    fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
+    fn metadata(&self) -> NodeMetadata {
+        self.metadata.clone()
+    }
+    fn init(&mut self, _sample_rate: f32) {}
+    fn reset(&mut self) {
+        self.state.sample_pos = 0;
+        self.state.blocks_processed = 0;
+    }
+
+    fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
+        None
+    }
+    fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
+        Err(rill_core::ProcessError::parameter(
+            "AudioOutput has no parameters",
+        ))
+    }
+
+    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.inputs.get(index)
+    }
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.inputs.get_mut(index)
+    }
+    fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
+    fn num_signal_inputs(&self) -> usize {
+        2
+    }
+    fn num_signal_outputs(&self) -> usize {
+        0
+    }
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
+    }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE>
-    for AudioOutput<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for AudioOutput<T, BUF_SIZE> {
     fn consume(
         &mut self,
         _clock: &ClockTick,
-        _signal_inputs: &[&[T; BUF_SIZE]],  // empty when called through propagate
+        _signal_inputs: &[&[T; BUF_SIZE]], // empty when called through propagate
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],

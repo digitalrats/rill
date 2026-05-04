@@ -46,8 +46,6 @@ pub type ControlValue<T> = T;
 pub mod prelude {
     // Re-export from parent modules
     pub use super::{
-        // Core traits
-        SignalNode,
         NodeCategory,
         // Node types
         NodeId,
@@ -76,6 +74,8 @@ pub mod prelude {
         ProcessResult,
         Processor,
         Router,
+        // Core traits
+        SignalNode,
         Sink,
 
         Source,

@@ -50,7 +50,9 @@ pub struct MpscQueue<T> {
 }
 
 impl<T> Default for MpscQueue<T> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T> MpscQueue<T> {

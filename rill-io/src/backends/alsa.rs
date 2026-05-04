@@ -31,10 +31,20 @@ unsafe impl Send for CbSlot {}
 unsafe impl Sync for CbSlot {}
 
 impl CbSlot {
-    fn new() -> Self { Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize) }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) { (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb); }
-    unsafe fn call(&self) { if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) { cb(); } }
-    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>)); }
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+    }
+    unsafe fn set(&self, cb: Box<dyn Fn()>) {
+        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    }
+    unsafe fn call(&self) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
+            cb();
+        }
+    }
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+    }
 }
 
 /// ALSA бэкенд
@@ -73,7 +83,10 @@ impl AlsaBackend {
         let running = Arc::new(AtomicBool::new(false));
         let started = Arc::new(AtomicBool::new(false));
         let device_name = Arc::new(Mutex::new(
-            config.output_device.clone().unwrap_or_else(|| "default".to_string()),
+            config
+                .output_device
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
         ));
 
         let process_cb = CbSlot::new();
@@ -88,8 +101,14 @@ impl AlsaBackend {
 
         let handle = thread::spawn(move || {
             alsa_thread(
-                thread_cb, thread_xruns, thread_input, thread_output,
-                thread_config, thread_running, thread_started, thread_device_name,
+                thread_cb,
+                thread_xruns,
+                thread_input,
+                thread_output,
+                thread_config,
+                thread_running,
+                thread_started,
+                thread_device_name,
             );
         });
 
@@ -203,14 +222,20 @@ fn alsa_thread(
         }
 
         // Process graph
-        unsafe { process_cb.call(); }
+        unsafe {
+            process_cb.call();
+        }
 
         // Output ring → ALSA
         {
             let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
             let n = output_buffer.read(&mut temp[..out_sz]);
             for i in 0..out_sz {
-                pb[i] = if i < n { (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16 } else { 0 };
+                pb[i] = if i < n {
+                    (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16
+                } else {
+                    0
+                };
             }
         }
 
@@ -231,19 +256,31 @@ fn alsa_thread(
 
 fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()> {
     let hw = HwParams::any(pcm).map_err(|e| IoError::Config(e.to_string()))?;
-    hw.set_access(Access::RWInterleaved).map_err(|e| IoError::Config(e.to_string()))?;
-    hw.set_format(Format::s16()).map_err(|e| IoError::Config(e.to_string()))?;
-    hw.set_rate(config.sample_rate, ValueOr::Nearest).map_err(|e| IoError::Config(e.to_string()))?;
-    hw.set_channels(channels).map_err(|e| IoError::Config(e.to_string()))?;
-    hw.set_buffer_size(config.buffer_size as alsa::pcm::Frames).map_err(|e| IoError::Config(e.to_string()))?;
-    pcm.hw_params(&hw).map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_access(Access::RWInterleaved)
+        .map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_format(Format::s16())
+        .map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_rate(config.sample_rate, ValueOr::Nearest)
+        .map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_channels(channels)
+        .map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_buffer_size(config.buffer_size as alsa::pcm::Frames)
+        .map_err(|e| IoError::Config(e.to_string()))?;
+    pcm.hw_params(&hw)
+        .map_err(|e| IoError::Config(e.to_string()))?;
     Ok(())
 }
 
 impl AudioBackend for AlsaBackend {
-    fn backend_type(&self) -> BackendType { BackendType::Alsa }
-    fn config(&self) -> &AudioConfig { &self.config }
-    fn config_mut(&mut self) -> &mut AudioConfig { &mut self.config }
+    fn backend_type(&self) -> BackendType {
+        BackendType::Alsa
+    }
+    fn config(&self) -> &AudioConfig {
+        &self.config
+    }
+    fn config_mut(&mut self) -> &mut AudioConfig {
+        &mut self.config
+    }
 
     fn init(&mut self) -> IoResult<()> {
         let cap = self.input_buffer.capacity();
@@ -285,7 +322,9 @@ impl AudioBackend for AlsaBackend {
         Ok(n)
     }
 
-    fn xruns(&self) -> u32 { self.xruns.load(Ordering::Acquire) }
+    fn xruns(&self) -> u32 {
+        self.xruns.load(Ordering::Acquire)
+    }
 
     fn latency(&self) -> Duration {
         Duration::from_micros(
@@ -294,19 +333,32 @@ impl AudioBackend for AlsaBackend {
     }
 
     fn list_input_devices(&self) -> Vec<String> {
-        vec!["default".to_string(), "hw:0,0".to_string(), "hw:1,0".to_string(),
-             "plughw:0,0".to_string(), "plughw:1,0".to_string()]
+        vec![
+            "default".to_string(),
+            "hw:0,0".to_string(),
+            "hw:1,0".to_string(),
+            "plughw:0,0".to_string(),
+            "plughw:1,0".to_string(),
+        ]
     }
 
     fn list_output_devices(&self) -> Vec<String> {
-        vec!["default".to_string(), "hw:0,0".to_string(), "hw:1,0".to_string(),
-             "plughw:0,0".to_string(), "plughw:1,0".to_string(), "dmix:0".to_string()]
+        vec![
+            "default".to_string(),
+            "hw:0,0".to_string(),
+            "hw:1,0".to_string(),
+            "plughw:0,0".to_string(),
+            "plughw:1,0".to_string(),
+            "dmix:0".to_string(),
+        ]
     }
 }
 
 impl AudioIo for AlsaBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { self.process_cb.set(cb); }
+        unsafe {
+            self.process_cb.set(cb);
+        }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
@@ -357,6 +409,8 @@ impl Drop for AlsaBackend {
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
-        unsafe { self.process_cb.drop_box(); }
+        unsafe {
+            self.process_cb.drop_box();
+        }
     }
 }

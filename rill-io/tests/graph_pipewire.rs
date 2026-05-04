@@ -7,30 +7,42 @@ mod graph_pipewire_it {
     use std::process::Command;
     use std::time::Duration;
 
-    use rill_core::ClockTick;
     use rill_core::traits::{SignalNode, Sink, Source};
+    use rill_core::ClockTick;
     use rill_io::audio_io::{AudioIo, AudioIoPtr};
     use rill_io::{AudioConfig, AudioInput, AudioOutput, PipewireBackend};
 
     const VIRTUAL_SINK: &str = "rill_graph_test_sink";
 
     fn has_pipewire() -> bool {
-        Command::new("pw-cli").arg("info").output()
-            .map(|o| o.status.success()).unwrap_or(false)
+        Command::new("pw-cli")
+            .arg("info")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     fn has_pactl() -> bool {
-        Command::new("pactl").arg("--version").output()
-            .map(|o| o.status.success()).unwrap_or(false)
+        Command::new("pactl")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     fn create_virtual_sink(name: &str) -> Option<u32> {
         let out = Command::new("pactl")
-            .args(["load-module", "module-null-sink",
+            .args([
+                "load-module",
+                "module-null-sink",
                 &format!("sink_name={name}"),
-                &format!("sink_properties=node.name={name}")])
-            .output().ok()?;
-        if !out.status.success() { return None; }
+                &format!("sink_properties=node.name={name}"),
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
         s.parse::<u32>().ok()
     }
@@ -42,7 +54,11 @@ mod graph_pipewire_it {
     }
 
     struct SinkGuard(u32);
-    impl Drop for SinkGuard { fn drop(&mut self) { destroy_virtual_sink(self.0); } }
+    impl Drop for SinkGuard {
+        fn drop(&mut self) {
+            destroy_virtual_sink(self.0);
+        }
+    }
 
     fn settle(ms: u64) {
         std::thread::sleep(Duration::from_millis(ms));
@@ -57,7 +73,10 @@ mod graph_pipewire_it {
 
         let mod_id = match create_virtual_sink(VIRTUAL_SINK) {
             Some(id) => id,
-            None => { eprintln!("SKIP: cannot create virtual sink"); return; }
+            None => {
+                eprintln!("SKIP: cannot create virtual sink");
+                return;
+            }
         };
         let _guard = SinkGuard(mod_id);
         settle(200);
@@ -86,7 +105,9 @@ mod graph_pipewire_it {
             let l = input.output_port(0).unwrap().buffer.as_array();
             let r = input.output_port(1).unwrap().buffer.as_array();
             let signal_inputs: [&[f32; BUF_SZ]; 2] = [l, r];
-            output.consume(&tick, &signal_inputs, &[], &[], &[]).unwrap();
+            output
+                .consume(&tick, &signal_inputs, &[], &[], &[])
+                .unwrap();
         }
 
         input.stop();
@@ -101,7 +122,10 @@ mod graph_pipewire_it {
 
         let mod_id = match create_virtual_sink(VIRTUAL_SINK) {
             Some(id) => id,
-            None => { eprintln!("SKIP: cannot create virtual sink"); return; }
+            None => {
+                eprintln!("SKIP: cannot create virtual sink");
+                return;
+            }
         };
         let _guard = SinkGuard(mod_id);
         settle(200);
@@ -130,7 +154,9 @@ mod graph_pipewire_it {
             let l = input.output_port(0).unwrap().buffer.as_array();
             let r = input.output_port(1).unwrap().buffer.as_array();
             let signal_inputs: [&[f32; BUF_SZ]; 2] = [l, r];
-            output.consume(&tick, &signal_inputs, &[], &[], &[]).unwrap();
+            output
+                .consume(&tick, &signal_inputs, &[], &[], &[])
+                .unwrap();
         }
 
         input.stop();

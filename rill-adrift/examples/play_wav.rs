@@ -10,14 +10,14 @@ use rill_adrift::io::output::AudioOutput;
 #[allow(unused_imports)]
 use rill_adrift::io::AudioBackend;
 use rill_adrift::io::AudioConfig;
-use rill_adrift::rill_core::traits::processable::NodeVariant;
-use rill_adrift::rill_core::traits::Sink;
-use rill_adrift::rill_core::traits::SignalNode;
 use rill_adrift::rill_core::time::SystemClock;
+use rill_adrift::rill_core::traits::processable::NodeVariant;
+use rill_adrift::rill_core::traits::SignalNode;
+use rill_adrift::rill_core::traits::Sink;
+use rill_adrift::rill_digital_filters::BiquadProcessor;
 use rill_adrift::rill_graph::GraphBuilder;
 use rill_adrift::sampler::player::SamplePlayerNode;
 use rill_adrift::sampler::wav::load_wav;
-use rill_adrift::rill_digital_filters::BiquadProcessor;
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -69,9 +69,10 @@ fn create_backend(name: &str, config: AudioConfig) -> Box<dyn AudioIo> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args.get(1).map(|s| s.as_str()).unwrap_or("cpal");
-    let wav_path = args.get(2).map(|s| s.as_str()).unwrap_or(
-        "ESW Aura Inst - LoFi Steel - C.wav",
-    );
+    let wav_path = args
+        .get(2)
+        .map(|s| s.as_str())
+        .unwrap_or("ESW Aura Inst - LoFi Steel - C.wav");
 
     let config = AudioConfig::default()
         .with_sample_rate(RATE as u32)
@@ -84,7 +85,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sample = load_wav(wav_path)?;
     println!(
         "Loaded: {} ({} ch, {} Hz, {} samples)",
-        sample.name, sample.channels, sample.sample_rate, sample.len()
+        sample.name,
+        sample.channels,
+        sample.sample_rate,
+        sample.len()
     );
 
     // ── Build graph: SamplePlayer → Biquad → AudioOutput ─────────────────
@@ -125,19 +129,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let NodeVariant::Sink(ref mut s) = sink {
             // Safety: we know this is an AudioOutput because we placed it
             // in the graph as a Sink at that index. The type erasure matches.
-            unsafe {
-                &mut *(s.as_mut() as *mut dyn Sink<f32, BUF> as *mut AudioOutput<f32, BUF>)
-            }
+            unsafe { &mut *(s.as_mut() as *mut dyn Sink<f32, BUF> as *mut AudioOutput<f32, BUF>) }
         } else {
             panic!("expected AudioOutput at index {out_idx}");
         }
     };
 
-    let nodes_ptr: *mut [NodeVariant<f32, BUF>] =
-        Box::leak(nodes.into_boxed_slice());
+    let nodes_ptr: *mut [NodeVariant<f32, BUF>] = Box::leak(nodes.into_boxed_slice());
 
-    let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>]) + Send> =
-        Box::new(|_| {});
+    let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>]) + Send> = Box::new(|_| {});
 
     // Start the pull model — the backend calls this callback on each audio tick.
     audio_output.start(nodes_ptr, drain_fn, RATE);
@@ -154,7 +154,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = backend.stop();
 
     // Free the leaked box before exit.
-    unsafe { drop(Box::from_raw(nodes_ptr)); }
+    unsafe {
+        drop(Box::from_raw(nodes_ptr));
+    }
     drop(backend);
 
     println!("⏹ Stopped.");

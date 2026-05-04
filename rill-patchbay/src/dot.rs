@@ -53,11 +53,21 @@ pub fn patchbay_to_dot(
     for auto in &patchbay.automata {
         let id = auto.id();
         let (label, fillcolor) = match auto {
-            crate::document::AutomatonDef::Lfo { frequency, waveform, .. } => {
+            crate::document::AutomatonDef::Lfo {
+                frequency,
+                waveform,
+                ..
+            } => {
                 let l = format!("LFO\\n{frequency} Hz\\n{waveform:?}");
                 (l, "#ccf")
             }
-            crate::document::AutomatonDef::Envelope { attack, decay, sustain, release, .. } => {
+            crate::document::AutomatonDef::Envelope {
+                attack,
+                decay,
+                sustain,
+                release,
+                ..
+            } => {
                 let l = format!("Envelope\\n{attack}/{decay}/{sustain}/{release}");
                 (l, "#fcf")
             }
@@ -71,7 +81,11 @@ pub fn patchbay_to_dot(
             }
         };
         let escaped = label.replace('\"', "\\\"");
-        writeln!(dot, "        auto_{id} [label=\"{escaped}\", shape=box, fillcolor=\"{fillcolor}\"];").ok();
+        writeln!(
+            dot,
+            "        auto_{id} [label=\"{escaped}\", shape=box, fillcolor=\"{fillcolor}\"];"
+        )
+        .ok();
     }
 
     writeln!(dot, "    }}").ok();
@@ -94,11 +108,13 @@ pub fn patchbay_to_dot(
         writeln!(
             dot,
             "    map_{i} [label=\"{pat_str}\", shape=note, fillcolor=\"#eee\"];"
-        ).ok();
+        )
+        .ok();
         writeln!(
             dot,
             "    map_{i} -> param_{target} [label=\"\", style=dotted, color=\"#888\"];"
-        ).ok();
+        )
+        .ok();
     }
 
     // ── SequencerDocument overlay ─────────────────────────────────
@@ -113,8 +129,17 @@ pub fn patchbay_to_dot(
             // Build an HTML-like table for the pattern
             let pat_id = format!("seq_{}", pat.id);
             writeln!(dot, "        {pat_id} [label=<").ok();
-            writeln!(dot, "            <table border=\"0\" cellborder=\"1\" cellspacing=\"0\">").ok();
-            writeln!(dot, "            <tr><td colspan=\"2\"><b>{}</b></td></tr>", pat.id).ok();
+            writeln!(
+                dot,
+                "            <table border=\"0\" cellborder=\"1\" cellspacing=\"0\">"
+            )
+            .ok();
+            writeln!(
+                dot,
+                "            <tr><td colspan=\"2\"><b>{}</b></td></tr>",
+                pat.id
+            )
+            .ok();
             writeln!(dot, "            <tr><td>Step</td><td>P-Locks</td></tr>").ok();
             for (si, step) in pat.steps.iter().enumerate() {
                 let locks: Vec<String> = step

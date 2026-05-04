@@ -27,15 +27,15 @@
 //! A [`SequencerHandle`] is returned for external control (start/stop/pattern
 //! select).
 
+mod engine;
+mod pattern;
 mod snapshot;
 mod step;
-mod pattern;
-mod engine;
 
+pub use engine::{SequencerCommand, SequencerHandle, SnapshotSequencer};
+pub use pattern::{Pattern, StepPlayMode};
 pub use snapshot::{ParameterTarget, Snapshot};
 pub use step::SequenceStep;
-pub use pattern::{Pattern, StepPlayMode};
-pub use engine::{SequencerCommand, SequencerHandle, SnapshotSequencer};
 
 /// Serializable sequencer configuration (serde feature gate).
 #[cfg(feature = "serde")]

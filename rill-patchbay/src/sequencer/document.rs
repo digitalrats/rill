@@ -112,12 +112,13 @@ mod tests {
                 "verse",
                 vec![ParameterTarget::new(NodeId(1), "gain", 0.8)],
             )],
-            patterns: vec![
-                Pattern::new("main", vec![
+            patterns: vec![Pattern::new(
+                "main",
+                vec![
                     SequenceStep::single(NodeId(1), "cutoff", 0.3, 1.0),
                     SequenceStep::single(NodeId(1), "cutoff", 0.7, 1.0),
-                ]),
-            ],
+                ],
+            )],
             active_pattern: "main".into(),
             auto_start: true,
             description: Some("test preset".into()),

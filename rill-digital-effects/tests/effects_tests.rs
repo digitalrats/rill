@@ -1,5 +1,5 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{SignalNode, ParamValue, ParameterId};
+use rill_core::traits::{ParamValue, ParameterId, SignalNode};
 use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter};
 
 const BUF_SIZE: usize = 1024;

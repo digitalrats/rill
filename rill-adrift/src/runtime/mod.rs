@@ -255,7 +255,9 @@ impl Runtime {
         }
 
         let control = self.control_shared.clone().unwrap_or_else(|| {
-            Arc::new(std::sync::Mutex::new(PatchbayControl::new(self.queue.clone())))
+            Arc::new(std::sync::Mutex::new(PatchbayControl::new(
+                self.queue.clone(),
+            )))
         });
         let surface = self.osc_surface.clone();
 
@@ -290,5 +292,3 @@ impl Drop for Runtime {
         self.stop();
     }
 }
-
-

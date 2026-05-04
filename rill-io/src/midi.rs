@@ -136,31 +136,65 @@ mod tests {
     #[test]
     fn test_note_on() {
         let ev = MidiEvent::from_bytes(&[0x90, 0x3C, 0x7F]).unwrap();
-        assert_eq!(ev, MidiEvent::NoteOn { channel: 0, note: 60, velocity: 127 });
+        assert_eq!(
+            ev,
+            MidiEvent::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 127
+            }
+        );
     }
 
     #[test]
     fn test_note_off() {
         let ev = MidiEvent::from_bytes(&[0x80, 0x3C, 0x40]).unwrap();
-        assert_eq!(ev, MidiEvent::NoteOff { channel: 0, note: 60, velocity: 64 });
+        assert_eq!(
+            ev,
+            MidiEvent::NoteOff {
+                channel: 0,
+                note: 60,
+                velocity: 64
+            }
+        );
     }
 
     #[test]
     fn test_velocity_zero_as_note_off() {
         let ev = MidiEvent::from_bytes(&[0x90, 0x3C, 0x00]).unwrap();
-        assert_eq!(ev, MidiEvent::NoteOff { channel: 0, note: 60, velocity: 0 });
+        assert_eq!(
+            ev,
+            MidiEvent::NoteOff {
+                channel: 0,
+                note: 60,
+                velocity: 0
+            }
+        );
     }
 
     #[test]
     fn test_cc() {
         let ev = MidiEvent::from_bytes(&[0xB1, 0x07, 0x40]).unwrap();
-        assert_eq!(ev, MidiEvent::ControlChange { channel: 1, controller: 7, value: 64 });
+        assert_eq!(
+            ev,
+            MidiEvent::ControlChange {
+                channel: 1,
+                controller: 7,
+                value: 64
+            }
+        );
     }
 
     #[test]
     fn test_pitch_bend() {
         let ev = MidiEvent::from_bytes(&[0xE0, 0x00, 0x40]).unwrap();
-        assert_eq!(ev, MidiEvent::PitchBend { channel: 0, bend: 8192 });
+        assert_eq!(
+            ev,
+            MidiEvent::PitchBend {
+                channel: 0,
+                bend: 8192
+            }
+        );
     }
 
     #[test]

@@ -16,7 +16,6 @@ use pw::spa;
 use pw::spa::sys as spa_sys;
 
 #[allow(unused_imports)]
-
 use crate::audio_io::{AudioIo, IoResult as AudioIoResult};
 use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
@@ -35,10 +34,20 @@ unsafe impl Send for CbSlot {}
 unsafe impl Sync for CbSlot {}
 
 impl CbSlot {
-    fn new() -> Self { Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize) }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) { (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb); }
-    unsafe fn call(&self) { if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) { cb(); } }
-    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>)); }
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+    }
+    unsafe fn set(&self, cb: Box<dyn Fn()>) {
+        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    }
+    unsafe fn call(&self) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
+            cb();
+        }
+    }
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+    }
 }
 
 /// Mutable view into a PW DMA buffer slice.
@@ -50,7 +59,10 @@ struct OutputWindow {
 impl OutputWindow {
     fn new(slice: &mut [u8], max_frames: usize) -> Self {
         let cap = (slice.len() / 4).min(max_frames * 2);
-        Self { ptr: slice.as_mut_ptr() as *mut f32, capacity: cap }
+        Self {
+            ptr: slice.as_mut_ptr() as *mut f32,
+            capacity: cap,
+        }
     }
     fn as_mut_slice(&mut self) -> &mut [f32] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
@@ -64,11 +76,21 @@ unsafe impl Send for OutputSlot {}
 unsafe impl Sync for OutputSlot {}
 
 impl OutputSlot {
-    fn new() -> Self { Self(Box::into_raw(Box::new(None))) }
-    unsafe fn set(&self, w: OutputWindow) { *self.0 = Some(w); }
-    unsafe fn clear(&self) { *self.0 = None; }
-    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> { (*self.0).as_mut() }
-    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0)); }
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None)))
+    }
+    unsafe fn set(&self, w: OutputWindow) {
+        *self.0 = Some(w);
+    }
+    unsafe fn clear(&self) {
+        *self.0 = None;
+    }
+    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
+        (*self.0).as_mut()
+    }
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0));
+    }
 }
 
 // ============================================================================
@@ -91,7 +113,14 @@ impl fmt::Debug for PipewireBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PipewireBackend")
             .field("config", &self.config)
-            .field("thread_handle", &self.thread_handle.lock().map(|g| g.is_some()).unwrap_or(false))
+            .field(
+                "thread_handle",
+                &self
+                    .thread_handle
+                    .lock()
+                    .map(|g| g.is_some())
+                    .unwrap_or(false),
+            )
             .finish()
     }
 }
@@ -99,7 +128,9 @@ impl fmt::Debug for PipewireBackend {
 impl PipewireBackend {
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(target_os = "linux") {
-            return Err(IoError::Unsupported("PipeWire is only available on Linux".into()));
+            return Err(IoError::Unsupported(
+                "PipeWire is only available on Linux".into(),
+            ));
         }
 
         let xruns = Arc::new(AtomicU32::new(0));
@@ -122,7 +153,15 @@ impl PipewireBackend {
         let handle = thread::Builder::new()
             .name("drift-pipewire".into())
             .spawn(move || {
-                run_pipewire_thread(t_xruns, t_input, t_process_cb, t_config, t_running, t_midi_tx, t_slot);
+                run_pipewire_thread(
+                    t_xruns,
+                    t_input,
+                    t_process_cb,
+                    t_config,
+                    t_running,
+                    t_midi_tx,
+                    t_slot,
+                );
             })
             .map_err(|e| IoError::Backend(e.to_string()))?;
 
@@ -140,7 +179,7 @@ impl PipewireBackend {
     pub fn rings(&self) -> Arc<PwBuffers> {
         Arc::new(PwBuffers {
             input: self.input_buffer.clone(),
-            output: Arc::new(IoRingBuffer::new(0)),  // unused — output goes directly to PW DMA
+            output: Arc::new(IoRingBuffer::new(0)), // unused — output goes directly to PW DMA
         })
     }
 }
@@ -151,7 +190,9 @@ impl PipewireBackend {
 
 impl AudioIo for PipewireBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { self.process_cb.set(cb); }
+        unsafe {
+            self.process_cb.set(cb);
+        }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
@@ -225,15 +266,24 @@ fn run_pipewire_thread(
 
     let mainloop = match pw::main_loop::MainLoopRc::new(None) {
         Ok(ml) => ml,
-        Err(e) => { log::error!("PW MainLoopRc::new: {e}"); return; }
+        Err(e) => {
+            log::error!("PW MainLoopRc::new: {e}");
+            return;
+        }
     };
     let context = match pw::context::ContextRc::new(&mainloop, None) {
         Ok(c) => c,
-        Err(e) => { log::error!("PW ContextRc::new: {e}"); return; }
+        Err(e) => {
+            log::error!("PW ContextRc::new: {e}");
+            return;
+        }
     };
     let core = match context.connect_rc(None) {
         Ok(c) => c,
-        Err(e) => { log::error!("PW core.connect_rc: {e}"); return; }
+        Err(e) => {
+            log::error!("PW core.connect_rc: {e}");
+            return;
+        }
     };
 
     let sample_rate = config.sample_rate;
@@ -252,10 +302,14 @@ fn run_pipewire_thread(
     };
     out_props.insert("audio.channels", out_channels.to_string());
 
-    let out_stream = match pw::stream::StreamBox::new(&core, &format!("{out_node}-output"), out_props) {
-        Ok(s) => s,
-        Err(e) => { log::error!("PW StreamBox output: {e}"); return; }
-    };
+    let out_stream =
+        match pw::stream::StreamBox::new(&core, &format!("{out_node}-output"), out_props) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("PW StreamBox output: {e}");
+                return;
+            }
+        };
 
     let oslot = output_slot;
     let _out_listener = match out_stream
@@ -266,7 +320,9 @@ fn run_pipewire_thread(
                 None => return,
             };
             let datas = buf.datas_mut();
-            if datas.is_empty() { return; }
+            if datas.is_empty() {
+                return;
+            }
             let data = &mut datas[0];
             let slice = match data.data() {
                 Some(s) => s,
@@ -279,12 +335,12 @@ fn run_pipewire_thread(
             // Split PW DMA buffer into BUF_SIZE chunks and process each.
             // Each process_cb.call() produces one block (BUF_SIZE frames).
             // The OutputWindow lets write_output() write directly into DMA memory.
-            let chunk_bytes = 512 * 4;  // 512 interleaved samples × 4 bytes = 2048 bytes
+            let chunk_bytes = 512 * 4; // 512 interleaved samples × 4 bytes = 2048 bytes
             let mut offset = 0usize;
             while offset + chunk_bytes <= slice.len() {
                 let chunk = &mut slice[offset..offset + chunk_bytes];
                 unsafe {
-                    oslot.set(OutputWindow::new(chunk, 256));  // BUF=256
+                    oslot.set(OutputWindow::new(chunk, 256)); // BUF=256
                     process_cb.call();
                     oslot.clear();
                 }
@@ -304,7 +360,10 @@ fn run_pipewire_thread(
         .register()
     {
         Ok(l) => l,
-        Err(e) => { log::error!("PW output listener: {e}"); return; }
+        Err(e) => {
+            log::error!("PW output listener: {e}");
+            return;
+        }
     };
 
     // ── Format params ──────────────────────────────────────────────────
@@ -313,8 +372,12 @@ fn run_pipewire_thread(
     audio_info.set_rate(sample_rate);
     audio_info.set_channels(out_channels as u32);
     let mut position = [0; spa::param::audio::MAX_CHANNELS];
-    if out_channels >= 1 { position[0] = spa_sys::SPA_AUDIO_CHANNEL_FL; }
-    if out_channels >= 2 { position[1] = spa_sys::SPA_AUDIO_CHANNEL_FR; }
+    if out_channels >= 1 {
+        position[0] = spa_sys::SPA_AUDIO_CHANNEL_FL;
+    }
+    if out_channels >= 2 {
+        position[1] = spa_sys::SPA_AUDIO_CHANNEL_FR;
+    }
     audio_info.set_position(position);
 
     let params_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
@@ -324,14 +387,23 @@ fn run_pipewire_thread(
             id: spa_sys::SPA_PARAM_EnumFormat,
             properties: audio_info.into(),
         }),
-    ).unwrap().0.into_inner();
+    )
+    .unwrap()
+    .0
+    .into_inner();
     let mut out_params = [spa::pod::Pod::from_bytes(&params_bytes).unwrap()];
 
     if let Err(e) = out_stream.connect(
-        spa::utils::Direction::Output, None,
-        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS,
+        spa::utils::Direction::Output,
+        None,
+        pw::stream::StreamFlags::AUTOCONNECT
+            | pw::stream::StreamFlags::MAP_BUFFERS
+            | pw::stream::StreamFlags::RT_PROCESS,
         &mut out_params,
-    ) { log::error!("PW output connect: {e}"); return; }
+    ) {
+        log::error!("PW output connect: {e}");
+        return;
+    }
 
     running.store(true, Ordering::Release);
 
@@ -349,7 +421,10 @@ fn run_pipewire_thread(
 
     let in_stream = match pw::stream::StreamBox::new(&core, &format!("{in_node}-input"), in_props) {
         Ok(s) => Some(s),
-        Err(e) => { log::warn!("PW StreamBox input: {e} — capture disabled"); None }
+        Err(e) => {
+            log::warn!("PW StreamBox input: {e} — capture disabled");
+            None
+        }
     };
 
     if let Some(ref in_st) = in_stream {
@@ -360,8 +435,12 @@ fn run_pipewire_thread(
         in_ai.set_rate(sample_rate);
         in_ai.set_channels(in_channels as u32);
         let mut in_pos = [0; spa::param::audio::MAX_CHANNELS];
-        if in_channels >= 1 { in_pos[0] = spa_sys::SPA_AUDIO_CHANNEL_FL; }
-        if in_channels >= 2 { in_pos[1] = spa_sys::SPA_AUDIO_CHANNEL_FR; }
+        if in_channels >= 1 {
+            in_pos[0] = spa_sys::SPA_AUDIO_CHANNEL_FL;
+        }
+        if in_channels >= 2 {
+            in_pos[1] = spa_sys::SPA_AUDIO_CHANNEL_FR;
+        }
         in_ai.set_position(in_pos);
 
         let in_params_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
@@ -371,7 +450,10 @@ fn run_pipewire_thread(
                 id: spa_sys::SPA_PARAM_EnumFormat,
                 properties: in_ai.into(),
             }),
-        ).unwrap().0.into_inner();
+        )
+        .unwrap()
+        .0
+        .into_inner();
         let mut in_params = [spa::pod::Pod::from_bytes(&in_params_bytes).unwrap()];
 
         let _in_listener = match in_st
@@ -379,10 +461,15 @@ fn run_pipewire_thread(
             .process(move |stream, _| {
                 let mut buf = match stream.dequeue_buffer() {
                     Some(b) => b,
-                    None => { ixruns.fetch_add(1, Ordering::Relaxed); return; }
+                    None => {
+                        ixruns.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
                 };
                 let datas = buf.datas_mut();
-                if datas.is_empty() { return; }
+                if datas.is_empty() {
+                    return;
+                }
                 let data = &mut datas[0];
                 let slice = match data.data() {
                     Some(s) => s,
@@ -405,13 +492,22 @@ fn run_pipewire_thread(
             .register()
         {
             Ok(l) => l,
-            Err(e) => { log::warn!("PW input listener: {e} — capture disabled"); return; }
+            Err(e) => {
+                log::warn!("PW input listener: {e} — capture disabled");
+                return;
+            }
         };
 
-        if let Err(e) = in_st.connect(spa::utils::Direction::Input, None,
-            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS,
+        if let Err(e) = in_st.connect(
+            spa::utils::Direction::Input,
+            None,
+            pw::stream::StreamFlags::AUTOCONNECT
+                | pw::stream::StreamFlags::MAP_BUFFERS
+                | pw::stream::StreamFlags::RT_PROCESS,
             &mut in_params,
-        ) { log::warn!("PW input connect: {e} — capture disabled"); }
+        ) {
+            log::warn!("PW input connect: {e} — capture disabled");
+        }
     }
 
     // ── MIDI ────────────────────────────────────────────────────────────
@@ -419,51 +515,86 @@ fn run_pipewire_thread(
     let midi_stream = if config.midi_input {
         let m_name = format!("{in_node}-midi");
         let m_desc = format!("Rill MIDI Input ({in_node})");
-        match pw::stream::StreamBox::new(&core, &m_name, properties! {
-            *pw::keys::MEDIA_TYPE => "Midi",
-            *pw::keys::MEDIA_ROLE => "Music",
-            *pw::keys::MEDIA_CATEGORY => "Capture",
-            *pw::keys::NODE_NAME => m_name.as_str(),
-            *pw::keys::NODE_DESCRIPTION => m_desc.as_str(),
-        }) {
+        match pw::stream::StreamBox::new(
+            &core,
+            &m_name,
+            properties! {
+                *pw::keys::MEDIA_TYPE => "Midi",
+                *pw::keys::MEDIA_ROLE => "Music",
+                *pw::keys::MEDIA_CATEGORY => "Capture",
+                *pw::keys::NODE_NAME => m_name.as_str(),
+                *pw::keys::NODE_DESCRIPTION => m_desc.as_str(),
+            },
+        ) {
             Ok(s) => {
                 let mt = midi_event_tx.clone();
-                let _ml = s.add_local_listener_with_user_data(())
+                let _ml = s
+                    .add_local_listener_with_user_data(())
                     .process(move |st, _| {
-                        let mut b = match st.dequeue_buffer() { Some(b) => b, None => return };
+                        let mut b = match st.dequeue_buffer() {
+                            Some(b) => b,
+                            None => return,
+                        };
                         let ds = b.datas_mut();
-                        if ds.is_empty() { return; }
+                        if ds.is_empty() {
+                            return;
+                        }
                         let d = &mut ds[0];
-                        let sl = match d.data() { Some(s) => s, None => return };
+                        let sl = match d.data() {
+                            Some(s) => s,
+                            None => return,
+                        };
                         let mut i = 0;
                         while i < sl.len() {
                             let st = sl[i];
-                            let ml = match st & 0xF0 { 0x80|0x90|0xA0|0xB0|0xE0 => 3, 0xC0|0xD0 => 2, _ => 1 };
+                            let ml = match st & 0xF0 {
+                                0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => 3,
+                                0xC0 | 0xD0 => 2,
+                                _ => 1,
+                            };
                             let end = (i + ml).min(sl.len());
-                            if let Some(ev) = MidiEvent::from_bytes(&sl[i..end]) { let _ = mt.as_ref().map(|t| t.send(ev)); }
+                            if let Some(ev) = MidiEvent::from_bytes(&sl[i..end]) {
+                                let _ = mt.as_ref().map(|t| t.send(ev));
+                            }
                             i = end;
                         }
-                    }).register();
-                if let Err(e) = s.connect(spa::utils::Direction::Input, None,
-                    pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS,
+                    })
+                    .register();
+                if let Err(e) = s.connect(
+                    spa::utils::Direction::Input,
+                    None,
+                    pw::stream::StreamFlags::AUTOCONNECT
+                        | pw::stream::StreamFlags::MAP_BUFFERS
+                        | pw::stream::StreamFlags::RT_PROCESS,
                     &mut [],
-                ) { log::warn!("PW MIDI connect: {e}"); }
+                ) {
+                    log::warn!("PW MIDI connect: {e}");
+                }
                 Some(s)
             }
-            Err(e) => { log::warn!("PW MIDI stream: {e}"); None }
+            Err(e) => {
+                log::warn!("PW MIDI stream: {e}");
+                None
+            }
         }
-    } else { None };
+    } else {
+        None
+    };
 
     // ── Main loop ──────────────────────────────────────────────────────
     loop {
-        mainloop.loop_().iterate(std::time::Duration::from_millis(1));
+        mainloop
+            .loop_()
+            .iterate(std::time::Duration::from_millis(1));
         if !running.load(Ordering::Acquire) {
             mainloop.quit();
             break;
         }
     }
     let _ = out_stream.disconnect();
-    if let Some(ref s) = in_stream { let _ = s.disconnect(); }
+    if let Some(ref s) = in_stream {
+        let _ = s.disconnect();
+    }
 }
 
 // ============================================================================
@@ -471,15 +602,25 @@ fn run_pipewire_thread(
 // ============================================================================
 
 impl AudioBackend for PipewireBackend {
-    fn backend_type(&self) -> BackendType { BackendType::PipeWire }
-    fn config(&self) -> &AudioConfig { &self.config }
-    fn config_mut(&mut self) -> &mut AudioConfig { &mut self.config }
-    fn init(&mut self) -> IoResult<()> { Ok(()) }
+    fn backend_type(&self) -> BackendType {
+        BackendType::PipeWire
+    }
+    fn config(&self) -> &AudioConfig {
+        &self.config
+    }
+    fn config_mut(&mut self) -> &mut AudioConfig {
+        &mut self.config
+    }
+    fn init(&mut self) -> IoResult<()> {
+        Ok(())
+    }
 
     fn start(&mut self) -> IoResult<()> {
         self.running.store(true, Ordering::Release);
         if let Ok(guard) = self.thread_handle.lock() {
-            if let Some(ref handle) = *guard { handle.thread().unpark(); }
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
         }
         Ok(())
     }
@@ -487,7 +628,9 @@ impl AudioBackend for PipewireBackend {
     fn stop(&mut self) -> IoResult<()> {
         self.running.store(false, Ordering::Release);
         if let Ok(guard) = self.thread_handle.lock() {
-            if let Some(ref handle) = *guard { handle.thread().unpark(); }
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
         }
         thread::sleep(std::time::Duration::from_millis(50));
         Ok(())
@@ -502,25 +645,39 @@ impl AudioBackend for PipewireBackend {
         Ok(0)
     }
 
-    fn xruns(&self) -> u32 { self.xruns.load(Ordering::Acquire) }
+    fn xruns(&self) -> u32 {
+        self.xruns.load(Ordering::Acquire)
+    }
     fn latency(&self) -> std::time::Duration {
         std::time::Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
         )
     }
-    fn list_input_devices(&self) -> Vec<String> { vec!["default".to_string()] }
-    fn list_output_devices(&self) -> Vec<String> { vec!["default".to_string()] }
+    fn list_input_devices(&self) -> Vec<String> {
+        vec!["default".to_string()]
+    }
+    fn list_output_devices(&self) -> Vec<String> {
+        vec!["default".to_string()]
+    }
 }
 
 impl Drop for PipewireBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
         if let Ok(guard) = self.thread_handle.lock() {
-            if let Some(ref handle) = *guard { handle.thread().unpark(); }
+            if let Some(ref handle) = *guard {
+                handle.thread().unpark();
+            }
         }
         let handle = self.thread_handle.lock().ok().and_then(|mut g| g.take());
-        if let Some(h) = handle { let _ = h.join(); }
-        unsafe { self.process_cb.drop_box(); }
-        unsafe { self.output_slot.drop_box(); }
+        if let Some(h) = handle {
+            let _ = h.join();
+        }
+        unsafe {
+            self.process_cb.drop_box();
+        }
+        unsafe {
+            self.output_slot.drop_box();
+        }
     }
 }

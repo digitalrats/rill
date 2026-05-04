@@ -14,16 +14,15 @@
 
 use std::sync::Mutex;
 
-use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
+use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use rill_graph::{node_ctor, NodeRegistry};
 
 #[cfg(feature = "io")]
-use crate::io::output::AudioOutput;
-#[cfg(feature = "io")]
 use crate::io::input::AudioInput;
 #[cfg(feature = "io")]
+use crate::io::output::AudioOutput;
+#[cfg(feature = "io")]
 use crate::io::AudioConfig;
-
 
 /// Return a lazily-initialized global registry for the given block size.
 ///
@@ -56,7 +55,11 @@ pub fn registry<const BUF_SIZE: usize>() -> &'static NodeRegistry<f32, BUF_SIZE>
     let inner: &NodeRegistry<f32, BUF_SIZE> = lock.as_ref().unwrap();
     // Safety: registry is never modified after initialisation. The
     // Option is set once and never taken out, so the &'static is sound.
-    unsafe { std::mem::transmute::<&NodeRegistry<f32, BUF_SIZE>, &'static NodeRegistry<f32, BUF_SIZE>>(inner) }
+    unsafe {
+        std::mem::transmute::<&NodeRegistry<f32, BUF_SIZE>, &'static NodeRegistry<f32, BUF_SIZE>>(
+            inner,
+        )
+    }
 }
 
 /// Register every built-in node type from all rill crates.
@@ -75,12 +78,16 @@ pub fn register_all<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_
 
 #[cfg(feature = "io")]
 fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>) {
-    node_ctor!(registry, "rill/output", |id: NodeId, params: &NodeParams| {
-        let mut n = AudioOutput::<f32, BUF_SIZE>::new();
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Sink(Box::new(n))
-    });
+    node_ctor!(
+        registry,
+        "rill/output",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = AudioOutput::<f32, BUF_SIZE>::new();
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            NodeVariant::Sink(Box::new(n))
+        }
+    );
 
     node_ctor!(registry, "rill/input", |id: NodeId, params: &NodeParams| {
         let mut n = AudioInput::<f32, BUF_SIZE>::new();
@@ -107,7 +114,7 @@ fn register_io<const BUF_SIZE: usize>(_registry: &mut NodeRegistry<f32, BUF_SIZE
 // ============================================================================
 
 fn register_oscillators<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>) {
-    use rill_oscillators::audio::{SineOsc, SawOsc, NoiseOsc, NoiseType};
+    use rill_oscillators::audio::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
     node_ctor!(registry, "rill/sine", |id: NodeId, params: &NodeParams| {
         let mut n = SineOsc::<f32, BUF_SIZE>::new()
@@ -148,20 +155,27 @@ fn register_digital_filters<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
     use rill_core_dsp::filters::FilterType;
     use rill_digital_filters::biquad::BiquadProcessor;
 
-    node_ctor!(registry, "rill/biquad", |id: NodeId, params: &NodeParams| {
-        let ft = match params.get("filter").and_then(|v| v.as_f32()) {
-            Some(1.0) => FilterType::LowPass,
-            Some(2.0) => FilterType::HighPass,
-            Some(3.0) => FilterType::BandPass,
-            _ => FilterType::LowPass,
-        };
-        let mut n = BiquadProcessor::<f32, BUF_SIZE>::new_with_params(
-            ft, params.get_f32("cutoff", 1000.0), params.get_f32("q", 0.707), 0.0,
-        );
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    });
+    node_ctor!(
+        registry,
+        "rill/biquad",
+        |id: NodeId, params: &NodeParams| {
+            let ft = match params.get("filter").and_then(|v| v.as_f32()) {
+                Some(1.0) => FilterType::LowPass,
+                Some(2.0) => FilterType::HighPass,
+                Some(3.0) => FilterType::BandPass,
+                _ => FilterType::LowPass,
+            };
+            let mut n = BiquadProcessor::<f32, BUF_SIZE>::new_with_params(
+                ft,
+                params.get_f32("cutoff", 1000.0),
+                params.get_f32("q", 0.707),
+                0.0,
+            );
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 }
 
 // ============================================================================
@@ -169,10 +183,7 @@ fn register_digital_filters<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
 // ============================================================================
 
 fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>) {
-    use rill_digital_effects::{
-        Delay, Distortion, DistortionType, Limiter,
-        WriteHead, ReadHead,
-    };
+    use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter, ReadHead, WriteHead};
     use rill_router::{DryWetMix, MixerNode};
 
     node_ctor!(registry, "rill/delay", |id: NodeId, params: &NodeParams| {
@@ -187,51 +198,71 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
         NodeVariant::Processor(Box::new(n))
     });
 
-    node_ctor!(registry, "rill/distortion", |id: NodeId, params: &NodeParams| {
-        let mut n = Distortion::<f32, BUF_SIZE>::with_params(
-            params.sample_rate,
-            DistortionType::SoftClip,
-            params.get_f32("drive", 1.0),
-            1.0,
-        );
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    });
+    node_ctor!(
+        registry,
+        "rill/distortion",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = Distortion::<f32, BUF_SIZE>::with_params(
+                params.sample_rate,
+                DistortionType::SoftClip,
+                params.get_f32("drive", 1.0),
+                1.0,
+            );
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 
-    node_ctor!(registry, "rill/limiter", |id: NodeId, params: &NodeParams| {
-        let mut n = Limiter::<f32, BUF_SIZE>::new(
-            params.sample_rate,
-            params.get_f32("threshold", -6.0),
-            params.get_f32("attack", 1.0),
-            params.get_f32("release", 50.0),
-            0.0,
-        );
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    });
+    node_ctor!(
+        registry,
+        "rill/limiter",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = Limiter::<f32, BUF_SIZE>::new(
+                params.sample_rate,
+                params.get_f32("threshold", -6.0),
+                params.get_f32("attack", 1.0),
+                params.get_f32("release", 50.0),
+                0.0,
+            );
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 
-    node_ctor!(registry, "rill/dry_wet_mix", |id: NodeId, params: &NodeParams| {
-        let mut n = DryWetMix::<f32, BUF_SIZE>::new();
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    });
+    node_ctor!(
+        registry,
+        "rill/dry_wet_mix",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = DryWetMix::<f32, BUF_SIZE>::new();
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 
-    node_ctor!(registry, "rill/write_head", |id: NodeId, params: &NodeParams| {
-        let mut n = WriteHead::<f32, BUF_SIZE>::new(params.sample_rate);
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    });
+    node_ctor!(
+        registry,
+        "rill/write_head",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = WriteHead::<f32, BUF_SIZE>::new(params.sample_rate);
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 
-    node_ctor!(registry, "rill/read_head", |id: NodeId, params: &NodeParams| {
-        let mut n = ReadHead::<f32, BUF_SIZE>::new();
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
-        NodeVariant::Source(Box::new(n))
-    });
+    node_ctor!(
+        registry,
+        "rill/read_head",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = ReadHead::<f32, BUF_SIZE>::new();
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            NodeVariant::Source(Box::new(n))
+        }
+    );
 
     node_ctor!(registry, "rill/mixer", |id: NodeId, params: &NodeParams| {
         let mut n = MixerNode::<BUF_SIZE>::new(4, 0);

@@ -1,6 +1,6 @@
 use rill_core::{
     math::Transcendental,
-    traits::{SignalNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    traits::{NodeCategory, NodeMetadata, NodeState, Processor, SignalNode},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
@@ -26,7 +26,9 @@ pub struct DryWetMix<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for DryWetMix<T, BUF_SIZE> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
@@ -34,12 +36,24 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("DryWetMix", NodeCategory::Processor);
         metadata.parameters = vec![
-            rill_core::ParamMetadata::new("dry", rill_core::ParamType::Float, ParamValue::Float(1.0))
-                .with_range(0.0, 1.0, 0.01),
-            rill_core::ParamMetadata::new("wet", rill_core::ParamType::Float, ParamValue::Float(0.5))
-                .with_range(0.0, 1.0, 0.01),
-            rill_core::ParamMetadata::new("master", rill_core::ParamType::Float, ParamValue::Float(1.0))
-                .with_range(0.0, 2.0, 0.01),
+            rill_core::ParamMetadata::new(
+                "dry",
+                rill_core::ParamType::Float,
+                ParamValue::Float(1.0),
+            )
+            .with_range(0.0, 1.0, 0.01),
+            rill_core::ParamMetadata::new(
+                "wet",
+                rill_core::ParamType::Float,
+                ParamValue::Float(0.5),
+            )
+            .with_range(0.0, 1.0, 0.01),
+            rill_core::ParamMetadata::new(
+                "master",
+                rill_core::ParamType::Float,
+                ParamValue::Float(1.0),
+            )
+            .with_range(0.0, 2.0, 0.01),
         ];
 
         let mut inputs = Vec::new();
@@ -62,9 +76,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-    for DryWetMix<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for DryWetMix<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -72,9 +84,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         rill_core::NodeTypeId::of::<Self>()
     }
 
-    fn id(&self) -> NodeId { self.id }
-    fn set_id(&mut self, id: NodeId) { self.id = id; }
-    fn metadata(&self) -> NodeMetadata { self.metadata.clone() }
+    fn id(&self) -> NodeId {
+        self.id
+    }
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
+    fn metadata(&self) -> NodeMetadata {
+        self.metadata.clone()
+    }
 
     fn init(&mut self, _sample_rate: f32) {}
 
@@ -96,10 +114,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         let name = id.as_str();
         if let Some(v) = value.as_f32() {
             match name {
-                "dry" => { self.dry = v.clamp(0.0, 1.0); Ok(()) }
-                "wet" => { self.wet = v.clamp(0.0, 1.0); Ok(()) }
-                "master" => { self.master = v.clamp(0.0, 2.0); Ok(()) }
-                _ => Err(ProcessError::parameter(format!("Unknown parameter: {}", name))),
+                "dry" => {
+                    self.dry = v.clamp(0.0, 1.0);
+                    Ok(())
+                }
+                "wet" => {
+                    self.wet = v.clamp(0.0, 1.0);
+                    Ok(())
+                }
+                "master" => {
+                    self.master = v.clamp(0.0, 2.0);
+                    Ok(())
+                }
+                _ => Err(ProcessError::parameter(format!(
+                    "Unknown parameter: {}",
+                    name
+                ))),
             }
         } else {
             Err(ProcessError::parameter("Expected float value"))
@@ -118,19 +148,29 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         self.outputs.get_mut(index)
     }
-    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        None
+    }
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        None
+    }
 
-    fn num_signal_inputs(&self) -> usize { 2 }
-    fn num_signal_outputs(&self) -> usize { 2 }
+    fn num_signal_inputs(&self) -> usize {
+        2
+    }
+    fn num_signal_outputs(&self) -> usize {
+        2
+    }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> { &self.state }
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> { &mut self.state }
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
+    }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
-    for DryWetMix<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for DryWetMix<T, BUF_SIZE> {
     fn process(
         &mut self,
         _clock: &ClockTick,
@@ -142,7 +182,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         let dry_buf = *self.inputs[0].buffer.as_array();
         let wet_buf = *self.inputs[1].buffer.as_array();
         let (out_l, out_r) = self.outputs.split_at_mut(1);
-        let (out_l, out_r) = (out_l[0].buffer.as_mut_array(), out_r[0].buffer.as_mut_array());
+        let (out_l, out_r) = (
+            out_l[0].buffer.as_mut_array(),
+            out_r[0].buffer.as_mut_array(),
+        );
 
         let dry_gain = T::from_f32(self.dry);
         let wet_gain = T::from_f32(self.wet);
@@ -158,7 +201,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         Ok(())
     }
 
-    fn latency(&self) -> usize { 0 }
+    fn latency(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]

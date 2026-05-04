@@ -1,4 +1,4 @@
-use crate::buffer::{AtomicStats, SignalBuffer, BufferStats};
+use crate::buffer::{AtomicStats, BufferStats, SignalBuffer};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
@@ -52,11 +52,17 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
     }
 
     /// Current delay in samples.
-    pub fn delay_samples(&self) -> usize { self.delay_samples }
+    pub fn delay_samples(&self) -> usize {
+        self.delay_samples
+    }
     /// Maximum possible delay (const generic parameter).
-    pub const fn max_delay(&self) -> usize { MAX_DELAY }
+    pub const fn max_delay(&self) -> usize {
+        MAX_DELAY
+    }
     /// The sample rate used for sec-to-sample conversion.
-    pub fn sample_rate(&self) -> f32 { self.sample_rate }
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
 
     /// Write a sample and return the delayed sample.
     #[inline(always)]
@@ -89,7 +95,12 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
     /// Read sample at arbitrary delay (0 = most recent).
     #[inline(always)]
     pub fn read_delayed(&self, delay: usize) -> T {
-        debug_assert!(delay < MAX_DELAY, "Delay {} out of range (max {})", delay, MAX_DELAY);
+        debug_assert!(
+            delay < MAX_DELAY,
+            "Delay {} out of range (max {})",
+            delay,
+            MAX_DELAY
+        );
         let read_pos = if self.write_pos > delay {
             self.write_pos - 1 - delay
         } else {
@@ -120,7 +131,9 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
     }
 
     /// Current write cursor position in the circular buffer.
-    pub fn write_position(&self) -> usize { self.write_pos }
+    pub fn write_position(&self) -> usize {
+        self.write_pos
+    }
 }
 
 // ============================================================================
@@ -145,17 +158,29 @@ impl<T: Transcendental, const MAX_DELAY: usize> IndexMut<usize> for DelayLine<T,
 // ============================================================================
 
 impl<T: Transcendental, const MAX_DELAY: usize> SignalBuffer<T> for DelayLine<T, MAX_DELAY> {
-    fn capacity(&self) -> usize { MAX_DELAY }
-    fn len(&self) -> usize { MAX_DELAY }
-    fn is_empty(&self) -> bool { false }
-    fn is_full(&self) -> bool { true }
-    fn clear(&mut self) { self.clear(); }
+    fn capacity(&self) -> usize {
+        MAX_DELAY
+    }
+    fn len(&self) -> usize {
+        MAX_DELAY
+    }
+    fn is_empty(&self) -> bool {
+        false
+    }
+    fn is_full(&self) -> bool {
+        true
+    }
+    fn clear(&mut self) {
+        self.clear();
+    }
     fn stats(&self) -> BufferStats {
         let mut stats = self.stats.snapshot();
         stats.fill_level = 1.0;
         stats
     }
-    fn reset_stats(&mut self) { self.stats.reset(); }
+    fn reset_stats(&mut self) {
+        self.stats.reset();
+    }
 }
 
 // ============================================================================
@@ -181,7 +206,9 @@ mod tests {
     #[test]
     fn test_delay_line_read_delayed() {
         let mut delay = DelayLine::<f32, 1024>::new(44100.0);
-        for i in 0..1024 { delay.write(i as f32); }
+        for i in 0..1024 {
+            delay.write(i as f32);
+        }
         assert_eq!(delay.read_delayed(0), 1023.0);
         assert_eq!(delay.read_delayed(100), 923.0);
     }
@@ -189,7 +216,9 @@ mod tests {
     #[test]
     fn test_delay_line_interpolation() {
         let mut delay = DelayLine::<f32, 1024>::new(44100.0);
-        for i in 0..1024 { delay.write(i as f32); }
+        for i in 0..1024 {
+            delay.write(i as f32);
+        }
         let val = delay.read_interpolated(100.5);
         assert!((val - 922.5).abs() < 0.01);
     }

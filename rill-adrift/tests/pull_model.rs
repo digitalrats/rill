@@ -2,21 +2,28 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use rill_adrift::io::audio_io::AudioIo;
+#[cfg(feature = "serialization")]
+use rill_adrift::io::audio_io::AudioIoPtr;
+use rill_adrift::io::buffer::IoRingBuffer;
+#[cfg(feature = "serialization")]
+use rill_adrift::io::output::AudioOutput;
 #[cfg(feature = "serialization")]
 use rill_adrift::registration;
+#[cfg(feature = "serialization")]
 use rill_adrift::rill_core::time::SystemClock;
+#[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::processable::NodeVariant;
+#[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::SignalNode;
+#[cfg(feature = "serialization")]
 use rill_adrift::rill_core::ParamValue;
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_graph::serialization::{
-    ConnectionDef, GraphDocument, NodeDef, SignalKind,
-};
-use rill_adrift::io::audio_io::{AudioIo, AudioIoPtr};
-use rill_adrift::io::buffer::IoRingBuffer;
-use rill_adrift::io::output::AudioOutput;
+use rill_adrift::rill_graph::serialization::{ConnectionDef, GraphDocument, NodeDef, SignalKind};
 
+#[cfg(feature = "serialization")]
 const BUF: usize = 256;
+#[cfg(feature = "serialization")]
 const RATE: f32 = 48000.0;
 
 // ---------------------------------------------------------------------------
@@ -32,13 +39,7 @@ unsafe impl Send for SyncBackend {}
 unsafe impl Sync for SyncBackend {}
 
 impl SyncBackend {
-    fn new(
-        cap: usize,
-    ) -> (
-        Self,
-        Arc<RwLock<IoRingBuffer>>,
-        Arc<RwLock<IoRingBuffer>>,
-    ) {
+    fn new(cap: usize) -> (Self, Arc<RwLock<IoRingBuffer>>, Arc<RwLock<IoRingBuffer>>) {
         let input = Arc::new(RwLock::new(IoRingBuffer::new(cap)));
         let output = Arc::new(RwLock::new(IoRingBuffer::new(cap)));
         let cb_ptr = Box::into_raw(Box::new(None));
@@ -166,15 +167,10 @@ fn make_sine_output_doc<const B: usize>() -> GraphDocument {
 fn build_pull_graph<const B: usize>(
     backend_ptr: AudioIoPtr,
     source_idx: usize,
-) -> (
-    *mut [NodeVariant<f32, B>],
-    &'static mut AudioOutput<f32, B>,
-) {
+) -> (*mut [NodeVariant<f32, B>], &'static mut AudioOutput<f32, B>) {
     let doc = make_sine_output_doc::<B>();
     let registry = registration::registry::<B>();
-    let builder = doc
-        .into_builder::<f32, B>(registry)
-        .expect("into_builder");
+    let builder = doc.into_builder::<f32, B>(registry).expect("into_builder");
     let clock = Box::new(SystemClock::with_sample_rate(RATE));
     let graph = builder.build(clock).expect("graph build");
     let (mut nodes, topo, _tick) = graph.into_parts();
@@ -196,8 +192,7 @@ fn build_pull_graph<const B: usize>(
         }
     }
 
-    let nodes_ptr: *mut [NodeVariant<f32, B>] =
-        Box::leak(nodes.into_boxed_slice());
+    let nodes_ptr: *mut [NodeVariant<f32, B>] = Box::leak(nodes.into_boxed_slice());
 
     let audio_output: &mut AudioOutput<f32, B> = {
         let sink = &mut unsafe { &mut *nodes_ptr }[out_idx];
@@ -226,13 +221,12 @@ fn test_pull_model_sync_inject_and_verify() {
     let (backend, _input_ring, output_ring) = SyncBackend::new(1024);
     let ptr = AudioIoPtr::from_ref(&backend);
 
-    let (_nodes_ptr, audio_output) = build_pull_graph::<B>(ptr, 0);
+    let (nodes_ptr, audio_output) = build_pull_graph::<B>(ptr, 0);
 
-    let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, B>]) + Send> =
-        Box::new(|_| {});
+    let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, B>]) + Send> = Box::new(|_| {});
 
     // Start the pull model — callback stored in SyncBackend.
-    audio_output.start(_nodes_ptr, drain_fn, 48000.0);
+    audio_output.start(nodes_ptr, drain_fn, 48000.0);
 
     // Trigger one processing cycle:
     //   1. process_block(source_idx=0) → SineOsc::generate() fills its output port
@@ -250,9 +244,7 @@ fn test_pull_model_sync_inject_and_verify() {
         .any(|w| (w[0] - w[1]).abs() > 0.001);
     assert!(has_variation, "sine output should vary between samples");
 
-    let within_range = temp[..n.min(B * 2)]
-        .iter()
-        .all(|&s| s >= -1.0 && s <= 1.0);
+    let within_range = temp[..n.min(B * 2)].iter().all(|&s| s >= -1.0 && s <= 1.0);
     assert!(within_range, "sine samples should be in [-1, 1]");
 }
 
@@ -282,12 +274,11 @@ fn test_alsa_pull_model() {
     let backend = rill_adrift::io::AlsaBackend::new(config).unwrap();
     let ptr = AudioIoPtr::from_ref(&backend as &dyn AudioIo);
 
-    let (_nodes_ptr, audio_output) = build_pull_graph::<BUF>(ptr, 0);
+    let (nodes_ptr, audio_output) = build_pull_graph::<BUF>(ptr, 0);
 
-    let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>]) + Send> =
-        Box::new(|_| {});
+    let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>]) + Send> = Box::new(|_| {});
 
-    audio_output.start(_nodes_ptr, drain_fn, RATE);
+    audio_output.start(nodes_ptr, drain_fn, RATE);
 
     // Let ALSA process a few blocks.
     std::thread::sleep(Duration::from_millis(500));

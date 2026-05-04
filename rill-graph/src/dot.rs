@@ -145,11 +145,7 @@ fn emit_node<T: Transcendental, const B: usize>(
 
     let escaped_label = label.replace('\"', "\\\"");
 
-    writeln!(
-        dot,
-        "    node_{id} [label=\"{escaped_label}\"",
-    )
-    .ok();
+    writeln!(dot, "    node_{id} [label=\"{escaped_label}\"",).ok();
     writeln!(dot, "          shape={shape}").ok();
     writeln!(dot, "          fillcolor=\"{fillcolor}\"];").ok();
 }
@@ -178,7 +174,10 @@ fn emit_clusters<T: Transcendental, const B: usize>(
 
     for (cat_name, nodes) in &by_cat {
         // Determine cluster color from category
-        let first = nodes.first().map(|(_, n)| n.node.metadata().category).unwrap_or(NodeCategory::Processor);
+        let first = nodes
+            .first()
+            .map(|(_, n)| n.node.metadata().category)
+            .unwrap_or(NodeCategory::Processor);
         let (_, fillcolor) = category_style(first);
 
         writeln!(dot, "    subgraph cluster_{cat_name} {{").ok();
@@ -212,7 +211,11 @@ fn category_style(cat: NodeCategory) -> (&'static str, &'static str) {
 }
 
 fn port_name(s: &str) -> String {
-    if s.is_empty() { "?".to_string() } else { s.to_string() }
+    if s.is_empty() {
+        "?".to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 fn port_name_by_index(idx: usize, dir: &str) -> String {

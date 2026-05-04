@@ -20,10 +20,20 @@ unsafe impl Send for CbSlot {}
 unsafe impl Sync for CbSlot {}
 
 impl CbSlot {
-    fn new() -> Self { Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize) }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) { (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb); }
-    unsafe fn call(&self) { if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) { cb(); } }
-    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>)); }
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+    }
+    unsafe fn set(&self, cb: Box<dyn Fn()>) {
+        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    }
+    unsafe fn call(&self) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
+            cb();
+        }
+    }
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+    }
 }
 
 /// Mutable view into a JACK port buffer chunk.
@@ -33,8 +43,12 @@ struct OutputWindow {
 }
 
 impl OutputWindow {
-    fn new(ptr: *mut f32, len: usize) -> Self { Self { ptr, capacity: len } }
-    fn as_mut_slice(&mut self) -> &mut [f32] { unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) } }
+    fn new(ptr: *mut f32, len: usize) -> Self {
+        Self { ptr, capacity: len }
+    }
+    fn as_mut_slice(&mut self) -> &mut [f32] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
+    }
 }
 
 /// Lock-free slot for the current output window.
@@ -44,11 +58,21 @@ unsafe impl Send for OutputSlot {}
 unsafe impl Sync for OutputSlot {}
 
 impl OutputSlot {
-    fn new() -> Self { Self(Box::into_raw(Box::new(None))) }
-    unsafe fn set(&self, w: OutputWindow) { *self.0 = Some(w); }
-    unsafe fn clear(&self) { *self.0 = None; }
-    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> { (*self.0).as_mut() }
-    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0)); }
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None)))
+    }
+    unsafe fn set(&self, w: OutputWindow) {
+        *self.0 = Some(w);
+    }
+    unsafe fn clear(&self) {
+        *self.0 = None;
+    }
+    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
+        (*self.0).as_mut()
+    }
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0));
+    }
 }
 
 /// JACK audio backend.
@@ -76,7 +100,9 @@ impl fmt::Debug for JackBackend {
 impl JackBackend {
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(any(target_os = "linux", target_os = "macos")) {
-            return Err(IoError::Unsupported("JACK is only available on Linux and macOS".into()));
+            return Err(IoError::Unsupported(
+                "JACK is only available on Linux and macOS".into(),
+            ));
         }
 
         let xruns = Arc::new(AtomicU32::new(0));
@@ -126,7 +152,8 @@ impl ProcessHandler for JackProcessHandler {
         let mut off = 0usize;
         while off + chunk <= nframes {
             unsafe {
-                self.output_slot.set(OutputWindow::new(out.as_mut_ptr().add(off), chunk));
+                self.output_slot
+                    .set(OutputWindow::new(out.as_mut_ptr().add(off), chunk));
                 self.process_cb.call();
                 self.output_slot.clear();
             }
@@ -149,7 +176,9 @@ fn run_jack_thread(
 ) {
     loop {
         thread::park();
-        if running.load(Ordering::Acquire) { break; }
+        if running.load(Ordering::Acquire) {
+            break;
+        }
         return;
     }
 
@@ -157,12 +186,18 @@ fn run_jack_thread(
 
     let (client, _status) = match Client::new(client_name, ClientOptions::NO_START_SERVER) {
         Ok(c) => c,
-        Err(e) => { log::error!("JACK client new: {e:?}"); return; }
+        Err(e) => {
+            log::error!("JACK client new: {e:?}");
+            return;
+        }
     };
 
     let out_port: Port<AudioOut> = match client.register_port("output", AudioOut) {
         Ok(p) => p,
-        Err(e) => { log::error!("JACK output port: {e:?}"); return; }
+        Err(e) => {
+            log::error!("JACK output port: {e:?}");
+            return;
+        }
     };
 
     let handler = JackProcessHandler {
@@ -173,7 +208,10 @@ fn run_jack_thread(
 
     let active_client = match client.activate_async((), handler) {
         Ok(a) => a,
-        Err(e) => { log::error!("JACK activate: {e:?}"); return; }
+        Err(e) => {
+            log::error!("JACK activate: {e:?}");
+            return;
+        }
     };
 
     // Auto-connect output port to JACK system playback ports.
@@ -198,10 +236,14 @@ fn run_jack_thread(
 
 impl AudioIo for JackBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { self.process_cb.set(cb); }
+        unsafe {
+            self.process_cb.set(cb);
+        }
     }
 
-    fn read_input(&self, _left: &mut [f32], _right: &mut [f32]) -> usize { 0 }
+    fn read_input(&self, _left: &mut [f32], _right: &mut [f32]) -> usize {
+        0
+    }
 
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
         let n = left.len().min(right.len());
@@ -213,7 +255,9 @@ impl AudioIo for JackBackend {
                 dst[i] = (left[i] + right[i]) * 0.5;
             }
             cap
-        } else { 0 }
+        } else {
+            0
+        }
     }
 
     fn start(&self) -> AudioIoResult<()> {
@@ -238,27 +282,45 @@ impl AudioIo for JackBackend {
 // ============================================================================
 
 impl AudioBackend for JackBackend {
-    fn backend_type(&self) -> BackendType { BackendType::Jack }
-    fn config(&self) -> &AudioConfig { &self.config }
-    fn config_mut(&mut self) -> &mut AudioConfig { &mut self.config }
-    fn init(&mut self) -> IoResult<()> { Ok(()) }
+    fn backend_type(&self) -> BackendType {
+        BackendType::Jack
+    }
+    fn config(&self) -> &AudioConfig {
+        &self.config
+    }
+    fn config_mut(&mut self) -> &mut AudioConfig {
+        &mut self.config
+    }
+    fn init(&mut self) -> IoResult<()> {
+        Ok(())
+    }
 
     fn start(&mut self) -> IoResult<()> {
         self.running.store(true, Ordering::Release);
-        if let Some(handle) = &self.thread_handle { handle.thread().unpark(); }
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
         Ok(())
     }
 
     fn stop(&mut self) -> IoResult<()> {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle { handle.thread().unpark(); }
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
         thread::sleep(Duration::from_millis(50));
         Ok(())
     }
 
-    fn read(&mut self, _buffer: &mut [f32]) -> IoResult<usize> { Ok(0) }
-    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> { Ok(0) }
-    fn xruns(&self) -> u32 { self.xruns.load(Ordering::Acquire) }
+    fn read(&mut self, _buffer: &mut [f32]) -> IoResult<usize> {
+        Ok(0)
+    }
+    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
+        Ok(0)
+    }
+    fn xruns(&self) -> u32 {
+        self.xruns.load(Ordering::Acquire)
+    }
 
     fn latency(&self) -> Duration {
         Duration::from_micros(
@@ -266,15 +328,23 @@ impl AudioBackend for JackBackend {
         )
     }
 
-    fn list_input_devices(&self) -> Vec<String> { vec!["default".to_string()] }
-    fn list_output_devices(&self) -> Vec<String> { vec!["default".to_string()] }
+    fn list_input_devices(&self) -> Vec<String> {
+        vec!["default".to_string()]
+    }
+    fn list_output_devices(&self) -> Vec<String> {
+        vec!["default".to_string()]
+    }
 }
 
 impl Drop for JackBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle { handle.thread().unpark(); }
-        if let Some(handle) = self.thread_handle.take() { let _ = handle.join(); }
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
         unsafe {
             self.process_cb.drop_box();
             self.output_slot.drop_box();

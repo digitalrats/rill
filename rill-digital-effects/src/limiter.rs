@@ -4,7 +4,7 @@ use crate::delay::Delay;
 use rill_core::{
     buffer::DelayLine,
     math::Transcendental,
-    traits::{SignalNode, NodeCategory, NodeMetadata, NodeState, Processor},
+    traits::{NodeCategory, NodeMetadata, NodeState, Processor, SignalNode},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
