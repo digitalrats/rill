@@ -1,8 +1,7 @@
 //! CPAL бэкенд — callback-driven, без отдельного потока, без crossbeam, без parking_lot.
 //!
+//! Output пишет напрямую в CPAL-буфер через OutputWindow (без ring buffer).
 //! Единственный поток — тот, в котором CPAL дёргает output-коллбэк.
-//! Процессинг живёт внутри этого коллбэка. Управление (start/stop) —
-//! синхронное, без каналов.
 
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -43,21 +42,49 @@ impl CbSlot {
     }
 }
 
+/// Mutable view into a CPAL output buffer chunk.
+struct OutputWindow {
+    ptr: *mut f32,
+    capacity: usize,
+}
+
+impl OutputWindow {
+    fn new(ptr: *mut f32, len: usize) -> Self {
+        Self { ptr, capacity: len }
+    }
+    fn as_mut_slice(&mut self) -> &mut [f32] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
+    }
+}
+
+/// Lock-free slot for the current output window, set during CPAL callback.
+#[derive(Copy, Clone)]
+struct OutputSlot(*mut Option<OutputWindow>);
+unsafe impl Send for OutputSlot {}
+unsafe impl Sync for OutputSlot {}
+
+impl OutputSlot {
+    fn new() -> Self { Self(Box::into_raw(Box::new(None))) }
+    unsafe fn set(&self, w: OutputWindow) { *self.0 = Some(w); }
+    unsafe fn clear(&self) { *self.0 = None; }
+    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> { (*self.0).as_mut() }
+    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0)); }
+}
+
 /// CPAL бэкенд.
 ///
-/// Владеет одним output-стримом (и опционально input-стримом).
-/// Не создаёт отдельного потока — обработка живёт в CPAL-коллбэке.
+/// Владеет одним output-стримом. Не создаёт отдельного потока —
+/// обработка живёт в CPAL-коллбэке. Output пишет напрямую в CPAL-буфер.
 ///
 /// # Safety
-/// `cpal::Stream` на некоторых платформах (ALSA) содержит `PhantomData<*mut ()>`
-/// и не реализует `Send` автоматически. `Send` корректен, поскольку `AudioIo`
-/// гарантирует последовательный доступ (stop вызывается после join RT-потока).
+/// `cpal::Stream` содержит `PhantomData<*mut ()>` → `!Send` на некоторых
+/// платформах. `Send` корректен: `AudioIo` гарантирует последовательный доступ.
 pub struct CpalBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     stream: UnsafeCell<Option<cpal::Stream>>,
-    output_ring: Arc<IoRingBuffer>,
     input_ring: Arc<IoRingBuffer>,
+    output_slot: OutputSlot,
     xruns: Arc<std::sync::atomic::AtomicU32>,
 }
 
@@ -76,13 +103,13 @@ impl fmt::Debug for CpalBackend {
 impl CpalBackend {
     /// Создать новый CPAL бэкенд.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
-        let buf_cap = (config.buffer_size * config.output_channels.max(config.input_channels).max(1) * 4) as usize;
+        let buf_cap = (config.buffer_size * config.input_channels.max(1) * 4) as usize;
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
             stream: UnsafeCell::new(None),
-            output_ring: Arc::new(IoRingBuffer::new(buf_cap)),
             input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
+            output_slot: OutputSlot::new(),
             xruns: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         })
     }
@@ -97,24 +124,29 @@ impl CpalBackend {
         let stream_config = cpal::StreamConfig {
             channels: self.config.output_channels as u16,
             sample_rate: cpal::SampleRate(self.config.sample_rate),
-            buffer_size: cpal::BufferSize::Fixed(self.config.buffer_size),
+            buffer_size: cpal::BufferSize::Default,
         };
 
-        let out_ring = self.output_ring.clone();
         let xruns = self.xruns.clone();
-        // Store slot address as usize — the field type IS Send.
         let cb_addr = self.process_cb.0;
+        let oslot = self.output_slot;
 
         let stream = output_device.build_output_stream(
             &stream_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // 1. Call graph processing callback
-                let slot = CbSlot(cb_addr);
-                unsafe { slot.call(); }
-                // 2. Read from output ring → CPAL buffer
-                let n = out_ring.read(data);
-                if n < data.len() {
-                    data[n..].fill(0.0);
+                let chunk = 256;  // BUF_SIZE
+                let mut off = 0usize;
+
+                while off + chunk * 2 <= data.len() {
+                    unsafe {
+                        oslot.set(OutputWindow::new(data.as_mut_ptr().add(off), chunk * 2));
+                        CbSlot(cb_addr).call();
+                        oslot.clear();
+                    }
+                    off += chunk * 2;
+                }
+                if off < data.len() {
+                    data[off..].fill(0.0);
                 }
             },
             move |err| {
@@ -142,7 +174,6 @@ impl AudioBackend for CpalBackend {
     }
 
     fn init(&mut self) -> IoResult<()> {
-        self.output_ring.clear_with_zeros();
         self.input_ring.clear_with_zeros();
         Ok(())
     }
@@ -163,9 +194,8 @@ impl AudioBackend for CpalBackend {
         Ok(n)
     }
 
-    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        let n = self.output_ring.write(buffer);
-        Ok(n)
+    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
+        Ok(0)
     }
 
     fn xruns(&self) -> u32 {
@@ -212,14 +242,18 @@ impl AudioIo for CpalBackend {
     }
 
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        let frames = left.len().min(right.len());
-        let cap = frames.min(256).saturating_mul(2);
-        let mut temp = [0.0f32; 512];
-        for i in 0..(cap / 2) {
-            temp[i * 2] = left[i];
-            temp[i * 2 + 1] = right[i];
+        let n = left.len().min(right.len());
+        if let Some(win) = unsafe { self.output_slot.as_mut() } {
+            let cap = win.capacity.min(n * 2);
+            let dst = win.as_mut_slice();
+            for i in 0..(cap / 2) {
+                dst[i * 2] = left[i];
+                dst[i * 2 + 1] = right[i];
+            }
+            cap / 2
+        } else {
+            0
         }
-        self.output_ring.write(&temp[..cap]) / 2
     }
 
     fn start(&self) -> AudioIoResult<()> {
@@ -249,6 +283,9 @@ impl Drop for CpalBackend {
         if let Some(s) = unsafe { (*self.stream.get()).take() } {
             let _ = s.pause();
         }
-        unsafe { self.process_cb.drop_box(); }
+        unsafe {
+            self.process_cb.drop_box();
+            self.output_slot.drop_box();
+        }
     }
 }
