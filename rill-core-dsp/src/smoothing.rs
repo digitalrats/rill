@@ -71,6 +71,7 @@ impl<T: Transcendental> ParamSmoother<T> {
     }
 
     /// Process a single sample value (useful outside the Algorithm interface).
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> T {
         let diff = self.target.sub(self.current);
         let step = diff.mul(self.coeff);

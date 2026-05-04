@@ -3,7 +3,6 @@
 //! Демонстрирует базовые операции с векторами: сложение, умножение,
 //! математические функции и работу с блоками данных.
 
-use rill_core::math::Transcendental;
 use rill_core_dsp::vector::prelude::*;
 
 fn main() {

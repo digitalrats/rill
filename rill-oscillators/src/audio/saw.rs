@@ -3,7 +3,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Processor, Source,
+    ParameterId, Port, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -94,7 +94,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
         self.osc
             .process(None, &mut output[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
-            output[i] = output[i] * self.amplitude;
+            output[i] *= self.amplitude;
         }
         Ok(())
     }

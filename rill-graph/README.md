@@ -1,34 +1,42 @@
 # rill-graph
 
-Real-time signal graph (DAG) with block processing, topological sort, and
-the [`SignalEngine`] — a real-time safe graph engine.
+Static DAG signal graph — topology and port connections only.
+Processing is driven by `Port::propagate` (not an external engine).
 
 ## Key components
 
 - **`SignalGraph`** — immutable DAG container, topology is fixed at build time
-- **`GraphBuilder`** — the only way to build a graph (`Source` → `Processor` → `Sink`)
+- **`GraphBuilder`** — the only way to build a graph (`Source` → `Processor` → `Sink`),
+  fills `downstream_input_ptrs`, `parent`, `upstream_buffer` for zero-copy routing
 - **Kahn's algorithm** — topological sort with cycle detection
-- **`SignalEngine<T, BUF_SIZE>`** — drives the graph:
-  - `process_tick(tick)` — clock boundary: drains commands (anti-ack on
-    overwrite), runs `pre_process` (feedback mix), applies parameter changes
-  - `process_block(tick)` — convenience: `process_tick` + topo-order node
-    processing + snapshot + propagate
-  - `spawn()` — consumes the engine and runs it in a dedicated real-time thread
-  - `running_flag()` — `Arc<AtomicBool>` for cooperative shutdown
-- **Two-thread architecture** — real-time thread (hard RT) runs the engine,
-  control thread (soft RT) runs `PatchbayManager` via queues
-- **Zero-copy routing** — 1:1 и fan-out соединения читают напрямую из буфера
-  upstream-порта (`Port::upstream_buffer`). Копирование только при fan-in и feedback.
-- **SIMD-friendly** — фиксированное положение буфера в памяти на всё время жизни графа.
-- **Port routing** — соединения и буферы обратной связи хранятся на портах
-- **Feedback support** — deferred feedback via `port.pre_process` /
-  `port.snapshot_feedback`
+- **`Port::propagate`** — recursive signal propagation:
+  1. Copy data to downstream input ports (skipped for zero-copy `upstream_buffer` ports)
+  2. Run port algorithm (`run_action`)
+  3. Call `pre_process` (feedback mix)
+  4. Call the downstream node's `process_block` (`generate`/`process`/`consume`)
+  5. `snapshot_feedback` on output ports
+  6. Recurse through output ports' `downstream_input_ptrs`
+- **Zero-copy routing** — 1:1 and fan-out connections read directly from upstream
+  output buffer via `upstream_buffer`. Copy only for fan-in and feedback.
+- **Hard-RT safe** — no heap allocations, no locks, no syscalls in the
+  signal path. All `Port::propagate` data structures are pre-allocated at
+  graph construction time (`downstream_nodes`, `downstream_input_ptrs`).
+  Communication with the control thread is exclusively through
+  lock-free `MpscQueue<ParameterCommand>`.
+- **SIMD-friendly** — fixed buffer position in memory for the graph's lifetime
+- **Port routing** — connections and feedback buffers live on ports
+- **Feedback support** — `port.pre_process` / `port.snapshot_feedback`
 - **Port types** — `Signal`, `Control`, `Clock`, `Feedback`, `Param`
+
+## Top-level processing entry point
+
+No `SignalEngine`. The source node (e.g. `AudioInput` from `rill-io`) creates its
+own processing callback. The callback drains the command queue, calls
+`Source::generate`, then `Port::propagate` to cascade through the DAG.
 
 ## Dependencies
 
-- `rill-core` — `SignalNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`,
-  `CommandQueue`, `TelemetryQueue`
+- `rill-core` — `SignalNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`
 
 ## Links
 

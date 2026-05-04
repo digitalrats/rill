@@ -18,6 +18,7 @@ use std::fmt;
 // ============================================================================
 
 /// Unique identifier for a node in the graph
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u32);
 
@@ -122,7 +123,7 @@ pub struct NodeMetadata {
     pub name: String,
 
     /// Canonical type name used for serialization / factory lookup
-    /// (e.g. `Some("rill/sine_osc")`). When `None`, [`name`] is used instead.
+    /// (e.g. `Some("rill/sine_osc")`). When `None`, [`NodeMetadata::name`] is used instead.
     pub type_name: Option<String>,
 
     /// Category of the node
@@ -249,6 +250,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 /// - Port counting
 /// - Parameter access
 /// - Initialization and reset
+/// - Optional telemetry sender
 ///
 /// The actual processing is split into specialized traits:
 /// - `Source` for generators
@@ -393,6 +395,15 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     fn num_outputs(&self) -> usize {
         self.num_signal_outputs() + self.num_control_outputs() + self.num_clock_outputs()
     }
+
+    /// Attach a telemetry sender to this node.
+    ///
+    /// Nodes that push telemetry (e.g. clock tick from a hardware source)
+    /// should store this sender and use it from their `generate()` /
+    /// `process()` / `consume()` methods via `TelemetryTx::try_send`.
+    /// Default is no-op — override only in nodes that produce telemetry.
+    fn set_telemetry_tx(&mut self, _tx: crate::queues::telemetry::TelemetryTx) {
+    }
 }
 
 // ============================================================================
@@ -507,80 +518,6 @@ pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: SignalNod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::Transcendental;
-
-    struct TestNode;
-
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for TestNode {
-        fn metadata(&self) -> NodeMetadata {
-            NodeMetadata {
-                name: "Test".to_string(),
-                type_name: None,
-                category: NodeCategory::Utility,
-                description: "Test node".to_string(),
-                author: "Rill".to_string(),
-                version: "1.0".to_string(),
-                signal_inputs: 0,
-                signal_outputs: 0,
-                control_inputs: 0,
-                control_outputs: 0,
-                clock_inputs: 0,
-                clock_outputs: 0,
-                feedback_ports: 0,
-                parameters: vec![],
-            }
-        }
-
-        fn init(&mut self, _sample_rate: f32) {}
-        fn reset(&mut self) {}
-        fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
-            None
-        }
-        fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
-            Ok(())
-        }
-
-        fn id(&self) -> NodeId {
-            NodeId(0)
-        }
-        fn set_id(&mut self, _id: NodeId) {}
-
-        fn input_port(&self, _index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>> {
-            None
-        }
-        fn input_port_mut(
-            &mut self,
-            _index: usize,
-        ) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
-            None
-        }
-        fn output_port(&self, _index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>> {
-            None
-        }
-        fn output_port_mut(
-            &mut self,
-            _index: usize,
-        ) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
-            None
-        }
-        fn control_port(&self, _index: usize) -> Option<&crate::traits::port::Port<T, BUF_SIZE>> {
-            None
-        }
-        fn control_port_mut(
-            &mut self,
-            _index: usize,
-        ) -> Option<&mut crate::traits::port::Port<T, BUF_SIZE>> {
-            None
-        }
-
-        fn state(&self) -> &NodeState<T, BUF_SIZE> {
-            unimplemented!()
-        }
-
-        fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
-            unimplemented!()
-        }
-    }
 
     #[test]
     fn test_node_id() {

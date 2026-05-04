@@ -342,11 +342,9 @@ impl<T: Transcendental> Smoother<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use float_cmp::approx_eq;
 
     // Константы для допусков
     const EPSILON: f32 = 1e-4; // Базовый допуск
-    const EPSILON_DB: f32 = 0.1; // Допуск для dB (0.1 dB)
     const EPSILON_WINDOW: f32 = 1e-3; // Допуск для оконных функций
 
     #[test]

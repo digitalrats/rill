@@ -101,7 +101,7 @@ pub use moog_ladder::MoogLadder;
 pub use one_pole::OnePole;
 pub use svf::StateVariableFilter;
 
-use crate::algorithm::{Algorithm, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use rill_core::Transcendental;
 
 /// Общий тип параметров для всех фильтров

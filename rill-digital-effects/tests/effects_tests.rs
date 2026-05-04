@@ -1,5 +1,5 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{SignalNode, ParamValue, ParameterId, Processor};
+use rill_core::traits::{SignalNode, ParamValue, ParameterId};
 use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter};
 
 const BUF_SIZE: usize = 1024;
@@ -85,7 +85,7 @@ fn test_delay_parameters() {
 
 #[test]
 fn test_distortion_hard_clip() {
-    let mut dist = TestDistortion::with_params(44100.0, DistortionType::HardClip, 10.0, 1.0);
+    let dist = TestDistortion::with_params(44100.0, DistortionType::HardClip, 10.0, 1.0);
 
     assert_eq!(dist.process_sample(0.1), 1.0); // driven to 1.0, clipped to 1.0
     assert_eq!(dist.process_sample(-0.05), -0.5); // driven to -0.5, no clip
@@ -93,7 +93,7 @@ fn test_distortion_hard_clip() {
 
 #[test]
 fn test_distortion_soft_clip() {
-    let mut dist = TestDistortion::with_params(44100.0, DistortionType::SoftClip, 5.0, 1.0);
+    let dist = TestDistortion::with_params(44100.0, DistortionType::SoftClip, 5.0, 1.0);
 
     let out = dist.process_sample(1.0);
     assert!(out < 1.0 && out > 0.9); // tanh(5) ~ 0.9999
@@ -145,7 +145,7 @@ fn test_distortion_types() {
         DistortionType::Tube,
         DistortionType::Fuzz,
     ] {
-        let mut dist = TestDistortion::with_params(44100.0, dist_type, 2.0, 1.0);
+        let dist = TestDistortion::with_params(44100.0, dist_type, 2.0, 1.0);
 
         for &input in &test_inputs {
             let output = dist.process_sample(input);

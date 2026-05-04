@@ -10,9 +10,7 @@ use rill_core::{Error, ErrorCode};
 /// Common configurations:
 /// - 10-band (31.25, 62.5, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz)
 /// - 31-band (1/3 octave)
-pub struct GraphicEq<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static> {
-    /// Filter factory
-    factory: Factory,
+pub struct GraphicEq<F: Filter<f32> + 'static> {
     /// EQ bands
     bands: Vec<EqBand<F>>,
     /// Center frequencies
@@ -23,11 +21,9 @@ pub struct GraphicEq<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send 
     output_gain: f32,
 }
 
-impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static>
-    GraphicEq<F, Factory>
-{
+impl<F: Filter<f32> + 'static> GraphicEq<F> {
     /// Create a new graphic equalizer with ISO 1/3 octave frequencies
-    pub fn new_third_octave(factory: Factory, sample_rate: f32) -> Self {
+    pub fn new_third_octave(factory: impl FilterFactory<F> + Send + Sync + 'static, sample_rate: f32) -> Self {
         let frequencies = vec![
             20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0,
             400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0,
@@ -38,7 +34,7 @@ impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static
     }
 
     /// Create a new graphic equalizer with custom frequencies
-    pub fn with_frequencies(factory: Factory, frequencies: Vec<f32>, sample_rate: f32) -> Self {
+    pub fn with_frequencies(factory: impl FilterFactory<F> + Send + Sync + 'static, frequencies: Vec<f32>, sample_rate: f32) -> Self {
         let mut bands = Vec::with_capacity(frequencies.len());
 
         for &freq in &frequencies {
@@ -53,7 +49,6 @@ impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static
         }
 
         Self {
-            factory,
             bands,
             frequencies,
             sample_rate,
@@ -96,7 +91,7 @@ impl<F: Filter<f32> + 'static, Factory: FilterFactory<F> + Send + Sync + 'static
 
     /// Set output gain
     pub fn set_output_gain(&mut self, gain: f32) {
-        self.output_gain = gain.max(0.0).min(4.0);
+        self.output_gain = gain.clamp(0.0, 4.0);
     }
 
     /// Get frequency for a band

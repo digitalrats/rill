@@ -1,6 +1,6 @@
 //! Трейты для эффектов
 
-use crate::algorithm::{Algorithm, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use rill_core::time::ClockTick;
 use rill_core::traits::ActionContext;
 use rill_core::Transcendental;

@@ -1,11 +1,14 @@
 [package]
 name = "rill-adrift"
-version = "0.4.0"
+version = "0.5.0-beta.1"
 edition = "2021"
 description = "Umbrella crate re-exporting all rill crates for audio application development"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+
+[dev-dependencies]
+parking_lot = "0.12"
 
 [dependencies]
 rill-core = { workspace = true }
@@ -17,6 +20,10 @@ rill-digital-effects = { workspace = true }
 rill-router = { workspace = true }
 rill-patchbay = { workspace = true }
 
+# Dependencies for Runtime (always needed)
+log = "0.4"
+crossbeam-channel = "0.5"
+
 # Optional (feature-gated)
 rill-io = { workspace = true, optional = true }
 rill-lofi = { workspace = true, optional = true }
@@ -27,16 +34,24 @@ rill-analog-filters = { workspace = true, optional = true }
 rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
 
+# Runtime sub-dependencies (feature gates match the consuming module)
+tokio = { workspace = true, optional = true, features = ["signal"] }
+serde_json = { version = "1.0", optional = true }
+
 [features]
-default = ["io", "lofi", "telemetry", "osc", "sampler"]
+default = ["io", "lofi", "telemetry", "osc", "sampler", "cpal"]
 
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi"]
 telemetry = ["dep:rill-telemetry"]
-osc = ["dep:rill-osc"]
+osc = ["dep:rill-osc", "dep:tokio"]
 analog = ["dep:rill-core-wdf", "dep:rill-analog-filters", "dep:rill-analog-effects"]
 sampler = ["dep:rill-sampler"]
-serialization = ["rill-graph/serialization"]
+serialization = [
+    "rill-graph/serialization",
+    "rill-patchbay/serialization",
+    "dep:serde_json",
+]
 
 # Audio backend passthrough
 alsa = ["rill-io/alsa"]

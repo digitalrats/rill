@@ -10,7 +10,7 @@ use rill_core::queues::TelemetryBlock;
 /// frames from the ring buffer and delivers them to a user-supplied callback.
 ///
 /// # Example
-/// ```ignore
+/// ```
 /// use std::sync::Arc;
 /// use rill_core::queues::spsc::SpscQueue;
 /// use rill_core::queues::TelemetryBlock;

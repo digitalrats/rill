@@ -1,16 +1,16 @@
-//! # Неблокирующие очереди для двухпоточной архитектуры
+//! # Non-blocking queues for the dual-thread architecture
 //!
-//! Этот модуль предоставляет очереди для безопасного обмена
-//! данными между потоком управления (soft RT) и аудиопотоком (hard RT).
+//! This module provides queues for safe data exchange between the
+//! control thread (soft RT) and the audio signal thread (hard RT).
 //!
-//! ## Основные компоненты
+//! ## Components
 //!
-//! - [`SpscQueue`] — Single-producer single-consumer очередь (максимальная скорость)
-//! - [`RtQueueBase`] — базовый трейт для всех очередей
-//! - [`QueueError`] — ошибки операций с очередями (thiserror)
-//! - [`CommandQueue`] — команды из control thread в signal thread
-//! - [`OverflowPolicy`] — политики поведения при переполнении
-//! - [`UnderflowPolicy`] — политики поведения при опустошении
+//! - [`SpscQueue`](crate::queues::SpscQueue) — Single-producer single-consumer queue (maximum throughput)
+//! - [`RtQueueBase`](crate::queues::RtQueueBase) — Base trait for all queues
+//! - [`QueueError`](crate::queues::QueueError) — Queue operation error type
+//! - [`CommandQueue`](crate::queues::CommandQueue) — Commands from control thread to signal thread
+//! - [`OverflowPolicy`](crate::queues::OverflowPolicy) — Overflow behaviour policies
+//! - [`UnderflowPolicy`](crate::queues::UnderflowPolicy) — Underflow behaviour policies
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,15 +19,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // Подмодули
 // =============================================================================
 
+/// Bounded command queue using a crossbeam channel.
 pub mod command;
+/// Queue error types.
 pub mod error;
+/// Multi-producer single-consumer queue for automation.
 pub mod mpsc;
+/// Observer pattern helpers for queue monitoring.
 pub mod observer;
+/// Lock-free ring buffer for real-time use.
 pub mod ring;
+/// Base real-time queue implementation.
 pub mod rt_queue;
+/// Signal and command types for automation.
 pub mod signal;
+/// Lock-free single-producer single-consumer queue.
 pub mod spsc;
+/// Telemetry data types and senders.
 pub mod telemetry;
+/// Telemetry block batching utilities.
 pub mod telemetry_block;
 
 pub use command::CommandQueue;
@@ -47,25 +57,25 @@ pub use signal::{
 // Политики поведения
 // =============================================================================
 
-/// Политика поведения при переполнении очереди
+/// Overflow behaviour policy for bounded queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowPolicy {
-    /// Перезаписать самый старый элемент (кольцевой буфер)
+    /// Overwrite the oldest element (ring-buffer behaviour).
     OverwriteOldest,
-    /// Отбросить новый элемент
+    /// Discard the newest element (drop on full).
     DropNewest,
-    /// Вызвать панику (только для отладки)
+    /// Panic on overflow (debug only).
     Panic,
-    /// Блокировать производителя (не для RT-потоков)
+    /// Block the producer (not safe for RT threads).
     Block,
 }
 
-/// Политика поведения при пустой очереди
+/// Underflow behaviour policy for bounded queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnderflowPolicy {
-    /// Вернуть None
+    /// Return `None` on empty.
     ReturnNone,
-    /// Вызвать панику (только для отладки)
+    /// Panic on underflow (debug only).
     Panic,
 }
 
@@ -73,20 +83,27 @@ pub enum UnderflowPolicy {
 // Статистика очереди
 // =============================================================================
 
-/// Живая статистика очереди (собирается внутри очереди)
+/// Live queue statistics collected inside the queue.
 pub struct QueueStats {
+    /// Total number of successful push operations.
     pushes: AtomicUsize,
+    /// Total number of successful pop operations.
     pops: AtomicUsize,
+    /// Total number of overflow events.
     overflows: AtomicUsize,
+    /// Total number of underflow events.
     underflows: AtomicUsize,
+    /// Maximum observed queue size.
     max_size: AtomicUsize,
 }
 
 impl QueueStats {
+    /// Create a new empty statistics counter.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Record a push operation and update the max size if needed.
     pub fn record_push(&self, current_size: usize) {
         self.pushes.fetch_add(1, Ordering::Relaxed);
         let prev = self.max_size.load(Ordering::Relaxed);
@@ -100,18 +117,22 @@ impl QueueStats {
         }
     }
 
+    /// Record a pop operation.
     pub fn record_pop(&self) {
         self.pops.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record an overflow event.
     pub fn record_overflow(&self) {
         self.overflows.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record an underflow event.
     pub fn record_underflow(&self) {
         self.underflows.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Take an atomic snapshot of the current statistics.
     pub fn snapshot(&self) -> QueueStatsSnapshot {
         QueueStatsSnapshot {
             pushes: self.pushes.load(Ordering::Relaxed),
@@ -135,28 +156,28 @@ impl Default for QueueStats {
     }
 }
 
-/// Снимок статистики очереди
+/// Point-in-time snapshot of queue statistics.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueueStatsSnapshot {
-    /// Количество успешных push операций
+    /// Number of successful push operations.
     pub pushes: usize,
-    /// Количество успешных pop операций
+    /// Number of successful pop operations.
     pub pops: usize,
-    /// Количество переполнений
+    /// Number of overflow events.
     pub overflows: usize,
-    /// Количество опустошений
+    /// Number of underflow events.
     pub underflows: usize,
-    /// Максимальный достигнутый размер
+    /// Maximum observed queue size.
     pub max_size: usize,
 }
 
 impl QueueStatsSnapshot {
-    /// Создать новую статистику
+    /// Create a new empty snapshot.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Объединить две статистики
+    /// Merge two snapshots by summing counts and taking the max size.
     pub fn merge(&self, other: &Self) -> Self {
         Self {
             pushes: self.pushes + other.pushes,
@@ -182,35 +203,38 @@ impl fmt::Display for QueueStatsSnapshot {
 // Базовый трейт для всех очередей
 // =============================================================================
 
-/// Базовый трейт для всех очередей, безопасных для реального времени
+/// Base trait for all real-time safe queues.
 ///
-/// Все реализации должны быть:
-/// - Lock-free (никаких мьютексов)
-/// - RT-safe (без аллокаций, без блокировок)
+/// Implementations must be:
+/// - Lock-free (no mutexes)
+/// - RT-safe (no allocations, no blocking)
 pub trait RtQueueBase<T>: Send + Sync {
-    /// Добавить элемент в очередь
+    /// Push a value into the queue.
+    ///
+    /// # Errors
+    /// Returns `QueueFull` if the queue is at capacity.
     fn push(&self, value: T) -> QueueResult<()>;
 
-    /// Извлечь элемент из очереди
+    /// Pop a value from the queue, or `None` if empty.
     fn pop(&self) -> Option<T>;
 
-    /// Текущий размер очереди
+    /// Current number of elements in the queue.
     fn len(&self) -> usize;
 
-    /// Вместимость очереди
+    /// Maximum capacity of the queue.
     fn capacity(&self) -> usize;
 
-    /// Проверить, пуста ли очередь
+    /// Return true if the queue is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Проверить, полна ли очередь
+    /// Return true if the queue is full.
     fn is_full(&self) -> bool {
         self.len() == self.capacity()
     }
 
-    /// Очистить очередь
+    /// Clear all elements from the queue.
     fn clear(&self);
 }
 
@@ -218,13 +242,16 @@ pub trait RtQueueBase<T>: Send + Sync {
 // Вспомогательные функции
 // =============================================================================
 
-/// Проверка, является ли число степенью двойки
+/// Return true if `n` is a power of two.
 #[inline]
 pub const fn is_power_of_two(n: usize) -> bool {
     n != 0 && (n & (n - 1)) == 0
 }
 
-/// Вычислить следующую степень двойки
+/// Compute the next power of two greater than or equal to `n`.
+///
+/// # Panics
+/// Panics when `n` is 0.
 #[inline]
 pub const fn next_power_of_two(n: usize) -> usize {
     let mut n = n - 1;

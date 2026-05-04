@@ -1,4 +1,4 @@
-//! # Clock sources for audio timing
+//! # Clock sources for signal timing
 //!
 //! This module defines the `ClockSource` trait and related types for
 //! providing timing information to the signal graph.

@@ -238,11 +238,10 @@ impl<T: Transcendental> Algorithm<T> for BasicOscillator<T> {
 
     fn process(
         &mut self,
-        input: Option<&[T]>,
+        _input: Option<&[T]>,
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        let input = input.unwrap_or(&[]);
         for out in output.iter_mut() {
             *out = self.generate().extract(0);
         }
@@ -284,7 +283,7 @@ impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
     }
 
     fn set_frequency(&mut self, freq: f32) {
-        self.frequency = freq.max(0.1).min(20000.0);
+        self.frequency = freq.clamp(0.1, 20000.0);
         self.update_phase_inc();
     }
 

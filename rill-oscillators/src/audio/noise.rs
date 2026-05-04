@@ -4,7 +4,7 @@ use rand::Rng;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    Processor, Source,
+    Source,
 };
 use rill_core::{ProcessError, ProcessResult};
 
@@ -109,7 +109,7 @@ impl<const BUF_SIZE: usize> NoiseOsc<BUF_SIZE> {
 
         self.pink_b0 = 0.99886 * self.pink_b0 + white * 0.0555179;
         self.pink_b1 = 0.99332 * self.pink_b1 + white * 0.0750759;
-        self.pink_b2 = 0.96900 * self.pink_b2 + white * 0.1538520;
+        self.pink_b2 = 0.96900 * self.pink_b2 + white * 0.153_852;
         self.pink_b3 = 0.86650 * self.pink_b3 + white * 0.3104856;
         self.pink_b4 = 0.55000 * self.pink_b4 + white * 0.5329522;
         self.pink_b5 = -0.7616 * self.pink_b5 - white * 0.0168980;

@@ -8,6 +8,10 @@ use rill_core::{ProcessError, ProcessResult};
 use rill_core_dsp::generators::{Generator, WavetableOscillator};
 use std::marker::PhantomData;
 
+/// Wavetable oscillator node with linear or cubic interpolation.
+///
+/// Generates audio from a fixed wavetable with configurable frequency,
+/// amplitude, and interpolation mode.
 pub struct WavetableOscNode<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> {
     osc: WavetableOscillator<T, WT_SIZE>,
     frequency: T,
@@ -21,6 +25,7 @@ pub struct WavetableOscNode<T: Transcendental, const BUF_SIZE: usize, const WT_S
 impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
     WavetableOscNode<T, BUF_SIZE, WT_SIZE>
 {
+    /// Create a new `WavetableOscNode` from an explicit wavetable and frequency.
     pub fn new(table: [T; WT_SIZE], frequency: T) -> Self {
         let freq_f32 = frequency.to_f32();
         let osc = WavetableOscillator::<T, WT_SIZE>::new(table, freq_f32);
@@ -35,6 +40,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
         }
     }
 
+    /// Create a `WavetableOscNode` using a pre-built sine wavetable.
     pub fn sine(frequency: T) -> Self {
         let freq_f32 = frequency.to_f32();
         let osc = WavetableOscillator::<T, WT_SIZE>::sine(freq_f32);
@@ -49,6 +55,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
         }
     }
 
+    /// Create a `WavetableOscNode` using a pre-built sawtooth wavetable.
     pub fn saw(frequency: T) -> Self {
         let freq_f32 = frequency.to_f32();
         let osc = WavetableOscillator::<T, WT_SIZE>::saw(freq_f32);
@@ -63,17 +70,20 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
         }
     }
 
+    /// Set the output amplitude (clamped to [0, 1]).
     pub fn with_amplitude(mut self, amp: T) -> Self {
         self.amplitude = amp.clamp(T::ZERO, T::from_f32(1.0));
         self
     }
 
+    /// Enable or disable cubic interpolation (linear is the default).
     pub fn with_cubic(mut self, cubic: bool) -> Self {
         self.cubic = cubic;
         self.osc.set_cubic(cubic);
         self
     }
 
+    /// Replace the wavetable data at runtime.
     pub fn set_table(&mut self, table: [T; WT_SIZE]) {
         self.osc.set_table(table);
     }
@@ -183,11 +193,11 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
 
     fn set_id(&mut self, _id: NodeId) {}
 
-    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
         None
     }
 
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         None
     }
 
@@ -199,11 +209,11 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> SignalNode<
         self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
         None
     }
 
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         None
     }
 
@@ -237,7 +247,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Source<T, B
         self.osc
             .process(None, &mut temp[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
-            temp[i] = temp[i] * self.amplitude;
+            temp[i] *= self.amplitude;
         }
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())

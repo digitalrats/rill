@@ -42,6 +42,10 @@ pub struct SimdDetector {
     has_wasm_simd128: bool,
 }
 
+impl Default for SimdDetector {
+    fn default() -> Self { Self::new() }
+}
+
 impl SimdDetector {
     /// Создает детектор и определяет возможности текущего процессора
     pub fn new() -> Self {

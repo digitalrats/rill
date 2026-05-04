@@ -1,6 +1,5 @@
 //! Integration tests for BiquadFilter
 
-use float_cmp::approx_eq;
 use rill_core::time::ClockTick;
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core_dsp::filters::{Filter, FilterParams};

@@ -4,7 +4,7 @@
 //! - Реверберации (серии гребенчатых фильтров)
 //! - Эффектах "металлического" звука
 //! - Физическом моделировании струн
-use super::{FilterParams, FilterType};
+use super::FilterParams;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::buffer::DelayLine;

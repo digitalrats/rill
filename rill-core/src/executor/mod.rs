@@ -29,6 +29,10 @@ pub struct GraphExecutor<T: Transcendental, const BUF_SIZE: usize> {
     _phantom: std::marker::PhantomData<T>,
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphExecutor<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> GraphExecutor<T, BUF_SIZE> {
     /// Create a new executor from an existing graph.
     pub fn new() -> Self {

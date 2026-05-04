@@ -1,64 +1,76 @@
-//! # Управление и автоматизация (Control + Automation)
+//! Control and automation subsystem.
 //!
-//! `rill-patchbay::control` объединяет функциональность:
-//! - Маппинг событий (MIDI/OSC) на параметры узлов (из rill-control)
-//! - Автоматизацию через LFO, огибающие и другие генераторы (из rill-automation)
-//! - Двухпоточную модель с неблокирующими очередями
-//!
-//! Все операции выполняются в **потоке управления** (soft RT) и
-//! отправляют команды в аудиопоток через `RtQueue<ParameterCommand>`.
+//! Provides event mapping (MIDI/OSC → parameters), automaton-based
+//! modulation (LFO, envelopes), and a two-thread model with lock-free
+//! queues for control → audio communication.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rill_core::prelude::*;
+use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
 use rill_core::queues::MpscQueue;
+
+use crossbeam_channel::Receiver as CrossbeamReceiver;
 
 pub use crate::automaton::Range;
 use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
+use crate::automaton_task::spawn_automaton_task;
+use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
+use crate::sequencer::{SequencerCommand, SequencerHandle, SnapshotSequencer};
+use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
-// 1. Паттерны событий (из rill-control)
+// 1. Event patterns
 // =============================================================================
 
-/// Паттерн для сопоставления событий
+/// A pattern for matching controller events.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventPattern {
-    /// Любая кнопка
+    /// Any button.
     AnyButton,
-    /// Кнопка с конкретным ID
+    /// A button with a specific ID.
     ButtonId(u32),
 
-    /// Любая ручка
+    /// Any knob.
     AnyKnob,
-    /// Ручка с конкретным ID
+    /// A knob with a specific ID.
     KnobId(u32),
 
-    /// Любой фейдер
+    /// Any fader.
     AnyFader,
-    /// Фейдер с конкретным ID
+    /// A fader with a specific ID.
     FaderId(u32),
 
-    /// Любое MIDI сообщение
+    /// Any MIDI message.
     AnyMidi,
-    /// MIDI Control Change
-    MidiControl { channel: Option<u8>, controller: u8 },
-    /// MIDI Note
-    MidiNote {
+    /// MIDI Control Change.
+    MidiControl {
+        /// MIDI channel (None = any channel).
         channel: Option<u8>,
+        /// Controller number.
+        controller: u8,
+    },
+    /// MIDI Note.
+    MidiNote {
+        /// MIDI channel (None = any channel).
+        channel: Option<u8>,
+        /// Note number (None = any note).
         note: Option<u8>,
     },
 
-    /// OSC сообщение по адресу
+    /// Exact OSC address.
     OscAddress(String),
 
-    /// OSC с паттерном (содержит)
+    /// OSC address pattern (substring match).
     OscPattern(String),
 }
 
 impl EventPattern {
-    /// Проверить, соответствует ли событие паттерну
+    /// Check whether the given event matches this pattern.
     pub fn matches(&self, event: &ControlEvent) -> bool {
         match (self, event) {
             (EventPattern::AnyButton, ControlEvent::Button { .. }) => true,
@@ -94,51 +106,76 @@ impl EventPattern {
 }
 
 // =============================================================================
-// 2. Типы событий (из rill-control)
+// 2. Event types
 // =============================================================================
 
-/// Событие контроллера
+/// A controller event from hardware or protocol input.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlEvent {
-    /// Кнопка (нажата/отпущена)
-    Button { id: u32, pressed: bool },
-
-    /// Поворотная ручка (энкодер)
-    Knob {
+    /// Button press/release.
+    Button {
+        /// Button identifier.
         id: u32,
-        value: f32,      // 0.0 - 1.0
-        normalized: f32, // то же, для совместимости
+        /// Whether the button is pressed.
+        pressed: bool,
     },
 
-    /// Фейдер (линейный ползунок)
-    Fader {
+    /// Rotary knob / encoder.
+    Knob {
+        /// Knob identifier.
         id: u32,
-        value: f32, // 0.0 - 1.0
+        /// Raw value.
+        value: f32,
+        /// Normalised value (0.0–1.0).
         normalized: f32,
     },
 
-    /// MIDI Control Change
-    MidiControl {
-        channel: u8,
-        controller: u8,
-        value: u8,       // 0-127
-        normalized: f32, // 0.0 - 1.0
+    /// Linear fader.
+    Fader {
+        /// Fader identifier.
+        id: u32,
+        /// Raw value.
+        value: f32,
+        /// Normalised value (0.0–1.0).
+        normalized: f32,
     },
 
-    /// MIDI Note
-    MidiNote {
+    /// MIDI Control Change.
+    MidiControl {
+        /// MIDI channel (0–15).
         channel: u8,
+        /// Controller number (0–127).
+        controller: u8,
+        /// Raw controller value (0–127).
+        value: u8,
+        /// Normalised value (0.0–1.0).
+        normalized: f32,
+    },
+
+    /// MIDI Note.
+    MidiNote {
+        /// MIDI channel (0–15).
+        channel: u8,
+        /// Note number (0–127).
         note: u8,
+        /// Velocity (0–127).
         velocity: u8,
+        /// Whether the note is on (true) or off (false).
         on: bool,
     },
 
-    /// OSC сообщение
-    Osc { address: String, args: Vec<f32> },
+    /// OSC message.
+    Osc {
+        /// OSC address pattern (e.g. `/filter/cutoff`).
+        address: String,
+        /// Message arguments.
+        args: Vec<f32>,
+    },
 }
 
 impl ControlEvent {
-    /// Получить нормализованное значение (0.0-1.0), если применимо
+    /// Return the normalised value (0.0–1.0) if applicable.
     pub fn normalized_value(&self) -> Option<f32> {
         match self {
             ControlEvent::Knob { normalized, .. } => Some(*normalized),
@@ -149,7 +186,7 @@ impl ControlEvent {
         }
     }
 
-    /// Получить ID элемента управления, если применимо
+    /// Return the controller element ID, if any.
     pub fn id(&self) -> Option<u32> {
         match self {
             ControlEvent::Button { id, .. } => Some(*id),
@@ -161,25 +198,51 @@ impl ControlEvent {
 }
 
 // =============================================================================
-// 3. Трансформации значений (из rill-control)
+// 2b. OSC Surface — OSC → EventPattern bridge
 // =============================================================================
 
-/// Тип преобразования значения
+/// Maps an OSC address pattern to an internal [`EventPattern`].
+///
+/// One patchbay configuration can have a single canonical surface.
+/// For alternate MIDI layouts, use separate `mappings` slices with
+/// different `EventPattern::MidiControl` entries.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
+pub struct OscSurfaceEntry {
+    /// OSC address pattern, e.g. `"/delay/time"`.
+    pub osc_path: String,
+
+    /// Abstract controller identifier that `mappings` expect.
+    pub event_pattern: EventPattern,
+
+    /// Optional human-readable label (ignored by the engine).
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub label: Option<String>,
+}
+
+/// A list of [`OscSurfaceEntry`] entries.
+pub type OscSurface = Vec<OscSurfaceEntry>;
+
+// =============================================================================
+// 3. Value transforms
+// =============================================================================
+
+/// Type of value transformation.
 #[derive(Clone)]
 pub enum Transform {
-    /// Линейное: out = min + value * (max - min)
+    /// Linear: out = min + value * (max - min).
     Linear,
 
-    /// Экспоненциальное: out = min + value^2 * (max - min)
+    /// Exponential: out = min + value² * (max - min).
     Exponential,
 
-    /// Логарифмическое: out = min + log(1 + value * 9) / log(10) * (max - min)
+    /// Logarithmic: out = min + log₁₀(1 + value * 9) / log₁₀(10) * (max - min).
     Logarithmic,
 
-    /// Инвертированное: out = max - value * (max - min)
+    /// Inverted: out = max - value * (max - min).
     Inverted,
 
-    /// Пользовательское
+    /// Custom user-defined function.
     Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>),
 }
 
@@ -196,7 +259,7 @@ impl Debug for Transform {
 }
 
 impl Transform {
-    /// Применить преобразование к нормализованному значению (0-1)
+    /// Apply the transform to a normalised value (0–1).
     pub fn apply(&self, value: f32, min: f32, max: f32) -> f32 {
         let range = max - min;
         let normalized = value.clamp(0.0, 1.0);
@@ -214,39 +277,40 @@ impl Transform {
 }
 
 // =============================================================================
-// 4. Маппинг событий (из rill-control)
+// 4. Event mapping
 // =============================================================================
 
-/// Целевой параметр узла
+/// A target parameter on a graph node.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Target {
-    /// ID узла в графе
+    /// Node ID in the signal graph.
     pub node_id: NodeId,
-    /// Имя параметра
+    /// Parameter name.
     pub param_name: String,
-    /// Минимальное значение
+    /// Minimum value.
     pub min: f32,
-    /// Максимальное значение
+    /// Maximum value.
     pub max: f32,
 }
 
-/// Маппинг события на параметр
+/// A mapping from an event pattern to a parameter target.
 #[derive(Debug, Clone)]
 pub struct Mapping {
-    /// Паттерн события
+    /// Event pattern to match.
     pub pattern: EventPattern,
-    /// Целевой параметр
+    /// Target parameter.
     pub target: Target,
-    /// Преобразование
+    /// Value transformation.
     pub transform: Transform,
-    /// Название (для отладки)
+    /// Human-readable name (for debugging).
     pub name: String,
-    /// Активен ли маппинг
+    /// Whether this mapping is active.
     pub enabled: bool,
 }
 
 impl Mapping {
-    /// Создать новый маппинг
+    /// Create a new mapping.
     pub fn new(pattern: EventPattern, target: Target, transform: Transform) -> Self {
         let name = format!("{:?} -> {}", pattern, target.param_name);
         Self {
@@ -258,12 +322,12 @@ impl Mapping {
         }
     }
 
-    /// Проверить, подходит ли событие под этот маппинг
+    /// Check whether an event matches this mapping's pattern.
     pub fn matches(&self, event: &ControlEvent) -> bool {
         self.enabled && self.pattern.matches(event)
     }
 
-    /// Применить событие и получить команду для параметра
+    /// Apply an event and produce a parameter command, if it matches.
     pub fn apply(&self, event: &ControlEvent) -> Option<ParameterCommand> {
         if !self.matches(event) {
             return None;
@@ -281,37 +345,37 @@ impl Mapping {
 }
 
 // =============================================================================
-// 5. Автоматы (из rill-automation)
+// 5. Automaton core trait
 // =============================================================================
 
-/// Тип времени для автоматов
+/// Time type used by automata.
 pub type Time = f64;
 
-/// Маркер "нет действия" (для автоматов без внешнего управления)
+/// Marker for automata that need no external action.
 #[derive(Debug, Clone, Default)]
 pub struct NoAction;
 
-/// Базовый трейт для всех автоматов
+/// Core trait for all automata.
 ///
-/// Автомат — это контейнер/исполнитель для чистой функции (`Action`),
-/// которая применяется к изменяемому состоянию (`State`) на каждом шаге.
-/// Автомат управляет диапазоном значений, интерполяцией и прочими
-/// аспектами выполнения, а `Action` — это чистое вычисление.
+/// An automaton is a stateful function generator. Each call to [`step`](Self::step)
+/// takes the current time, an action, and the current state, and returns a
+/// new state together with an optional output value.  Automata are `Send`
+/// and run on the control thread (soft RT).
 pub trait Automaton: Send + Sync + Debug {
-    /// Тип состояния
+    /// State type.
     type State: Clone + Send + Sync + 'static + Debug;
 
-    /// Тип действия (чистая функция, применяемая к состоянию)
+    /// Action type (a pure function applied to the state).
     type Action: Debug + Clone + Send + Sync + Default + 'static;
 
-    /// Выполнить один шаг автомата
+    /// Advance the automaton by one time step.
     ///
     /// # Arguments
-    /// * `time` — текущее время
-    /// * `action` — действие/функция, применяемая к состоянию
-    /// * `state` — текущее состояние
+    /// * `time` — current time
+    /// * `action` — action to apply
+    /// * `state` — current state
     ///
-    /// Возвращает (новое_состояние, опциональное_значение)
+    /// Returns `(new_state, optional_output_value)`.
     fn step(
         &self,
         time: Time,
@@ -319,36 +383,37 @@ pub trait Automaton: Send + Sync + Debug {
         state: &Self::State,
     ) -> (Self::State, Option<f64>);
 
-    /// Начальное состояние
+    /// Return the initial state.
     fn initial_state(&self) -> Self::State;
 
-    /// Имя автомата
+    /// Automaton name.
     fn name(&self) -> &str;
 
-    /// Извлечь значение из состояния
+    /// Extract the output value from the state.
     fn extract_value(&self, state: &Self::State) -> f64;
 
-    /// Сбросить автомат (создать новое начальное состояние)
+    /// Reset the automaton to its initial state.
     fn reset(&self) -> Self::State {
         self.initial_state()
     }
 }
 
 // =============================================================================
-// 6. Сервоприводы (связь автоматов с параметрами)
+// 6. Servo — automaton-to-parameter bridge
 // =============================================================================
 
-// =============================================================================
-// 6. Сервоприводы (связь автоматов с параметрами)
-// =============================================================================
-
-/// Тип маппинга значений для сервопривода
+/// Mapping type for a servo's output value.
 #[derive(Clone)]
 pub enum ParameterMapping {
+    /// Linear: `min + value * (max - min)`.
     Linear,
+    /// Exponential: `min + value^exp * (max - min)`.
     Exponential,
+    /// Logarithmic: `min + log(1 + value * (e - 1)) / log(e) * (max - min)`.
     Logarithmic,
+    /// Inverted linear: `max - value * (max - min)`.
     Inverted,
+    /// Custom mapping function.
     Custom(Arc<dyn Fn(f64) -> f64 + Send + Sync>),
 }
 
@@ -365,6 +430,7 @@ impl std::fmt::Debug for ParameterMapping {
 }
 
 impl ParameterMapping {
+    /// Apply the mapping to a raw automaton value.
     pub fn apply(&self, raw: f64) -> f64 {
         match self {
             ParameterMapping::Linear => raw,
@@ -376,33 +442,23 @@ impl ParameterMapping {
     }
 }
 
-/// Сервопривод — связывает автомат с параметром узла
+/// A servo bridges an automaton to a graph-node parameter.
 pub struct Servo<A: Automaton> {
-    /// Идентификатор
     id: String,
-    /// Автомат
     automaton: A,
-    /// Состояние автомата
     state: A::State,
-    /// Целевой узел
     target_node: NodeId,
-    /// Целевой параметр
     target_param: String,
-    /// Маппинг значения
     mapping: ParameterMapping,
-    /// Минимальное значение
     min: f64,
-    /// Максимальное значение
     max: f64,
-    /// Последнее отправленное значение
     last_value: f64,
-    /// Активен ли сервопривод
     enabled: bool,
-    /// Время последнего обновления
     last_time: Time,
 }
 
 impl<A: Automaton> Servo<A> {
+    /// Create a new servo.
     pub fn new(
         id: impl Into<String>,
         automaton: A,
@@ -428,7 +484,7 @@ impl<A: Automaton> Servo<A> {
         }
     }
 
-    /// Обновить сервопривод и вернуть команду, если значение изменилось
+    /// Advance the servo and return a parameter command if the value changed.
     pub fn update(&mut self, time: Time) -> Option<ParameterCommand> {
         if !self.enabled {
             return None;
@@ -443,7 +499,6 @@ impl<A: Automaton> Servo<A> {
             let mapped = self.mapping.apply(raw_value);
             let clamped = mapped.clamp(self.min, self.max);
 
-            // Отправляем только если значение изменилось значительно
             if (clamped - self.last_value).abs() > 1e-6 {
                 self.last_value = clamped;
                 self.last_time = time;
@@ -459,23 +514,27 @@ impl<A: Automaton> Servo<A> {
         None
     }
 
-    /// Включить/выключить сервопривод
+    /// Enable or disable this servo.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
-    /// Получить ID сервопривода
+    /// Return the servo's unique identifier.
     pub fn id(&self) -> &str {
         &self.id
     }
 }
 
-// Тип для хранения разнородных сервоприводов
+/// Type-erased boxed servo.
 pub type BoxedServo = Box<dyn AnyServo>;
 
+/// Trait for type-erased servo operations.
 pub trait AnyServo: Send + Sync {
+    /// Update the servo and return a parameter command if the value changed.
     fn update(&mut self, time: Time) -> Option<ParameterCommand>;
+    /// Return the servo's unique identifier.
     fn id(&self) -> &str;
+    /// Enable or disable the servo.
     fn set_enabled(&mut self, enabled: bool);
 }
 
@@ -494,22 +553,23 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 }
 
 // =============================================================================
-// 7. Команды для аудиопотока
+// 7. Parameter commands
 // =============================================================================
 
-/// Команда изменения параметра (отправляется в аудиопоток)
+/// A command to change a graph-node parameter, sent to the audio thread.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ParameterCommand {
-    /// ID узла
+    /// Target node ID.
     pub node_id: NodeId,
-    /// Имя параметра
+    /// Parameter name.
     pub param: String,
-    /// Новое значение
+    /// New value.
     pub value: f32,
 }
 
 impl ParameterCommand {
-    /// Создать новую команду
+    /// Create a new parameter command.
     pub fn new(node_id: NodeId, param: impl Into<String>, value: f32) -> Self {
         Self {
             node_id,
@@ -520,44 +580,65 @@ impl ParameterCommand {
 }
 
 // =============================================================================
-// 8. Главный контроллер (Patchbay Control)
+// 8. Main patchbay controller
 // =============================================================================
 
-/// Главный контроллер патчбэя
+/// The central patchbay controller.
 ///
-/// Работает в **потоке управления** (soft RT) и отправляет команды
-/// в аудиопоток через `MpscQueue<ParameterCommand>`.
+/// Operates on the **control thread** (soft RT) and sends parameter commands
+/// to the audio thread via [`MpscQueue<ParameterCommand>`].
+///
+/// ## Operation modes
+///
+/// - **Sync** (legacy): [`update(dt)`](Self::update) walks all servos sequentially.
+///   Does not require tokio.
+/// - **Async** (recommended): automata run as tokio tasks through
+///   [`add_automaton_task()`](Self::add_automaton_task). Requires an active
+///   tokio runtime.
 pub struct PatchbayControl {
-    /// Маппинги событий
     mappings: Vec<Mapping>,
-
-    /// Сервоприводы (автоматы)
     servos: HashMap<String, BoxedServo>,
-
-    /// Очередь для отправки команд в аудиопоток
+    port_combiners: HashMap<String, PortCombinerHandle>,
+    automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
+    sequencer_handle: Option<SequencerHandle>,
+    sequencer_task: Option<tokio::task::JoinHandle<()>>,
     command_queue: Arc<MpscQueue<ParameterCommand>>,
-
-    /// Внутреннее время (секунды)
     time: Time,
 }
 
 impl PatchbayControl {
-    /// Создать новый контроллер
+    /// Create a new patchbay controller.
     pub fn new(command_queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
         Self {
             mappings: Vec::new(),
             servos: HashMap::new(),
+            port_combiners: HashMap::new(),
+            automaton_handles: HashMap::new(),
+            sequencer_handle: None,
+            sequencer_task: None,
             command_queue,
             time: 0.0,
         }
     }
 
-    /// Добавить маппинг события
+    /// Add an event mapping.
     pub fn add_mapping(&mut self, mapping: Mapping) {
         self.mappings.push(mapping);
     }
 
-    /// Добавить маппинг из строк (удобно для скриптов)
+    /// Add a pre-constructed boxed servo.
+    ///
+    /// Useful for automaton types not covered by `add_lfo` / `add_envelope`
+    /// (e.g. sequencers, named functions).
+    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) {
+        self.servos.insert(id, servo);
+    }
+
+    /// Add a mapping from string descriptions (convenient for scripting).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the pattern string is malformed.
     pub fn add_mapping_str(
         &mut self,
         pattern: &str,
@@ -608,12 +689,12 @@ impl PatchbayControl {
         Ok(())
     }
 
-    /// Добавить сервопривод (автомат)
+    /// Add a servo (automaton → parameter bridge).
     pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) {
         self.servos.insert(servo.id().to_string(), Box::new(servo));
     }
 
-    /// Добавить LFO как сервопривод
+    /// Add an LFO as a servo.
     pub fn add_lfo(
         &mut self,
         id: &str,
@@ -639,7 +720,7 @@ impl PatchbayControl {
         self.add_servo(servo);
     }
 
-    /// Добавить огибающую как сервопривод
+    /// Add an envelope ADSR as a servo.
     pub fn add_envelope(
         &mut self,
         id: &str,
@@ -665,20 +746,222 @@ impl PatchbayControl {
         self.add_servo(servo);
     }
 
-    /// Обработать внешнее событие (MIDI/OSC)
+    /// Add an automaton as a green thread (tokio task).
+    ///
+    /// Requires an active tokio runtime. Ports with async automata receive
+    /// a `PortCombiner` that resolves UI ↔ automaton conflicts.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — unique identifier
+    /// * `automaton` — the automaton implementation
+    /// * `interval` — update interval (e.g. 10 ms = 100 Hz)
+    /// * `target` — `(node_id, param_name)`
+    /// * `range` — `(min, max)` parameter range
+    /// * `control` — control strategy
+    /// * `conflict` — conflict resolution strategy
+    pub fn add_automaton_task<A: Automaton + 'static>(
+        &mut self,
+        id: &str,
+        automaton: A,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        let key = target_key(target.0, &target.1);
+
+        let combiner = spawn_combiner(
+            target,
+            range,
+            control,
+            conflict,
+            self.command_queue.clone(),
+        );
+
+        let task = spawn_automaton_task(
+            automaton,
+            interval,
+            combiner.automaton_tx.clone(),
+            combiner.cancel_rx(),
+        );
+
+        self.port_combiners.insert(key, combiner);
+        self.automaton_handles.insert(id.to_string(), task);
+    }
+
+    /// Add an LFO as an async automaton task.
+    pub fn add_lfo_task(
+        &mut self,
+        id: &str,
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        waveform: LfoWaveform,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        let automaton = LfoAutomaton::new(id, frequency, amplitude, offset, waveform);
+        self.add_automaton_task(
+            format!("{}_auto", id).as_str(),
+            automaton,
+            interval,
+            target,
+            range,
+            control,
+            conflict,
+        );
+    }
+
+    /// Add an envelope ADSR as an async automaton task.
+    pub fn add_envelope_task(
+        &mut self,
+        id: &str,
+        attack: f64,
+        decay: f64,
+        sustain: f64,
+        release: f64,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        let automaton = EnvelopeAutomaton::adsr(id, attack, decay, sustain, release);
+        self.add_automaton_task(
+            format!("{}_auto", id).as_str(),
+            automaton,
+            interval,
+            target,
+            range,
+            control,
+            conflict,
+        );
+    }
+
+    /// Attach a parameter-lock sequencer driven by audio-thread clock ticks.
+    ///
+    /// Spawns a blocking tokio task that reads `CLOCK_TICK` telemetry and
+    /// pushes returned parameter commands to the queue.
+    ///
+    /// Returns a [`SequencerHandle`] for external control.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a sequencer is already attached (call `detach_sequencer()` first).
+    pub fn attach_sequencer(
+        &mut self,
+        tel_rx: CrossbeamReceiver<Telemetry>,
+        sequencer: SnapshotSequencer,
+    ) -> SequencerHandle {
+        assert!(
+            self.sequencer_task.is_none(),
+            "sequencer already attached — detach first"
+        );
+
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<SequencerCommand>();
+        let queue = self.command_queue.clone();
+
+        let task = tokio::task::spawn_blocking(move || {
+            let mut seq = sequencer;
+
+            loop {
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(SequencerCommand::Start) => seq.start(),
+                        Ok(SequencerCommand::Stop) => seq.stop(),
+                        Ok(SequencerCommand::Reset { sample_pos }) => seq.reset(sample_pos),
+                        Ok(SequencerCommand::SetPattern(id)) => seq.set_active_pattern(&id),
+                        Err(crossbeam_channel::TryRecvError::Empty) => break,
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => return,
+                    }
+                }
+
+                match tel_rx.recv() {
+                    Ok(Telemetry::Event { kind, data, .. }) if kind == CLOCK_TICK => {
+                        if data.len() >= 3 {
+                            let sample_pos = data[0] as u64;
+                            let sample_rate = data[1];
+                            let tempo = data[2];
+
+                            let beat_pos = data.get(3).copied().unwrap_or(0.0);
+                            let new_beat = data.get(4).copied().unwrap_or(0.0) > 0.5;
+                            let new_bar = data.get(5).copied().unwrap_or(0.0) > 0.5;
+
+                            let cmds = seq.tick_ext(
+                                sample_pos, sample_rate, tempo,
+                                beat_pos, new_beat, new_bar,
+                            );
+                            for cmd in cmds {
+                                let _ = queue.push(cmd);
+                            }
+                        }
+                    }
+                    Err(_) => return,
+                    _ => {}
+                }
+            }
+        });
+
+        let handle = SequencerHandle::new(cmd_tx);
+        self.sequencer_handle = Some(handle.clone());
+        self.sequencer_task = Some(task);
+
+        handle
+    }
+
+    /// Detach the sequencer: abort its task and drop the handle.
+    pub fn detach_sequencer(&mut self) {
+        if let Some(task) = self.sequencer_task.take() {
+            task.abort();
+        }
+        self.sequencer_handle = None;
+    }
+
+    /// Get a reference to the sequencer handle, if attached.
+    pub fn sequencer_handle(&self) -> Option<&SequencerHandle> {
+        self.sequencer_handle.as_ref()
+    }
+
+    /// Stop all async automata and the sequencer.
+    pub fn stop_all(&mut self) {
+        for combiner in self.port_combiners.values() {
+            combiner.stop();
+        }
+        self.port_combiners.clear();
+        self.automaton_handles.clear();
+        self.detach_sequencer();
+    }
+
+    /// Handle an external event (MIDI/OSC).
+    ///
+    /// If a `PortCombiner` exists for the target port the event is routed
+    /// there for conflict resolution; otherwise it is pushed directly to
+    /// the command queue.
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
-                let _ = self.command_queue.push(cmd);
+                let key = target_key(cmd.node_id, &cmd.param);
+                if let Some(combiner) = self.port_combiners.get(&key) {
+                    let _ = combiner.ui_tx.send(UiCommand::SetValue(cmd.value as f64));
+                } else {
+                    let _ = self.command_queue.push(cmd);
+                }
             }
         }
     }
 
-    /// Обновить состояние (вызывается регулярно из потока управления)
+    /// Update synchronous servos.
+    ///
+    /// This method is deprecated. For new projects use `add_automaton_task()`
+    /// with green threads.
     pub fn update(&mut self, dt: f32) {
         self.time += dt as f64;
 
-        // Обновляем все сервоприводы
         for servo in self.servos.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
                 let _ = self.command_queue.push(cmd);
@@ -686,48 +969,54 @@ impl PatchbayControl {
         }
     }
 
-    /// Получить все маппинги
+    /// Get a combiner by key (format: `"node_id:param_name"`).
+    pub fn get_combiner(&self, key: &str) -> Option<&PortCombinerHandle> {
+        self.port_combiners.get(key)
+    }
+
+    /// Return all mappings.
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
     }
 
-    /// Получить сервопривод по ID
+    /// Get a servo by ID.
     pub fn get_servo(&self, id: &str) -> Option<&dyn AnyServo> {
         self.servos.get(id).map(|b| b.as_ref())
     }
 
-    /// Получить мутабельный сервопривод по ID
+    /// Get a mutable servo by ID.
     pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedServo> {
         self.servos.get_mut(id)
     }
 
-    /// Удалить сервопривод
+    /// Remove a servo by ID.
     pub fn remove_servo(&mut self, id: &str) -> bool {
         self.servos.remove(id).is_some()
     }
 
-    /// Очистить все маппинги и сервоприводы
+    /// Clear all mappings, servos, and async automata.
     pub fn clear(&mut self) {
         self.mappings.clear();
         self.servos.clear();
+        self.stop_all();
     }
 
-    /// Сбросить время
+    /// Reset the internal clock to zero.
     pub fn reset_time(&mut self) {
         self.time = 0.0;
     }
 
-    /// Текущее время
+    /// Current internal time in seconds.
     pub fn current_time(&self) -> Time {
         self.time
     }
 }
 
 // =============================================================================
-// 9. Вспомогательные функции для создания маппингов
+// 9. Helper functions for creating mappings
 // =============================================================================
 
-/// Создать маппинг MIDI CC на параметр
+/// Create a MIDI CC → parameter mapping.
 pub fn midi_cc(
     controller: u8,
     channel: Option<u8>,
@@ -750,7 +1039,7 @@ pub fn midi_cc(
     Mapping::new(pattern, target, transform)
 }
 
-/// Создать маппинг OSC адреса на параметр
+/// Create an OSC address → parameter mapping.
 pub fn osc_address(
     address: &str,
     target_node: NodeId,
@@ -770,7 +1059,15 @@ pub fn osc_address(
 }
 
 // =============================================================================
-// 10. Тесты
+// 9b. PortCombiner key helper
+// =============================================================================
+
+fn target_key(node_id: NodeId, param_name: &str) -> String {
+    format!("{}:{}", node_id.0, param_name)
+}
+
+// =============================================================================
+// 10. Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -818,7 +1115,6 @@ mod tests {
 
         assert!(control.get_servo("test_lfo").is_some());
 
-        // Несколько обновлений должны генерировать команды
         for _i in 0..10 {
             control.update(0.1);
         }
@@ -832,16 +1128,10 @@ mod tests {
 
         control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
 
-        // Находим сервопривод и триггерим его
         if let Some(_servo) = control.get_servo_mut("test_env") {
-            // В реальном коде здесь нужно вызвать trigger
-            // Для теста просто обновляем время
         }
 
         control.update(0.05);
         control.update(0.05);
-
-        // Должны быть команды в очереди
-        // assert!(queue.len() > 0); // В реальном тесте
     }
 }

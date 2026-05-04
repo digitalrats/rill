@@ -42,6 +42,7 @@ impl<T> SampleBuffer<T> {
         self.data.len()
     }
 
+    /// Returns `true` if the sample buffer contains no samples.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }

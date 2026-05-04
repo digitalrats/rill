@@ -19,9 +19,6 @@
 
 mod graph;
 
-/// Real-time safe signal engine for driving an [`SignalGraph`].
-pub mod engine;
-
 /// Node factory and registry for constructing nodes by type name.
 pub mod registry;
 
@@ -29,7 +26,11 @@ pub mod registry;
 #[cfg(feature = "serialization")]
 pub mod serialization;
 
-pub use graph::{SignalGraph, BuildError, ConnectionKind, GraphBuilder};
+/// DOT graph visualization (Graphviz). Feature-gated behind `dot`.
+#[cfg(feature = "dot")]
+pub mod dot;
+
+pub use graph::{SignalGraph, BuildError, GraphBuilder, GraphResource};
 pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
 
 /// Prelude for convenient imports

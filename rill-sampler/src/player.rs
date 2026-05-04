@@ -106,6 +106,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
         }
     }
 
+    /// Stop playback (sets gate to false).
     pub fn stop(&mut self) {
         self.gate = false;
         self.left.set_gate(false);
@@ -303,11 +304,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
 
     fn set_id(&mut self, _id: NodeId) {}
 
-    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+    fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
         None
     }
 
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+    fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         None
     }
 
@@ -319,11 +320,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         self.outputs.get_mut(index)
     }
 
-    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+    fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
         None
     }
 
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         None
     }
 
@@ -360,7 +361,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
             .process(None, &mut temp[..], &rill_core::traits::ActionContext::new(clock))?;
         if amp != T::from_f32(1.0) {
             for s in temp.iter_mut() {
-                *s = *s * amp;
+                *s *= amp;
             }
         }
         *self.outputs[0].buffer.as_mut_array() = temp;
@@ -371,7 +372,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
                 .process(None, &mut right_temp[..], &rill_core::traits::ActionContext::new(clock))?;
             if amp != T::from_f32(1.0) {
                 for s in right_temp.iter_mut() {
-                    *s = *s * amp;
+                    *s *= amp;
                 }
             }
             if self.outputs.len() > 1 {

@@ -1,6 +1,6 @@
 [package]
 name = "rill-core"
-version = "0.4.0"
+version = "0.5.0-beta.1"
 edition = "2021"
 description = "Core foundation for the Rill ecosystem — traits, math, buffers, queues, time, macros"
 license.workspace = true
@@ -22,7 +22,6 @@ float-cmp = "0.9"
 [features]
 default = []
 serde = ["dep:serde"]
-stats = []
 simd = ["wide"]
 
 [package.metadata.docs.rs]

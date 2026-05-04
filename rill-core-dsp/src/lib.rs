@@ -25,7 +25,9 @@
 #![cfg_attr(feature = "unstable", feature(generic_const_exprs))]
 
 pub mod algorithm;
+pub mod analyzer;
 pub mod context;
+pub mod effect;
 pub mod filters;
 pub mod generators;
 pub mod mapping;
@@ -56,7 +58,6 @@ pub mod prelude {
         EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator,
         SamplePlayer, LFO, WavetableOscillator,
     };
-    pub use crate::macros::prelude::*;
     pub use crate::mapping::{ControlMapper, MappingStrategy};
     pub use crate::math::*;
     pub use crate::smoothing::ParamSmoother;

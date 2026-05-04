@@ -1,22 +1,71 @@
-//! Очередь телеметрии — данные обратной связи из звукового мира
+//! Telemetry queue — feedback data from the audio world.
 
 use super::command::Command;
 use crate::traits::{NodeId, ParameterId, PortId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Тип телеметрии (для идентификации)
+/// Константы для телеметрии часов (clock)
+///
+/// Формат `CLOCK_TICK` (Telemetry::Event с kind="clock_tick"):
+/// - `data[0]` — `sample_pos` (абсолютная позиция сэмпла, f32)
+/// - `data[1]` — `sample_rate` (частота дискретизации, Hz)
+/// - `data[2]` — `tempo` (BPM, 0.0 если неизвестен)
+/// - `data[3]` — `beat_position` (дробная позиция бита, 0.0 если нет темпа)
+/// - `data[4]` — `is_new_beat` (1.0 если это начало нового бита, иначе 0.0)
+/// - `data[5]` — `is_new_bar` (1.0 если это начало нового такта, иначе 0.0)
+/// Event kind for clock tick telemetry.
+pub const CLOCK_TICK: &str = "clock_tick";
+/// Event kind for clock tempo telemetry.
+pub const CLOCK_TEMPO: &str = "clock_tempo";
+
+/// Lightweight wrapper around a telemetry sender.
+///
+/// Stored in nodes that wish to emit telemetry from `generate()` /
+/// `process()` / `consume()`. Non-blocking `try_send` is safe for the
+/// audio thread.
+#[derive(Clone)]
+pub struct TelemetryTx {
+    /// Optional inner crossbeam sender (None = telemetry disabled).
+    inner: Option<crossbeam_channel::Sender<Telemetry>>,
+}
+
+impl TelemetryTx {
+    /// Create a disabled (no-op) telemetry sender.
+    pub const fn empty() -> Self {
+        Self { inner: None }
+    }
+
+    /// Create a new telemetry sender wrapping a crossbeam channel sender.
+    pub fn new(tx: crossbeam_channel::Sender<Telemetry>) -> Self {
+        Self { inner: Some(tx) }
+    }
+
+    /// Try to send a telemetry event (non-blocking, safe for RT threads).
+    pub fn try_send(&self, event: Telemetry) {
+        if let Some(ref tx) = self.inner {
+            let _ = tx.try_send(event);
+        }
+    }
+
+    /// Return a reference to the inner crossbeam sender, if present.
+    pub fn sender(&self) -> Option<&crossbeam_channel::Sender<Telemetry>> {
+        self.inner.as_ref()
+    }
+}
+
+/// Telemetry type identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TelemetryKind {
-    /// Значение параметра
+    /// Parameter value telemetry.
     Parameter,
-    /// Сигнальные данные (аудио, сенсоры)
+    /// Signal data (audio, sensor readings).
     Signal,
-    /// Пиковое значение
+    /// Peak value telemetry.
     Peak,
-    /// Событие
+    /// Event telemetry.
     Event,
-    /// Нарушение микро-контроля
+    /// Micro-control violation telemetry.
     Violation,
 }
 
@@ -32,49 +81,72 @@ impl fmt::Display for TelemetryKind {
     }
 }
 
-/// Данные телеметрии
+/// Telemetry data emitted by signal graph nodes.
 #[derive(Debug, Clone)]
 pub enum Telemetry {
-    /// Значение параметра
+    /// A parameter value change.
     ParameterValue {
+        /// Target port.
         port: PortId,
+        /// Target parameter.
         parameter: ParameterId,
+        /// Current parameter value.
         value: f32,
+        /// Unix timestamp (microseconds).
         timestamp: u64,
     },
 
-    /// Аудио данные
+    /// Audio or sensor signal data.
     SignalData {
+        /// Source node ID.
         node_id: NodeId,
+        /// Channel index.
         channel: usize,
+        /// Signal sample data.
         data: Vec<f32>,
+        /// Unix timestamp (microseconds).
         timestamp: u64,
+        /// Sample rate of the signal.
         sample_rate: f32,
     },
 
-    /// Пиковое значение
+    /// Peak value reading.
     Peak {
+        /// Target port.
         port: PortId,
+        /// Peak value.
         value: f32,
+        /// Unix timestamp (microseconds).
         timestamp: u64,
+        /// Optional hold time in milliseconds.
         hold_time_ms: Option<u32>,
     },
 
-    /// Событие
+    /// Named event with float payload.
     Event {
+        /// Source component name.
         source: String,
+        /// Event kind string.
         kind: String,
+        /// Event data payload.
         data: Vec<f32>,
+        /// Unix timestamp (microseconds).
         timestamp: u64,
+        /// Optional human-readable description.
         description: Option<String>,
     },
 
-    /// Нарушение микро-контроля
+    /// Micro-control timing violation.
     Violation {
+        /// Component that exceeded its time budget.
         component: String,
+        /// Expected execution time (nanoseconds).
         expected_ns: u64,
+        /// Actual execution time (nanoseconds).
         actual_ns: u64,
+        /// Optional associated value.
         value: Option<f32>,
+        /// Unix timestamp (microseconds).
         timestamp: u64,
     },
 }
@@ -83,7 +155,7 @@ pub enum Telemetry {
 impl Command for Telemetry {}
 
 impl Telemetry {
-    /// Создать метку времени (текущее время в микросекундах)
+    /// Return the current Unix time in microseconds.
     pub fn now() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -91,7 +163,7 @@ impl Telemetry {
             .as_micros() as u64
     }
 
-    /// Создать телеметрию значения параметра
+    /// Create a parameter value telemetry event.
     pub fn parameter(port: PortId, parameter: ParameterId, value: f32) -> Self {
         Telemetry::ParameterValue {
             port,
@@ -101,7 +173,7 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию с указанной временной меткой (для тестов)
+    /// Create a parameter value telemetry event with an explicit timestamp (for testing).
     pub fn parameter_with_time(
         port: PortId,
         parameter: ParameterId,
@@ -116,8 +188,8 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию аудиоданных
-    pub fn audio(node_id: NodeId, channel: usize, data: Vec<f32>) -> Self {
+    /// Create a signal data telemetry event.
+    pub fn signal(node_id: NodeId, channel: usize, data: Vec<f32>) -> Self {
         Telemetry::SignalData {
             node_id,
             channel,
@@ -127,8 +199,8 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию аудиоданных с частотой дискретизации
-    pub fn audio_with_sample_rate(
+    /// Create a signal data telemetry event with an explicit sample rate.
+    pub fn signal_with_sample_rate(
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
@@ -143,7 +215,7 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию пика
+    /// Create a peak value telemetry event.
     pub fn peak(port: PortId, value: f32) -> Self {
         Telemetry::Peak {
             port,
@@ -153,7 +225,7 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию пика с удержанием
+    /// Create a peak value telemetry event with a hold time.
     pub fn peak_with_hold(port: PortId, value: f32, hold_time_ms: u32) -> Self {
         Telemetry::Peak {
             port,
@@ -163,7 +235,7 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию события
+    /// Create an event telemetry event.
     pub fn event(source: impl Into<String>, kind: impl Into<String>, data: Vec<f32>) -> Self {
         Telemetry::Event {
             source: source.into(),
@@ -174,7 +246,7 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию события с описанием
+    /// Create an event telemetry event with a description.
     pub fn event_with_description(
         source: impl Into<String>,
         kind: impl Into<String>,
@@ -190,7 +262,7 @@ impl Telemetry {
         }
     }
 
-    /// Создать телеметрию нарушения
+    /// Create a micro-control violation telemetry event.
     pub fn violation(
         component: impl Into<String>,
         expected_ns: u64,
@@ -206,7 +278,7 @@ impl Telemetry {
         }
     }
 
-    /// Получить тип телеметрии
+    /// Return the telemetry type category.
     pub fn kind(&self) -> TelemetryKind {
         match self {
             Telemetry::ParameterValue { .. } => TelemetryKind::Parameter,
@@ -217,7 +289,7 @@ impl Telemetry {
         }
     }
 
-    /// Получить временную метку
+    /// Return the timestamp (microseconds since Unix epoch).
     pub fn timestamp(&self) -> u64 {
         match self {
             Telemetry::ParameterValue { timestamp, .. } => *timestamp,
@@ -320,43 +392,52 @@ impl fmt::Display for Telemetry {
     }
 }
 
-// TelemetryQueue - это просто тип-алиас на CommandQueue<Telemetry>
+/// Alias for a [`CommandQueue`] specialised for telemetry data.
+///
+/// [`CommandQueue`]: super::command::CommandQueue
 pub type TelemetryQueue = super::command::CommandQueue<Telemetry>;
 
-// Удобные методы расширения для TelemetryQueue
+/// Convenience extension methods for [`TelemetryQueue`].
 pub trait TelemetryQueueExt {
+    /// Send a parameter value telemetry event.
     fn send_parameter(
         &self,
         port: PortId,
         parameter: ParameterId,
         value: f32,
     ) -> Result<(), super::error::QueueError>;
-    fn send_audio(
+    /// Send a signal data telemetry event.
+    fn send_signal(
         &self,
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError>;
-    fn send_audio_with_sample_rate(
+    /// Send a signal data telemetry event with explicit sample rate.
+    fn send_signal_with_sample_rate(
         &self,
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
         sample_rate: f32,
     ) -> Result<(), super::error::QueueError>;
+    /// Send a peak value telemetry event.
     fn send_peak(&self, port: PortId, value: f32) -> Result<(), super::error::QueueError>;
+    /// Send a peak value telemetry event with hold time.
     fn send_peak_with_hold(
         &self,
         port: PortId,
         value: f32,
         hold_time_ms: u32,
     ) -> Result<(), super::error::QueueError>;
+    /// Send an event telemetry event.
     fn send_event(
         &self,
         source: &str,
         kind: &str,
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError>;
+    /// Send an event telemetry event with description.
     fn send_event_with_description(
         &self,
         source: &str,
@@ -364,6 +445,7 @@ pub trait TelemetryQueueExt {
         data: Vec<f32>,
         description: &str,
     ) -> Result<(), super::error::QueueError>;
+    /// Send a micro-control violation telemetry event.
     fn send_violation(
         &self,
         component: &str,
@@ -381,38 +463,34 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
         value: f32,
     ) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::parameter(port, parameter, value))
-            .map_err(|e| e.into())
     }
 
-    fn send_audio(
+    fn send_signal(
         &self,
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError> {
-        self.send(Telemetry::audio(node_id, channel, data))
-            .map_err(|e| e.into())
+        self.send(Telemetry::signal(node_id, channel, data))
     }
 
-    fn send_audio_with_sample_rate(
+    fn send_signal_with_sample_rate(
         &self,
         node_id: NodeId,
         channel: usize,
         data: Vec<f32>,
         sample_rate: f32,
     ) -> Result<(), super::error::QueueError> {
-        self.send(Telemetry::audio_with_sample_rate(
+        self.send(Telemetry::signal_with_sample_rate(
             node_id,
             channel,
             data,
             sample_rate,
         ))
-        .map_err(|e| e.into())
     }
 
     fn send_peak(&self, port: PortId, value: f32) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::peak(port, value))
-            .map_err(|e| e.into())
     }
 
     fn send_peak_with_hold(
@@ -422,7 +500,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
         hold_time_ms: u32,
     ) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::peak_with_hold(port, value, hold_time_ms))
-            .map_err(|e| e.into())
     }
 
     fn send_event(
@@ -432,7 +509,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::event(source, kind, data))
-            .map_err(|e| e.into())
     }
 
     fn send_event_with_description(
@@ -448,7 +524,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
             data,
             description,
         ))
-        .map_err(|e| e.into())
     }
 
     fn send_violation(
@@ -464,6 +539,5 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
             actual_ns,
             value,
         ))
-        .map_err(|e| e.into())
     }
 }

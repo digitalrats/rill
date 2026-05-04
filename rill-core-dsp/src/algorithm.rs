@@ -31,7 +31,7 @@ pub trait ParameterizedAlgorithm<T: Transcendental>: Algorithm<T> {
     /// Set a single parameter by name (for automation / scripting).
     ///
     /// Default: returns an error for any unrecognised name.
-    fn set_parameter(&mut self, name: &str, value: ParamValue) -> Result<(), &'static str> {
+    fn set_parameter(&mut self, name: &str, _value: ParamValue) -> Result<(), &'static str> {
         Err(format!("Parameter '{}' not supported", name).leak())
     }
 }

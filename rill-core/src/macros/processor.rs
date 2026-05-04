@@ -5,7 +5,7 @@
 macro_rules! processor_node {
     (
         $(#[$meta:meta])*
-        $vis:vis $struct_name:ident<$T:ident: $audio_num:path, const $BUF:ident: usize>
+        $vis:vis $struct_name:ident<$T:ident: $signal_num:path, const $BUF:ident: usize>
         $(where $($bounds:tt)*)?
         {
             params { $($param_name:ident: $param_ty:ty = $param_default:expr),* $(,)? }
@@ -14,7 +14,7 @@ macro_rules! processor_node {
         }
     ) => {
         #[derive(Debug)]
-        $vis struct $struct_name<$T: $audio_num, const $BUF: usize>
+        $vis struct $struct_name<$T: $signal_num, const $BUF: usize>
         $(where $($bounds)*)?
         {
             state: $crate::traits::node::NodeState<T,$BUF>,
@@ -28,7 +28,7 @@ macro_rules! processor_node {
             )*
         }
 
-        impl<$T: $audio_num, const $BUF: usize>
+        impl<$T: $signal_num, const $BUF: usize>
             $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
@@ -57,20 +57,9 @@ macro_rules! processor_node {
                 node
             }
 
-            pub fn sample_rate(&self) -> f32 {
-                self.state.sample_rate
-            }
-
-            pub fn state(&self) -> &$crate::traits::node::NodeState<T,$BUF> {
-                &self.state
-            }
-
-            pub fn state_mut(&mut self) -> &mut $crate::traits::node::NodeState<T,$BUF> {
-                &mut self.state
-            }
         }
 
-        impl<$T: $audio_num, const $BUF: usize>
+        impl<$T: $signal_num, const $BUF: usize>
             $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
@@ -178,11 +167,11 @@ macro_rules! processor_node {
         {
             fn process(
                 &mut self,
-                clock: &$crate::ClockTick,
-                signal_inputs: &[&[$T; $BUF]],
-                control_inputs: &[$T],
-                clock_inputs: &[$crate::ClockTick],
-                feedback_inputs: &[&[$T; $BUF]],
+                _clock: &$crate::ClockTick,
+                _signal_inputs: &[&[$T; $BUF]],
+                _control_inputs: &[$T],
+                _clock_inputs: &[$crate::ClockTick],
+                _feedback_inputs: &[&[$T; $BUF]],
             ) -> $crate::ProcessResult<()> {
                 ($process)(self)?;
                 Ok(())

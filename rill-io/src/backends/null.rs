@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::audio_io::AudioIo;
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::IoResult;
@@ -77,5 +78,24 @@ impl AudioBackend for NullBackend {
 
     fn list_output_devices(&self) -> Vec<String> {
         vec!["Null Output".to_string()]
+    }
+}
+
+impl AudioIo for NullBackend {
+    fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+        let n = left.len().min(right.len());
+        left[..n].fill(0.0);
+        right[..n].fill(0.0);
+        n
+    }
+    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
+        left.len().min(right.len())
+    }
+    fn start(&self) -> crate::audio_io::IoResult<()> {
+        Ok(())
+    }
+    fn stop(&self) -> crate::audio_io::IoResult<()> {
+        Ok(())
     }
 }

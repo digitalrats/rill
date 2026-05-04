@@ -7,6 +7,7 @@ use crate::control::{Automaton, NoAction, Range, Time};
 use std::collections::VecDeque;
 
 /// Шаг секвенсора
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Step {
     /// Значение (0.0 - 1.0)
@@ -14,10 +15,12 @@ pub struct Step {
     /// Длительность в долях такта
     pub duration: f64,
     /// Кривая перехода к следующему шагу
+    #[cfg_attr(feature = "serde", serde(default))]
     pub curve: Option<f64>,
 }
 
 /// Режим воспроизведения секвенсора
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlayMode {
     /// Один раз

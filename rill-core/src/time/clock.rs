@@ -1,108 +1,23 @@
-//! Clock and time abstractions for signal processing
-//!
-//! Provides timing information for sample-accurate processing
-//! and synchronization between signal graph and control world.
-
-use super::tick;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// ============================================================================
-// Clock Tick
-// ============================================================================
+use super::tick;
 
-/// A tick of the audio clock
-///
-/// Sent to nodes on every signal block to provide timing information
-/// and synchronize processing.
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct ClockTick {
-    /// Absolute sample position since start
-    pub sample_pos: u64,
-
-    /// Number of samples since last tick
-    pub samples_since_last: u32,
-
-    /// Whether this is the start of a new block
-    pub is_new_block: bool,
-
-    /// Current sample rate
-    pub sample_rate: f32,
-
-    /// Current tempo in BPM (if available)
-    pub tempo: Option<f64>,
-}
-
-#[allow(dead_code)]
-impl ClockTick {
-    /// Create a new clock tick
-    pub fn new(sample_pos: u64, samples_since_last: u32, sample_rate: f32) -> Self {
-        Self {
-            sample_pos,
-            samples_since_last,
-            is_new_block: true,
-            sample_rate,
-            tempo: None,
-        }
-    }
-
-    /// Get time since last tick in seconds
-    pub fn delta_seconds(&self) -> f32 {
-        self.samples_since_last as f32 / self.sample_rate
-    }
-
-    /// Get absolute time in seconds
-    pub fn absolute_seconds(&self) -> f64 {
-        self.sample_pos as f64 / self.sample_rate as f64
-    }
-
-    /// Advance to next tick
-    pub fn advance(&mut self, samples: u32) {
-        self.sample_pos += samples as u64;
-        self.samples_since_last = samples;
-        self.is_new_block = true;
-    }
-}
-
-// ============================================================================
-// Clock Source
-// ============================================================================
-
-/// Source of clock ticks
-///
-/// Can be either a hardware device (ALSA, JACK) or a software generator.
-#[allow(dead_code)]
-pub trait ClockSource: Send + Sync {
-    /// Get the next clock tick
-    fn next_tick(&mut self) -> ClockTick;
-
-    /// Get the sample rate
-    fn sample_rate(&self) -> f32;
-
-    /// Start the clock
-    fn start(&mut self) -> Result<(), ClockError>;
-
-    /// Stop the clock
-    fn stop(&mut self) -> Result<(), ClockError>;
-}
-
-// ============================================================================
-// System Clock
-// ============================================================================
-
-/// High-precision system clock
+/// High-precision system clock for sample-accurate timing.
 ///
 /// Provides sample-accurate timing for signal processing.
 /// Uses atomic operations for thread safety without locks.
 pub struct SystemClock {
+    /// Sample rate of the audio system (Hz).
     pub sample_rate: f32,
+    /// Global sample position (atomically updated).
     position: AtomicU64,
-    bpm: AtomicU64, // stored as bits for atomic operations
+    /// Current BPM stored as raw f64 bits for atomic access.
+    bpm: AtomicU64,
 }
 
 impl SystemClock {
-    /// Create a new system clock
+    /// Create a new system clock at the given sample rate and initial BPM.
     pub fn new(sample_rate: f32, initial_bpm: f64) -> Self {
         Self {
             sample_rate,
@@ -111,12 +26,12 @@ impl SystemClock {
         }
     }
 
-    /// Create a clock with default BPM (120)
+    /// Create a new system clock with a default BPM of 120.
     pub fn with_sample_rate(sample_rate: f32) -> Self {
         Self::new(sample_rate, 120.0)
     }
 
-    /// Get the next tick
+    /// Advance the clock by `block_size` samples and return the clock tick.
     pub fn next_tick(&mut self, block_size: usize) -> tick::ClockTick {
         let samples = block_size as u32;
         let pos = self.position.fetch_add(samples as u64, Ordering::Relaxed);
@@ -130,49 +45,24 @@ impl SystemClock {
         }
     }
 
-    /// Get current BPM
+    /// Return the current BPM value.
     pub fn bpm(&self) -> f64 {
         f64::from_bits(self.bpm.load(Ordering::Relaxed))
     }
 
-    /// Set BPM
+    /// Set the BPM value atomically.
     pub fn set_bpm(&self, bpm: f64) {
         self.bpm.store(bpm.to_bits(), Ordering::Relaxed);
     }
 
-    /// Get current sample position
+    /// Return the current sample position.
     pub fn position(&self) -> u64 {
         self.position.load(Ordering::Relaxed)
     }
 
-    /// Reset position to zero
+    /// Reset the sample position to zero.
     pub fn reset(&self) {
         self.position.store(0, Ordering::Relaxed);
-    }
-}
-
-impl ClockSource for SystemClock {
-    fn next_tick(&mut self) -> ClockTick {
-        let pos = self.position.fetch_add(1, Ordering::Relaxed);
-        ClockTick {
-            sample_pos: pos,
-            samples_since_last: 1,
-            is_new_block: true,
-            sample_rate: self.sample_rate,
-            tempo: Some(self.bpm()),
-        }
-    }
-
-    fn sample_rate(&self) -> f32 {
-        self.sample_rate
-    }
-
-    fn start(&mut self) -> Result<(), ClockError> {
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<(), ClockError> {
-        Ok(())
     }
 }
 
@@ -185,35 +75,6 @@ impl fmt::Debug for SystemClock {
             .finish()
     }
 }
-
-// ============================================================================
-// Clock Error
-// ============================================================================
-
-/// Errors that can occur in clock operations
-#[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
-pub enum ClockError {
-    /// Hardware error (ALSA, JACK, etc.)
-    #[error("Hardware error: {0}")]
-    Hardware(String),
-
-    /// Invalid sample rate
-    #[error("Invalid sample rate: {0}")]
-    InvalidSampleRate(f32),
-
-    /// Clock not started
-    #[error("Clock not started")]
-    NotStarted,
-
-    /// Clock already started
-    #[error("Clock already started")]
-    AlreadyStarted,
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -231,12 +92,5 @@ mod tests {
 
         let tick = clock.next_tick(64);
         assert_eq!(tick.sample_pos, 64);
-    }
-
-    #[test]
-    fn test_clock_tick_math() {
-        let tick = ClockTick::new(44100, 44100, 44100.0);
-        assert_eq!(tick.absolute_seconds(), 1.0);
-        assert_eq!(tick.delta_seconds(), 1.0);
     }
 }

@@ -7,7 +7,11 @@
 
 #![warn(missing_docs)]
 
+/// Dry/wet mix utility node.
+pub mod dry_wet;
+/// Equalizer modules (graphic and parametric).
 pub mod eq;
+/// Multi-channel audio mixer with aux sends.
 pub mod mixer;
 
 // Re-export common types
@@ -22,3 +26,6 @@ pub use eq::{
 
 // Re-export main types from mixer module
 pub use mixer::{ChannelConfig, ChannelMode, ChannelState, MixerNode, SendConfig, SendType};
+
+// Re-export main types from dry_wet module
+pub use dry_wet::DryWetMix;

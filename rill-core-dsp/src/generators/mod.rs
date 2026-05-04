@@ -11,7 +11,7 @@
 //! типом `T: Transcendental` (f32 или f64).
 
 // Импортируем необходимые типы и трейты
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use crate::algorithm::Algorithm;
 use rill_core::Transcendental;
 
 // Объявляем подмодули

@@ -1,6 +1,6 @@
 [package]
 name = "rill-osc"
-version = "0.4.0"
+version = "0.5.0-beta.1"
 edition = "2021"
 description = "OSC server and networking for Rill audio graph"
 license.workspace = true

@@ -15,8 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{SignalNode, NodeId, NodeMetadata, NodeParams, NodeVariant, ParamValue};
-use rill_core::ParamMetadata;
+use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParameterId;
 
 use crate::graph::{GraphBuilder, NodeEntry};
@@ -29,10 +28,21 @@ use serde::{Deserialize, Serialize};
 // Document structure
 // ============================================================================
 
+/// A named resource (e.g. a tape loop) shared between graph nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceDef {
+    /// Unique name referenced by node parameters (e.g. `"tape_0"`).
+    pub name: String,
+    /// Resource kind: `"tape"` for a [`TapeLoop`](rill_core::buffer::TapeLoop).
+    pub kind: String,
+    /// Capacity in samples (for `"tape"` kind).
+    pub capacity: usize,
+}
+
 /// A serialisable graph document.
 ///
 /// Contains everything needed to reconstruct a signal graph:
-/// node definitions with parameters and the connections between them.
+/// node definitions with parameters, named resources, and connections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphDocument {
     /// Format identifier for forward compatibility (e.g. `"rill/1"`).
@@ -44,11 +54,20 @@ pub struct GraphDocument {
     /// Block / buffer size.
     pub block_size: usize,
 
+    /// Named resources shared between nodes (tape loops, etc.).
+    #[serde(default)]
+    pub resources: Vec<ResourceDef>,
+
     /// Node definitions.
     pub nodes: Vec<NodeDef>,
 
     /// Connection wiring.
     pub connections: Vec<ConnectionDef>,
+
+    /// Optional human-readable description (attribution, preset notes, …).
+    /// Not interpreted by the engine; preserved through serialisation round-trips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// A single node in the serialised graph.
@@ -145,8 +164,10 @@ impl GraphDocument {
             format_version: "rill/1".to_string(),
             sample_rate,
             block_size,
+            resources: Vec::new(),
             nodes: Vec::new(),
             connections: Vec::new(),
+            description: None,
         }
     }
 
@@ -200,12 +221,24 @@ impl GraphDocument {
         let nodes: Vec<NodeDef> = entries.iter().map(|entry| node_to_def(&entry.node)).collect();
         let connections = extract_connections(entries);
 
+        let resources = graph
+            .resources()
+            .iter()
+            .map(|r| ResourceDef {
+                name: r.name.clone(),
+                kind: r.kind.clone(),
+                capacity: r.capacity,
+            })
+            .collect();
+
         Self {
             format_version: "rill/1".to_string(),
             sample_rate,
             block_size: B as usize,
+            resources,
             nodes,
             connections,
+            description: None,
         }
     }
 }
@@ -247,8 +280,8 @@ fn extract_connections<T: Transcendental, const B: usize>(
         let variant = &entry.node;
         let from_id = variant.id().inner();
 
-        let audio_outs = variant.metadata().signal_outputs;
-        for from_port in 0..audio_outs {
+        let signal_outs = variant.metadata().signal_outputs;
+        for from_port in 0..signal_outs {
             if let Some(port) = variant.output_port(from_port) {
                 for &(to_idx, to_port) in &port.downstream {
                     let to_id = entries[to_idx].node.id().inner();
@@ -307,6 +340,15 @@ impl GraphDocument {
         }
 
         let mut builder = GraphBuilder::new();
+
+        // ── register resources ──
+        for rd in &self.resources {
+            builder.add_resource(crate::graph::GraphResource {
+                name: rd.name.clone(),
+                kind: rd.kind.clone(),
+                capacity: rd.capacity,
+            });
+        }
 
         // ── construct nodes ──
         for nd in &self.nodes {
@@ -405,7 +447,7 @@ mod tests {
     use super::*;
     use crate::graph::SignalGraph;
     use crate::registry::NodeConstructor;
-    use rill_core::buffer::Buffer;
+    use rill_core::buffer::FixedBuffer;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
     use rill_core::traits::node::NodeState;
@@ -821,6 +863,7 @@ mod tests {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 64,
+            resources: vec![],
             nodes: vec![NodeDef {
                 id: 0,
                 type_name: "rill/nonexistent".to_string(),
@@ -828,6 +871,7 @@ mod tests {
                 parameters: HashMap::new(),
             }],
             connections: vec![],
+            description: None,
         };
         let result = doc.into_builder(&reg);
         assert!(result.is_err());
@@ -840,6 +884,7 @@ mod tests {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 64,
+            resources: vec![],
             nodes: vec![
                 NodeDef {
                     id: 0,
@@ -855,6 +900,7 @@ mod tests {
                 },
             ],
             connections: vec![],
+            description: None,
         };
         match doc.into_builder(&reg) {
             Err(SerializationError::DuplicateNodeId(id)) => assert_eq!(id, 0),
@@ -868,8 +914,10 @@ mod tests {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 128,
+            resources: vec![],
             nodes: vec![],
             connections: vec![],
+            description: None,
         };
         let r = NodeRegistry::<f32, 256>::new();
         match doc.into_builder(&r) {

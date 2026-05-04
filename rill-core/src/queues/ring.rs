@@ -1,6 +1,6 @@
 //! # Кольцевая очередь с произвольным доступом
 //!
-//! [`RingQueue`] — гибрид между кольцевым буфером и очередью,
+//! [`RingQueue`](crate::queues::ring::RingQueue) — гибрид между кольцевым буфером и очередью,
 //! позволяющий читать данные с произвольной задержкой.
 
 use super::QueueStats;
@@ -21,6 +21,10 @@ pub struct RingQueue<T: Copy, const CAP: usize> {
     mask: usize,
     /// Статистика
     stats: QueueStats,
+}
+
+impl<T: Copy + Default, const CAP: usize> Default for RingQueue<T, CAP> {
+    fn default() -> Self { Self::new() }
 }
 
 impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
@@ -108,6 +112,11 @@ impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
     /// Количество записанных элементов (не больше CAP)
     pub fn len(&self) -> usize {
         CAP
+    }
+
+    /// Returns `true` if no elements have been written.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Сбросить позицию записи

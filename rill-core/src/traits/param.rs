@@ -195,6 +195,14 @@ impl ParamValue {
             _ => None,
         }
     }
+
+    /// Return the string value if this is a `String` or `Choice` variant.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) | Self::Choice(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
 }
 
 // ============================================================================
@@ -357,7 +365,7 @@ impl ParamMetadata {
 /// whatever named parameters it supports. This is intentionally
 /// open-ended — no fixed schema, no required fields.
 ///
-/// See [`NodeConstructor`] (in `rill-graph`) for how builder uses this.
+/// See `NodeConstructor` (in `rill-graph`) for how builder uses this.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeParams {

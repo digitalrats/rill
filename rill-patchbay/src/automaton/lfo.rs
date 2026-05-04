@@ -1,34 +1,34 @@
-//! # LFO (Low Frequency Oscillator) автоматы
+//! LFO (Low Frequency Oscillator) automata for periodic modulation.
 //!
-//! Генераторы периодических сигналов для модуляции параметров.
-//! Поддерживаются различные формы волны и режимы синхронизации.
+//! Supports various waveform shapes and synchronisation modes.
 
 use crate::control::{Automaton, Range, Time};
 use std::f64::consts::PI;
 
-/// Форма волны LFO
+/// LFO waveform shape.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LfoWaveform {
-    /// Синусоида (гладкая)
+    /// Smooth sinusoidal wave.
     Sine,
-    /// Треугольная волна
+    /// Triangular wave.
     Triangle,
-    /// Пилообразная волна (нарастающая)
+    /// Rising sawtooth wave.
     Saw,
-    /// Пилообразная волна (спадающая)
+    /// Falling sawtooth wave.
     ReverseSaw,
-    /// Прямоугольная волна
+    /// Square wave.
     Square,
-    /// Прямоугольная с переменной скважностью
-    Pulse(f64), // 0.0 - 1.0
-    /// Случайное значение, удерживаемое в течение периода
+    /// Pulse wave with configurable duty cycle.
+    Pulse(f64),
+    /// Random value held for the duration of one period.
     SampleAndHold,
-    /// Плавное случайное блуждание
+    /// Smooth random walk (continuous noise).
     RandomWalk,
 }
 
 impl LfoWaveform {
-    /// Получить название формы волны
+    /// Return the human-readable name of this waveform.
     pub fn name(&self) -> &'static str {
         match self {
             LfoWaveform::Sine => "Sine",
@@ -42,7 +42,9 @@ impl LfoWaveform {
         }
     }
 
-    /// Вычислить значение для заданной фазы
+    /// Evaluate the waveform at a given phase (0.0 – 1.0).
+    ///
+    /// `pulse_width` overrides the built-in width for `Pulse` waveforms.
     pub fn evaluate(&self, phase: f64, pulse_width: Option<f64>) -> f64 {
         match self {
             LfoWaveform::Sine => (phase * 2.0 * PI).sin(),
@@ -79,59 +81,52 @@ impl LfoWaveform {
             }
 
             LfoWaveform::SampleAndHold => {
-                // Значение обновляется на каждом периоде
-                // Здесь просто возвращаем фазу как заглушку
-                // Реальное значение хранится в состоянии автомата
                 phase
             }
 
             LfoWaveform::RandomWalk => {
-                // Непрерывное случайное блуждание
-                // Здесь просто возвращаем фазу как заглушку
                 phase
             }
         }
     }
 }
 
-/// Состояние LFO
+/// Runtime state of an LFO automaton.
+///
+/// Tracks the current phase, output value, random state, and timing.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct LfoState {
-    /// Текущая фаза (0.0 - 1.0)
+    /// Current phase in radians.
     pub phase: f64,
-    /// Текущее значение (для S&H и RandomWalk)
+    /// Current output value.
     pub value: f64,
-    /// Счётчик семплов для S&H
+    /// Samples remaining in hold phase (for sample-and-hold / stepped waveforms).
     pub hold_counter: usize,
-    /// Случайное зерно
+    /// Internal RNG state for randomised waveforms.
     pub rng_state: u64,
-    /// Время последнего шага
+    /// Timestamp of the last update (seconds).
     pub last_time: f64,
 }
 
-/// LFO автомат
+/// An LFO automaton that generates periodic modulation signals.
+///
+/// Supports multiple waveform shapes, configurable frequency, amplitude,
+/// offset, pulse width, and random-walk rate.
 #[derive(Debug, Clone)]
 pub struct LfoAutomaton {
-    /// Имя автомата
     name: String,
-    /// Частота (Hz)
     frequency: f64,
-    /// Амплитуда
     amplitude: f64,
-    /// Смещение
     offset: f64,
-    /// Форма волны
     waveform: LfoWaveform,
-    /// Диапазон выходных значений
     range: Range,
-    /// Ширина импульса (для Pulse)
     pulse_width: f64,
-    /// Скорость случайного блуждания
     walk_rate: f64,
 }
 
 impl LfoAutomaton {
-    /// Создать новый LFO
+    /// Create a new LFO automaton.
     pub fn new(
         name: &str,
         frequency: f64,
@@ -151,21 +146,25 @@ impl LfoAutomaton {
         }
     }
 
+    /// Set the output range.
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
 
+    /// Set the pulse width for the `Pulse` waveform (0.01 – 0.99).
     pub fn with_pulse_width(mut self, width: f64) -> Self {
         self.pulse_width = width.clamp(0.01, 0.99);
         self
     }
 
+    /// Set the random-walk step rate.
     pub fn with_walk_rate(mut self, rate: f64) -> Self {
         self.walk_rate = rate.max(0.0);
         self
     }
 
+    /// Simple xorshift PRNG returning a value in [-1, 1].
     fn random(&self, state: &mut u64) -> f64 {
         let mut x = *state;
         x ^= x << 13;
@@ -175,18 +174,21 @@ impl LfoAutomaton {
         (x as f64 / u64::MAX as f64) * 2.0 - 1.0
     }
 
+    /// Advance the random-walk state by a time step.
     fn update_random_walk(&self, state: &mut LfoState, dt: f64) {
         let step = (self.random(&mut state.rng_state) - 0.5) * self.walk_rate * dt * 100.0;
         state.value = (state.value + step).clamp(-1.0, 1.0);
     }
 }
 
-/// Действие для LFO
+/// Control action for an LFO automaton.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
 pub enum LfoAction {
     #[default]
+    /// Continue normal operation.
     None,
-    /// Сбросить фазу
+    /// Reset the phase to zero.
     Reset,
 }
 
@@ -202,7 +204,6 @@ impl Automaton for LfoAutomaton {
     ) -> (Self::State, Option<f64>) {
         let mut new_state = state.clone();
 
-        // Обработка действий
         if let LfoAction::Reset = action {
             new_state.phase = 0.0;
             new_state.last_time = time;
@@ -260,10 +261,6 @@ impl Automaton for LfoAutomaton {
         self.range.clamp(raw * self.amplitude + self.offset)
     }
 }
-
-// =============================================================================
-// Тесты
-// =============================================================================
 
 #[cfg(test)]
 mod tests {

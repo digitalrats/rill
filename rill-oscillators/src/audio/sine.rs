@@ -3,7 +3,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
     ActionContext, Algorithm, SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Processor, Source,
+    ParameterId, Port, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -126,34 +126,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
         ParamValue::Float(value.to_f32())
     }
 
-    /// Generate a block of samples with FM (sample-by-sample)
-    fn generate_block_with_fm(
-        &mut self,
-        output: &mut [T; BUF_SIZE],
-        fm_input: &[T; BUF_SIZE],
-        clock: &ClockTick,
-    ) -> ProcessResult<()> {
-        let one = T::from_f32(1.0);
-        let two = T::from_f32(2.0);
-        let min_freq = T::from_f32(0.1);
-        let max_freq = T::from_f32(20000.0);
-
-        for i in 0..BUF_SIZE {
-            let mod_normalized = fm_input[i] * two - one;
-            let modulation = mod_normalized * self.fm_amount;
-            let modulated_freq = (self.frequency + modulation).max(min_freq).max(max_freq);
-
-            self.osc.set_frequency(modulated_freq.to_f32());
-            let mut sample_buf = [T::ZERO; 1];
-            self.osc
-                .process(None, &mut sample_buf, &ActionContext::new(clock))?;
-            output[i] = sample_buf[0] * self.amplitude;
-        }
-
-        self.osc.set_frequency(self.frequency.to_f32());
-        Ok(())
-    }
-
     /// Generate a block of samples without FM (efficient block processing)
     fn generate_block_no_fm(
         &mut self,
@@ -164,7 +136,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
         self.osc
             .process(None, &mut output[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
-            output[i] = output[i] * self.amplitude;
+            output[i] *= self.amplitude;
         }
         Ok(())
     }

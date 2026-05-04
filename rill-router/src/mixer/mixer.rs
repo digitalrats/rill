@@ -4,15 +4,14 @@ use super::channel::{ChannelConfig, ChannelState};
 use super::send::{SendConfig, SendType};
 use rill_core::traits::{
     SignalNode, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata,
-    ParamRange, ParamType, ParamValue, ParameterId, Port, Processor,
+    ParamRange, ParamType, ParamValue, ParameterId, Port,
 };
 use rill_core::ClockTick;
-use rill_core::{ProcessError, ProcessResult, DEFAULT_BLOCK_SIZE};
+use rill_core::{ProcessError, ProcessResult};
 use std::collections::HashMap;
 
 /// Mixer node with multiple channels and aux sends
-/// Mixer node with multiple channels and aux sends
-pub struct MixerNode {
+pub struct MixerNode<const BUF_SIZE: usize> {
     /// Master volume (0.0 - 2.0)
     pub master_volume: f32,
     /// Smoothing factor (0.0 - 1.0)
@@ -40,16 +39,16 @@ pub struct MixerNode {
     /// Node ID
     pub id: NodeId,
     /// Audio input ports
-    pub input_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    pub input_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Audio output ports
-    pub output_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    pub output_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Control ports
-    pub control_ports: Vec<Port<f32, DEFAULT_BLOCK_SIZE>>,
+    pub control_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Node state
-    pub state: NodeState<f32, DEFAULT_BLOCK_SIZE>,
+    pub state: NodeState<f32, BUF_SIZE>,
 }
 
-impl MixerNode {
+impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
     /// Create a new mixer with specified number of channels and buses
     pub fn new(num_channels: usize, num_buses: usize) -> Self {
         let mut channels = Vec::with_capacity(num_channels);
@@ -233,7 +232,7 @@ impl MixerNode {
     }
 }
 
-impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
+impl<const BUF_SIZE: usize> rill_core::traits::SignalNode<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         let mut params = vec![ParamMetadata {
             name: "master_volume".to_string(),
@@ -296,7 +295,7 @@ impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
         NodeMetadata {
             name: "Mixer".to_string(),
             type_name: Some("rill/mixer".to_string()),
-            category: NodeCategory::Processor,
+            category: NodeCategory::Utility,
             description: format!(
                 "Mixer with {} channels and {} buses",
                 self.channels.len(),
@@ -423,35 +422,35 @@ impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
         self.id = id;
     }
 
-    fn input_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn input_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.input_ports.get(index)
     }
 
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
         self.input_ports.get_mut(index)
     }
 
-    fn output_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn output_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.output_ports.get(index)
     }
 
-    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
         self.output_ports.get_mut(index)
     }
 
-    fn control_port(&self, index: usize) -> Option<&Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn control_port(&self, index: usize) -> Option<&Port<f32, BUF_SIZE>> {
         self.control_ports.get(index)
     }
 
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, DEFAULT_BLOCK_SIZE>> {
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<f32, BUF_SIZE>> {
         self.control_ports.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<f32, DEFAULT_BLOCK_SIZE> {
+    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<f32, DEFAULT_BLOCK_SIZE> {
+    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
         &mut self.state
     }
 
@@ -484,18 +483,15 @@ impl rill_core::traits::SignalNode<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
     }
 }
 
-// Override Processor trait methods for dynamic I/O and custom parameters
-impl rill_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
-    fn process(
+// ── Router trait — N→M конфигурируемая маршрутизация ────────────────
+impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
+    fn route(
         &mut self,
         clock: &ClockTick,
-        _signal_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
-        _control_inputs: &[f32],
-        _clock_inputs: &[ClockTick],
-        _feedback_inputs: &[&[f32; DEFAULT_BLOCK_SIZE]],
+        _inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let num_buses = self.buses.len();
-        let buffer_size = DEFAULT_BLOCK_SIZE;
+        let _num_buses = self.buses.len();
+        let buffer_size = BUF_SIZE;
 
         // Update state with clock
         self.state.sample_pos = clock.sample_pos;
@@ -575,7 +571,86 @@ impl rill_core::traits::Processor<f32, DEFAULT_BLOCK_SIZE> for MixerNode {
         Ok(())
     }
 
-    fn latency(&self) -> usize {
-        0
+    fn num_route_inputs(&self) -> usize {
+        self.channels.len()
+    }
+
+    fn num_route_outputs(&self) -> usize {
+        2 + self.buses.len()
+    }
+
+    fn set_connection(&mut self, from: usize, to: usize, gain: f32) -> ProcessResult<()> {
+        // For the mixer, "connection" means routing channel `from` to output `to`.
+        // Channel volume controls the gain to master L/R.
+        // Bus sends are managed via add_send().
+        if from >= self.channels.len() {
+            return Err(ProcessError::Parameter("Channel index out of range".into()));
+        }
+        if to == 0 || to == 1 {
+            // Master L/R: set channel volume (pan is unchanged)
+            self.set_channel_volume(from, gain.clamp(0.0, 1.0))
+        } else if to >= 2 && to < 2 + self.buses.len() {
+            // Aux bus: add/update a send
+            let bus_idx = to - 2;
+            // Check if a send to this bus already exists
+            if let Some(existing) = self.sends[from]
+                .iter_mut()
+                .find(|s| s.bus_index == bus_idx)
+            {
+                existing.level = gain.clamp(0.0, 1.0);
+                Ok(())
+            } else {
+                self.add_send(from, SendConfig {
+                    bus_index: bus_idx,
+                    level: gain.clamp(0.0, 1.0),
+                    send_type: SendType::PostFader,
+                })
+            }
+        } else {
+            Err(ProcessError::Parameter("Output index out of range".into()))
+        }
+    }
+
+    fn remove_connection(&mut self, from: usize, to: usize) -> ProcessResult<()> {
+        if from >= self.channels.len() {
+            return Err(ProcessError::Parameter("Channel index out of range".into()));
+        }
+        if to == 0 || to == 1 {
+            // Master L/R: mute the channel
+            self.set_channel_mute(from, true)
+        } else if to >= 2 && to < 2 + self.buses.len() {
+            // Remove the send to this bus
+            let bus_idx = to - 2;
+            self.sends[from].retain(|s| s.bus_index != bus_idx);
+            Ok(())
+        } else {
+            Err(ProcessError::Parameter("Output index out of range".into()))
+        }
+    }
+
+    fn routing_matrix(&self) -> Vec<Vec<(usize, f32)>> {
+        let n_out = self.num_route_outputs();
+        let mut matrix = vec![Vec::new(); n_out];
+
+        // Master L (0): sum of all channels with their volumes
+        // Master R (1): same
+        for (ch_idx, ch) in self.channels.iter().enumerate() {
+            if !ch.config().muted {
+                matrix[0].push((ch_idx, ch.config().volume));
+                matrix[1].push((ch_idx, ch.config().volume));
+            }
+        }
+
+        // Buses: send connections
+        for (ch_idx, ch_sends) in self.sends.iter().enumerate() {
+            for send in ch_sends {
+                let out_idx = 2 + send.bus_index;
+                if out_idx < n_out {
+                    matrix[out_idx].push((ch_idx, send.level));
+                }
+            }
+        }
+
+        matrix
     }
 }

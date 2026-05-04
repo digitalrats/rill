@@ -1,7 +1,9 @@
-//! # Audio Buffers with Transcendental Support
+//! # Signal Buffers for single-threaded signal processing
 //!
-//! This module provides lock-free, real-time safe buffers for signal processing
-//! with full `Transcendental` support for both `f32` and `f64` sample types.
+//! This module provides real-time safe buffers used by graph nodes inside
+//! the signal thread. All buffers are **single-threaded** — they contain no
+//! atomics or locks. Cross-thread communication goes through
+//! [`rill_core::queues`](crate::queues).
 //!
 //! ## Buffer Types
 //!
@@ -12,19 +14,16 @@
 //! | [`FanInBuffer`] | Multiple producers, one consumer | Mix multiple signals |
 //! | [`DelayLine`] | Circular buffer with delay | Effects like echo, reverb |
 //! | [`RingBuffer`] | Multi-producer, multi-consumer | Generic queue for any scenario |
+//! | [`TapeLoop`](crate::buffer::TapeLoop) | Heap-allocated circular buffer | Tape delay with large capacity |
 //!
 //! ## Features
 //!
-//! - **Lock-free** - All buffers use atomic operations, no mutexes
-//! - **Wait-free** - Bounded number of steps per operation
-//! - **Cache-line aligned** - Prevents false sharing between threads
 //! - **Real-time safe** - No allocations, no blocking, no system calls
+//! - **Single-threaded** - No atomics, no locks, minimal overhead
+//! - **Cache-line aligned** - Prevents false sharing
 //! - **Statistically monitored** - Track performance metrics
 //! - **Type-safe** - Generic over `Transcendental` (f32/f64)
-//! - **Const generics** - Sizes checked at compile time
 
-use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::fmt;
 
@@ -37,20 +36,24 @@ use crate::math::Transcendental;
 mod delay;
 mod fan;
 mod pipe;
-mod port_buffer;
+mod registry;
 mod ring;
 mod storage;
+mod tape;
+mod buffer_trait;
 
 // ============================================================================
 // Re-exports
 // ============================================================================
 
+pub use buffer_trait::{Buffer, FixedBuffer, HeapBuffer};
 pub use delay::DelayLine;
 pub use fan::{FanInBuffer, FanOutBuffer};
 pub use pipe::PipeBuffer;
-pub use port_buffer::Buffer;
+pub use registry::BufferRegistry;
 pub use ring::RingBuffer;
 pub use storage::{AtomicCell, AtomicCellError};
+pub use tape::TapeLoop;
 
 // ============================================================================
 // Constants
@@ -321,87 +324,17 @@ pub trait SignalBuffer<T: Transcendental> {
 // Aligned Storage
 // ============================================================================
 
-/// Cache-line aligned storage for lock-free buffers
-///
-/// This type provides aligned storage that can be safely shared between threads.
-/// It is not `Copy` or `Clone` by design - use references or pointers.
-///
-/// # Type Parameters
-/// - `T`: The sample type (must implement `Transcendental`)
-/// - `N`: The number of elements
-///
-/// # Safety
-/// This type uses `UnsafeCell` for interior mutability and `MaybeUninit`
-/// for uninitialized data. Users must ensure proper initialization before reading.
-
-// ============================================================================
-// Buffer Read/Write Guards
-// ============================================================================
-
-/// Read guard for buffer access
-///
-/// Provides RAII-style access to buffer data for reading.
-/// The guard releases any locks when dropped.
-
-#[allow(dead_code)]
-pub struct ReadGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    buffer: &'a B,
-    data: &'a [T],
-    _marker: PhantomData<B>,
-}
-
-impl<'a, T, B> Deref for ReadGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        self.data
-    }
-}
-
-/// Write guard for buffer access
-///
-/// Provides RAII-style access to buffer data for writing.
-/// The guard releases any locks and commits changes when dropped.
-#[allow(dead_code)]
-pub struct WriteGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    buffer: &'a mut B,
-    data: &'a mut [T],
-    _marker: PhantomData<B>,
-}
-
-impl<'a, T, B> Deref for WriteGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        self.data
-    }
-}
-
-impl<'a, T, B> DerefMut for WriteGuard<'a, T, B>
-where
-    T: Transcendental,
-    B: SignalBuffer<T>,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.data
-    }
-}
+// Cache-line aligned storage for lock-free buffers
+//
+// This type provides aligned storage that can be safely shared between threads.
+// It is not `Copy` or `Clone` by design - use references or pointers.
+//
+// # Type Parameters
+// - `T`: The sample type (must implement `Transcendental`)
+// - `N`: The number of elements
+// # Safety
+// This type uses `UnsafeCell` for interior mutability and `MaybeUninit`
+// for uninitialized data. Users must ensure proper initialization before reading.
 
 // ============================================================================
 // Utility Functions
@@ -450,7 +383,7 @@ pub mod utils {
     {
         let len = src.len().min(dst.len());
         for i in 0..len {
-            dst[i] = dst[i] + src[i] * gain;
+            dst[i] += src[i] * gain;
         }
     }
 
@@ -465,7 +398,7 @@ pub mod utils {
         T: Transcendental + core::ops::Mul<Output = T>,
     {
         for item in slice.iter_mut() {
-            *item = *item * gain;
+            *item *= gain;
         }
     }
 

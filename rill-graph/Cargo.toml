@@ -1,6 +1,6 @@
 [package]
 name = "rill-graph"
-version = "0.4.0"
+version = "0.5.0-beta.1"
 edition = "2021"
 description = "Real-time audio graph with block processing"
 license.workspace = true
@@ -9,9 +9,7 @@ repository.workspace = true
 
 [dependencies]
 rill-core = { workspace = true }
-crossbeam-channel = "0.5"
-parking_lot = "0.12"
-thiserror = "1.0"
+
 log = "0.4"
 
 serde = { version = "1.0", features = ["derive"], optional = true }
@@ -20,7 +18,9 @@ serde_cbor = { version = "0.11", optional = true }
 
 [dev-dependencies]
 rill-core-dsp = { workspace = true }
+rill-patchbay = { workspace = true }
 
 [features]
 default = []
 serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "rill-core/serde"]
+dot = []

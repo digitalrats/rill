@@ -132,7 +132,7 @@ impl CassetteDeckModel {
         let mut eq_signal = playback_voltage;
         for filter in &mut self.eq_filters {
             let alpha = 1.0 / (1.0 + filter.port_resistance() * 1000.0);
-            eq_signal = alpha * eq_signal;
+            eq_signal *= alpha;
         }
 
         let print_through_signal = self.print_through * playback_voltage;

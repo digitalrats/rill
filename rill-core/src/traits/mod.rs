@@ -10,6 +10,7 @@ pub mod node;
 pub mod param;
 pub mod port;
 pub mod processable;
+pub mod router;
 
 // Re-export all public items
 pub use action::*;
@@ -19,6 +20,7 @@ pub use node::*;
 pub use param::*;
 pub use port::*;
 pub use processable::*;
+pub use router::*;
 
 // ============================================================================
 // Common Type Aliases
@@ -73,6 +75,7 @@ pub mod prelude {
         // Error types
         ProcessResult,
         Processor,
+        Router,
         Sink,
 
         Source,
@@ -177,7 +180,7 @@ mod tests {
     fn test_prelude_imports() {
         // Verify that all expected types are accessible
         let _node_id = NodeId(0);
-        let _port_id = PortId::audio_in(_node_id, 0);
+        let _port_id = PortId::signal_in(_node_id, 0);
         let _param_id = ParameterId::new("test").unwrap();
 
         // Test IntoParamValue
@@ -223,13 +226,13 @@ mod tests {
     fn test_port_id_creation() {
         let node = NodeId(42);
 
-        let audio_in = PortId::audio_in(node, 0);
-        assert_eq!(audio_in.node_id(), node);
-        assert_eq!(audio_in.port_type(), PortType::Signal);
-        assert_eq!(audio_in.direction(), PortDirection::Input);
-        assert_eq!(audio_in.index(), 0);
-        assert!(audio_in.is_input());
-        assert!(audio_in.is_audio());
+        let signal_in = PortId::signal_in(node, 0);
+        assert_eq!(signal_in.node_id(), node);
+        assert_eq!(signal_in.port_type(), PortType::Signal);
+        assert_eq!(signal_in.direction(), PortDirection::Input);
+        assert_eq!(signal_in.index(), 0);
+        assert!(signal_in.is_input());
+        assert!(signal_in.is_signal());
 
         let clock_out = PortId::clock_out(node, 0);
         assert_eq!(clock_out.port_type(), PortType::Clock);

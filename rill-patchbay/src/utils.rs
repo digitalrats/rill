@@ -1,30 +1,25 @@
-//! # Утилиты для патчбэя
+//! Utility functions and helpers for the patchbay.
 //!
-//! Вспомогательные функции и структуры для работы с патчбэем:
-//! - Конвертеры значений
-//! - Утилиты для времени
-//! - Хелперы для тестирования
+//! Provides value converters, metronome timing, note-type conversion,
+//! test helpers, and test-signal generation.
 
 use crate::automaton::Range;
 use crate::control::Transform;
 
 // =============================================================================
-// Конвертеры значений
+// Value converters
 // =============================================================================
 
-/// Конвертер значений между разными шкалами
+/// Converts values between different scales using a specified transform.
 #[derive(Debug, Clone)]
 pub struct ValueConverter {
-    /// Входной диапазон
     input_range: Range,
-    /// Выходной диапазон
     output_range: Range,
-    /// Тип преобразования
     transform: Transform,
 }
 
 impl ValueConverter {
-    /// Создать новый конвертер
+    /// Create a new value converter.
     pub fn new(input_range: Range, output_range: Range, transform: Transform) -> Self {
         Self {
             input_range,
@@ -33,12 +28,10 @@ impl ValueConverter {
         }
     }
 
-    /// Конвертировать значение
+    /// Convert a value from the input range to the output range.
     pub fn convert(&self, value: f64) -> f64 {
-        // Нормализуем входное значение
         let norm = self.input_range.normalize(value);
 
-        // Применяем преобразование
         let transformed = match self.transform {
             Transform::Linear => norm,
             Transform::Exponential => norm * norm,
@@ -47,57 +40,51 @@ impl ValueConverter {
             Transform::Custom(ref f) => f(norm as f32) as f64,
         };
 
-        // Денормализуем в выходной диапазон
         self.output_range.denormalize(transformed)
     }
 
-    /// Конвертировать значение в обратном направлении
+    /// Convert a value in the reverse direction (approximate).
     pub fn convert_inverse(&self, value: f64) -> f64 {
-        // Денормализуем в обратную сторону (приблизительно)
         let norm = self.output_range.normalize(value);
         self.input_range.denormalize(norm)
     }
 }
 
-/// Преобразование MIDI value (0-127) в нормализованное значение (0.0-1.0)
+/// Convert a MIDI value (0–127) to a normalised float (0.0–1.0).
 pub fn midi_to_normalized(midi: u8) -> f64 {
     midi as f64 / 127.0
 }
 
-/// Преобразование нормализованного значения в MIDI value
+/// Convert a normalised float (0.0–1.0) to a MIDI value (0–127).
 pub fn normalized_to_midi(norm: f64) -> u8 {
     (norm.clamp(0.0, 1.0) * 127.0).round() as u8
 }
 
-/// Преобразование частоты в MIDI ноту
+/// Convert a frequency in Hz to the nearest MIDI note number.
 pub fn freq_to_midi_note(freq: f64) -> f64 {
     69.0 + 12.0 * (freq / 440.0).log2()
 }
 
-/// Преобразование MIDI ноты в частоту
+/// Convert a MIDI note number to frequency in Hz.
 pub fn midi_note_to_freq(note: f64) -> f64 {
     440.0 * 2.0_f64.powf((note - 69.0) / 12.0)
 }
 
 // =============================================================================
-// Утилиты для времени
+// Timing utilities
 // =============================================================================
 
-/// Метроном для синхронизации с BPM
+/// A metronome for synchronisation with BPM.
 #[derive(Debug, Clone)]
 pub struct Metronome {
-    /// BPM
     bpm: f64,
-    /// Время последнего тика
     last_tick: f64,
-    /// Время следующего тика
     next_tick: f64,
-    /// Длительность четверти в секундах
     quarter_duration: f64,
 }
 
 impl Metronome {
-    /// Создать новый метроном
+    /// Create a new metronome at the given BPM.
     pub fn new(bpm: f64) -> Self {
         let quarter_duration = 60.0 / bpm;
         Self {
@@ -108,7 +95,7 @@ impl Metronome {
         }
     }
 
-    /// Обновить состояние и проверить, был ли тик
+    /// Advance the metronome and return whether a tick occurred.
     pub fn update(&mut self, time: f64) -> bool {
         if time >= self.next_tick {
             self.last_tick = self.next_tick;
@@ -119,26 +106,26 @@ impl Metronome {
         }
     }
 
-    /// Получить текущую фазу (0.0-1.0) внутри четверти
+    /// Get the current phase (0.0–1.0) within the current quarter note.
     pub fn phase(&self, time: f64) -> f64 {
         ((time - self.last_tick) / self.quarter_duration).clamp(0.0, 1.0)
     }
 
-    /// Установить новый BPM
+    /// Set a new BPM value.
     pub fn set_bpm(&mut self, bpm: f64) {
         self.bpm = bpm;
         self.quarter_duration = 60.0 / bpm;
         self.next_tick = self.last_tick + self.quarter_duration;
     }
 
-    /// Сбросить метроном
+    /// Reset the metronome to the start of a new bar.
     pub fn reset(&mut self) {
         self.last_tick = 0.0;
         self.next_tick = self.quarter_duration;
     }
 }
 
-/// Преобразование длительности ноты в секунды
+/// Convert a note type to duration in seconds at the given BPM.
 pub fn note_duration_to_seconds(note_type: NoteType, bpm: f64) -> f64 {
     let quarter = 60.0 / bpm;
     match note_type {
@@ -153,50 +140,57 @@ pub fn note_duration_to_seconds(note_type: NoteType, bpm: f64) -> f64 {
     }
 }
 
-/// Тип ноты
+/// A musical note type for duration calculations.
 #[derive(Debug, Clone)]
 pub enum NoteType {
+    /// Whole note (semibreve).
     Whole,
+    /// Half note (minim).
     Half,
+    /// Quarter note (crotchet).
     Quarter,
+    /// Eighth note (quaver).
     Eighth,
+    /// Sixteenth note (semiquaver).
     Sixteenth,
+    /// Thirty-second note (demisemiquaver).
     ThirtySecond,
+    /// Dotted variant of a note type.
     Dotted(Box<NoteType>),
+    /// Triplet variant of a note type.
     Triplet(Box<NoteType>),
 }
 
 // =============================================================================
-// Хелперы для тестирования
+// Test helpers
 // =============================================================================
 
-/// Запись событий для тестирования
+/// Records events for testing purposes.
 #[derive(Debug, Default)]
 pub struct EventRecorder {
-    /// Записанные события
     events: Vec<RecordedEvent>,
 }
 
-/// Записанное событие
+/// A single recorded event.
 #[derive(Debug, Clone)]
 pub struct RecordedEvent {
-    /// Время записи
+    /// Time of the event.
     pub time: f64,
-    /// Тип события
+    /// Event type label.
     pub event_type: String,
-    /// Значение
+    /// Numeric value.
     pub value: f64,
-    /// Дополнительные данные
+    /// Additional data.
     pub data: String,
 }
 
 impl EventRecorder {
-    /// Создать новый рекордер
+    /// Create a new event recorder.
     pub fn new() -> Self {
         Self { events: Vec::new() }
     }
 
-    /// Записать событие
+    /// Record an event.
     pub fn record(&mut self, time: f64, event_type: &str, value: f64, data: &str) {
         self.events.push(RecordedEvent {
             time,
@@ -206,17 +200,17 @@ impl EventRecorder {
         });
     }
 
-    /// Получить все события
+    /// Return all recorded events.
     pub fn events(&self) -> &[RecordedEvent] {
         &self.events
     }
 
-    /// Очистить запись
+    /// Clear all recorded events.
     pub fn clear(&mut self) {
         self.events.clear();
     }
 
-    /// Найти события по типу
+    /// Find events by type label.
     pub fn find_by_type(&self, event_type: &str) -> Vec<&RecordedEvent> {
         self.events
             .iter()
@@ -226,47 +220,45 @@ impl EventRecorder {
 }
 
 // =============================================================================
-// Генераторы тестовых сигналов
+// Test signal generators
 // =============================================================================
 
-/// Генератор тестовых сигналов
+/// Generates test signals for verification and debugging.
 pub struct TestSignalGenerator {
-    /// Тип сигнала
     signal_type: TestSignalType,
-    /// Параметры
     params: TestSignalParams,
 }
 
-/// Тип тестового сигнала
+/// Type of test signal.
 #[derive(Debug, Clone)]
 pub enum TestSignalType {
-    /// Синусоида
+    /// Sine wave.
     Sine,
-    /// Прямоугольный
+    /// Square wave.
     Square,
-    /// Пилообразный
+    /// Sawtooth wave.
     Saw,
-    /// Случайный шум
+    /// White noise.
     Noise,
-    /// Огибающая ADSR
+    /// ADSR-like envelope.
     Envelope,
 }
 
-/// Параметры тестового сигнала
+/// Parameters for a test signal.
 #[derive(Debug, Clone)]
 pub struct TestSignalParams {
-    /// Частота (Гц)
+    /// Frequency in Hz.
     pub frequency: f64,
-    /// Амплитуда
+    /// Amplitude.
     pub amplitude: f64,
-    /// Смещение
+    /// DC offset.
     pub offset: f64,
-    /// Длительность (секунды)
+    /// Duration in seconds.
     pub duration: f64,
 }
 
 impl TestSignalGenerator {
-    /// Создать новый генератор
+    /// Create a new test signal generator.
     pub fn new(signal_type: TestSignalType, params: TestSignalParams) -> Self {
         Self {
             signal_type,
@@ -274,7 +266,7 @@ impl TestSignalGenerator {
         }
     }
 
-    /// Генерировать значение в заданное время
+    /// Generate the signal value at the given time.
     pub fn generate(&self, time: f64) -> f64 {
         if time > self.params.duration {
             return 0.0;
@@ -305,7 +297,6 @@ impl TestSignalGenerator {
             }
 
             TestSignalType::Envelope => {
-                // Простая ADSR-подобная огибающая
                 let attack = 0.1;
                 let decay = 0.2;
                 let sustain = 0.7;
@@ -327,7 +318,7 @@ impl TestSignalGenerator {
 }
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -348,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_metronome() {
-        let mut metro = Metronome::new(120.0); // 120 BPM = 0.5 сек на четверть
+        let mut metro = Metronome::new(120.0);
 
         assert!(!metro.update(0.2));
         assert!(metro.update(0.6));

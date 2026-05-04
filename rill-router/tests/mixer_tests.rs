@@ -1,21 +1,21 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{SignalNode, Processor};
-use rill_core::{ClockTick, DEFAULT_BLOCK_SIZE};
+use rill_core::traits::{Router, SignalNode};
+use rill_core::ClockTick;
 
 #[test]
 fn test_mixer_creation() {
-    let mixer = rill_router::MixerNode::new(4, 2);
+    let mixer = rill_router::MixerNode::<64>::new(4, 2);
     assert_eq!(mixer.num_inputs(), 4);
     assert_eq!(mixer.num_outputs(), 4); // 2 master + 2 buses
 }
 
 #[test]
 fn test_mixer_basic_processing() {
-    let mut mixer = rill_router::MixerNode::new(2, 0);
+    let mut mixer = rill_router::MixerNode::<64>::new(2, 0);
     mixer.init(44100.0);
 
-    let input1 = [0.5; DEFAULT_BLOCK_SIZE];
-    let input2 = [0.3; DEFAULT_BLOCK_SIZE];
+    let input1 = [0.5; 64];
+    let input2 = [0.3; 64];
 
     mixer
         .input_port_mut(0)
@@ -32,7 +32,7 @@ fn test_mixer_basic_processing() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -40,7 +40,7 @@ fn test_mixer_basic_processing() {
     // Both channels are mono, so they are summed to both left and right outputs
     let expected = input1[0] + input2[0];
 
-    for i in 0..DEFAULT_BLOCK_SIZE {
+    for i in 0..64 {
         assert!(
             approx_eq!(f32, output_left[i], expected, epsilon = 0.001),
             "left[{}]: {} vs {}",
@@ -60,11 +60,11 @@ fn test_mixer_basic_processing() {
 
 #[test]
 fn test_mixer_pan() {
-    let mut mixer = rill_router::MixerNode::new(1, 0);
+    let mut mixer = rill_router::MixerNode::<64>::new(1, 0);
     mixer.set_channel_pan(0, -0.5).unwrap();
     mixer.init(44100.0);
 
-    let input = [1.0; DEFAULT_BLOCK_SIZE];
+    let input = [1.0; 64];
 
     mixer
         .input_port_mut(0)
@@ -75,7 +75,7 @@ fn test_mixer_pan() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -90,11 +90,11 @@ fn test_mixer_pan() {
 
 #[test]
 fn test_mixer_mute() {
-    let mut mixer = rill_router::MixerNode::new(1, 0);
+    let mut mixer = rill_router::MixerNode::<64>::new(1, 0);
     mixer.set_channel_mute(0, true).unwrap();
     mixer.init(44100.0);
 
-    let input = [1.0; DEFAULT_BLOCK_SIZE];
+    let input = [1.0; 64];
 
     mixer
         .input_port_mut(0)
@@ -105,12 +105,12 @@ fn test_mixer_mute() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
 
-    for i in 0..DEFAULT_BLOCK_SIZE {
+    for i in 0..64 {
         assert_eq!(output_left[i], 0.0);
         assert_eq!(output_right[i], 0.0);
     }
@@ -118,7 +118,7 @@ fn test_mixer_mute() {
 
 #[test]
 fn test_mixer_sends() {
-    let mut mixer = rill_router::MixerNode::new(1, 2); // 2 buses for testing
+    let mut mixer = rill_router::MixerNode::<64>::new(1, 2); // 2 buses for testing
 
     // Disable smoothing for accurate testing
     mixer.set_smoothing(1.0); // 1.0 = instant change
@@ -151,7 +151,7 @@ fn test_mixer_sends() {
 
     mixer.init(44100.0);
 
-    let input = [1.0; DEFAULT_BLOCK_SIZE];
+    let input = [1.0; 64];
 
     mixer
         .input_port_mut(0)
@@ -162,7 +162,7 @@ fn test_mixer_sends() {
 
     let clock = ClockTick::default();
 
-    mixer.process(&clock, &[], &[], &[], &[]).unwrap();
+    mixer.route(&clock, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -172,7 +172,7 @@ fn test_mixer_sends() {
     // Skip first few samples due to smoothing
     let start = 10;
 
-    for i in start..DEFAULT_BLOCK_SIZE {
+    for i in start..64 {
         assert!(
             approx_eq!(f32, output_left[i], 0.8, epsilon = 0.01),
             "left[{}]: {} vs 0.8",
@@ -206,7 +206,7 @@ fn test_mixer_sends() {
 
 #[test]
 fn test_mixer_parameters() {
-    let mut mixer = rill_router::MixerNode::new(2, 0);
+    let mut mixer = rill_router::MixerNode::<64>::new(2, 0);
 
     // Test get_param
     assert!(mixer.get_param("master_volume").is_some());

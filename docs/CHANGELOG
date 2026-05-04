@@ -16,6 +16,64 @@
 
 ---
 
+## [0.4.1] — 2026-05-04
+
+### ✨ Audio I/O backends — AudioIo trait
+
+Реализован `AudioIo` для всех бэкендов:
+
+| Бэкенд | Статус | Механизм вызова callback |
+|--------|--------|--------------------------|
+| `NullBackend` | ✅ | Заглушка, callback не дёргается |
+| `PipewireBackend` | ✅ | RT callback (PW thread) |
+| `JackBackend` | ✅ | RT callback (JACK thread) |
+| `AlsaBackend` | ✅ | `snd_pcm_wait()` — event-driven, без `thread::sleep` |
+| `CpalBackend` | ✅ | Thread + `thread::sleep(interval)` — poll-driven |
+
+- **`AudioInput::init_backend(name, config)`** — узел сам создаёт бэкенд по
+  имени (`null`, `alsa`, `cpal`, `pipewire`, `jack`), каждый под feature gate
+- **`AudioOutput::set_active(source_idx)` + `start()`** — pull model (active
+  Sink). Sink хранит ссылку на Source и дёргает `generate()` + `propagate()`
+  при каждом цикле обработки. Callback идентичен push-модели.
+- **`AudioOutput::consume()`** — читает из собственных входных портов
+  (`self.inputs`), а не из параметра `signal_inputs` (пуст при вызове через
+  `process_block` → `propagate`)
+- **`ParamValue::as_str()`** — доступ к строковому значению `String`/`Choice`
+
+### 🧹 Удалён глобальный реестр бэкендов
+
+Из `rill-adrift` удалён `BACKEND_PTR`, `set_audio_backend()`,
+`clear_audio_backend()`, `get_audio_backend()`. I/O узлы регистрируются
+в фабрике без бэкенда — бэкенд создаётся внутри узла через
+`init_backend()` при десериализации графа (параметр `"backend"`).
+
+### ⚡ ALSA: poll → event-driven
+
+- Убран `thread::sleep(1000μs)` из `run_alsa_thread()`. Вместо этого
+  используется `pcm_playback.wait(None)` (`snd_pcm_wait()`). Тред спит
+  в ядре, просыпается только когда DMA готов. Никакого busy-wait.
+
+### 🧪 Тесты
+
+- **`test_pull_model_sync_inject_and_verify`** — интеграционный тест
+  pull model: граф SineOsc → AudioOutput через `GraphDocument`,
+  `SyncBackend` с ручным триггером, верификация данных в output ring.
+- **`test_alsa_pull_model`** — ALSA loopback через snd-aloop, проверка
+  xruns после работы pull model.
+
+### 📝 Документация
+
+- **AGENTS.md**: раздел Hard-RT safety переписан. Две модели бэкендов
+  (callback-driven / poll-driven), `thread::sleep()` запрещён в RT path.
+  Добавлен Known issues (ALSA/CPAL poll loop). Threading model исправлен
+  — ALSA больше не указан как RT thread.
+- **README.md**: таблица версий обновлена (все 0.4.0).
+- **docs/architecture.md**: версии крейтов обновлены (0.3.0 → 0.4.0).
+- **docs/src/index.md, docs/src/guides/getting-started.md**: версии
+  зависимостей обновлены (`"0.3"` → `"0.4"`).
+
+---
+
 ## [0.3.2 / 0.3.1 / 0.3.1] — 2026-05-02
 
 ### 🆕 Новые крейты

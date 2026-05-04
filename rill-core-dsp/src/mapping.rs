@@ -1,4 +1,4 @@
-//! ControlMapper — maps normalized [0,1] control values to parameter ranges.
+//! ControlMapper — maps normalized [0, 1\] control values to parameter ranges.
 //!
 //! Provides `MappingStrategy` to select the mapping curve and `ControlMapper<T>`
 //! which implements `Algorithm<T>`.
@@ -7,13 +7,17 @@ use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
 use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
 
-/// Mapping strategy for translating normalized [0,1] values to a parameter range.
+/// Mapping strategy for translating normalized [0, 1\] values to a parameter range.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MappingStrategy {
     /// Linear mapping: `min + value * (max - min)`
     Linear,
     /// Exponential mapping: `min + value^exp * (max - min)`
-    Exponential { exponent: f32 },
+    Exponential {
+        /// Exponent for the exponential curve. Values > 1 emphasize the upper
+        /// end; values < 1 emphasize the lower end.
+        exponent: f32,
+    },
     /// Logarithmic mapping: `min + log(1 + value * (e - 1)) / log(e) * (max - min)`
     Logarithmic,
     /// Inverted linear mapping: `max - value * (max - min)`
@@ -21,7 +25,7 @@ pub enum MappingStrategy {
 }
 
 impl MappingStrategy {
-    /// Map a normalized value `x` in [0,1] to [min, max] using this strategy.
+    /// Map a normalized value `x` in [0, 1\] to [min, max] using this strategy.
     pub fn map<T: Transcendental>(&self, x: T, min: T, max: T) -> T {
         let xf: f32 = x.to_f32();
         let minf: f32 = min.to_f32();
@@ -42,7 +46,7 @@ impl MappingStrategy {
     }
 }
 
-/// Maps an incoming normalized control value [0,1] to a parameter range
+/// Maps an incoming normalized control value [0, 1\] to a parameter range
 /// using a `MappingStrategy`.
 ///
 /// Implements `Algorithm<T>`. The input (if present) is treated as the
