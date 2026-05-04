@@ -4,6 +4,7 @@
 //! Процессинг живёт внутри этого коллбэка. Управление (start/stop) —
 //! синхронное, без каналов.
 
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::Arc;
 
@@ -54,7 +55,7 @@ impl CbSlot {
 pub struct CpalBackend {
     config: AudioConfig,
     process_cb: CbSlot,
-    stream: Option<cpal::Stream>,
+    stream: UnsafeCell<Option<cpal::Stream>>,
     output_ring: Arc<IoRingBuffer>,
     input_ring: Arc<IoRingBuffer>,
     xruns: Arc<std::sync::atomic::AtomicU32>,
@@ -67,7 +68,7 @@ impl fmt::Debug for CpalBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CpalBackend")
             .field("config", &self.config)
-            .field("stream", &self.stream.is_some())
+            .field("stream", &unsafe { (*self.stream.get()).is_some() })
             .finish()
     }
 }
@@ -79,14 +80,14 @@ impl CpalBackend {
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
-            stream: None,
+            stream: UnsafeCell::new(None),
             output_ring: Arc::new(IoRingBuffer::new(buf_cap)),
             input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
             xruns: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         })
     }
 
-    fn build_streams(&mut self) -> IoResult<cpal::Stream> {
+    fn build_streams(&self) -> IoResult<cpal::Stream> {
         let host = cpal::default_host();
         let output_device = self.config.output_device.as_deref()
             .and_then(|name| host.output_devices().ok()?.find(|d| d.name().ok().as_deref() == Some(name)))
@@ -147,16 +148,13 @@ impl AudioBackend for CpalBackend {
     }
 
     fn start(&mut self) -> IoResult<()> {
-        let stream = self.build_streams()?;
-        stream.play().map_err(|e| IoError::Backend(format!("CPAL play: {e}")))?;
-        self.stream = Some(stream);
+        // AudioIo::start() does the actual work. This path is unused
+        // when the backend is used via AudioOutput (pull model).
         Ok(())
     }
 
     fn stop(&mut self) -> IoResult<()> {
-        if let Some(s) = self.stream.take() {
-            let _ = s.pause();
-        }
+        // AudioIo::stop() does the actual work.
         Ok(())
     }
 
@@ -225,20 +223,32 @@ impl AudioIo for CpalBackend {
     }
 
     fn start(&self) -> AudioIoResult<()> {
-        // AudioIo::start is a no-op here — AudioBackend::start does the work.
-        // In the AudioIo path the backend is started via AudioBackend.
+        // Build stream and start playback.
+        // Using UnsafeCell for interior mutability since AudioIo::start()
+        // takes &self — but this is the only place the stream is created,
+        // always from the control thread, never concurrent with itself.
+        let stream = match self.build_streams() {
+            Ok(s) => s,
+            Err(e) => return Err(format!("CPAL build: {e}")),
+        };
+        stream.play().map_err(|e| format!("CPAL play: {e}"))?;
+        unsafe { *self.stream.get() = Some(stream); }
         Ok(())
     }
 
     fn stop(&self) -> AudioIoResult<()> {
-        // Stopped via AudioBackend::stop or Drop.
+        if let Some(s) = unsafe { (*self.stream.get()).take() } {
+            let _ = s.pause();
+        }
         Ok(())
     }
 }
 
 impl Drop for CpalBackend {
     fn drop(&mut self) {
-        let _ = self.stop();
+        if let Some(s) = unsafe { (*self.stream.get()).take() } {
+            let _ = s.pause();
+        }
         unsafe { self.process_cb.drop_box(); }
     }
 }
