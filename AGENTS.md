@@ -133,8 +133,9 @@ Any code reached from the process callback — `generate()`, `process()`,
 
 ### Known issues
 
-1. **ALSA backend (`run_alsa_thread`)** uses `thread::sleep(1000μs)` to pace the
-   poll loop. This must be replaced with `poll()` on `snd_pcm_poll_descriptors()`.
+*(All originally identified RT-safety issues have been fixed — ALSA uses
+`snd_pcm_wait`, CPAL drives processing from its stream callback, and
+no backend uses `thread::sleep` in the audio path.)*
 
 **Testing:** any new RT path code must be verified with `cargo test --release`
 under `pw‑loopback` or similar virtual device to detect xruns.

@@ -3,6 +3,10 @@
 //! Thread запускается сразу, ждёт `Start` через `Arc<AtomicBool>` +
 //! `thread::park`/`unpark`. После старта — event-driven ALSA loop
 //! (`snd_pcm_wait`), никакого `thread::sleep`.
+//!
+//! Все буферы в RT-пути — стековые фиксированного размера.
+
+const MAX_BLOCK_SAMPLES: usize = 8192;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -165,8 +169,10 @@ fn alsa_thread(
 
     let out_buffer_size = (config.buffer_size * config.output_channels) as usize;
     let in_buffer_size = (config.buffer_size * config.input_channels) as usize;
-    let mut pb = vec![0i16; out_buffer_size];
-    let mut cb = vec![0i16; in_buffer_size.max(1)];
+    let out_sz = out_buffer_size.min(MAX_BLOCK_SAMPLES);
+    let in_sz = in_buffer_size.max(1).min(MAX_BLOCK_SAMPLES);
+    let mut pb = [0i16; MAX_BLOCK_SAMPLES];
+    let mut cb = [0i16; MAX_BLOCK_SAMPLES];
 
     while running.load(Ordering::Acquire) {
         match pcm_playback.wait(None) {
@@ -185,13 +191,13 @@ fn alsa_thread(
         // Capture → input ring
         if let Some(ref pcm) = pcm_capture {
             if let Ok(io) = pcm.io_i16() {
-                if let Ok(n_read) = io.readi(&mut cb) {
-                    let n = n_read * config.input_channels as usize;
-                    let mut temp = vec![0.0f32; n];
+                if let Ok(n_read) = io.readi(&mut cb[..in_sz]) {
+                    let n = (n_read * config.input_channels as usize).min(in_sz);
+                    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
                     for (i, s) in cb[..n].iter().enumerate() {
                         temp[i] = *s as f32 / 32768.0;
                     }
-                    input_buffer.write(&temp);
+                    input_buffer.write(&temp[..n]);
                 }
             }
         }
@@ -201,10 +207,10 @@ fn alsa_thread(
 
         // Output ring → ALSA
         {
-            let mut temp = vec![0.0f32; out_buffer_size];
-            let n = output_buffer.read(&mut temp);
-            for (i, s) in pb.iter_mut().enumerate() {
-                *s = if i < n { (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16 } else { 0 };
+            let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
+            let n = output_buffer.read(&mut temp[..out_sz]);
+            for i in 0..out_sz {
+                pb[i] = if i < n { (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16 } else { 0 };
             }
         }
 
