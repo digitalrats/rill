@@ -7,9 +7,10 @@
 //! - Master output with volume
 
 mod channel;
-mod mixer;
+#[allow(clippy::module_name_repetitions)]
+mod node;
 mod send;
 
 pub use channel::{ChannelConfig, ChannelMode, ChannelState};
-pub use mixer::MixerNode;
+pub use node::MixerNode;
 pub use send::{SendConfig, SendType};
