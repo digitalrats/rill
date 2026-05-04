@@ -25,17 +25,6 @@ pub enum BuildError {
 // Graph Builder
 // ============================================================================
 
-/// Runtime statistics for the signal graph.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct GraphStats {
-    /// Total number of blocks processed since the graph started.
-    pub blocks_processed: u64,
-    /// Maximum wall-clock time spent processing a single block (nanoseconds).
-    pub max_process_time_ns: u64,
-    /// Average wall-clock time per block (nanoseconds).
-    pub avg_process_time_ns: f64,
-}
-
 // ============================================================================
 // Node Storage
 // ============================================================================

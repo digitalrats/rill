@@ -9,7 +9,6 @@ repository.workspace = true
 
 [dependencies]
 rill-core = { workspace = true }
-crossbeam-channel = "0.5"
 
 log = "0.4"
 
