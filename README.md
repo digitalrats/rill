@@ -147,5 +147,6 @@ See [Git Flow guide](docs/src/guides/git-flow.md) for detailed workflow.
 
 ## License
 
-Licensed under **Apache 2.0** ([LICENSE.md](LICENSE.md)) or **MIT** ([LICENSE-MIT](LICENSE-MIT))
-at your option.
+Licensed under **Apache 2.0** ([LICENSE.md](LICENSE.md)).
+Example code in `*/examples/` directories is additionally available under
+**MIT** ([LICENSE-MIT](LICENSE-MIT)).
