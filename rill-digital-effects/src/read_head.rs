@@ -33,6 +33,10 @@ unsafe impl<T: Transcendental, const B: usize> Send for ReadHead<T, B> {}
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Sync for ReadHead<T, B> {}
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for ReadHead<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     /// Create a new `ReadHead` with default delay of 0.5 seconds.
     pub fn new() -> Self {
@@ -41,8 +45,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
             rill_core::ParamMetadata::new("delay", rill_core::ParamType::Float, ParamValue::Float(0.5))
                 .with_range(0.01, 2.0, 0.01),
         ];
-        let mut outputs = Vec::new();
-        outputs.push(Port::output(NodeId(0), 0, "out"));
+        let outputs = vec![Port::output(NodeId(0), 0, "out")];
         Self {
             id: NodeId(0),
             metadata,

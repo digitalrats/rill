@@ -7,6 +7,7 @@
 //! - Master output with volume
 
 mod channel;
+#[allow(clippy::module_name_repetitions)]
 mod mixer;
 mod send;
 

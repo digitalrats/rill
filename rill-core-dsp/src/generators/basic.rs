@@ -283,7 +283,7 @@ impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
     }
 
     fn set_frequency(&mut self, freq: f32) {
-        self.frequency = freq.max(0.1).min(20000.0);
+        self.frequency = freq.clamp(0.1, 20000.0);
         self.update_phase_inc();
     }
 

@@ -57,8 +57,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> TelemetryBlock<T, BUF_SIZE> {
             if abs > peak {
                 peak = abs;
             }
-            sum = sum + sample;
-            sq_sum = sq_sum + sample * sample;
+            sum += sample;
+            sq_sum += sample * sample;
         }
 
         let len = T::from_f32(BUF_SIZE as f32);

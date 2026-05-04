@@ -92,7 +92,7 @@ impl<T: Transcendental, const SIZE: usize> Algorithm<T> for WavetableOscillator<
         self.reader.render_block(output);
         if amp != T::from_f32(1.0) {
             for s in output.iter_mut() {
-                *s = *s * amp;
+                *s *= amp;
             }
         }
         Ok(())
@@ -102,7 +102,7 @@ impl<T: Transcendental, const SIZE: usize> Algorithm<T> for WavetableOscillator<
         AlgorithmMetadata {
             name: "Wavetable Oscillator",
             category: AlgorithmCategory::Generator,
-            description: "Wavetable oscillator with linear / cubic interpolation".into(),
+            description: "Wavetable oscillator with linear / cubic interpolation",
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }

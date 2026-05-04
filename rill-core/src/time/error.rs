@@ -58,10 +58,7 @@ impl TimeError {
 
     /// Check if the error is recoverable
     pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::Underflow | Self::Overflow => true,
-            _ => false,
-        }
+        matches!(self, Self::Underflow | Self::Overflow)
     }
 }
 

@@ -90,7 +90,7 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
     #[inline(always)]
     pub fn read_delayed(&self, delay: usize) -> T {
         debug_assert!(delay < MAX_DELAY, "Delay {} out of range (max {})", delay, MAX_DELAY);
-        let read_pos = if self.write_pos >= delay + 1 {
+        let read_pos = if self.write_pos > delay {
             self.write_pos - 1 - delay
         } else {
             MAX_DELAY + self.write_pos - 1 - delay

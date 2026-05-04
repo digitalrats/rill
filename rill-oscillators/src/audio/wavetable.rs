@@ -247,7 +247,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Source<T, B
         self.osc
             .process(None, &mut temp[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
-            temp[i] = temp[i] * self.amplitude;
+            temp[i] *= self.amplitude;
         }
         *self.outputs[0].buffer.as_mut_array() = temp;
         Ok(())

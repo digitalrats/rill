@@ -261,7 +261,7 @@ impl Runtime {
 
         let handle = OscHandle::start(bind, self.queue.clone(), control, surface)
             .await
-            .map_err(|e| RuntimeError::Osc(e))?;
+            .map_err(RuntimeError::Osc)?;
 
         self.osc = Some(handle);
         log::info!("OSC server started on {bind}");

@@ -40,9 +40,7 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
     /// Broadcast data to all consumers.
     #[inline(always)]
     pub fn write(&mut self, data: &[T; N]) {
-        for i in 0..N {
-            self.storage[i] = data[i];
-        }
+        self.storage.copy_from_slice(data);
         self.version += 1;
         self.valid = true;
         self.stats.record_write();
@@ -61,9 +59,7 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
             return None;
         }
         let mut result = [T::ZERO; N];
-        for i in 0..N {
-            result[i] = self.storage[i];
-        }
+        result.copy_from_slice(&self.storage);
         self.read_versions[consumer_id] = current_version;
         self.stats.record_read();
         Some(result)
@@ -165,9 +161,7 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
     #[inline(always)]
     pub fn write(&mut self, producer_id: usize, data: &[T; N]) {
         if producer_id >= PRODUCERS { return; }
-        for i in 0..N {
-            self.storage[producer_id][i] = data[i];
-        }
+        self.storage[producer_id].copy_from_slice(data);
         self.valid[producer_id] = true;
         self.write_seq[producer_id] += 1;
         self.stats.record_write();
@@ -185,7 +179,7 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
                 any_valid = true;
                 active_producers += 1;
                 for i in 0..N {
-                    result[i] = result[i] + self.storage[producer][i];
+                    result[i] += self.storage[producer][i];
                 }
             }
         }

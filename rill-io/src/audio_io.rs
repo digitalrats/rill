@@ -85,6 +85,10 @@ pub struct BackendRegistry {
     backends: HashMap<String, Box<dyn AudioIo>>,
 }
 
+impl Default for BackendRegistry {
+    fn default() -> Self { Self::new() }
+}
+
 impl BackendRegistry {
     /// Create an empty registry.
     pub fn new() -> Self { Self { backends: HashMap::new() } }

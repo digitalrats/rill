@@ -214,7 +214,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
 
         let warp_cutoff = 2.0 * (PI64 * cutoff / sample_rate_f64).tan();
 
-        self.num_sections = (n + 1) / 2;
+        self.num_sections = n.div_ceil(2);
         self.gain = ScalarVector1::splat(T::from_f32(1.0)); // Упрощённо, в реальности нужно вычислять gain
 
         for i in 0..self.num_sections {
@@ -358,7 +358,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> 
 
         let warp_cutoff = 2.0 * (PI64 * cutoff / sample_rate_f64).tan();
 
-        self.num_sections = (n + 1) / 2;
+        self.num_sections = n.div_ceil(2);
         self.gain = ScalarVector1::splat(T::from_f32(1.0));
 
         for i in 0..self.num_sections {

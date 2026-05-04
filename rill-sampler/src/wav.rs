@@ -47,7 +47,7 @@ pub fn load_wav(path: &str) -> Result<SampleBuffer<Sample>, WavError> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
 
-    let channels = spec.channels as u16;
+    let channels = spec.channels;
     let sample_rate = spec.sample_rate as f32;
     let bits_per_sample = spec.bits_per_sample;
 

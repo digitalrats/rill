@@ -29,7 +29,6 @@ use crate::math::vector::scalar::ScalarVector4;
 use crate::math::vector::traits::Vector;
 
 #[macro_export]
-///
 macro_rules! vec_map {
     ($input:expr, $output:expr, |$x:ident| $($body:tt)*) => {{
         use $crate::math::vector::traits::Vector;

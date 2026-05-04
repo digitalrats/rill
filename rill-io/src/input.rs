@@ -57,6 +57,10 @@ pub struct AudioInput<T: Transcendental, const BUF_SIZE: usize> {
     buf_r: [f32; BUF_SIZE],
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for AudioInput<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
     /// Create a new `AudioInput` with no backend attached.
     pub fn new() -> Self {
@@ -64,9 +68,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
         metadata.signal_inputs = 0;
         metadata.signal_outputs = 2;
 
-        let mut outputs = Vec::new();
-        outputs.push(Port::output(NodeId(0), 0, "left"));
-        outputs.push(Port::output(NodeId(0), 1, "right"));
+        let outputs = vec![
+            Port::output(NodeId(0), 0, "left"),
+            Port::output(NodeId(0), 1, "right"),
+        ];
 
         Self {
             id: NodeId(0),

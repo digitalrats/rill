@@ -49,6 +49,10 @@ pub struct MpscQueue<T> {
     size: AtomicUsize,
 }
 
+impl<T> Default for MpscQueue<T> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T> MpscQueue<T> {
     /// Создать новую очередь
     pub fn new() -> Self {
@@ -187,7 +191,7 @@ impl<T> MpscQueue<T> {
 
 impl<T> Drop for MpscQueue<T> {
     fn drop(&mut self) {
-        while let Some(_) = self.pop() {}
+        while self.pop().is_some() {}
 
         let head = self.head.load(Ordering::Relaxed);
         if !head.is_null() {

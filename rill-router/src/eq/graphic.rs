@@ -91,7 +91,7 @@ impl<F: Filter<f32> + 'static> GraphicEq<F> {
 
     /// Set output gain
     pub fn set_output_gain(&mut self, gain: f32) {
-        self.output_gain = gain.max(0.0).min(4.0);
+        self.output_gain = gain.clamp(0.0, 4.0);
     }
 
     /// Get frequency for a band

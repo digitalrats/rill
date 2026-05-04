@@ -36,9 +36,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
     /// Write a block of data. Subsequent reads will return this data.
     #[inline(always)]
     pub fn write(&mut self, data: &[T; N]) {
-        for i in 0..N {
-            self.storage[i] = data[i];
-        }
+        self.storage.copy_from_slice(data);
         self.valid = true;
         self.write_seq += 1;
         self.stats.record_write();
@@ -52,9 +50,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
             return None;
         }
         let mut result = [T::ZERO; N];
-        for i in 0..N {
-            result[i] = self.storage[i];
-        }
+        result.copy_from_slice(&self.storage);
         self.read_seq += 1;
         self.stats.record_read();
         Some(result)
@@ -68,9 +64,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
             return None;
         }
         let mut result = [T::ZERO; N];
-        for i in 0..N {
-            result[i] = self.storage[i];
-        }
+        result.copy_from_slice(&self.storage);
         self.valid = false;
         self.read_seq += 1;
         self.stats.record_read();

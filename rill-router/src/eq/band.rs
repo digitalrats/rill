@@ -26,6 +26,7 @@ pub enum BandType {
 
 impl BandType {
     /// Get band type from string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "peak" => Some(BandType::Peak),
@@ -127,17 +128,17 @@ impl<F: Filter<f32>> EqBand<F> {
 
     /// Set frequency
     pub fn set_frequency(&mut self, freq: f32) {
-        self.frequency = freq.max(20.0).min(20000.0);
+        self.frequency = freq.clamp(20.0, 20000.0);
     }
 
     /// Set Q factor
     pub fn set_q(&mut self, q: f32) {
-        self.q = q.max(0.1).min(20.0);
+        self.q = q.clamp(0.1, 20.0);
     }
 
     /// Set gain in dB
     pub fn set_gain_db(&mut self, gain: f32) {
-        self.gain_db = gain.max(-24.0).min(24.0);
+        self.gain_db = gain.clamp(-24.0, 24.0);
     }
 
     /// Enable/disable band

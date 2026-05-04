@@ -25,6 +25,10 @@ pub struct DryWetMix<T: Transcendental, const BUF_SIZE: usize> {
     master: f32,
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for DryWetMix<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
     /// Create a new `DryWetMix` with unity dry gain, 0.5 wet gain, and unity master.
     pub fn new() -> Self {

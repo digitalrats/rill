@@ -249,7 +249,7 @@ impl<T: Transcendental> Algorithm<T> for SamplePlayer<T> {
         AlgorithmMetadata {
             name: "SamplePlayer",
             category: AlgorithmCategory::Generator,
-            description: "Sample playback with loop modes".into(),
+            description: "Sample playback with loop modes",
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }

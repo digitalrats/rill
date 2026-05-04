@@ -24,7 +24,7 @@ pub struct DspContext<T: Transcendental> {
     pub _phantom: std::marker::PhantomData<T>,
 }
 
-impl<'a, T: Transcendental> DspContext<T> {
+impl<T: Transcendental> DspContext<T> {
     /// Создать новый контекст
     pub fn new(sample_rate: f32, block_size: usize, block_position: usize) -> Self {
         Self {

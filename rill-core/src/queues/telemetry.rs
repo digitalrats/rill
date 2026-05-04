@@ -463,7 +463,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
         value: f32,
     ) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::parameter(port, parameter, value))
-            .map_err(|e| e.into())
     }
 
     fn send_signal(
@@ -473,7 +472,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::signal(node_id, channel, data))
-            .map_err(|e| e.into())
     }
 
     fn send_signal_with_sample_rate(
@@ -489,12 +487,10 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
             data,
             sample_rate,
         ))
-        .map_err(|e| e.into())
     }
 
     fn send_peak(&self, port: PortId, value: f32) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::peak(port, value))
-            .map_err(|e| e.into())
     }
 
     fn send_peak_with_hold(
@@ -504,7 +500,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
         hold_time_ms: u32,
     ) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::peak_with_hold(port, value, hold_time_ms))
-            .map_err(|e| e.into())
     }
 
     fn send_event(
@@ -514,7 +509,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
         data: Vec<f32>,
     ) -> Result<(), super::error::QueueError> {
         self.send(Telemetry::event(source, kind, data))
-            .map_err(|e| e.into())
     }
 
     fn send_event_with_description(
@@ -530,7 +524,6 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
             data,
             description,
         ))
-        .map_err(|e| e.into())
     }
 
     fn send_violation(
@@ -546,6 +539,5 @@ impl TelemetryQueueExt for super::command::CommandQueue<Telemetry> {
             actual_ns,
             value,
         ))
-        .map_err(|e| e.into())
     }
 }

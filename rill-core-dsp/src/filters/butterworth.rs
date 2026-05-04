@@ -171,7 +171,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
         let analog_poles = butterworth_analog_poles(n);
 
         // Количество биквадратных секций
-        self.num_sections = (n + 1) / 2;
+        self.num_sections = n.div_ceil(2);
 
         // Вычисляем gain
         self.gain = self.compute_gain(&analog_poles, warp_cutoff);

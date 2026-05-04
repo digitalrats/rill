@@ -103,7 +103,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
 
     /// Sets the cutoff frequency (Hz) and updates coefficients.
     pub fn set_cutoff(&mut self, cutoff: f32) {
-        self.cutoff = cutoff.max(20.0).min(20000.0);
+        self.cutoff = cutoff.clamp(20.0, 20000.0);
         self.update_algorithm();
     }
 
@@ -114,7 +114,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
 
     /// Sets the Q factor and updates coefficients.
     pub fn set_q(&mut self, q: f32) {
-        self.q = q.max(0.1).min(20.0);
+        self.q = q.clamp(0.1, 20.0);
         self.update_algorithm();
     }
 
@@ -125,7 +125,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
 
     /// Sets the gain in dB and updates coefficients.
     pub fn set_gain_db(&mut self, gain_db: f32) {
-        self.gain_db = gain_db.max(-24.0).min(24.0);
+        self.gain_db = gain_db.clamp(-24.0, 24.0);
         self.update_algorithm();
     }
 
@@ -335,7 +335,7 @@ where
 
     fn set_cutoff(&mut self, cutoff: f32) {
         let mut params = self.params().clone();
-        params.cutoff = cutoff.max(20.0).min(20000.0);
+        params.cutoff = cutoff.clamp(20.0, 20000.0);
         self.set_params(params);
     }
 
@@ -345,7 +345,7 @@ where
 
     fn set_q(&mut self, q: f32) {
         let mut params = self.params().clone();
-        params.q = q.max(0.1).min(20.0);
+        params.q = q.clamp(0.1, 20.0);
         self.set_params(params);
     }
 
@@ -355,7 +355,7 @@ where
 
     fn set_gain_db(&mut self, gain_db: f32) {
         let mut params = self.params().clone();
-        params.gain_db = gain_db.max(-24.0).min(24.0);
+        params.gain_db = gain_db.clamp(-24.0, 24.0);
         self.set_params(params);
     }
 

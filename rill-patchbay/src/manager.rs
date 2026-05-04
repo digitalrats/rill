@@ -527,7 +527,7 @@ impl PatchbayManager {
         let update_interval = Duration::from_secs_f64(1.0 / self.config.update_rate_hz);
         let collect_stats = self.config.collect_stats;
 
-        let automata = std::mem::replace(&mut self.automata, HashMap::new());
+        let automata = std::mem::take(&mut self.automata);
         let mut automaton_states = std::mem::take(&mut self.automaton_states);
         let mut servos = std::mem::take(&mut self.servos);
         let command_queue = self.command_queue.clone();
@@ -548,7 +548,7 @@ impl PatchbayManager {
 
                 let mut commands = Vec::new();
 
-                for (id, _automaton) in &automata {
+                for id in automata.keys() {
                     if let Some(_state) = automaton_states.get_mut(id) {
                         if let Some(servo) = servos.get_mut(id) {
                             if let Some(cmd) = servo.update(time) {
