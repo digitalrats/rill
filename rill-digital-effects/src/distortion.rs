@@ -26,6 +26,7 @@ impl DistortionType {
     }
 
     /// Get type from string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "hard_clip" => Some(DistortionType::HardClip),
@@ -123,7 +124,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
 
     /// Set drive
     pub fn set_drive(&mut self, drive: f32) {
-        self.drive = drive.max(1.0).min(100.0);
+        self.drive = drive.clamp(1.0, 100.0);
     }
 
     /// Set output gain

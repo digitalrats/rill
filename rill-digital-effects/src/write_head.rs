@@ -40,6 +40,7 @@ pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
+    /// Create a new `WriteHead` with default delay (0.5 s) and feedback (0.3).
     pub fn new(sample_rate: f32) -> Self {
         let mut metadata = NodeMetadata::new("WriteHead", NodeCategory::Processor);
         metadata.parameters = vec![

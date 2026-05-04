@@ -24,6 +24,10 @@ pub struct DelayLine<T: Transcendental, const MAX_DELAY: usize> {
 }
 
 impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
+    /// Create a new delay line with the given sample rate.
+    ///
+    /// # Panics
+    /// Panics if `MAX_DELAY` is 0.
     pub fn new(sample_rate: f32) -> Self {
         assert!(MAX_DELAY > 0, "DelayLine must have MAX_DELAY > 0");
         Self {
@@ -36,17 +40,22 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
         }
     }
 
+    /// Set the delay time in seconds.
     pub fn set_delay(&mut self, delay_sec: f32) {
         let samples = (delay_sec * self.sample_rate) as usize;
         self.delay_samples = samples.min(MAX_DELAY - 1);
     }
 
+    /// Set the delay time in samples.
     pub fn set_delay_samples(&mut self, samples: usize) {
         self.delay_samples = samples.min(MAX_DELAY - 1);
     }
 
+    /// Current delay in samples.
     pub fn delay_samples(&self) -> usize { self.delay_samples }
+    /// Maximum possible delay (const generic parameter).
     pub const fn max_delay(&self) -> usize { MAX_DELAY }
+    /// The sample rate used for sec-to-sample conversion.
     pub fn sample_rate(&self) -> f32 { self.sample_rate }
 
     /// Write a sample and return the delayed sample.
@@ -81,7 +90,7 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
     #[inline(always)]
     pub fn read_delayed(&self, delay: usize) -> T {
         debug_assert!(delay < MAX_DELAY, "Delay {} out of range (max {})", delay, MAX_DELAY);
-        let read_pos = if self.write_pos >= delay + 1 {
+        let read_pos = if self.write_pos > delay {
             self.write_pos - 1 - delay
         } else {
             MAX_DELAY + self.write_pos - 1 - delay
@@ -110,6 +119,7 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayLine<T, MAX_DELAY> {
         self.stats.reset();
     }
 
+    /// Current write cursor position in the circular buffer.
     pub fn write_position(&self) -> usize { self.write_pos }
 }
 

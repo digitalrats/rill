@@ -14,7 +14,7 @@
 //! | [`FanInBuffer`] | Multiple producers, one consumer | Mix multiple signals |
 //! | [`DelayLine`] | Circular buffer with delay | Effects like echo, reverb |
 //! | [`RingBuffer`] | Multi-producer, multi-consumer | Generic queue for any scenario |
-//! | [`TapeLoop`] | Heap-allocated circular buffer | Tape delay with large capacity |
+//! | [`TapeLoop`](crate::buffer::TapeLoop) | Heap-allocated circular buffer | Tape delay with large capacity |
 //!
 //! ## Features
 //!
@@ -324,18 +324,17 @@ pub trait SignalBuffer<T: Transcendental> {
 // Aligned Storage
 // ============================================================================
 
-/// Cache-line aligned storage for lock-free buffers
-///
-/// This type provides aligned storage that can be safely shared between threads.
-/// It is not `Copy` or `Clone` by design - use references or pointers.
-///
-/// # Type Parameters
-/// - `T`: The sample type (must implement `Transcendental`)
-/// - `N`: The number of elements
-///
-/// # Safety
-/// This type uses `UnsafeCell` for interior mutability and `MaybeUninit`
-/// for uninitialized data. Users must ensure proper initialization before reading.
+// Cache-line aligned storage for lock-free buffers
+//
+// This type provides aligned storage that can be safely shared between threads.
+// It is not `Copy` or `Clone` by design - use references or pointers.
+//
+// # Type Parameters
+// - `T`: The sample type (must implement `Transcendental`)
+// - `N`: The number of elements
+// # Safety
+// This type uses `UnsafeCell` for interior mutability and `MaybeUninit`
+// for uninitialized data. Users must ensure proper initialization before reading.
 
 // ============================================================================
 // Utility Functions
@@ -384,7 +383,7 @@ pub mod utils {
     {
         let len = src.len().min(dst.len());
         for i in 0..len {
-            dst[i] = dst[i] + src[i] * gain;
+            dst[i] += src[i] * gain;
         }
     }
 
@@ -399,7 +398,7 @@ pub mod utils {
         T: Transcendental + core::ops::Mul<Output = T>,
     {
         for item in slice.iter_mut() {
-            *item = *item * gain;
+            *item *= gain;
         }
     }
 

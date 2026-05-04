@@ -8,19 +8,35 @@ use crate::buffer::AtomicCell;
 // Основная структура
 // =============================================================================
 
+/// A lock-free single-producer single-consumer queue.
+///
+/// Uses atomic operations for real-time safe push/pop without blocking.
+/// The capacity must be a power of two for efficient mask-based indexing.
 #[repr(C, align(64))]
 pub struct SpscQueue<T: Copy, const CAP: usize> {
+    /// Ring buffer of atomic cells holding queue elements.
     buffer: [AtomicCell<T>; CAP],
+    /// Producer index (written by producer, read by consumer).
     head: AtomicUsize,
+    /// Consumer index (written by consumer, read by producer).
     tail: AtomicUsize,
+    /// Flag indicating whether the queue is full.
     full: AtomicBool,
+    /// Bitmask for wrapping (CAP - 1, requires CAP to be a power of two).
     mask: usize,
+    /// Behaviour when a push would overflow the queue.
     overflow_policy: OverflowPolicy,
+    /// Default value returned when popping from an empty queue.
     default_value: Option<T>,
 }
 
 impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
-    /// Создать новую очередь
+    /// Create a new SPSC queue with default policies.
+    ///
+    /// The overflow policy defaults to [`OverflowPolicy::OverwriteOldest`].
+    ///
+    /// # Panics
+    /// Panics if `CAP` is not a power of two.
     pub fn new() -> Self {
         assert!(CAP.is_power_of_two(), "CAP must be a power of two");
 
@@ -37,7 +53,7 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
         }
     }
 
-    /// Создать очередь с указанными политиками
+    /// Create a queue with custom overflow policy and default value.
     pub fn with_policies(overflow_policy: OverflowPolicy, default_value: Option<T>) -> Self {
         let mut queue = Self::new();
         queue.overflow_policy = overflow_policy;
@@ -45,17 +61,23 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
         queue
     }
 
-    /// Добавить элемент
+    /// Push a value into the queue.
+    ///
+    /// If the queue is full, behaviour depends on [`OverflowPolicy`].
+    ///
+    /// # Errors
+    /// Returns `QueueFull` when the policy is [`OverflowPolicy::DropNewest`]
+    /// or [`OverflowPolicy::Block`] and the queue is full.
+    ///
+    /// # Panics
+    /// Panics when the policy is [`OverflowPolicy::Panic`] and the queue is full.
     pub fn push(&self, value: T) -> QueueResult<()> {
         let head = self.head.load(Ordering::Relaxed);
         let next_head = (head + 1) & self.mask;
 
-        // Проверка на переполнение
         if self.full.load(Ordering::Acquire) {
             match self.overflow_policy {
                 OverflowPolicy::OverwriteOldest => {
-                    // Перезаписываем самый старый элемент
-                    // Сдвигаем tail, чтобы освободить место
                     let _ = self.tail.fetch_add(1, Ordering::Release) & self.mask;
                     self.full.store(false, Ordering::Release);
                 }
@@ -76,10 +98,8 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
 
         self.buffer[head].store(value);
 
-        // Обновляем head
         self.head.store(next_head, Ordering::Release);
 
-        // Если после записи head догоняет tail, значит очередь полна
         if next_head == self.tail.load(Ordering::Acquire) {
             self.full.store(true, Ordering::Release);
         }
@@ -87,7 +107,7 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
         Ok(())
     }
 
-    /// Извлечь элемент
+    /// Pop a value from the queue, or return the default value if empty.
     pub fn pop(&self) -> Option<T> {
         if self.is_empty() {
             return self.default_value;
@@ -99,13 +119,12 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
         let next_tail = (tail + 1) & self.mask;
         self.tail.store(next_tail, Ordering::Release);
 
-        // После извлечения очередь уже не полна
         self.full.store(false, Ordering::Release);
 
         Some(value)
     }
 
-    /// Получить элемент без удаления
+    /// Peek at the front value without removing it.
     pub fn peek(&self) -> Option<T> {
         if self.is_empty() {
             None
@@ -115,7 +134,7 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
         }
     }
 
-    /// Текущий размер
+    /// Return the current number of elements in the queue.
     pub fn len(&self) -> usize {
         if self.full.load(Ordering::Acquire) {
             CAP
@@ -131,45 +150,45 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
         }
     }
 
-    /// Вместимость
+    /// Return the fixed capacity of the queue.
     pub const fn capacity(&self) -> usize {
         CAP
     }
 
-    /// Проверить, пуста ли очередь
+    /// Return true if the queue is empty.
     pub fn is_empty(&self) -> bool {
         !self.full.load(Ordering::Acquire)
             && self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
     }
 
-    /// Проверить, полна ли очередь
+    /// Return true if the queue is full.
     pub fn is_full(&self) -> bool {
         self.full.load(Ordering::Acquire)
     }
 
-    /// Очистить очередь
+    /// Clear the queue, resetting both head and tail pointers.
     pub fn clear(&self) {
         self.head.store(0, Ordering::Relaxed);
         self.tail.store(0, Ordering::Relaxed);
         self.full.store(false, Ordering::Relaxed);
     }
 
-    /// Получить статистику
+    /// Return a statistics snapshot (currently always empty).
     pub fn stats(&self) -> QueueStatsSnapshot {
         QueueStatsSnapshot::default()
     }
 
-    /// Установить значение по умолчанию
+    /// Set the default value returned when popping from an empty queue.
     pub fn set_default(&mut self, value: T) {
         self.default_value = Some(value);
     }
 
-    /// Получить политику переполнения
+    /// Return the current overflow policy.
     pub fn overflow_policy(&self) -> OverflowPolicy {
         self.overflow_policy
     }
 
-    /// Установить политику переполнения
+    /// Set the overflow policy.
     pub fn set_overflow_policy(&mut self, policy: OverflowPolicy) {
         self.overflow_policy = policy;
     }

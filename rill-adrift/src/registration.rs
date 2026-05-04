@@ -1,7 +1,7 @@
 //! Centralized node type registration for the Rill ecosystem.
 //!
 //! Provides a single entry point to register all built-in node types
-//! from every rill crate into a [`NodeRegistry`].
+//! from every rill crate into a NodeRegistry.
 //!
 //! # Usage
 //!
@@ -28,7 +28,7 @@ use crate::io::AudioConfig;
 /// Return a lazily-initialized global registry for the given block size.
 ///
 /// The registry is initialised once on the first call and reused thereafter.
-/// This allows [`rill_graph::serialization::from_json`] and similar functions
+/// This allows rill_graph::serialization::from_json and similar functions
 /// to work without the caller providing a registry.
 ///
 /// # Panics

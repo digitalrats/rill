@@ -7,7 +7,7 @@ use rill_core::{
 
 /// Read head — pure tape reader. Reads from the shared [`TapeLoop`] at a
 /// fixed delay. Mono output. Level and pan are handled by a downstream
-/// [`SumNode`](crate::sum_node::SumNode) with per-channel gains.
+/// SumNode with per-channel gains.
 ///
 /// The tape loop is obtained through the graph's resource registry during
 /// node initialization.
@@ -33,15 +33,19 @@ unsafe impl<T: Transcendental, const B: usize> Send for ReadHead<T, B> {}
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Sync for ReadHead<T, B> {}
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for ReadHead<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
+    /// Create a new `ReadHead` with default delay of 0.5 seconds.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("ReadHead", NodeCategory::Source);
         metadata.parameters = vec![
             rill_core::ParamMetadata::new("delay", rill_core::ParamType::Float, ParamValue::Float(0.5))
                 .with_range(0.01, 2.0, 0.01),
         ];
-        let mut outputs = Vec::new();
-        outputs.push(Port::output(NodeId(0), 0, "out"));
+        let outputs = vec![Port::output(NodeId(0), 0, "out")];
         Self {
             id: NodeId(0),
             metadata,

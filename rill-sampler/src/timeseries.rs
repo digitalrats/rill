@@ -32,6 +32,7 @@ pub struct TimeSeriesChannel<T> {
 }
 
 impl<T> TimeSeriesChannel<T> {
+    /// Create a new empty channel with the given name.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -49,10 +50,12 @@ impl<T> TimeSeriesChannel<T> {
         }
     }
 
+    /// Number of samples in this channel.
     pub fn len(&self) -> usize {
         self.timestamps.len()
     }
 
+    /// Returns `true` if the channel has no samples.
     pub fn is_empty(&self) -> bool {
         self.timestamps.is_empty()
     }
@@ -79,6 +82,7 @@ pub struct TimeSeriesReader<T> {
 }
 
 impl<T: Transcendental + Copy> TimeSeriesReader<T> {
+    /// Create an empty reader with nearest-neighbour interpolation.
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
@@ -86,31 +90,38 @@ impl<T: Transcendental + Copy> TimeSeriesReader<T> {
         }
     }
 
+    /// Set the interpolation mode (builder pattern).
     pub fn with_interp(mut self, mode: InterpMode) -> Self {
         self.interp = mode;
         self
     }
 
+    /// Set the interpolation mode.
     pub fn set_interp(&mut self, mode: InterpMode) {
         self.interp = mode;
     }
 
+    /// Return the current interpolation mode.
     pub fn interp_mode(&self) -> InterpMode {
         self.interp
     }
 
+    /// Add a channel to the reader.
     pub fn add_channel(&mut self, channel: TimeSeriesChannel<T>) {
         self.channels.push(channel);
     }
 
+    /// Number of registered channels.
     pub fn num_channels(&self) -> usize {
         self.channels.len()
     }
 
+    /// Immutable access to a channel by index.
     pub fn channel(&self, index: usize) -> Option<&TimeSeriesChannel<T>> {
         self.channels.get(index)
     }
 
+    /// Mutable access to a channel by index.
     pub fn channel_mut(&mut self, index: usize) -> Option<&mut TimeSeriesChannel<T>> {
         self.channels.get_mut(index)
     }
@@ -185,6 +196,7 @@ impl<T: Transcendental + Copy> TimeSeriesReader<T> {
         }
     }
 
+    /// All registered channels as a slice.
     pub fn channels(&self) -> &[TimeSeriesChannel<T>] {
         &self.channels
     }
@@ -216,6 +228,7 @@ pub struct TimeSeriesNode<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental + Copy, const BUF_SIZE: usize> TimeSeriesNode<T, BUF_SIZE> {
+    /// Create a new node with linear interpolation at 100 Hz virtual rate.
     pub fn new() -> Self {
         Self {
             reader: TimeSeriesReader::new().with_interp(InterpMode::Linear),
@@ -229,14 +242,17 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> TimeSeriesNode<T, BUF_SIZE
         }
     }
 
+    /// Immutable reference to the inner reader.
     pub fn reader(&self) -> &TimeSeriesReader<T> {
         &self.reader
     }
 
+    /// Mutable reference to the inner reader.
     pub fn reader_mut(&mut self) -> &mut TimeSeriesReader<T> {
         &mut self.reader
     }
 
+    /// Replace all channels and rebuild output ports.
     pub fn set_channels(&mut self, channels: Vec<TimeSeriesChannel<T>>) {
         self.outputs.clear();
         for (i, ch) in channels.iter().enumerate() {

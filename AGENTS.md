@@ -93,6 +93,7 @@ mdbook serve docs/                # dev server at localhost:3000
     - Prefer internal workspace tools over bringing in new third-party dependencies.
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
+- **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
 - **Versioning:** crates version synchronously (all at 0.4.0). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 
@@ -132,12 +133,9 @@ Any code reached from the process callback — `generate()`, `process()`,
 
 ### Known issues
 
-1. **ALSA backend (`run_alsa_thread`)** uses `thread::sleep(1000μs)` to pace the
-   poll loop. This must be replaced with `poll()` on `snd_pcm_poll_descriptors()`.
-2. **CPAL backend** uses `thread::sleep(interval)` in the same way. Must be
-   replaced with an event‑driven wait (CPAL stream callbacks already fire on
-   their own thread — the processing callback should be driven from the output
-   stream callback, not a timer).
+*(All originally identified RT-safety issues have been fixed — ALSA uses
+`snd_pcm_wait`, CPAL drives processing from its stream callback, and
+no backend uses `thread::sleep` in the audio path.)*
 
 **Testing:** any new RT path code must be verified with `cargo test --release`
 under `pw‑loopback` or similar virtual device to detect xruns.

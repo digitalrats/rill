@@ -1,15 +1,11 @@
 //! Unified oscillators for Rill
 //!
-//! This crate provides all types of oscillators:
-//! - Audio oscillators (20Hz - 20kHz): Sine, Saw, Square, Triangle, Noise, FM
-//! - Control oscillators (0.01Hz - 100Hz): LFO, Envelope, Random, Sample & Hold
-//! - Sync generators: Clock, Trigger, Pulse
+//! Audio-frequency oscillators (20 Hz – 20 kHz): Sine, Saw, Square,
+//! Triangle, Noise, FM synthesis, and wavetable.
 
 #![warn(missing_docs)]
 
 pub mod audio;
-pub mod control;
-pub mod sync;
 
 // Re-export common types for convenience
 pub use audio::*;

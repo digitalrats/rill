@@ -46,7 +46,9 @@ impl<T: Transcendental> TapeLoop<T> {
         })
     }
 
+    /// Maximum capacity in samples.
     pub fn capacity(&self) -> usize { self.capacity }
+    /// Current write cursor position.
     pub fn write_pos(&self) -> usize { self.write_pos }
 
     /// Write a single sample and advance the write cursor.
@@ -60,7 +62,7 @@ impl<T: Transcendental> TapeLoop<T> {
     #[inline(always)]
     pub fn read(&self, delay: usize) -> T {
         let d = delay.min(self.capacity - 1);
-        let read_pos = if self.write_pos >= d + 1 {
+        let read_pos = if self.write_pos > d {
             self.write_pos - 1 - d
         } else {
             self.capacity + self.write_pos - 1 - d

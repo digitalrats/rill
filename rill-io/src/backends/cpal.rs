@@ -1,310 +1,162 @@
-//! CPAL бэкенд (кросс-платформенный)
+//! CPAL бэкенд — callback-driven, без отдельного потока, без crossbeam, без parking_lot.
+//!
+//! Output пишет напрямую в CPAL-буфер через OutputWindow (без ring buffer).
+//! Единственный поток — тот, в котором CPAL дёргает output-коллбэк.
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use parking_lot::RwLock;
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::audio_io::AudioIo;
-use crate::buffer::IoRingBuffer;
-
+use crate::audio_io::{AudioIo, IoResult as AudioIoResult};
 use crate::backend::{AudioBackend, BackendType};
+use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 
-/// Wrapper to make `*mut` `Send` for cross-thread AudioIo access.
-struct SendPtr(*mut Option<Box<dyn Fn()>>);
-unsafe impl Send for SendPtr {}
-unsafe impl Sync for SendPtr {}
-impl Copy for SendPtr {}
-impl Clone for SendPtr {
-    fn clone(&self) -> Self { *self }
+/// Callback slot — stores a `*mut Option<Box<dyn Fn()>>` as `usize`
+/// so the field type itself is `Send`.
+#[derive(Copy, Clone)]
+struct CbSlot(usize);
+unsafe impl Send for CbSlot {}
+unsafe impl Sync for CbSlot {}
+
+impl CbSlot {
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+    }
+
+    unsafe fn set(&self, cb: Box<dyn Fn()>) {
+        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    }
+
+    unsafe fn call(&self) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
+            cb();
+        }
+    }
+
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+    }
 }
 
-// Команды для потока
-#[derive(Debug)]
-enum Command {
-    Init {
-        input_device: Option<String>,
-        output_device: Option<String>,
-    },
-    Start,
-    Stop,
+/// Mutable view into a CPAL output buffer chunk.
+struct OutputWindow {
+    ptr: *mut f32,
+    capacity: usize,
 }
 
-// Сообщения о состоянии
-#[derive(Debug, PartialEq)]
-enum Status {
-    Initialized,
-    Started,
-    Stopped,
-    Error(String),
+impl OutputWindow {
+    fn new(ptr: *mut f32, len: usize) -> Self {
+        Self { ptr, capacity: len }
+    }
+    fn as_mut_slice(&mut self) -> &mut [f32] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
+    }
 }
 
-/// CPAL бэкенд
+/// Lock-free slot for the current output window, set during CPAL callback.
+#[derive(Copy, Clone)]
+struct OutputSlot(*mut Option<OutputWindow>);
+unsafe impl Send for OutputSlot {}
+unsafe impl Sync for OutputSlot {}
+
+impl OutputSlot {
+    fn new() -> Self { Self(Box::into_raw(Box::new(None))) }
+    unsafe fn set(&self, w: OutputWindow) { *self.0 = Some(w); }
+    unsafe fn clear(&self) { *self.0 = None; }
+    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> { (*self.0).as_mut() }
+    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0)); }
+}
+
+/// CPAL бэкенд.
+///
+/// Владеет одним output-стримом. Не создаёт отдельного потока —
+/// обработка живёт в CPAL-коллбэке. Output пишет напрямую в CPAL-буфер.
+///
+/// # Safety
+/// `cpal::Stream` содержит `PhantomData<*mut ()>` → `!Send` на некоторых
+/// платформах. `Send` корректен: `AudioIo` гарантирует последовательный доступ.
 pub struct CpalBackend {
     config: AudioConfig,
-    host: Arc<cpal::Host>,
-    command_tx: Sender<Command>,
-    status_rx: Receiver<Status>,
-    process_cb: SendPtr,
-    xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<IoRingBuffer>>,
-    output_buffer: Arc<RwLock<IoRingBuffer>>,
-    thread_handle: Option<thread::JoinHandle<()>>,
+    process_cb: CbSlot,
+    stream: UnsafeCell<Option<cpal::Stream>>,
+    input_ring: Arc<IoRingBuffer>,
+    output_slot: OutputSlot,
+    xruns: Arc<std::sync::atomic::AtomicU32>,
 }
+
+unsafe impl Send for CpalBackend {}
+unsafe impl Sync for CpalBackend {}
 
 impl fmt::Debug for CpalBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CpalBackend")
             .field("config", &self.config)
-            .field("xruns", &self.xruns)
-            .field("thread_handle", &self.thread_handle.is_some())
+            .field("stream", &unsafe { (*self.stream.get()).is_some() })
             .finish()
     }
 }
 
 impl CpalBackend {
-    /// Создать новый CPAL бэкенд
+    /// Создать новый CPAL бэкенд.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
-        let host = Arc::new(cpal::default_host());
-        let buffer_size = (config.buffer_size * config.output_channels.max(config.input_channels).max(1) * 4) as usize;
-
-        let (command_tx, command_rx) = unbounded();
-        let (status_tx, status_rx) = unbounded();
-
-        let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
-        let xruns = Arc::new(RwLock::new(0));
-        let input_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
-        let output_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
-
-        let thread_cb = SendPtr(process_cb);
-        let thread_host = host.clone();
-        let thread_input = input_buffer.clone();
-        let thread_output = output_buffer.clone();
-        let thread_xruns = xruns.clone();
-        let thread_config = config.clone();
-
-        // Запускаем поток для работы с CPAL
-        let handle = thread::spawn(move || {
-            run_cpal_thread(
-                command_rx,
-                status_tx,
-                thread_cb,
-                thread_host,
-                thread_config,
-                thread_input,
-                thread_output,
-                thread_xruns,
-            );
-        });
-
+        let buf_cap = (config.buffer_size * config.input_channels.max(1) * 4) as usize;
         Ok(Self {
             config,
-            host,
-            command_tx,
-            status_rx,
-            process_cb: SendPtr(process_cb),
-            xruns,
-            input_buffer,
-            output_buffer,
-            thread_handle: Some(handle),
+            process_cb: CbSlot::new(),
+            stream: UnsafeCell::new(None),
+            input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
+            output_slot: OutputSlot::new(),
+            xruns: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         })
     }
 
-    fn wait_for_status(&self, expected: Status) -> IoResult<()> {
-        while let Ok(status) = self.status_rx.recv_timeout(Duration::from_millis(1000)) {
-            match status {
-                Status::Error(e) => return Err(IoError::Backend(e)),
-                s if s == expected => return Ok(()),
-                _ => continue,
-            }
-        }
-        Err(IoError::Timeout)
-    }
-}
+    fn build_streams(&self) -> IoResult<cpal::Stream> {
+        let host = cpal::default_host();
+        let output_device = self.config.output_device.as_deref()
+            .and_then(|name| host.output_devices().ok()?.find(|d| d.name().ok().as_deref() == Some(name)))
+            .or_else(|| host.default_output_device())
+            .ok_or_else(|| IoError::DeviceNotFound("No output device available".into()))?;
 
-// Функция, выполняющаяся в отдельном потоке
-fn run_cpal_thread(
-    command_rx: Receiver<Command>,
-    status_tx: Sender<Status>,
-    process_cb: SendPtr,
-    host: Arc<cpal::Host>,
-    config: AudioConfig,
-    input_buffer: Arc<RwLock<IoRingBuffer>>,
-    output_buffer: Arc<RwLock<IoRingBuffer>>,
-    xruns: Arc<RwLock<u32>>,
-) {
-    let mut input_device: Option<cpal::Device> = None;
-    let mut output_device: Option<cpal::Device> = None;
-    let mut output_stream: Option<cpal::Stream> = None;
-    let mut input_stream: Option<cpal::Stream> = None;
+        let stream_config = cpal::StreamConfig {
+            channels: self.config.output_channels as u16,
+            sample_rate: cpal::SampleRate(self.config.sample_rate),
+            buffer_size: cpal::BufferSize::Default,
+        };
 
-    while let Ok(cmd) = command_rx.recv() {
-        match cmd {
-            Command::Init {
-                input_device: in_name,
-                output_device: out_name,
-            } => {
-                input_device = find_device(&host, in_name.as_deref(), true).ok().flatten();
-                output_device = find_device(&host, out_name.as_deref(), false)
-                    .ok()
-                    .flatten();
+        let xruns = self.xruns.clone();
+        let cb_addr = self.process_cb.0;
+        let oslot = self.output_slot;
 
-                // Очищаем буферы
-                let cap = input_buffer.read().capacity();
-                let zeros = vec![0.0f32; cap];
-                input_buffer.write().write(&zeros);
-                output_buffer.write().write(&zeros);
+        let stream = output_device.build_output_stream(
+            &stream_config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let chunk = 256;  // BUF_SIZE
+                let mut off = 0usize;
 
-                let _ = status_tx.send(Status::Initialized);
-            }
-
-            Command::Start => {
-                // ── Выходной (playback) поток ───────────────────────────────
-                if let Some(dev) = &output_device {
-                    let out_buf = output_buffer.clone();
-                    let xruns_clone = xruns.clone();
-
-                    let stream_config = cpal::StreamConfig {
-                        channels: config.output_channels as u16,
-                        sample_rate: cpal::SampleRate(config.sample_rate),
-                        buffer_size: cpal::BufferSize::Fixed(config.buffer_size),
-                    };
-
-                    match dev.build_output_stream(
-                        &stream_config,
-                        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            let mut out_buf_lock = out_buf.write();
-                            let n = out_buf_lock.read(data);
-                            drop(out_buf_lock);
-                            if n < data.len() {
-                                data[n..].fill(0.0);
-                            }
-                        },
-                        move |err| {
-                            eprintln!("Output stream error: {}", err);
-                            *xruns_clone.write() += 1;
-                        },
-                        None,
-                    ) {
-                        Ok(s) => {
-                            if s.play().is_ok() {
-                                output_stream = Some(s);
-                            } else {
-                                let _ = status_tx.send(Status::Error("Failed to play output stream".into()));
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = status_tx.send(Status::Error(format!("Output stream build: {e}")));
-                            continue;
-                        }
+                while off + chunk * 2 <= data.len() {
+                    unsafe {
+                        oslot.set(OutputWindow::new(data.as_mut_ptr().add(off), chunk * 2));
+                        CbSlot(cb_addr).call();
+                        oslot.clear();
                     }
+                    off += chunk * 2;
                 }
-
-                // ── Входной (capture) поток ─────────────────────────────────
-                if let Some(dev) = &input_device {
-                    let in_buf = input_buffer.clone();
-                    let xruns_clone = xruns.clone();
-
-                    let stream_config = cpal::StreamConfig {
-                        channels: config.input_channels as u16,
-                        sample_rate: cpal::SampleRate(config.sample_rate),
-                        buffer_size: cpal::BufferSize::Fixed(config.buffer_size),
-                    };
-
-                    match dev.build_input_stream(
-                        &stream_config,
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                            let mut in_buf_lock = in_buf.write();
-                            in_buf_lock.write(data);
-                            drop(in_buf_lock);
-                        },
-                        move |err| {
-                            eprintln!("Input stream error: {}", err);
-                            *xruns_clone.write() += 1;
-                        },
-                        None,
-                    ) {
-                        Ok(s) => {
-                            if s.play().is_ok() {
-                                input_stream = Some(s);
-                            } else {
-                                log::warn!("Failed to play input stream — capture may be inactive");
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Input stream build: {e} — capture disabled");
-                        }
-                    }
+                if off < data.len() {
+                    data[off..].fill(0.0);
                 }
+            },
+            move |err| {
+                eprintln!("CPAL output stream error: {}", err);
+                xruns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            },
+            None,
+        ).map_err(|e| IoError::Backend(format!("CPAL output: {e}")))?;
 
-                let _ = status_tx.send(Status::Started);
-
-                // Processing loop: call the graph callback at buffer-sized intervals.
-                let interval = Duration::from_micros(
-                    (config.buffer_size as u64 * 1_000_000 / config.sample_rate as u64).max(1),
-                );
-                let mut running = true;
-                while running {
-                    if let Some(ref cb) = unsafe { &*process_cb.0 } {
-                        cb();
-                    }
-
-                    // Check for stop command (non-blocking).
-                    while let Ok(cmd) = command_rx.try_recv() {
-                        if matches!(cmd, Command::Stop) {
-                            running = false;
-                        }
-                    }
-
-                    thread::sleep(interval);
-                }
-            }
-
-            Command::Stop => {
-                if let Some(s) = output_stream.take() {
-                    let _ = s.pause();
-                }
-                if let Some(s) = input_stream.take() {
-                    let _ = s.pause();
-                }
-                let _ = status_tx.send(Status::Stopped);
-            }
-        }
-    }
-}
-
-fn find_device(
-    host: &cpal::Host,
-    name: Option<&str>,
-    is_input: bool,
-) -> IoResult<Option<cpal::Device>> {
-    let devices = if is_input {
-        host.input_devices()
-    } else {
-        host.output_devices()
-    }
-    .map_err(|e| IoError::DeviceNotFound(e.to_string()))?;
-
-    if let Some(name) = name {
-        for device in devices {
-            if let Ok(dev_name) = device.name() {
-                if dev_name.contains(name) {
-                    return Ok(Some(device));
-                }
-            }
-        }
-        Ok(None)
-    } else if is_input {
-        Ok(host.default_input_device())
-    } else {
-        Ok(host.default_output_device())
+        Ok(stream)
     }
 }
 
@@ -322,63 +174,49 @@ impl AudioBackend for CpalBackend {
     }
 
     fn init(&mut self) -> IoResult<()> {
-        self.command_tx
-            .send(Command::Init {
-                input_device: self.config.input_device.clone(),
-                output_device: self.config.output_device.clone(),
-            })
-            .map_err(|e| IoError::Backend(e.to_string()))?;
-
-        self.wait_for_status(Status::Initialized)
+        self.input_ring.clear_with_zeros();
+        Ok(())
     }
 
     fn start(&mut self) -> IoResult<()> {
-        self.command_tx
-            .send(Command::Start)
-            .map_err(|e| IoError::Backend(e.to_string()))?;
-
-        self.wait_for_status(Status::Started)
+        // AudioIo::start() does the actual work. This path is unused
+        // when the backend is used via AudioOutput (pull model).
+        Ok(())
     }
 
     fn stop(&mut self) -> IoResult<()> {
-        self.command_tx
-            .send(Command::Stop)
-            .map_err(|e| IoError::Backend(e.to_string()))?;
-
-        self.wait_for_status(Status::Stopped)
+        // AudioIo::stop() does the actual work.
+        Ok(())
     }
 
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let mut input_buf = self.input_buffer.write();
-        input_buf.read(buffer);
-        Ok(buffer.len())
+        let n = self.input_ring.read(buffer);
+        Ok(n)
     }
 
-    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        let mut output_buf = self.output_buffer.write();
-        output_buf.write(buffer);
-        Ok(buffer.len())
+    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
+        Ok(0)
     }
 
     fn xruns(&self) -> u32 {
-        *self.xruns.read()
+        self.xruns.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    fn latency(&self) -> Duration {
-        Duration::from_micros(
+    fn latency(&self) -> std::time::Duration {
+        std::time::Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
         )
     }
 
     fn list_input_devices(&self) -> Vec<String> {
-        self.host
+        cpal::default_host()
             .input_devices()
             .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
             .unwrap_or_default()
     }
 
     fn list_output_devices(&self) -> Vec<String> {
-        self.host
+        cpal::default_host()
             .output_devices()
             .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
             .unwrap_or_default()
@@ -387,15 +225,14 @@ impl AudioBackend for CpalBackend {
 
 impl AudioIo for CpalBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { *self.process_cb.0 = Some(cb); }
+        unsafe { self.process_cb.set(cb); }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
         let frames = left.len().min(right.len());
-        let mut buf = self.input_buffer.write();
-        let mut temp = vec![0.0f32; frames * 2];
-        let n = buf.read(&mut temp);
-        drop(buf);
+        let cap = frames.min(256).saturating_mul(2);
+        let mut temp = [0.0f32; 512];
+        let n = self.input_ring.read(&mut temp[..cap]);
         let frames_out = n / 2;
         for i in 0..frames_out.min(frames) {
             left[i] = temp[i * 2];
@@ -405,39 +242,50 @@ impl AudioIo for CpalBackend {
     }
 
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        let frames = left.len().min(right.len());
-        let mut temp = vec![0.0f32; frames * 2];
-        for i in 0..frames {
-            temp[i * 2] = left[i];
-            temp[i * 2 + 1] = right[i];
+        let n = left.len().min(right.len());
+        if let Some(win) = unsafe { self.output_slot.as_mut() } {
+            let cap = win.capacity.min(n * 2);
+            let dst = win.as_mut_slice();
+            for i in 0..(cap / 2) {
+                dst[i * 2] = left[i];
+                dst[i * 2 + 1] = right[i];
+            }
+            cap / 2
+        } else {
+            0
         }
-        let mut buf = self.output_buffer.write();
-        buf.write(&temp) / 2
     }
 
-    fn start(&self) -> crate::audio_io::IoResult<()> {
-        self.command_tx
-            .send(Command::Start)
-            .map_err(|e| format!("{e}"))?;
-        self.wait_for_status(Status::Started)
-            .map_err(|e| format!("{e}"))?;
+    fn start(&self) -> AudioIoResult<()> {
+        // Build stream and start playback.
+        // Using UnsafeCell for interior mutability since AudioIo::start()
+        // takes &self — but this is the only place the stream is created,
+        // always from the control thread, never concurrent with itself.
+        let stream = match self.build_streams() {
+            Ok(s) => s,
+            Err(e) => return Err(format!("CPAL build: {e}")),
+        };
+        stream.play().map_err(|e| format!("CPAL play: {e}"))?;
+        unsafe { *self.stream.get() = Some(stream); }
         Ok(())
     }
 
-    fn stop(&self) -> crate::audio_io::IoResult<()> {
-        self.command_tx
-            .send(Command::Stop)
-            .map_err(|e| format!("{e}"))?;
+    fn stop(&self) -> AudioIoResult<()> {
+        if let Some(s) = unsafe { (*self.stream.get()).take() } {
+            let _ = s.pause();
+        }
         Ok(())
     }
 }
 
 impl Drop for CpalBackend {
     fn drop(&mut self) {
-        let _ = self.command_tx.send(Command::Stop);
-        if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
+        if let Some(s) = unsafe { (*self.stream.get()).take() } {
+            let _ = s.pause();
         }
-        unsafe { drop(Box::from_raw(self.process_cb.0)); }
+        unsafe {
+            self.process_cb.drop_box();
+            self.output_slot.drop_box();
+        }
     }
 }

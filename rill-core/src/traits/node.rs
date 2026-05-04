@@ -123,7 +123,7 @@ pub struct NodeMetadata {
     pub name: String,
 
     /// Canonical type name used for serialization / factory lookup
-    /// (e.g. `Some("rill/sine_osc")`). When `None`, [`name`] is used instead.
+    /// (e.g. `Some("rill/sine_osc")`). When `None`, [`NodeMetadata::name`] is used instead.
     pub type_name: Option<String>,
 
     /// Category of the node

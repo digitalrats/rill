@@ -27,6 +27,10 @@ pub struct Biquad<T: Transcendental> {
 }
 
 impl<T: Transcendental> Biquad<T> {
+    /// Create a new `Biquad` filter with the given parameters.
+    ///
+    /// Coefficients are computed immediately based on the filter type, cutoff,
+    /// Q factor, and gain.
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
             params,

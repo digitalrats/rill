@@ -6,13 +6,20 @@ macro_rules! wdf_compose {
         kind: Series,
         elements: ($left:ty, $right:ty),
     ) => {
+        /// Series composite of two WDF elements.
+        ///
+        /// Port resistance is the sum of element resistances. Incident waves
+        /// are distributed proportionally to each element's resistance share.
         #[derive(Debug, Clone, Copy)]
         pub struct $name<T: $crate::Transcendental> {
+            /// Left (first) WDF element in the series composite.
             pub left: $left,
+            /// Right (second) WDF element in the series composite.
             pub right: $right,
         }
 
         impl<T: $crate::Transcendental> $name<T> {
+            /// Create a new series composite from two WDF elements.
             pub fn new(left: $left, right: $right) -> Self {
                 Self { left, right }
             }
@@ -51,13 +58,21 @@ macro_rules! wdf_compose {
         kind: Parallel,
         elements: ($left:ty, $right:ty),
     ) => {
+        /// Parallel composite of two WDF elements.
+        ///
+        /// Port resistance is the parallel combination
+        /// `(r1 * r2) / (r1 + r2)`. Incident waves are scattered using
+        /// conductance weighting.
         #[derive(Debug, Clone, Copy)]
         pub struct $name<T: $crate::Transcendental> {
+            /// Left (first) WDF element in the parallel composite.
             pub left: $left,
+            /// Right (second) WDF element in the parallel composite.
             pub right: $right,
         }
 
         impl<T: $crate::Transcendental> $name<T> {
+            /// Create a new parallel composite from two WDF elements.
             pub fn new(left: $left, right: $right) -> Self {
                 Self { left, right }
             }

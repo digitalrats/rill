@@ -21,6 +21,10 @@ pub struct FanOutBuffer<T: Transcendental, const N: usize, const CONSUMERS: usiz
 }
 
 impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, N, CONSUMERS> {
+    /// Create a new fan-out buffer.
+    ///
+    /// # Panics
+    /// Panics if `CONSUMERS` is 0.
     pub fn new() -> Self {
         assert!(CONSUMERS > 0, "FanOutBuffer must have at least one consumer");
         Self {
@@ -33,17 +37,17 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
         }
     }
 
+    /// Broadcast data to all consumers.
     #[inline(always)]
     pub fn write(&mut self, data: &[T; N]) {
-        for i in 0..N {
-            self.storage[i] = data[i];
-        }
+        self.storage.copy_from_slice(data);
         self.version += 1;
         self.valid = true;
         self.stats.record_write();
         self.stats.update_peak(1);
     }
 
+    /// Read data for a specific consumer, returning `None` if already read or no data available.
     #[inline(always)]
     pub fn try_read(&mut self, consumer_id: usize) -> Option<[T; N]> {
         if consumer_id >= CONSUMERS {
@@ -55,24 +59,27 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
             return None;
         }
         let mut result = [T::ZERO; N];
-        for i in 0..N {
-            result[i] = self.storage[i];
-        }
+        result.copy_from_slice(&self.storage);
         self.read_versions[consumer_id] = current_version;
         self.stats.record_read();
         Some(result)
     }
 
+    /// Whether unread data exists for the given consumer.
     pub fn has_new_data(&self, consumer_id: usize) -> bool {
         consumer_id < CONSUMERS && self.version != self.read_versions[consumer_id] && self.valid
     }
 
+    /// Number of consumers (const generic parameter).
     pub const fn consumer_count(&self) -> usize { CONSUMERS }
+    /// Current write version.
     pub fn current_version(&self) -> usize { self.version }
+    /// Version last read by a consumer, or `None` if consumer ID is invalid.
     pub fn last_read_version(&self, consumer_id: usize) -> Option<usize> {
         if consumer_id >= CONSUMERS { None } else { Some(self.read_versions[consumer_id]) }
     }
 
+    /// Reset to initial state (invalid, all consumers at version 0).
     pub fn reset(&mut self) {
         self.valid = false;
         self.read_versions.fill(0);
@@ -134,6 +141,10 @@ pub struct FanInBuffer<T: Transcendental, const N: usize, const PRODUCERS: usize
 }
 
 impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N, PRODUCERS> {
+    /// Create a new fan-in buffer.
+    ///
+    /// # Panics
+    /// Panics if `PRODUCERS` is 0.
     pub fn new() -> Self {
         assert!(PRODUCERS > 0, "FanInBuffer must have at least one producer");
         Self {
@@ -146,17 +157,17 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
         }
     }
 
+    /// Write a block of data from one producer.
     #[inline(always)]
     pub fn write(&mut self, producer_id: usize, data: &[T; N]) {
         if producer_id >= PRODUCERS { return; }
-        for i in 0..N {
-            self.storage[producer_id][i] = data[i];
-        }
+        self.storage[producer_id].copy_from_slice(data);
         self.valid[producer_id] = true;
         self.write_seq[producer_id] += 1;
         self.stats.record_write();
     }
 
+    /// Read and sum all producers' data that have new writes since last read.
     #[inline(always)]
     pub fn try_read(&mut self) -> Option<[T; N]> {
         let mut result = [T::ZERO; N];
@@ -168,7 +179,7 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
                 any_valid = true;
                 active_producers += 1;
                 for i in 0..N {
-                    result[i] = result[i] + self.storage[producer][i];
+                    result[i] += self.storage[producer][i];
                 }
             }
         }
@@ -183,18 +194,23 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
         }
     }
 
+    /// Number of producers (const generic parameter).
     pub const fn producer_count(&self) -> usize { PRODUCERS }
 
+    /// Whether a specific producer has unread data.
     pub fn producer_has_data(&self, producer_id: usize) -> bool {
         if producer_id >= PRODUCERS { return false; }
         self.write_seq[producer_id] > self.read_seq && self.valid[producer_id]
     }
 
+    /// Current read sequence counter.
     pub fn read_seq(&self) -> usize { self.read_seq }
+    /// Write sequence counter for a specific producer, or `None` if ID is invalid.
     pub fn write_seq(&self, producer_id: usize) -> Option<usize> {
         if producer_id >= PRODUCERS { None } else { Some(self.write_seq[producer_id]) }
     }
 
+    /// Reset all producers and the read counter.
     pub fn reset(&mut self) {
         self.valid.fill(false);
         self.write_seq.fill(0);
@@ -202,6 +218,7 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
         self.stats.reset();
     }
 
+    /// Clear a specific producer's data without affecting others.
     pub fn clear_producer(&mut self, producer_id: usize) {
         if producer_id < PRODUCERS {
             self.valid[producer_id] = false;

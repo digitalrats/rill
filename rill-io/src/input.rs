@@ -57,15 +57,21 @@ pub struct AudioInput<T: Transcendental, const BUF_SIZE: usize> {
     buf_r: [f32; BUF_SIZE],
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for AudioInput<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
+    /// Create a new `AudioInput` with no backend attached.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("AudioInput", NodeCategory::Source);
         metadata.signal_inputs = 0;
         metadata.signal_outputs = 2;
 
-        let mut outputs = Vec::new();
-        outputs.push(Port::output(NodeId(0), 0, "left"));
-        outputs.push(Port::output(NodeId(0), 1, "right"));
+        let outputs = vec![
+            Port::output(NodeId(0), 0, "left"),
+            Port::output(NodeId(0), 1, "right"),
+        ];
 
         Self {
             id: NodeId(0),
@@ -88,6 +94,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
     /// Supported names: `"null"`, `"alsa"`, `"cpal"`, `"pipewire"`, `"jack"`.
     /// Each backend is available only when its cargo feature is enabled.
     /// `"null"` is always available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IoError::Unsupported` if the name is not recognised, or
+    /// a backend-specific error if the device cannot be opened.
     pub fn init_backend(&mut self, name: &str, config: AudioConfig) -> IoResult<()> {
         match name {
             "null" | "Null" => {
@@ -187,12 +198,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
         }
     }
 
+    /// Stop the audio backend.
     pub fn stop(&mut self) {
         if let Some(b) = self.backend.as_ref() {
             let _ = b.stop();
         }
     }
 
+    /// Check whether a backend has been attached.
     pub fn has_backend(&self) -> bool { self.backend.is_some() }
 }
 
@@ -260,16 +273,14 @@ mod tests {
 
     /// Mock AudioIo backed by IoRingBuffers for testing.
     struct RingIo {
-        input_ring: Arc<parking_lot::RwLock<IoRingBuffer>>,
-        output_ring: Arc<parking_lot::RwLock<IoRingBuffer>>,
+        input_ring: Arc<IoRingBuffer>,
+        output_ring: Arc<IoRingBuffer>,
     }
     impl AudioIo for RingIo {
         fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
         fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
-            let mut ring = self.input_ring.write();
             let mut temp = vec![0.0f32; left.len().min(right.len()).saturating_mul(2)];
-            let n = ring.read(&mut temp);
-            drop(ring);
+            let n = self.input_ring.read(&mut temp);
             let frames = n / 2;
             for i in 0..frames.min(left.len()).min(right.len()) {
                 left[i] = temp[i * 2];
@@ -279,13 +290,12 @@ mod tests {
         }
         fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
             let n = left.len().min(right.len());
-            let mut ring = self.output_ring.write();
             let mut temp = vec![0.0f32; n * 2];
             for i in 0..n {
                 temp[i * 2] = left[i];
                 temp[i * 2 + 1] = right[i];
             }
-            ring.write(&temp) / 2
+            self.output_ring.write(&temp) / 2
         }
         fn start(&self) -> crate::audio_io::IoResult<()> { Ok(()) }
         fn stop(&self) -> crate::audio_io::IoResult<()> { Ok(()) }
@@ -311,8 +321,8 @@ mod tests {
     #[test]
     fn test_loopback_through_rings() {
         const BUF_SZ: usize = 64;
-        let input_ring = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(512)));
-        let output_ring = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(512)));
+        let input_ring = Arc::new(IoRingBuffer::new(512));
+        let output_ring = Arc::new(IoRingBuffer::new(512));
 
         let backend = Box::new(RingIo {
             input_ring: input_ring.clone(),
@@ -330,7 +340,7 @@ mod tests {
             test_block[i * 2] = test_val;       // left
             test_block[i * 2 + 1] = test_val;   // right
         }
-        input_ring.write().write(&test_block);
+        input_ring.write(&test_block);
 
         // Run generate
         let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);

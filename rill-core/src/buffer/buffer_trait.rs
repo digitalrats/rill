@@ -1,38 +1,38 @@
-//! # Buffer trait — абстрактный аудиобуфер
+//! # Buffer trait — abstract audio buffer
 //!
-//! Определяет общий интерфейс для всех типов буферов, используемых
-//! в графе: per-port фиксированные буферы, heap-буферы, TapeLoop.
+//! Defines the common interface for all buffer types used in the signal
+//! graph: per-port fixed buffers, heap-allocated buffers, TapeLoop.
 //!
-//! Размер буфера является внутренней деталью реализации — трейт
-//! не параметризован размером.
+//! Buffer size is an internal implementation detail — the trait is not
+//! parameterised by size.
 
 use core::ops::{Deref, DerefMut};
 
-/// Общий интерфейс для аудиобуферов произвольного размера.
+/// Common interface for audio buffers of arbitrary size.
 ///
-/// Позволяет хранить буферы разных типов и размеров в едином реестре
-/// ресурсов графа (`GraphResources`).
+/// Enables storing buffers of different types and sizes in a single graph
+/// resource registry (`GraphResources`).
 pub trait Buffer<T> {
-    /// Количество сэмплов в буфере.
+    /// Number of samples in the buffer.
     fn len(&self) -> usize;
 
-    /// Буфер пуст?
+    /// Whether the buffer is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Доступ к данным только для чтения.
+    /// Read-only access to the buffer data.
     fn as_slice(&self) -> &[T];
 
-    /// Доступ к данным для записи.
+    /// Mutable access to the buffer data.
     fn as_mut_slice(&mut self) -> &mut [T];
 
-    /// Заполнить весь буфер значением.
+    /// Fill the entire buffer with a value.
     fn fill(&mut self, value: T)
     where
         T: Copy;
 
-    /// Скопировать данные из среза. Копируется `min(src.len(), self.len())` сэмплов.
+    /// Copy data from a slice. Copies `min(src.len(), self.len())` samples.
     fn copy_from(&mut self, src: &[T])
     where
         T: Copy;
@@ -42,25 +42,26 @@ pub trait Buffer<T> {
 // FixedBuffer — compile-time fixed size, stack-allocated
 // ============================================================================
 
-/// Фиксированный буфер на стеке — per-port буфер по умолчанию.
-///
-/// Аналог старого `Buffer<T, SIZE>`.
+/// Fixed-size buffer on the stack — default per-port buffer.
 #[derive(Debug, Clone)]
 pub struct FixedBuffer<T, const SIZE: usize> {
     data: [T; SIZE],
 }
 
 impl<T: Copy + Default, const SIZE: usize> FixedBuffer<T, SIZE> {
+    /// Create a new buffer filled with `T::default()`.
     pub fn new() -> Self {
         Self {
             data: [T::default(); SIZE],
         }
     }
 
+    /// Create a buffer from a fixed-size array.
     pub fn from_array(data: [T; SIZE]) -> Self {
         Self { data }
     }
 
+    /// Create a buffer from a slice, truncating or padding with `T::default()` as needed.
     pub fn from_slice(slice: &[T]) -> Self
     where
         T: Copy,
@@ -71,10 +72,12 @@ impl<T: Copy + Default, const SIZE: usize> FixedBuffer<T, SIZE> {
         Self { data }
     }
 
+    /// Return a reference to the inner array.
     pub fn as_array(&self) -> &[T; SIZE] {
         &self.data
     }
 
+    /// Return a mutable reference to the inner array.
     pub fn as_mut_array(&mut self) -> &mut [T; SIZE] {
         &mut self.data
     }
@@ -138,22 +141,24 @@ impl<T: Default + Copy, const SIZE: usize> Buffer<T> for FixedBuffer<T, SIZE> {
 // HeapBuffer — runtime-sized, heap-allocated
 // ============================================================================
 
-/// Буфер на куче с размером, известным только во время выполнения.
+/// Heap-allocated buffer with runtime-determined size.
 ///
-/// Используется для ресурсов, размер которых определяется из данных
-/// (загруженные сэмплы, конфигурация).
+/// Used for resources whose size is determined from data
+/// (loaded samples, configuration).
 #[derive(Debug, Clone)]
 pub struct HeapBuffer<T> {
     data: Vec<T>,
 }
 
 impl<T: Default + Copy> HeapBuffer<T> {
+    /// Create a new buffer with `size` samples, all initialized to `T::default()`.
     pub fn new(size: usize) -> Self {
         Self {
             data: vec![T::default(); size],
         }
     }
 
+    /// Create a buffer from an existing `Vec`, taking ownership.
     pub fn from_vec(data: Vec<T>) -> Self {
         Self { data }
     }

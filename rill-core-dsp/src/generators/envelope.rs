@@ -7,17 +7,23 @@ use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
-/// Стадия огибающей
+/// Current stage of an envelope generator.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EnvelopeStage {
+    /// Attack phase — level rises from 0 to 1.
     Attack,
+    /// Decay phase — level falls from 1 to sustain level.
     Decay,
+    /// Sustain phase — level holds at the sustain value.
     Sustain,
+    /// Release phase — level falls from sustain to 0.
     Release,
+    /// Off — level is 0 and the envelope is inactive.
     Off,
 }
 
 impl EnvelopeStage {
+    /// Human-readable name of the current stage.
     pub fn name(&self) -> &'static str {
         match self {
             EnvelopeStage::Attack => "Attack",
@@ -29,42 +35,46 @@ impl EnvelopeStage {
     }
 }
 
-/// Тип огибающей
+/// Envelope shape variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EnvelopeType {
-    ADSR, // Attack, Decay, Sustain, Release
-    AR,   // Attack, Release
-    ASR,  // Attack, Sustain, Release
+    /// Attack, Decay, Sustain, Release — the classic four-stage envelope.
+    ADSR,
+    /// Attack, Release — no sustain, for percussive sounds.
+    AR,
+    /// Attack, Sustain, Release — sustain holds until gate-off, for organ sounds.
+    ASR,
 }
 
-/// Генератор огибающей ADSR
+/// Multi-stage envelope generator (ADSR, AR, ASR).
+///
+/// Processes an audio-rate gate signal: values > 0.5 trigger the attack
+/// phase, values ≤ 0.5 trigger the release phase. Output ramps smoothly
+/// between stages.
 pub struct EnvelopeGenerator<T: Transcendental> {
-    /// Тип огибающей
     env_type: EnvelopeType,
-    /// Времена (в секундах)
     attack: f32,
     decay: f32,
     sustain: ScalarVector1<T>,
     release: f32,
-    /// Текущая стадия
     stage: EnvelopeStage,
-    /// Текущий уровень
     level: ScalarVector1<T>,
-    /// Сглаживатель для устранения щелчков
     smoother: Smoother<T>,
-    /// Счётчики в семплах
     attack_samples: usize,
     decay_samples: usize,
     release_samples: usize,
     position: usize,
-    /// Частота дискретизации
     sample_rate: f32,
-    /// Запущена ли
     gate: bool,
 }
 
 impl<T: Transcendental> EnvelopeGenerator<T> {
-    /// Создать новую ADSR огибающую
+    /// Create a new ADSR envelope.
+    ///
+    /// * `attack` — attack time in seconds.
+    /// * `decay` — decay time in seconds.
+    /// * `sustain` — sustain level (0..1).
+    /// * `release` — release time in seconds.
     pub fn adsr(attack: f32, decay: f32, sustain: T, release: f32) -> Self {
         Self {
             env_type: EnvelopeType::ADSR,
@@ -84,7 +94,7 @@ impl<T: Transcendental> EnvelopeGenerator<T> {
         }
     }
 
-    /// Создать новую AR огибающую (для перкуссии)
+    /// Create a new AR (Attack-Release) envelope for percussive sounds.
     pub fn ar(attack: f32, release: f32) -> Self {
         Self {
             env_type: EnvelopeType::AR,
@@ -104,7 +114,7 @@ impl<T: Transcendental> EnvelopeGenerator<T> {
         }
     }
 
-    /// Создать новую ASR огибающую (для орга́нных звуков)
+    /// Create a new ASR (Attack-Sustain-Release) envelope for organ-like sounds.
     pub fn asr(attack: f32, sustain: T, release: f32) -> Self {
         Self {
             env_type: EnvelopeType::ASR,
@@ -131,26 +141,26 @@ impl<T: Transcendental> EnvelopeGenerator<T> {
         self.release_samples = (self.release * self.sample_rate) as usize;
     }
 
-    /// Запустить огибающую (gate on)
+    /// Start the envelope (gate on). Resets to the attack phase.
     pub fn trigger(&mut self) {
         self.gate = true;
         self.stage = EnvelopeStage::Attack;
         self.position = 0;
     }
 
-    /// Отпустить огибающую (gate off)
+    /// Release the envelope (gate off). Enters the release phase.
     pub fn release(&mut self) {
         self.gate = false;
         self.stage = EnvelopeStage::Release;
         self.position = 0;
     }
 
-    /// Получить текущую стадию
+    /// Current envelope stage.
     pub fn stage(&self) -> EnvelopeStage {
         self.stage
     }
 
-    /// Проверить, активна ли огибающая
+    /// Returns `true` if the envelope is not in the `Off` stage.
     pub fn is_active(&self) -> bool {
         self.stage != EnvelopeStage::Off
     }

@@ -39,7 +39,7 @@ The foundation (`rill-core`) provides lock-free queues, `no_std`-compatible math
 
 ## Project Status
 
-Active development — 17 crates, 0.4.0, 300+ tests.
+Active development — 17 crates, 0.5.0-beta.1, 300+ tests.
 
 - [GitHub](https://github.com/DigitalRats/rill)
 - [crates.io](https://crates.io/crates/rill-adrift)

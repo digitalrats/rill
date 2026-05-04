@@ -1,9 +1,16 @@
-//! ALSA бэкенд для Linux
+//! ALSA бэкенд для Linux — без crossbeam, без parking_lot.
+//!
+//! Thread запускается сразу, ждёт `Start` через `Arc<AtomicBool>` +
+//! `thread::park`/`unpark`. После старта — event-driven ALSA loop
+//! (`snd_pcm_wait`), никакого `thread::sleep`.
+//!
+//! Все буферы в RT-пути — стековые фиксированного размера.
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use parking_lot::RwLock;
+const MAX_BLOCK_SAMPLES: usize = 8192;
+
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -17,397 +24,268 @@ use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 
-/// Wrapper to make `*mut` `Send` for cross-thread AudioIo access.
-struct SendPtr(*mut Option<Box<dyn Fn()>>);
-unsafe impl Send for SendPtr {}
-unsafe impl Sync for SendPtr {}
-impl Copy for SendPtr {}
-impl Clone for SendPtr {
-    fn clone(&self) -> Self { *self }
-}
+/// Callback slot — `*mut Option<Box<dyn Fn()>>` as `usize` (Send-friendly).
+#[derive(Copy, Clone)]
+struct CbSlot(usize);
+unsafe impl Send for CbSlot {}
+unsafe impl Sync for CbSlot {}
 
-/// Команды для ALSA потока
-#[derive(Debug)]
-enum AlsaCommand {
-    Start,
-    Stop,
-}
-
-/// Состояние ALSA потока
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum AlsaState {
-    Stopped,
-    Running,
-    Error,
+impl CbSlot {
+    fn new() -> Self { Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize) }
+    unsafe fn set(&self, cb: Box<dyn Fn()>) { (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb); }
+    unsafe fn call(&self) { if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) { cb(); } }
+    unsafe fn drop_box(&self) { drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>)); }
 }
 
 /// ALSA бэкенд
 pub struct AlsaBackend {
     config: AudioConfig,
-    command_tx: Sender<AlsaCommand>,
-    process_cb: SendPtr,
-    xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<IoRingBuffer>>,
-    output_buffer: Arc<RwLock<IoRingBuffer>>,
+    process_cb: CbSlot,
+    xruns: Arc<AtomicU32>,
+    input_buffer: Arc<IoRingBuffer>,
+    output_buffer: Arc<IoRingBuffer>,
     thread_handle: Option<thread::JoinHandle<()>>,
-    state: Arc<RwLock<AlsaState>>,
-    device_name: Arc<RwLock<String>>,
+    running: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+    device_name: Arc<Mutex<String>>,
 }
+
+// Send+Sync: AudioIo требует Send, доступ последовательный.
+unsafe impl Send for AlsaBackend {}
+unsafe impl Sync for AlsaBackend {}
 
 impl fmt::Debug for AlsaBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AlsaBackend")
             .field("config", &self.config)
-            .field("xruns", &self.xruns)
-            .field("state", &self.state.read().clone())
-            .field("device_name", &self.device_name.read().clone())
+            .field("running", &self.running.load(Ordering::Relaxed))
             .field("thread_handle", &self.thread_handle.is_some())
             .finish()
     }
 }
 
 impl AlsaBackend {
-    /// Создать новый ALSA бэкенд
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         let buffer_size = (config.buffer_size * config.output_channels * 4) as usize;
-        let (command_tx, command_rx) = unbounded();
-
-        let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
-        let xruns = Arc::new(RwLock::new(0));
-        let input_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
-        let output_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
-        let state = Arc::new(RwLock::new(AlsaState::Stopped));
-        let device_name = Arc::new(RwLock::new(
-            config
-                .output_device
-                .clone()
-                .unwrap_or_else(|| "default".to_string()),
+        let xruns = Arc::new(AtomicU32::new(0));
+        let input_buffer = Arc::new(IoRingBuffer::new(buffer_size));
+        let output_buffer = Arc::new(IoRingBuffer::new(buffer_size));
+        let running = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let device_name = Arc::new(Mutex::new(
+            config.output_device.clone().unwrap_or_else(|| "default".to_string()),
         ));
 
-        let thread_cb = SendPtr(process_cb);
+        let process_cb = CbSlot::new();
+        let thread_cb = process_cb;
         let thread_xruns = xruns.clone();
         let thread_input = input_buffer.clone();
         let thread_output = output_buffer.clone();
-        let thread_state = state.clone();
         let thread_config = config.clone();
+        let thread_running = running.clone();
+        let thread_started = started.clone();
         let thread_device_name = device_name.clone();
 
-        // Запускаем поток для работы с ALSA
         let handle = thread::spawn(move || {
-            run_alsa_thread(
-                command_rx,
-                thread_cb,
-                thread_xruns,
-                thread_input,
-                thread_output,
-                thread_state,
-                thread_config,
-                thread_device_name,
+            alsa_thread(
+                thread_cb, thread_xruns, thread_input, thread_output,
+                thread_config, thread_running, thread_started, thread_device_name,
             );
         });
 
         Ok(Self {
             config,
-            command_tx,
-            process_cb: SendPtr(process_cb),
+            process_cb,
             xruns,
             input_buffer,
             output_buffer,
             thread_handle: Some(handle),
-            state,
+            running,
+            started,
             device_name,
         })
     }
-
-    /// Установить имя устройства
-    pub fn with_device(self, device: &str) -> Self {
-        *self.device_name.write() = device.to_string();
-        self
-    }
-
-    /// Получить состояние
-    #[allow(dead_code)]
-    pub(crate) fn state(&self) -> AlsaState {
-        *self.state.read()
-    }
 }
 
-// Функция, выполняющаяся в отдельном потоке
-fn run_alsa_thread(
-    command_rx: Receiver<AlsaCommand>,
-    process_cb: SendPtr,
-    xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<IoRingBuffer>>,
-    output_buffer: Arc<RwLock<IoRingBuffer>>,
-    state: Arc<RwLock<AlsaState>>,
+fn alsa_thread(
+    process_cb: CbSlot,
+    xruns: Arc<AtomicU32>,
+    input_buffer: Arc<IoRingBuffer>,
+    output_buffer: Arc<IoRingBuffer>,
     config: AudioConfig,
-    device_name: Arc<RwLock<String>>,
+    running: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+    device_name: Arc<Mutex<String>>,
 ) {
-    while let Ok(cmd) = command_rx.recv() {
-        match cmd {
-            AlsaCommand::Start => {
-                let dev_name = device_name.read().clone();
+    // Ждём первого Start (unpark от start()).
+    loop {
+        thread::park();
+        if running.load(Ordering::Acquire) {
+            break;
+        }
+    }
 
-                // Открываем PCM playback устройство
-                let pcm_playback = match PCM::new(&dev_name, Direction::Playback, false) {
-                    Ok(pcm) => pcm,
-                    Err(e) => {
-                        eprintln!("Failed to open ALSA playback device {}: {}", dev_name, e);
-                        *state.write() = AlsaState::Error;
-                        continue;
-                    }
-                };
+    let dev_name = device_name.lock().unwrap().clone();
 
-                // Открываем PCM capture устройство (если нужны входные каналы)
-                let pcm_capture: Option<PCM> = if config.input_channels > 0 {
-                    match PCM::new(&dev_name, Direction::Capture, false) {
-                        Ok(pcm) => Some(pcm),
-                        Err(e) => {
-                            log::warn!("Failed to open ALSA capture device {}: {} — capture disabled", dev_name, e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
+    let pcm_playback = match PCM::new(&dev_name, Direction::Playback, false) {
+        Ok(pcm) => pcm,
+        Err(e) => {
+            eprintln!("ALSA open {}: {}", dev_name, e);
+            return;
+        }
+    };
 
-                // Настраиваем параметры playback
-                if let Err(e) = configure_alsa_pcm(&pcm_playback, config.output_channels, &config) {
-                    eprintln!("Failed to configure ALSA playback: {}", e);
-                    *state.write() = AlsaState::Error;
-                    continue;
+    let pcm_capture: Option<PCM> = if config.input_channels > 0 {
+        match PCM::new(&dev_name, Direction::Capture, false) {
+            Ok(pcm) => Some(pcm),
+            Err(e) => {
+                log::warn!("ALSA capture {}: {} — disabled", dev_name, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Err(e) = configure_pcm(&pcm_playback, config.output_channels, &config) {
+        eprintln!("ALSA configure playback: {}", e);
+        return;
+    }
+    if let Some(ref pcm) = pcm_capture {
+        if let Err(e) = configure_pcm(pcm, config.input_channels, &config) {
+            log::warn!("ALSA configure capture: {} — disabled", e);
+        }
+    }
+
+    if let Err(e) = pcm_playback.start() {
+        eprintln!("ALSA start: {}", e);
+        return;
+    }
+    if let Some(ref pcm) = pcm_capture {
+        let _ = pcm.start();
+    }
+
+    started.store(true, Ordering::Release);
+
+    let out_buffer_size = (config.buffer_size * config.output_channels) as usize;
+    let in_buffer_size = (config.buffer_size * config.input_channels) as usize;
+    let out_sz = out_buffer_size.min(MAX_BLOCK_SAMPLES);
+    let in_sz = in_buffer_size.max(1).min(MAX_BLOCK_SAMPLES);
+    let mut pb = [0i16; MAX_BLOCK_SAMPLES];
+    let mut cb = [0i16; MAX_BLOCK_SAMPLES];
+
+    while running.load(Ordering::Acquire) {
+        match pcm_playback.wait(None) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                eprintln!("ALSA wait: {}", e);
+                if let Err(r) = pcm_playback.try_recover(e, true) {
+                    eprintln!("ALSA recover failed: {}", r);
+                    break;
                 }
+                continue;
+            }
+        }
 
-                // Настраиваем параметры capture
-                if let Some(ref pcm) = pcm_capture {
-                    if let Err(e) = configure_alsa_pcm(pcm, config.input_channels, &config) {
-                        log::warn!("Failed to configure ALSA capture: {} — capture disabled", e);
-                        // Продолжаем без захвата
+        // Capture → input ring
+        if let Some(ref pcm) = pcm_capture {
+            if let Ok(io) = pcm.io_i16() {
+                if let Ok(n_read) = io.readi(&mut cb[..in_sz]) {
+                    let n = (n_read * config.input_channels as usize).min(in_sz);
+                    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
+                    for (i, s) in cb[..n].iter().enumerate() {
+                        temp[i] = *s as f32 / 32768.0;
                     }
-                }
-
-                // Запускаем воспроизведение
-                if let Err(e) = pcm_playback.start() {
-                    eprintln!("Failed to start ALSA playback: {}", e);
-                    *state.write() = AlsaState::Error;
-                    continue;
-                }
-
-                // Запускаем захват
-                if let Some(ref pcm) = pcm_capture {
-                    if let Err(e) = pcm.start() {
-                        log::warn!("Failed to start ALSA capture: {} — capture disabled", e);
-                    }
-                }
-
-                let mut running = true;
-                *state.write() = AlsaState::Running;
-
-                let out_buffer_size = (config.buffer_size * config.output_channels) as usize;
-                let in_buffer_size = (config.buffer_size * config.input_channels) as usize;
-                let mut playback_buffer = vec![0i16; out_buffer_size];
-                let mut capture_buffer = vec![0i16; in_buffer_size.max(1)];
-
-                while running {
-                    // Wait until playback needs more data (event-driven, no sleep).
-                    match pcm_playback.wait(None) {
-                        Ok(true) => {}
-                        Ok(false) => continue,  // spurious wake, retry
-                        Err(e) => {
-                            eprintln!("ALSA playback wait error: {}", e);
-                            if let Err(recover_err) = pcm_playback.try_recover(e, true) {
-                                eprintln!("Failed to recover ALSA playback: {}", recover_err);
-                                running = false;
-                            }
-                            continue;
-                        }
-                    }
-
-                    // ── Capture: читаем из ALSA → input ring ────────────────
-                    if let Some(ref pcm) = pcm_capture {
-                        match pcm.io_i16() {
-                            Ok(io) => {
-                                match io.readi(&mut capture_buffer) {
-                                    Ok(n_read) => {
-                                        let n = n_read * config.input_channels as usize;
-                                        let mut temp = vec![0.0f32; n];
-                                        for (i, sample) in capture_buffer[..n].iter().enumerate() {
-                                            temp[i] = *sample as f32 / 32768.0;
-                                        }
-                                        let mut input = input_buffer.write();
-                                        input.write(&temp);
-                                        drop(input);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("ALSA capture error: {}", e);
-                                        *xruns.write() += 1;
-                                        if let Err(recover_err) = pcm.try_recover(e, true) {
-                                            eprintln!("Failed to recover ALSA capture: {}", recover_err);
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to get ALSA capture IO: {}", e);
-                                *xruns.write() += 1;
-                            }
-                        }
-                    }
-
-                    // ── Process callback: drives the signal graph ────────────
-                    if let Some(ref cb) = unsafe { &*process_cb.0 } {
-                        cb();
-                    }
-
-                    // ── Playback: читаем из output ring → ALSA ──────────────
-                    {
-                        let mut output = output_buffer.write();
-                        let mut temp = vec![0.0f32; out_buffer_size];
-                        let n = output.read(&mut temp);
-                        drop(output);
-
-                        for (i, sample) in playback_buffer.iter_mut().enumerate() {
-                            *sample = if i < n {
-                                (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16
-                            } else {
-                                0
-                            };
-                        }
-                    }
-
-                    match pcm_playback.io_i16() {
-                        Ok(io) => {
-                            match io.writei(&playback_buffer) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    eprintln!("ALSA playback error: {}", e);
-                                    *xruns.write() += 1;
-                                    if let Err(recover_err) = pcm_playback.try_recover(e, true) {
-                                        eprintln!("Failed to recover ALSA playback: {}", recover_err);
-                                        running = false;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to get ALSA playback IO: {}", e);
-                            *xruns.write() += 1;
-                        }
-                    }
-
-                    // Проверяем команды без блокировки
-                    while let Ok(cmd) = command_rx.try_recv() {
-                        match cmd {
-                            AlsaCommand::Stop => {
-                                running = false;
-                            }
-                            AlsaCommand::Start => {}
-                        }
-                    }
-                }
-
-                let _ = pcm_playback.drain();
-                if let Some(ref pcm) = pcm_capture {
-                    let _ = pcm.drain();
+                    input_buffer.write(&temp[..n]);
                 }
             }
+        }
 
-            AlsaCommand::Stop => {
-                *state.write() = AlsaState::Stopped;
+        // Process graph
+        unsafe { process_cb.call(); }
+
+        // Output ring → ALSA
+        {
+            let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
+            let n = output_buffer.read(&mut temp[..out_sz]);
+            for i in 0..out_sz {
+                pb[i] = if i < n { (temp[i].clamp(-1.0, 1.0) * 32767.0) as i16 } else { 0 };
+            }
+        }
+
+        if let Ok(io) = pcm_playback.io_i16() {
+            if let Err(e) = io.writei(&pb) {
+                eprintln!("ALSA write: {}", e);
+                xruns.fetch_add(1, Ordering::Relaxed);
+                let _ = pcm_playback.try_recover(e, true);
             }
         }
     }
+
+    let _ = pcm_playback.drain();
+    if let Some(ref pcm) = pcm_capture {
+        let _ = pcm.drain();
+    }
 }
 
-// Настройка параметров ALSA PCM
-fn configure_alsa_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()> {
-    let hw_params = HwParams::any(pcm).map_err(|e| IoError::Config(e.to_string()))?;
-
-    // Устанавливаем параметры
-    hw_params
-        .set_access(Access::RWInterleaved)
-        .map_err(|e| IoError::Config(e.to_string()))?;
-
-    hw_params
-        .set_format(Format::s16())
-        .map_err(|e| IoError::Config(e.to_string()))?;
-
-    hw_params
-        .set_rate(config.sample_rate, ValueOr::Nearest)
-        .map_err(|e| IoError::Config(e.to_string()))?;
-
-    hw_params
-        .set_channels(channels)
-        .map_err(|e| IoError::Config(e.to_string()))?;
-
-    // Устанавливаем размер буфера
-    hw_params
-        .set_buffer_size(config.buffer_size as alsa::pcm::Frames)
-        .map_err(|e| IoError::Config(e.to_string()))?;
-
-    // Применяем параметры
-    pcm.hw_params(&hw_params)
-        .map_err(|e| IoError::Config(e.to_string()))?;
-
+fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()> {
+    let hw = HwParams::any(pcm).map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_access(Access::RWInterleaved).map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_format(Format::s16()).map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_rate(config.sample_rate, ValueOr::Nearest).map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_channels(channels).map_err(|e| IoError::Config(e.to_string()))?;
+    hw.set_buffer_size(config.buffer_size as alsa::pcm::Frames).map_err(|e| IoError::Config(e.to_string()))?;
+    pcm.hw_params(&hw).map_err(|e| IoError::Config(e.to_string()))?;
     Ok(())
 }
 
 impl AudioBackend for AlsaBackend {
-    fn backend_type(&self) -> BackendType {
-        BackendType::Alsa
-    }
-
-    fn config(&self) -> &AudioConfig {
-        &self.config
-    }
-
-    fn config_mut(&mut self) -> &mut AudioConfig {
-        &mut self.config
-    }
+    fn backend_type(&self) -> BackendType { BackendType::Alsa }
+    fn config(&self) -> &AudioConfig { &self.config }
+    fn config_mut(&mut self) -> &mut AudioConfig { &mut self.config }
 
     fn init(&mut self) -> IoResult<()> {
-        // Очищаем буферы
-        let cap = self.input_buffer.read().capacity();
+        let cap = self.input_buffer.capacity();
         let zeros = vec![0.0f32; cap];
-        self.input_buffer.write().write(&zeros);
-        self.output_buffer.write().write(&zeros);
-
+        self.input_buffer.write(&zeros);
+        self.output_buffer.write(&zeros);
         Ok(())
     }
 
     fn start(&mut self) -> IoResult<()> {
-        self.command_tx
-            .send(AlsaCommand::Start)
-            .map_err(|e| IoError::Backend(e.to_string()))?;
+        self.running.store(true, Ordering::Release);
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
+        // Ждём, пока тред подтвердит старт
+        while !self.started.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
         Ok(())
     }
 
     fn stop(&mut self) -> IoResult<()> {
-        self.command_tx
-            .send(AlsaCommand::Stop)
-            .map_err(|e| IoError::Backend(e.to_string()))?;
-
-        // Даем время потоку остановиться
-        thread::sleep(Duration::from_millis(10));
-
+        self.running.store(false, Ordering::Release);
+        self.started.store(false, Ordering::Release);
+        // unpark, чтобы тред проснулся и вышел из wait
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
         Ok(())
     }
 
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let mut input_buf = self.input_buffer.write();
-        input_buf.read(buffer);
-        Ok(buffer.len())
+        let n = self.input_buffer.read(buffer);
+        Ok(n)
     }
 
     fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        let mut output_buf = self.output_buffer.write();
-        output_buf.write(buffer);
-        Ok(buffer.len())
+        let n = self.output_buffer.write(buffer);
+        Ok(n)
     }
 
-    fn xruns(&self) -> u32 {
-        *self.xruns.read()
-    }
+    fn xruns(&self) -> u32 { self.xruns.load(Ordering::Acquire) }
 
     fn latency(&self) -> Duration {
         Duration::from_micros(
@@ -416,39 +294,26 @@ impl AudioBackend for AlsaBackend {
     }
 
     fn list_input_devices(&self) -> Vec<String> {
-        // В ALSA обычно используем "default", "hw:0,0", "plughw:0,0" и т.д.
-        vec![
-            "default".to_string(),
-            "hw:0,0".to_string(),
-            "hw:1,0".to_string(),
-            "plughw:0,0".to_string(),
-            "plughw:1,0".to_string(),
-        ]
+        vec!["default".to_string(), "hw:0,0".to_string(), "hw:1,0".to_string(),
+             "plughw:0,0".to_string(), "plughw:1,0".to_string()]
     }
 
     fn list_output_devices(&self) -> Vec<String> {
-        vec![
-            "default".to_string(),
-            "hw:0,0".to_string(),
-            "hw:1,0".to_string(),
-            "plughw:0,0".to_string(),
-            "plughw:1,0".to_string(),
-            "dmix:0".to_string(),
-        ]
+        vec!["default".to_string(), "hw:0,0".to_string(), "hw:1,0".to_string(),
+             "plughw:0,0".to_string(), "plughw:1,0".to_string(), "dmix:0".to_string()]
     }
 }
 
 impl AudioIo for AlsaBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
-        unsafe { *self.process_cb.0 = Some(cb); }
+        unsafe { self.process_cb.set(cb); }
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
         let frames = left.len().min(right.len());
-        let mut buf = self.input_buffer.write();
-        let mut temp = vec![0.0f32; frames * 2];
-        let n = buf.read(&mut temp);
-        drop(buf);
+        let cap = frames.min(256).saturating_mul(2);
+        let mut temp = [0.0f32; 512];
+        let n = self.input_buffer.read(&mut temp[..cap]);
         let frames_out = n / 2;
         for i in 0..frames_out.min(frames) {
             left[i] = temp[i * 2];
@@ -459,37 +324,39 @@ impl AudioIo for AlsaBackend {
 
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
         let frames = left.len().min(right.len());
-        let mut temp = vec![0.0f32; frames * 2];
-        for i in 0..frames {
+        let cap = frames.min(256).saturating_mul(2);
+        let mut temp = [0.0f32; 512];
+        for i in 0..(cap / 2) {
             temp[i * 2] = left[i];
             temp[i * 2 + 1] = right[i];
         }
-        let mut buf = self.output_buffer.write();
-        buf.write(&temp) / 2
+        self.output_buffer.write(&temp[..cap]) / 2
     }
 
     fn start(&self) -> crate::audio_io::IoResult<()> {
-        self.command_tx
-            .send(AlsaCommand::Start)
-            .map_err(|e| format!("{e}"))?;
+        self.running.store(true, Ordering::Release);
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
         Ok(())
     }
 
     fn stop(&self) -> crate::audio_io::IoResult<()> {
-        self.command_tx
-            .send(AlsaCommand::Stop)
-            .map_err(|e| format!("{e}"))?;
+        self.running.store(false, Ordering::Release);
+        self.started.store(false, Ordering::Release);
         Ok(())
     }
 }
 
 impl Drop for AlsaBackend {
     fn drop(&mut self) {
-        let _ = self.command_tx.send(AlsaCommand::Stop);
+        self.running.store(false, Ordering::Release);
+        if let Some(handle) = &self.thread_handle {
+            handle.thread().unpark();
+        }
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
-        // Free the heap-allocated callback slot.
-        unsafe { drop(Box::from_raw(self.process_cb.0)); }
+        unsafe { self.process_cb.drop_box(); }
     }
 }

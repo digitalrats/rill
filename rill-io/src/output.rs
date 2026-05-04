@@ -19,7 +19,7 @@ use crate::audio_io::AudioIoPtr;
 
 /// Stereo audio output sink. Writes to backend's output buffer in `consume()`.
 ///
-/// In pull model (active Sink), [`source_idx`](Self::set_source_idx) must be
+/// In pull model (active Sink), [`set_active`](AudioOutput::set_active) must be
 /// set to the graph index of the Source node that drives the processing.
 /// Then [`start`](Self::start) drives the graph from that Source.
 pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
@@ -34,15 +34,21 @@ pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
     source_idx: usize,
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for AudioOutput<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
+    /// Create a new `AudioOutput` with no backend attached.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("AudioOutput", NodeCategory::Sink);
         metadata.signal_inputs = 2;
         metadata.signal_outputs = 0;
 
-        let mut inputs = Vec::new();
-        inputs.push(Port::input(NodeId(0), 0, "left"));
-        inputs.push(Port::input(NodeId(0), 1, "right"));
+        let inputs = vec![
+            Port::input(NodeId(0), 0, "left"),
+            Port::input(NodeId(0), 1, "right"),
+        ];
 
         Self {
             id: NodeId(0),
@@ -55,6 +61,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
         }
     }
 
+    /// Attach a borrowed backend pointer.
     pub fn set_backend(&mut self, backend: AudioIoPtr) {
         self.backend = backend;
     }

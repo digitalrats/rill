@@ -1,6 +1,6 @@
 [package]
 name = "rill-graph"
-version = "0.4.0"
+version = "0.5.0-beta.1"
 edition = "2021"
 description = "Real-time audio graph with block processing"
 license.workspace = true
@@ -9,7 +9,6 @@ repository.workspace = true
 
 [dependencies]
 rill-core = { workspace = true }
-crossbeam-channel = "0.5"
 
 log = "0.4"
 

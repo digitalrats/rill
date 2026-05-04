@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// A named function that can be referenced from serialized [`MappingDef`](crate::document::MappingDef)
-/// and [`ServoDef`](crate::document::ServoDef) instead of a raw closure.
+/// A named function that can be referenced from serialized MappingDef
+/// and ServoDef instead of a raw closure.
 ///
 /// Each function takes an input value plus a parameter map and returns a mapped value.
 pub type NamedFunction = Arc<dyn Fn(f64, &HashMap<String, f64>) -> f64 + Send + Sync>;

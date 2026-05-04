@@ -2,6 +2,7 @@ use crate::math::Transcendental;
 
 /// Fractional-index reading with interpolation.
 pub trait Interpolate {
+    /// The type produced by interpolation.
     type Output;
 
     /// Linear interpolation at fractional index.

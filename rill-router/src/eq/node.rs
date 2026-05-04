@@ -8,7 +8,7 @@ use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 use super::{BandType, FilterFactory, GraphicEq, ParametricEq};
 
-/// Default factory that creates Biquad<f32> filters.
+/// Default factory that creates `Biquad<f32>` filters.
 #[derive(Debug, Clone, Default)]
 pub struct BiquadFactory;
 
@@ -115,7 +115,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE
 
     /// Set output gain (linear).
     pub fn set_output_gain(&mut self, gain: f32) {
-        self.output_gain = gain.max(0.0).min(4.0);
+        self.output_gain = gain.clamp(0.0, 4.0);
         self.eq.set_output_gain(self.output_gain);
     }
 
@@ -475,7 +475,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
 
     /// Set output gain (linear).
     pub fn set_output_gain(&mut self, gain: f32) {
-        self.output_gain = gain.max(0.0).min(4.0);
+        self.output_gain = gain.clamp(0.0, 4.0);
         self.eq.set_output_gain(self.output_gain);
     }
 

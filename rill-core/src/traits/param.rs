@@ -365,7 +365,7 @@ impl ParamMetadata {
 /// whatever named parameters it supports. This is intentionally
 /// open-ended — no fixed schema, no required fields.
 ///
-/// See [`NodeConstructor`] (in `rill-graph`) for how builder uses this.
+/// See `NodeConstructor` (in `rill-graph`) for how builder uses this.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeParams {

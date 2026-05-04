@@ -10,10 +10,15 @@
 
 #![warn(missing_docs)]
 
+/// Delay effect with configurable time, feedback, and mix.
 pub mod delay;
+/// Waveshaping distortion with multiple algorithm types.
 pub mod distortion;
+/// Lookahead limiter with configurable threshold and release.
 pub mod limiter;
+/// Tape read head for delay-line playback.
 pub mod read_head;
+/// Tape write head for delay-line recording with feedback.
 pub mod write_head;
 
 pub use delay::Delay;

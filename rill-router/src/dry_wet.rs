@@ -4,6 +4,15 @@ use rill_core::{
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
+/// Processor that blends a dry and a wet signal into a stereo output.
+///
+/// Each sample is computed as `(dry_in * dry_gain + wet_in * wet_gain) * master_gain`
+/// and sent to both left and right outputs.
+///
+/// # Parameters
+/// - `dry`    (0.0 – 1.0)
+/// - `wet`    (0.0 – 1.0)
+/// - `master` (0.0 – 2.0)
 pub struct DryWetMix<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
@@ -16,7 +25,12 @@ pub struct DryWetMix<T: Transcendental, const BUF_SIZE: usize> {
     master: f32,
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for DryWetMix<T, BUF_SIZE> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
+    /// Create a new `DryWetMix` with unity dry gain, 0.5 wet gain, and unity master.
     pub fn new() -> Self {
         let mut metadata = NodeMetadata::new("DryWetMix", NodeCategory::Processor);
         metadata.parameters = vec![

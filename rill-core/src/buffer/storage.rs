@@ -1,68 +1,59 @@
-//! # Безопасная атомарная ячейка
+//! # Safe atomic cell
 //!
-//! Предоставляет безопасную обертку вокруг `UnsafeCell` с полностью безопасным API.
-//! Конструктор гарантирует корректную инициализацию, а в случае невозможности
-//! создания вызывает panic (так как продолжение работы невозможно).
+//! Provides a safe wrapper around `UnsafeCell` with a fully safe API.
+//! The constructor guarantees correct initialisation; if creation is impossible
+//! it panics (since continued operation is not possible).
 
 use std::cell::UnsafeCell;
 use std::fmt;
 
-/// Атомарная ячейка с полностью безопасным API
+/// Atomic cell with a fully safe API.
 ///
-/// # Безопасность
-/// - Конструктор гарантирует корректную инициализацию
-/// - Все операции с памятью инкапсулированы
-/// - Паника при невозможности создания (системная ошибка)
+/// Wraps `UnsafeCell` to provide interior mutability without requiring `T: Default`.
+///
+/// # Safety
+/// - The constructor guarantees correct initialisation.
+/// - All memory operations are encapsulated.
+/// - Panics if creation is impossible (system error).
 #[repr(transparent)]
 pub struct AtomicCell<T> {
-    /// The actual storage, using `UnsafeCell` for interior mutability
-    /// and `MaybeUninit` to avoid requiring `T: Default`
     inner: UnsafeCell<T>,
 }
 
 #[allow(unsafe_code)]
 impl<T> AtomicCell<T> {
-    /// Безопасно загрузить значение
-    ///
-    /// # Safety
-    /// Этот метод безопасен, так как:
-    /// - Вызывается только когда нет одновременной записи
-    /// - Использует правильные гарантии памяти
+    /// Load the value (requires no concurrent writes).
     #[inline]
     pub fn load(&self) -> T
     where
         T: Copy,
     {
         // SAFETY:
-        // - Вызывающий код гарантирует отсутствие одновременной записи
-        // - Relaxed ordering достаточен для наших целей
-        // - Значение всегда корректно инициализировано
+        // - The caller guarantees no concurrent write.
+        // - Relaxed ordering is sufficient.
+        // - The value is always correctly initialised.
         unsafe { *self.inner.get() }
     }
 
-    /// Безопасно сохранить значение
-    ///
-    /// # Safety
-    /// Этот метод безопасен, так как:
-    /// - Гарантируется уникальный доступ для записи
-    /// - Нет одновременного чтения
+    /// Store a new value (requires unique write access, no concurrent reads).
     #[inline]
     pub fn store(&self, value: T) {
         // SAFETY:
-        // - Гарантируется уникальный доступ для записи
-        // - Значение корректно инициализировано
-        // - Relaxed ordering достаточен
+        // - Unique write access is guaranteed.
+        // - The value is correctly initialised.
+        // - Relaxed ordering is sufficient.
         unsafe {
             *self.inner.get() = value;
         }
     }
 
-    /// Получить указатель на данные (для совместимости)
+    /// Get a raw pointer to the data (for compatibility).
     #[inline]
     pub fn as_ptr(&self) -> *mut T {
         self.inner.get()
     }
 
+    /// Create a new atomic cell.
     #[inline]
     pub const fn new(value: T) -> Self {
         Self {
@@ -70,7 +61,10 @@ impl<T> AtomicCell<T> {
         }
     }
 
-    /// Создать новую атомарную ячейку с проверкой
+    /// Create a new atomic cell with validation.
+    ///
+    /// # Errors
+    /// Returns `AtomicCellError::TypeTooLarge` if the type is too large.
     pub fn try_new(value: T) -> Result<Self, AtomicCellError> {
         if std::mem::size_of::<T>() > isize::MAX as usize {
             return Err(AtomicCellError::TypeTooLarge);
@@ -99,12 +93,12 @@ impl<T: Default> Default for AtomicCell<T> {
     }
 }
 
-/// Ошибки создания атомарной ячейки
+/// Errors that can occur when creating an [`AtomicCell`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtomicCellError {
-    /// Тип слишком большой для атомарной ячейки
+    /// The type is too large for an atomic cell.
     TypeTooLarge,
-    /// Недостаточно памяти (крайне редко)
+    /// Out of memory (extremely rare).
     OutOfMemory,
 }
 

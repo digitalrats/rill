@@ -1,8 +1,8 @@
-//! # Система ошибок Rill Core
+//! # Rill Core error system
 //!
-//! Централизованная система обработки ошибок для всей экосистемы Rill.
-//! Предоставляет иерархию типов ошибок с контекстом и возможностью
-//! преобразования между различными уровнями.
+//! Centralised error handling for the entire Rill ecosystem.
+//! Provides a hierarchy of error types with context and cross-level
+//! conversion.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -11,44 +11,44 @@ use std::fmt;
 // Основные типы ошибок
 // =============================================================================
 
-/// Основной тип ошибки для всей экосистемы Rill
+/// Primary error type for the entire Rill ecosystem.
 #[derive(Debug, Clone)]
 pub struct Error {
-    /// Категория ошибки
+    /// High-level error category for grouping.
     pub category: ErrorCategory,
-    /// Код ошибки (для машинной обработки)
+    /// Machine-processable error code.
     pub code: ErrorCode,
-    /// Человекочитаемое сообщение
+    /// Human-readable error description.
     pub message: String,
-    /// Причина (опционально)
+    /// Optional chained cause (builder-style via [`Error::with_cause`]).
     pub cause: Option<Box<Error>>,
-    /// Место возникновения (файл, строка)
+    /// Optional source location (attached via [`Error::at`]).
     pub location: Option<ErrorLocation>,
 }
 
-/// Категория ошибки
+/// Error category for grouping related error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
-    /// Ошибки ядра (буферы, очереди, базовые типы)
+    /// Core errors (buffers, queues, basic types).
     Core,
-    /// Ошибки DSP (фильтры, эффекты, генераторы)
+    /// DSP errors (filters, effects, generators).
     Dsp,
-    /// Ошибки графа (соединения, топология)
+    /// Graph errors (connections, topology).
     Graph,
-    /// Ошибки ввода-вывода (ALSA, JACK, PipeWire)
+    /// I/O errors (ALSA, JACK, PipeWire).
     Io,
-    /// Ошибки управления (MIDI, OSC, автоматизация)
+    /// Control errors (MIDI, OSC, automation).
     Control,
-    /// Ошибки конфигурации
+    /// Configuration errors.
     Config,
-    /// Ошибки времени выполнения
+    /// Runtime errors.
     Runtime,
-    /// Внутренние ошибки (не должны возникать)
+    /// Internal errors (should never occur).
     Internal,
 }
 
 impl ErrorCategory {
-    /// Получить строковое представление
+    /// Return the string representation of this category.
     pub fn as_str(&self) -> &'static str {
         match self {
             ErrorCategory::Core => "core",
@@ -69,122 +69,106 @@ impl fmt::Display for ErrorCategory {
     }
 }
 
-/// Код ошибки (для машинной обработки)
+/// Machine-processable error code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
-    // =======================================================================
-    // Core errors (0-99)
-    // =======================================================================
-    /// Неизвестная ошибка
+    // ── Core errors (0-99) ──────────────────────────────────────
+    /// Unknown or uncategorised error.
     Unknown = 0,
-    /// Неверный параметр
+    /// Invalid parameter value.
     InvalidParameter = 1,
-    /// Неверное состояние
+    /// Operation attempted in an invalid state.
     InvalidState = 2,
-    /// Неподдерживаемая операция
+    /// Unsupported operation.
     Unsupported = 3,
-    /// Не реализовано
+    /// Feature not yet implemented.
     NotImplemented = 4,
-    /// Таймаут
+    /// Operation timed out.
     Timeout = 5,
 
-    // =======================================================================
-    // Buffer errors (100-119)
-    // =======================================================================
-    /// Переполнение буфера
+    // ── Buffer errors (100-119) ─────────────────────────────────
+    /// Buffer is full and cannot accept more data.
     BufferFull = 100,
-    /// Буфер пуст
+    /// Buffer is empty and has no data to read.
     BufferEmpty = 101,
-    /// Неверный размер буфера
+    /// Requested buffer size is invalid.
     InvalidBufferSize = 102,
-    /// Неверное выравнивание буфера
+    /// Buffer is misaligned for SIMD operations.
     BufferMisaligned = 103,
-    /// Буфер не инициализирован
+    /// Buffer has not been initialised yet.
     BufferNotInitialized = 104,
 
-    // =======================================================================
-    // Queue errors (120-139)
-    // =======================================================================
-    /// Очередь переполнена
+    // ── Queue errors (120-139) ──────────────────────────────────
+    /// Command or telemetry queue is full.
     QueueFull = 120,
-    /// Очередь пуста
+    /// Queue is empty (no pending items).
     QueueEmpty = 121,
-    /// Очередь закрыта
+    /// Queue has been closed.
     QueueClosed = 122,
-    /// Неверный индекс очереди
+    /// Queue index is out of bounds.
     InvalidQueueIndex = 123,
 
-    // =======================================================================
-    // Graph errors (200-299)
-    // =======================================================================
-    /// Узел не найден
+    // ── Graph errors (200-299) ──────────────────────────────────
+    /// Referenced node does not exist in the graph.
     NodeNotFound = 200,
-    /// Порт не найден
+    /// Referenced port does not exist on the node.
     PortNotFound = 201,
-    /// Неверное соединение
+    /// The requested connection is invalid.
     InvalidConnection = 202,
-    /// Цикл в графе
+    /// A cycle was detected in the graph (forbidden in a DAG).
     CycleDetected = 203,
-    /// Узел уже существует
+    /// Node with the same ID already exists.
     NodeAlreadyExists = 204,
-    /// Порт уже подключён
+    /// Port is already connected.
     PortAlreadyConnected = 205,
 
-    // =======================================================================
-    // IO errors (300-399)
-    // =======================================================================
-    /// Устройство не найдено
+    // ── I/O errors (300-399) ────────────────────────────────────
+    /// Audio device not found.
     DeviceNotFound = 300,
-    /// Устройство занято
+    /// Audio device is busy.
     DeviceBusy = 301,
-    /// Ошибка ALSA
+    /// ALSA-specific error.
     AlsaError = 310,
-    /// Ошибка JACK
+    /// JACK-specific error.
     JackError = 311,
-    /// Ошибка PipeWire
+    /// PipeWire-specific error.
     PipeWireError = 312,
-    /// XRun (переполнение/опустошение буфера)
+    /// Buffer underrun or overrun.
     XRun = 320,
 
-    // =======================================================================
-    // Control errors (400-499)
-    // =======================================================================
-    /// MIDI ошибка
+    // ── Control errors (400-499) ────────────────────────────────
+    /// MIDI protocol error.
     MidiError = 400,
-    /// OSC ошибка
+    /// OSC protocol error.
     OscError = 401,
-    /// Маппинг не найден
+    /// Control mapping not found.
     MappingNotFound = 402,
-    /// Автомат не найден
+    /// Automaton instance not found.
     AutomatonNotFound = 403,
-    /// Неверное значение параметра
+    /// Parameter value is outside the allowed range.
     InvalidParameterValue = 404,
 
-    // =======================================================================
-    // Config errors (500-599)
-    // =======================================================================
-    /// Конфигурация не найдена
+    // ── Config errors (500-599) ─────────────────────────────────
+    /// Configuration path not found.
     ConfigNotFound = 500,
-    /// Неверный формат конфигурации
+    /// Configuration format is invalid.
     InvalidConfigFormat = 501,
-    /// Отсутствует обязательное поле
+    /// Required field is missing from configuration.
     MissingField = 502,
 
-    // =======================================================================
-    // Runtime errors (600-699)
-    // =======================================================================
-    /// Ошибка в real-time потоке
+    // ── Runtime errors (600-699) ────────────────────────────────
+    /// Real-time safety violation detected.
     RealtimeViolation = 600,
-    /// Приоритет потока не может быть установлен
+    /// Failed to set thread priority for RT scheduling.
     PriorityError = 601,
-    /// Поток уже запущен
+    /// Operation failed because the component is already running.
     AlreadyRunning = 602,
-    /// Поток не запущен
+    /// Operation failed because the component is not running.
     NotRunning = 603,
 }
 
 impl ErrorCode {
-    /// Получить категорию ошибки
+    /// Return the error category for this code.
     pub fn category(&self) -> ErrorCategory {
         match *self {
             ErrorCode::Unknown
@@ -234,7 +218,7 @@ impl ErrorCode {
         }
     }
 
-    /// Получить описание ошибки
+    /// Return a human-readable description of this error code.
     pub fn description(&self) -> &'static str {
         match self {
             ErrorCode::Unknown => "Unknown error",
@@ -287,14 +271,14 @@ impl ErrorCode {
     }
 }
 
-/// Место возникновения ошибки
+/// Source location where an error originated.
 #[derive(Debug, Clone)]
 pub struct ErrorLocation {
-    /// Файл
+    /// Source file name.
     pub file: &'static str,
-    /// Строка
+    /// Line number in the source file.
     pub line: u32,
-    /// Колонка
+    /// Column number in the source file.
     pub column: u32,
 }
 
@@ -309,7 +293,7 @@ impl fmt::Display for ErrorLocation {
 // =============================================================================
 
 impl Error {
-    /// Создать новую ошибку
+    /// Create a new error with the given code and message.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             category: code.category(),
@@ -320,19 +304,19 @@ impl Error {
         }
     }
 
-    /// Создать ошибку с причиной
+    /// Add a cause to this error (builder-style).
     pub fn with_cause(mut self, cause: Error) -> Self {
         self.cause = Some(Box::new(cause));
         self
     }
 
-    /// Добавить информацию о месте возникновения
+    /// Attach source location info (builder-style).
     pub fn at(mut self, file: &'static str, line: u32, column: u32) -> Self {
         self.location = Some(ErrorLocation { file, line, column });
         self
     }
 
-    /// Получить корневую причину
+    /// Walk the cause chain to find the root cause.
     pub fn root_cause(&self) -> &Error {
         let mut current = self;
         while let Some(cause) = &current.cause {
@@ -341,7 +325,7 @@ impl Error {
         current
     }
 
-    /// Проверить, является ли ошибка фатальной для RT-потока
+    /// Whether this error is critical for a real-time thread.
     pub fn is_realtime_critical(&self) -> bool {
         matches!(
             self.code,
@@ -352,7 +336,7 @@ impl Error {
         )
     }
 
-    /// Проверить, является ли ошибка recoverable
+    /// Whether this error is recoverable (non-critical).
     pub fn is_recoverable(&self) -> bool {
         !self.is_realtime_critical()
     }
@@ -397,7 +381,7 @@ impl StdError for Error {
 // Результат операций
 // =============================================================================
 
-/// Результат операций в Rill Core
+/// Result type alias for Rill Core operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
 // =============================================================================
@@ -432,7 +416,7 @@ impl From<std::str::Utf8Error> for Error {
 // Макросы для удобного создания ошибок
 // =============================================================================
 
-/// Создать ошибку с кодом и сообщением
+/// Create an error with a code and message.
 #[macro_export]
 macro_rules! error {
     ($code:expr, $msg:expr) => {
@@ -443,7 +427,7 @@ macro_rules! error {
     };
 }
 
-/// Создать ошибку с местом возникновения
+/// Create an error with source location attached.
 #[macro_export]
 macro_rules! error_at {
     ($code:expr, $msg:expr) => {
@@ -455,7 +439,7 @@ macro_rules! error_at {
     };
 }
 
-/// Возврат ошибки с контекстом
+/// Return early with an error (convenience for `return Err(...)`).
 #[macro_export]
 macro_rules! bail {
     ($code:expr, $msg:expr) => {
@@ -466,7 +450,7 @@ macro_rules! bail {
     };
 }
 
-/// Преобразование Result с добавлением контекста
+/// Transform a `Result` by mapping the error with additional context.
 #[macro_export]
 macro_rules! context {
     ($expr:expr, $code:expr, $msg:expr) => {
@@ -481,55 +465,66 @@ macro_rules! context {
 // Специализированные типы ошибок для разных компонентов
 // =============================================================================
 
-/// Ошибки ввода-вывода
+/// I/O error constructors.
 pub mod io {
     use super::*;
 
+    /// Create a `DeviceNotFound` error.
     pub fn device_not_found(name: &str) -> Error {
         error!(ErrorCode::DeviceNotFound, "Device not found: {}", name)
     }
 
+    /// Create a `DeviceBusy` error.
     pub fn device_busy(name: &str) -> Error {
         error!(ErrorCode::DeviceBusy, "Device is busy: {}", name)
     }
 
+    /// Create an `AlsaError` with a description.
     pub fn alsa_error(desc: &str) -> Error {
         error!(ErrorCode::AlsaError, "ALSA error: {}", desc)
     }
 
+    /// Create a `JackError` with a description.
     pub fn jack_error(desc: &str) -> Error {
         error!(ErrorCode::JackError, "JACK error: {}", desc)
     }
 
+    /// Create a `PipeWireError` with a description.
     pub fn pipewire_error(desc: &str) -> Error {
         error!(ErrorCode::PipeWireError, "PipeWire error: {}", desc)
     }
 
+    /// Create an `XRun` (buffer underrun/overrun) error.
     pub fn xrun() -> Error {
         Error::new(ErrorCode::XRun, "Buffer underrun/overrun detected")
     }
 }
 
-/// Ошибки управления
+/// Control error constructors (MIDI, OSC, automation).
 pub mod control {
     use super::*;
 
+    /// Create a `MidiError` with a description.
     pub fn midi_error(desc: &str) -> Error {
         error!(ErrorCode::MidiError, "MIDI error: {}", desc)
     }
 
+    /// Create an `OscError` with a description.
     pub fn osc_error(desc: &str) -> Error {
         error!(ErrorCode::OscError, "OSC error: {}", desc)
     }
 
+    /// Create a `MappingNotFound` error for the given mapping ID.
     pub fn mapping_not_found(id: &str) -> Error {
         error!(ErrorCode::MappingNotFound, "Mapping not found: {}", id)
     }
 
+    /// Create an `AutomatonNotFound` error for the given automaton ID.
     pub fn automaton_not_found(id: &str) -> Error {
         error!(ErrorCode::AutomatonNotFound, "Automaton not found: {}", id)
     }
 
+    /// Create an `InvalidParameterValue` error for a value outside the allowed range.
     pub fn invalid_parameter_value(param: &str, value: f64, min: f64, max: f64) -> Error {
         error!(
             ErrorCode::InvalidParameterValue,
@@ -538,10 +533,11 @@ pub mod control {
     }
 }
 
-/// Ошибки конфигурации
+/// Configuration error constructors.
 pub mod config {
     use super::*;
 
+    /// Create a `ConfigNotFound` error for the given path.
     pub fn not_found(path: &str) -> Error {
         error!(
             ErrorCode::ConfigNotFound,
@@ -549,6 +545,7 @@ pub mod config {
         )
     }
 
+    /// Create an `InvalidConfigFormat` error with details.
     pub fn invalid_format(details: &str) -> Error {
         error!(
             ErrorCode::InvalidConfigFormat,
@@ -556,15 +553,17 @@ pub mod config {
         )
     }
 
+    /// Create a `MissingField` error for the required field name.
     pub fn missing_field(field: &str) -> Error {
         error!(ErrorCode::MissingField, "Missing required field: {}", field)
     }
 }
 
-/// Ошибки времени выполнения
+/// Runtime error constructors (thread priority, critical violations).
 pub mod runtime {
     use super::*;
 
+    /// Create a `RealtimeViolation` error with details.
     pub fn realtime_violation(details: &str) -> Error {
         error!(
             ErrorCode::RealtimeViolation,
@@ -572,6 +571,7 @@ pub mod runtime {
         )
     }
 
+    /// Create a `PriorityError` with details about the failure.
     pub fn priority_error(details: &str) -> Error {
         error!(
             ErrorCode::PriorityError,
@@ -579,10 +579,12 @@ pub mod runtime {
         )
     }
 
+    /// Create an `AlreadyRunning` error.
     pub fn already_running() -> Error {
         Error::new(ErrorCode::AlreadyRunning, "Already running")
     }
 
+    /// Create a `NotRunning` error.
     pub fn not_running() -> Error {
         Error::new(ErrorCode::NotRunning, "Not running")
     }

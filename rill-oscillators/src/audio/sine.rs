@@ -136,7 +136,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
         self.osc
             .process(None, &mut output[..], &ActionContext::new(clock))?;
         for i in 0..BUF_SIZE {
-            output[i] = output[i] * self.amplitude;
+            output[i] *= self.amplitude;
         }
         Ok(())
     }

@@ -364,7 +364,7 @@ impl<T: Transcendental, const N: usize> Algorithm<T> for FmSynth<T, N> {
                 // Суммируем все модуляции для этого оператора
                 for j in 0..N {
                     if self.algorithm[i][j] {
-                        mod_sum = mod_sum + values[j] * self.modulation_indices[j].extract(0);
+                        mod_sum += values[j] * self.modulation_indices[j].extract(0);
                     }
                 }
 

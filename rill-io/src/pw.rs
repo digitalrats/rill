@@ -6,6 +6,9 @@ use std::sync::Arc;
 use crate::audio_io::{AudioIo, AudioIoPtr};
 use crate::PwBuffers;
 
+/// Ensure a PipeWire backend is available (stub when `pipewire` feature is disabled).
+///
+/// Returns `None` — PipeWire is not compiled in.
 #[cfg(not(feature = "pipewire"))]
 pub fn ensure(
     _sample_rate: u32,
@@ -15,6 +18,10 @@ pub fn ensure(
     None
 }
 
+/// Ensure a PipeWire backend with the given configuration is available.
+///
+/// Creates the backend, stores its ring buffers, and starts the stream.
+/// Returns the backend, shared buffer handles, and a borrow pointer.
 #[cfg(feature = "pipewire")]
 pub fn ensure(
     sample_rate: u32,
