@@ -10,7 +10,6 @@ repository.workspace = true
 [dependencies]
 rill-core = { workspace = true }
 thiserror = "1.0"
-parking_lot = "0.12"
 log = "0.4"
 crossbeam-channel = "0.5"
 

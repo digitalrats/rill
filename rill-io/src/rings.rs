@@ -18,7 +18,7 @@ use crate::buffer::IoRingBuffer;
 /// Input and output ring buffers shared between PipeWire and graph nodes.
 pub struct PwBuffers {
     /// Ring buffer written by the PipeWire input callback and read by `AudioInput::generate()`.
-    pub input: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    pub input: Arc<IoRingBuffer>,
     /// Ring buffer written by `AudioOutput::consume()` and read by the PipeWire output callback.
-    pub output: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    pub output: Arc<IoRingBuffer>,
 }

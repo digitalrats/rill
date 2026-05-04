@@ -1,9 +1,9 @@
 //! ALSA бэкенд для Linux
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use parking_lot::RwLock;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -46,21 +46,21 @@ pub struct AlsaBackend {
     config: AudioConfig,
     command_tx: Sender<AlsaCommand>,
     process_cb: SendPtr,
-    xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<IoRingBuffer>>,
-    output_buffer: Arc<RwLock<IoRingBuffer>>,
+    xruns: Arc<AtomicU32>,
+    input_buffer: Arc<IoRingBuffer>,
+    output_buffer: Arc<IoRingBuffer>,
     thread_handle: Option<thread::JoinHandle<()>>,
-    state: Arc<RwLock<AlsaState>>,
-    device_name: Arc<RwLock<String>>,
+    state: Arc<Mutex<AlsaState>>,
+    device_name: Arc<Mutex<String>>,
 }
 
 impl fmt::Debug for AlsaBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AlsaBackend")
             .field("config", &self.config)
-            .field("xruns", &self.xruns)
-            .field("state", &self.state.read().clone())
-            .field("device_name", &self.device_name.read().clone())
+            .field("xruns", &self.xruns.load(Ordering::Relaxed))
+            .field("state", &*self.state.lock().unwrap())
+            .field("device_name", &*self.device_name.lock().unwrap())
             .field("thread_handle", &self.thread_handle.is_some())
             .finish()
     }
@@ -73,11 +73,11 @@ impl AlsaBackend {
         let (command_tx, command_rx) = unbounded();
 
         let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
-        let xruns = Arc::new(RwLock::new(0));
-        let input_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
-        let output_buffer = Arc::new(RwLock::new(IoRingBuffer::new(buffer_size)));
-        let state = Arc::new(RwLock::new(AlsaState::Stopped));
-        let device_name = Arc::new(RwLock::new(
+        let xruns = Arc::new(AtomicU32::new(0));
+        let input_buffer = Arc::new(IoRingBuffer::new(buffer_size));
+        let output_buffer = Arc::new(IoRingBuffer::new(buffer_size));
+        let state = Arc::new(Mutex::new(AlsaState::Stopped));
+        let device_name = Arc::new(Mutex::new(
             config
                 .output_device
                 .clone()
@@ -121,14 +121,14 @@ impl AlsaBackend {
 
     /// Установить имя устройства
     pub fn with_device(self, device: &str) -> Self {
-        *self.device_name.write() = device.to_string();
+        *self.device_name.lock().unwrap() = device.to_string();
         self
     }
 
     /// Получить состояние
     #[allow(dead_code)]
     pub(crate) fn state(&self) -> AlsaState {
-        *self.state.read()
+        *self.state.lock().unwrap()
     }
 }
 
@@ -136,24 +136,24 @@ impl AlsaBackend {
 fn run_alsa_thread(
     command_rx: Receiver<AlsaCommand>,
     process_cb: SendPtr,
-    xruns: Arc<RwLock<u32>>,
-    input_buffer: Arc<RwLock<IoRingBuffer>>,
-    output_buffer: Arc<RwLock<IoRingBuffer>>,
-    state: Arc<RwLock<AlsaState>>,
+    xruns: Arc<AtomicU32>,
+    input_buffer: Arc<IoRingBuffer>,
+    output_buffer: Arc<IoRingBuffer>,
+    state: Arc<Mutex<AlsaState>>,
     config: AudioConfig,
-    device_name: Arc<RwLock<String>>,
+    device_name: Arc<Mutex<String>>,
 ) {
     while let Ok(cmd) = command_rx.recv() {
         match cmd {
             AlsaCommand::Start => {
-                let dev_name = device_name.read().clone();
+                let dev_name = device_name.lock().unwrap().clone();
 
                 // Открываем PCM playback устройство
                 let pcm_playback = match PCM::new(&dev_name, Direction::Playback, false) {
                     Ok(pcm) => pcm,
                     Err(e) => {
                         eprintln!("Failed to open ALSA playback device {}: {}", dev_name, e);
-                        *state.write() = AlsaState::Error;
+                        *state.lock().unwrap() = AlsaState::Error;
                         continue;
                     }
                 };
@@ -174,7 +174,7 @@ fn run_alsa_thread(
                 // Настраиваем параметры playback
                 if let Err(e) = configure_alsa_pcm(&pcm_playback, config.output_channels, &config) {
                     eprintln!("Failed to configure ALSA playback: {}", e);
-                    *state.write() = AlsaState::Error;
+                    *state.lock().unwrap() = AlsaState::Error;
                     continue;
                 }
 
@@ -189,7 +189,7 @@ fn run_alsa_thread(
                 // Запускаем воспроизведение
                 if let Err(e) = pcm_playback.start() {
                     eprintln!("Failed to start ALSA playback: {}", e);
-                    *state.write() = AlsaState::Error;
+                    *state.lock().unwrap() = AlsaState::Error;
                     continue;
                 }
 
@@ -201,7 +201,7 @@ fn run_alsa_thread(
                 }
 
                 let mut running = true;
-                *state.write() = AlsaState::Running;
+                *state.lock().unwrap() = AlsaState::Running;
 
                 let out_buffer_size = (config.buffer_size * config.output_channels) as usize;
                 let in_buffer_size = (config.buffer_size * config.input_channels) as usize;
@@ -234,13 +234,11 @@ fn run_alsa_thread(
                                         for (i, sample) in capture_buffer[..n].iter().enumerate() {
                                             temp[i] = *sample as f32 / 32768.0;
                                         }
-                                        let mut input = input_buffer.write();
-                                        input.write(&temp);
-                                        drop(input);
+                                        input_buffer.write(&temp);
                                     }
                                     Err(e) => {
                                         eprintln!("ALSA capture error: {}", e);
-                                        *xruns.write() += 1;
+                                        xruns.fetch_add(1, Ordering::Relaxed);
                                         if let Err(recover_err) = pcm.try_recover(e, true) {
                                             eprintln!("Failed to recover ALSA capture: {}", recover_err);
                                         }
@@ -249,7 +247,7 @@ fn run_alsa_thread(
                             }
                             Err(e) => {
                                 eprintln!("Failed to get ALSA capture IO: {}", e);
-                                *xruns.write() += 1;
+                                xruns.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                     }
@@ -261,10 +259,8 @@ fn run_alsa_thread(
 
                     // ── Playback: читаем из output ring → ALSA ──────────────
                     {
-                        let mut output = output_buffer.write();
                         let mut temp = vec![0.0f32; out_buffer_size];
-                        let n = output.read(&mut temp);
-                        drop(output);
+                        let n = output_buffer.read(&mut temp);
 
                         for (i, sample) in playback_buffer.iter_mut().enumerate() {
                             *sample = if i < n {
@@ -281,7 +277,7 @@ fn run_alsa_thread(
                                 Ok(_) => {}
                                 Err(e) => {
                                     eprintln!("ALSA playback error: {}", e);
-                                    *xruns.write() += 1;
+                                    xruns.fetch_add(1, Ordering::Relaxed);
                                     if let Err(recover_err) = pcm_playback.try_recover(e, true) {
                                         eprintln!("Failed to recover ALSA playback: {}", recover_err);
                                         running = false;
@@ -290,8 +286,8 @@ fn run_alsa_thread(
                             }
                         }
                         Err(e) => {
-                            eprintln!("Failed to get ALSA playback IO: {}", e);
-                            *xruns.write() += 1;
+                                eprintln!("Failed to get ALSA playback IO: {}", e);
+                                xruns.fetch_add(1, Ordering::Relaxed);
                         }
                     }
 
@@ -313,7 +309,7 @@ fn run_alsa_thread(
             }
 
             AlsaCommand::Stop => {
-                *state.write() = AlsaState::Stopped;
+                *state.lock().unwrap() = AlsaState::Stopped;
             }
         }
     }
@@ -367,10 +363,10 @@ impl AudioBackend for AlsaBackend {
 
     fn init(&mut self) -> IoResult<()> {
         // Очищаем буферы
-        let cap = self.input_buffer.read().capacity();
+        let cap = self.input_buffer.capacity();
         let zeros = vec![0.0f32; cap];
-        self.input_buffer.write().write(&zeros);
-        self.output_buffer.write().write(&zeros);
+        self.input_buffer.write(&zeros);
+        self.output_buffer.write(&zeros);
 
         Ok(())
     }
@@ -394,19 +390,17 @@ impl AudioBackend for AlsaBackend {
     }
 
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let mut input_buf = self.input_buffer.write();
-        input_buf.read(buffer);
+        self.input_buffer.read(buffer);
         Ok(buffer.len())
     }
 
     fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        let mut output_buf = self.output_buffer.write();
-        output_buf.write(buffer);
+        self.output_buffer.write(buffer);
         Ok(buffer.len())
     }
 
     fn xruns(&self) -> u32 {
-        *self.xruns.read()
+        self.xruns.load(Ordering::Acquire)
     }
 
     fn latency(&self) -> Duration {
@@ -445,10 +439,8 @@ impl AudioIo for AlsaBackend {
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
         let frames = left.len().min(right.len());
-        let mut buf = self.input_buffer.write();
         let mut temp = vec![0.0f32; frames * 2];
-        let n = buf.read(&mut temp);
-        drop(buf);
+        let n = self.input_buffer.read(&mut temp);
         let frames_out = n / 2;
         for i in 0..frames_out.min(frames) {
             left[i] = temp[i * 2];
@@ -464,8 +456,7 @@ impl AudioIo for AlsaBackend {
             temp[i * 2] = left[i];
             temp[i * 2 + 1] = right[i];
         }
-        let mut buf = self.output_buffer.write();
-        buf.write(&temp) / 2
+        self.output_buffer.write(&temp) / 2
     }
 
     fn start(&self) -> crate::audio_io::IoResult<()> {

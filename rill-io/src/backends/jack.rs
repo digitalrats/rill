@@ -35,8 +35,8 @@ enum JackCommand {
 pub struct JackBackend {
     config: AudioConfig,
     command_tx: Sender<JackCommand>,
-    input_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
-    output_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    input_buffer: Arc<IoRingBuffer>,
+    output_buffer: Arc<IoRingBuffer>,
     process_cb: SendPtr,
     thread_handle: Option<thread::JoinHandle<()>>,
     xruns: Arc<AtomicU32>,
@@ -69,8 +69,8 @@ impl JackBackend {
         let xruns = Arc::new(AtomicU32::new(0));
         let running = Arc::new(AtomicBool::new(false));
 
-        let input_buffer = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(buf_cap)));
-        let output_buffer = Arc::new(parking_lot::RwLock::new(IoRingBuffer::new(buf_cap)));
+        let input_buffer = Arc::new(IoRingBuffer::new(buf_cap));
+        let output_buffer = Arc::new(IoRingBuffer::new(buf_cap));
 
         let process_cb = Box::into_raw(Box::new(None::<Box<dyn Fn()>>));
 
@@ -107,8 +107,8 @@ struct JackProcessHandler {
     process_cb: *mut Option<Box<dyn Fn()>>,
     in_port: Option<Port<AudioIn>>,
     out_port: Port<AudioOut>,
-    ibuf: Arc<parking_lot::RwLock<IoRingBuffer>>,
-    obuf: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    ibuf: Arc<IoRingBuffer>,
+    obuf: Arc<IoRingBuffer>,
     _xruns: Arc<AtomicU32>,
 }
 
@@ -121,9 +121,7 @@ impl ProcessHandler for JackProcessHandler {
         // 1. Read JACK input → input ring
         if let Some(ref in_p) = self.in_port {
             let inp = in_p.as_slice(ps);
-            let mut ib = self.ibuf.write();
-            ib.write(inp);
-            drop(ib);
+            self.ibuf.write(inp);
         }
 
         // 2. Call process callback (drives signal graph)
@@ -135,10 +133,8 @@ impl ProcessHandler for JackProcessHandler {
 
         // 3. Read from output ring → JACK output buffers
         let out = self.out_port.as_mut_slice(ps);
-        let mut ob = self.obuf.write();
         let mut temp = [0.0f32; MAX_JACK_SAMPLES];
-        let n = ob.read(&mut temp[..nframes.min(MAX_JACK_SAMPLES)]);
-        drop(ob);
+        let n = self.obuf.read(&mut temp[..nframes.min(MAX_JACK_SAMPLES)]);
         for i in 0..nframes.min(MAX_JACK_SAMPLES) {
             out[i] = if i < n { temp[i] } else { 0.0 };
         }
@@ -150,8 +146,8 @@ impl ProcessHandler for JackProcessHandler {
 fn run_jack_thread(
     command_rx: Receiver<JackCommand>,
     xruns: Arc<AtomicU32>,
-    input_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
-    output_buffer: Arc<parking_lot::RwLock<IoRingBuffer>>,
+    input_buffer: Arc<IoRingBuffer>,
+    output_buffer: Arc<IoRingBuffer>,
     process_cb: SendPtr,
     config: AudioConfig,
     running: Arc<AtomicBool>,
@@ -234,10 +230,8 @@ impl AudioIo for JackBackend {
     }
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
-        let mut buf = self.input_buffer.write();
         let mut temp = [0.0f32; MAX_JACK_SAMPLES];
-        let n = buf.read(&mut temp[..left.len().min(right.len()).min(MAX_JACK_SAMPLES / 2).saturating_mul(2)]);
-        drop(buf);
+        let n = self.input_buffer.read(&mut temp[..left.len().min(right.len()).min(MAX_JACK_SAMPLES / 2).saturating_mul(2)]);
         let frames = n / 2;
         for i in 0..frames.min(left.len()).min(right.len()) {
             left[i] = temp[i * 2];
@@ -248,16 +242,13 @@ impl AudioIo for JackBackend {
 
     fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
         let n = left.len().min(right.len());
-        let mut buf = self.output_buffer.write();
         let mut temp = [0.0f32; MAX_JACK_SAMPLES];
         let len = n.min(MAX_JACK_SAMPLES / 2);
         for i in 0..len {
             temp[i * 2] = left[i];
             temp[i * 2 + 1] = right[i];
         }
-        let written = buf.write(&temp[..len * 2]);
-        drop(buf);
-        written / 2
+        self.output_buffer.write(&temp[..len * 2]) / 2
     }
 
     fn start(&self) -> AudioIoResult<()> {
@@ -311,12 +302,12 @@ impl AudioBackend for JackBackend {
     }
 
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let n = self.input_buffer.write().read(buffer);
+        let n = self.input_buffer.read(buffer);
         Ok(n)
     }
 
     fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        let n = self.output_buffer.write().write(buffer);
+        let n = self.output_buffer.write(buffer);
         Ok(n)
     }
 

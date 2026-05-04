@@ -135,10 +135,6 @@ Any code reached from the process callback — `generate()`, `process()`,
 
 1. **ALSA backend (`run_alsa_thread`)** uses `thread::sleep(1000μs)` to pace the
    poll loop. This must be replaced with `poll()` on `snd_pcm_poll_descriptors()`.
-2. **CPAL backend** uses `thread::sleep(interval)` in the same way. Must be
-   replaced with an event‑driven wait (CPAL stream callbacks already fire on
-   their own thread — the processing callback should be driven from the output
-   stream callback, not a timer).
 
 **Testing:** any new RT path code must be verified with `cargo test --release`
 under `pw‑loopback` or similar virtual device to detect xruns.
