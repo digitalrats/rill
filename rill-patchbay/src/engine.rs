@@ -43,11 +43,11 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use rill_core::queues::telemetry::Telemetry;
-use rill_core::queues::MpscQueue;
+use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::NodeId;
 
 use crate::automaton::LfoWaveform;
-use crate::control::{ControlEvent, Mapping, ParameterCommand, PatchbayControl};
+use crate::control::{ControlEvent, Mapping, PatchbayControl};
 #[cfg(feature = "serde")]
 use crate::document::PatchbayDocument;
 #[cfg(feature = "serde")]
@@ -71,7 +71,7 @@ impl PatchbayEngine {
     ///
     /// Requires an active tokio runtime (e.g. `#[tokio::main]`).
     /// Panics if `tokio::runtime::Handle::try_current()` fails.
-    pub fn new(command_queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
+    pub fn new(command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
         let _ = tokio::runtime::Handle::try_current()
             .expect("PatchbayEngine requires an active tokio runtime");
         Self {
@@ -286,7 +286,7 @@ mod tests {
         engine.handle_event(event);
 
         let cmd = queue.pop().unwrap();
-        assert_eq!(cmd.param, "volume");
+        assert_eq!(cmd.parameter.as_ref(), "volume");
         assert!((cmd.value - 0.5).abs() < 1e-6);
     }
 

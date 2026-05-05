@@ -21,8 +21,6 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 
 [dev-dependencies]
 float-cmp = "0.9"
-rill-graph = { workspace = true }
-rill-core-dsp = { workspace = true }
 
 [features]
 default = ["cpal"]

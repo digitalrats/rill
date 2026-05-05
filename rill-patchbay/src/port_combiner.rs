@@ -10,12 +10,11 @@
 
 use std::sync::Arc;
 
-use rill_core::queues::MpscQueue;
-use rill_core::NodeId;
+use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+use rill_core::traits::{NodeId, ParameterId, PortId};
 
 use tokio::sync::{mpsc, watch};
 
-use crate::control::ParameterCommand;
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 /// Хэндл для управления PortCombiner извне
@@ -56,7 +55,7 @@ pub fn spawn_combiner(
     range: (f64, f64),
     control: ControlStrategy,
     conflict: ConflictStrategy,
-    output_queue: Arc<MpscQueue<ParameterCommand>>,
+    output_queue: Arc<MpscQueue<SetParameter>>,
 ) -> PortCombinerHandle {
     let (automaton_tx, automaton_rx) = mpsc::channel::<f64>(16);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
@@ -93,7 +92,7 @@ async fn combiner_loop(
     range: (f64, f64),
     control: ControlStrategy,
     conflict: ConflictStrategy,
-    output_queue: Arc<MpscQueue<ParameterCommand>>,
+    output_queue: Arc<MpscQueue<SetParameter>>,
 ) {
     let (node_id, param_name) = target;
     let (min, max) = range;
@@ -116,8 +115,10 @@ async fn combiner_loop(
                 }
 
                 let value = combine(mod_val, base, control, min, max);
-                let cmd = ParameterCommand::new(node_id, &param_name, value as f32);
-                let _ = output_queue.push(cmd);
+                let pid = ParameterId::new(&param_name).unwrap();
+                let _ = output_queue.push(SetParameter::new(
+                    PortId::param(node_id, 0), pid, value as f32, SignalSource::Manual,
+                ));
             }
 
             Some(cmd) = ui_rx.recv() => {
@@ -125,27 +126,35 @@ async fn combiner_loop(
                     (UiCommand::SetValue(v), ConflictStrategy::TouchOverride) => {
                         base = v;
                         frozen = true;
-                        let cmd = ParameterCommand::new(node_id, &param_name, v as f32);
-                        let _ = output_queue.push(cmd);
+                        let pid = ParameterId::new(&param_name).unwrap();
+                        let _ = output_queue.push(SetParameter::new(
+                            PortId::param(node_id, 0), pid, v as f32, SignalSource::Manual,
+                        ));
                     }
 
                     (UiCommand::SetValue(v), ConflictStrategy::BasePlusModulation) => {
                         base = v;
                         let value = combine(latest_mod, v, control, min, max);
-                        let cmd = ParameterCommand::new(node_id, &param_name, value as f32);
-                        let _ = output_queue.push(cmd);
+                        let pid = ParameterId::new(&param_name).unwrap();
+                        let _ = output_queue.push(SetParameter::new(
+                            PortId::param(node_id, 0), pid, value as f32, SignalSource::Manual,
+                        ));
                     }
 
                     (UiCommand::SetValue(v), ConflictStrategy::LastWriteWins) => {
-                        let cmd = ParameterCommand::new(node_id, &param_name, v as f32);
-                        let _ = output_queue.push(cmd);
+                        let pid = ParameterId::new(&param_name).unwrap();
+                        let _ = output_queue.push(SetParameter::new(
+                            PortId::param(node_id, 0), pid, v as f32, SignalSource::Manual,
+                        ));
                     }
 
                     (UiCommand::Release, ConflictStrategy::TouchOverride) => {
                         frozen = false;
                         let value = combine(latest_mod, base, control, min, max);
-                        let cmd = ParameterCommand::new(node_id, &param_name, value as f32);
-                        let _ = output_queue.push(cmd);
+                        let pid = ParameterId::new(&param_name).unwrap();
+                        let _ = output_queue.push(SetParameter::new(
+                            PortId::param(node_id, 0), pid, value as f32, SignalSource::Manual,
+                        ));
                     }
 
                     (UiCommand::Release, _) => {
