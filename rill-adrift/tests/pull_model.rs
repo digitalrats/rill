@@ -1,10 +1,10 @@
-use std::sync::Arc;
-
+#[cfg(feature = "serialization")]
 use parking_lot::RwLock;
-
+#[cfg(feature = "serialization")]
 use rill_adrift::io::audio_io::AudioIo;
 #[cfg(feature = "serialization")]
 use rill_adrift::io::audio_io::AudioIoPtr;
+#[cfg(feature = "serialization")]
 use rill_adrift::io::buffer::IoRingBuffer;
 #[cfg(feature = "serialization")]
 use rill_adrift::io::output::AudioOutput;
@@ -20,6 +20,8 @@ use rill_adrift::rill_core::traits::SignalNode;
 use rill_adrift::rill_core::ParamValue;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_graph::serialization::{ConnectionDef, GraphDocument, NodeDef, SignalKind};
+#[cfg(feature = "serialization")]
+use std::sync::Arc;
 
 #[cfg(feature = "serialization")]
 const BUF: usize = 256;
