@@ -269,45 +269,27 @@ fn alsa_thread(
             }
         }
 
-        // Available frames for playback
-        let avail = match pcm_playback.avail_update() {
-            Ok(a) => a as usize,
-            Err(e) => {
-                if let Err(r) = pcm_playback.try_recover(e, true) {
-                    break;
-                }
-                continue;
-            }
-        };
+        // Generate one block and write to ALSA
+        {
+            let chunk_samples = buf_frames * config.output_channels as usize;
 
-        let out_channels = config.output_channels as usize;
-        let mut written = 0usize;
-        while written + buf_frames <= avail {
-            let chunk_frames = buf_frames;
-            let chunk_samples = chunk_frames * out_channels;
-
-            // Set OutputWindow → call process_cb → write directly into f32_buf
             unsafe {
                 output_slot.set(OutputWindow::new(f32_buf.as_mut_ptr(), chunk_samples));
                 process_cb.call();
                 output_slot.clear();
             }
 
-            // Convert f32 → i16 interleaved
             for i in 0..chunk_samples {
                 i16_buf[i] = (f32_buf[i].clamp(-1.0, 1.0) * 32767.0) as i16;
             }
 
-            // Write to ALSA
             match pcm_playback.io_i16() {
                 Ok(io) => match io.writei(&i16_buf[..chunk_samples]) {
-                    Ok(n) => written += n,
+                    Ok(_) => {}
                     Err(e) => {
                         eprintln!("ALSA write: {}", e);
                         xruns.fetch_add(1, Ordering::Relaxed);
-                        if let Err(r) = pcm_playback.try_recover(e, true) {
-                            break;
-                        }
+                        let _ = pcm_playback.try_recover(e, true);
                     }
                 },
                 Err(e) => {
