@@ -13,6 +13,8 @@ mod error;
 
 pub mod backends;
 
+pub mod output_window;
+
 /// MIDI event types for I/O backends.
 pub mod midi;
 

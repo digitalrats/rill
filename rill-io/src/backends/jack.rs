@@ -11,69 +11,8 @@ use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, Proce
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
-
-/// Callback slot.
-#[derive(Copy, Clone)]
-struct CbSlot(usize);
-unsafe impl Send for CbSlot {}
-unsafe impl Sync for CbSlot {}
-
-impl CbSlot {
-    fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
-    }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) {
-        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
-    }
-    unsafe fn call(&self) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
-            cb();
-        }
-    }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
-    }
-}
-
-/// Mutable view into a JACK port buffer chunk.
-struct OutputWindow {
-    ptr: *mut f32,
-    capacity: usize,
-}
-
-impl OutputWindow {
-    fn new(ptr: *mut f32, len: usize) -> Self {
-        Self { ptr, capacity: len }
-    }
-    fn as_mut_slice(&mut self) -> &mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
-    }
-}
-
-/// Lock-free slot for the current output window.
-#[derive(Copy, Clone)]
-struct OutputSlot(*mut Option<OutputWindow>);
-unsafe impl Send for OutputSlot {}
-unsafe impl Sync for OutputSlot {}
-
-impl OutputSlot {
-    fn new() -> Self {
-        Self(Box::into_raw(Box::new(None)))
-    }
-    unsafe fn set(&self, w: OutputWindow) {
-        *self.0 = Some(w);
-    }
-    unsafe fn clear(&self) {
-        *self.0 = None;
-    }
-    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
-        (*self.0).as_mut()
-    }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0));
-    }
-}
 
 /// JACK audio backend.
 pub struct JackBackend {
@@ -249,7 +188,7 @@ impl IoBackend<f32> for JackBackend {
     fn write(&self, channels: &[&[f32]]) -> usize {
         let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity.min(frames);
+            let cap = win.capacity().min(frames);
             let dst = win.as_mut_slice();
             let left = channels.first().copied().unwrap_or(&[]);
             let right = channels.get(1).copied().unwrap_or(left);
@@ -349,7 +288,6 @@ impl Drop for JackBackend {
         }
         unsafe {
             self.process_cb.drop_box();
-            self.output_slot.drop_box();
         }
     }
 }

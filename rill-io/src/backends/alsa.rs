@@ -22,49 +22,11 @@ use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
 
 // ============================================================================
-// OutputWindow — writable slice into ALSA's interleaved buffer
-// ============================================================================
-
-struct OutputWindow {
-    ptr: *mut f32,
-    capacity: usize,
-}
-
-impl OutputWindow {
-    fn new(ptr: *mut f32, len: usize) -> Self {
-        Self { ptr, capacity: len }
-    }
-    fn as_mut_slice(&mut self) -> &mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
-    }
-}
-
-#[derive(Copy, Clone)]
-struct OutputSlot(*mut Option<OutputWindow>);
-unsafe impl Send for OutputSlot {}
-unsafe impl Sync for OutputSlot {}
-
-impl OutputSlot {
-    fn new() -> Self {
-        Self(Box::into_raw(Box::new(None)))
-    }
-    unsafe fn set(&self, w: OutputWindow) {
-        *self.0 = Some(w);
-    }
-    unsafe fn clear(&self) {
-        *self.0 = None;
-    }
-    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
-        (*self.0).as_mut()
-    }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0));
-    }
-}
-
+// Callback slot
 // ============================================================================
 // Callback slot
 // ============================================================================
@@ -443,7 +405,7 @@ impl IoBackend<f32> for AlsaBackend {
         }
         unsafe {
             if let Some(win) = self.output_slot.as_mut() {
-                let cap = win.capacity.min(frames * 2);
+                let cap = win.capacity()().min(frames * 2);
                 let dst = win.as_mut_slice();
                 for i in 0..(cap / 2) {
                     if let Some(ch) = channels.get(0) {
@@ -486,9 +448,6 @@ impl Drop for AlsaBackend {
         }
         unsafe {
             self.process_cb.drop_box();
-        }
-        unsafe {
-            self.output_slot.drop_box();
         }
     }
 }

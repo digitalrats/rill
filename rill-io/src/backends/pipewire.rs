@@ -20,6 +20,8 @@ use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use crate::midi::MidiEvent;
+use crate::output_window::{OutputSlot, OutputWindow};
+use crate::output_window::{OutputSlot, OutputWindow};
 use crate::PwBuffers;
 use rill_core::io::IoBackend;
 
@@ -48,51 +50,6 @@ impl CbSlot {
         drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
     }
 }
-
-/// Mutable view into a PW DMA buffer slice.
-struct OutputWindow {
-    ptr: *mut f32,
-    capacity: usize,
-}
-
-impl OutputWindow {
-    fn new(slice: &mut [u8], max_frames: usize) -> Self {
-        let cap = (slice.len() / 4).min(max_frames * 2);
-        Self {
-            ptr: slice.as_mut_ptr() as *mut f32,
-            capacity: cap,
-        }
-    }
-    fn as_mut_slice(&mut self) -> &mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
-    }
-}
-
-/// Lock-free slot for the current output window, set during PW process callback.
-#[derive(Copy, Clone)]
-struct OutputSlot(*mut Option<OutputWindow>);
-unsafe impl Send for OutputSlot {}
-unsafe impl Sync for OutputSlot {}
-
-impl OutputSlot {
-    fn new() -> Self {
-        Self(Box::into_raw(Box::new(None)))
-    }
-    unsafe fn set(&self, w: OutputWindow) {
-        *self.0 = Some(w);
-    }
-    unsafe fn clear(&self) {
-        *self.0 = None;
-    }
-    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
-        (*self.0).as_mut()
-    }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0));
-    }
-}
-
-// ============================================================================
 // PipewireBackend
 // ============================================================================
 
@@ -219,7 +176,7 @@ impl IoBackend<f32> for PipewireBackend {
     fn write(&self, channels: &[&[f32]]) -> usize {
         let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity.min(frames * 2);
+            let cap = win.capacity().min(frames * 2);
             let dst = win.as_mut_slice();
             for i in 0..(cap / 2) {
                 if let Some(ch) = channels.get(0) {
@@ -351,7 +308,7 @@ fn run_pipewire_thread(
             while offset + chunk_bytes <= slice.len() {
                 let chunk = &mut slice[offset..offset + chunk_bytes];
                 unsafe {
-                    oslot.set(OutputWindow::new(chunk, 256)); // BUF=256
+                    oslot.set(OutputWindow::new(chunk.as_mut_ptr() as *mut f32, 512)); // 512 f32 = 256 stereo frames
                     process_cb.call();
                     oslot.clear();
                 }
@@ -687,8 +644,6 @@ impl Drop for PipewireBackend {
         unsafe {
             self.process_cb.drop_box();
         }
-        unsafe {
-            self.output_slot.drop_box();
-        }
+        unsafe {}
     }
 }
