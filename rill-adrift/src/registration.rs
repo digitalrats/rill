@@ -21,8 +21,6 @@ use rill_graph::{node_ctor, NodeRegistry};
 use crate::io::input::AudioInput;
 #[cfg(feature = "io")]
 use crate::io::output::AudioOutput;
-#[cfg(feature = "io")]
-use crate::io::AudioConfig;
 
 /// Return a lazily-initialized global registry for the given block size.
 ///
@@ -92,13 +90,6 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
 
     node_ctor!(registry, "rill/input", |id: NodeId, params: &NodeParams| {
         let mut n = AudioInput::<f32, BUF_SIZE>::new();
-        if let Some(name) = params.get("backend").and_then(|v| v.as_str()) {
-            let config = AudioConfig::new()
-                .with_sample_rate(params.sample_rate as u32)
-                .with_buffer_size(BUF_SIZE as u32)
-                .with_channels(2);
-            let _ = n.init_backend(name, config);
-        }
         SignalNode::set_id(&mut n, id);
         SignalNode::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -247,7 +238,11 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
         registry,
         "rill/write_head",
         |id: NodeId, params: &NodeParams| {
-            let mut n = WriteHead::<f32, BUF_SIZE>::new(params.sample_rate);
+            let resource = params
+                .get("tape")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tape_0");
+            let mut n = WriteHead::<f32, BUF_SIZE>::with_resource(params.sample_rate, resource);
             SignalNode::set_id(&mut n, id);
             SignalNode::init(&mut n, params.sample_rate);
             NodeVariant::Processor(Box::new(n))
@@ -258,7 +253,11 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
         registry,
         "rill/read_head",
         |id: NodeId, params: &NodeParams| {
-            let mut n = ReadHead::<f32, BUF_SIZE>::new();
+            let resource = params
+                .get("tape")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tape_0");
+            let mut n = ReadHead::<f32, BUF_SIZE>::with_resource(resource);
             SignalNode::set_id(&mut n, id);
             SignalNode::init(&mut n, params.sample_rate);
             NodeVariant::Source(Box::new(n))
@@ -290,4 +289,26 @@ pub fn load_graph_json<const B: usize>(
     json: &str,
 ) -> Result<rill_graph::GraphBuilder<f32, B>, rill_graph::serialization::SerializationError> {
     rill_graph::serialization::from_json(json, registry::<B>())
+}
+
+/// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).
+pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
+    factory.register("null", |sr, bs, ch| {
+        Ok(Box::new(crate::io::backends::NullBackend::new(
+            crate::io::AudioConfig::new()
+                .with_sample_rate(sr)
+                .with_buffer_size(bs)
+                .with_channels(ch),
+        )))
+    });
+
+    #[cfg(feature = "alsa")]
+    factory.register("alsa", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b = crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?;
+        Ok(Box::new(b))
+    });
 }

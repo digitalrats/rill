@@ -21,7 +21,7 @@ use std::fmt::Write;
 use rill_core::traits::{NodeCategory, SignalNode};
 use rill_core::Transcendental;
 
-use crate::graph::{NodeEntry, SignalGraph};
+use crate::graph::SignalGraph;
 
 /// Configuration for DOT graph generation.
 pub struct DotConfig {
@@ -63,14 +63,13 @@ pub fn to_dot<T: Transcendental, const B: usize>(
     writeln!(dot, "    node [style=filled, fontname=\"Sans\"];").ok();
     writeln!(dot, "    edge [fontname=\"Sans\", fontsize=10];").ok();
 
-    let entries = graph.node_entries();
+    let nodes = graph.nodes();
 
     if config.cluster_by_category {
-        emit_clusters(&mut dot, entries, config);
+        emit_clusters(&mut dot, nodes, config);
     } else {
-        // No clustering — emit all nodes inline
-        for (idx, entry) in entries.iter().enumerate() {
-            emit_node(&mut dot, idx, entry, config);
+        for (idx, variant) in nodes.iter().enumerate() {
+            emit_node(&mut dot, idx, variant, config);
         }
     }
 
@@ -78,19 +77,17 @@ pub fn to_dot<T: Transcendental, const B: usize>(
     // Walk every node's output ports and create DOT edges from downstream.
     let topo = graph.topo_order();
     for &node_idx in topo {
-        let entry = &entries[node_idx];
-        let meta = entry.node.metadata();
-        let id = entry.node.id().inner();
+        let variant = &nodes[node_idx];
+        let meta = variant.metadata();
+        let id = variant.id().inner();
 
-        // Signal outputs
         for p in 0..meta.signal_outputs {
-            if let Some(port) = entry.node.output_port(p) {
+            if let Some(port) = variant.output_port(p) {
                 for &(target_node, _) in &port.downstream {
-                    let target_entry = &entries[target_node];
-                    let target_id = target_entry.node.id().inner();
+                    let target_entry = &nodes[target_node];
+                    let target_id = target_entry.id().inner();
 
                     let from_label = port_name(&port_name_by_index(p, "out"));
-                    let _to_label = port_name("?");
 
                     write!(dot, "    node_{id} -> node_{target_id}").ok();
                     if config.show_port_names {
@@ -115,12 +112,11 @@ pub fn to_dot<T: Transcendental, const B: usize>(
 fn emit_node<T: Transcendental, const B: usize>(
     dot: &mut String,
     _idx: usize,
-    entry: &NodeEntry<T, B>,
+    variant: &NodeVariant<T, B>,
     config: &DotConfig,
 ) {
-    let node = &entry.node;
-    let meta = node.metadata();
-    let id = node.id().inner();
+    let meta = variant.metadata();
+    let id = variant.id().inner();
     let cat = meta.category;
 
     let (shape, fillcolor) = category_style(cat);
@@ -152,15 +148,14 @@ fn emit_node<T: Transcendental, const B: usize>(
 
 fn emit_clusters<T: Transcendental, const B: usize>(
     dot: &mut String,
-    entries: &[NodeEntry<T, B>],
+    nodes: &[NodeVariant<T, B>],
     config: &DotConfig,
 ) {
-    // Collect nodes by category
-    let mut by_cat: std::collections::BTreeMap<String, Vec<(usize, &NodeEntry<T, B>)>> =
+    let mut by_cat: std::collections::BTreeMap<String, Vec<(usize, &NodeVariant<T, B>)>> =
         std::collections::BTreeMap::new();
 
-    for (idx, entry) in entries.iter().enumerate() {
-        let cat = entry.node.metadata().category;
+    for (idx, variant) in nodes.iter().enumerate() {
+        let cat = variant.metadata().category;
         let cat_name = cat.name();
         // Capitalize
         let mut key = String::new();
@@ -169,14 +164,13 @@ fn emit_clusters<T: Transcendental, const B: usize>(
             key.extend(c.to_uppercase());
             key.push_str(chars.as_str());
         }
-        by_cat.entry(key).or_default().push((idx, entry));
+        by_cat.entry(key).or_default().push((idx, variant));
     }
 
     for (cat_name, nodes) in &by_cat {
-        // Determine cluster color from category
         let first = nodes
             .first()
-            .map(|(_, n)| n.node.metadata().category)
+            .map(|(_, n)| n.metadata().category)
             .unwrap_or(NodeCategory::Processor);
         let (_, fillcolor) = category_style(first);
 
@@ -187,8 +181,8 @@ fn emit_clusters<T: Transcendental, const B: usize>(
         writeln!(dot, "        fontcolor=\"{fillcolor}\";").ok();
         writeln!(dot, "        fontsize=14;").ok();
 
-        for (idx, entry) in nodes {
-            emit_node(dot, *idx, entry, config);
+        for (idx, variant) in nodes {
+            emit_node(dot, *idx, variant, config);
         }
 
         writeln!(dot, "    }}").ok();

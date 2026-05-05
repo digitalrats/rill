@@ -1,13 +1,10 @@
-//! Null бэкенд для тестирования
-
 use std::time::Duration;
 
-use crate::audio_io::AudioIo;
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::IoResult;
+use rill_core::io::IoBackend;
 
-/// Null бэкенд - не производит реального аудио ввода-вывода
 #[derive(Debug)]
 pub struct NullBackend {
     config: AudioConfig,
@@ -16,7 +13,6 @@ pub struct NullBackend {
 }
 
 impl NullBackend {
-    /// Создать новый Null бэкенд
     pub fn new(config: AudioConfig) -> Self {
         Self {
             config,
@@ -30,72 +26,62 @@ impl AudioBackend for NullBackend {
     fn backend_type(&self) -> BackendType {
         BackendType::Null
     }
-
     fn config(&self) -> &AudioConfig {
         &self.config
     }
-
     fn config_mut(&mut self) -> &mut AudioConfig {
         &mut self.config
     }
-
     fn init(&mut self) -> IoResult<()> {
         Ok(())
     }
-
     fn start(&mut self) -> IoResult<()> {
         self.is_running = true;
         Ok(())
     }
-
     fn stop(&mut self) -> IoResult<()> {
         self.is_running = false;
         Ok(())
     }
-
     fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
         buffer.fill(0.0);
         Ok(buffer.len())
     }
-
     fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
         Ok(buffer.len())
     }
-
     fn xruns(&self) -> u32 {
         self.xruns
     }
-
     fn latency(&self) -> Duration {
         Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
         )
     }
-
     fn list_input_devices(&self) -> Vec<String> {
-        vec!["Null Input".to_string()]
+        vec!["Null Input".into()]
     }
-
     fn list_output_devices(&self) -> Vec<String> {
-        vec!["Null Output".to_string()]
+        vec!["Null Output".into()]
     }
 }
 
-impl AudioIo for NullBackend {
+impl IoBackend<f32> for NullBackend {
     fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
-    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
-        let n = left.len().min(right.len());
-        left[..n].fill(0.0);
-        right[..n].fill(0.0);
+    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
+        let n = channels.first().map(|c| c.len()).unwrap_or(0);
+        for ch in channels.iter_mut() {
+            ch[..n].fill(0.0);
+        }
         n
     }
-    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        left.len().min(right.len())
+    fn write(&self, channels: &[&[f32]]) -> usize {
+        channels.first().map(|c| c.len()).unwrap_or(0)
     }
-    fn start(&self) -> crate::audio_io::IoResult<()> {
+    fn start(&self) -> Result<(), String> {
         Ok(())
     }
-    fn stop(&self) -> crate::audio_io::IoResult<()> {
+    fn stop(&self) -> Result<(), String> {
         Ok(())
     }
 }

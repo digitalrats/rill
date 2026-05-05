@@ -18,10 +18,11 @@ use rill_core::math::Transcendental;
 use rill_core::traits::{NodeId, NodeParams, NodeVariant, ParamValue, SignalNode};
 use rill_core::ParameterId;
 
-use crate::graph::{GraphBuilder, NodeEntry};
+use crate::graph::GraphBuilder;
 use crate::registry::{NodeRegistry, RegistryError};
 
 // Re-export serde unconditionally — the whole module is feature-gated.
+use serde::de;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -83,6 +84,13 @@ pub struct NodeDef {
     pub name: String,
 
     /// Runtime parameters (frequency, gain, …).
+    ///
+    /// Accepts both plain values (`"delay_time": 0.5`) and tagged format
+    /// (`"delay_time": {"Float": 0.5}`). Always serialises as plain values.
+    #[serde(
+        deserialize_with = "deserialize_params",
+        serialize_with = "serialize_params"
+    )]
     pub parameters: HashMap<String, ParamValue>,
 }
 
@@ -217,14 +225,11 @@ impl GraphDocument {
     /// Iterates every node, reads its metadata and current parameters,
     /// and reconstructs all connections from port routing state.
     pub fn from_graph<T: Transcendental, const B: usize>(graph: &super::SignalGraph<T, B>) -> Self {
-        let entries = graph.node_entries();
+        let nodes_slice = graph.nodes();
         let sample_rate = graph.sample_rate();
 
-        let nodes: Vec<NodeDef> = entries
-            .iter()
-            .map(|entry| node_to_def(&entry.node))
-            .collect();
-        let connections = extract_connections(entries);
+        let nodes: Vec<NodeDef> = nodes_slice.iter().map(node_to_def).collect();
+        let connections = extract_connections(nodes_slice);
 
         let resources = graph
             .resources()
@@ -272,19 +277,19 @@ fn node_to_def<T: Transcendental, const B: usize>(variant: &NodeVariant<T, B>) -
 }
 
 fn extract_connections<T: Transcendental, const B: usize>(
-    entries: &[NodeEntry<T, B>],
+    nodes: &[NodeVariant<T, B>],
 ) -> Vec<ConnectionDef> {
     let mut conns = Vec::new();
 
-    for (_from_idx, entry) in entries.iter().enumerate() {
-        let variant = &entry.node;
+    for (from_idx, variant) in nodes.iter().enumerate() {
+        let _ = from_idx;
         let from_id = variant.id().inner();
-
         let signal_outs = variant.metadata().signal_outputs;
+
         for from_port in 0..signal_outs {
             if let Some(port) = variant.output_port(from_port) {
                 for &(to_idx, to_port) in &port.downstream {
-                    let to_id = entries[to_idx].node.id().inner();
+                    let to_id = nodes[to_idx].id().inner();
                     conns.push(ConnectionDef {
                         kind: SignalKind::Signal,
                         from_node: from_id,
@@ -294,7 +299,7 @@ fn extract_connections<T: Transcendental, const B: usize>(
                     });
                 }
                 for &(to_idx, to_port) in &port.feedback_downstream {
-                    let to_id = entries[to_idx].node.id().inner();
+                    let to_id = nodes[to_idx].id().inner();
                     conns.push(ConnectionDef {
                         kind: SignalKind::Feedback,
                         from_node: from_id,
@@ -399,6 +404,82 @@ impl GraphDocument {
         }
 
         Ok(builder)
+    }
+}
+
+// ============================================================================
+// Custom serde for NodeDef.parameters — accepts both plain and tagged formats
+// ============================================================================
+
+fn deserialize_params<'de, D>(deserializer: D) -> Result<HashMap<String, ParamValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: HashMap<String, serde_json::Value> = HashMap::deserialize(deserializer)?;
+    raw.into_iter()
+        .map(|(k, v)| {
+            json_to_param_value(v)
+                .map(|pv| (k, pv))
+                .map_err(de::Error::custom)
+        })
+        .collect()
+}
+
+fn json_to_param_value(v: serde_json::Value) -> Result<ParamValue, String> {
+    match v {
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .map(|f| ParamValue::Float(f as f32))
+            .ok_or_else(|| "invalid number".to_string()),
+        serde_json::Value::String(s) => Ok(ParamValue::String(s)),
+        serde_json::Value::Bool(b) => Ok(ParamValue::Bool(b)),
+        serde_json::Value::Object(obj) => {
+            if let Some(val) = obj.get("Float").and_then(|v| v.as_f64()) {
+                return Ok(ParamValue::Float(val as f32));
+            }
+            if let Some(val) = obj.get("Int").and_then(|v| v.as_i64()) {
+                return Ok(ParamValue::Int(val as i32));
+            }
+            if let Some(val) = obj.get("Bool").and_then(|v| v.as_bool()) {
+                return Ok(ParamValue::Bool(val));
+            }
+            if let Some(val) = obj.get("String").and_then(|v| v.as_str()) {
+                return Ok(ParamValue::String(val.to_string()));
+            }
+            if let Some(val) = obj.get("Choice").and_then(|v| v.as_str()) {
+                return Ok(ParamValue::Choice(val.to_string()));
+            }
+            Err("unknown variant in tagged format".to_string())
+        }
+        _ => Err("invalid param value type".to_string()),
+    }
+}
+
+fn serialize_params<S>(
+    params: &HashMap<String, ParamValue>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut map = serializer.serialize_map(Some(params.len()))?;
+    for (k, v) in params {
+        let json_val = param_value_to_json(v);
+        map.serialize_entry(k, &json_val)?;
+    }
+    map.end()
+}
+
+fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
+    match v {
+        ParamValue::Float(f) => {
+            serde_json::Value::Number(serde_json::Number::from_f64(*f as f64).unwrap_or(0.into()))
+        }
+        ParamValue::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+        ParamValue::Bool(b) => serde_json::Value::Bool(*b),
+        ParamValue::String(s) => serde_json::Value::String(s.clone()),
+        ParamValue::Choice(s) => serde_json::Value::String(s.clone()),
     }
 }
 

@@ -15,7 +15,7 @@ use rill_core::{
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
-use crate::audio_io::AudioIoPtr;
+use crate::signal_io::IoBackendPtr;
 
 /// Stereo audio output sink. Writes to backend's output buffer in `consume()`.
 ///
@@ -27,7 +27,7 @@ pub struct AudioOutput<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: AudioIoPtr,
+    backend: IoBackendPtr<T>,
     /// Pull‑model mode: when `true`, [`start()`] drives the graph by calling
     /// `process_block` on the node at `source_idx` (the passive Source).
     active: bool,
@@ -57,14 +57,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
             metadata,
             inputs,
             state: NodeState::new(44100.0),
-            backend: AudioIoPtr::null(),
+            backend: IoBackendPtr::<T>::null(),
             active: false,
             source_idx: 0,
         }
     }
 
     /// Attach a borrowed backend pointer.
-    pub fn set_backend(&mut self, backend: AudioIoPtr) {
+    pub fn set_backend(&mut self, backend: IoBackendPtr<T>) {
         self.backend = backend;
     }
 
@@ -217,13 +217,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for AudioOutput
             if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
                 let l_buf = lp.buffer.as_array();
                 let r_buf = rp.buffer.as_array();
-                let mut out_l = [0.0f32; BUF_SIZE];
-                let mut out_r = [0.0f32; BUF_SIZE];
-                for i in 0..BUF_SIZE {
-                    out_l[i] = l_buf[i].to_f32();
-                    out_r[i] = r_buf[i].to_f32();
-                }
-                backend.write_output(&out_l, &out_r);
+                let out = [l_buf as &[T], r_buf as &[T]];
+                backend.write(&out);
             }
         }
         self.state.advance();

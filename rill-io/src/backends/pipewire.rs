@@ -15,14 +15,13 @@ use pw::properties::properties;
 use pw::spa;
 use pw::spa::sys as spa_sys;
 
-#[allow(unused_imports)]
-use crate::audio_io::{AudioIo, IoResult as AudioIoResult};
 use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use crate::midi::MidiEvent;
 use crate::PwBuffers;
+use rill_core::io::IoBackend;
 
 /// Maximum stereo block in samples (4096 frames × 2 channels).
 const MAX_BLOCK_SAMPLES: usize = 8192;
@@ -192,35 +191,43 @@ impl PipewireBackend {
 // AudioIo impl
 // ============================================================================
 
-impl AudioIo for PipewireBackend {
+impl IoBackend<f32> for PipewireBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
         unsafe {
             self.process_cb.set(cb);
         }
     }
 
-    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
-        let n = left.len().min(right.len());
+    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-        let max_s = n.saturating_mul(2).min(MAX_BLOCK_SAMPLES);
+        let max_s = frames.saturating_mul(2).min(MAX_BLOCK_SAMPLES);
         let n_read = self.input_buffer.read(&mut temp[..max_s]);
-        let frames = n_read / 2;
-        let out = frames.min(n);
+        let frames_out = n_read / 2;
+        let out = frames_out.min(frames);
         for i in 0..out {
-            left[i] = temp[i * 2];
-            right[i] = temp[i * 2 + 1];
+            if let Some(ch) = channels.get_mut(0) {
+                ch[i] = temp[i * 2];
+            }
+            if let Some(ch) = channels.get_mut(1) {
+                ch[i] = temp[i * 2 + 1];
+            }
         }
         out
     }
 
-    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        let n = left.len().min(right.len());
+    fn write(&self, channels: &[&[f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity.min(n * 2);
+            let cap = win.capacity.min(frames * 2);
             let dst = win.as_mut_slice();
             for i in 0..(cap / 2) {
-                dst[i * 2] = left[i];
-                dst[i * 2 + 1] = right[i];
+                if let Some(ch) = channels.get(0) {
+                    dst[i * 2] = ch[i];
+                }
+                if let Some(ch) = channels.get(1) {
+                    dst[i * 2 + 1] = ch[i];
+                }
             }
             cap / 2
         } else {
@@ -228,7 +235,7 @@ impl AudioIo for PipewireBackend {
         }
     }
 
-    fn start(&self) -> AudioIoResult<()> {
+    fn start(&self) -> Result<(), String> {
         self.running.store(true, Ordering::Release);
         if let Ok(guard) = self.thread_handle.lock() {
             if let Some(ref handle) = *guard {
@@ -238,7 +245,7 @@ impl AudioIo for PipewireBackend {
         Ok(())
     }
 
-    fn stop(&self) -> AudioIoResult<()> {
+    fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
         if let Ok(guard) = self.thread_handle.lock() {
             if let Some(ref handle) = *guard {

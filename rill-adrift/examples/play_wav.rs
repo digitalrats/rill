@@ -5,11 +5,12 @@
 //!
 //! Backend: "cpal" (default), "alsa", "pipewire", "jack", "null"
 
-use rill_adrift::io::audio_io::{AudioIo, AudioIoPtr};
 use rill_adrift::io::output::AudioOutput;
+use rill_adrift::io::signal_io::IoBackendPtr;
 #[allow(unused_imports)]
 use rill_adrift::io::AudioBackend;
 use rill_adrift::io::AudioConfig;
+use rill_adrift::rill_core::io::IoBackend;
 use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_core::traits::processable::NodeVariant;
 use rill_adrift::rill_core::traits::SignalNode;
@@ -22,7 +23,7 @@ use rill_adrift::sampler::wav::load_wav;
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
-fn create_backend(name: &str, config: AudioConfig) -> Box<dyn AudioIo> {
+fn create_backend(name: &str, config: AudioConfig) -> Box<dyn IoBackend<f32>> {
     match name {
         "null" => Box::new(rill_adrift::io::NullBackend::new(config)),
         #[cfg(feature = "cpal")]
@@ -79,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_buffer_size(BUF as u32)
         .with_channels(2);
     let backend = create_backend(backend_name, config);
-    let backend_ptr = AudioIoPtr::from_ref(&*backend);
+    let backend_ptr = IoBackendPtr::from_ref(&*backend);
 
     // ── Load WAV ──────────────────────────────────────────────────────────
     let sample = load_wav(wav_path)?;
@@ -113,33 +114,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.connect_signal(fx, 0, snk, 0);
     builder.connect_signal(src, 1, snk, 1);
 
-    let graph = builder
-        .build(Box::new(SystemClock::with_sample_rate(RATE)))
+    let mut graph = builder
+        .build(Box::new(SystemClock::with_sample_rate(RATE)), None)
         .expect("graph build");
-    let (mut nodes, topo, _tick) = graph.into_parts();
 
-    // ── Find AudioOutput in the graph and start it ────────────────────────
+    // ── Start the pull model ──────────────────────────────────────────────
+    let topo = graph.topo_order().to_vec();
     let out_idx = topo
         .iter()
-        .position(|&i| nodes[i].metadata().name == "AudioOutput")
+        .position(|&i| graph.nodes()[i].metadata().name == "AudioOutput")
         .expect("AudioOutput in graph");
+    let src_idx = topo[0];
 
     let audio_output: &mut AudioOutput<f32, BUF> = {
-        let sink = &mut nodes[out_idx];
-        if let NodeVariant::Sink(ref mut s) = sink {
-            // Safety: we know this is an AudioOutput because we placed it
-            // in the graph as a Sink at that index. The type erasure matches.
+        let n = &mut graph.nodes_mut()[out_idx];
+        if let NodeVariant::Sink(ref mut s) = n {
             unsafe { &mut *(s.as_mut() as *mut dyn Sink<f32, BUF> as *mut AudioOutput<f32, BUF>) }
         } else {
             panic!("expected AudioOutput at index {out_idx}");
         }
     };
 
-    let nodes_ptr: *mut [NodeVariant<f32, BUF>] = Box::leak(nodes.into_boxed_slice());
-
+    let nodes_ptr = graph.nodes_mut() as *mut [NodeVariant<f32, BUF>];
     let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>]) + Send> = Box::new(|_| {});
 
-    // Start the pull model — the backend calls this callback on each audio tick.
     audio_output.start(nodes_ptr, drain_fn, RATE);
 
     // ── Let it play ────────────────────────────────────────────────────────
@@ -150,14 +148,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
 
-    // Stop the backend's audio stream.
     let _ = backend.stop();
 
-    // Free the leaked box before exit.
-    unsafe {
-        drop(Box::from_raw(nodes_ptr));
-    }
-    drop(backend);
+    // graph dropped → everything freed
 
     println!("⏹ Stopped.");
     Ok(())

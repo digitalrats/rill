@@ -38,6 +38,23 @@ impl<T> BufferRegistry<T> {
         self.buffers.get(name).map(|b| &**b as *const dyn Buffer<T>)
     }
 
+    /// Take ownership of a buffer by name, removing it from the registry.
+    pub fn take(&mut self, name: &str) -> Option<Box<dyn Buffer<T>>> {
+        self.buffers.remove(name)
+    }
+
+    /// Leak a buffer by name, returning a raw mutable pointer.
+    /// The leaked buffer will live for the remainder of the program
+    /// (or until manually re‑boxed and dropped).
+    pub fn leak(&mut self, name: &str) -> Option<*mut dyn Buffer<T>> {
+        self.buffers.remove(name).map(|b| Box::into_raw(b))
+    }
+
+    /// Consume the registry and return all owned buffers.
+    pub fn into_inner(self) -> Vec<Box<dyn Buffer<T>>> {
+        self.buffers.into_values().collect()
+    }
+
     /// Number of registered buffers.
     pub fn len(&self) -> usize {
         self.buffers.len()

@@ -17,12 +17,11 @@ use std::time::Duration;
 use alsa::pcm::{Access, Format, HwParams};
 use alsa::{Direction, ValueOr, PCM};
 
-use crate::audio_io::AudioIo;
-use crate::buffer::IoRingBuffer;
-
 use crate::backend::{AudioBackend, BackendType};
+use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+use rill_core::io::IoBackend;
 
 /// Callback slot — `*mut Option<Box<dyn Fn()>>` as `usize` (Send-friendly).
 #[derive(Copy, Clone)]
@@ -353,38 +352,46 @@ impl AudioBackend for AlsaBackend {
     }
 }
 
-impl AudioIo for AlsaBackend {
+impl IoBackend<f32> for AlsaBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
         unsafe {
             self.process_cb.set(cb);
         }
     }
 
-    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
-        let frames = left.len().min(right.len());
+    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         let cap = frames.min(256).saturating_mul(2);
         let mut temp = [0.0f32; 512];
         let n = self.input_buffer.read(&mut temp[..cap]);
         let frames_out = n / 2;
         for i in 0..frames_out.min(frames) {
-            left[i] = temp[i * 2];
-            right[i] = temp[i * 2 + 1];
+            if let Some(ch) = channels.get_mut(0) {
+                ch[i] = temp[i * 2];
+            }
+            if let Some(ch) = channels.get_mut(1) {
+                ch[i] = temp[i * 2 + 1];
+            }
         }
         frames_out
     }
 
-    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        let frames = left.len().min(right.len());
+    fn write(&self, channels: &[&[f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         let cap = frames.min(256).saturating_mul(2);
         let mut temp = [0.0f32; 512];
         for i in 0..(cap / 2) {
-            temp[i * 2] = left[i];
-            temp[i * 2 + 1] = right[i];
+            if let Some(ch) = channels.get(0) {
+                temp[i * 2] = ch[i];
+            }
+            if let Some(ch) = channels.get(1) {
+                temp[i * 2 + 1] = ch[i];
+            }
         }
         self.output_buffer.write(&temp[..cap]) / 2
     }
 
-    fn start(&self) -> crate::audio_io::IoResult<()> {
+    fn start(&self) -> Result<(), String> {
         self.running.store(true, Ordering::Release);
         if let Some(handle) = &self.thread_handle {
             handle.thread().unpark();
@@ -392,7 +399,7 @@ impl AudioIo for AlsaBackend {
         Ok(())
     }
 
-    fn stop(&self) -> crate::audio_io::IoResult<()> {
+    fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
         self.started.store(false, Ordering::Release);
         Ok(())

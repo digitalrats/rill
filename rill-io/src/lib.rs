@@ -25,6 +25,9 @@ pub mod input;
 /// Abstract audio I/O backend + registry.
 pub mod audio_io;
 
+/// Signal I/O pointer and backend registry.
+pub mod signal_io;
+
 /// Shared ring buffers and downcast helpers for I/O nodes.
 pub mod rings;
 
@@ -52,6 +55,8 @@ pub use backends::PipewireBackend;
 
 #[cfg(feature = "jack")]
 pub use backends::JackBackend;
+
+pub use signal_io::IoBackendPtr;
 
 #[cfg(test)]
 mod tests {

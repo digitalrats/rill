@@ -171,6 +171,9 @@ pub mod prelude;
 /// Fractional-index interpolation trait for slice-like types
 pub mod interpolate;
 
+/// Generic multi-channel signal I/O abstraction
+pub mod io;
+
 /// Graph executor for driving signal processing
 pub mod executor;
 

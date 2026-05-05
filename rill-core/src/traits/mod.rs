@@ -4,6 +4,7 @@
 //! of the Rill ecosystem.
 
 pub mod action;
+pub mod active;
 pub mod algorithm;
 mod error;
 pub mod node;
@@ -14,6 +15,7 @@ pub mod router;
 
 // Re-export all public items
 pub use action::*;
+pub use active::*;
 pub use algorithm::*;
 pub use error::*;
 pub use node::*;

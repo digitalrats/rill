@@ -1,5 +1,5 @@
 use rill_core::{
-    buffer::TapeLoop,
+    buffer::{BufferRegistry, TapeLoop},
     math::Transcendental,
     traits::{NodeCategory, NodeMetadata, NodeState, SignalNode, Source},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
@@ -23,6 +23,7 @@ pub struct ReadHead<T: Transcendental, const BUF_SIZE: usize> {
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
     tape: *const TapeLoop<T>,
+    resource_name: String,
     delay: f32,
     sample_rate: f32,
 }
@@ -41,7 +42,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for ReadHead<T, BUF_SIZE>
 
 impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     /// Create a new `ReadHead` with default delay of 0.5 seconds.
+    ///
+    /// `resource_name` is the name of the shared tape loop in the buffer registry.
+    /// Defaults to `"tape_0"`.
     pub fn new() -> Self {
+        Self::with_resource("tape_0")
+    }
+
+    /// Create a new `ReadHead` with an explicit resource name.
+    pub fn with_resource(resource_name: &str) -> Self {
         let mut metadata = NodeMetadata::new("ReadHead", NodeCategory::Source);
         metadata.parameters = vec![rill_core::ParamMetadata::new(
             "delay",
@@ -56,9 +65,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
             outputs,
             state: NodeState::new(44100.0),
             tape: std::ptr::null(),
+            resource_name: resource_name.to_string(),
             delay: 0.5,
             sample_rate: 44100.0,
         }
+    }
+
+    /// Set the tape pointer (called during resource resolution).
+    pub fn set_tape_ptr(&mut self, tape: *const TapeLoop<T>) {
+        self.tape = tape;
     }
 
     fn delay_samples(&self) -> usize {
@@ -114,6 +129,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for ReadH
     fn reset(&mut self) {
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
+    }
+    fn resolve_resources(&mut self, buffers: &BufferRegistry<T>) {
+        if !self.tape.is_null() {
+            return;
+        }
+        if let Some(ptr) = buffers.get_ptr(&self.resource_name) {
+            self.tape = ptr as *const TapeLoop<T>;
+        }
     }
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
         match id.as_str() {

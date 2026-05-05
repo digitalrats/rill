@@ -1,5 +1,5 @@
 use rill_core::{
-    buffer::TapeLoop,
+    buffer::{BufferRegistry, TapeLoop},
     math::Transcendental,
     traits::{NodeCategory, NodeMetadata, NodeState, Processor, SignalNode},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
@@ -34,6 +34,7 @@ pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
     state: NodeState<T, BUF_SIZE>,
 
     tape: *mut TapeLoop<T>,
+    resource_name: String,
     delay_time: f32,
     feedback: f32,
     sample_rate: f32,
@@ -41,7 +42,15 @@ pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
 
 impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     /// Create a new `WriteHead` with default delay (0.5 s) and feedback (0.3).
+    ///
+    /// `resource_name` is the name of the shared tape loop in the buffer registry.
+    /// Defaults to `"tape_0"`.
     pub fn new(sample_rate: f32) -> Self {
+        Self::with_resource(sample_rate, "tape_0")
+    }
+
+    /// Create a new `WriteHead` with an explicit resource name.
+    pub fn with_resource(sample_rate: f32, resource_name: &str) -> Self {
         let mut metadata = NodeMetadata::new("WriteHead", NodeCategory::Processor);
         metadata.parameters = vec![
             rill_core::ParamMetadata::new(
@@ -71,10 +80,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
             outputs,
             state: NodeState::new(sample_rate),
             tape: std::ptr::null_mut(),
+            resource_name: resource_name.to_string(),
             delay_time: 0.5,
             feedback: 0.3,
             sample_rate,
         }
+    }
+
+    /// Set the tape pointer (called during resource resolution).
+    pub fn set_tape_ptr(&mut self, tape: *mut TapeLoop<T>) {
+        self.tape = tape;
     }
 
     /// Return a raw pointer to the tape loop for read heads.
@@ -145,6 +160,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Write
     fn reset(&mut self) {
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
+    }
+
+    fn resolve_resources(&mut self, buffers: &BufferRegistry<T>) {
+        if !self.tape.is_null() {
+            return;
+        }
+        if let Some(ptr) = buffers.get_ptr(&self.resource_name) {
+            self.tape = ptr as *const dyn rill_core::buffer::Buffer<T> as *mut TapeLoop<T>;
+        }
     }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {

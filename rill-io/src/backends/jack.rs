@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
 
-use crate::audio_io::{AudioIo, IoResult as AudioIoResult};
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+use rill_core::io::IoBackend;
 
 /// Callback slot.
 #[derive(Copy, Clone)]
@@ -235,23 +235,24 @@ fn run_jack_thread(
 // AudioIo impl
 // ============================================================================
 
-impl AudioIo for JackBackend {
+impl IoBackend<f32> for JackBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
         unsafe {
             self.process_cb.set(cb);
         }
     }
 
-    fn read_input(&self, _left: &mut [f32], _right: &mut [f32]) -> usize {
+    fn read(&self, _channels: &mut [&mut [f32]]) -> usize {
         0
     }
 
-    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        let n = left.len().min(right.len());
+    fn write(&self, channels: &[&[f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity.min(n);
+            let cap = win.capacity.min(frames);
             let dst = win.as_mut_slice();
-            // Sum stereo to mono
+            let left = channels.first().copied().unwrap_or(&[]);
+            let right = channels.get(1).copied().unwrap_or(left);
             for i in 0..cap {
                 dst[i] = (left[i] + right[i]) * 0.5;
             }
@@ -261,7 +262,7 @@ impl AudioIo for JackBackend {
         }
     }
 
-    fn start(&self) -> AudioIoResult<()> {
+    fn start(&self) -> Result<(), String> {
         self.running.store(true, Ordering::Release);
         if let Some(handle) = &self.thread_handle {
             handle.thread().unpark();
@@ -269,7 +270,7 @@ impl AudioIo for JackBackend {
         Ok(())
     }
 
-    fn stop(&self) -> AudioIoResult<()> {
+    fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
         if let Some(handle) = &self.thread_handle {
             handle.thread().unpark();

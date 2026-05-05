@@ -308,6 +308,15 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     /// Get node ID
     fn id(&self) -> NodeId;
 
+    /// Resolve named resource buffers (tape loops, etc.) from the registry.
+    fn resolve_resources(&mut self, _buffers: &crate::buffer::BufferRegistry<T>) {}
+
+    /// Provide the shared audio backend pointer.
+    ///
+    /// Called during graph assembly so that audio I/O nodes can store
+    /// the pointer.  Default no‑op.
+    fn resolve_backend(&mut self, _backend: *mut dyn crate::io::IoBackend<T>) {}
+
     /// Set node ID
     fn set_id(&mut self, id: NodeId);
 

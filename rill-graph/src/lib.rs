@@ -19,6 +19,9 @@
 
 mod graph;
 
+/// Backend factory for constructing audio I/O backends by name.
+pub mod backend_factory;
+
 /// Node factory and registry for constructing nodes by type name.
 pub mod registry;
 

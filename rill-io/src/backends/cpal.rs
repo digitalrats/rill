@@ -9,11 +9,11 @@ use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::audio_io::{AudioIo, IoResult as AudioIoResult};
 use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+use rill_core::io::IoBackend;
 
 /// Callback slot — stores a `*mut Option<Box<dyn Fn()>>` as `usize`
 /// so the field type itself is `Send`.
@@ -243,34 +243,42 @@ impl AudioBackend for CpalBackend {
     }
 }
 
-impl AudioIo for CpalBackend {
+impl IoBackend<f32> for CpalBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
         unsafe {
             self.process_cb.set(cb);
         }
     }
 
-    fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
-        let frames = left.len().min(right.len());
+    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         let cap = frames.min(256).saturating_mul(2);
         let mut temp = [0.0f32; 512];
         let n = self.input_ring.read(&mut temp[..cap]);
         let frames_out = n / 2;
         for i in 0..frames_out.min(frames) {
-            left[i] = temp[i * 2];
-            right[i] = temp[i * 2 + 1];
+            if let Some(ch) = channels.get_mut(0) {
+                ch[i] = temp[i * 2];
+            }
+            if let Some(ch) = channels.get_mut(1) {
+                ch[i] = temp[i * 2 + 1];
+            }
         }
         frames_out
     }
 
-    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        let n = left.len().min(right.len());
+    fn write(&self, channels: &[&[f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity.min(n * 2);
+            let cap = win.capacity.min(frames * 2);
             let dst = win.as_mut_slice();
             for i in 0..(cap / 2) {
-                dst[i * 2] = left[i];
-                dst[i * 2 + 1] = right[i];
+                if let Some(ch) = channels.get(0) {
+                    dst[i * 2] = ch[i];
+                }
+                if let Some(ch) = channels.get(1) {
+                    dst[i * 2 + 1] = ch[i];
+                }
             }
             cap / 2
         } else {
@@ -278,11 +286,7 @@ impl AudioIo for CpalBackend {
         }
     }
 
-    fn start(&self) -> AudioIoResult<()> {
-        // Build stream and start playback.
-        // Using UnsafeCell for interior mutability since AudioIo::start()
-        // takes &self — but this is the only place the stream is created,
-        // always from the control thread, never concurrent with itself.
+    fn start(&self) -> Result<(), String> {
         let stream = match self.build_streams() {
             Ok(s) => s,
             Err(e) => return Err(format!("CPAL build: {e}")),
@@ -294,7 +298,7 @@ impl AudioIo for CpalBackend {
         Ok(())
     }
 
-    fn stop(&self) -> AudioIoResult<()> {
+    fn stop(&self) -> Result<(), String> {
         if let Some(s) = unsafe { (*self.stream.get()).take() } {
             let _ = s.pause();
         }
