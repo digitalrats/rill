@@ -111,7 +111,7 @@ pub use automaton::{
 pub use automaton_task::spawn_automaton_task;
 pub use control::{
     midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
-    NoAction, OscSurface, OscSurfaceEntry, ParameterCommand, ParameterMapping, PatchbayControl,
+    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, PatchbayControl,
     Servo, Target, Transform,
 };
 pub use engine::PatchbayEngine;

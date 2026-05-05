@@ -40,7 +40,8 @@ use std::sync::Arc;
 
 use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
-use rill_patchbay::control::{OscSurface, ParameterCommand, PatchbayControl};
+use rill_core::queues::SetParameter;
+use rill_patchbay::control::{OscSurface, PatchbayControl};
 use rill_patchbay::engine::PatchbayEngine;
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
@@ -111,7 +112,7 @@ pub enum RuntimeError {
 /// the all-in-one lifecycle.
 pub struct Runtime {
     /// Lock-free command queue (control → audio thread).
-    pub(crate) queue: Arc<MpscQueue<ParameterCommand>>,
+    pub(crate) queue: Arc<MpscQueue<SetParameter>>,
 
     /// Host configuration (stored for serialized graph/patchbay loading).
     #[cfg(feature = "serialization")]
@@ -226,11 +227,17 @@ impl Runtime {
     ///
     /// Lock-free; safe from any thread.
     pub fn set_param(&self, node: NodeId, param: &str, value: f32) {
-        let _ = self.queue.push(ParameterCommand::new(node, param, value));
+        let pid = rill_core::traits::ParameterId::new(param).unwrap();
+        let _ = self.queue.push(SetParameter::new(
+            rill_core::traits::PortId::param(node, 0),
+            pid,
+            value,
+            rill_core::queues::SignalSource::Manual,
+        ));
     }
 
     /// Access the shared command queue.
-    pub fn queue(&self) -> Arc<MpscQueue<ParameterCommand>> {
+    pub fn queue(&self) -> Arc<MpscQueue<SetParameter>> {
         self.queue.clone()
     }
 

@@ -15,9 +15,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rill_core::NodeId;
+use rill_core::queues::{SetParameter, SignalSource};
+use rill_core::traits::{NodeId, ParameterId, PortId};
 use rill_patchbay::control::{
-    ControlEvent, EventPattern, OscSurface, ParameterCommand, PatchbayControl,
+    ControlEvent, EventPattern, OscSurface, PatchbayControl,
 };
 
 use crate::osc::osc::{OscMessage, OscType};
@@ -33,7 +34,7 @@ impl OscHandle {
     /// Bind an OSC server, register system + surface handlers, spawn recv loop.
     pub async fn start(
         bind: &str,
-        queue: Arc<rill_core::queues::MpscQueue<ParameterCommand>>,
+        queue: Arc<rill_core::queues::MpscQueue<SetParameter>>,
         control: Arc<std::sync::Mutex<PatchbayControl>>,
         surface: OscSurface,
     ) -> Result<Self, String> {
@@ -62,7 +63,14 @@ impl OscHandle {
                 OscType::Int(i) => *i as f32,
                 _ => return,
             };
-            let _ = q.push(ParameterCommand::new(node, &param, value));
+            if let Ok(pid) = ParameterId::new(&param) {
+                let _ = q.push(SetParameter::new(
+                    PortId::param(node, 0),
+                    pid,
+                    value,
+                    SignalSource::External("osc".into()),
+                ));
+            }
         });
 
         // /sys/graph/stop
@@ -98,7 +106,14 @@ impl OscHandle {
                 } else {
                     log::warn!("OSC surface: control lock failed");
                     if let Some(normalized) = event.normalized_value() {
-                        let _ = q.push(ParameterCommand::new(NodeId(0), &path, normalized));
+                        if let Ok(pid) = ParameterId::new(&path) {
+                            let _ = q.push(SetParameter::new(
+                                PortId::param(NodeId(0), 0),
+                                pid,
+                                normalized,
+                                SignalSource::External("osc".into()),
+                            ));
+                        }
                     }
                 }
             });

@@ -88,7 +88,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
     /// reached via `Port::propagate` from an upstream source.
     ///
     /// Callback sequence when active:
-    /// 1. `drain_fn()` — drain `MpscQueue<ParameterCommand>` into graph nodes
+    /// 1. `drain_fn()` — drain `MpscQueue<SetParameter>` into graph nodes
     /// 2. `process_block()` on the source (`source_idx` in `nodes_ptr`)
     /// 3. `Port::propagate()` — recursive DAG traversal ending at `consume()`
     ///

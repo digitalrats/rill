@@ -15,7 +15,7 @@
 //! - `PatchbayControl::handle_event()`
 
 use rill_core::prelude::*;
-use rill_core::queues::MpscQueue;
+use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,7 +26,7 @@ use crate::automaton::{
 };
 use crate::control::{
     midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
-    ParameterCommand, ParameterMapping, Transform,
+    ParameterMapping, Transform,
 };
 
 // =============================================================================
@@ -55,7 +55,7 @@ pub enum PatchbayEvent {
         value: f32,
     },
     /// A command was sent to the audio thread.
-    CommandSent(ParameterCommand),
+    CommandSent(SetParameter),
     /// An error occurred.
     Error(String),
 }
@@ -135,7 +135,7 @@ pub struct PatchbayManager {
     automaton_states: HashMap<String, Box<dyn std::any::Any + Send>>,
     servos: HashMap<String, BoxedServo>,
     mappings: Vec<Mapping>,
-    command_queue: Arc<MpscQueue<ParameterCommand>>,
+    command_queue: Arc<MpscQueue<SetParameter>>,
     event_tx: Option<crossbeam_channel::Sender<PatchbayEvent>>,
     time: f64,
     stats: PatchbayStats,
@@ -145,7 +145,7 @@ pub struct PatchbayManager {
 
 impl PatchbayManager {
     /// Create a new patchbay manager.
-    pub fn new(config: PatchbayConfig, command_queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
+    pub fn new(config: PatchbayConfig, command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
         Self {
             config,
             automata: HashMap::new(),
@@ -626,15 +626,16 @@ struct TestServo {
 }
 
 impl AnyServo for TestServo {
-    fn update(&mut self, time: f64) -> Option<ParameterCommand> {
+    fn update(&mut self, time: f64) -> Option<SetParameter> {
         let value = (time * 2.0).sin() * 0.5 + 0.5;
 
         if (value - self.last_value).abs() > 0.01 {
             self.last_value = value;
-            Some(ParameterCommand::new(
-                self.target_node,
-                &self.target_param,
+            Some(SetParameter::new(
+                PortId::param(self.target_node, 0),
+                ParameterId::new(&self.target_param).unwrap(),
                 value as f32,
+                SignalSource::Manual,
             ))
         } else {
             None
@@ -655,7 +656,7 @@ impl AnyServo for TestServo {
 /// Builder for creating a [`PatchbayManager`] with a fluent API.
 pub struct PatchbayManagerBuilder {
     config: PatchbayConfig,
-    command_queue: Option<Arc<MpscQueue<ParameterCommand>>>,
+    command_queue: Option<Arc<MpscQueue<SetParameter>>>,
     event_channel: Option<crossbeam_channel::Sender<PatchbayEvent>>,
 }
 
@@ -682,7 +683,7 @@ impl PatchbayManagerBuilder {
     }
 
     /// Set the command queue.
-    pub fn with_command_queue(mut self, queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
+    pub fn with_command_queue(mut self, queue: Arc<MpscQueue<SetParameter>>) -> Self {
         self.command_queue = Some(queue);
         self
     }

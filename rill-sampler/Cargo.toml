@@ -1,6 +1,6 @@
 [package]
 name = "rill-sampler"
-version = "0.5.0-beta.1"
+version = "0.5.0-beta.2"
 edition = "2021"
 description = "Sample playback node for the Rill audio graph"
 license.workspace = true

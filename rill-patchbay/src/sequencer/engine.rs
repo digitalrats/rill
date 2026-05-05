@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use super::pattern::{Pattern, StepPlayMode};
 use super::snapshot::Snapshot;
-use crate::control::ParameterCommand;
+use rill_core::queues::{SetParameter, SignalSource};
+use rill_core::traits::{ParameterId, PortId};
 
 /// The core sequencer state machine.
 ///
@@ -194,7 +195,7 @@ impl SnapshotSequencer {
     /// Convenience wrapper around [`tick_ext`](Self::tick_ext) that passes
     /// default beat info (beat_position=0, no beat/bar boundaries).
     /// Prefer `tick_ext` when beat-aware CLOCK_TICK telemetry is available.
-    pub fn tick(&mut self, sample_pos: u64, sample_rate: f32, tempo: f32) -> Vec<ParameterCommand> {
+    pub fn tick(&mut self, sample_pos: u64, sample_rate: f32, tempo: f32) -> Vec<SetParameter> {
         self.tick_ext(sample_pos, sample_rate, tempo, 0.0, false, false)
     }
 
@@ -208,7 +209,7 @@ impl SnapshotSequencer {
     /// [`is_new_beat`](Self::is_new_beat),
     /// [`is_new_bar`](Self::is_new_bar)).
     ///
-    /// Returns a batch of [`ParameterCommand`] values to push when a step
+    /// Returns a batch of [`SetParameter`] values to push when a step
     /// boundary is crossed, or an empty `Vec` if no step change occurred.
     pub fn tick_ext(
         &mut self,
@@ -218,7 +219,7 @@ impl SnapshotSequencer {
         beat_position: f32,
         is_new_beat: bool,
         is_new_bar: bool,
-    ) -> Vec<ParameterCommand> {
+    ) -> Vec<SetParameter> {
         self.latest_beat_position = beat_position;
         self.latest_new_beat = is_new_beat;
         self.latest_new_bar = is_new_bar;
@@ -251,11 +252,12 @@ impl SnapshotSequencer {
                     return new_step
                         .parameters
                         .iter()
-                        .map(|p| ParameterCommand {
-                            node_id: p.node_id,
-                            param: p.param_name.clone(),
-                            value: p.value,
-                        })
+                        .map(|p| SetParameter::new(
+                            PortId::param(p.node_id, 0),
+                            ParameterId::new(&p.param_name).unwrap(),
+                            p.value,
+                            SignalSource::Manual,
+                        ))
                         .collect();
                 }
             }
