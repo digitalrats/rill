@@ -923,7 +923,7 @@ impl PatchbayControl {
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
-                let key = target_key(cmd.port.node_id(), &cmd.parameter.as_ref());
+                let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
                 if let Some(combiner) = self.port_combiners.get(&key) {
                     let _ = combiner.ui_tx.send(UiCommand::SetValue(cmd.value as f64));
                 } else {
