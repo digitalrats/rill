@@ -263,7 +263,7 @@ impl PatchbayDocument {
                 }
                 AutomatonDef::Envelope {
                     id,
-                    envelope_type,
+                    envelope_type: _,
                     attack,
                     decay,
                     sustain,

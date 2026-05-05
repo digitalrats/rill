@@ -33,7 +33,7 @@ pub struct PatchbayDotConfig {
 pub fn patchbay_to_dot(
     patchbay: &PatchbayDocument,
     sequencer: Option<&SequencerDocument>,
-    config: &PatchbayDotConfig,
+    _config: &PatchbayDotConfig,
 ) -> String {
     let mut dot = String::new();
     writeln!(dot, "// Patchbay control graph").ok();

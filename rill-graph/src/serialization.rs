@@ -276,7 +276,7 @@ fn extract_connections<T: Transcendental, const B: usize>(
 ) -> Vec<ConnectionDef> {
     let mut conns = Vec::new();
 
-    for (from_idx, entry) in entries.iter().enumerate() {
+    for (_from_idx, entry) in entries.iter().enumerate() {
         let variant = &entry.node;
         let from_id = variant.id().inner();
 

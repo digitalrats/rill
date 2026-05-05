@@ -57,7 +57,6 @@ pub struct AlsaBackend {
     thread_handle: Option<thread::JoinHandle<()>>,
     running: Arc<AtomicBool>,
     started: Arc<AtomicBool>,
-    device_name: Arc<Mutex<String>>,
 }
 
 // Send+Sync: AudioIo требует Send, доступ последовательный.
@@ -122,7 +121,6 @@ impl AlsaBackend {
             thread_handle: Some(handle),
             running,
             started,
-            device_name,
         })
     }
 }
