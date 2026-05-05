@@ -16,8 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 use alsa::pcm::{Access, Format, HwParams};
-use alsa::ValueOr;
-use alsa::{Direction, PCM};
+use alsa::{Direction, ValueOr, PCM};
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
@@ -340,8 +339,6 @@ fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()>
     hw.set_channels(channels)
         .map_err(|e| IoError::Config(e.to_string()))?;
     hw.set_buffer_size(config.buffer_size as alsa::pcm::Frames)
-        .map_err(|e| IoError::Config(e.to_string()))?;
-    hw.set_period_size(config.buffer_size as alsa::pcm::Frames, ValueOr::Nearest)
         .map_err(|e| IoError::Config(e.to_string()))?;
     pcm.hw_params(&hw)
         .map_err(|e| IoError::Config(e.to_string()))?;
