@@ -85,7 +85,7 @@ pub fn to_dot<T: Transcendental, const B: usize>(
         // Signal outputs
         for p in 0..meta.signal_outputs {
             if let Some(port) = entry.node.output_port(p) {
-                for &(target_node, target_port) in &port.downstream {
+                for &(target_node, _) in &port.downstream {
                     let target_entry = &entries[target_node];
                     let target_id = target_entry.node.id().inner();
 
@@ -114,7 +114,7 @@ pub fn to_dot<T: Transcendental, const B: usize>(
 
 fn emit_node<T: Transcendental, const B: usize>(
     dot: &mut String,
-    idx: usize,
+    _idx: usize,
     entry: &NodeEntry<T, B>,
     config: &DotConfig,
 ) {
