@@ -334,8 +334,8 @@ fn test_midi_mapping() {
     assert!(mapping.matches(&event));
 
     let cmd = mapping.apply(&event).unwrap();
-    assert_eq!(cmd.node_id, node);
-    assert_eq!(cmd.param, "volume");
+    assert_eq!(cmd.port.node_id(), node);
+    assert_eq!(cmd.parameter.as_ref(), "volume");
     assert!((cmd.value - 0.5).abs() < 1e-6);
 }
 

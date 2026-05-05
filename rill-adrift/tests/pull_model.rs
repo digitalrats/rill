@@ -30,14 +30,18 @@ const RATE: f32 = 48000.0;
 // Helper: synchronous mock backend (drives the graph on demand)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "serialization")]
 struct SyncBackend {
     cb_ptr: *mut Option<Box<dyn Fn()>>,
     input: Arc<RwLock<IoRingBuffer>>,
     output: Arc<RwLock<IoRingBuffer>>,
 }
+#[cfg(feature = "serialization")]
 unsafe impl Send for SyncBackend {}
+#[cfg(feature = "serialization")]
 unsafe impl Sync for SyncBackend {}
 
+#[cfg(feature = "serialization")]
 impl SyncBackend {
     fn new(cap: usize) -> (Self, Arc<RwLock<IoRingBuffer>>, Arc<RwLock<IoRingBuffer>>) {
         let input = Arc::new(RwLock::new(IoRingBuffer::new(cap)));
@@ -63,6 +67,7 @@ impl SyncBackend {
     }
 }
 
+#[cfg(feature = "serialization")]
 impl Drop for SyncBackend {
     fn drop(&mut self) {
         unsafe {
@@ -71,8 +76,10 @@ impl Drop for SyncBackend {
     }
 }
 
+#[cfg(feature = "serialization")]
 type AudioIoResult<T> = Result<T, String>;
 
+#[cfg(feature = "serialization")]
 impl AudioIo for SyncBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
         unsafe {
@@ -82,7 +89,7 @@ impl AudioIo for SyncBackend {
 
     fn read_input(&self, left: &mut [f32], right: &mut [f32]) -> usize {
         let frames = left.len().min(right.len());
-        let mut buf = self.input.write();
+        let buf = self.input.write();
         let mut temp = vec![0.0f32; frames * 2];
         let n = buf.read(&mut temp);
         drop(buf);
@@ -101,7 +108,7 @@ impl AudioIo for SyncBackend {
             temp[i * 2] = left[i];
             temp[i * 2 + 1] = right[i];
         }
-        let mut buf = self.output.write();
+        let buf = self.output.write();
         buf.write(&temp) / 2
     }
 
