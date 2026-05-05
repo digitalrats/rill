@@ -238,7 +238,7 @@ fn alsa_thread(
         }
 
         if let Ok(io) = pcm_playback.io_i16() {
-            if let Err(e) = io.writei(&pb) {
+            if let Err(e) = io.writei(&pb[..out_sz]) {
                 eprintln!("ALSA write: {}", e);
                 xruns.fetch_add(1, Ordering::Relaxed);
                 let _ = pcm_playback.try_recover(e, true);
