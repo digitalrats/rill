@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook: reject direct commits to protected branches.
+# Pre-commit hook: reject direct commits to protected branches and check formatting.
 set -euo pipefail
 
 branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
@@ -9,4 +9,13 @@ if [ "$branch" = "develop" ] || [ "$branch" = "master" ] || [ "$branch" = "main"
     echo "Create a feature/hotfix/release branch first:"
     echo "  git flow feature start <name>"
     exit 1
+fi
+
+# Check formatting on staged .rs files
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+if [ -n "$staged" ]; then
+    if ! cargo fmt --check -- 2>/dev/null; then
+        echo "ERROR: Formatting issues found. Run 'cargo fmt' to fix."
+        exit 1
+    fi
 fi
