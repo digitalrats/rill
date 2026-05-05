@@ -252,12 +252,14 @@ impl SnapshotSequencer {
                     return new_step
                         .parameters
                         .iter()
-                        .map(|p| SetParameter::new(
-                            PortId::param(p.node_id, 0),
-                            ParameterId::new(&p.param_name).unwrap(),
-                            p.value,
-                            SignalSource::Manual,
-                        ))
+                        .map(|p| {
+                            SetParameter::new(
+                                PortId::param(p.node_id, 0),
+                                ParameterId::new(&p.param_name).unwrap(),
+                                p.value,
+                                SignalSource::Manual,
+                            )
+                        })
                         .collect();
                 }
             }

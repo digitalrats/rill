@@ -17,9 +17,7 @@ use std::sync::Arc;
 
 use rill_core::queues::{SetParameter, SignalSource};
 use rill_core::traits::{NodeId, ParameterId, PortId};
-use rill_patchbay::control::{
-    ControlEvent, EventPattern, OscSurface, PatchbayControl,
-};
+use rill_patchbay::control::{ControlEvent, EventPattern, OscSurface, PatchbayControl};
 
 use crate::osc::osc::{OscMessage, OscType};
 use crate::osc::server::OscServer;
