@@ -41,20 +41,20 @@ crossbeam-channel = "0.5"
 tokio = "1.0"
 
 # Internal workspace crates
-rill-core = { path = "rill-core", version = "0.5.0-beta.1" }
-rill-core-dsp = { path = "rill-core-dsp", version = "0.5.0-beta.1" }
-rill-core-wdf = { path = "rill-core-wdf", version = "0.5.0-beta.1" }
-rill-graph = { path = "rill-graph", version = "0.5.0-beta.1" }
-rill-patchbay = { path = "rill-patchbay", version = "0.5.0-beta.1" }
-rill-oscillators = { path = "rill-oscillators", version = "0.5.0-beta.1" }
-rill-digital-filters = { path = "rill-digital-filters", version = "0.5.0-beta.1" }
-rill-digital-effects = { path = "rill-digital-effects", version = "0.5.0-beta.1" }
-rill-router = { path = "rill-router", version = "0.5.0-beta.1" }
-rill-lofi = { path = "rill-lofi", version = "0.5.0-beta.1" }
-rill-io = { path = "rill-io", version = "0.5.0-beta.1" }
-rill-telemetry = { path = "rill-telemetry", version = "0.5.0-beta.1" }
-rill-analog-filters = { path = "rill-analog-filters", version = "0.5.0-beta.1" }
-rill-analog-effects = { path = "rill-analog-effects", version = "0.5.0-beta.1" }
-rill-osc = { path = "rill-osc", version = "0.5.0-beta.1" }
-rill-sampler = { path = "rill-sampler", version = "0.5.0-beta.1" }
-rill-adrift = { path = "rill-adrift", version = "0.5.0-beta.1" }
+rill-core = { path = "rill-core", version = "0.5.0-beta.2" }
+rill-core-dsp = { path = "rill-core-dsp", version = "0.5.0-beta.2" }
+rill-core-wdf = { path = "rill-core-wdf", version = "0.5.0-beta.2" }
+rill-graph = { path = "rill-graph", version = "0.5.0-beta.2" }
+rill-patchbay = { path = "rill-patchbay", version = "0.5.0-beta.2" }
+rill-oscillators = { path = "rill-oscillators", version = "0.5.0-beta.2" }
+rill-digital-filters = { path = "rill-digital-filters", version = "0.5.0-beta.2" }
+rill-digital-effects = { path = "rill-digital-effects", version = "0.5.0-beta.2" }
+rill-router = { path = "rill-router", version = "0.5.0-beta.2" }
+rill-lofi = { path = "rill-lofi", version = "0.5.0-beta.2" }
+rill-io = { path = "rill-io", version = "0.5.0-beta.2" }
+rill-telemetry = { path = "rill-telemetry", version = "0.5.0-beta.2" }
+rill-analog-filters = { path = "rill-analog-filters", version = "0.5.0-beta.2" }
+rill-analog-effects = { path = "rill-analog-effects", version = "0.5.0-beta.2" }
+rill-osc = { path = "rill-osc", version = "0.5.0-beta.2" }
+rill-sampler = { path = "rill-sampler", version = "0.5.0-beta.2" }
+rill-adrift = { path = "rill-adrift", version = "0.5.0-beta.2" }

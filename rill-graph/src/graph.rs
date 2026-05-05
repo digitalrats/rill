@@ -1176,11 +1176,11 @@ mod tests {
 
     #[test]
     fn test_command_queue_drain() {
-        use rill_core::queues::MpscQueue;
-        use rill_patchbay::control::ParameterCommand;
+        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::traits::PortId;
 
         const BUF: usize = 64;
-        let queue: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+        let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
         let mut builder = GraphBuilder::<f32, BUF>::new();
         builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
@@ -1193,14 +1193,17 @@ mod tests {
             .unwrap();
         let (mut nodes, _, _) = graph.into_parts();
 
-        let _ = queue.push(ParameterCommand::new(NodeId(0), "multiplier", 5.0));
+        let _ = queue.push(SetParameter::new(
+            PortId::control_in(NodeId(0), 0),
+            ParameterId::new("multiplier").unwrap(),
+            5.0,
+            SignalSource::Manual,
+        ));
 
         while let Some(cmd) = queue.pop() {
-            let idx = cmd.node_id.inner() as usize;
-            let pid = ParameterId::new(&cmd.param).unwrap();
-            nodes[idx]
-                .set_parameter(&pid, ParamValue::Float(cmd.value))
-                .unwrap();
+            let idx = cmd.port.node_id().inner() as usize;
+            let pid = cmd.parameter.clone();
+            let _ = nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
         }
 
         let pid = ParameterId::new("multiplier").unwrap();
@@ -1216,11 +1219,11 @@ mod tests {
 
     #[test]
     fn test_command_then_propagate() {
-        use rill_core::queues::MpscQueue;
-        use rill_patchbay::control::ParameterCommand;
+        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::traits::PortId;
 
         const BUF: usize = 64;
-        let queue: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+        let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
         let mut builder = GraphBuilder::<f32, BUF>::new();
         let src = builder.add_source(Box::new(ConstantSource::new(7.0, 44100.0)));
@@ -1239,13 +1242,16 @@ mod tests {
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
         // Push command and drain
-        let _ = queue.push(ParameterCommand::new(NodeId(1), "multiplier", 4.0));
+        let _ = queue.push(SetParameter::new(
+            PortId::control_in(NodeId(1), 0),
+            ParameterId::new("multiplier").unwrap(),
+            4.0,
+            SignalSource::Manual,
+        ));
         while let Some(cmd) = queue.pop() {
-            let idx = cmd.node_id.inner() as usize;
-            let pid = ParameterId::new(&cmd.param).unwrap();
-            nodes[idx]
-                .set_parameter(&pid, ParamValue::Float(cmd.value))
-                .unwrap();
+            let idx = cmd.port.node_id().inner() as usize;
+            let pid = cmd.parameter.clone();
+            let _ = nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
         }
 
         // Verify multiplier changed
@@ -1328,11 +1334,11 @@ mod tests {
 
     #[test]
     fn test_drain_fn_before_propagate() {
-        use rill_core::queues::MpscQueue;
-        use rill_patchbay::control::ParameterCommand;
+        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::traits::PortId;
 
         const BUF: usize = 64;
-        let queue: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+        let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
         let mut builder = GraphBuilder::<f32, BUF>::new();
         let src = builder.add_source(Box::new(ConstantSource::new(5.0, 44100.0)));
@@ -1355,18 +1361,22 @@ mod tests {
             let q = queue.clone();
             Box::new(move |nd: &mut [NodeVariant<f32, BUF>]| {
                 while let Some(cmd) = q.pop() {
-                    let idx = cmd.node_id.inner() as usize;
+                    let idx = cmd.port.node_id().inner() as usize;
                     if idx < nd.len() {
-                        if let Ok(pid) = ParameterId::new(&cmd.param) {
-                            let _ = nd[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
-                        }
+                        let pid = cmd.parameter.clone();
+                        let _ = nd[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
                     }
                 }
             })
         };
 
         // Push command BEFORE processing
-        let _ = queue.push(ParameterCommand::new(NodeId(1), "multiplier", 3.0));
+        let _ = queue.push(SetParameter::new(
+            PortId::control_in(NodeId(1), 0),
+            ParameterId::new("multiplier").unwrap(),
+            3.0,
+            SignalSource::Manual,
+        ));
 
         // Processing cycle exactly as AudioInput callback does:
         let tick = ClockTick::new(0, BUF as u32, 44100.0);

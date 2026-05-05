@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rill_core::prelude::*;
 use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
-use rill_core::queues::MpscQueue;
+use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 
@@ -331,18 +331,20 @@ impl Mapping {
     }
 
     /// Apply an event and produce a parameter command, if it matches.
-    pub fn apply(&self, event: &ControlEvent) -> Option<ParameterCommand> {
+    pub fn apply(&self, event: &ControlEvent) -> Option<SetParameter> {
         if !self.matches(event) {
             return None;
         }
 
         event.normalized_value().map(|norm| {
             let value = self.transform.apply(norm, self.target.min, self.target.max);
-            ParameterCommand {
-                node_id: self.target.node_id,
-                param: self.target.param_name.clone(),
+            let pid = ParameterId::new(&self.target.param_name).unwrap();
+            SetParameter::new(
+                PortId::param(self.target.node_id, 0),
+                pid,
                 value,
-            }
+                SignalSource::External(self.name.clone()),
+            )
         })
     }
 }
@@ -488,7 +490,7 @@ impl<A: Automaton> Servo<A> {
     }
 
     /// Advance the servo and return a parameter command if the value changed.
-    pub fn update(&mut self, time: Time) -> Option<ParameterCommand> {
+    pub fn update(&mut self, time: Time) -> Option<SetParameter> {
         if !self.enabled {
             return None;
         }
@@ -506,11 +508,13 @@ impl<A: Automaton> Servo<A> {
                 self.last_value = clamped;
                 self.last_time = time;
 
-                return Some(ParameterCommand {
-                    node_id: self.target_node,
-                    param: self.target_param.clone(),
-                    value: clamped as f32,
-                });
+                let pid = ParameterId::new(&self.target_param).unwrap();
+                return Some(SetParameter::new(
+                    PortId::param(self.target_node, 0),
+                    pid,
+                    clamped as f32,
+                    SignalSource::Automaton(self.id.clone()),
+                ));
             }
         }
 
@@ -534,7 +538,7 @@ pub type BoxedServo = Box<dyn AnyServo>;
 /// Trait for type-erased servo operations.
 pub trait AnyServo: Send + Sync {
     /// Update the servo and return a parameter command if the value changed.
-    fn update(&mut self, time: Time) -> Option<ParameterCommand>;
+    fn update(&mut self, time: Time) -> Option<SetParameter>;
     /// Return the servo's unique identifier.
     fn id(&self) -> &str;
     /// Enable or disable the servo.
@@ -542,7 +546,7 @@ pub trait AnyServo: Send + Sync {
 }
 
 impl<A: Automaton + 'static> AnyServo for Servo<A> {
-    fn update(&mut self, time: Time) -> Option<ParameterCommand> {
+    fn update(&mut self, time: Time) -> Option<SetParameter> {
         Servo::update(self, time)
     }
 
@@ -556,40 +560,13 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 }
 
 // =============================================================================
-// 7. Parameter commands
-// =============================================================================
-
-/// A command to change a graph-node parameter, sent to the audio thread.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
-pub struct ParameterCommand {
-    /// Target node ID.
-    pub node_id: NodeId,
-    /// Parameter name.
-    pub param: String,
-    /// New value.
-    pub value: f32,
-}
-
-impl ParameterCommand {
-    /// Create a new parameter command.
-    pub fn new(node_id: NodeId, param: impl Into<String>, value: f32) -> Self {
-        Self {
-            node_id,
-            param: param.into(),
-            value,
-        }
-    }
-}
-
-// =============================================================================
 // 8. Main patchbay controller
 // =============================================================================
 
 /// The central patchbay controller.
 ///
 /// Operates on the **control thread** (soft RT) and sends parameter commands
-/// to the audio thread via [`MpscQueue<ParameterCommand>`].
+/// to the audio thread via [`MpscQueue<SetParameter>`].
 ///
 /// ## Operation modes
 ///
@@ -605,13 +582,13 @@ pub struct PatchbayControl {
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
     sequencer_handle: Option<SequencerHandle>,
     sequencer_task: Option<tokio::task::JoinHandle<()>>,
-    command_queue: Arc<MpscQueue<ParameterCommand>>,
+    command_queue: Arc<MpscQueue<SetParameter>>,
     time: Time,
 }
 
 impl PatchbayControl {
     /// Create a new patchbay controller.
-    pub fn new(command_queue: Arc<MpscQueue<ParameterCommand>>) -> Self {
+    pub fn new(command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
         Self {
             mappings: Vec::new(),
             servos: HashMap::new(),
@@ -946,7 +923,7 @@ impl PatchbayControl {
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
-                let key = target_key(cmd.node_id, &cmd.param);
+                let key = target_key(cmd.port.node_id(), &cmd.parameter.to_string());
                 if let Some(combiner) = self.port_combiners.get(&key) {
                     let _ = combiner.ui_tx.send(UiCommand::SetValue(cmd.value as f64));
                 } else {
@@ -1064,7 +1041,7 @@ pub fn osc_address(
 // =============================================================================
 
 fn target_key(node_id: NodeId, param_name: &str) -> String {
-    format!("{}:{}", node_id.0, param_name)
+    format!("{}:{}", node_id.inner(), param_name)
 }
 
 // =============================================================================
@@ -1091,8 +1068,8 @@ mod tests {
         assert!(mapping.matches(&event));
 
         let cmd = mapping.apply(&event).unwrap();
-        assert_eq!(cmd.node_id, node);
-        assert_eq!(cmd.param, "volume");
+        assert_eq!(cmd.port.node_id(), node);
+        assert_eq!(cmd.parameter.as_ref(), "volume");
         assert!((cmd.value - 0.5).abs() < 1e-6);
     }
 

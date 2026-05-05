@@ -658,8 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_to_async_spawns_tasks() {
-        use crate::control::ParameterCommand;
-        use rill_core::queues::MpscQueue;
+        use rill_core::queues::{MpscQueue, SetParameter};
 
         let doc = PatchbayDocument {
             automata: vec![AutomatonDef::Lfo {
@@ -686,7 +685,7 @@ mod tests {
             description: None,
         };
 
-        let q: Arc<MpscQueue<ParameterCommand>> = Arc::new(MpscQueue::new());
+        let q: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
         let mut control = PatchbayControl::new(q.clone());
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry).unwrap();

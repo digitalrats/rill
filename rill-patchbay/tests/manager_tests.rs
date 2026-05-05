@@ -263,7 +263,7 @@ fn test_disable_servo() {
     );
 }
 
-fn drain_count(queue: &Arc<MpscQueue<rill_patchbay::ParameterCommand>>) -> usize {
+fn drain_count(queue: &Arc<MpscQueue<rill_core::queues::SetParameter>>) -> usize {
     let mut count = 0;
     while queue.pop().is_some() {
         count += 1;
