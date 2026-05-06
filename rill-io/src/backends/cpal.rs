@@ -246,8 +246,9 @@ impl IoBackend<f32> for CpalBackend {
         }
 
         // ── Capture-only: processing loop ──────────────────────────────────
-        // When there is no output stream to drive the graph, run a blocking
-        // processing loop that reads from the input ring buffer.
+        // When there is no output stream to drive the graph, run a tight
+        // spin loop in run() that reads from the input ring buffer and
+        // calls process_cb for each complete block.
         if out_channels == 0 && in_channels > 0 {
             let block_samps = (buf_frames * in_channels) as usize;
             while running.load(Ordering::Acquire) {
@@ -255,8 +256,6 @@ impl IoBackend<f32> for CpalBackend {
                     unsafe {
                         process_cb.call();
                     }
-                } else {
-                    std::thread::yield_now();
                 }
             }
         }
