@@ -5,6 +5,7 @@ use rill_core::math::Transcendental;
 #[cfg(test)]
 use rill_core::time::SystemClock;
 use rill_core::time::{ClockSource, ClockTick};
+use rill_core::traits::active::{ActiveNode, GraphHandle};
 use rill_core::traits::port::Port;
 use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use std::collections::VecDeque;
@@ -396,7 +397,33 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             None
         };
 
-        let nodes: Vec<NodeVariant<T, BUF_SIZE>> = self.nodes.into_iter().map(|e| e.node).collect();
+        let mut nodes: Vec<NodeVariant<T, BUF_SIZE>> =
+            self.nodes.into_iter().map(|e| e.node).collect();
+
+        // Auto-start driver node (registers process callback on backend).
+        if let Some(ref _backend) = backend_box {
+            let driver_idx = nodes
+                .iter()
+                .position(|n| n.metadata().name == "AudioInput")
+                .or_else(|| {
+                    nodes
+                        .iter()
+                        .position(|n| n.metadata().name == "AudioOutput")
+                });
+            if let Some(driver_idx) = driver_idx {
+                let nodes_ptr = nodes.as_mut_ptr();
+                let len = nodes.len();
+                let source_idx = topo[0];
+                let handle = GraphHandle {
+                    nodes: nodes_ptr as *mut u8,
+                    len,
+                    source_idx,
+                    sample_rate,
+                    queue: std::ptr::null(),
+                };
+                nodes[driver_idx].start(handle);
+            }
+        }
 
         let owned_buffers = buffers.into_inner();
 

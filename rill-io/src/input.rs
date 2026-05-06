@@ -163,6 +163,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Audio
             self.io_ptr = IoBackendPtr::from_ref(unsafe { &*backend });
         }
     }
+    fn start(&mut self, handle: GraphHandle) {
+        ActiveNode::start(self, handle);
+    }
+    fn stop(&mut self) {
+        ActiveNode::stop(self);
+    }
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
         None
     }

@@ -317,6 +317,12 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     /// the pointer.  Default no‑op.
     fn resolve_backend(&mut self, _backend: *mut dyn crate::io::IoBackend<T>) {}
 
+    /// Start graph processing. Default no‑op — overridden by I/O nodes.
+    fn start(&mut self, _handle: crate::traits::active::GraphHandle) {}
+
+    /// Stop graph processing. Default no‑op — overridden by I/O nodes.
+    fn stop(&mut self) {}
+
     /// Set node ID
     fn set_id(&mut self, id: NodeId);
 

@@ -7,6 +7,7 @@ use std::cell::Cell;
 use rill_core::{
     math::Transcendental,
     traits::{
+        active::{ActiveNode, GraphHandle},
         algorithm::ActionContext,
         node::SignalNode,
         processable::{NodeVariant, ProcessContext, Processable},
@@ -207,6 +208,52 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         if !backend.is_null() {
             self.backend = crate::signal_io::IoBackendPtr::from_ref(unsafe { &*backend });
         }
+    }
+    fn start(&mut self, handle: GraphHandle) {
+        if self.active {
+            let idx = self.source_idx;
+            if let Some(backend) = self.backend.as_ref() {
+                let nodes_ptr = handle.nodes as *mut NodeVariant<T, BUF_SIZE>;
+                let len = handle.len;
+                let queue_ptr = handle.queue;
+                let sample_rate = handle.sample_rate;
+                let sample_pos = Cell::new(0u64);
+                backend.set_process_callback(Box::new(move || unsafe {
+                    let nodes = std::slice::from_raw_parts_mut(nodes_ptr, len);
+                    if let Some(q) = queue_ptr.as_ref() {
+                        while let Some(cmd) = q.pop() {
+                            let nid = cmd.port.node_id().inner() as usize;
+                            if nid < len {
+                                let _ = nodes[nid].set_parameter(
+                                    &cmd.parameter,
+                                    rill_core::ParamValue::Float(cmd.value),
+                                );
+                            }
+                        }
+                    }
+                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, sample_rate);
+                    let mut ctx = ProcessContext { clock: &tick };
+                    let _ = nodes[idx].process_block(&mut ctx);
+                    let action_ctx = ActionContext::new(&tick);
+                    for po in 0..nodes[idx].num_signal_outputs() {
+                        if let Some(port) = nodes[idx].output_port(po) {
+                            let _ = port.propagate(port.buffer(), &action_ctx);
+                        }
+                    }
+                    sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
+                }));
+            }
+        }
+    }
+    fn stop(&mut self) {}
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for AudioOutput<T, BUF_SIZE> {
+    fn start(&mut self, handle: GraphHandle) {
+        SignalNode::start(self, handle);
+    }
+    fn stop(&mut self) {
+        SignalNode::stop(self);
     }
 }
 
