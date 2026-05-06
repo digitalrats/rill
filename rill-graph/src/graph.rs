@@ -10,6 +10,8 @@ use rill_core::traits::active::{ActiveNode, GraphHandle};
 use rill_core::traits::port::Port;
 use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 // ============================================================================
 // Internal routing metadata
@@ -518,8 +520,26 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
     }
 
     /// Return a reference to the audio backend, if one was configured.
-    pub fn backend_ref(&self) -> Option<&dyn rill_core::io::IoBackend<T>> {
+    pub(crate) fn backend_ref(&self) -> Option<&dyn rill_core::io::IoBackend<T>> {
         self.backend.as_deref().map(|b| &*b)
+    }
+
+    /// Run the audio backend until `running` becomes false.
+    ///
+    /// For blocking backends (ALSA, PipeWire) this blocks inside
+    /// `backend.run()`. For non-blocking backends (CPAL, JACK) it
+    /// parks after setup. An external signal must unpark the thread
+    /// after setting `running` to false.
+    pub fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
+        if let Some(ref backend) = self.backend {
+            backend.run(running.clone())?;
+            while running.load(Ordering::Acquire) {
+                std::thread::park();
+            }
+            backend.stop()
+        } else {
+            Ok(())
+        }
     }
 
     /// Send a parameter change command to the graph's audio thread.
