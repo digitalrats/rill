@@ -254,6 +254,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         self.outputs.get_mut(index)
     }
+    fn num_signal_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+    fn num_signal_inputs(&self) -> usize {
+        self.inputs.len()
+    }
 
     fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
         self.controls.get(index)
