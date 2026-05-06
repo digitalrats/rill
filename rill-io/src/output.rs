@@ -59,7 +59,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
             inputs,
             state: NodeState::new(44100.0),
             backend: IoBackendPtr::<T>::null(),
-            active: false,
+            active: true,
             source_idx: 0,
         }
     }
