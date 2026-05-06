@@ -376,7 +376,7 @@ impl IoBackend<f32> for PipewireBackend {
             let nch_fmt = self.negotiated_input_channels.clone();
             let nrate_fmt = self.negotiated_input_rate.clone();
             let nch_proc = self.negotiated_input_channels.clone();
-            let nrate_proc = self.negotiated_input_rate.clone();
+            let _nrate_proc = self.negotiated_input_rate.clone();
 
             let listener = in_st
                 .add_local_listener_with_user_data(())

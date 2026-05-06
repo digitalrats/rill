@@ -8,7 +8,6 @@ use std::cell::Cell;
 
 use rill_core::{
     math::Transcendental,
-    queues::{MpscQueue, SetParameter},
     traits::{
         active::{ActiveNode, GraphHandle},
         algorithm::ActionContext,
@@ -77,43 +76,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
     /// Check whether a backend has been attached.
     pub fn has_backend(&self) -> bool {
         !self.io_ptr.is_null()
-    }
-}
-
-// ── Helper: create a backend by name ───────────────────────────────────
-
-fn create_backend(
-    name: &str,
-    config: &crate::config::AudioConfig,
-) -> Result<Box<dyn rill_core::io::IoBackend<f32>>, String> {
-    match name {
-        "null" => Ok(Box::new(crate::backends::NullBackend::new(config.clone()))),
-        #[cfg(feature = "alsa")]
-        "alsa" => {
-            let b = crate::backends::AlsaBackend::new(config.clone())
-                .map_err(|e| format!("alsa: {e}"))?;
-            Ok(Box::new(b))
-        }
-        #[cfg(feature = "cpal")]
-        "cpal" => {
-            let mut b = crate::backends::CpalBackend::new(config.clone())
-                .map_err(|e| format!("cpal: {e}"))?;
-            crate::backend::AudioBackend::init(&mut b).map_err(|e| format!("cpal init: {e}"))?;
-            Ok(Box::new(b))
-        }
-        #[cfg(feature = "pipewire")]
-        "pipewire" => {
-            let b = crate::backends::PipewireBackend::new(config.clone())
-                .map_err(|e| format!("pipewire: {e}"))?;
-            Ok(Box::new(b))
-        }
-        #[cfg(feature = "jack")]
-        "jack" => {
-            let b = crate::backends::JackBackend::new(config.clone())
-                .map_err(|e| format!("jack: {e}"))?;
-            Ok(Box::new(b))
-        }
-        other => Err(format!("unsupported backend: {other}")),
     }
 }
 

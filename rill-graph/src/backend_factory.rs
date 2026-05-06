@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use rill_core::io::{BackendRegistry, IoBackend};
+use rill_core::io::IoBackend;
 
 /// Constructor signature.
 pub type BackendCtor<T> =

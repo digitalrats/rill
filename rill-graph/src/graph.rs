@@ -1,9 +1,10 @@
 use crate::backend_factory;
 use crate::registry::{NodeRegistry, RegistryError};
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
-use rill_core::io::BackendRegistry;
 use rill_core::math::Transcendental;
-use rill_core::time::{ClockSource, ClockTick, SystemClock};
+#[cfg(test)]
+use rill_core::time::SystemClock;
+use rill_core::time::{ClockSource, ClockTick};
 use rill_core::traits::port::Port;
 use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use std::collections::VecDeque;
@@ -433,8 +434,10 @@ pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
     /// Resource metadata (name, kind, capacity) for serialization.
     pub(crate) resources: Vec<GraphResource>,
     /// Named buffers (tape loops, etc.) shared between nodes.
+    #[allow(dead_code)]
     buffers: Vec<Box<dyn Buffer<T>>>,
     /// Shared audio backend (alive for the graph's lifetime).
+    #[allow(dead_code)]
     backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
 }
 

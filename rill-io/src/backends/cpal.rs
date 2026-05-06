@@ -18,7 +18,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
-use crate::error::{IoError, IoResult};
+use crate::error::IoResult;
 use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
 
