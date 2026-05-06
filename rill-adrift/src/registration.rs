@@ -18,7 +18,6 @@ use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use rill_graph::{node_ctor, NodeRegistry};
 
 #[cfg(feature = "io")]
-
 /// Return a lazily-initialized global registry for the given block size.
 ///
 /// The registry is initialised once on the first call and reused thereafter.

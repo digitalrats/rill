@@ -41,10 +41,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for Input<T, BUF_SIZE> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Input<T, BUF_SIZE> {
+    /// Create a new stereo input source.
     pub fn new() -> Self {
         Self::with_channels(2)
     }
 
+    /// Create a new input source with the given number of channels.
     pub fn with_channels(num: usize) -> Self {
         let mut metadata = NodeMetadata::new("Input", NodeCategory::Source);
         metadata.signal_inputs = 0;
@@ -72,14 +74,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> Input<T, BUF_SIZE> {
         }
     }
 
+    /// Attach an I/O backend pointer to this input source.
     pub fn set_io_ptr(&mut self, ptr: IoBackendPtr<T>) {
         self.io_ptr = ptr;
     }
 
+    /// Get the current I/O backend pointer.
     pub fn io_ptr(&self) -> IoBackendPtr<T> {
         self.io_ptr
     }
 
+    /// Returns `true` if a backend is attached.
     pub fn has_backend(&self) -> bool {
         !self.io_ptr.is_null()
     }
@@ -166,6 +171,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Input
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn resolve_backend(&mut self, backend: *mut dyn rill_core::io::IoBackend<T>) {
         if !backend.is_null() {
             self.io_ptr = IoBackendPtr::from_ref(unsafe { &*backend });

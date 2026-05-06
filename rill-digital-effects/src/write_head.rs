@@ -167,7 +167,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Write
             return;
         }
         if let Some(ptr) = buffers.get_ptr(&self.resource_name) {
-            self.tape = ptr as *const dyn rill_core::buffer::Buffer<T> as *mut TapeLoop<T>;
+            self.tape = ptr as *mut TapeLoop<T>;
         }
     }
 

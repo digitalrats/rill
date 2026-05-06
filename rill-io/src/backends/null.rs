@@ -30,6 +30,9 @@ impl CbSlot {
     }
 }
 
+/// A no-op audio backend that produces silence and discards output.
+///
+/// Useful for testing and offline processing.
 pub struct NullBackend {
     config: AudioConfig,
     cb: CbSlot,
@@ -48,6 +51,7 @@ impl fmt::Debug for NullBackend {
 }
 
 impl NullBackend {
+    /// Create a new null backend with the given audio config.
     pub fn new(config: AudioConfig) -> Self {
         Self {
             config,

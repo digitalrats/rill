@@ -47,7 +47,7 @@ impl<T> BufferRegistry<T> {
     /// The leaked buffer will live for the remainder of the program
     /// (or until manually re‑boxed and dropped).
     pub fn leak(&mut self, name: &str) -> Option<*mut dyn Buffer<T>> {
-        self.buffers.remove(name).map(|b| Box::into_raw(b))
+        self.buffers.remove(name).map(Box::into_raw)
     }
 
     /// Consume the registry and return all owned buffers.

@@ -103,7 +103,7 @@ impl SequencerDocument {
 #[cfg(feature = "serde")]
 mod tests {
     use super::*;
-    use crate::sequencer::{ParameterTarget, SequenceStep, StepPlayMode};
+    use crate::sequencer::{ParameterTarget, SequenceStep};
     use rill_core::NodeId;
 
     fn sample_doc() -> SequencerDocument {

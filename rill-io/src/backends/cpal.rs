@@ -69,6 +69,7 @@ impl fmt::Debug for CpalBackend {
 }
 
 impl CpalBackend {
+    /// Create a new CPAL backend with the given audio config.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         let buf_cap = (config.buffer_size * config.input_channels.max(1) * 4) as usize;
         Ok(Self {
@@ -118,7 +119,7 @@ impl IoBackend<f32> for CpalBackend {
             let cap = win.capacity().min(frames * out_ch);
             let dst = win.as_mut_slice();
             for i in 0..(cap / out_ch) {
-                if let Some(ch) = channels.get(0) {
+                if let Some(ch) = channels.first() {
                     dst[i * out_ch] = ch[i];
                 }
                 if let Some(ch) = channels.get(1) {
@@ -155,7 +156,7 @@ impl IoBackend<f32> for CpalBackend {
                         .find(|d| d.name().ok().as_deref() == Some(name))
                 })
                 .or_else(|| host.default_output_device())
-                .ok_or_else(|| format!("No output device available"))?;
+                .ok_or_else(|| "No output device available".to_string())?;
 
             let block = (buf_frames * out_channels) as usize;
             let mut temp_buf = vec![0.0f32; block * 16];

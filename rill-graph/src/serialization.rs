@@ -532,14 +532,13 @@ mod tests {
     use super::*;
     use crate::graph::SignalGraph;
     use crate::registry::NodeConstructor;
-    use rill_core::buffer::FixedBuffer;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
     use rill_core::traits::node::NodeState;
     use rill_core::traits::port::Port;
     use rill_core::traits::{
-        NodeCategory, NodeMetadata, ParamMetadata, ParamType, ParamValue as PV, ParameterId,
-        ProcessResult, Processor, Source,
+        NodeCategory, NodeMetadata, ParamType, ParamValue as PV, ParameterId, ProcessResult,
+        Processor, Source,
     };
     use rill_core::ParamMetadata as PM;
 

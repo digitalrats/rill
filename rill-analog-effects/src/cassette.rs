@@ -7,6 +7,7 @@ use rill_core_wdf::{Capacitor, Inductor, WdfElement};
 /// wow & flutter, and tape noise.
 #[derive(Debug, Clone)]
 pub struct CassetteDeckModel {
+    /// Sample rate in Hz.
     pub sample_rate: f64,
 
     input_amp: OperationalAmplifier,
@@ -17,15 +18,19 @@ pub struct CassetteDeckModel {
     eq_filters: [Capacitor<f64>; 2],
     output_amp: OperationalAmplifier,
 
+    /// Tape speed in cm/s (default 4.76 for compact cassette).
     pub tape_speed: f64,
     #[allow(dead_code)]
     tape_width: f64,
+    /// Bias level (0.0–1.0).
     pub bias_level: f64,
+    /// Tape noise floor amplitude.
     pub noise_floor: f64,
 
     hysteresis: f64,
     saturation: f64,
     print_through: f64,
+    /// Wow & flutter intensity factor.
     pub wow_flutter: f64,
 
     tape_position: f64,
@@ -65,10 +70,12 @@ impl CassetteDeckModel {
         }
     }
 
+    /// Set the tape speed (clamped to 1.19–19.05 cm/s).
     pub fn set_tape_speed(&mut self, speed_cm_per_sec: f64) {
         self.tape_speed = speed_cm_per_sec.clamp(1.19, 19.05);
     }
 
+    /// Set the bias level (clamped to 0.0–1.0).
     pub fn set_bias_level(&mut self, bias: f64) {
         self.bias_level = bias.clamp(0.0, 1.0);
     }

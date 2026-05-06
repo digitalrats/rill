@@ -281,7 +281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = audio_thread.join();
 
     // ── Счётчик вызовов из RecordingSink ──────────────────────────────────
-    let sink_calls = {
+    let _sink_calls = {
         let sink_idx = topo[1];
         let n = &mut graph.nodes_mut()[sink_idx];
         if let NodeVariant::Sink(ref mut s) = n {

@@ -4,7 +4,7 @@
 //! (backed by `rill_core::vector::simd::F64x4`).
 
 use crate::constants::{BOLTZMANN, ELECTRON_CHARGE, NEWTON_TOLERANCE};
-use rill_core::vector::prelude::{F64x4, Vector, VectorMask};
+use rill_core::vector::prelude::{F64x4, Vector, VectorMask, VectorTranscendental};
 
 /// SIMD WDF element trait
 pub trait SimdWdfElement: Send + Sync {
@@ -27,6 +27,7 @@ pub trait SimdWdfElement: Send + Sync {
 /// SIMD-accelerated resistor
 #[derive(Debug, Clone)]
 pub struct SimdResistor {
+    #[allow(dead_code)]
     resistance: f64,
     port_resistance: F64x4,
     voltage: F64x4,
@@ -68,10 +69,13 @@ impl SimdWdfElement for SimdResistor {
 /// SIMD-accelerated capacitor
 #[derive(Debug, Clone)]
 pub struct SimdCapacitor {
+    #[allow(dead_code)]
     capacitance: f64,
+    #[allow(dead_code)]
     sample_rate: f64,
     port_resistance: F64x4,
     state: F64x4,
+    #[allow(dead_code)]
     dt: f64,
 }
 
@@ -115,8 +119,11 @@ impl SimdWdfElement for SimdCapacitor {
 /// SIMD-accelerated diode with vectorized Newton-Raphson
 #[derive(Debug, Clone)]
 pub struct SimdDiode {
+    #[allow(dead_code)]
     saturation_current: f64,
+    #[allow(dead_code)]
     thermal_voltage: f64,
+    #[allow(dead_code)]
     ideality_factor: f64,
     port_resistance: F64x4,
     vt_simd: F64x4,

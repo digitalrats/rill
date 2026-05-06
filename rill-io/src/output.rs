@@ -39,10 +39,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for Output<T, BUF_SIZE> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
+    /// Create a new stereo output sink.
     pub fn new() -> Self {
         Self::with_channels(2)
     }
 
+    /// Create a new output sink with the given number of channels.
     pub fn with_channels(num: usize) -> Self {
         let mut metadata = NodeMetadata::new("Output", NodeCategory::Sink);
         metadata.signal_inputs = num;
@@ -70,10 +72,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
         }
     }
 
+    /// Attach an I/O backend to this output sink.
     pub fn set_backend(&mut self, backend: IoBackendPtr<T>) {
         self.backend = backend;
     }
 
+    /// Mark this output as active, setting its source node index.
     pub fn set_active(&mut self, source_idx: usize) {
         self.active = true;
         self.source_idx = source_idx;
@@ -145,6 +149,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Outpu
     fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn resolve_backend(&mut self, backend: *mut dyn rill_core::io::IoBackend<T>) {
         if !backend.is_null() {
             self.backend = crate::signal_io::IoBackendPtr::from_ref(unsafe { &*backend });

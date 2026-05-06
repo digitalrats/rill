@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 
 pub use rill_core;
 pub use rill_core_dsp;
@@ -38,6 +39,7 @@ pub mod registration;
 
 pub mod runtime;
 
+/// Common re-exports for typical Rill application development.
 pub mod prelude {
     pub use rill_core::prelude::*;
 }

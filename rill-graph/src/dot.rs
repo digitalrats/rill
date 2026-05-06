@@ -79,7 +79,6 @@ pub fn to_dot<T: Transcendental, const B: usize>(
     let topo = graph.topo_order();
     for &node_idx in topo {
         let variant = &nodes[node_idx];
-        let meta = variant.metadata();
         let id = variant.id().inner();
 
         for p in 0..variant.num_signal_outputs() {

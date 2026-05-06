@@ -6,7 +6,7 @@ use rill_core::queues::{MpscQueue, SetParameter};
 #[cfg(test)]
 use rill_core::time::SystemClock;
 use rill_core::time::{ClockSource, ClockTick};
-use rill_core::traits::active::{ActiveNode, GraphHandle};
+use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
 use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use std::collections::VecDeque;
@@ -388,7 +388,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             let b = cfg
                 .factory
                 .create(cfg.name, cfg.sample_rate, cfg.buffer_size, cfg.channels)
-                .map_err(|e| BuildError::Backend(e))?;
+                .map_err(BuildError::Backend)?;
             let ptr: *mut dyn rill_core::io::IoBackend<T> = &*b
                 as *const dyn rill_core::io::IoBackend<T>
                 as *mut dyn rill_core::io::IoBackend<T>;
@@ -524,8 +524,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
     }
 
     /// Return a reference to the audio backend, if one was configured.
+    #[allow(dead_code)]
     pub(crate) fn backend_ref(&self) -> Option<&dyn rill_core::io::IoBackend<T>> {
-        self.backend.as_deref().map(|b| &*b)
+        self.backend.as_deref()
     }
 
     /// Run the audio backend until `running` becomes false.
@@ -557,7 +558,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
     /// audio callback on the next processing cycle. Returns `None` when
     /// the queue is full (overflow) or no queue was created.
     pub fn send_parameter(&self, cmd: SetParameter) -> Option<()> {
-        Some(self.command_queue.as_ref()?.push(cmd).ok()?)
+        self.command_queue.as_ref()?.push(cmd).ok()
     }
 
     /// Consume the graph and return its owned parts (test only).
@@ -589,7 +590,7 @@ mod tests {
     use super::*;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
-    use rill_core::traits::active::{ActiveNode, GraphHandle};
+    use rill_core::traits::active::ActiveNode;
     use rill_core::traits::algorithm::ActionContext;
     use rill_core::traits::processable::{ProcessContext, Processable};
     use rill_core::traits::{
@@ -1220,7 +1221,7 @@ mod tests {
         let src = builder.add_source(Box::new(ConstantSource::new(42.0, 44100.0)));
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(1), 44100.0)));
         builder.connect_signal(src, 0, snk, 0);
-        let mut graph = builder
+        let graph = builder
             .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
@@ -1253,7 +1254,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let mut graph = builder
+        let graph = builder
             .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
@@ -1289,7 +1290,7 @@ mod tests {
             44100.0,
             2.0,
         )));
-        let mut graph = builder
+        let graph = builder
             .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
         let (mut nodes, _, _, _bufs) = graph.into_parts();
@@ -1338,7 +1339,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let mut graph = builder
+        let graph = builder
             .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
@@ -1396,7 +1397,7 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         builder.connect_feedback(proc, 0, proc, 0);
-        let mut graph = builder
+        let graph = builder
             .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
