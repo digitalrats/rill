@@ -153,6 +153,14 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> SignalNod
         None
     }
 
+    fn num_signal_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_signal_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
     fn num_control_inputs(&self) -> usize {
         0
     }

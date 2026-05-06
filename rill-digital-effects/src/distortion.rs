@@ -269,6 +269,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Disto
         self.outputs.len()
     }
 
+    fn num_signal_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_signal_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
     fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
