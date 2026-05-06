@@ -184,13 +184,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "output.wav".into());
 
     // ── Бэкенд ─────────────────────────────────────────────────────────────
-    #[cfg(feature = "pipewire")]
-    let config = AudioConfig::default()
-        .with_sample_rate(RATE as u32)
-        .with_buffer_size(BUF as u32)
-        .with_input_channels(2)
-        .with_output_channels(0); // capture-only, без output stream
-    #[cfg(not(feature = "pipewire"))]
     let config = AudioConfig::default()
         .with_sample_rate(RATE as u32)
         .with_buffer_size(BUF as u32)
@@ -200,7 +193,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "pipewire")]
     let backend =
         Box::new(rill_adrift::io::PipewireBackend::new(config).expect("PipewireBackend::new"));
-    #[cfg(not(feature = "pipewire"))]
+    #[cfg(all(
+        feature = "cpal",
+        not(any(feature = "pipewire", feature = "alsa", feature = "jack"))
+    ))]
+    let backend = Box::new(rill_adrift::io::CpalBackend::new(config).expect("CpalBackend::new"));
+    #[cfg(feature = "jack")]
+    let backend = Box::new(rill_adrift::io::JackBackend::new(config).expect("JackBackend::new"));
+    #[cfg(all(
+        feature = "alsa",
+        not(any(feature = "pipewire", feature = "cpal", feature = "jack"))
+    ))]
     let backend = Box::new(rill_adrift::io::AlsaBackend::new(config).expect("AlsaBackend::new"));
     let backend_ptr = IoBackendPtr::from_ref(&*backend);
 

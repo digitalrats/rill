@@ -50,6 +50,7 @@ pub struct CpalBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     stream: UnsafeCell<Option<cpal::Stream>>,
+    input_stream: UnsafeCell<Option<cpal::Stream>>,
     input_ring: Arc<IoRingBuffer>,
     output_slot: OutputSlot,
     xruns: Arc<AtomicU32>,
@@ -74,6 +75,7 @@ impl CpalBackend {
             config,
             process_cb: CbSlot::new(),
             stream: UnsafeCell::new(None),
+            input_stream: UnsafeCell::new(None),
             input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
             output_slot: OutputSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
@@ -132,69 +134,124 @@ impl IoBackend<f32> for CpalBackend {
     fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
         let process_cb = self.process_cb;
         let oslot = self.output_slot.clone();
+        let iring = self.input_ring.clone();
         let xruns = self.xruns.clone();
         let sample_rate = self.config.sample_rate;
         let out_channels = self.config.output_channels;
+        let in_channels = self.config.input_channels;
         let buf_frames = self.config.buffer_size;
-        let dev_name = self.config.output_device.clone();
+        let out_dev_name = self.config.output_device.clone();
+        let in_dev_name = self.config.input_device.clone();
 
         let host = cpal::default_host();
-        let output_device = dev_name
-            .as_deref()
-            .and_then(|name| {
-                host.output_devices()
-                    .ok()?
-                    .find(|d| d.name().ok().as_deref() == Some(name))
-            })
-            .or_else(|| host.default_output_device())
-            .ok_or_else(|| format!("No output device available"))?;
 
-        let block = (buf_frames * out_channels) as usize;
+        // ── Output stream ───────────────────────────────────────────────────
+        if out_channels > 0 {
+            let output_device = out_dev_name
+                .as_deref()
+                .and_then(|name| {
+                    host.output_devices()
+                        .ok()?
+                        .find(|d| d.name().ok().as_deref() == Some(name))
+                })
+                .or_else(|| host.default_output_device())
+                .ok_or_else(|| format!("No output device available"))?;
 
-        // Temp buffer decouples CPAL's variable period from our block size.
-        let mut temp_buf = vec![0.0f32; block * 16];
+            let block = (buf_frames * out_channels) as usize;
+            let mut temp_buf = vec![0.0f32; block * 16];
 
-        let scfg = cpal::StreamConfig {
-            channels: out_channels as u16,
-            sample_rate: cpal::SampleRate(sample_rate),
-            buffer_size: cpal::BufferSize::Default,
-        };
-        let stream = output_device
-            .build_output_stream(
-                &scfg,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let total = data.len();
-                    let mut written = 0usize;
-                    let max_written = total.min(temp_buf.len());
-                    while written + block <= max_written {
-                        unsafe {
-                            oslot.set(OutputWindow::new(temp_buf.as_mut_ptr().add(written), block));
-                            process_cb.call();
-                            oslot.clear();
+            let scfg = cpal::StreamConfig {
+                channels: out_channels as u16,
+                sample_rate: cpal::SampleRate(sample_rate),
+                buffer_size: cpal::BufferSize::Default,
+            };
+            let stream = output_device
+                .build_output_stream(
+                    &scfg,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let total = data.len();
+                        let mut written = 0usize;
+                        let max_written = total.min(temp_buf.len());
+                        while written + block <= max_written {
+                            unsafe {
+                                oslot.set(OutputWindow::new(
+                                    temp_buf.as_mut_ptr().add(written),
+                                    block,
+                                ));
+                                process_cb.call();
+                                oslot.clear();
+                            }
+                            written += block;
                         }
-                        written += block;
-                    }
+                        data[..written].copy_from_slice(&temp_buf[..written]);
+                        if written < total {
+                            data[written..].fill(0.0);
+                        }
+                    },
+                    {
+                        let xruns = xruns.clone();
+                        move |err| {
+                            eprintln!("CPAL output stream error: {err}");
+                            xruns.fetch_add(1, Ordering::Relaxed);
+                        }
+                    },
+                    None,
+                )
+                .map_err(|e| format!("CPAL output build: {e}"))?;
 
-                    // Copy processed blocks from temp to CPAL's buffer.
-                    data[..written].copy_from_slice(&temp_buf[..written]);
+            stream
+                .play()
+                .map_err(|e| format!("CPAL output play: {e}"))?;
+            unsafe {
+                *self.stream.get() = Some(stream);
+            }
+        }
 
-                    // Zero unused portion.
-                    if written < total {
-                        data[written..].fill(0.0);
-                    }
-                },
-                move |err| {
-                    eprintln!("CPAL output stream error: {err}");
-                    xruns.fetch_add(1, Ordering::Relaxed);
-                },
-                None,
-            )
-            .map_err(|e| format!("CPAL build: {e}"))?;
+        // ── Input stream ────────────────────────────────────────────────────
+        if in_channels > 0 {
+            let input_device = in_dev_name
+                .as_deref()
+                .and_then(|name| {
+                    host.input_devices()
+                        .ok()?
+                        .find(|d| d.name().ok().as_deref() == Some(name))
+                })
+                .or_else(|| host.default_input_device())
+                .ok_or_else(|| format!("No input device available"))?;
 
-        stream.play().map_err(|e| format!("CPAL play: {e}"))?;
+            let block_samps = (buf_frames * in_channels) as usize;
+            let icfg = cpal::StreamConfig {
+                channels: in_channels as u16,
+                sample_rate: cpal::SampleRate(sample_rate),
+                buffer_size: cpal::BufferSize::Default,
+            };
 
-        unsafe {
-            *self.stream.get() = Some(stream);
+            let cb_process = process_cb;
+            let has_output = out_channels > 0;
+            let stream = input_device
+                .build_input_stream(
+                    &icfg,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        iring.write(data);
+                        if !has_output {
+                            while iring.len() >= block_samps {
+                                unsafe {
+                                    cb_process.call();
+                                }
+                            }
+                        }
+                    },
+                    move |err| {
+                        eprintln!("CPAL input stream error: {err}");
+                    },
+                    None,
+                )
+                .map_err(|e| format!("CPAL input build: {e}"))?;
+
+            stream.play().map_err(|e| format!("CPAL input play: {e}"))?;
+            unsafe {
+                *self.input_stream.get() = Some(stream);
+            }
         }
 
         Ok(())
@@ -202,6 +259,9 @@ impl IoBackend<f32> for CpalBackend {
 
     fn stop(&self) -> Result<(), String> {
         if let Some(s) = unsafe { (*self.stream.get()).take() } {
+            let _ = s.pause();
+        }
+        if let Some(s) = unsafe { (*self.input_stream.get()).take() } {
             let _ = s.pause();
         }
         Ok(())
@@ -275,6 +335,9 @@ impl AudioBackend for CpalBackend {
 impl Drop for CpalBackend {
     fn drop(&mut self) {
         if let Some(s) = unsafe { (*self.stream.get()).take() } {
+            let _ = s.pause();
+        }
+        if let Some(s) = unsafe { (*self.input_stream.get()).take() } {
             let _ = s.pause();
         }
         unsafe {

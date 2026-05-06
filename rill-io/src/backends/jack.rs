@@ -10,7 +10,9 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
+use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
+
+use crate::buffer::IoRingBuffer;
 
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
@@ -46,6 +48,7 @@ pub struct JackBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     output_slot: OutputSlot,
+    input_ring: Arc<IoRingBuffer>,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     /// Stores the active JACK client handle.
@@ -74,17 +77,19 @@ impl JackBackend {
             ));
         }
 
+        let buf_cap = (config.buffer_size * config.input_channels.max(1) * 4) as usize;
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
             output_slot: OutputSlot::new(),
+            input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             active_client: UnsafeCell::new(None),
         })
     }
 
-    /// Common setup: create JACK client, register port, activate.
+    /// Common setup: create JACK client, register ports, activate.
     /// Called from `run()` (non‑blocking) and `AudioBackend::start()`.
     fn setup(&self) -> Result<(), String> {
         let client_name = self.config.output_device.as_deref().unwrap_or("rill");
@@ -92,26 +97,68 @@ impl JackBackend {
         let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
             .map_err(|e| format!("JACK client new: {e:?}"))?;
 
-        let out_port: Port<AudioOut> = client
-            .register_port("output", AudioOut)
-            .map_err(|e| format!("JACK output port: {e:?}"))?;
+        let out_port: Option<Port<AudioOut>> = if self.config.output_channels > 0 {
+            Some(
+                client
+                    .register_port("output", AudioOut)
+                    .map_err(|e| format!("JACK output port: {e:?}"))?,
+            )
+        } else {
+            None
+        };
 
+        let in_ports: Vec<Port<AudioIn>> = if self.config.input_channels > 0 {
+            let n = self.config.input_channels.min(2) as usize;
+            let mut ports = Vec::with_capacity(n);
+            for i in 0..n {
+                let name = if n == 1 {
+                    "input".into()
+                } else {
+                    format!("input_{}", i + 1)
+                };
+                ports.push(
+                    client
+                        .register_port(&name, AudioIn)
+                        .map_err(|e| format!("JACK input port {name}: {e:?}"))?,
+                );
+            }
+            ports
+        } else {
+            Vec::new()
+        };
+
+        // Auto-connect ports (before activation, ports are already registered)
+        let out_port_name = out_port.as_ref().and_then(|p| p.name().ok());
+        let in_port_names: Vec<_> = in_ports.iter().filter_map(|p| p.name().ok()).collect();
+
+        let in_ch = self.config.input_channels.max(1) as usize;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
             out_port,
+            in_ports,
+            in_ch,
             output_slot: self.output_slot.clone(),
+            input_ring: self.input_ring.clone(),
         };
 
         let active_client = client
             .activate_async((), handler)
             .map_err(|e| format!("JACK activate: {e:?}"))?;
 
-        // Auto-connect to system playback ports
         let jack_client = active_client.as_client();
-        let out_port_name = format!("{client_name}:output");
-        for target in &["system:playback_1", "system:playback_2"] {
-            if let Err(e) = jack_client.connect_ports_by_name(&out_port_name, target) {
-                log::info!("JACK connect {out_port_name} → {target}: {e}");
+        if let Some(name) = out_port_name {
+            let full = format!("{client_name}:{name}");
+            for target in &["system:playback_1", "system:playback_2"] {
+                if let Err(e) = jack_client.connect_ports_by_name(&full, target) {
+                    log::info!("JACK connect {full} → {target}: {e}");
+                }
+            }
+        }
+        for (i, name) in in_port_names.iter().enumerate() {
+            let full = format!("{client_name}:{name}");
+            let src = format!("system:capture_{}", i + 1);
+            if let Err(e) = jack_client.connect_ports_by_name(&src, &full) {
+                log::info!("JACK connect {src} → {full}: {e}");
             }
         }
 
@@ -127,28 +174,58 @@ impl JackBackend {
 
 struct JackProcessHandler {
     process_cb: CbSlot,
-    out_port: Port<AudioOut>,
+    out_port: Option<Port<AudioOut>>,
+    in_ports: Vec<Port<AudioIn>>,
+    in_ch: usize,
     output_slot: OutputSlot,
+    input_ring: Arc<IoRingBuffer>,
 }
 
 impl ProcessHandler for JackProcessHandler {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
         let nframes = ps.n_frames() as usize;
-        let out = self.out_port.as_mut_slice(ps);
 
-        let chunk = 256usize;
-        let mut off = 0usize;
-        while off + chunk <= nframes {
-            unsafe {
-                self.output_slot
-                    .set(OutputWindow::new(out.as_mut_ptr().add(off), chunk));
-                self.process_cb.call();
-                self.output_slot.clear();
+        // Capture: read input ports → ring buffer (interleaved)
+        if !self.in_ports.is_empty() {
+            let n_samp = nframes * self.in_ch;
+            let max_samp = n_samp.min(4096);
+            let mut temp = [0.0f32; 4096];
+            let len = max_samp;
+            for i in 0..nframes.min(len / self.in_ch) {
+                for ch in 0..self.in_ch.min(2) {
+                    if ch < self.in_ports.len() {
+                        let src = self.in_ports[ch].as_slice(ps);
+                        if i < src.len() {
+                            temp[i * self.in_ch + ch] = src[i];
+                        }
+                    }
+                }
             }
-            off += chunk;
+            self.input_ring.write(&temp[..len]);
         }
-        if off < nframes {
-            out[off..nframes].fill(0.0);
+
+        // Playback: process graph → output port
+        if let Some(ref mut out) = self.out_port {
+            let buf = out.as_mut_slice(ps);
+            let chunk = 256usize;
+            let mut off = 0usize;
+            while off + chunk <= nframes {
+                unsafe {
+                    self.output_slot
+                        .set(OutputWindow::new(buf.as_mut_ptr().add(off), chunk));
+                    self.process_cb.call();
+                    self.output_slot.clear();
+                }
+                off += chunk;
+            }
+            if off < nframes {
+                buf[off..nframes].fill(0.0);
+            }
+        } else if !self.in_ports.is_empty() {
+            // Capture-only: trigger process callback after writing to ring buffer
+            unsafe {
+                self.process_cb.call();
+            }
         }
 
         Control::Continue
@@ -166,8 +243,34 @@ impl IoBackend<f32> for JackBackend {
         }
     }
 
-    fn read(&self, _channels: &mut [&mut [f32]]) -> usize {
-        0
+    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
+        if frames == 0 {
+            return 0;
+        }
+        let out_ch = self.config.input_channels.max(1) as usize;
+        let cap = frames.saturating_mul(out_ch).min(4096);
+        let mut temp = [0.0f32; 4096];
+        let n = self.input_ring.read(&mut temp[..cap]);
+        let frames_out = n / out_ch;
+        let out = frames_out.min(frames);
+        if out_ch >= 2 {
+            for i in 0..out {
+                if let Some(c) = channels.get_mut(0) {
+                    c[i] = temp[i * out_ch];
+                }
+                if let Some(c) = channels.get_mut(1) {
+                    c[i] = temp[i * out_ch + 1];
+                }
+            }
+        } else {
+            for i in 0..out {
+                if let Some(c) = channels.get_mut(0) {
+                    c[i] = temp[i];
+                }
+            }
+        }
+        out
     }
 
     fn write(&self, channels: &[&[f32]]) -> usize {
