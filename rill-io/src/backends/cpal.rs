@@ -131,7 +131,7 @@ impl IoBackend<f32> for CpalBackend {
         }
     }
 
-    fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
+    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
         let process_cb = self.process_cb;
         let oslot = self.output_slot.clone();
         let iring = self.input_ring.clone();
@@ -163,7 +163,7 @@ impl IoBackend<f32> for CpalBackend {
             let scfg = cpal::StreamConfig {
                 channels: out_channels as u16,
                 sample_rate: cpal::SampleRate(sample_rate),
-                buffer_size: cpal::BufferSize::Default,
+                buffer_size: cpal::BufferSize::Fixed(buf_frames),
             };
             let stream = output_device
                 .build_output_stream(
@@ -219,44 +219,61 @@ impl IoBackend<f32> for CpalBackend {
                 .or_else(|| host.default_input_device())
                 .ok_or_else(|| format!("No input device available"))?;
 
+            let block_samps = (buf_frames * in_channels) as usize;
             let icfg = cpal::StreamConfig {
                 channels: in_channels as u16,
                 sample_rate: cpal::SampleRate(sample_rate),
-                buffer_size: cpal::BufferSize::Default,
+                buffer_size: cpal::BufferSize::Fixed(buf_frames),
             };
 
+            let has_output = out_channels > 0;
             let iring_cb = iring.clone();
+            let cb_process = process_cb;
             let stream = input_device
                 .build_input_stream(
                     &icfg,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         iring_cb.write(data);
+                        if !has_output && iring_cb.len() >= block_samps {
+                            unsafe {
+                                cb_process.call();
+                            }
+                        }
                     },
                     move |err| {
                         eprintln!("CPAL input stream error: {err}");
                     },
                     None,
                 )
+                .or_else(|_| {
+                    let icfg_def = cpal::StreamConfig {
+                        channels: in_channels as u16,
+                        sample_rate: cpal::SampleRate(sample_rate),
+                        buffer_size: cpal::BufferSize::Default,
+                    };
+                    let iring_cb2 = iring.clone();
+                    let cb_process2 = process_cb;
+                    input_device.build_input_stream(
+                        &icfg_def,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            iring_cb2.write(data);
+                            if !has_output && iring_cb2.len() >= block_samps {
+                                unsafe {
+                                    cb_process2.call();
+                                }
+                            }
+                        },
+                        move |err| {
+                            eprintln!("CPAL input stream error: {err}");
+                        },
+                        None,
+                    )
+                })
                 .map_err(|e| format!("CPAL input build: {e}"))?;
 
             stream.play().map_err(|e| format!("CPAL input play: {e}"))?;
             unsafe {
                 *self.input_stream.get() = Some(stream);
-            }
-        }
-
-        // ── Capture-only: processing loop ──────────────────────────────────
-        // When there is no output stream to drive the graph, run a tight
-        // spin loop in run() that reads from the input ring buffer and
-        // calls process_cb for each complete block.
-        if out_channels == 0 && in_channels > 0 {
-            let block_samps = (buf_frames * in_channels) as usize;
-            while running.load(Ordering::Acquire) {
-                if iring.len() >= block_samps {
-                    unsafe {
-                        process_cb.call();
-                    }
-                }
             }
         }
 
