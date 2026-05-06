@@ -163,7 +163,7 @@ impl IoBackend<f32> for CpalBackend {
             let scfg = cpal::StreamConfig {
                 channels: out_channels as u16,
                 sample_rate: cpal::SampleRate(sample_rate),
-                buffer_size: cpal::BufferSize::Fixed(buf_frames),
+                buffer_size: cpal::BufferSize::Default,
             };
             let stream = output_device
                 .build_output_stream(
