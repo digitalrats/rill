@@ -31,14 +31,25 @@ const BUF: usize = 256;
 const RATE: f32 = 48000.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── Бэкенд (PipeWire — захват + воспроизведение) ─────────────────────
+    // ── Бэкенд ──────────────────────────────────────────────────────────
     let config = AudioConfig::default()
         .with_sample_rate(RATE as u32)
         .with_buffer_size(BUF as u32)
         .with_channels(2);
 
+    // Priority: pipewire > jack > cpal > alsa
+    #[cfg(feature = "pipewire")]
     let backend =
         Box::new(rill_adrift::io::PipewireBackend::new(config).expect("PipewireBackend::new"));
+    #[cfg(all(feature = "jack", not(feature = "pipewire")))]
+    let backend = Box::new(rill_adrift::io::JackBackend::new(config).expect("JackBackend::new"));
+    #[cfg(all(feature = "cpal", not(any(feature = "pipewire", feature = "jack"))))]
+    let backend = Box::new(rill_adrift::io::CpalBackend::new(config).expect("CpalBackend::new"));
+    #[cfg(all(
+        feature = "alsa",
+        not(any(feature = "pipewire", feature = "jack", feature = "cpal"))
+    ))]
+    let backend = Box::new(rill_adrift::io::AlsaBackend::new(config).expect("AlsaBackend::new"));
     let backend_ptr = IoBackendPtr::from_ref(&*backend);
 
     // ── Граф: AudioInput → AudioOutput ────────────────────────────────────
