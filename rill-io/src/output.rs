@@ -132,7 +132,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioOutput<T, BUF_SIZE> {
                         sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
                     }
                 }));
-                let _ = backend.start();
+                // Thread ownership moved to caller — backend.run(running) is called
+                // on a pre-created audio thread (see rill-adrift examples).
             }
         }
     }

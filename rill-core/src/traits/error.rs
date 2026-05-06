@@ -454,9 +454,6 @@ pub struct ErrorContext {
     /// Source location (file:line)
     pub location: Option<String>,
 
-    /// Thread ID where error occurred
-    pub thread_id: Option<std::thread::ThreadId>,
-
     /// Timestamp when error occurred
     pub timestamp: std::time::SystemTime,
 
@@ -477,7 +474,6 @@ impl Default for ErrorContext {
     fn default() -> Self {
         Self {
             location: None,
-            thread_id: Some(std::thread::current().id()),
             timestamp: std::time::SystemTime::now(),
             node_id: None,
             port_id: None,
@@ -529,10 +525,6 @@ impl ErrorContext {
 
         if let Some(loc) = &self.location {
             msg.push_str(&format!("\n  at {}", loc));
-        }
-
-        if let Some(id) = self.thread_id {
-            msg.push_str(&format!("\n  thread: {:?}", id));
         }
 
         if let Some(node) = self.node_id {

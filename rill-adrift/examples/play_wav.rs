@@ -1,9 +1,14 @@
 //! Play a WAV file through the rill audio graph with optional low-pass filter.
 //!
 //! Usage:
-//!   cargo run --example play_wav -- [backend] [wav_path]
+//!   cargo run --example play_wav -- [backend] [wav_path] [device]
 //!
 //! Backend: "cpal" (default), "alsa", "pipewire", "jack", "null"
+//! Device:  ALSA device name (e.g. "plughw:0,0", "sysdefault:CARD=UAC232").
+//!          Only used with "alsa" backend. Defaults to "default".
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use rill_adrift::io::output::AudioOutput;
 use rill_adrift::io::signal_io::IoBackendPtr;
@@ -74,13 +79,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get(2)
         .map(|s| s.as_str())
         .unwrap_or("ESW Aura Inst - LoFi Steel - C.wav");
+    let device_name = args.get(3).map(|s| s.as_str());
 
-    let config = AudioConfig::default()
+    let mut config = AudioConfig::default()
         .with_sample_rate(RATE as u32)
         .with_buffer_size(BUF as u32)
         .with_channels(2);
-    let backend = create_backend(backend_name, config);
-    let backend_ptr = IoBackendPtr::from_ref(&*backend);
+    if let Some(dev) = device_name {
+        config = config.with_output_device(dev);
+    }
+    let backend = Arc::new(create_backend(backend_name, config));
+    let backend_ptr = IoBackendPtr::from_ref(&**backend);
 
     // ── Load WAV ──────────────────────────────────────────────────────────
     let sample = load_wav(wav_path)?;
@@ -138,7 +147,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nodes_ptr = graph.nodes_mut() as *mut [NodeVariant<f32, BUF>];
     let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>]) + Send> = Box::new(|_| {});
 
+    // Register the callback (AudioOutput::start sets callback only)
     audio_output.start(nodes_ptr, drain_fn, RATE);
+
+    // Create audio thread — rill-adrift owns thread lifecycle
+    let running = Arc::new(AtomicBool::new(true));
+    let t_running = running.clone();
+    let t_backend = backend.clone();
+    let audio_thread = std::thread::spawn(move || {
+        let _ = t_backend.run(t_running.clone());
+        // For non-blocking backends (JACK, CPAL) run() returns immediately
+        // after setup — park until stop is signaled.
+        // For blocking backends (ALSA, PW) run() returns when running is
+        // already false, so the park loop exits immediately.
+        while t_running.load(Ordering::Acquire) {
+            std::thread::park();
+        }
+        let _ = t_backend.stop();
+    });
 
     // ── Let it play ────────────────────────────────────────────────────────
     println!(
@@ -148,7 +174,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
 
-    let _ = backend.stop();
+    running.store(false, Ordering::Release);
+    audio_thread.thread().unpark();
+    let _ = audio_thread.join();
 
     // graph dropped → everything freed
 

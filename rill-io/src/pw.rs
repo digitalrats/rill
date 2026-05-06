@@ -34,6 +34,7 @@ pub fn ensure(
     let backend = PipewireBackend::new(config).ok()?;
     let ptr = IoBackendPtr::from_ref(&backend as &dyn IoBackend<f32>);
     let rings = backend.rings();
-    backend.start().ok()?;
+    // Caller is responsible for creating the audio thread and calling
+    // backend.run(running) on it.
     Some((Box::new(backend) as Box<dyn IoBackend<f32>>, rings, ptr))
 }

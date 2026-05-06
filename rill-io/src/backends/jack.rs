@@ -1,10 +1,14 @@
 //! JACK бэкенд — OutputWindow, без ring buffer для output.
+//!
+//! `run()` — non‑blocking: создаёт JACK client, активирует, сохраняет
+//! handle и возвращается. Process callback работает на JACK RT thread.
+//! `stop()` дропает handle → JACK деактивируется.
+//! Никаких `std::thread`, `std::sync`.
 
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
 
@@ -14,14 +18,39 @@ use crate::error::{IoError, IoResult};
 use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
 
+/// Callback slot.
+#[derive(Copy, Clone)]
+struct CbSlot(usize);
+unsafe impl Send for CbSlot {}
+unsafe impl Sync for CbSlot {}
+
+impl CbSlot {
+    fn new() -> Self {
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+    }
+    unsafe fn set(&self, cb: Box<dyn Fn()>) {
+        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    }
+    unsafe fn call(&self) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
+            cb();
+        }
+    }
+    unsafe fn drop_box(&self) {
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+    }
+}
+
 /// JACK audio backend.
 pub struct JackBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     output_slot: OutputSlot,
-    thread_handle: Option<thread::JoinHandle<()>>,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
+    /// Stores the active JACK client handle.
+    /// Set once in `run()` (audio thread), taken once in `stop()` (control thread).
+    active_client: UnsafeCell<Option<jack::AsyncClient<(), JackProcessHandler>>>,
 }
 
 unsafe impl Send for JackBackend {}
@@ -45,31 +74,52 @@ impl JackBackend {
             ));
         }
 
-        let xruns = Arc::new(AtomicU32::new(0));
-        let running = Arc::new(AtomicBool::new(false));
-        let process_cb = CbSlot::new();
-        let output_slot = OutputSlot::new();
-
-        let t_config = config.clone();
-        let t_running = running.clone();
-        let t_process_cb = process_cb;
-        let t_slot = output_slot;
-
-        let handle = thread::Builder::new()
-            .name("rill-jack".into())
-            .spawn(move || {
-                run_jack_thread(t_process_cb, t_config, t_running, t_slot);
-            })
-            .map_err(|e| IoError::Backend(e.to_string()))?;
-
         Ok(Self {
             config,
-            process_cb,
-            output_slot,
-            thread_handle: Some(handle),
-            xruns,
-            running,
+            process_cb: CbSlot::new(),
+            output_slot: OutputSlot::new(),
+            xruns: Arc::new(AtomicU32::new(0)),
+            running: Arc::new(AtomicBool::new(false)),
+            active_client: UnsafeCell::new(None),
         })
+    }
+
+    /// Common setup: create JACK client, register port, activate.
+    /// Called from `run()` (non‑blocking) and `AudioBackend::start()`.
+    fn setup(&self) -> Result<(), String> {
+        let client_name = self.config.output_device.as_deref().unwrap_or("rill");
+
+        let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
+            .map_err(|e| format!("JACK client new: {e:?}"))?;
+
+        let out_port: Port<AudioOut> = client
+            .register_port("output", AudioOut)
+            .map_err(|e| format!("JACK output port: {e:?}"))?;
+
+        let handler = JackProcessHandler {
+            process_cb: self.process_cb,
+            out_port,
+            output_slot: self.output_slot.clone(),
+        };
+
+        let active_client = client
+            .activate_async((), handler)
+            .map_err(|e| format!("JACK activate: {e:?}"))?;
+
+        // Auto-connect to system playback ports
+        let jack_client = active_client.as_client();
+        let out_port_name = format!("{client_name}:output");
+        for target in &["system:playback_1", "system:playback_2"] {
+            if let Err(e) = jack_client.connect_ports_by_name(&out_port_name, target) {
+                log::info!("JACK connect {out_port_name} → {target}: {e}");
+            }
+        }
+
+        self.running.store(true, Ordering::Release);
+        unsafe {
+            *self.active_client.get() = Some(active_client);
+        }
+        Ok(())
     }
 }
 
@@ -86,8 +136,6 @@ impl ProcessHandler for JackProcessHandler {
         let nframes = ps.n_frames() as usize;
         let out = self.out_port.as_mut_slice(ps);
 
-        // Split JACK output buffer into BUF_SIZE chunks and process each.
-        // write_output() sums stereo to mono and writes directly into out.
         let chunk = 256usize;
         let mut off = 0usize;
         while off + chunk <= nframes {
@@ -99,7 +147,6 @@ impl ProcessHandler for JackProcessHandler {
             }
             off += chunk;
         }
-        // Zero remaining frames
         if off < nframes {
             out[off..nframes].fill(0.0);
         }
@@ -108,70 +155,8 @@ impl ProcessHandler for JackProcessHandler {
     }
 }
 
-fn run_jack_thread(
-    process_cb: CbSlot,
-    config: AudioConfig,
-    running: Arc<AtomicBool>,
-    output_slot: OutputSlot,
-) {
-    loop {
-        thread::park();
-        if running.load(Ordering::Acquire) {
-            break;
-        }
-        return;
-    }
-
-    let client_name = config.output_device.as_deref().unwrap_or("rill");
-
-    let (client, _status) = match Client::new(client_name, ClientOptions::NO_START_SERVER) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("JACK client new: {e:?}");
-            return;
-        }
-    };
-
-    let out_port: Port<AudioOut> = match client.register_port("output", AudioOut) {
-        Ok(p) => p,
-        Err(e) => {
-            log::error!("JACK output port: {e:?}");
-            return;
-        }
-    };
-
-    let handler = JackProcessHandler {
-        process_cb,
-        out_port,
-        output_slot,
-    };
-
-    let active_client = match client.activate_async((), handler) {
-        Ok(a) => a,
-        Err(e) => {
-            log::error!("JACK activate: {e:?}");
-            return;
-        }
-    };
-
-    // Auto-connect output port to JACK system playback ports.
-    let jack_client = active_client.as_client();
-    let out_port_name = format!("{}:output", client_name);
-    for target in &["system:playback_1", "system:playback_2"] {
-        if let Err(e) = jack_client.connect_ports_by_name(&out_port_name, target) {
-            log::info!("JACK connect {} → {}: {}", out_port_name, target, e);
-        }
-    }
-
-    while running.load(Ordering::Acquire) {
-        thread::park();
-    }
-
-    drop(active_client);
-}
-
 // ============================================================================
-// AudioIo impl
+// IoBackend impl
 // ============================================================================
 
 impl IoBackend<f32> for JackBackend {
@@ -201,18 +186,16 @@ impl IoBackend<f32> for JackBackend {
         }
     }
 
-    fn start(&self) -> Result<(), String> {
-        self.running.store(true, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
-        }
-        Ok(())
+    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
+        self.setup()
     }
 
     fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
+        unsafe {
+            if let Some(client) = (*self.active_client.get()).take() {
+                drop(client);
+            }
         }
         Ok(())
     }
@@ -237,19 +220,16 @@ impl AudioBackend for JackBackend {
     }
 
     fn start(&mut self) -> IoResult<()> {
-        self.running.store(true, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
-        }
-        Ok(())
+        self.setup().map_err(|e| IoError::Backend(e))
     }
 
     fn stop(&mut self) -> IoResult<()> {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
+        unsafe {
+            if let Some(client) = (*self.active_client.get()).take() {
+                drop(client);
+            }
         }
-        thread::sleep(Duration::from_millis(50));
         Ok(())
     }
 
@@ -263,8 +243,8 @@ impl AudioBackend for JackBackend {
         self.xruns.load(Ordering::Acquire)
     }
 
-    fn latency(&self) -> Duration {
-        Duration::from_micros(
+    fn latency(&self) -> std::time::Duration {
+        std::time::Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
         )
     }
@@ -280,13 +260,10 @@ impl AudioBackend for JackBackend {
 impl Drop for JackBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
-        }
-        if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
-        }
         unsafe {
+            if let Some(client) = (*self.active_client.get()).take() {
+                drop(client);
+            }
             self.process_cb.drop_box();
         }
     }

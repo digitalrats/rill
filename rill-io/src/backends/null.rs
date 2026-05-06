@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::backend::{AudioBackend, BackendType};
@@ -78,7 +80,7 @@ impl IoBackend<f32> for NullBackend {
     fn write(&self, channels: &[&[f32]]) -> usize {
         channels.first().map(|c| c.len()).unwrap_or(0)
     }
-    fn start(&self) -> Result<(), String> {
+    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
         Ok(())
     }
     fn stop(&self) -> Result<(), String> {

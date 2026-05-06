@@ -15,9 +15,6 @@ pub mod backends;
 
 pub mod output_window;
 
-/// MIDI event types for I/O backends.
-pub mod midi;
-
 /// Audio output sink node (stereo, bridge to hardware).
 pub mod output;
 
@@ -40,7 +37,6 @@ pub use backend::{AudioBackend, BackendType, DeviceInfo};
 pub use config::AudioConfig;
 pub use error::{IoError, IoResult};
 pub use input::AudioInput;
-pub use midi::MidiEvent;
 pub use output::AudioOutput;
 pub use rings::PwBuffers;
 

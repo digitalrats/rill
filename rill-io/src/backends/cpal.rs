@@ -1,10 +1,16 @@
-//! CPAL бэкенд — callback-driven, без отдельного потока, без crossbeam, без parking_lot.
+//! CPAL бэкенд — callback-driven, без отдельного потока.
 //!
-//! Output пишет напрямую в CPAL-буфер через OutputWindow (без ring buffer).
-//! Единственный поток — тот, в котором CPAL дёргает output-коллбэк.
+//! Output пишет напрямую в CPAL-буфер через OutputWindow.
+//! Process callback работает на CPAL audio thread.
+//!
+//! `run()` — non‑blocking: создаёт stream, запускает, сохраняет handle,
+//! возвращается. Caller удерживает тред в park‑loop до `stop()`.
+//! `stop()` — дропает stream.
+//! Никаких `std::thread`, `std::sync`.
 
 use std::cell::UnsafeCell;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -40,20 +46,13 @@ impl CbSlot {
 }
 
 /// CPAL бэкенд.
-///
-/// Владеет одним output-стримом. Не создаёт отдельного потока —
-/// обработка живёт в CPAL-коллбэке. Output пишет напрямую в CPAL-буфер.
-///
-/// # Safety
-/// `cpal::Stream` содержит `PhantomData<*mut ()>` → `!Send` на некоторых
-/// платформах. `Send` корректен: `AudioIo` гарантирует последовательный доступ.
 pub struct CpalBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     stream: UnsafeCell<Option<cpal::Stream>>,
     input_ring: Arc<IoRingBuffer>,
     output_slot: OutputSlot,
-    xruns: Arc<std::sync::atomic::AtomicU32>,
+    xruns: Arc<AtomicU32>,
 }
 
 unsafe impl Send for CpalBackend {}
@@ -69,7 +68,6 @@ impl fmt::Debug for CpalBackend {
 }
 
 impl CpalBackend {
-    /// Создать новый CPAL бэкенд.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         let buf_cap = (config.buffer_size * config.input_channels.max(1) * 4) as usize;
         Ok(Self {
@@ -78,127 +76,14 @@ impl CpalBackend {
             stream: UnsafeCell::new(None),
             input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
             output_slot: OutputSlot::new(),
-            xruns: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            xruns: Arc::new(AtomicU32::new(0)),
         })
     }
-
-    fn build_streams(&self) -> IoResult<cpal::Stream> {
-        let host = cpal::default_host();
-        let output_device = self
-            .config
-            .output_device
-            .as_deref()
-            .and_then(|name| {
-                host.output_devices()
-                    .ok()?
-                    .find(|d| d.name().ok().as_deref() == Some(name))
-            })
-            .or_else(|| host.default_output_device())
-            .ok_or_else(|| IoError::DeviceNotFound("No output device available".into()))?;
-
-        let stream_config = cpal::StreamConfig {
-            channels: self.config.output_channels as u16,
-            sample_rate: cpal::SampleRate(self.config.sample_rate),
-            buffer_size: cpal::BufferSize::Default,
-        };
-
-        let xruns = self.xruns.clone();
-        let cb_addr = self.process_cb.0;
-        let oslot = self.output_slot.clone();
-
-        let stream = output_device
-            .build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let chunk = 256; // BUF_SIZE
-                    let mut off = 0usize;
-
-                    while off + chunk * 2 <= data.len() {
-                        unsafe {
-                            oslot.set(OutputWindow::new(data.as_mut_ptr().add(off), chunk * 2));
-                            CbSlot(cb_addr).call();
-                            oslot.clear();
-                        }
-                        off += chunk * 2;
-                    }
-                    if off < data.len() {
-                        data[off..].fill(0.0);
-                    }
-                },
-                move |err| {
-                    eprintln!("CPAL output stream error: {}", err);
-                    xruns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                },
-                None,
-            )
-            .map_err(|e| IoError::Backend(format!("CPAL output: {e}")))?;
-
-        Ok(stream)
-    }
 }
 
-impl AudioBackend for CpalBackend {
-    fn backend_type(&self) -> BackendType {
-        BackendType::Cpal
-    }
-
-    fn config(&self) -> &AudioConfig {
-        &self.config
-    }
-
-    fn config_mut(&mut self) -> &mut AudioConfig {
-        &mut self.config
-    }
-
-    fn init(&mut self) -> IoResult<()> {
-        self.input_ring.clear_with_zeros();
-        Ok(())
-    }
-
-    fn start(&mut self) -> IoResult<()> {
-        // AudioIo::start() does the actual work. This path is unused
-        // when the backend is used via AudioOutput (pull model).
-        Ok(())
-    }
-
-    fn stop(&mut self) -> IoResult<()> {
-        // AudioIo::stop() does the actual work.
-        Ok(())
-    }
-
-    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let n = self.input_ring.read(buffer);
-        Ok(n)
-    }
-
-    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
-        Ok(0)
-    }
-
-    fn xruns(&self) -> u32 {
-        self.xruns.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    fn latency(&self) -> std::time::Duration {
-        std::time::Duration::from_micros(
-            (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
-        )
-    }
-
-    fn list_input_devices(&self) -> Vec<String> {
-        cpal::default_host()
-            .input_devices()
-            .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
-            .unwrap_or_default()
-    }
-
-    fn list_output_devices(&self) -> Vec<String> {
-        cpal::default_host()
-            .output_devices()
-            .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
-            .unwrap_or_default()
-    }
-}
+// ============================================================================
+// IoBackend impl
+// ============================================================================
 
 impl IoBackend<f32> for CpalBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
@@ -227,31 +112,91 @@ impl IoBackend<f32> for CpalBackend {
     fn write(&self, channels: &[&[f32]]) -> usize {
         let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity().min(frames * 2);
+            let out_ch = self.config.output_channels as usize;
+            let cap = win.capacity().min(frames * out_ch);
             let dst = win.as_mut_slice();
-            for i in 0..(cap / 2) {
+            for i in 0..(cap / out_ch) {
                 if let Some(ch) = channels.get(0) {
-                    dst[i * 2] = ch[i];
+                    dst[i * out_ch] = ch[i];
                 }
                 if let Some(ch) = channels.get(1) {
-                    dst[i * 2 + 1] = ch[i];
+                    dst[i * out_ch + 1] = ch[i];
                 }
             }
-            cap / 2
+            cap / out_ch
         } else {
             0
         }
     }
 
-    fn start(&self) -> Result<(), String> {
-        let stream = match self.build_streams() {
-            Ok(s) => s,
-            Err(e) => return Err(format!("CPAL build: {e}")),
+    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
+        let process_cb = self.process_cb;
+        let oslot = self.output_slot.clone();
+        let xruns = self.xruns.clone();
+        let sample_rate = self.config.sample_rate;
+        let out_channels = self.config.output_channels;
+        let buf_frames = self.config.buffer_size;
+        let dev_name = self.config.output_device.clone();
+
+        let host = cpal::default_host();
+        let output_device = dev_name
+            .as_deref()
+            .and_then(|name| {
+                host.output_devices()
+                    .ok()?
+                    .find(|d| d.name().ok().as_deref() == Some(name))
+            })
+            .or_else(|| host.default_output_device())
+            .ok_or_else(|| format!("No output device available"))?;
+
+        let block = (buf_frames * out_channels) as usize;
+
+        // Temp buffer decouples CPAL's variable period from our block size.
+        let mut temp_buf = vec![0.0f32; block * 16];
+
+        let scfg = cpal::StreamConfig {
+            channels: out_channels as u16,
+            sample_rate: cpal::SampleRate(sample_rate),
+            buffer_size: cpal::BufferSize::Default,
         };
+        let stream = output_device
+            .build_output_stream(
+                &scfg,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    let total = data.len();
+                    let mut written = 0usize;
+                    let max_written = total.min(temp_buf.len());
+                    while written + block <= max_written {
+                        unsafe {
+                            oslot.set(OutputWindow::new(temp_buf.as_mut_ptr().add(written), block));
+                            process_cb.call();
+                            oslot.clear();
+                        }
+                        written += block;
+                    }
+
+                    // Copy processed blocks from temp to CPAL's buffer.
+                    data[..written].copy_from_slice(&temp_buf[..written]);
+
+                    // Zero unused portion.
+                    if written < total {
+                        data[written..].fill(0.0);
+                    }
+                },
+                move |err| {
+                    eprintln!("CPAL output stream error: {err}");
+                    xruns.fetch_add(1, Ordering::Relaxed);
+                },
+                None,
+            )
+            .map_err(|e| format!("CPAL build: {e}"))?;
+
         stream.play().map_err(|e| format!("CPAL play: {e}"))?;
+
         unsafe {
             *self.stream.get() = Some(stream);
         }
+
         Ok(())
     }
 
@@ -260,6 +205,70 @@ impl IoBackend<f32> for CpalBackend {
             let _ = s.pause();
         }
         Ok(())
+    }
+}
+
+// ============================================================================
+// AudioBackend impl
+// ============================================================================
+
+impl AudioBackend for CpalBackend {
+    fn backend_type(&self) -> BackendType {
+        BackendType::Cpal
+    }
+
+    fn config(&self) -> &AudioConfig {
+        &self.config
+    }
+
+    fn config_mut(&mut self) -> &mut AudioConfig {
+        &mut self.config
+    }
+
+    fn init(&mut self) -> IoResult<()> {
+        self.input_ring.clear_with_zeros();
+        Ok(())
+    }
+
+    fn start(&mut self) -> IoResult<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) -> IoResult<()> {
+        Ok(())
+    }
+
+    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
+        let n = self.input_ring.read(buffer);
+        Ok(n)
+    }
+
+    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
+        Ok(0)
+    }
+
+    fn xruns(&self) -> u32 {
+        self.xruns.load(Ordering::Acquire)
+    }
+
+    fn latency(&self) -> std::time::Duration {
+        std::time::Duration::from_micros(
+            (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
+        )
+    }
+
+    fn list_input_devices(&self) -> Vec<String> {
+        cpal::default_host()
+            .input_devices()
+            .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+            .unwrap_or_default()
+    }
+
+    fn list_output_devices(&self) -> Vec<String> {
+        cpal::default_host()
+            .output_devices()
+            .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+            .unwrap_or_default()
     }
 }
 

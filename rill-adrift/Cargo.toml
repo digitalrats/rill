@@ -10,6 +10,7 @@ documentation = "https://docs.rs/rill-adrift"
 
 [dev-dependencies]
 parking_lot = "0.12"
+hound = "3.5"
 
 [dependencies]
 rill-core = { workspace = true }

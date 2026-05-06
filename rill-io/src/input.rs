@@ -163,7 +163,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for AudioInput<T, BUF_
                 }
             }));
 
-            let _ = b.start();
+            // Thread ownership moved to caller — backend.run(running) is called
+            // on a pre-created audio thread (see rill-adrift examples).
         }
     }
 
@@ -250,15 +251,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for AudioInpu
         if let Some(io) = self.io_ptr.as_ref() {
             let channels = &mut [&mut self.buf_l[..], &mut self.buf_r[..]];
             let n = io.read(channels);
-            if n > 0 {
-                let frames = n.min(BUF_SIZE);
+            if n >= BUF_SIZE {
                 if let Some(left) = self.outputs.get_mut(0) {
                     let l = left.buffer_mut().as_mut_array();
-                    l[..frames].copy_from_slice(&self.buf_l[..frames]);
+                    l[..BUF_SIZE].copy_from_slice(&self.buf_l[..BUF_SIZE]);
                 }
                 if let Some(right) = self.outputs.get_mut(1) {
                     let r = right.buffer_mut().as_mut_array();
-                    r[..frames].copy_from_slice(&self.buf_r[..frames]);
+                    r[..BUF_SIZE].copy_from_slice(&self.buf_r[..BUF_SIZE]);
                 }
             }
         }
@@ -311,7 +311,7 @@ mod tests {
             }
             self.output_ring.write(&temp) / 2
         }
-        fn start(&self) -> IoResult<()> {
+        fn run(&self, _running: Arc<std::sync::atomic::AtomicBool>) -> IoResult<()> {
             Ok(())
         }
         fn stop(&self) -> IoResult<()> {
