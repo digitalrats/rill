@@ -147,7 +147,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             signal_inputs: 0,
-            signal_outputs: if self.right.is_some() { 2 } else { 1 },
+            signal_outputs: self.outputs.len(),
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
