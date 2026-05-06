@@ -42,8 +42,9 @@ use rill_core::queues::MpscQueue;
 use rill_core::queues::SetParameter;
 use rill_core::traits::ParamValue;
 use rill_core::NodeId;
-use rill_patchbay::control::{OscSurface, PatchbayControl};
 use rill_patchbay::engine::PatchbayEngine;
+#[cfg(feature = "osc")]
+use rill_patchbay::control::{OscSurface, PatchbayControl};
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
 
