@@ -203,6 +203,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
+    fn resolve_backend(&mut self, backend: *mut dyn rill_core::io::IoBackend<T>) {
+        if !backend.is_null() {
+            self.backend = crate::signal_io::IoBackendPtr::from_ref(unsafe { &*backend });
+        }
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for AudioOutput<T, BUF_SIZE> {
