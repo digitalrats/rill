@@ -124,7 +124,7 @@ fn register_sampler<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_
                     n.load(sample);
                     n.play();
                 } else {
-                    log::warn!("SamplePlayer: could not load {path}");
+                    eprintln!("SamplePlayer: could not load {path}");
                 }
             }
             NodeVariant::Source(Box::new(n))

@@ -309,12 +309,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
                             if let Some(ref mut r) = self.right {
                                 r.set_gate(true);
                             }
+                            eprintln!("SamplePlayer: loaded {path}");
                             Ok(())
                         }
-                        Err(e) => Err(ProcessError::Parameter(format!(
-                            "Cannot load {}: {}",
-                            path, e
-                        ))),
+                        Err(e) => {
+                            eprintln!("SamplePlayer: could not load {path}: {e}");
+                            Err(ProcessError::Parameter(format!(
+                                "Cannot load {}: {}",
+                                path, e
+                            )))
+                        }
                     }
                 } else {
                     Err(ProcessError::Parameter("Expected string path".into()))

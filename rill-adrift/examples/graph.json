@@ -9,8 +9,7 @@
             "type_name": "rill/sampler",
             "name": "player",
             "parameters": {
-                "file": "ESW Aura Inst - LoFi Steel - C.wav",
-                "gate": true
+                "file": "ESW Aura Inst - LoFi Steel - C.wav"
             }
         },
         {
@@ -32,9 +31,8 @@
     ],
     "connections": [
         {"kind": "Signal", "from_node": 0, "from_port": 0, "to_node": 1, "to_port": 0},
-        {"kind": "Signal", "from_node": 0, "from_port": 1, "to_node": 1, "to_port": 1},
         {"kind": "Signal", "from_node": 1, "from_port": 0, "to_node": 2, "to_port": 0},
-        {"kind": "Signal", "from_node": 1, "from_port": 1, "to_node": 2, "to_port": 1}
+        {"kind": "Signal", "from_node": 0, "from_port": 1, "to_node": 2, "to_port": 1}
     ],
-    "description": "Sample player → Low-pass filter → Audio output"
+    "description": "Sample player → Low-pass filter (L) + direct (R) → Audio output"
 }
