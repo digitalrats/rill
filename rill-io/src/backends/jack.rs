@@ -220,9 +220,12 @@ impl ProcessHandler for JackProcessHandler {
                 buf[off..nframes].fill(0.0);
             }
         } else if !self.in_ports.is_empty() {
-            // Capture-only: trigger process callback after writing to ring buffer
-            unsafe {
-                self.process_cb.call();
+            // Capture-only: process all available blocks
+            let chunk_samps = 256 * self.in_ch;
+            while self.input_ring.len() >= chunk_samps {
+                unsafe {
+                    self.process_cb.call();
+                }
             }
         }
 
