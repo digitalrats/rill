@@ -2,6 +2,7 @@ use crate::backend_factory;
 use crate::registry::{NodeRegistry, RegistryError};
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
+use rill_core::queues::{MpscQueue, SetParameter};
 #[cfg(test)]
 use rill_core::time::SystemClock;
 use rill_core::time::{ClockSource, ClockTick};
@@ -401,6 +402,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             self.nodes.into_iter().map(|e| e.node).collect();
 
         // Auto-start driver node (registers process callback on backend).
+        let mut command_queue: Option<Box<MpscQueue<SetParameter>>> = None;
         if let Some(ref _backend) = backend_box {
             let driver_idx = nodes
                 .iter()
@@ -414,14 +416,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 let nodes_ptr = nodes.as_mut_ptr();
                 let len = nodes.len();
                 let source_idx = topo[0];
+                let cmd_queue = Box::new(MpscQueue::<SetParameter>::with_capacity(64));
+                let queue_ptr: *const MpscQueue<SetParameter> = &*cmd_queue;
                 let handle = GraphHandle {
                     nodes: nodes_ptr as *mut u8,
                     len,
                     source_idx,
                     sample_rate,
-                    queue: std::ptr::null(),
+                    queue: queue_ptr,
                 };
                 nodes[driver_idx].start(handle);
+                command_queue = Some(cmd_queue);
             }
         }
 
@@ -437,6 +442,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
             buffers: owned_buffers,
             backend: backend_box,
+            command_queue,
         })
     }
 }
@@ -466,6 +472,8 @@ pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
     /// Shared audio backend (alive for the graph's lifetime).
     #[allow(dead_code)]
     backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
+    /// Command queue for sending parameters from control to audio thread.
+    command_queue: Option<Box<MpscQueue<SetParameter>>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
@@ -512,6 +520,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
     /// Return a reference to the audio backend, if one was configured.
     pub fn backend_ref(&self) -> Option<&dyn rill_core::io::IoBackend<T>> {
         self.backend.as_deref().map(|b| &*b)
+    }
+
+    /// Send a parameter change command to the graph's audio thread.
+    ///
+    /// The command is pushed into a lock-free queue and drained by the
+    /// audio callback on the next processing cycle. Returns `None` when
+    /// the queue is full (overflow).
+    /// Send a parameter change command to the graph's audio thread.
+    ///
+    /// The command is pushed into a lock-free queue and drained by the
+    /// audio callback on the next processing cycle. Returns `None` when
+    /// the queue is full (overflow) or no queue was created.
+    pub fn send_parameter(&self, cmd: SetParameter) -> Option<()> {
+        Some(self.command_queue.as_ref()?.push(cmd).ok()?)
     }
 
     /// Consume the graph and return its owned parts (test only).
