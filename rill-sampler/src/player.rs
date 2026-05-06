@@ -418,3 +418,39 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rill_core::traits::SignalNode;
+
+    #[test]
+    fn test_set_and_get_parameter() {
+        const B: usize = 64;
+        let mut player = SamplePlayerNode::<f32, B>::new();
+
+        // Set rate → verify via get
+        let pid = ParameterId::new("rate").unwrap();
+        let _ = player.set_parameter(&pid, ParamValue::Float(2.0));
+        let val = player.get_parameter(&pid);
+        assert_eq!(val, Some(ParamValue::Float(2.0)));
+
+        // Set amplitude → verify via get
+        let pid = ParameterId::new("amplitude").unwrap();
+        let _ = player.set_parameter(&pid, ParamValue::Float(0.75));
+        let val = player.get_parameter(&pid);
+        assert_eq!(val, Some(ParamValue::Float(0.75)));
+
+        // Gate on/off → verify via get
+        let pid = ParameterId::new("gate").unwrap();
+        let _ = player.set_parameter(&pid, ParamValue::Bool(true));
+        let val = player.get_parameter(&pid);
+        assert_eq!(val, Some(ParamValue::Bool(true)));
+
+        // Unknown parameter → error on set, None on get
+        let unknown = ParameterId::new("nonexistent").unwrap();
+        let result = player.set_parameter(&unknown, ParamValue::Float(0.0));
+        assert!(result.is_err());
+        assert!(player.get_parameter(&unknown).is_none());
+    }
+}
