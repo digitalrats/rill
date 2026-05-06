@@ -408,11 +408,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         if let Some(ref _backend) = backend_box {
             let driver_idx = nodes
                 .iter()
-                .position(|n| n.metadata().name == "AudioInput")
+                .position(|n| {
+                    let name = n.metadata().name;
+                    name == "AudioInput" || name == "Input"
+                })
                 .or_else(|| {
-                    nodes
-                        .iter()
-                        .position(|n| n.metadata().name == "AudioOutput")
+                    nodes.iter().position(|n| {
+                        let name = n.metadata().name;
+                        name == "AudioOutput" || name == "Output"
+                    })
                 });
             if let Some(driver_idx) = driver_idx {
                 let nodes_ptr = nodes.as_mut_ptr();

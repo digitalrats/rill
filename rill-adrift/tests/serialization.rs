@@ -92,7 +92,7 @@ fn test_deserialize_input_biquad_output() {
         .iter()
         .map(|n| n.metadata().name.clone())
         .collect();
-    assert_eq!(names, ["AudioInput", "BiquadProcessor", "AudioOutput"]);
+    assert_eq!(names, ["Input", "BiquadProcessor", "Output"]);
 }
 
 #[cfg(feature = "serialization")]
