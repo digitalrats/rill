@@ -73,6 +73,8 @@ pub fn register_all<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_
     register_digital_filters(registry);
     register_digital_effects(registry);
     register_io(registry);
+    #[cfg(feature = "sampler")]
+    register_sampler::<BUF_SIZE>(registry);
 }
 
 #[cfg(feature = "io")]
@@ -99,6 +101,35 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
 #[cfg(not(feature = "io"))]
 fn register_io<const BUF_SIZE: usize>(_registry: &mut NodeRegistry<f32, BUF_SIZE>) {
     // No I/O nodes available without "io" feature.
+}
+
+// ============================================================================
+// Rill Sampler
+// ============================================================================
+
+#[cfg(feature = "sampler")]
+fn register_sampler<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>) {
+    use rill_sampler::player::SamplePlayerNode;
+    use rill_sampler::wav::load_wav;
+
+    node_ctor!(
+        registry,
+        "rill/sampler",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            if let Some(path) = params.get("file").and_then(|v| v.as_str()) {
+                if let Ok(sample) = load_wav(path) {
+                    n.load(sample);
+                    n.play();
+                } else {
+                    log::warn!("SamplePlayer: could not load {path}");
+                }
+            }
+            NodeVariant::Source(Box::new(n))
+        }
+    );
 }
 
 // ============================================================================

@@ -9,6 +9,8 @@ use rill_core_dsp::generators::{Generator, LoopMode, SamplePlayer};
 use std::marker::PhantomData;
 
 use crate::buffer::SampleBuffer;
+#[cfg(feature = "wav")]
+use crate::wav::load_wav;
 
 /// Sample-playback source node with stereo support.
 ///
@@ -285,6 +287,37 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
                     Ok(())
                 } else {
                     Err(ProcessError::Parameter("Expected choice".into()))
+                }
+            }
+            #[cfg(feature = "wav")]
+            "file" => {
+                if let ParamValue::String(path) = &value {
+                    match load_wav(path) {
+                        Ok(sample) => {
+                            let converted = SampleBuffer {
+                                data: sample.data.into_iter().map(|s| T::from_f32(s)).collect(),
+                                right: sample
+                                    .right
+                                    .map(|r| r.into_iter().map(|s| T::from_f32(s)).collect()),
+                                sample_rate: sample.sample_rate,
+                                channels: sample.channels,
+                                name: sample.name,
+                            };
+                            self.load(converted);
+                            self.gate = true;
+                            self.left.set_gate(true);
+                            if let Some(ref mut r) = self.right {
+                                r.set_gate(true);
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(ProcessError::Parameter(format!(
+                            "Cannot load {}: {}",
+                            path, e
+                        ))),
+                    }
+                } else {
+                    Err(ProcessError::Parameter("Expected string path".into()))
                 }
             }
             _ => Err(ProcessError::Parameter(format!(

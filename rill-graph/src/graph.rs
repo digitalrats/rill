@@ -509,6 +509,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
         &self.resources
     }
 
+    /// Return a reference to the audio backend, if one was configured.
+    pub fn backend_ref(&self) -> Option<&dyn rill_core::io::IoBackend<T>> {
+        self.backend.as_deref().map(|b| &*b)
+    }
+
     /// Consume the graph and return its owned parts (test only).
     #[cfg(test)]
     pub fn into_parts(
