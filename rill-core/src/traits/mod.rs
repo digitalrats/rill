@@ -3,17 +3,27 @@
 //! This module defines the fundamental traits that form the backbone
 //! of the Rill ecosystem.
 
+/// Action trait and types for node‑level commands.
 pub mod action;
+/// Active node trait — nodes that drive graph processing.
+pub mod active;
+/// Algorithm trait and action contexts.
 pub mod algorithm;
 mod error;
+/// Core node trait (`SignalNode`) and related types.
 pub mod node;
+/// Parameter types and IDs (`ParameterId`, `ParamValue`, `ParamType`, etc.).
 pub mod param;
+/// Port types and identifiers (`PortId`, `PortDirection`, `PortType`).
 pub mod port;
+/// Processing traits (`Processable`, `Processor`, `Source`, `Sink`).
 pub mod processable;
+/// Router trait for signal fan‑out / fan‑in.
 pub mod router;
 
 // Re-export all public items
 pub use action::*;
+pub use active::*;
 pub use algorithm::*;
 pub use error::*;
 pub use node::*;

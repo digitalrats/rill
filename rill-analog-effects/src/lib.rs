@@ -1,6 +1,7 @@
 //! Analog circuit models — operational amplifiers, tape decks, preamps.
 
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 mod cassette;
 mod nodes;

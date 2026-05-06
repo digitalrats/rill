@@ -4,12 +4,15 @@ use std::f32::consts::PI;
 
 /// Простой фильтр нижних частот (однополюсный)
 pub struct LowPass {
+    /// Cutoff frequency in Hz.
     pub cutoff: f32,
+    /// Sample rate in Hz.
     pub sample_rate: f32,
     state: f32,
 }
 
 impl LowPass {
+    /// Create a new `LowPass` filter with the given cutoff frequency and sample rate.
     pub fn new(cutoff: f32, sample_rate: f32) -> Self {
         Self {
             cutoff,
@@ -18,6 +21,7 @@ impl LowPass {
         }
     }
 
+    /// Process a single sample through the low-pass filter, returning the filtered output.
     pub fn process(&mut self, input: f32) -> f32 {
         let rc = 1.0 / (2.0 * PI * self.cutoff);
         let dt = 1.0 / self.sample_rate;

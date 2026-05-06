@@ -7,9 +7,11 @@ mod graph_pipewire_it {
     use std::process::Command;
     use std::time::Duration;
 
+    use rill_core::io::IoBackend;
     use rill_core::traits::{SignalNode, Sink, Source};
     use rill_core::ClockTick;
-    use rill_io::audio_io::{AudioIo, AudioIoPtr};
+    use rill_io::audio_io::AudioIoPtr;
+    use rill_io::AudioBackend;
     use rill_io::{AudioConfig, AudioInput, AudioOutput, PipewireBackend};
 
     const VIRTUAL_SINK: &str = "rill_graph_test_sink";
@@ -89,12 +91,12 @@ mod graph_pipewire_it {
             .with_channels(2)
             .with_output_device(VIRTUAL_SINK);
 
-        let backend = PipewireBackend::new(config).unwrap();
-        let _ = backend.start();
-        let ptr = AudioIoPtr::from_ref(&backend as &dyn AudioIo);
+        let mut backend = Box::new(PipewireBackend::new(config).unwrap());
+        let _ = AudioBackend::start(&mut *backend);
+        let ptr = AudioIoPtr::from_ref(&*backend as &dyn IoBackend<f32>);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
-        input.set_backend(Box::new(backend));
+        input.set_io_ptr(ptr);
         settle(300);
 
         {
@@ -138,12 +140,12 @@ mod graph_pipewire_it {
             .with_channels(2)
             .with_output_device(VIRTUAL_SINK);
 
-        let backend = PipewireBackend::new(config).unwrap();
-        let _ = backend.start();
-        let ptr = AudioIoPtr::from_ref(&backend as &dyn AudioIo);
+        let mut backend = Box::new(PipewireBackend::new(config).unwrap());
+        let _ = AudioBackend::start(&mut *backend);
+        let ptr = AudioIoPtr::from_ref(&*backend as &dyn IoBackend<f32>);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
-        input.set_backend(Box::new(backend));
+        input.set_io_ptr(ptr);
         settle(300);
 
         {

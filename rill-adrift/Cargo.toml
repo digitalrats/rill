@@ -10,6 +10,7 @@ documentation = "https://docs.rs/rill-adrift"
 
 [dev-dependencies]
 parking_lot = "0.12"
+hound = "3.5"
 
 [dependencies]
 rill-core = { workspace = true }
@@ -39,6 +40,10 @@ rill-sampler = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["signal"] }
 serde_json = { version = "1.0", optional = true }
 
+[[example]]
+name = "play_json"
+required-features = ["serialization", "sampler"]
+
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "cpal"]
 
@@ -53,6 +58,7 @@ serialization = [
     "rill-patchbay/serialization",
     "dep:serde_json",
 ]
+dot = ["rill-graph/dot"]
 
 # Audio backend passthrough
 alsa = ["rill-io/alsa"]

@@ -18,12 +18,6 @@ use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use rill_graph::{node_ctor, NodeRegistry};
 
 #[cfg(feature = "io")]
-use crate::io::input::AudioInput;
-#[cfg(feature = "io")]
-use crate::io::output::AudioOutput;
-#[cfg(feature = "io")]
-use crate::io::AudioConfig;
-
 /// Return a lazily-initialized global registry for the given block size.
 ///
 /// The registry is initialised once on the first call and reused thereafter.
@@ -75,6 +69,8 @@ pub fn register_all<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_
     register_digital_filters(registry);
     register_digital_effects(registry);
     register_io(registry);
+    #[cfg(feature = "sampler")]
+    register_sampler::<BUF_SIZE>(registry);
 }
 
 #[cfg(feature = "io")]
@@ -83,7 +79,8 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
         registry,
         "rill/output",
         |id: NodeId, params: &NodeParams| {
-            let mut n = AudioOutput::<f32, BUF_SIZE>::new();
+            let ch = params.get_f32("channels", 2.0) as usize;
+            let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(ch);
             SignalNode::set_id(&mut n, id);
             SignalNode::init(&mut n, params.sample_rate);
             NodeVariant::Sink(Box::new(n))
@@ -91,14 +88,8 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
     );
 
     node_ctor!(registry, "rill/input", |id: NodeId, params: &NodeParams| {
-        let mut n = AudioInput::<f32, BUF_SIZE>::new();
-        if let Some(name) = params.get("backend").and_then(|v| v.as_str()) {
-            let config = AudioConfig::new()
-                .with_sample_rate(params.sample_rate as u32)
-                .with_buffer_size(BUF_SIZE as u32)
-                .with_channels(2);
-            let _ = n.init_backend(name, config);
-        }
+        let ch = params.get_f32("channels", 2.0) as usize;
+        let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(ch);
         SignalNode::set_id(&mut n, id);
         SignalNode::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -108,6 +99,35 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
 #[cfg(not(feature = "io"))]
 fn register_io<const BUF_SIZE: usize>(_registry: &mut NodeRegistry<f32, BUF_SIZE>) {
     // No I/O nodes available without "io" feature.
+}
+
+// ============================================================================
+// Rill Sampler
+// ============================================================================
+
+#[cfg(feature = "sampler")]
+fn register_sampler<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>) {
+    use rill_sampler::player::SamplePlayerNode;
+    use rill_sampler::wav::load_wav;
+
+    node_ctor!(
+        registry,
+        "rill/sampler",
+        |id: NodeId, params: &NodeParams| {
+            let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
+            SignalNode::set_id(&mut n, id);
+            SignalNode::init(&mut n, params.sample_rate);
+            if let Some(path) = params.get("file").and_then(|v| v.as_str()) {
+                if let Ok(sample) = load_wav(path) {
+                    n.load(sample);
+                    n.play();
+                } else {
+                    eprintln!("SamplePlayer: could not load {path}");
+                }
+            }
+            NodeVariant::Source(Box::new(n))
+        }
+    );
 }
 
 // ============================================================================
@@ -247,7 +267,11 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
         registry,
         "rill/write_head",
         |id: NodeId, params: &NodeParams| {
-            let mut n = WriteHead::<f32, BUF_SIZE>::new(params.sample_rate);
+            let resource = params
+                .get("tape")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tape_0");
+            let mut n = WriteHead::<f32, BUF_SIZE>::with_resource(params.sample_rate, resource);
             SignalNode::set_id(&mut n, id);
             SignalNode::init(&mut n, params.sample_rate);
             NodeVariant::Processor(Box::new(n))
@@ -258,7 +282,11 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
         registry,
         "rill/read_head",
         |id: NodeId, params: &NodeParams| {
-            let mut n = ReadHead::<f32, BUF_SIZE>::new();
+            let resource = params
+                .get("tape")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tape_0");
+            let mut n = ReadHead::<f32, BUF_SIZE>::with_resource(resource);
             SignalNode::set_id(&mut n, id);
             SignalNode::init(&mut n, params.sample_rate);
             NodeVariant::Source(Box::new(n))
@@ -290,4 +318,57 @@ pub fn load_graph_json<const B: usize>(
     json: &str,
 ) -> Result<rill_graph::GraphBuilder<f32, B>, rill_graph::serialization::SerializationError> {
     rill_graph::serialization::from_json(json, registry::<B>())
+}
+
+/// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).
+pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
+    factory.register("null", |sr, bs, ch| {
+        Ok(Box::new(crate::io::backends::NullBackend::new(
+            crate::io::AudioConfig::new()
+                .with_sample_rate(sr)
+                .with_buffer_size(bs)
+                .with_channels(ch),
+        )))
+    });
+
+    #[cfg(feature = "alsa")]
+    factory.register("alsa", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b = crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?;
+        Ok(Box::new(b))
+    });
+
+    #[cfg(feature = "cpal")]
+    factory.register("cpal", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b = crate::io::backends::CpalBackend::new(cfg).map_err(|e| format!("cpal: {e}"))?;
+        Ok(Box::new(b))
+    });
+
+    #[cfg(feature = "pipewire")]
+    factory.register("pipewire", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b =
+            crate::io::backends::PipewireBackend::new(cfg).map_err(|e| format!("pipewire: {e}"))?;
+        Ok(Box::new(b))
+    });
+
+    #[cfg(feature = "jack")]
+    factory.register("jack", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b = crate::io::backends::JackBackend::new(cfg).map_err(|e| format!("jack: {e}"))?;
+        Ok(Box::new(b))
+    });
 }

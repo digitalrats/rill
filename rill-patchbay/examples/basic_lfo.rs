@@ -30,8 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let time = i as f64 * 0.5;
         control.update(0.5);
 
-        let value = queue.pop().map(|cmd| cmd.value).unwrap_or(0.5);
-        println!("{:.1}\t{:.3}", time, value);
+        let value = queue
+            .pop()
+            .map(|cmd| cmd.value)
+            .unwrap_or(rill_core::traits::ParamValue::Float(0.5));
+        println!("{:.1}\t{:.3}", time, value.as_f32().unwrap_or(0.0));
     }
 
     println!("\nDone");

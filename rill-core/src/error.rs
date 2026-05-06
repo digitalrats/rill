@@ -467,6 +467,7 @@ macro_rules! context {
 
 /// I/O error constructors.
 pub mod io {
+    #![allow(unused)]
     use super::*;
 
     /// Create a `DeviceNotFound` error.

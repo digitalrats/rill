@@ -35,6 +35,9 @@ struct AyMixer {
     io_b_enabled: bool,
 }
 
+/// Emulates the AY-3-8910 / YM2149 programmable sound generator, used in the
+/// ZX Spectrum 128, Atari ST, and Amstrad CPC. Provides three tone channels,
+/// a noise generator, and a hardware envelope.
 pub struct Ay38910Emulator<const BUF_SIZE: usize> {
     state: NodeState<f32, BUF_SIZE>,
     id: NodeId,
@@ -52,6 +55,8 @@ pub struct Ay38910Emulator<const BUF_SIZE: usize> {
 }
 
 impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
+    /// Creates a new AY-3-8910 emulator with the default 1.75 MHz chip clock
+    /// and 8-bit lo-fi processing.
     pub fn new(_sample_rate: f32) -> Self {
         let chip_clock = 1_750_000.0;
 
@@ -118,6 +123,8 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
         }
     }
 
+    /// Writes a value to one of the chip's 16 internal registers and
+    /// immediately updates the emulator state.
     pub fn write_register(&mut self, reg: usize, value: u8) {
         if reg < 16 {
             self.registers[reg] = value;
@@ -126,6 +133,8 @@ impl<const BUF_SIZE: usize> Ay38910Emulator<BUF_SIZE> {
         }
     }
 
+    /// Reads the current value of one of the chip's 16 internal registers.
+    /// Returns `0` for out-of-range register indices.
     pub fn read_register(&self, reg: usize) -> u8 {
         if reg < 16 {
             self.registers[reg]

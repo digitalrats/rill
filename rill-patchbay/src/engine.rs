@@ -287,7 +287,7 @@ mod tests {
 
         let cmd = queue.pop().unwrap();
         assert_eq!(cmd.parameter.as_ref(), "volume");
-        assert!((cmd.value - 0.5).abs() < 1e-6);
+        assert!((cmd.value.as_f32().unwrap() - 0.5).abs() < 1e-6);
     }
 
     #[tokio::test]

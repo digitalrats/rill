@@ -29,6 +29,7 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// Create a default runtime configuration.
     pub fn new() -> Self {
         Self {
             sample_rate: 48000.0,

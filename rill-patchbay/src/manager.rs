@@ -455,7 +455,7 @@ impl PatchbayManager {
 
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
-                let value = cmd.value;
+                let value = cmd.value.clone();
                 commands.push(cmd);
 
                 if self.config.log_events {
@@ -465,7 +465,7 @@ impl PatchbayManager {
                             "{}:{}",
                             mapping.target.node_id.0, mapping.target.param_name
                         ),
-                        value,
+                        value: value.as_f32().unwrap_or(0.0),
                     });
                 }
             }
@@ -634,7 +634,7 @@ impl AnyServo for TestServo {
             Some(SetParameter::new(
                 PortId::param(self.target_node, 0),
                 ParameterId::new(&self.target_param).unwrap(),
-                value as f32,
+                ParamValue::Float(value as f32),
                 SignalSource::Manual,
             ))
         } else {

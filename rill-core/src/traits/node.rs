@@ -286,7 +286,6 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     /// Falls back to `set_parameter()` when the port is not found.
     fn apply_set_parameter(&mut self, cmd: &SetParameter) -> ProcessResult<()> {
         use crate::traits::port::{PortDirection, PortType};
-        let value = T::from_f32(cmd.value);
         let port = match cmd.port.port_type() {
             PortType::Control => self.control_port_mut(cmd.port.index() as usize),
             PortType::Signal => match cmd.port.direction() {
@@ -296,17 +295,32 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
             PortType::Param => self.input_port_mut(cmd.port.index() as usize),
             PortType::Clock | PortType::Feedback => None,
         };
-        match port {
-            Some(p) => {
-                p.set_value(value);
+        match (port, &cmd.value) {
+            (Some(p), ParamValue::Float(v)) => {
+                p.set_value(T::from_f32(*v));
                 Ok(())
             }
-            None => self.set_parameter(&cmd.parameter, ParamValue::Float(cmd.value)),
+            _ => self.set_parameter(&cmd.parameter, cmd.value.clone()),
         }
     }
 
     /// Get node ID
     fn id(&self) -> NodeId;
+
+    /// Resolve named resource buffers (tape loops, etc.) from the registry.
+    fn resolve_resources(&mut self, _buffers: &crate::buffer::BufferRegistry<T>) {}
+
+    /// Provide the shared audio backend pointer.
+    ///
+    /// Called during graph assembly so that audio I/O nodes can store
+    /// the pointer.  Default no‑op.
+    fn resolve_backend(&mut self, _backend: *mut dyn crate::io::IoBackend<T>) {}
+
+    /// Start graph processing. Default no‑op — overridden by I/O nodes.
+    fn start(&mut self, _handle: crate::traits::active::GraphHandle) {}
+
+    /// Stop graph processing. Default no‑op — overridden by I/O nodes.
+    fn stop(&mut self) {}
 
     /// Set node ID
     fn set_id(&mut self, id: NodeId);

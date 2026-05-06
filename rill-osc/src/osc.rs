@@ -1,12 +1,19 @@
 use crate::error::Error;
 
+/// OSC timestamp represented as a 64-bit NTP time tag.
+///
+/// The top 32 bits are the seconds since 1900-01-01, and the bottom 32 bits
+/// are the fractional part (1/2³² second resolution).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeTag {
+    /// Seconds since 1900-01-01 (top 32 bits of NTP time tag).
     pub seconds: u64,
+    /// Fractional seconds in 1/2³² units (bottom 32 bits).
     pub fractional: u64,
 }
 
 impl TimeTag {
+    /// Create a time tag representing "immediately" (all zeros).
     pub fn immediate() -> Self {
         TimeTag {
             seconds: 0,
@@ -15,33 +22,52 @@ impl TimeTag {
     }
 }
 
+/// An OSC argument value — one of the supported OSC type tags.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OscType {
+    /// 32-bit big-endian integer.
     Int(i32),
+    /// 32-bit big-endian IEEE 754 float.
     Float(f32),
+    /// NULL-terminated ASCII string, padded to 4-byte boundary.
     String(String),
+    /// Byte blob prefixed by a 32-bit length, padded to 4-byte boundary.
     Blob(Vec<u8>),
+    /// 64-bit NTP time tag (two 32-bit words).
     Timetag(TimeTag),
 }
 
+/// A single OSC message with an address pattern and arguments.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OscMessage {
+    /// OSC address pattern (e.g. `/audio/volume`).
     pub addr: String,
+    /// Type-tagged argument values.
     pub args: Vec<OscType>,
 }
 
+/// A bundle of OSC packets with a shared time tag.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OscBundle {
+    /// The time tag at which the bundled messages should fire.
     pub timetag: TimeTag,
+    /// The contained OSC packets (messages or nested bundles).
     pub packets: Vec<OscPacket>,
 }
 
+/// An OSC packet — either a single message or a bundle of packets.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OscPacket {
+    /// A single OSC message.
     Message(OscMessage),
+    /// A bundle of packets with a shared time tag.
     Bundle(OscBundle),
 }
 
+/// Decode a byte slice into an `OscPacket`.
+///
+/// Automatically detects whether the buffer is a message (starts with `/`)
+/// or a bundle (starts with `#bundle\0`).
 pub fn decode(buf: &[u8]) -> Result<OscPacket, Error> {
     if buf.starts_with(b"/") {
         decode_message(buf).map(OscPacket::Message)
@@ -132,6 +158,7 @@ fn decode_bundle(buf: &[u8]) -> Result<OscBundle, Error> {
     Ok(OscBundle { timetag, packets })
 }
 
+/// Encode an `OscPacket` into its OSC wire format byte representation.
 pub fn encode(packet: &OscPacket) -> Result<Vec<u8>, Error> {
     match packet {
         OscPacket::Message(msg) => encode_message(msg),
@@ -285,6 +312,9 @@ fn write_timetag(buf: &mut Vec<u8>, tag: TimeTag) {
     buf.extend_from_slice(&(tag.fractional as u32).to_be_bytes());
 }
 
+/// Match an OSC address pattern against a concrete address.
+///
+/// Supports `*` as a wildcard matching a single path segment.
 pub fn pattern_match(pattern: &str, addr: &str) -> bool {
     if pattern == "*" {
         return true;

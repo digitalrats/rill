@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
-use rill_core::traits::{NodeId, ParameterId, PortId};
+use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 
 use tokio::sync::{mpsc, watch};
 
@@ -117,7 +117,7 @@ async fn combiner_loop(
                 let value = combine(mod_val, base, control, min, max);
                 let pid = ParameterId::new(&param_name).unwrap();
                 let _ = output_queue.push(SetParameter::new(
-                    PortId::param(node_id, 0), pid, value as f32, SignalSource::Manual,
+                    PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalSource::Manual,
                 ));
             }
 
@@ -128,7 +128,7 @@ async fn combiner_loop(
                         frozen = true;
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, v as f32, SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalSource::Manual,
                         ));
                     }
 
@@ -137,14 +137,14 @@ async fn combiner_loop(
                         let value = combine(latest_mod, v, control, min, max);
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, value as f32, SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalSource::Manual,
                         ));
                     }
 
                     (UiCommand::SetValue(v), ConflictStrategy::LastWriteWins) => {
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, v as f32, SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalSource::Manual,
                         ));
                     }
 
@@ -153,7 +153,7 @@ async fn combiner_loop(
                         let value = combine(latest_mod, base, control, min, max);
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, value as f32, SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalSource::Manual,
                         ));
                     }
 
@@ -246,13 +246,13 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         assert!(!queue.is_empty());
         let cmd = queue.pop().unwrap();
-        assert!((cmd.value - 550.0).abs() < 1.0);
+        assert!((cmd.value.as_f32().unwrap() - 550.0).abs() < 1.0);
 
         // UI трогает
         handle.ui_tx.send(UiCommand::SetValue(800.0)).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         let cmd = queue.pop().unwrap();
-        assert!((cmd.value - 800.0).abs() < 1.0);
+        assert!((cmd.value.as_f32().unwrap() - 800.0).abs() < 1.0);
 
         // Автомат шлёт новое значение — оно игнорируется (frozen)
         handle.automaton_tx.send(0.1).await.unwrap();
@@ -277,14 +277,14 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         // BasePlusModulation: combine(center, 500, Modulation, ...) = 500 + 0 * ...
         let cmd = queue.pop().unwrap();
-        assert!((cmd.value - 500.0).abs() < 1.0);
+        assert!((cmd.value.as_f32().unwrap() - 500.0).abs() < 1.0);
 
         // Автомат шлёт модуляцию
         handle.automaton_tx.send(0.5).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         // value = 500 + 0.5 * 0.5 * 900 = 500 + 225 = 725
         let cmd = queue.pop().unwrap();
-        assert!((cmd.value - 725.0).abs() < 1.0);
+        assert!((cmd.value.as_f32().unwrap() - 725.0).abs() < 1.0);
     }
 
     #[tokio::test]
@@ -302,13 +302,13 @@ mod tests {
         handle.ui_tx.send(UiCommand::SetValue(0.8)).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         let cmd1 = queue.pop().unwrap();
-        assert!((cmd1.value - 0.8).abs() < 1e-6);
+        assert!((cmd1.value.as_f32().unwrap() - 0.8).abs() < 1e-6);
 
         // Автомат пишет
         handle.automaton_tx.send(0.3).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         let cmd2 = queue.pop().unwrap();
-        assert!((cmd2.value - 0.3).abs() < 1e-6);
+        assert!((cmd2.value.as_f32().unwrap() - 0.3).abs() < 1e-6);
     }
 
     #[tokio::test]
@@ -336,6 +336,6 @@ mod tests {
         handle.automaton_tx.send(0.2).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         let cmd = queue.pop().unwrap();
-        assert!((cmd.value - 280.0).abs() < 1.0);
+        assert!((cmd.value.as_f32().unwrap() - 280.0).abs() < 1.0);
     }
 }

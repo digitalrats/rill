@@ -1,14 +1,14 @@
 //! Lo-fi audio emulation: 8-bit, 12-bit, and classic digital audio systems
 
-//#![warn(missing_docs)]
-#![allow(missing_docs)]
+#![warn(missing_docs)]
 
 mod config;
+/// Digital signal processing utilities (quantization, bitcrushing, etc.).
+pub mod dsp;
+/// Hardware emulators (NES, AY-3-8910, Akai S900).
+pub mod emulators;
 mod error;
 mod lofi_processor;
-// Публичные модули
-pub mod dsp;
-pub mod emulators;
 
 // Реэкспорт основных типов
 pub use config::{ClassicSystem, HardwareEmulation, LofiConfig};

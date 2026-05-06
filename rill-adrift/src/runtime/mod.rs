@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use rill_core::queues::MpscQueue;
 use rill_core::queues::SetParameter;
+use rill_core::traits::ParamValue;
 use rill_core::NodeId;
 use rill_patchbay::control::{OscSurface, PatchbayControl};
 use rill_patchbay::engine::PatchbayEngine;
@@ -231,7 +232,7 @@ impl Runtime {
         let _ = self.queue.push(SetParameter::new(
             rill_core::traits::PortId::param(node, 0),
             pid,
-            value,
+            ParamValue::Float(value),
             rill_core::queues::SignalSource::Manual,
         ));
     }

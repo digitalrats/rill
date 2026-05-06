@@ -1,10 +1,17 @@
+use crate::backend_factory;
 use crate::registry::{NodeRegistry, RegistryError};
-use rill_core::buffer::{BufferRegistry, FixedBuffer, TapeLoop};
+use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
-use rill_core::time::{ClockSource, ClockTick, SystemClock};
+use rill_core::queues::{MpscQueue, SetParameter};
+#[cfg(test)]
+use rill_core::time::SystemClock;
+use rill_core::time::{ClockSource, ClockTick};
+use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
 use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 // ============================================================================
 // Internal routing metadata
@@ -19,6 +26,8 @@ use std::collections::VecDeque;
 pub enum BuildError {
     /// A cycle was detected in the signal edge graph.
     CycleDetected,
+    /// Backend creation failed.
+    Backend(String),
 }
 
 // ============================================================================
@@ -237,6 +246,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     pub fn build(
         mut self,
         clock_source: Box<dyn ClockSource>,
+        backend: Option<&backend_factory::BackendConfig<'_, T>>,
     ) -> Result<SignalGraph<T, BUF_SIZE>, BuildError> {
         let num_nodes = self.nodes.len();
 
@@ -365,15 +375,80 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 }
             }
         }
+
+        // Resolve resources — each node that needs a shared buffer
+        // (e.g. WriteHead, ReadHead) looks it up by name and caches the
+        // pointer.  This is a single‑threaded, one‑time setup step.
+        for entry in &mut self.nodes {
+            entry.node.resolve_resources(&buffers);
+        }
+
+        // Resolve audio backend pointer for I/O nodes.
+        let backend_box = if let Some(cfg) = backend {
+            let b = cfg
+                .factory
+                .create(cfg.name, cfg.sample_rate, cfg.buffer_size, cfg.channels)
+                .map_err(BuildError::Backend)?;
+            let ptr: *mut dyn rill_core::io::IoBackend<T> = &*b
+                as *const dyn rill_core::io::IoBackend<T>
+                as *mut dyn rill_core::io::IoBackend<T>;
+            for entry in &mut self.nodes {
+                entry.node.resolve_backend(ptr);
+            }
+            Some(b)
+        } else {
+            None
+        };
+
+        let mut nodes: Vec<NodeVariant<T, BUF_SIZE>> =
+            self.nodes.into_iter().map(|e| e.node).collect();
+
+        // Auto-start driver node (registers process callback on backend).
+        let mut command_queue: Option<Box<MpscQueue<SetParameter>>> = None;
+        if let Some(ref _backend) = backend_box {
+            let driver_idx = nodes
+                .iter()
+                .position(|n| {
+                    let name = n.metadata().name;
+                    name == "AudioInput" || name == "Input"
+                })
+                .or_else(|| {
+                    nodes.iter().position(|n| {
+                        let name = n.metadata().name;
+                        name == "AudioOutput" || name == "Output"
+                    })
+                });
+            if let Some(driver_idx) = driver_idx {
+                let nodes_ptr = nodes.as_mut_ptr();
+                let len = nodes.len();
+                let source_idx = topo[0];
+                let cmd_queue = Box::new(MpscQueue::<SetParameter>::with_capacity(64));
+                let queue_ptr: *const MpscQueue<SetParameter> = &*cmd_queue;
+                let handle = GraphHandle {
+                    nodes: nodes_ptr as *mut u8,
+                    len,
+                    source_idx,
+                    sample_rate,
+                    queue: queue_ptr,
+                };
+                nodes[driver_idx].start(handle);
+                command_queue = Some(cmd_queue);
+            }
+        }
+
+        let owned_buffers = buffers.into_inner();
+
         let allocated = self.resources.clone();
 
         Ok(SignalGraph {
-            nodes: self.nodes,
+            nodes,
             topo_order: topo,
             clock_source,
             resources: allocated,
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
-            buffers,
+            buffers: owned_buffers,
+            backend: backend_box,
+            command_queue,
         })
     }
 }
@@ -390,48 +465,37 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 /// called from external code (e.g. a real-time signal callback or an
 /// offline renderer).
 pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
-    nodes: Vec<NodeEntry<T, BUF_SIZE>>,
+    nodes: Vec<NodeVariant<T, BUF_SIZE>>,
     topo_order: Vec<usize>,
     #[allow(dead_code)]
     clock_source: Box<dyn ClockSource>,
     current_tick: ClockTick,
     /// Resource metadata (name, kind, capacity) for serialization.
     pub(crate) resources: Vec<GraphResource>,
-    /// Allocated buffer registry — named buffers shared between nodes.
-    pub buffers: BufferRegistry<T>,
+    /// Named buffers (tape loops, etc.) shared between nodes.
+    #[allow(dead_code)]
+    buffers: Vec<Box<dyn Buffer<T>>>,
+    /// Shared audio backend (alive for the graph's lifetime).
+    #[allow(dead_code)]
+    backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
+    /// Command queue for sending parameters from control to audio thread.
+    command_queue: Option<Box<MpscQueue<SetParameter>>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
-    /// Create an empty graph with the given clock source.
-    pub fn new(clock_source: Box<dyn ClockSource>) -> Self {
-        let sample_rate = clock_source.sample_rate();
-        Self {
-            nodes: Vec::new(),
-            topo_order: Vec::new(),
-            clock_source,
-            current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
-            resources: Vec::new(),
-            buffers: BufferRegistry::new(),
-        }
-    }
-
-    /// Create an empty graph with a system clock at the given sample rate.
-    pub fn with_sample_rate(sample_rate: f32) -> Self {
-        Self::new(Box::new(SystemClock::with_sample_rate(sample_rate)))
-    }
-
-    /// Borrow an output port buffer (for inspection in tests).
-    pub fn output_buffer(&self, node_idx: usize, port_idx: usize) -> Option<&[T; BUF_SIZE]> {
-        self.nodes
-            .get(node_idx)?
-            .node
-            .output_port(port_idx)
-            .map(|p| p.buffer.as_array())
-    }
-
     // ========================================================================
     // Accessors
     // ========================================================================
+
+    /// Borrow the node array.
+    pub fn nodes(&self) -> &[NodeVariant<T, BUF_SIZE>] {
+        &self.nodes
+    }
+
+    /// Mutably borrow the node array.
+    pub fn nodes_mut(&mut self) -> &mut [NodeVariant<T, BUF_SIZE>] {
+        &mut self.nodes
+    }
 
     /// Return the current clock tick.
     pub fn current_tick(&self) -> ClockTick {
@@ -448,13 +512,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
         &self.topo_order
     }
 
-    // ── pub(crate) accessors for serialization ─────────────────────
-
-    #[allow(dead_code)]
-    pub(crate) fn node_entries(&self) -> &[NodeEntry<T, BUF_SIZE>] {
-        &self.nodes
-    }
-
     #[allow(dead_code)]
     pub(crate) fn sample_rate(&self) -> f32 {
         self.current_tick.sample_rate
@@ -466,45 +523,77 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
         &self.resources
     }
 
-    // ── Dispatch ──────────────────────────────────────────────────
+    /// Return a reference to the audio backend, if one was configured.
+    #[allow(dead_code)]
+    pub(crate) fn backend_ref(&self) -> Option<&dyn rill_core::io::IoBackend<T>> {
+        self.backend.as_deref()
+    }
 
-    /// Dispatch `SetParameter` commands to their target nodes.
+    /// Run the audio backend until `running` becomes false.
     ///
-    /// Each command is routed to the node identified by `cmd.port.node_id()`
-    /// via that node's `apply_set_parameter` method.
-    pub fn dispatch_set_parameters(
-        &mut self,
-        commands: &[rill_core::queues::signal::SetParameter],
-    ) {
-        for cmd in commands {
-            let target = cmd.port.node_id();
-            for entry in self.nodes.iter_mut() {
-                if entry.node.id() == target {
-                    let _ = entry.node.apply_set_parameter(cmd);
-                    break;
-                }
+    /// For blocking backends (ALSA, PipeWire) this blocks inside
+    /// `backend.run()`. For non-blocking backends (CPAL, JACK) it
+    /// parks after setup. An external signal must unpark the thread
+    /// after setting `running` to false.
+    pub fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
+        if let Some(ref backend) = self.backend {
+            backend.run(running.clone())?;
+            while running.load(Ordering::Acquire) {
+                std::thread::park();
             }
+            backend.stop()
+        } else {
+            Ok(())
         }
     }
 
-    /// Consume the graph and return its parts for the SignalEngine.
-    pub fn into_parts(self) -> (Vec<NodeVariant<T, BUF_SIZE>>, Vec<usize>, ClockTick) {
-        let nodes = self.nodes.into_iter().map(|e| e.node).collect();
-        (nodes, self.topo_order, self.current_tick)
+    /// Send a parameter change command to the graph's audio thread.
+    ///
+    /// The command is pushed into a lock-free queue and drained by the
+    /// audio callback on the next processing cycle. Returns `None` when
+    /// the queue is full (overflow).
+    /// Send a parameter change command to the graph's audio thread.
+    ///
+    /// The command is pushed into a lock-free queue and drained by the
+    /// audio callback on the next processing cycle. Returns `None` when
+    /// the queue is full (overflow) or no queue was created.
+    pub fn send_parameter(&self, cmd: SetParameter) -> Option<()> {
+        self.command_queue.as_ref()?.push(cmd).ok()
+    }
+
+    /// Consume the graph and return its owned parts (test only).
+    #[cfg(test)]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<NodeVariant<T, BUF_SIZE>>,
+        Vec<usize>,
+        ClockTick,
+        Vec<Box<dyn Buffer<T>>>,
+    ) {
+        let Self {
+            nodes,
+            topo_order,
+            clock_source: _,
+            current_tick,
+            resources: _,
+            buffers,
+            backend: _,
+            command_queue: _,
+        } = self;
+        (nodes, topo_order, current_tick, buffers)
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
+    use rill_core::traits::active::ActiveNode;
+    use rill_core::traits::algorithm::ActionContext;
+    use rill_core::traits::processable::{ProcessContext, Processable};
     use rill_core::traits::{
-        processable::{ProcessContext, Processable},
         NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
         PortDirection, PortId, ProcessResult, Processor, SignalNode, Sink, Source,
     };
@@ -621,6 +710,29 @@ mod tests {
         fn num_signal_outputs(&self) -> usize {
             1
         }
+    }
+
+    impl<const BUF_SIZE: usize> ActiveNode for ConstantSource<f32, BUF_SIZE> {
+        fn start(&mut self, handle: GraphHandle) {
+            #[allow(unsafe_code)]
+            unsafe {
+                let nodes = std::slice::from_raw_parts_mut(
+                    handle.nodes as *mut NodeVariant<f32, BUF_SIZE>,
+                    handle.len,
+                );
+                let idx = handle.source_idx;
+                let tick = ClockTick::new(0, BUF_SIZE as u32, handle.sample_rate);
+                let mut ctx = ProcessContext { clock: &tick };
+                let _ = nodes[idx].process_block(&mut ctx);
+                let action_ctx = ActionContext::new(&tick);
+                for po in 0..nodes[idx].num_signal_outputs() {
+                    if let Some(port) = nodes[idx].output_port(po) {
+                        let _ = port.propagate(port.buffer(), &action_ctx);
+                    }
+                }
+            }
+        }
+        fn stop(&mut self) {}
     }
 
     // ------------------------------------------------------------------------
@@ -802,12 +914,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_graph_creation() {
-        let graph = SignalGraph::<f32, 64>::with_sample_rate(44100.0);
-        assert_eq!(graph.node_count(), 0);
-    }
-
-    #[test]
     fn test_topo_order_correct() {
         const BUF: usize = 64;
         let mut builder = GraphBuilder::<f32, BUF>::new();
@@ -820,7 +926,7 @@ mod tests {
         builder.connect_signal(proc, 0, sink, 0);
 
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .expect("build failed");
 
         let order = graph.topo_order();
@@ -842,7 +948,7 @@ mod tests {
         builder.connect_signal(a, 0, b, 0);
         builder.connect_signal(b, 0, a, 0);
 
-        let result = builder.build(Box::new(SystemClock::with_sample_rate(44100.0)));
+        let result = builder.build(Box::new(SystemClock::with_sample_rate(44100.0)), None);
         assert!(matches!(result, Err(BuildError::CycleDetected)));
     }
 
@@ -852,7 +958,7 @@ mod tests {
         let mut builder = GraphBuilder::<f32, BUF>::new();
         let idx = builder.add_source(Box::new(ConstantSource::new(0.5, 44100.0)));
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .expect("build failed");
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.topo_order(), &[idx]);
@@ -1108,24 +1214,22 @@ mod tests {
 
     #[test]
     fn test_graph_source_to_sink() {
+        use rill_core::traits::algorithm::ActionContext;
+        use rill_core::traits::processable::{ProcessContext, Processable};
         const BUF: usize = 64;
         let mut builder = GraphBuilder::<f32, BUF>::new();
         let src = builder.add_source(Box::new(ConstantSource::new(42.0, 44100.0)));
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(1), 44100.0)));
         builder.connect_signal(src, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
-
-        let (mut nodes, topo, _) = graph.into_parts();
+        let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
-        // Process source
         let mut ctx = ProcessContext { clock: &tick };
         let _ = nodes[topo[0]].process_block(&mut ctx);
-
-        // Propagate through builder-wired connections
-        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        let action_ctx = ActionContext::new(&tick);
         let out_port = nodes[topo[0]].output_port(0).unwrap();
         out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
 
@@ -1137,6 +1241,8 @@ mod tests {
 
     #[test]
     fn test_graph_source_proc_sink() {
+        use rill_core::traits::algorithm::ActionContext;
+        use rill_core::traits::processable::{ProcessContext, Processable};
         const BUF: usize = 64;
         let mut builder = GraphBuilder::<f32, BUF>::new();
         let src = builder.add_source(Box::new(ConstantSource::new(10.0, 44100.0)));
@@ -1149,18 +1255,14 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
-
-        let (mut nodes, topo, _) = graph.into_parts();
+        let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
-        // Process source
         let mut ctx = ProcessContext { clock: &tick };
         let _ = nodes[topo[0]].process_block(&mut ctx);
-
-        // Propagate — should traverse source→processor→sink recursively
-        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        let action_ctx = ActionContext::new(&tick);
         let out_port = nodes[topo[0]].output_port(0).unwrap();
         out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
 
@@ -1172,7 +1274,7 @@ mod tests {
         );
     }
 
-    //     ── Test: Command queue drain ───────────────────────────────────
+    // ── Test: Command queue drain ───────────────────────────────────
 
     #[test]
     fn test_command_queue_drain() {
@@ -1189,21 +1291,21 @@ mod tests {
             2.0,
         )));
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
-        let (mut nodes, _, _) = graph.into_parts();
+        let (mut nodes, _, _, _bufs) = graph.into_parts();
 
         let _ = queue.push(SetParameter::new(
             PortId::control_in(NodeId(0), 0),
             ParameterId::new("multiplier").unwrap(),
-            5.0,
+            ParamValue::Float(5.0),
             SignalSource::Manual,
         ));
 
         while let Some(cmd) = queue.pop() {
             let idx = cmd.port.node_id().inner() as usize;
             let pid = cmd.parameter.clone();
-            let _ = nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
+            let _ = nodes[idx].set_parameter(&pid, cmd.value.clone());
         }
 
         let pid = ParameterId::new("multiplier").unwrap();
@@ -1220,6 +1322,8 @@ mod tests {
     #[test]
     fn test_command_then_propagate() {
         use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::traits::algorithm::ActionContext;
+        use rill_core::traits::processable::{ProcessContext, Processable};
         use rill_core::traits::PortId;
 
         const BUF: usize = 64;
@@ -1236,22 +1340,22 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
-        let (mut nodes, topo, _) = graph.into_parts();
+        let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
         // Push command and drain
         let _ = queue.push(SetParameter::new(
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
-            4.0,
+            ParamValue::Float(4.0),
             SignalSource::Manual,
         ));
         while let Some(cmd) = queue.pop() {
             let idx = cmd.port.node_id().inner() as usize;
             let pid = cmd.parameter.clone();
-            let _ = nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
+            let _ = nodes[idx].set_parameter(&pid, cmd.value.clone());
         }
 
         // Verify multiplier changed
@@ -1262,7 +1366,7 @@ mod tests {
         // Process + propagate
         let mut ctx = ProcessContext { clock: &tick };
         let _ = nodes[topo[0]].process_block(&mut ctx);
-        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
+        let action_ctx = ActionContext::new(&tick);
         let out_port = nodes[topo[0]].output_port(0).unwrap();
         out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
 
@@ -1279,6 +1383,7 @@ mod tests {
     #[test]
     fn test_feedback_propagation() {
         use rill_core::traits::algorithm::ActionContext;
+        use rill_core::traits::processable::{ProcessContext, Processable};
 
         const BUF: usize = 64;
         let mut builder = GraphBuilder::<f32, BUF>::new();
@@ -1289,20 +1394,18 @@ mod tests {
             2.0,
         )));
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
-        // Signal path: source → processor → sink
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        // Feedback: processor output → processor input
         builder.connect_feedback(proc, 0, proc, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
-        let (mut nodes, topo, _) = graph.into_parts();
+        let (mut nodes, topo, _, _bufs) = graph.into_parts();
 
         // ── Block 1: no feedback yet ──
         let tick1 = ClockTick::new(0, BUF as u32, 44100.0);
         let mut ctx = ProcessContext { clock: &tick1 };
-        let _ = nodes[topo[0]].process_block(&mut ctx); // source generates
+        let _ = nodes[topo[0]].process_block(&mut ctx);
         let ctx1 = ActionContext::new(&tick1);
         let out_port = nodes[topo[0]].output_port(0).unwrap();
         out_port.propagate(out_port.buffer(), &ctx1).unwrap();
@@ -1316,13 +1419,11 @@ mod tests {
         // ── Block 2: feedback from block1 should be mixed in ──
         let tick2 = ClockTick::new(BUF as u64, BUF as u32, 44100.0);
         let mut ctx = ProcessContext { clock: &tick2 };
-        let _ = nodes[topo[0]].process_block(&mut ctx); // source generates again
+        let _ = nodes[topo[0]].process_block(&mut ctx);
         let ctx2 = ActionContext::new(&tick2);
         let out_port = nodes[topo[0]].output_port(0).unwrap();
         out_port.propagate(out_port.buffer(), &ctx2).unwrap();
         let block2 = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
-        // pre_process: input = 1.0 (source) + 2.0 (feedback from block1) = 3.0
-        // process: 3.0 × 2.0 = 6.0
         assert!(
             (block2 - 6.0).abs() < 1e-6,
             "block2: (1+2)×2=6.0, got {}",
@@ -1335,6 +1436,8 @@ mod tests {
     #[test]
     fn test_drain_fn_before_propagate() {
         use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::traits::algorithm::ActionContext;
+        use rill_core::traits::processable::{ProcessContext, Processable};
         use rill_core::traits::PortId;
 
         const BUF: usize = 64;
@@ -1351,80 +1454,46 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)))
+            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
             .unwrap();
-        let (mut nodes, topo, _) = graph.into_parts();
-        let nodes_ptr: *mut [NodeVariant<f32, BUF>] = &mut *nodes;
-
-        // drain_fn — exactly as AudioInput creates it
-        let drain_fn: Box<dyn Fn(&mut [NodeVariant<f32, BUF>])> = {
-            let q = queue.clone();
-            Box::new(move |nd: &mut [NodeVariant<f32, BUF>]| {
-                while let Some(cmd) = q.pop() {
-                    let idx = cmd.port.node_id().inner() as usize;
-                    if idx < nd.len() {
-                        let pid = cmd.parameter.clone();
-                        let _ = nd[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
-                    }
-                }
-            })
-        };
+        let (mut nodes, topo, _, _bufs) = graph.into_parts();
+        let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
         // Push command BEFORE processing
         let _ = queue.push(SetParameter::new(
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
-            3.0,
+            ParamValue::Float(3.0),
             SignalSource::Manual,
         ));
 
-        // Processing cycle exactly as AudioInput callback does:
-        let tick = ClockTick::new(0, BUF as u32, 44100.0);
-
-        // Step 1: drain
-        #[allow(unsafe_code)]
-        unsafe {
-            drain_fn(&mut *nodes_ptr);
+        // Drain
+        while let Some(cmd) = queue.pop() {
+            let idx = cmd.port.node_id().inner() as usize;
+            let pid = cmd.parameter.clone();
+            let _ = nodes[idx].set_parameter(&pid, cmd.value.clone());
         }
 
         // Verify parameter applied
         let pid = ParameterId::new("multiplier").unwrap();
-        #[allow(unsafe_code)]
-        let val = unsafe {
-            (*nodes_ptr)[1]
-                .get_parameter(&pid)
-                .unwrap()
-                .as_f32()
-                .unwrap()
-        };
+        let val = nodes[1].get_parameter(&pid).unwrap().as_f32().unwrap();
         assert!(
             (val - 3.0).abs() < 1e-6,
             "multiplier should be 3.0, got {}",
             val
         );
 
-        // Step 2: source generate
+        // Source generate
         let mut ctx = ProcessContext { clock: &tick };
-        #[allow(unsafe_code)]
-        unsafe {
-            (*nodes_ptr)[topo[0]].process_block(&mut ctx).unwrap();
-        }
+        let _ = nodes[topo[0]].process_block(&mut ctx).unwrap();
 
-        // Step 3: propagate
-        let action_ctx = rill_core::traits::algorithm::ActionContext::new(&tick);
-        #[allow(unsafe_code)]
-        let out_port = unsafe { (*nodes_ptr)[topo[0]].output_port(0).unwrap() };
+        // Propagate
+        let action_ctx = ActionContext::new(&tick);
+        let out_port = nodes[topo[0]].output_port(0).unwrap();
         out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
 
         // Verify: source(5) × gain(3) = 15
-        #[allow(unsafe_code)]
-        let sink_val = unsafe {
-            (*nodes_ptr)[topo[2]]
-                .input_port(0)
-                .unwrap()
-                .buffer
-                .as_array()[0]
-        };
+        let sink_val = nodes[topo[2]].input_port(0).unwrap().buffer.as_array()[0];
         assert!(
             (sink_val - 15.0).abs() < 1e-6,
             "source(5)×gain(3)=15, got {}",

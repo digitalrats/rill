@@ -1,24 +1,39 @@
 use serde::{Deserialize, Serialize};
 
+/// Classic digital audio systems that inform the lo-fi emulation parameters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum ClassicSystem {
+    /// Nintendo Entertainment System (7-bit).
     Nes,
+    /// Commodore 64 (8-bit).
     Commodore64,
+    /// Sega Genesis / Mega Drive (9-bit).
     SegaGenesis,
+    /// Roland D-50 (16-bit, 32 kHz).
     RolandD50,
+    /// Akai S900 (12-bit, 40 kHz, non-linear).
     AkaiS900,
+    /// E-mu Emulator II (8-bit, 27.7 kHz).
     EmulatorII,
+    /// Fairlight CMI (8-bit, 16 kHz).
     FairlightCMI,
+    /// LinnDrum (8-bit).
     LinnDrum,
+    /// User-defined system with custom parameters.
     Custom {
+        /// Bit depth (1–16).
         bit_depth: u8,
+        /// Sample rate in Hz.
         sample_rate: f32,
+        /// Whether the system uses non-linear encoding.
         nonlinear: bool,
+        /// Noise floor in dB.
         noise_floor: f32,
     },
 }
 
 impl ClassicSystem {
+    /// Returns the bit depth for this classic system.
     pub fn get_bit_depth(&self) -> u8 {
         match self {
             ClassicSystem::Nes => 7,
@@ -33,6 +48,7 @@ impl ClassicSystem {
         }
     }
 
+    /// Returns the sample rate in Hz for this classic system.
     pub fn get_sample_rate(&self) -> f32 {
         match self {
             ClassicSystem::Nes => 44_100.0,
@@ -47,6 +63,7 @@ impl ClassicSystem {
         }
     }
 
+    /// Returns `true` if this system uses non-linear encoding (e.g. Akai S900).
     pub fn has_nonlinear_encoding(&self) -> bool {
         matches!(
             self,
@@ -58,6 +75,7 @@ impl ClassicSystem {
         )
     }
 
+    /// Returns the noise floor in dB for this classic system.
     pub fn get_noise_floor_db(&self) -> f32 {
         match self {
             ClassicSystem::Nes => -42.0,
@@ -70,15 +88,24 @@ impl ClassicSystem {
     }
 }
 
+/// Parameters for emulating vintage hardware imperfections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareEmulation {
+    /// Bit depth of the DAC.
     pub bit_depth: u8,
+    /// Sample rate in Hz.
     pub sample_rate: f32,
+    /// Whether to simulate DAC non-linearity.
     pub dac_nonlinearity: bool,
+    /// Clock drift factor.
     pub clock_drift: f32,
+    /// Voltage drop factor.
     pub voltage_drop: f32,
+    /// Channel crosstalk factor.
     pub crosstalk: f32,
+    /// Thermal noise floor.
     pub thermal_noise: f32,
+    /// Ageing effect factor.
     pub ageing_effect: f32,
 }
 
@@ -98,6 +125,7 @@ impl Default for HardwareEmulation {
 }
 
 impl HardwareEmulation {
+    /// Creates a `HardwareEmulation` configured for a given classic system.
     pub fn for_system(system: ClassicSystem) -> Self {
         let mut emulation = Self::default();
 
@@ -137,14 +165,22 @@ impl HardwareEmulation {
     }
 }
 
+/// Configuration for the lo-fi audio processor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LofiConfig {
+    /// Target classic system to emulate.
     pub system: ClassicSystem,
+    /// Hardware imperfection parameters.
     pub hardware: HardwareEmulation,
+    /// Enable bitcrushing effect.
     pub enable_bitcrush: bool,
+    /// Enable sample rate reduction.
     pub enable_sr_reduction: bool,
+    /// Enable noise simulation.
     pub enable_noise: bool,
+    /// Output gain (1.0 = unity).
     pub output_gain: f32,
+    /// Dry/wet mix (1.0 = fully wet).
     pub dry_wet: f32,
 }
 
@@ -168,6 +204,7 @@ impl Default for LofiConfig {
 }
 
 impl LofiConfig {
+    /// Creates a `LofiConfig` pre-populated for a given classic system.
     pub fn for_system(system: ClassicSystem) -> Self {
         Self {
             system,

@@ -166,6 +166,38 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
             NodeVariant::Sink(sink) => sink.init(sample_rate),
         }
     }
+    fn resolve_resources(&mut self, buffers: &crate::buffer::BufferRegistry<T>) {
+        match self {
+            NodeVariant::Source(src) => src.resolve_resources(buffers),
+            NodeVariant::Processor(proc) => proc.resolve_resources(buffers),
+            NodeVariant::Router(rt) => rt.resolve_resources(buffers),
+            NodeVariant::Sink(sink) => sink.resolve_resources(buffers),
+        }
+    }
+    fn resolve_backend(&mut self, backend: *mut dyn crate::io::IoBackend<T>) {
+        match self {
+            NodeVariant::Source(src) => src.resolve_backend(backend),
+            NodeVariant::Processor(proc) => proc.resolve_backend(backend),
+            NodeVariant::Router(rt) => rt.resolve_backend(backend),
+            NodeVariant::Sink(sink) => sink.resolve_backend(backend),
+        }
+    }
+    fn start(&mut self, handle: crate::traits::active::GraphHandle) {
+        match self {
+            NodeVariant::Source(src) => src.start(handle),
+            NodeVariant::Processor(proc) => proc.start(handle),
+            NodeVariant::Router(rt) => rt.start(handle),
+            NodeVariant::Sink(sink) => sink.start(handle),
+        }
+    }
+    fn stop(&mut self) {
+        match self {
+            NodeVariant::Source(src) => src.stop(),
+            NodeVariant::Processor(proc) => proc.stop(),
+            NodeVariant::Router(rt) => rt.stop(),
+            NodeVariant::Sink(sink) => sink.stop(),
+        }
+    }
     fn reset(&mut self) {
         match self {
             NodeVariant::Source(src) => src.reset(),

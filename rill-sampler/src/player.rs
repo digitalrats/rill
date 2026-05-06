@@ -9,6 +9,8 @@ use rill_core_dsp::generators::{Generator, LoopMode, SamplePlayer};
 use std::marker::PhantomData;
 
 use crate::buffer::SampleBuffer;
+#[cfg(feature = "wav")]
+use crate::wav::load_wav;
 
 /// Sample-playback source node with stereo support.
 ///
@@ -56,7 +58,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
             loop_start: 0.0,
             loop_end: 0.0,
             cubic: false,
-            outputs: vec![Port::output(NodeId(0), 0, "left")],
+            outputs: vec![
+                Port::output(NodeId(0), 0, "left"),
+                Port::output(NodeId(0), 1, "right"),
+            ],
             state: None,
             _phantom: PhantomData,
         }
@@ -142,7 +147,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
             author: "Rill".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             signal_inputs: 0,
-            signal_outputs: if self.right.is_some() { 2 } else { 1 },
+            signal_outputs: self.outputs.len(),
             control_inputs: 0,
             control_outputs: 0,
             clock_inputs: 0,
@@ -287,6 +292,41 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
                     Err(ProcessError::Parameter("Expected choice".into()))
                 }
             }
+            #[cfg(feature = "wav")]
+            "file" => {
+                if let ParamValue::String(path) = &value {
+                    match load_wav(path) {
+                        Ok(sample) => {
+                            let converted = SampleBuffer {
+                                data: sample.data.into_iter().map(|s| T::from_f32(s)).collect(),
+                                right: sample
+                                    .right
+                                    .map(|r| r.into_iter().map(|s| T::from_f32(s)).collect()),
+                                sample_rate: sample.sample_rate,
+                                channels: sample.channels,
+                                name: sample.name,
+                            };
+                            self.load(converted);
+                            self.gate = true;
+                            self.left.set_gate(true);
+                            if let Some(ref mut r) = self.right {
+                                r.set_gate(true);
+                            }
+                            eprintln!("SamplePlayer: loaded {path}");
+                            Ok(())
+                        }
+                        Err(e) => {
+                            eprintln!("SamplePlayer: could not load {path}: {e}");
+                            Err(ProcessError::Parameter(format!(
+                                "Cannot load {}: {}",
+                                path, e
+                            )))
+                        }
+                    }
+                } else {
+                    Err(ProcessError::Parameter("Expected string path".into()))
+                }
+            }
             _ => Err(ProcessError::Parameter(format!(
                 "Unknown parameter: {}",
                 id
@@ -383,5 +423,41 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rill_core::traits::SignalNode;
+
+    #[test]
+    fn test_set_and_get_parameter() {
+        const B: usize = 64;
+        let mut player = SamplePlayerNode::<f32, B>::new();
+
+        // Set rate → verify via get
+        let pid = ParameterId::new("rate").unwrap();
+        let _ = player.set_parameter(&pid, ParamValue::Float(2.0));
+        let val = player.get_parameter(&pid);
+        assert_eq!(val, Some(ParamValue::Float(2.0)));
+
+        // Set amplitude → verify via get
+        let pid = ParameterId::new("amplitude").unwrap();
+        let _ = player.set_parameter(&pid, ParamValue::Float(0.75));
+        let val = player.get_parameter(&pid);
+        assert_eq!(val, Some(ParamValue::Float(0.75)));
+
+        // Gate on/off → verify via get
+        let pid = ParameterId::new("gate").unwrap();
+        let _ = player.set_parameter(&pid, ParamValue::Bool(true));
+        let val = player.get_parameter(&pid);
+        assert_eq!(val, Some(ParamValue::Bool(true)));
+
+        // Unknown parameter → error on set, None on get
+        let unknown = ParameterId::new("nonexistent").unwrap();
+        let result = player.set_parameter(&unknown, ParamValue::Float(0.0));
+        assert!(result.is_err());
+        assert!(player.get_parameter(&unknown).is_none());
     }
 }
