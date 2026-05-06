@@ -1,16 +1,19 @@
 //! Load a graph from a JSON file and play it through the selected backend.
 //!
 //! Usage:
-//!   cargo run --example play_json --features "cpal,sampler,serialization" -- [backend] [graph.json]
+//!   cargo run --example play_json --features "cpal,sampler,serialization" -- [backend] [graph.json] [wav]
 //!
 //! Backend: "cpal" (default), "alsa", "pipewire", "jack", "null"
 //! Graph:   path to JSON file (default: examples/graph.json)
+//! WAV:     override the sample file (sent through command queue)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::registration;
+use rill_adrift::rill_core::queues::{SetParameter, SignalSource};
 use rill_adrift::rill_core::time::SystemClock;
+use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
 
 const BUF: usize = 256;
@@ -19,11 +22,12 @@ const RATE: f32 = 44100.0;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
-    let backend_name_clone = backend_name.clone();
     let graph_path = args
         .get(2)
         .cloned()
         .unwrap_or_else(|| "examples/graph.json".into());
+    let wav_file = args.get(3).cloned();
+    let backend_display = backend_name.clone();
 
     let json = std::fs::read_to_string(&graph_path)
         .map_err(|e| format!("Cannot read {graph_path}: {e}"))?;
@@ -31,7 +35,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let running = Arc::new(AtomicBool::new(true));
 
     // Build graph and run it on a dedicated audio thread.
-    // The graph owns the backend — no external access.
     let t_run = running.clone();
     let audio_thread = std::thread::spawn(move || {
         let builder = registration::load_graph_json::<BUF>(&json).expect("load_graph_json");
@@ -45,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 clock,
                 Some(&BackendConfig {
                     factory: &backend_factory,
-                    name: &backend_name_clone,
+                    name: &backend_name,
                     sample_rate: RATE as u32,
                     buffer_size: BUF as u32,
                     channels: 2,
@@ -53,8 +56,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .expect("graph build");
 
-        // graph.run() parks for non-blocking backends;
-        // signal thread unparks after Enter.
+        // Override sample file via command queue (before run, applies on first callback)
+        if let Some(ref path) = wav_file {
+            let _ = graph.send_parameter(SetParameter::new(
+                PortId::param(NodeId(0), 0),
+                ParameterId::new("file").unwrap(),
+                ParamValue::String(path.clone()),
+                SignalSource::Manual,
+            ));
+        }
+
         graph.run(t_run).ok();
     });
 
@@ -70,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "▶ Playing graph from {graph_path} through {} backend. Press Enter to stop.",
-        backend_name
+        backend_display
     );
 
     signal_thread.join().ok();
