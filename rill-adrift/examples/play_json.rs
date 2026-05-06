@@ -21,11 +21,13 @@ const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let default_graph = crate_dir.join("examples/graph.json");
     let backend_name = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
     let graph_path = args
         .get(2)
         .cloned()
-        .unwrap_or_else(|| "examples/graph.json".into());
+        .unwrap_or_else(|| default_graph.to_string_lossy().to_string());
     let wav_file = args.get(3).cloned();
     let backend_display = backend_name.clone();
 
