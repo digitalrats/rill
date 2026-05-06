@@ -1,10 +1,9 @@
 //! Load a graph from a JSON file and play it through the selected backend.
 //!
 //! Usage:
-//!   cargo run --example play_json --features "cpal,sampler,serialization" -- [backend] [graph.json] [wav]
+//!   cargo run --example play_json --features "cpal,sampler,serialization" -- [backend] [wav]
 //!
 //! Backend: "cpal" (default), "alsa", "pipewire", "jack", "null"
-//! Graph:   path to JSON file (default: examples/graph.json)
 //! WAV:     override the sample file (sent through command queue)
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,17 +21,13 @@ const RATE: f32 = 44100.0;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let default_graph = crate_dir.join("examples/graph.json");
-    let backend_name = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
-    let graph_path = args
-        .get(2)
-        .cloned()
-        .unwrap_or_else(|| default_graph.to_string_lossy().to_string());
-    let wav_file = args.get(3).cloned();
-    let backend_display = backend_name.clone();
-
+    let graph_path = crate_dir.join("examples/graph.json");
     let json = std::fs::read_to_string(&graph_path)
-        .map_err(|e| format!("Cannot read {graph_path}: {e}"))?;
+        .map_err(|e| format!("Cannot read {}: {e}", graph_path.display()))?;
+
+    let backend_name_arg = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
+    let wav_file = args.get(2).cloned();
+    let backend_name = backend_name_arg.clone();
 
     let running = Arc::new(AtomicBool::new(true));
 
@@ -82,8 +77,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     println!(
-        "▶ Playing graph from {graph_path} through {} backend. Press Enter to stop.",
-        backend_display
+        "▶ Playing graph from {} through {} backend. Press Enter to stop.",
+        graph_path.display(),
+        backend_name_arg,
     );
 
     signal_thread.join().ok();
