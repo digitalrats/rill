@@ -108,7 +108,7 @@ impl Automaton for MappingAutomaton {
                             let cmd = rill_core::queues::SetParameter::new(
                                 *port,
                                 param.clone(),
-                                output_val,
+                                rill_core::traits::ParamValue::Float(output_val),
                                 rill_core::queues::SignalSource::Automaton(self.name.clone()),
                             );
                             let _ = context.command_tx.send(rill_core::queues::CommandEnum::SetParameter(cmd));

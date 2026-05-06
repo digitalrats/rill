@@ -342,7 +342,7 @@ impl Mapping {
             SetParameter::new(
                 PortId::param(self.target.node_id, 0),
                 pid,
-                value,
+                ParamValue::Float(value),
                 SignalSource::External(self.name.clone()),
             )
         })
@@ -512,7 +512,7 @@ impl<A: Automaton> Servo<A> {
                 return Some(SetParameter::new(
                     PortId::param(self.target_node, 0),
                     pid,
-                    clamped as f32,
+                    ParamValue::Float(clamped as f32),
                     SignalSource::Automaton(self.id.clone()),
                 ));
             }
@@ -925,7 +925,9 @@ impl PatchbayControl {
             if let Some(cmd) = mapping.apply(&event) {
                 let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
                 if let Some(combiner) = self.port_combiners.get(&key) {
-                    let _ = combiner.ui_tx.send(UiCommand::SetValue(cmd.value as f64));
+                    let _ = combiner
+                        .ui_tx
+                        .send(UiCommand::SetValue(cmd.value.as_f32().unwrap_or(0.0) as f64));
                 } else {
                     let _ = self.command_queue.push(cmd);
                 }

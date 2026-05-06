@@ -224,10 +224,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
                         while let Some(cmd) = q.pop() {
                             let nid = cmd.port.node_id().inner() as usize;
                             if nid < len {
-                                let _ = nodes[nid].set_parameter(
-                                    &cmd.parameter,
-                                    rill_core::ParamValue::Float(cmd.value),
-                                );
+                                let _ = nodes[nid].set_parameter(&cmd.parameter, cmd.value.clone());
                             }
                         }
                     }

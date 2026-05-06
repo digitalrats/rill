@@ -100,8 +100,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for AudioInput<T, BUF_
                         while let Some(cmd) = q.pop() {
                             let idx = cmd.port.node_id().inner() as usize;
                             if idx < len {
-                                let _ = nodes[idx]
-                                    .set_parameter(&cmd.parameter, ParamValue::Float(cmd.value));
+                                let _ = nodes[idx].set_parameter(&cmd.parameter, cmd.value.clone());
                             }
                         }
                     }
