@@ -11,7 +11,7 @@ use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
 #[cfg(feature = "serialization")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 #[cfg(feature = "serialization")]
 use std::sync::Arc;
 
@@ -149,10 +149,10 @@ fn test_send_parameter_via_queue() {
         .expect("send_parameter should succeed");
 
     // Parameter is in the queue — not yet applied (no callback fired).
-    // Run the backend once — NullBackend::run() fires the stored callback.
+    // Run graph once — NullBackend fires the callback and returns.
+    // running is false, so the park loop exits immediately.
     let running = Arc::new(AtomicBool::new(false));
-    let backend = graph.backend_ref().expect("backend exists");
-    let _ = backend.run(running);
+    graph.run(running).expect("run should succeed");
 
     // After callback: queue drained, parameter applied.
     let val = graph.nodes()[0].get_parameter(&ParameterId::new("frequency").unwrap());
