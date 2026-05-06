@@ -77,7 +77,9 @@ impl JackBackend {
             ));
         }
 
-        let buf_cap = (config.buffer_size * config.input_channels.max(1) * 4) as usize;
+        // JACK periods (nframes) can be 1024-4096, so ring buffer needs
+        // to hold multiple periods. Use 32x multiplier like PipeWire.
+        let buf_cap = (config.buffer_size * config.input_channels.max(1) * 32) as usize;
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
