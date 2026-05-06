@@ -342,4 +342,35 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
         let b = crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?;
         Ok(Box::new(b))
     });
+
+    #[cfg(feature = "cpal")]
+    factory.register("cpal", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b = crate::io::backends::CpalBackend::new(cfg).map_err(|e| format!("cpal: {e}"))?;
+        Ok(Box::new(b))
+    });
+
+    #[cfg(feature = "pipewire")]
+    factory.register("pipewire", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b =
+            crate::io::backends::PipewireBackend::new(cfg).map_err(|e| format!("pipewire: {e}"))?;
+        Ok(Box::new(b))
+    });
+
+    #[cfg(feature = "jack")]
+    factory.register("jack", |sr, bs, ch| {
+        let cfg = crate::io::AudioConfig::new()
+            .with_sample_rate(sr)
+            .with_buffer_size(bs)
+            .with_channels(ch);
+        let b = crate::io::backends::JackBackend::new(cfg).map_err(|e| format!("jack: {e}"))?;
+        Ok(Box::new(b))
+    });
 }

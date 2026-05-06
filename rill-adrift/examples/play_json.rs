@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(&graph_path)
         .map_err(|e| format!("Cannot read {}: {e}", graph_path.display()))?;
 
-    let backend_name_arg = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
+    let backend_name_arg = args.get(1).cloned().unwrap_or_else(|| "null".into());
     let wav_file = args.get(2).cloned();
     let backend_name = backend_name_arg.clone();
 
