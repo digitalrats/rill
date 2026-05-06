@@ -58,7 +58,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
             loop_start: 0.0,
             loop_end: 0.0,
             cubic: false,
-            outputs: vec![Port::output(NodeId(0), 0, "left")],
+            outputs: vec![
+                Port::output(NodeId(0), 0, "left"),
+                Port::output(NodeId(0), 1, "right"),
+            ],
             state: None,
             _phantom: PhantomData,
         }
