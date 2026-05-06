@@ -42,26 +42,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let clock = Box::new(SystemClock::with_sample_rate(RATE));
-    let graph = builder
+    let mut graph = builder
         .build(clock, Some(&backend_cfg))
         .expect("graph build");
-
-    // The backend is owned by the graph. Take it out so we can run it.
-    // SAFETY: graph is dropped after the audio thread joins.
-    let backend = graph.backend_ref().expect("graph should have a backend");
-    let backend_ptr: *const dyn rill_adrift::rill_core::io::IoBackend<f32> = backend;
 
     let running = Arc::new(AtomicBool::new(true));
     let t_running = running.clone();
 
+    // Get a static reference to the backend (graph lives until end of main)
+    let backend_static: &'static dyn rill_adrift::rill_core::io::IoBackend<f32> =
+        unsafe { std::mem::transmute(graph.backend_ref().unwrap()) };
+
     let audio_thread = std::thread::spawn(move || {
-        // SAFETY: backend is alive for the thread's lifetime (graph lives on main stack).
-        let backend: &dyn rill_adrift::rill_core::io::IoBackend<f32> = unsafe { &*backend_ptr };
-        let _ = backend.run(t_running.clone());
+        let _ = backend_static.run(t_running.clone());
         while t_running.load(Ordering::Acquire) {
             std::thread::park();
         }
-        let _ = backend.stop();
+        let _ = backend_static.stop();
     });
 
     println!(
