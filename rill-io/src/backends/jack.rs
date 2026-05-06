@@ -147,18 +147,16 @@ impl JackBackend {
 
         let jack_client = active_client.as_client();
         if let Some(name) = out_port_name {
-            let full = format!("{client_name}:{name}");
             for target in &["system:playback_1", "system:playback_2"] {
-                if let Err(e) = jack_client.connect_ports_by_name(&full, target) {
-                    log::info!("JACK connect {full} → {target}: {e}");
+                if let Err(e) = jack_client.connect_ports_by_name(&name, target) {
+                    log::info!("JACK connect {name} → {target}: {e}");
                 }
             }
         }
         for (i, name) in in_port_names.iter().enumerate() {
-            let full = format!("{client_name}:{name}");
             let src = format!("system:capture_{}", i + 1);
-            if let Err(e) = jack_client.connect_ports_by_name(&src, &full) {
-                log::info!("JACK connect {src} → {full}: {e}");
+            if let Err(e) = jack_client.connect_ports_by_name(&src, name) {
+                log::info!("JACK connect {src} → {name}: {e}");
             }
         }
 
