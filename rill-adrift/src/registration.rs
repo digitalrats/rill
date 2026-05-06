@@ -12,8 +12,6 @@
 //! register_all(&mut registry);
 //! ```
 
-use std::sync::Mutex;
-
 use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use rill_graph::{node_ctor, NodeRegistry};
 
@@ -28,6 +26,8 @@ use rill_graph::{node_ctor, NodeRegistry};
 /// Panics if `BUF_SIZE` is not one of: 64, 128, 256, 512.
 #[allow(clippy::missing_transmute_annotations)]
 pub fn registry<const BUF_SIZE: usize>() -> &'static NodeRegistry<f32, BUF_SIZE> {
+    use std::sync::Mutex;
+
     // Static registries per block size. Initialized lazily on first call.
     static R64: Mutex<Option<NodeRegistry<f32, 64>>> = Mutex::new(None);
     static R128: Mutex<Option<NodeRegistry<f32, 128>>> = Mutex::new(None);
@@ -321,6 +321,7 @@ pub fn load_graph_json<const B: usize>(
 }
 
 /// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).
+#[cfg(feature = "io")]
 pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
     factory.register("null", |sr, bs, ch| {
         Ok(Box::new(crate::io::backends::NullBackend::new(
