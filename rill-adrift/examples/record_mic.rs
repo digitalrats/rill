@@ -20,7 +20,7 @@ use rill_adrift::io::AudioConfig;
 use rill_adrift::rill_core::io::IoBackend;
 use rill_adrift::rill_core::queues::MpscQueue;
 use rill_adrift::rill_core::time::{ClockTick, SystemClock};
-use rill_adrift::rill_core::traits::active::{ActiveNode, GraphHandle};
+use rill_adrift::rill_core::traits::active::GraphHandle;
 use rill_adrift::rill_core::traits::processable::NodeVariant;
 use rill_adrift::rill_core::traits::{
     NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessResult,
