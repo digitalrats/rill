@@ -18,9 +18,6 @@ use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
 use rill_graph::{node_ctor, NodeRegistry};
 
 #[cfg(feature = "io")]
-use crate::io::input::AudioInput;
-#[cfg(feature = "io")]
-use crate::io::output::AudioOutput;
 
 /// Return a lazily-initialized global registry for the given block size.
 ///
@@ -83,7 +80,8 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
         registry,
         "rill/output",
         |id: NodeId, params: &NodeParams| {
-            let mut n = AudioOutput::<f32, BUF_SIZE>::new();
+            let ch = params.get_f32("channels", 2.0) as usize;
+            let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(ch);
             SignalNode::set_id(&mut n, id);
             SignalNode::init(&mut n, params.sample_rate);
             NodeVariant::Sink(Box::new(n))
@@ -91,7 +89,8 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
     );
 
     node_ctor!(registry, "rill/input", |id: NodeId, params: &NodeParams| {
-        let mut n = AudioInput::<f32, BUF_SIZE>::new();
+        let ch = params.get_f32("channels", 2.0) as usize;
+        let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(ch);
         SignalNode::set_id(&mut n, id);
         SignalNode::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))

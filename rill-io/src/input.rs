@@ -1,8 +1,6 @@
-//! # AudioInput — Stereo Source Node (push model)
+//! # Input — generic signal input source node (push model)
 //!
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
-//!
-//! Owns the backend (`Box<dyn AudioIo>`). Output nodes borrow via `AudioIoPtr`.
 
 use std::cell::Cell;
 
@@ -20,38 +18,49 @@ use rill_core::{
 
 use crate::signal_io::IoBackendPtr;
 
-/// Stereo audio input source. Drives the graph by reading from a backend
-/// in `generate()`, then propagating through the DAG.
+/// Signal input source. Reads from a backend in `generate()`, fills output ports.
 ///
-/// The backend is owned by the graph's `BackendRegistry` — this node stores
-/// only a non‑owning [`IoBackendPtr<T>`].
-pub struct AudioInput<T: Transcendental, const BUF_SIZE: usize> {
+/// The backend is owned by the graph — this node stores only a non‑owning
+/// [`IoBackendPtr<T>`].
+///
+/// # Ports
+/// - `n` output ports (one per channel), set via [`Self::with_channels`].
+pub struct Input<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
     io_ptr: IoBackendPtr<T>,
-    buf_l: [T; BUF_SIZE],
-    buf_r: [T; BUF_SIZE],
+    bufs: Vec<[T; BUF_SIZE]>,
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Default for AudioInput<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Default for Input<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
-    /// Create a new `AudioInput` with no backend attached.
+impl<T: Transcendental, const BUF_SIZE: usize> Input<T, BUF_SIZE> {
     pub fn new() -> Self {
-        let mut metadata = NodeMetadata::new("AudioInput", NodeCategory::Source);
-        metadata.signal_inputs = 0;
-        metadata.signal_outputs = 2;
+        Self::with_channels(2)
+    }
 
-        let outputs = vec![
-            Port::output(NodeId(0), 0, "left"),
-            Port::output(NodeId(0), 1, "right"),
-        ];
+    pub fn with_channels(num: usize) -> Self {
+        let mut metadata = NodeMetadata::new("Input", NodeCategory::Source);
+        metadata.signal_inputs = 0;
+        metadata.signal_outputs = num;
+
+        let name = move |i: usize| -> String {
+            if num == 1 {
+                "out".into()
+            } else {
+                format!("ch_{i}")
+            }
+        };
+        let outputs: Vec<_> = (0..num)
+            .map(|i| Port::output(NodeId(0), i as u16, &name(i)))
+            .collect();
+        let bufs = vec![[T::ZERO; BUF_SIZE]; num];
 
         Self {
             id: NodeId(0),
@@ -59,12 +68,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
             outputs,
             state: NodeState::new(44100.0),
             io_ptr: IoBackendPtr::<T>::null(),
-            buf_l: [T::ZERO; BUF_SIZE],
-            buf_r: [T::ZERO; BUF_SIZE],
+            bufs,
         }
     }
 
-    /// Attach an `IoBackendPtr` (called during graph assembly).
     pub fn set_io_ptr(&mut self, ptr: IoBackendPtr<T>) {
         self.io_ptr = ptr;
     }
@@ -73,13 +80,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> AudioInput<T, BUF_SIZE> {
         self.io_ptr
     }
 
-    /// Check whether a backend has been attached.
     pub fn has_backend(&self) -> bool {
         !self.io_ptr.is_null()
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for AudioInput<T, BUF_SIZE> {
+/// Backward-compatible alias.
+pub type AudioInput<T, const B: usize> = Input<T, B>;
+
+impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for Input<T, BUF_SIZE> {
     #[allow(clippy::not_unsafe_ptr_arg_deref, clippy::type_complexity)]
     fn start(&mut self, handle: GraphHandle) {
         if let Some(b) = self.io_ptr.as_ref() {
@@ -136,7 +145,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for AudioInput<T, BUF_
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for AudioInput<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -173,7 +182,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Audio
     }
     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
         Err(rill_core::ProcessError::parameter(
-            "AudioInput has no parameters",
+            "Input has no parameters",
         ))
     }
     fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -198,7 +207,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Audio
         0
     }
     fn num_signal_outputs(&self) -> usize {
-        2
+        self.outputs.len()
     }
     fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
@@ -208,7 +217,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Audio
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for AudioInput<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, BUF_SIZE> {
     fn generate(
         &mut self,
         _clock: &ClockTick,
@@ -216,16 +225,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for AudioInpu
         _clock_inputs: &[ClockTick],
     ) -> ProcessResult<()> {
         if let Some(io) = self.io_ptr.as_ref() {
-            let channels = &mut [&mut self.buf_l[..], &mut self.buf_r[..]];
-            let n = io.read(channels);
+            let nch = self.outputs.len();
+            if nch == 0 {
+                self.state.advance();
+                return Ok(());
+            }
+            let mut channels: Vec<&mut [T]> = self.bufs.iter_mut().map(|b| &mut b[..]).collect();
+            let n = io.read(&mut channels);
             if n >= BUF_SIZE {
-                if let Some(left) = self.outputs.get_mut(0) {
-                    let l = left.buffer_mut().as_mut_array();
-                    l[..BUF_SIZE].copy_from_slice(&self.buf_l[..BUF_SIZE]);
-                }
-                if let Some(right) = self.outputs.get_mut(1) {
-                    let r = right.buffer_mut().as_mut_array();
-                    r[..BUF_SIZE].copy_from_slice(&self.buf_r[..BUF_SIZE]);
+                for (i, buf) in self.bufs.iter().enumerate() {
+                    if let Some(port) = self.outputs.get_mut(i) {
+                        let dst = port.buffer_mut().as_mut_array();
+                        dst[..BUF_SIZE].copy_from_slice(&buf[..BUF_SIZE]);
+                    }
                 }
             }
         }
@@ -288,19 +300,27 @@ mod tests {
 
     #[test]
     fn test_audio_input_creation() {
-        let inp = AudioInput::<f32, 64>::new();
+        let inp = Input::<f32, 64>::new();
         assert_eq!(inp.metadata().signal_outputs, 2);
         assert!(!inp.has_backend());
     }
 
     #[test]
+    fn test_audio_input_mono_creation() {
+        let inp = Input::<f32, 64>::with_channels(1);
+        assert_eq!(inp.metadata().signal_outputs, 1);
+        assert!(inp.output_port(0).is_some());
+        assert!(inp.output_port(1).is_none());
+    }
+
+    #[test]
     fn test_audio_input_generate_without_backend() {
-        let mut inp = AudioInput::<f32, 64>::new();
+        let mut inp = Input::<f32, 64>::new();
         let clock = ClockTick::new(0, 64, 48000.0);
         assert!(inp.generate(&clock, &[], &[]).is_ok());
     }
 
-    /// Round-trip test: AudioInput → AudioOutput through shared ring buffers.
+    /// Round-trip test: Input → Output through shared ring buffers.
     #[test]
     fn test_loopback_through_rings() {
         const BUF_SZ: usize = 64;
@@ -311,15 +331,15 @@ mod tests {
             input_ring: input_ring.clone(),
             output_ring: output_ring.clone(),
         });
-        let mut input = AudioInput::<f32, BUF_SZ>::new();
+        let mut input = Input::<f32, BUF_SZ>::new();
         input.set_io_ptr(IoBackendPtr::from_ref(&*backend));
 
-        // Write test data into the input ring (as PW input callback would)
+        // Write test data into the input ring
         let test_val: f32 = 42.0;
         let mut test_block = vec![0.0f32; BUF_SZ * 2];
         for i in 0..BUF_SZ {
-            test_block[i * 2] = test_val; // left
-            test_block[i * 2 + 1] = test_val; // right
+            test_block[i * 2] = test_val;
+            test_block[i * 2 + 1] = test_val;
         }
         input_ring.write(&test_block);
 
@@ -344,13 +364,5 @@ mod tests {
                 r[i]
             );
         }
-
-        // Verify data flows: AudioInput.generate() reads from input ring,
-        // fills output ports, Port::propagate copies to downstream, and
-        // AudioOutput.consume() writes to output ring.
-        //
-        // This loopback through a proper graph is tested in
-        // rill-adrift/tests/pull_model.rs via GraphDocument serialization.
-        // Here we verify the two halves work in isolation.
     }
 }
