@@ -254,7 +254,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    audio_input.start(handle);
+    use rill_adrift::rill_core::traits::active::ActiveNode;
+
+    ActiveNode::start(&mut *audio_input, handle);
 
     // ── Запуск аудиотреда ─────────────────────────────────────────────────
     let running = Arc::new(AtomicBool::new(true));
