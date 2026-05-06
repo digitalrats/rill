@@ -18,6 +18,7 @@
 
 use std::fmt::Write;
 
+use rill_core::traits::processable::NodeVariant;
 use rill_core::traits::{NodeCategory, SignalNode};
 use rill_core::Transcendental;
 
@@ -131,7 +132,7 @@ fn emit_node<T: Transcendental, const B: usize>(
     if config.show_parameters {
         for pm in meta.parameters.iter().take(5) {
             if let Ok(pid) = rill_core::ParameterId::new(&pm.name) {
-                if let Some(val) = node.get_parameter(&pid) {
+                if let Some(val) = variant.get_parameter(&pid) {
                     let val_str = format!("{:?}", val);
                     write!(label, "\\n{}={}", pm.name, val_str).ok();
                 }

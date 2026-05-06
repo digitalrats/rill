@@ -54,6 +54,7 @@ serialization = [
     "rill-patchbay/serialization",
     "dep:serde_json",
 ]
+dot = ["rill-graph/dot"]
 
 # Audio backend passthrough
 alsa = ["rill-io/alsa"]
