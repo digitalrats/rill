@@ -82,7 +82,7 @@ pub fn to_dot<T: Transcendental, const B: usize>(
         let meta = variant.metadata();
         let id = variant.id().inner();
 
-        for p in 0..meta.signal_outputs {
+        for p in 0..variant.num_signal_outputs() {
             if let Some(port) = variant.output_port(p) {
                 for &(target_node, _) in &port.downstream {
                     let target_entry = &nodes[target_node];
