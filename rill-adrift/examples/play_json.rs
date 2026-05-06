@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Cannot read {}: {e}", graph_path.display()))?;
 
     // --dot: export graph to DOT and exit
-    if args.get(1).map(|s| s.as_str()) == Some("--dot") {
+    if args.iter().any(|a| a == "--dot") {
         #[cfg(feature = "dot")]
         {
             let graph = build_graph(&json, "null");
