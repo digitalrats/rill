@@ -22,11 +22,16 @@ const RATE: f32 = 44100.0;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
-    let wav_path = args
-        .get(2)
-        .cloned()
-        .unwrap_or_else(|| "ESW Aura Inst - LoFi Steel - C.wav".into());
     let backend_display = backend_name.clone();
+    let wav_path = {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        args.get(2).cloned().unwrap_or_else(|| {
+            crate_dir
+                .join("ESW Aura Inst - LoFi Steel - C.wav")
+                .to_string_lossy()
+                .to_string()
+        })
+    };
 
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
