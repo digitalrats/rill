@@ -190,19 +190,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_input_channels(2)
         .with_output_channels(0);
 
+    // Priority: pipewire > jack > cpal > alsa.
+    // Guards with not() ensure only one backend is defined when
+    // multiple features are active (e.g. --features alsa adds to
+    // default cpal — cpal takes priority).
     #[cfg(feature = "pipewire")]
     let backend =
         Box::new(rill_adrift::io::PipewireBackend::new(config).expect("PipewireBackend::new"));
-    #[cfg(all(
-        feature = "cpal",
-        not(any(feature = "pipewire", feature = "alsa", feature = "jack"))
-    ))]
-    let backend = Box::new(rill_adrift::io::CpalBackend::new(config).expect("CpalBackend::new"));
-    #[cfg(feature = "jack")]
+    #[cfg(all(feature = "jack", not(feature = "pipewire")))]
     let backend = Box::new(rill_adrift::io::JackBackend::new(config).expect("JackBackend::new"));
+    #[cfg(all(feature = "cpal", not(any(feature = "pipewire", feature = "jack"))))]
+    let backend = Box::new(rill_adrift::io::CpalBackend::new(config).expect("CpalBackend::new"));
     #[cfg(all(
         feature = "alsa",
-        not(any(feature = "pipewire", feature = "cpal", feature = "jack"))
+        not(any(feature = "pipewire", feature = "jack", feature = "cpal"))
     ))]
     let backend = Box::new(rill_adrift::io::AlsaBackend::new(config).expect("AlsaBackend::new"));
     let backend_ptr = IoBackendPtr::from_ref(&*backend);
