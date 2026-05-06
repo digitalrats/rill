@@ -578,6 +578,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
             resources: _,
             buffers,
             backend: _,
+            command_queue: _,
         } = self;
         (nodes, topo_order, current_tick, buffers)
     }
@@ -1296,14 +1297,14 @@ mod tests {
         let _ = queue.push(SetParameter::new(
             PortId::control_in(NodeId(0), 0),
             ParameterId::new("multiplier").unwrap(),
-            5.0,
+            ParamValue::Float(5.0),
             SignalSource::Manual,
         ));
 
         while let Some(cmd) = queue.pop() {
             let idx = cmd.port.node_id().inner() as usize;
             let pid = cmd.parameter.clone();
-            let _ = nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
+            let _ = nodes[idx].set_parameter(&pid, cmd.value.clone());
         }
 
         let pid = ParameterId::new("multiplier").unwrap();
@@ -1347,13 +1348,13 @@ mod tests {
         let _ = queue.push(SetParameter::new(
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
-            4.0,
+            ParamValue::Float(4.0),
             SignalSource::Manual,
         ));
         while let Some(cmd) = queue.pop() {
             let idx = cmd.port.node_id().inner() as usize;
             let pid = cmd.parameter.clone();
-            let _ = nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
+            let _ = nodes[idx].set_parameter(&pid, cmd.value.clone());
         }
 
         // Verify multiplier changed
@@ -1461,7 +1462,7 @@ mod tests {
         let _ = queue.push(SetParameter::new(
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
-            3.0,
+            ParamValue::Float(3.0),
             SignalSource::Manual,
         ));
 
@@ -1469,7 +1470,7 @@ mod tests {
         while let Some(cmd) = queue.pop() {
             let idx = cmd.port.node_id().inner() as usize;
             let pid = cmd.parameter.clone();
-            let _ = nodes[idx].set_parameter(&pid, ParamValue::Float(cmd.value));
+            let _ = nodes[idx].set_parameter(&pid, cmd.value.clone());
         }
 
         // Verify parameter applied

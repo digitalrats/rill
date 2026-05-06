@@ -538,8 +538,8 @@ mod tests {
     use rill_core::traits::node::NodeState;
     use rill_core::traits::port::Port;
     use rill_core::traits::{
-        NodeCategory, ParamMetadata, ParamType, ParamValue as PV, ParameterId, ProcessResult,
-        Processor, Source,
+        NodeCategory, NodeMetadata, ParamMetadata, ParamType, ParamValue as PV, ParameterId,
+        ProcessResult, Processor, Source,
     };
     use rill_core::ParamMetadata as PM;
 
@@ -745,9 +745,10 @@ mod tests {
             .add_node(registry, "rill/test", &NodeParams::new(44100.0))
             .unwrap();
         b.connect_signal(src, 0, proc, 0);
-        b.build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-            44100.0,
-        )))
+        b.build(
+            Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+            None,
+        )
         .expect("build")
     }
 
@@ -770,9 +771,10 @@ mod tests {
 
         // Must rebuild without errors
         restored
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("rebuild");
     }
 
@@ -791,7 +793,12 @@ mod tests {
     #[test]
     fn test_empty_graph_roundtrip() {
         let reg = empty_registry();
-        let graph = SignalGraph::<f32, 64>::with_sample_rate(44100.0);
+        let graph = GraphBuilder::<f32, 64>::new()
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
+            .expect("graph build");
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains(r#""nodes": []"#));
@@ -818,9 +825,10 @@ mod tests {
         )
         .unwrap();
         let graph = b
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("build");
 
         let doc = GraphDocument::from_graph(&graph);
@@ -845,9 +853,10 @@ mod tests {
         )
         .unwrap();
         let graph = b
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                48000.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(48000.0)),
+                None,
+            )
             .expect("build");
 
         let json = to_json(&graph).expect("to_json");
@@ -855,9 +864,10 @@ mod tests {
         assert_eq!(restored.node_count(), 1);
         // Rebuild — should not error
         restored
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                48000.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(48000.0)),
+                None,
+            )
             .expect("rebuild");
     }
 
@@ -878,9 +888,10 @@ mod tests {
         b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
         let graph = b
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("build");
 
         let doc = GraphDocument::from_graph(&graph);
@@ -902,9 +913,10 @@ mod tests {
         b.add_node(&reg, "rill/param", &NodeParams::new(44100.0))
             .unwrap();
         let graph = b
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("build");
 
         let doc = GraphDocument::from_graph(&graph);
@@ -935,9 +947,10 @@ mod tests {
         b.add_node(&reg, "rill/fallback", &NodeParams::new(44100.0))
             .unwrap();
         let graph = b
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("build");
 
         let doc = GraphDocument::from_graph(&graph);
@@ -959,9 +972,10 @@ mod tests {
             .unwrap();
         b.connect_signal(0, 0, 1, 0);
         let graph = b
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("build");
 
         let json = to_json(&graph).expect("to_json");
@@ -970,9 +984,10 @@ mod tests {
 
         let restored = from_json(&json, &reg).expect("from_json");
         let rebuilt = restored
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("rebuild");
         assert_eq!(rebuilt.node_count(), 2);
     }
@@ -998,9 +1013,10 @@ mod tests {
         b.connect_signal(p1, 0, p2, 0);
 
         let graph = b
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("build");
 
         let json = to_json(&graph).expect("to_json");
@@ -1009,9 +1025,10 @@ mod tests {
 
         // Verify connections
         let rebuilt = restored
-            .build(Box::new(rill_core::time::SystemClock::with_sample_rate(
-                44100.0,
-            )))
+            .build(
+                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
+                None,
+            )
             .expect("rebuild");
 
         // Topological order: source must be first
