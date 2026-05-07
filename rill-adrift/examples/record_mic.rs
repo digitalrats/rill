@@ -245,7 +245,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     def.populate(&mut builder)
         .map_err(|e| format!("populate: {e}"))?;
     let graph = builder
-        .with_backend(backend_name, RATE as u32, BUF as u32, 2)
+        .with_backend(backend_name, {
+            let mut p = std::collections::HashMap::new();
+            p.insert(
+                "sample_rate".into(),
+                rill_core::ParamValue::Int(RATE as i32),
+            );
+            p.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
+            p.insert("channels".into(), rill_core::ParamValue::Int(2));
+            p
+        })
         .build()
         .map_err(|e| format!("graph build: {e}"))?;
     let _actor_ref = graph.handle();

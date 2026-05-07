@@ -3,9 +3,10 @@
 //! Provides `register_all_nodes` and `register_all_backends` for
 //! populating factories before creating a [`GraphBuilder`].
 
-use rill_core::traits::{Node, NodeId, NodeVariant, Params};
+use rill_core::traits::{Node, NodeId, NodeVariant, ParamValue, Params};
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{node_ctor, NodeFactory};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(feature = "io")]
@@ -266,53 +267,50 @@ pub fn load_graph_json<const B: usize>(
 /// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).
 #[cfg(feature = "io")]
 pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
-    factory.register("null", |sr, bs, ch| {
+    factory.register("null", |p| {
         Ok(Box::new(crate::io::backends::NullBackend::new(
-            crate::io::AudioConfig::new()
-                .with_sample_rate(sr)
-                .with_buffer_size(bs)
-                .with_channels(ch),
+            cfg_from_params(p),
         )))
     });
 
     #[cfg(feature = "alsa")]
-    factory.register("alsa", |sr, bs, ch| {
-        let cfg = crate::io::AudioConfig::new()
-            .with_sample_rate(sr)
-            .with_buffer_size(bs)
-            .with_channels(ch);
-        let b = crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?;
+    factory.register("alsa", |p| {
+        let b = crate::io::backends::AlsaBackend::new(cfg_from_params(p))
+            .map_err(|e| format!("alsa: {e}"))?;
         Ok(Box::new(b))
     });
 
     #[cfg(feature = "cpal")]
-    factory.register("cpal", |sr, bs, ch| {
-        let cfg = crate::io::AudioConfig::new()
-            .with_sample_rate(sr)
-            .with_buffer_size(bs)
-            .with_channels(ch);
-        let b = crate::io::backends::CpalBackend::new(cfg).map_err(|e| format!("cpal: {e}"))?;
+    factory.register("cpal", |p| {
+        let b = crate::io::backends::CpalBackend::new(cfg_from_params(p))
+            .map_err(|e| format!("cpal: {e}"))?;
         Ok(Box::new(b))
     });
 
     #[cfg(feature = "pipewire")]
-    factory.register("pipewire", |sr, bs, ch| {
-        let cfg = crate::io::AudioConfig::new()
-            .with_sample_rate(sr)
-            .with_buffer_size(bs)
-            .with_channels(ch);
-        let b =
-            crate::io::backends::PipewireBackend::new(cfg).map_err(|e| format!("pipewire: {e}"))?;
+    factory.register("pipewire", |p| {
+        let b = crate::io::backends::PipewireBackend::new(cfg_from_params(p))
+            .map_err(|e| format!("pipewire: {e}"))?;
         Ok(Box::new(b))
     });
 
     #[cfg(feature = "jack")]
-    factory.register("jack", |sr, bs, ch| {
-        let cfg = crate::io::AudioConfig::new()
-            .with_sample_rate(sr)
-            .with_buffer_size(bs)
-            .with_channels(ch);
-        let b = crate::io::backends::JackBackend::new(cfg).map_err(|e| format!("jack: {e}"))?;
+    factory.register("jack", |p| {
+        let b = crate::io::backends::JackBackend::new(cfg_from_params(p))
+            .map_err(|e| format!("jack: {e}"))?;
         Ok(Box::new(b))
     });
+}
+
+fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
+    let sr = p
+        .get("sample_rate")
+        .and_then(|v| v.as_i32())
+        .unwrap_or(44100) as u32;
+    let bs = p.get("buffer_size").and_then(|v| v.as_i32()).unwrap_or(256) as u32;
+    let ch = p.get("channels").and_then(|v| v.as_i32()).unwrap_or(2) as u32;
+    crate::io::AudioConfig::new()
+        .with_sample_rate(sr)
+        .with_buffer_size(bs)
+        .with_channels(ch)
 }

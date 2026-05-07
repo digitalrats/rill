@@ -6,9 +6,10 @@ use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::time::ClockTick;
 use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
+use rill_core::traits::ParamValue;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params};
 use rill_core_actor::{ActorCell, ActorRef};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -91,9 +92,7 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
 
 struct BackendConfig {
     name: String,
-    sample_rate: u32,
-    buffer_size: u32,
-    channels: u32,
+    params: HashMap<String, ParamValue>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
@@ -254,18 +253,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// and auto-starts it with a command queue and the given audio backend.
     /// Without this method, the graph is purely structural (no audio I/O,
     /// no command queue).
-    pub fn with_backend(
-        mut self,
-        backend_name: &str,
-        sample_rate: u32,
-        buffer_size: u32,
-        channels: u32,
-    ) -> Self {
+    /// Configure an audio backend for this builder.
+    ///
+    /// Params are passed blindly to the backend factory — keys like
+    /// `"sample_rate"`, `"buffer_size"`, `"channels"` are interpreted
+    /// by each backend constructor.
+    pub fn with_backend(mut self, backend_name: &str, params: HashMap<String, ParamValue>) -> Self {
         self.backend_config = Some(BackendConfig {
             name: backend_name.to_string(),
-            sample_rate,
-            buffer_size,
-            channels,
+            params,
         });
         self
     }
@@ -277,10 +273,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// audio backend. Otherwise the graph is purely structural (no audio I/O,
     /// no command queue).
     pub fn build(mut self) -> Result<Graph<T, BUF_SIZE>, BuildError> {
-        let backend_name = self.backend_config.as_ref().map(|c| c.name.as_str());
-        let sample_rate = self.backend_config.as_ref().map_or(0, |c| c.sample_rate);
-        let buffer_size = self.backend_config.as_ref().map_or(0, |c| c.buffer_size);
-        let channels = self.backend_config.as_ref().map_or(0, |c| c.channels);
+        let (backend_name, params) = match self.backend_config.as_ref() {
+            Some(cfg) => (Some(cfg.name.as_str()), &cfg.params),
+            None => (None, &HashMap::new()),
+        };
         let num_nodes = self.nodes.len();
 
         // --- adjacency for Kahn (audio edges only; feedback is not a DAG edge) ---
@@ -397,7 +393,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        let sr = sample_rate as f32;
+        let sr = params
+            .get("sample_rate")
+            .and_then(|v| v.as_i32())
+            .unwrap_or(44100) as f32;
 
         // Allocate named buffers (tape loops, etc.) from resource definitions.
         let mut buffers = BufferRegistry::new();
@@ -420,7 +419,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let backend_box = if let Some(name) = backend_name {
             let b = self
                 .backends
-                .create(name, sample_rate, buffer_size, channels)
+                .create(name, params)
                 .map_err(BuildError::Backend)?;
             let ptr: *mut dyn rill_core::io::IoBackend<T> = &*b
                 as *const dyn rill_core::io::IoBackend<T>

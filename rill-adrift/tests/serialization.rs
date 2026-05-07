@@ -61,7 +61,16 @@ fn test_deserialize_input_biquad_output() {
     let builder = registration::load_graph_json::<B>(json).expect("load_graph_json should succeed");
 
     let graph = builder
-        .with_backend("null", RATE as u32, B as u32, 2)
+        .with_backend("null", {
+            let mut p = std::collections::HashMap::new();
+            p.insert(
+                "sample_rate".into(),
+                rill_core::ParamValue::Int(RATE as i32),
+            );
+            p.insert("buffer_size".into(), rill_core::ParamValue::Int(B as i32));
+            p.insert("channels".into(), rill_core::ParamValue::Int(2));
+            p
+        })
         .build()
         .expect("graph build should succeed");
 
@@ -107,7 +116,16 @@ fn test_send_parameter_via_queue() {
     .expect("load_graph_json");
 
     let graph = builder
-        .with_backend("null", RATE as u32, B as u32, 2)
+        .with_backend("null", {
+            let mut p = std::collections::HashMap::new();
+            p.insert(
+                "sample_rate".into(),
+                rill_core::ParamValue::Int(RATE as i32),
+            );
+            p.insert("buffer_size".into(), rill_core::ParamValue::Int(B as i32));
+            p.insert("channels".into(), rill_core::ParamValue::Int(2));
+            p
+        })
         .build()
         .expect("graph build");
 

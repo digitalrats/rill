@@ -3,10 +3,15 @@
 use std::collections::HashMap;
 
 use rill_core::io::IoBackend;
+use rill_core::traits::ParamValue;
 
 /// Constructor signature.
+///
+/// Backend constructors receive a parameter map with string keys and
+/// [`ParamValue`] entries. Typical keys: `"sample_rate"`, `"buffer_size"`,
+/// `"channels"`. Each constructor parses the values it needs.
 pub type BackendCtor<T> =
-    fn(sample_rate: u32, buffer_size: u32, channels: u32) -> Result<Box<dyn IoBackend<T>>, String>;
+    fn(params: &HashMap<String, ParamValue>) -> Result<Box<dyn IoBackend<T>>, String>;
 
 /// Registry of named backend constructors (analogue of `NodeFactory`).
 pub struct BackendFactory<T> {
@@ -30,12 +35,10 @@ impl<T> BackendFactory<T> {
     pub fn create(
         &self,
         name: &str,
-        sample_rate: u32,
-        buffer_size: u32,
-        channels: u32,
+        params: &HashMap<String, ParamValue>,
     ) -> Result<Box<dyn IoBackend<T>>, String> {
         match self.ctors.get(name) {
-            Some(ctor) => ctor(sample_rate, buffer_size, channels),
+            Some(ctor) => ctor(params),
             None => Err(format!("unknown backend: {name}")),
         }
     }
@@ -50,19 +53,4 @@ impl<T> Default for BackendFactory<T> {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Backend configuration passed to [`GraphBuilder::build`](crate::Graph::build).
-/// Backend configuration passed to [`GraphBuilder::build`](crate::Graph::build).
-pub struct BackendConfig<'a, T> {
-    /// Backend factory to use for construction.
-    pub factory: &'a BackendFactory<T>,
-    /// Name of the backend to construct.
-    pub name: &'a str,
-    /// Sample rate in Hz.
-    pub sample_rate: u32,
-    /// Buffer size in frames.
-    pub buffer_size: u32,
-    /// Number of audio channels.
-    pub channels: u32,
 }

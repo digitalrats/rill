@@ -63,7 +63,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.connect_signal(src, 1, snk, 1);
 
         let graph = builder
-            .with_backend(&backend_name, RATE as u32, BUF as u32, 2)
+            .with_backend(&backend_name, {
+                let mut p = std::collections::HashMap::new();
+                p.insert(
+                    "sample_rate".into(),
+                    rill_core::ParamValue::Int(RATE as i32),
+                );
+                p.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
+                p.insert("channels".into(), rill_core::ParamValue::Int(2));
+                p
+            })
             .build()
             .expect("graph build");
 
