@@ -18,7 +18,7 @@ use std::sync::Arc;
 use rill_core::queues::{SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 use rill_core_actor::ActorRef;
-use rill_patchbay::control::{ControlEvent, EventPattern, OscSurface, PatchbayControl};
+use rill_patchbay::engine::{ControlEvent, Engine, EventPattern, OscSurface};
 
 use crate::osc::osc::{OscMessage, OscType};
 use crate::osc::server::OscServer;
@@ -34,7 +34,7 @@ impl OscHandle {
     pub async fn start(
         bind: &str,
         queue: ActorRef<SetParameter>,
-        control: Arc<std::sync::Mutex<PatchbayControl>>,
+        control: Arc<std::sync::Mutex<Engine>>,
         surface: OscSurface,
     ) -> Result<Self, String> {
         let mut server = OscServer::bind(bind)

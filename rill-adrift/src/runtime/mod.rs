@@ -42,7 +42,7 @@ use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::NodeId;
 use rill_core_actor::ActorRef;
 #[cfg(feature = "osc")]
-use rill_patchbay::control::{OscSurface, PatchbayControl};
+use rill_patchbay::engine::{Engine, OscSurface};
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
 
@@ -124,11 +124,11 @@ pub struct Runtime {
     graph_doc: Option<GraphDocument>,
 
     /// Control engine: automata, mappings, port combiners.
-    control: Option<PatchbayControl>,
+    control: Option<Engine>,
 
-    /// Shared PatchbayControl reference (for OSC surface dispatch).
+    /// Shared Engine reference (for OSC surface dispatch).
     #[cfg(feature = "osc")]
-    control_shared: Option<Arc<std::sync::Mutex<PatchbayControl>>>,
+    control_shared: Option<Arc<std::sync::Mutex<Engine>>>,
 
     /// Current osc_surface (set by load_patchbay).
     #[cfg(feature = "osc")]
@@ -193,14 +193,14 @@ impl Runtime {
     ///
     /// The `cmd_queue` is typically obtained from a built [`Graph`](rill_graph::Graph)
     /// via [`Graph::handle`](rill_graph::Graph::handle).
-    /// Creates/replaces the [`PatchbayControl`] and updates the OSC surface.
+    /// Creates/replaces the [`Engine`] and updates the OSC surface.
     #[cfg(feature = "serialization")]
     pub fn load_patchbay(
         &mut self,
         doc: PatchbayDocument,
         cmd_queue: ActorRef<SetParameter>,
     ) -> Result<(), RuntimeError> {
-        let mut control = PatchbayControl::new(cmd_queue.clone());
+        let mut control = Engine::new(cmd_queue.clone());
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry)
             .map_err(|e| RuntimeError::Patchbay(e))?;
@@ -210,7 +210,7 @@ impl Runtime {
         #[cfg(feature = "osc")]
         {
             self.osc_surface = doc.osc_surface.clone();
-            let mut ctrl = PatchbayControl::new(cmd_queue);
+            let mut ctrl = Engine::new(cmd_queue);
             doc.apply_to(&mut ctrl, &registry)
                 .map_err(|e| RuntimeError::Patchbay(e))?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
@@ -255,7 +255,7 @@ impl Runtime {
         }
 
         let control = self.control_shared.clone().unwrap_or_else(|| {
-            Arc::new(std::sync::Mutex::new(PatchbayControl::new(ActorRef::new(
+            Arc::new(std::sync::Mutex::new(Engine::new(ActorRef::new(
                 &Arc::new(MpscQueue::with_capacity(64)),
             ))))
         });

@@ -3,7 +3,7 @@
 //! Автоматы, построенные на произвольных функциях времени.
 //! Позволяют реализовать любую математическую зависимость.
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 use std::fmt;
 use std::sync::Arc;
 

@@ -5,7 +5,7 @@
 //! - Chaos (детерминированный хаос)
 //! - Noise (белый, розовый, коричневый шум)
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 
 /// Тип случайного процесса
 #[derive(Debug, Clone, Copy, PartialEq)]

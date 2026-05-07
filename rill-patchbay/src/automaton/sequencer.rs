@@ -3,7 +3,7 @@
 //! Автоматы для генерации ритмических паттернов и последовательностей
 //! значений во времени.
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 use std::collections::VecDeque;
 
 /// Шаг секвенсора

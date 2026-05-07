@@ -2,7 +2,7 @@
 //!
 //! `PatchbayManager` is a legacy component. It runs in a dedicated
 //! `std::thread` at a fixed update rate. Superseded by the async model:
-//! `PatchbayControl::add_automaton_task()` + tokio tasks.
+//! `Engine::add_automaton_task()` + tokio tasks.
 //!
 //! Old functionality:
 //! - Automata (LFO, envelopes, sequencers)
@@ -10,9 +10,9 @@
 //! - Servos (automaton-to-parameter bridge)
 //!
 //! Recommended replacements:
-//! - `PatchbayControl::add_lfo_task()`
-//! - `PatchbayControl::add_automaton_task()`
-//! - `PatchbayControl::handle_event()`
+//! - `Engine::add_lfo_task()`
+//! - `Engine::add_automaton_task()`
+//! - `Engine::handle_event()`
 
 use rill_core::prelude::*;
 use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use crate::automaton::{
     EnvelopeAutomaton, FunctionAutomaton, LfoAutomaton, LfoWaveform, SequencerAutomaton, Step,
 };
-use crate::control::{
+use crate::engine::{
     midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
     ParameterMapping, Transform,
 };

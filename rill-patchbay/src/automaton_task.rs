@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-use crate::control::{Automaton, Time};
+use crate::engine::{Automaton, Time};
 
 /// Запустить автомат как green thread (tokio task)
 ///

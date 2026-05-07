@@ -59,7 +59,7 @@ pub use rill_core::{NodeId, ParamValue, ParameterId, PortId};
 pub mod automaton;
 
 /// Управление и маппинг событий
-pub mod control;
+pub mod engine;
 
 /// Менеджер патчбэя — центральный координатор
 pub mod manager;
@@ -106,10 +106,9 @@ pub use automaton::{
     PlayMode, Range, SequencerAutomaton, StatefulFunctionAutomaton, Step, SyncMode,
 };
 pub use automaton_task::spawn_automaton_task;
-pub use control::{
-    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
-    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, PatchbayControl, Servo, Target,
-    Transform,
+pub use engine::{
+    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, Engine, EventPattern,
+    Mapping, NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target, Transform,
 };
 
 pub use manager::PatchbayManager;
@@ -133,7 +132,7 @@ pub mod prelude {
     // Основные типы
     pub use crate::automaton::*;
     pub use crate::automaton_task::*;
-    pub use crate::control::*;
+    pub use crate::engine::*;
     pub use crate::manager::*;
     pub use crate::port_combiner::*;
     pub use crate::sequencer::*;
@@ -158,7 +157,7 @@ mod tests {
     fn test_basic_imports() {
         // Просто проверяем, что всё импортируется
         let _ = automaton::LfoWaveform::Sine;
-        let _ = control::Transform::Linear;
+        let _ = engine::Transform::Linear;
         let _ = manager::PatchbayConfig::default();
     }
 }

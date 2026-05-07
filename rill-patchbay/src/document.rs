@@ -14,9 +14,9 @@ use rill_core::NodeId;
 use crate::automaton::envelope::{EnvelopeAutomaton, EnvelopeType};
 use crate::automaton::lfo::LfoWaveform;
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
-pub use crate::control::EventPattern;
-use crate::control::{
-    BoxedServo, Mapping, OscSurface, ParameterMapping, PatchbayControl, Servo, Target, Transform,
+pub use crate::engine::EventPattern;
+use crate::engine::{
+    BoxedServo, Engine, Mapping, OscSurface, ParameterMapping, Servo, Target, Transform,
 };
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
@@ -120,7 +120,7 @@ pub struct ServoDef {
     /// Async mode: update interval in milliseconds.
     /// When `Some`, the automaton runs as a green thread (tokio task)
     /// with the given interval. When `None`, falls back to sync mode
-    /// (requires manual `PatchbayControl::update()` calls).
+    /// (requires manual `Engine::update()` calls).
     #[serde(default)]
     pub async_interval_ms: Option<f64>,
 
@@ -220,10 +220,10 @@ impl PatchbayDocument {
         }
     }
 
-    /// Apply the document to a [`PatchbayControl`].
+    /// Apply the document to a [`Engine`].
     pub fn apply_to(
         &self,
-        control: &mut PatchbayControl,
+        control: &mut Engine,
         registry: &FunctionRegistry,
     ) -> Result<(), String> {
         let auto_ids: std::collections::HashSet<&str> =
@@ -342,7 +342,7 @@ impl PatchbayDocument {
         Ok(())
     }
 
-    /// Apply the document to a [`PatchbayControl`] using async automaton tasks.
+    /// Apply the document to a [`Engine`] using async automaton tasks.
     ///
     /// For each servo with `async_interval_ms: Some(...)`, creates a green
     /// thread (tokio task) with the specified strategies. Falls back to sync
@@ -351,7 +351,7 @@ impl PatchbayDocument {
     /// Requires an active tokio runtime.
     pub fn apply_to_async(
         &self,
-        control: &mut PatchbayControl,
+        control: &mut Engine,
         registry: &FunctionRegistry,
     ) -> Result<(), String> {
         let auto_ids: std::collections::HashSet<&str> =
@@ -588,7 +588,7 @@ mod tests {
         let doc = sample_doc();
         let _mailbox = Arc::new(MpscQueue::with_capacity(64));
         let actor_ref = ActorRef::new(&_mailbox);
-        let mut control = PatchbayControl::new(actor_ref);
+        let mut control = Engine::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to(&mut control, &registry).unwrap();
         control.update(0.01);
@@ -616,7 +616,7 @@ mod tests {
         };
         let _mailbox = Arc::new(MpscQueue::with_capacity(64));
         let actor_ref = ActorRef::new(&_mailbox);
-        let mut control = PatchbayControl::new(actor_ref);
+        let mut control = Engine::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         assert!(doc.apply_to(&mut control, &registry).is_err());
     }
@@ -693,7 +693,7 @@ mod tests {
 
         let mailbox = Arc::new(MpscQueue::with_capacity(64));
         let actor_ref = ActorRef::new(&mailbox);
-        let mut control = PatchbayControl::new(actor_ref);
+        let mut control = Engine::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry).unwrap();
 

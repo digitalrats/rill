@@ -3,7 +3,7 @@
 //! Генерация сигналов на основе клеточных автоматов.
 //! Поддерживаются 1D и 2D клеточные автоматы с различными правилами.
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 
 /// Тип клеточного автомата
 #[derive(Debug, Clone, Copy, PartialEq)]

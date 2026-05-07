@@ -2,7 +2,7 @@
 //!
 //! Supports various waveform shapes and synchronisation modes.
 
-use crate::control::{Automaton, Range, Time};
+use crate::engine::{Automaton, Range, Time};
 use std::f64::consts::PI;
 
 /// LFO waveform shape.
