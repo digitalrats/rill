@@ -1,8 +1,14 @@
 # Actor Model (rill-core-actor)
 
-Rill implements a lightweight actor model for communication between the
-control thread and the audio thread. The model is inspired by Akka/Pekko
-but specialised for the real-time audio use case.
+Rill implements a lightweight actor model for lock-free message passing
+between threads. The model is inspired by Akka/Pekko but specialised for
+the real-time signal processing use case.
+
+The actor model is **domain-agnostic** — `ActorRef<M>`, `ActorCell`, and
+`MessageDispatcher<M>` are generic over `M: Send + 'static`. They have no
+dependency on audio or signal types. The concrete message type
+(`SetParameter`) and its consumer (`Graph`) belong to higher-level crates
+(`rill-patchbay`, `rill-graph`), not to the actor infrastructure itself.
 
 ## Core concepts
 
@@ -105,7 +111,7 @@ Runtime::new()
   ├── Engine::new(actor_ref)
   │     └── holds ActorRef, sends commands via MessageDispatcher
   │
-  └── Graph runs audio callback
+  └── Graph runs signal callback
         └── drains mailbox via raw pointer (GraphHandle)
 ```
 
