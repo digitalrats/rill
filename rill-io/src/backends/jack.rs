@@ -326,7 +326,7 @@ impl AudioBackend for JackBackend {
     }
 
     fn start(&mut self) -> IoResult<()> {
-        self.setup().map_err(|e| IoError::Backend(e))
+        self.setup().map_err(IoError::Backend)
     }
 
     fn stop(&mut self) -> IoResult<()> {

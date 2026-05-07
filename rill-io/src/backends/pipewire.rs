@@ -176,7 +176,7 @@ impl IoBackend<f32> for PipewireBackend {
             let cap = win.capacity().min(frames * 2);
             let dst = win.as_mut_slice();
             for i in 0..(cap / 2) {
-                if let Some(ch) = channels.get(0) {
+                if let Some(ch) = channels.first() {
                     dst[i * 2] = ch[i];
                 }
                 if let Some(ch) = channels.get(1) {
@@ -284,7 +284,7 @@ impl IoBackend<f32> for PipewireBackend {
             let mut audio_info = spa::param::audio::AudioInfoRaw::new();
             audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
             audio_info.set_rate(sample_rate);
-            audio_info.set_channels(out_chan as u32);
+            audio_info.set_channels(out_chan);
             let mut position = [0; spa::param::audio::MAX_CHANNELS];
             if out_chan >= 1 {
                 position[0] = spa_sys::SPA_AUDIO_CHANNEL_FL;
@@ -435,12 +435,12 @@ impl IoBackend<f32> for PipewireBackend {
                     let n_samp = (chunk_size as usize / stride) * actual_channels;
                     let len = n_samp.min(MAX_BLOCK_SAMPLES);
                     let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                    for i in 0..len {
+                    for (i, item) in temp.iter_mut().enumerate().take(len) {
                         let off = i * 4;
                         if off + 4 <= slice.len() {
                             let mut bytes = [0u8; 4];
                             bytes.copy_from_slice(&slice[off..off + 4]);
-                            temp[i] = f32::from_le_bytes(bytes);
+                            *item = f32::from_le_bytes(bytes);
                         }
                     }
                     let block_samps = buf_frames * actual_channels;

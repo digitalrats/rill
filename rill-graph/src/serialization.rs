@@ -244,7 +244,7 @@ impl GraphDocument {
         Self {
             format_version: "rill/1".to_string(),
             sample_rate,
-            block_size: B as usize,
+            block_size: B,
             resources,
             nodes,
             connections,

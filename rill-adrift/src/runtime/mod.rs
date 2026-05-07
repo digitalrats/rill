@@ -208,7 +208,7 @@ impl Runtime {
         let registry = FunctionRegistry::builtin();
         engine
             .load_document(&doc, &registry)
-            .map_err(|e| RuntimeError::Patchbay(e))?;
+            .map_err(RuntimeError::Patchbay)?;
 
         self.control = Some(engine);
 
@@ -217,7 +217,7 @@ impl Runtime {
             self.osc_surface = doc.osc_surface.clone();
             let mut ctrl = PatchbayControl::new(self.queue.clone());
             doc.apply_to(&mut ctrl, &registry)
-                .map_err(|e| RuntimeError::Patchbay(e))?;
+                .map_err(RuntimeError::Patchbay)?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
         }
 
