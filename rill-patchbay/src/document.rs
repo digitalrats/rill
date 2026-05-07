@@ -586,7 +586,8 @@ mod tests {
     #[test]
     fn test_apply_to_adds_servo() {
         let doc = sample_doc();
-        let (actor_ref, _mailbox) = ActorRef::<SetParameter>::new_pair();
+        let _mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&_mailbox);
         let mut control = PatchbayControl::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to(&mut control, &registry).unwrap();
@@ -613,7 +614,8 @@ mod tests {
             osc_surface: vec![],
             description: None,
         };
-        let (actor_ref, _mailbox) = ActorRef::<SetParameter>::new_pair();
+        let _mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&_mailbox);
         let mut control = PatchbayControl::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         assert!(doc.apply_to(&mut control, &registry).is_err());
@@ -689,7 +691,8 @@ mod tests {
             description: None,
         };
 
-        let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&mailbox);
         let mut control = PatchbayControl::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry).unwrap();

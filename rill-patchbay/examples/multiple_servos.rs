@@ -6,7 +6,8 @@ use rill_patchbay::{FunctionAutomaton, LfoWaveform, ParameterMapping, PatchbayCo
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Multiple Servos Example ===\n");
 
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref);
     let node = NodeId(1);
 

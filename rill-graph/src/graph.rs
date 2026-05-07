@@ -65,10 +65,6 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
     resources: Vec<GraphResource>,
-    /// Optional external command queue. If set, `build()` uses this
-    /// instead of creating a fresh queue, enabling the Runtime to
-    /// provide a single shared queue for both graph and patchbay.
-    command_queue: Option<Arc<MpscQueue<SetParameter>>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
@@ -87,18 +83,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
             resources: Vec::new(),
-            command_queue: None,
         }
-    }
-
-    /// Attach an external command queue.
-    ///
-    /// When set, [`build`](Self::build) uses this queue instead of
-    /// creating a new one, allowing the graph to share a single queue
-    /// with the patchbay and other control subsystems.
-    pub fn with_command_queue(mut self, queue: Arc<MpscQueue<SetParameter>>) -> Self {
-        self.command_queue = Some(queue);
-        self
     }
 
     /// Register a named resource.
@@ -419,12 +404,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             self.nodes.into_iter().map(|e| e.node).collect();
 
         // Auto-start driver node (registers process callback on backend).
-        let dead = Arc::new(MpscQueue::new());
-        let cmd_queue = if let Some(q) = self.command_queue.take() {
-            q
-        } else {
-            Arc::new(MpscQueue::<SetParameter>::with_capacity(64))
-        };
+        let cmd_queue = Arc::new(MpscQueue::<SetParameter>::with_capacity(64));
         let have_queue = if let Some(ref _backend) = backend_box {
             let driver_idx = nodes
                 .iter()
@@ -473,7 +453,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             buffers: owned_buffers,
             backend: backend_box,
             command_queue,
-            dead,
         })
     }
 }
@@ -505,8 +484,6 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
     /// Command queue for sending parameters from control to audio thread.
     command_queue: Option<Arc<MpscQueue<SetParameter>>>,
-    /// Dead letters — undeliverable messages collected when the actor is gone.
-    dead: Arc<MpscQueue<SetParameter>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
@@ -581,7 +558,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     /// Returns `None` if no audio backend was configured (no queue created).
     pub fn handle(&self) -> Option<ActorRef<SetParameter>> {
         let mailbox = self.command_queue.as_ref()?;
-        Some(ActorRef::new(mailbox, self.dead.clone()))
+        Some(ActorRef::new(mailbox))
     }
 
     /// Consume the graph and return its owned parts (test only).
@@ -603,7 +580,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             buffers,
             backend: _,
             command_queue: _,
-            dead: _,
         } = self;
         (nodes, topo_order, current_tick, buffers)
     }

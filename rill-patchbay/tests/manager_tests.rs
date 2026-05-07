@@ -12,7 +12,8 @@ fn param(name: &str) -> String {
 
 #[test]
 fn test_control_creation() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let control = PatchbayControl::new(actor_ref);
 
     assert_eq!(control.mappings().len(), 0);
@@ -21,7 +22,8 @@ fn test_control_creation() {
 
 #[test]
 fn test_add_lfo_servo() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref.clone());
 
     control.add_lfo(
@@ -41,7 +43,8 @@ fn test_add_lfo_servo() {
 
 #[test]
 fn test_add_envelope_servo() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref.clone());
 
     control.add_envelope("env1", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);
@@ -51,7 +54,8 @@ fn test_add_envelope_servo() {
 
 #[test]
 fn test_add_custom_servo() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref.clone());
 
     let sine = FunctionAutomaton::new("Sine", |t| (t * 2.0).sin() * 0.5 + 0.5);
@@ -71,7 +75,8 @@ fn test_add_custom_servo() {
 
 #[test]
 fn test_remove_servo() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref);
 
     control.add_lfo(
@@ -105,7 +110,8 @@ fn test_remove_servo() {
 
 #[test]
 fn test_clear_servos() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref);
 
     control.add_lfo(
@@ -150,7 +156,8 @@ fn test_clear_servos() {
 
 #[test]
 fn test_servo_updates() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref.clone());
 
     control.add_lfo(
@@ -178,7 +185,8 @@ fn test_servo_updates() {
 
 #[test]
 fn test_multiple_servos() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref);
 
     control.add_lfo(
@@ -222,7 +230,8 @@ fn test_multiple_servos() {
 
 #[test]
 fn test_disable_servo() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref.clone());
 
     control.add_lfo(
@@ -273,7 +282,8 @@ fn drain_count(mailbox: &MpscQueue<rill_core::queues::SetParameter>) -> usize {
 
 #[test]
 fn test_different_servo_types() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref);
 
     control.add_lfo(
@@ -341,7 +351,8 @@ fn test_midi_mapping() {
 
 #[test]
 fn test_mapping_in_control() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref.clone());
 
     control
@@ -365,7 +376,8 @@ fn test_mapping_in_control() {
 
 #[test]
 fn test_reset_time() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref);
 
     control.update(1.0);

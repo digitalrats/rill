@@ -234,7 +234,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_combiner_absolute_touch_override() {
-        let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&mailbox);
         let handle = spawn_combiner(
             (NodeId(1), "cutoff".into()),
             (100.0, 1000.0),
@@ -265,7 +266,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_combiner_modulation_base_plus() {
-        let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&mailbox);
         let handle = spawn_combiner(
             (NodeId(1), "cutoff".into()),
             (100.0, 1000.0),
@@ -291,7 +293,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_combiner_last_write_wins() {
-        let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&mailbox);
         let handle = spawn_combiner(
             (NodeId(1), "gain".into()),
             (0.0, 1.0),
@@ -315,7 +318,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_combiner_release_unfreezes() {
-        let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&mailbox);
         let handle = spawn_combiner(
             (NodeId(1), "cutoff".into()),
             (100.0, 1000.0),

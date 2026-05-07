@@ -5,7 +5,8 @@ use rill_patchbay::{LfoWaveform, PatchbayControl};
 
 #[test]
 fn test_lfo_automaton_in_control() {
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let mut control = PatchbayControl::new(actor_ref);
 
     control.add_lfo(
@@ -35,7 +36,8 @@ fn test_lfo_automaton_in_control() {
 
 #[test]
 fn test_envelope_in_control() {
-    let (actor_ref, _mailbox) = ActorRef::<SetParameter>::new_pair();
+    let _mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&_mailbox);
     let mut control = PatchbayControl::new(actor_ref);
 
     control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);

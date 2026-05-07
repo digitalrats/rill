@@ -38,7 +38,7 @@
 
 use std::sync::Arc;
 
-use rill_core::queues::SetParameter;
+use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::traits::{ActorRef, ParamValue};
 use rill_core::NodeId;
 #[cfg(feature = "osc")]
@@ -142,7 +142,8 @@ pub struct Runtime {
 impl Runtime {
     /// Create a new (stopped) runtime with the given configuration.
     pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
-        let (actor_ref, _mailbox) = ActorRef::new_pair();
+        let _mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let actor_ref = ActorRef::new(&_mailbox);
         Self {
             actor_ref,
             control: None,

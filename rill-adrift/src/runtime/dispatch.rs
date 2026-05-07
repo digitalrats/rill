@@ -77,11 +77,8 @@ impl OscHandle {
         });
 
         // /sys/status
-        let q = queue.clone();
         server.handle("/sys/status", move |_: OscMessage, _: SocketAddr| {
-            let alive = q.is_alive();
-            let dead = q.dead_letters().is_empty();
-            log::info!("status: actor_alive={alive}, dead_letters_empty={dead}");
+            log::info!("status: alive (ActorRef holds strong ref)");
         });
 
         // ── User surface handlers ──────────────────────────────────────

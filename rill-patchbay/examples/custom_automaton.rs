@@ -8,7 +8,8 @@ use rill_patchbay::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Custom Automaton Examples ===\n");
 
-    let (actor_ref, _mailbox) = ActorRef::<SetParameter>::new_pair();
+    let _mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&_mailbox);
     let mut control = PatchbayControl::new(actor_ref);
     let node = NodeId(1);
 

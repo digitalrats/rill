@@ -221,7 +221,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.connect_signal(src, 0, snk, 0);
     builder.connect_signal(src, 1, snk, 1);
 
-    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
     let graph = builder
         .with_command_queue(mailbox)
         .build(Box::new(SystemClock::with_sample_rate(RATE)), None)

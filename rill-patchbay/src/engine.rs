@@ -237,7 +237,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_add_lfo_produces_values() {
-        let (cmd_queue, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let cmd_queue = ActorRef::new(&mailbox);
         let mut engine = PatchbayEngine::new(cmd_queue);
 
         engine.add_lfo(
@@ -262,7 +263,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_handle_event_direct() {
-        let (cmd_queue, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mailbox = Arc::new(MpscQueue::with_capacity(64));
+        let cmd_queue = ActorRef::new(&mailbox);
         let mut engine = PatchbayEngine::new(cmd_queue);
 
         engine.add_mapping(midi_cc(
