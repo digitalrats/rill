@@ -1,15 +1,15 @@
-//! # Математические функции для векторов
+//! # Mathematical functions for vectors
 //!
-//! Реализация математических функций (sin, cos, exp, ln, sqrt и т.д.) для векторных типов.
+//! Implementation of mathematical functions (sin, cos, exp, ln, sqrt, etc.) for vector types.
 
 use super::traits::{Vector, VectorTranscendental};
 use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
-// Функции для работы со слайсами
+// Slice functions
 // -----------------------------------------------------------------------------
 
-/// Поэлементный синус слайса
+/// Element-wise sine of a slice
 pub fn sin_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: VectorTranscendental<T, N>,
@@ -34,7 +34,7 @@ where
     }
 }
 
-/// Поэлементный косинус слайса
+/// Element-wise cosine of a slice
 pub fn cos_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: VectorTranscendental<T, N>,
@@ -59,7 +59,7 @@ where
     }
 }
 
-/// Поэлементный тангенс слайса
+/// Element-wise tangent of a slice
 pub fn tan_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: VectorTranscendental<T, N>,
@@ -84,7 +84,7 @@ where
     }
 }
 
-/// Поэлементная экспонента слайса
+/// Element-wise exponent of a slice
 pub fn exp_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: VectorTranscendental<T, N>,
@@ -109,7 +109,7 @@ where
     }
 }
 
-/// Поэлементный натуральный логарифм слайса
+/// Element-wise natural logarithm of a slice
 pub fn ln_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: VectorTranscendental<T, N>,
@@ -134,7 +134,7 @@ where
     }
 }
 
-/// Поэлементный квадратный корень слайса
+/// Element-wise square root of a slice
 pub fn sqrt_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: VectorTranscendental<T, N>,
@@ -159,7 +159,7 @@ where
     }
 }
 
-/// Поэлементный модуль слайса
+/// Element-wise absolute value of a slice
 pub fn abs_slice<T: Transcendental, const N: usize, V>(input: &[T], output: &mut [T])
 where
     V: Vector<T, N>,
@@ -184,7 +184,7 @@ where
     }
 }
 
-/// Поэлементный минимум двух слайсов
+/// Element-wise minimum of two slices
 pub fn min_slice<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], output: &mut [T])
 where
     V: Vector<T, N>,
@@ -211,7 +211,7 @@ where
     }
 }
 
-/// Поэлементный максимум двух слайсов
+/// Element-wise maximum of two slices
 pub fn max_slice<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], output: &mut [T])
 where
     V: Vector<T, N>,
@@ -238,7 +238,7 @@ where
     }
 }
 
-/// Поэлементное ограничение слайса
+/// Element-wise clamp of a slice
 pub fn clamp_slice<T: Transcendental, const N: usize, V>(
     input: &[T],
     min: &[T],
@@ -272,9 +272,7 @@ pub fn clamp_slice<T: Transcendental, const N: usize, V>(
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
-// -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -282,5 +280,5 @@ mod tests {
     use super::*;
     use crate::Transcendental;
 
-    // Тесты будут добавлены после реализации скалярных векторов
+    // Tests will be added after scalar vector implementation
 }

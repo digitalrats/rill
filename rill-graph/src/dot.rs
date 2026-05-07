@@ -1,16 +1,16 @@
 //! DOT graph serialization for Graphviz visualization.
 //!
 //! Generates `digraph` DOT format from a [`Graph`].  Uses
-//! Р-схема (Glushkov R-scheme) inspired node shapes:
+//! R-scheme (Glushkov R-scheme) inspired node shapes:
 //!
 //! | NodeCategory | DOT shape | Color | Meaning |
 //! |---|---|---|---|
-//! | `Source` | `trapezium` | green `#8f8` | Оператор-генератор |
-//! | `Processor` | `box` | blue `#8bf` | Оператор-преобразователь |
-//! | `Router` | `diamond` | orange `#fa8` | Условие/распределитель |
-//! | `Sink` | `invtrapezium` | red `#f88` | Терминальный оператор |
-//! | `Analyzer` | `note` | grey `#ccc` | Наблюдатель |
-//! | `Sequencer` | `doublecircle` | pink `#fcf` | Управляющий оператор |
+//! | `Source` | `trapezium` | green `#8f8` | Generator operator |
+//! | `Processor` | `box` | blue `#8bf` | Processor operator |
+//! | `Router` | `diamond` | orange `#fa8` | Condition/distributor |
+//! | `Sink` | `invtrapezium` | red `#f88` | Terminal operator |
+//! | `Analyzer` | `note` | grey `#ccc` | Observer |
+//! | `Sequencer` | `doublecircle` | pink `#fcf` | Control operator |
 //!
 //! ## Feature gate
 //!

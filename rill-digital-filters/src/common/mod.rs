@@ -1,8 +1,8 @@
 //! Common imports and utilities for tests
 
 pub use rill_digital_filters::{BiquadFilter, FilterType};
-pub use rill_core::traits::Node;  // для init, reset, process
-pub use rill_core_dsp::filters::Filter;  // для cutoff, q, gain_db
+pub use rill_core::traits::Node;  // for init, reset, process
+pub use rill_core_dsp::filters::Filter;  // for cutoff, q, gain_db
 pub use float_cmp::approx_eq;
 
 // Helper function to generate sine wave

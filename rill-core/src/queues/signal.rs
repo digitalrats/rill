@@ -12,28 +12,28 @@
 //! - `SensorCommand` — sensor control
 //! - `ServoCommand` — servo control
 //!
-//! ## Пример
+//! ## Example
 //!
 //! ```rust
 //! use rill_core::queues::*;
 //! use rill_core::traits::*;
 //! #
-//! // Создаем очередь команд
+//! // Create a command queue
 //! let queue: CommandQueue<CommandEnum> = CommandQueue::new("signal-control", 1024);
 //!
-//! // Создаем идентификаторы
+//! // Create identifiers
 //! let node = NodeId(1);
 //! let port = PortId::control_in(node, 0);
 //! let param = ParameterId::new("gain").unwrap();
 //!
-//! // Где-то в мире автоматов
+//! // Somewhere in the world of automatons
 //! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalOrigin::Automaton("lfo".into()));
 //! queue.send(CommandEnum::SetParameter(cmd)).unwrap();
 //!
-//! // Где-то в звуковом мире
+//! // Somewhere in the sound world
 //! while let Ok(cmd_enum) = queue.try_recv() {
 //!     if let CommandEnum::SetParameter(cmd) = cmd_enum {
-//!         // apply_parameter(cmd); // функция должна быть определена
+//!         // apply_parameter(cmd); // function must be defined
 //!     }
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -45,7 +45,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 //==============================================================================
-// SignalOrigin — источник сигнала
+// SignalOrigin — signal source
 //==============================================================================
 
 /// Origin of a signal or command.
@@ -186,7 +186,7 @@ impl fmt::Display for SetParameter {
     }
 }
 
-// Реализуем трейт Command для SetParameter
+// Implement the Command trait for SetParameter
 impl Command for SetParameter {}
 
 // ===== AutomatonCommand =====
@@ -525,7 +525,7 @@ impl fmt::Display for ServoCommand {
 
 impl Command for ServoCommand {}
 
-// ===== CommandType (бывшее Command) — общий тип команды =====
+// ===== CommandType (formerly Command) — common command type =====
 
 /// Runtime command type identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -652,10 +652,10 @@ impl fmt::Display for CommandEnum {
     }
 }
 
-// Реализуем трейт Command для CommandEnum, чтобы его можно было использовать в CommandQueue
+// Implement the Command trait for CommandEnum so it can be used in CommandQueue
 impl Command for CommandEnum {}
 
-// ===== Преобразования =====
+// ===== Conversions =====
 
 /// Marker trait for types that can be converted into a command.
 pub trait ToCommand: Send + 'static {

@@ -1,58 +1,58 @@
-//! # Стратегии управления автоматами
+//! # Automaton control strategies
 //!
-//! Определяют как автомат воздействует на параметр узла и как
-//! разрешаются конфликты между автоматическим и ручным управлением.
+//! Defines how an automaton affects a node parameter and how
+//! conflicts between automatic and manual control are resolved.
 
-/// Как автомат воздействует на целевой параметр
+/// How the automaton affects the target parameter
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ControlStrategy {
-    /// Автомат задаёт значение параметра напрямую.
+    /// The automaton sets the parameter value directly.
     ///
-    /// Выход автомата ожидается в диапазоне [0, 1] и маппится
-    /// на [min, max] целевого параметра.
+    /// The automaton output is expected in the [0, 1] range and is mapped
+    /// to [min, max] of the target parameter.
     Absolute,
 
-    /// Автомат модулирует вокруг базового значения.
+    /// The automaton modulates around the base value.
     ///
-    /// Выход автомата ожидается в диапазоне [-1, 1].
-    /// Финальное значение: `base + mod_val * depth * (max - min)`,
-    /// обрезанное до [min, max].
+    /// The automaton output is expected in the [-1, 1] range.
+    /// Final value: `base + mod_val * depth * (max - min)`,
+    /// clamped to [min, max].
     Modulation {
-        /// Глубина модуляции (0.0 — нет модуляции, 1.0 — полный диапазон)
+        /// Modulation depth (0.0 — no modulation, 1.0 — full range)
         depth: f64,
     },
 }
 
-/// Стратегия разрешения конфликта между UI и автоматом
+/// Conflict resolution strategy between UI and automaton
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConflictStrategy {
-    /// Касание UI замораживает автомат для этого порта.
+    /// UI touch freezes the automaton for this port.
     ///
-    /// При получении `SetBase` автомат прекращает влиять на параметр.
-    /// При получении `Release` автомат возобновляет управление.
+    /// On `SetBase`, the automaton stops affecting the parameter.
+    /// On `Release`, the automaton resumes control.
     TouchOverride,
 
-    /// UI задаёт базовое значение, автомат модулирует вокруг него.
+    /// UI sets the base value, the automaton modulates around it.
     ///
-    /// Финальное значение вычисляется по формуле стратегии управления
-    /// с учётом базового значения от UI и модуляции от автомата.
+    /// The final value is computed using the control strategy formula
+    /// combining the UI base value and automaton modulation.
     BasePlusModulation,
 
-    /// Последний записавший в очередь побеждает.
+    /// The last writer to the queue wins.
     ///
-    /// UI и автомат пишут в очередь независимо. Порядок применения
-    /// определяется порядком сообщений в очереди MpscQueue.
+    /// UI and automaton write to the queue independently. The order of
+    /// application is determined by the message order in the MpscQueue.
     LastWriteWins,
 }
 
-/// Команда от UI в PortCombiner
+/// Command from UI to PortCombiner
 #[derive(Debug, Clone)]
 pub enum UiCommand {
-    /// Установить базовое значение
+    /// Set the base value
     SetValue(f64),
 
-    /// Отпустить контроль (только для TouchOverride)
+    /// Release control (TouchOverride only)
     Release,
 }

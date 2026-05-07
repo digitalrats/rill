@@ -1,7 +1,7 @@
-//! # OutputWindow — обобщённое окно для прямой записи в DMA-буфер
+//! # OutputWindow — generic window for direct write to DMA buffer
 //!
-//! Используется бэкэндами ALSA, CPAL, JACK, PipeWire для записи
-//! аудиоданных напрямую в аппаратный буфер (без промежуточного ring buffer).
+//! Used by ALSA, CPAL, JACK, PipeWire backends for writing
+//! audio data directly to the hardware buffer (without intermediate ring buffer).
 
 use std::cell::UnsafeCell;
 use std::slice;

@@ -1,35 +1,6 @@
 # CHANGELOG
 
-## [Unreleased]
-
-### 💥 Breaking changes
-
-- **`Signal` → prefix removal** across the entire API surface:
-  - `SignalGraph` → `Graph` (in `rill_graph::Graph`)
-  - `SignalNode` → `Node` (in `rill_core::Node`)
-  - `SignalBuffer` merged into `Buffer<T: Scalar>` — replaces both old `Buffer` and `SignalBuffer` traits
-  - `SignalSource` → `SignalOrigin`
-
-- **Actor model** — new `rill-core-actor` crate:
-  - `ActorCell` trait, `ActorRef<M>`, `MessageDispatcher<M>` moved from `rill_core::traits` to `rill-core-actor`
-  - `ActorRef::new_pair()` convenience constructor
-  - `Graph::send_parameter()` removed — use `Graph::handle() -> ActorRef`
-  - `ActorSystem<M>` — named mailbox registry with routing and dead letters
-  - `signal_node!` macro renamed to `node!`
-
-- **`rill-patchbay` restructuring**:
-  - `PatchbayControl` → `Engine` (in `rill_patchbay::engine`)
-  - `PatchbayEngine` removed — all functionality folded into `Engine`
-  - `engine.rs` replaces `control.rs`
-  - `PatchbayManager` → `Manager`
-  - `PatchbayEvent` → `Event`, `PatchbayStats` → `Stats`, `PatchbayConfig` → `Config`
-  - `PatchbayDotConfig` → `DotConfig`
-
-- **Serialization `*Document` → `*Def`**:
-  - `GraphDocument` → `GraphDef` (in `rill_graph::serialization`)
-  - `PatchbayDocument` → `PatchbayDef` (in `rill_patchbay::serialization`)
-  - `SequencerDocument` → `SequencerDef`
-  - `rill-patchbay`: `document.rs` + `dot.rs` consolidated into `serialization/` module
+## [0.5.0-beta.3] — 2026-05-07
 
 ### ✨ New
 

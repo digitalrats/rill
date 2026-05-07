@@ -1,29 +1,29 @@
-//! Макросы для удобного построения векторных выражений.
+//! Macros for convenient construction of vector expressions.
 //!
-//! Этот модуль предоставляет макросы, которые упрощают работу с векторным eDSL,
-//! позволяя писать выражения в естественной математической нотации.
+//! This module provides macros that simplify working with the vector eDSL,
+//! allowing expressions in natural mathematical notation.
 //!
-//! ## Примеры
+//! ## Examples
 //! ```
 //! use rill_core::vector::prelude::*;
 //! use rill_core::vector::macros::*;
 //!
 //! let a = ScalarVector4::splat(1.0);
 //! let b = ScalarVector4::splat(2.0);
-//! let c = a + b; // обычная векторная операция
+//! let c = a + b; // regular vector operation
 //! assert_eq!(c, ScalarVector4::splat(3.0));
 //!
-//! // Применение выражения ко всему слайсу
+//! // Apply expression to the entire slice
 //! let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
 //! let mut output = [0.0f32; 8];
 //! vec_map!(&input, &mut output, |x| x * 2.0 + 1.0);
 //! // output = [3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 17.0]
 //! ```
 //!
-//! ## Доступные макросы
-//! - [`vec_map!`] – применяет векторное выражение ко всему слайсу.
-//! - [`vec_expr!`] – создаёт ленивое векторное выражение (заглушка, требует исправления модуля expr).
-//! - [`vec_eval!`] – немедленно вычисляет векторное выражение (заглушка).
+//! ## Available macros
+//! - [`vec_map!`] – applies a vector expression to the entire slice.
+//! - [`vec_expr!`] – creates a lazy vector expression (stub, requires fixing the expr module).
+//! - [`vec_eval!`] – immediately evaluates a vector expression (stub).
 
 use crate::math::vector::scalar::ScalarVector4;
 use crate::math::vector::traits::Vector;
@@ -73,10 +73,10 @@ macro_rules! vec_map {
     }};
 }
 
-/// Создаёт ленивое векторное выражение (заглушка).
+/// Creates a lazy vector expression (stub).
 ///
-/// В текущей реализации модуль `expr` временно отключён из-за ошибок компиляции,
-/// поэтому этот макрос возвращает переданное значение без изменений.
+/// In the current implementation, the `expr` module is temporarily disabled due to compilation
+/// errors, so this macro returns the passed value unchanged.
 #[macro_export]
 macro_rules! vec_expr {
     ($val:expr) => {
@@ -84,9 +84,9 @@ macro_rules! vec_expr {
     };
 }
 
-/// Немедленно вычисляет векторное выражение (заглушка).
+/// Immediately evaluates a vector expression (stub).
 ///
-/// В текущей реализации просто возвращает переданное выражение.
+/// In the current implementation, simply returns the passed expression.
 #[macro_export]
 macro_rules! vec_eval {
     ($($t:tt)*) => {
@@ -99,7 +99,7 @@ pub use crate::vec_expr;
 pub use crate::vec_map;
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -112,7 +112,7 @@ mod tests {
         let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let mut output = [0.0f32; 8];
 
-        // Замыкание: x * 2.0 + 1.0
+        // Closure: x * 2.0 + 1.0
         vec_map!(&input, &mut output, |x| x * 2.0 + 1.0);
 
         assert_eq!(output[0], 3.0); // 1*2 + 1
@@ -142,12 +142,12 @@ mod tests {
     fn test_vec_map_empty() {
         let input: [f32; 0] = [];
         let mut output: [f32; 0] = [];
-        vec_map!(&input, &mut output, |x| x * 2.0); // не должно паниковать
+        vec_map!(&input, &mut output, |x| x * 2.0); // should not panic
     }
 
     #[test]
     fn test_vec_map_remainder() {
-        let input = [1.0f32, 2.0, 3.0]; // три элемента
+        let input = [1.0f32, 2.0, 3.0]; // three elements
         let mut output = [0.0f32; 3];
 
         vec_map!(&input, &mut output, |x| x + 10.0);

@@ -1,21 +1,21 @@
-//! # Rill Patchbay — Маршрутизация событий и автоматизация
+//! # Rill Patchbay — Event routing and automation
 //!
-//! `rill-patchbay` является эволюцией `rill-automation` из версии 0.2.0,
-//! объединённой с функциональностью маппинга из `rill-control`.
+//! `rill-patchbay` is the evolution of `rill-automation` from version 0.2.0,
+//! merged with the mapping functionality from `rill-control`.
 //!
-//! ## Основные компоненты
+//! ## Core components
 //!
-//! - **Автоматы** — генеративные источники сигналов (LFO, огибающие, секвенсоры)
-//! - **Сервоприводы** (в модуле `control`) — связь автоматов с параметрами узлов
-//! - **Маппинги** — связь внешних событий (MIDI/OSC) с параметрами
-//! - **Сенсоры** — источники событий из внешнего мира
-//! - **Менеджер** — центральный координатор для двухпоточной архитектуры
+//! - **Automata** — generative signal sources (LFO, envelopes, sequencers)
+//! - **Servos** (in the `control` module) — connect automata to node parameters
+//! - **Mappings** — connect external events (MIDI/OSC) to parameters
+//! - **Sensors** — event sources from the external world
+//! - **Manager** — central coordinator for dual-thread architecture
 //!
-//! ## Архитектура
+//! ## Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │                     ПОТОК УПРАВЛЕНИЯ                         │
+//! │                     CONTROL THREAD                         │
 //! │                                                              │
 //! │  ┌─────────────────────────────────────────────────────┐   │
 //! │  │               Manager                         │   │
@@ -29,10 +29,10 @@
 //! │  │              └──────────────────────────┘           │   │
 //! │  └─────────────────────────────────────────────────────┘   │
 //! │                              │                               │
-//! │                              │ неблокирующая очередь         │
+//! │                              │ non-blocking queue              │
 //! │                              ▼                               │
 //! │  ┌─────────────────────────────────────────────────────┐   │
-//! │  │                  АУДИОПОТОК                          │   │
+//! │  │                  AUDIO THREAD                          │   │
 //! │  │              (rill-graph / rill-io)                  │   │
 //! │  └─────────────────────────────────────────────────────┘   │
 //! └─────────────────────────────────────────────────────────────┘
@@ -43,49 +43,49 @@
 #![allow(clippy::too_many_arguments)]
 
 // =============================================================================
-// Внешние зависимости
+// External dependencies
 // =============================================================================
 
-// Реэкспорты из rill-core
+// Re-exports from rill-core
 pub use rill_core::prelude::*;
 pub use rill_core::queues::RtQueue;
 pub use rill_core::{NodeId, ParamValue, ParameterId, PortId};
 
 // =============================================================================
-// Публичные модули
+// Public modules
 // =============================================================================
 
-/// Автоматы — генеративные источники управления
+/// Automata — generative control sources
 pub mod automaton;
 
-/// Управление и маппинг событий
+/// Control and event mapping
 pub mod engine;
 
-/// Менеджер патчбэя — центральный координатор
+/// Patchbay manager — central coordinator
 pub mod manager;
 
-/// Сенсоры — источники событий из внешнего мира
+/// Sensors — event sources from the external world
 pub mod sensor;
 
-/// Утилиты и вспомогательные функции
+/// Utilities and helper functions
 pub mod utils;
 
-/// Реестр именованных функций для сериализации
+/// Named function registry for serialization
 pub mod function_registry;
 
-/// Стратегии управления автоматами
+/// Automaton control strategies
 pub mod strategy;
 
-/// PortCombiner — комбинирование автомата и UI на порт
+/// PortCombiner — combining automaton and UI per port
 pub mod port_combiner;
 
-/// Обёртка Automaton в green thread (tokio task)
+/// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
 /// Parameter-lock step sequencer
 pub mod sequencer;
 
-/// Сериализация — документы, DOT, форматы
+/// Serialization — documents, DOT, formats
 #[cfg(feature = "serde")]
 pub mod serialization;
 
@@ -93,7 +93,7 @@ pub mod serialization;
 pub use serialization::PatchbayDef;
 
 // =============================================================================
-// Реэкспорты для удобства
+// Re-exports for convenience
 // =============================================================================
 
 // Selective re-exports
@@ -120,12 +120,12 @@ pub use sequencer::{
 pub use serialization::SequencerDef;
 
 // =============================================================================
-// Прелюдия для удобного импорта
+// Prelude for convenient imports
 // =============================================================================
 
-/// Прелюдия для удобного импорта основных типов
+/// Prelude for convenient import of core types
 pub mod prelude {
-    // Основные типы
+    // Core types
     pub use crate::automaton::*;
     pub use crate::automaton_task::*;
     pub use crate::engine::*;
@@ -135,14 +135,14 @@ pub mod prelude {
     pub use crate::strategy::*;
     pub use crate::utils::*;
 
-    // Реэкспорты из rill-core
+    // Re-exports from rill-core
     pub use rill_core::prelude::*;
     pub use rill_core::queues::RtQueue;
     pub use rill_core::{NodeId, ParameterId, PortId};
 }
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_basic_imports() {
-        // Просто проверяем, что всё импортируется
+        // Just check that everything imports
         let _ = automaton::LfoWaveform::Sine;
         let _ = engine::Transform::Linear;
         let _ = manager::Config::default();

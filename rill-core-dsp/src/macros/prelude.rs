@@ -1,4 +1,4 @@
-//! Prelude для удобного импорта макросов
+//! Prelude for convenient macro imports
 //!
-//! Макросы доступны напрямую из корня крейта, например `rill_core_dsp::simple_algorithm`.
-//! Этот модуль оставлен для будущих расширений.
+//! Macros are available directly from the crate root, e.g. `rill_core_dsp::simple_algorithm`.
+//! This module is reserved for future extensions.

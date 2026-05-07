@@ -1,8 +1,8 @@
-//! Низкочастотные генераторы для модуляции
+//! Low-frequency oscillators for modulation
 //!
-//! LFO (Low Frequency Oscillator) используются для модуляции параметров
-//! звука: вибрато (частота), тремоло (амплитуда), фильтр-свип (частота среза)
-//! и другие эффекты.
+//! LFOs are used for modulating sound parameters:
+//! vibrato (frequency), tremolo (amplitude), filter sweep (cutoff),
+//! and other effects.
 
 use super::basic::{BasicOscillator, Waveform};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
@@ -11,17 +11,17 @@ use crate::vector::prelude::*;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
-/// LFO генератор (Low Frequency Oscillator)
+/// LFO (Low Frequency Oscillator)
 ///
-/// Генерирует низкочастотные сигналы для модуляции параметров.
-/// Частотный диапазон: 0.01 Hz - 100 Hz.
+/// Generates low-frequency signals for parameter modulation.
+/// Frequency range: 0.01 Hz - 100 Hz.
 ///
-/// # Режимы работы
+/// # Operating modes
 ///
-/// - **Биполярный**: выходной сигнал в диапазоне [-1, 1]
-/// - **Униполярный**: выходной сигнал в диапазоне [0, 1]
+/// - **Bipolar**: output in range [-1, 1]
+/// - **Unipolar**: output in range [0, 1]
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core::time::ClockTick;
 /// use rill_core::traits::ActionContext;
@@ -31,36 +31,36 @@ use rill_core::Transcendental;
 /// let tick = ClockTick::default();
 /// let ctx = ActionContext::new(&tick);
 ///
-/// // Создаём LFO для модуляции частоты фильтра
+/// // Create LFO for filter frequency modulation
 /// let mut lfo = LFO::<f32>::new(
 ///     5.0,              // 5 Hz
 ///     Waveform::Sine,
-///     true              // биполярный режим (-1..1)
+///     true              // bipolar mode (-1..1)
 /// );
 /// lfo.init(44100.0);
 ///
-/// // Генерируем модуляционный сигнал
+/// // Generate modulation signal
 /// let mut output = [0.0_f32];
 /// lfo.process(None, &mut output, &ctx).unwrap();
 /// let modulation = output[0];
 /// ```
 #[derive(Clone, Copy)]
 pub struct LFO<T: Transcendental> {
-    /// Внутренний осциллятор
+    /// Internal oscillator
     osc: BasicOscillator<T>,
-    /// Биполярный режим (-1..1) или униполярный (0..1)
+    /// Bipolar mode (-1..1) or unipolar (0..1)
     bipolar: bool,
-    /// Смещение фазы (для синхронизации)
+    /// Phase offset (for synchronization)
     phase_offset: ScalarVector1<T>,
 }
 
 impl<T: Transcendental> LFO<T> {
-    /// Создать новый LFO
+    /// Create a new LFO
     ///
     /// # Arguments
-    /// * `frequency` - частота в Hz (0.01 - 100)
-    /// * `waveform` - форма волны
-    /// * `bipolar` - true для биполярного режима (-1..1), false для униполярного (0..1)
+    /// * `frequency` - frequency in Hz (0.01 - 100)
+    /// * `waveform` - waveform shape
+    /// * `bipolar` - true for bipolar (-1..1), false for unipolar (0..1)
     pub fn new(frequency: f32, waveform: Waveform, bipolar: bool) -> Self {
         let one = T::from_f32(1.0);
         Self {
@@ -70,24 +70,24 @@ impl<T: Transcendental> LFO<T> {
         }
     }
 
-    /// Создать LFO с фазовым смещением
+    /// Create an LFO with phase offset
     pub fn with_phase_offset(mut self, offset: T) -> Self {
         self.set_phase_offset(offset);
         self
     }
 
-    /// Установить биполярный режим
+    /// Set bipolar mode
     ///
     /// # Arguments
-    /// * `bipolar` - true: выход в [-1, 1], false: выход в [0, 1]
+    /// * `bipolar` - true: output in [-1, 1], false: output in [0, 1]
     pub fn set_bipolar(&mut self, bipolar: bool) {
         self.bipolar = bipolar;
     }
 
-    /// Установить смещение фазы (0..1)
+    /// Set phase offset (0..1)
     ///
-    /// Позволяет сдвинуть фазу LFO относительно опорной точки.
-    /// Полезно для создания стерео эффектов или синхронизации нескольких LFO.
+    /// Shifts the LFO phase relative to the reference point.
+    /// Useful for stereo effects or synchronizing multiple LFOs.
     pub fn set_phase_offset(&mut self, offset: T) {
         let one = T::from_f32(1.0);
         let zero = T::ZERO;
@@ -101,46 +101,46 @@ impl<T: Transcendental> LFO<T> {
         self.phase_offset = ScalarVector1::splat(clamped);
     }
 
-    /// Получить текущее смещение фазы
+    /// Get current phase offset
     pub fn phase_offset(&self) -> T {
         self.phase_offset.extract(0)
     }
 
-    /// Проверить, работает ли LFO в биполярном режиме
+    /// Check if LFO is in bipolar mode
     pub fn is_bipolar(&self) -> bool {
         self.bipolar
     }
 
-    /// Синхронизировать с внешним clock
+    /// Sync with external clock
     ///
     /// # Arguments
-    /// * `reset` - если true, сбросить фазу в значение phase_offset
+    /// * `reset` - if true, reset phase to phase_offset value
     pub fn sync(&mut self, reset: bool) {
         if reset {
             self.osc.set_phase(self.phase_offset.extract(0));
         }
     }
 
-    /// Получить значение для модуляции (текущий семпл)
+    /// Get modulation value (current sample)
     pub fn modulate(&mut self) -> T {
         let raw = self.osc.generate().extract(0);
 
         if self.bipolar {
-            raw // уже -1..1
+            raw // already -1..1
         } else {
-            // Конвертируем из -1..1 в 0..1
+            // Convert from -1..1 to 0..1
             raw.mul(T::from_f32(0.5)).add(T::from_f32(0.5))
         }
     }
 
-    /// Сбросить LFO в начальное состояние
+    /// Reset LFO to initial state
     pub fn reset(&mut self) {
         self.osc.reset();
         self.osc.set_phase(self.phase_offset.extract(0));
     }
 }
 
-// ==================== Реализация трейта Algorithm ====================
+// ==================== Algorithm trait implementation ====================
 
 impl<T: Transcendental> Algorithm<T> for LFO<T> {
     fn init(&mut self, sample_rate: f32) {
@@ -166,8 +166,8 @@ impl<T: Transcendental> Algorithm<T> for LFO<T> {
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
-        // Получаем имя волны из поля waveform самого LFO
-        // Но у нас нет прямого доступа к waveform, поэтому используем описание из BasicOscillator
+        // Get waveform name from LFO's internal waveform
+        // No direct access to waveform, so use description from BasicOscillator
         AlgorithmMetadata {
             name: "LFO",
             category: AlgorithmCategory::Generator,
@@ -187,7 +187,7 @@ impl<T: Transcendental> Algorithm<T> for LFO<T> {
     }
 }
 
-// ==================== Реализация трейта Generator ====================
+// ==================== Generator trait implementation ====================
 
 impl<T: Transcendental> Generator<T> for LFO<T> {
     fn phase(&self) -> T {
@@ -215,7 +215,7 @@ impl<T: Transcendental> Generator<T> for LFO<T> {
     }
 }
 
-// ==================== Реализация трейта SyncableGenerator ====================
+// ==================== SyncableGenerator trait implementation ====================
 
 impl<T: Transcendental> SyncableGenerator<T> for LFO<T> {
     fn sync(&mut self, reset: bool) {
@@ -229,7 +229,7 @@ impl<T: Transcendental> SyncableGenerator<T> for LFO<T> {
     }
 }
 
-// ==================== Тесты ====================
+// ==================== Tests ====================
 
 #[cfg(test)]
 mod tests {
@@ -251,7 +251,7 @@ mod tests {
         let mut lfo = LFO::<f32>::new(5.0, Waveform::Sine, true);
         lfo.init(44100.0);
 
-        // В биполярном режиме значения должны быть в [-1, 1]
+        // In bipolar mode, values should be in [-1, 1]
         let mut output = [0.0f32; 1];
         let tick = ClockTick::default();
         let ctx = ActionContext::new(&tick);
@@ -271,7 +271,7 @@ mod tests {
         let mut lfo = LFO::<f32>::new(5.0, Waveform::Sine, false);
         lfo.init(44100.0);
 
-        // В униполярном режиме значения должны быть в [0, 1]
+        // In unipolar mode, values should be in [0, 1]
         let mut output = [0.0f32; 1];
         let tick = ClockTick::default();
         let ctx = ActionContext::new(&tick);
@@ -288,7 +288,7 @@ mod tests {
         lfo.set_phase_offset(0.25);
         lfo.init(44100.0);
 
-        // Проверяем, что фаза установлена правильно
+        // Verify phase is set correctly
         assert!(approx_eq!(f32, lfo.phase(), 0.25, epsilon = 0.01));
     }
 
@@ -298,7 +298,7 @@ mod tests {
         lfo.set_phase_offset(0.5);
         lfo.init(44100.0);
 
-        // Продвигаем фазу
+        // Advance phase
         let mut output = [0.0f32; 1];
         let tick = ClockTick::default();
         let ctx = ActionContext::new(&tick);
@@ -306,7 +306,7 @@ mod tests {
             lfo.process(None, &mut output, &ctx).unwrap();
         }
 
-        // Синхронизируем со сбросом
+        // Sync with reset
         lfo.sync(true);
         assert!(approx_eq!(f32, lfo.phase(), 0.5, epsilon = 0.01));
     }
@@ -343,7 +343,7 @@ mod tests {
         let mut lfo = LFO::<f32>::new(5.0, Waveform::Sine, true);
         lfo.init(44100.0);
 
-        // Тестируем методы из трейта Generator
+        // Test methods from Generator trait
         assert_eq!(lfo.frequency(), 5.0);
 
         lfo.set_frequency(10.0);
@@ -364,25 +364,25 @@ mod tests {
         let initial_periods = lfo.periods();
         println!("Initial periods: {}", initial_periods);
 
-        // Вычисляем количество семплов за период
-        let samples_per_period = (44100.0 / 5.0) as usize; // 8820 семплов
+        // Compute samples per period
+        let samples_per_period = (44100.0 / 5.0) as usize; // 8820 samples
         println!("Samples per period: {}", samples_per_period);
 
-        // Записываем начальную фазу
+        // Record initial phase
         let initial_phase = lfo.phase();
         println!("Initial phase: {}", initial_phase.to_f32());
         let mut output = [0.0f32; 1];
         let tick = ClockTick::default();
         let ctx = ActionContext::new(&tick);
 
-        // Продвигаем фазу на несколько периодов
+        // Advance phase through several periods
         for i in 0..samples_per_period * 3 {
-            // 3 полных периода
+            // 3 full periods
             let before_phase = lfo.phase();
             lfo.process(None, &mut output, &ctx).unwrap();
             let after_phase = lfo.phase();
 
-            // Проверяем, не произошёл ли сброс фазы
+            // Check if phase reset occurred
             if after_phase < before_phase {
                 println!(
                     "Phase reset at sample {}: {} -> {}",
@@ -393,7 +393,7 @@ mod tests {
                 println!("Periods count: {}", lfo.periods());
             }
 
-            // Для отладки выведем информацию на ключевых точках
+            // Debug output at key points
             if i == samples_per_period - 1 {
                 println!(
                     "After 1 period (sample {}): phase={}, periods={}",
@@ -421,11 +421,11 @@ mod tests {
             lfo.periods()
         );
 
-        // Проверяем, что фаза продолжает меняться
+        // Verify phase continues to change
         let mid_phase = lfo.phase();
         assert!(mid_phase != initial_phase, "Phase should change");
 
-        // Синхронизируем со сбросом
+        // Sync with reset
         lfo.sync(true);
         assert!(approx_eq!(f32, lfo.phase(), 0.0, epsilon = 0.01));
     }
@@ -433,8 +433,8 @@ mod tests {
     #[test]
     fn test_lfo_clone_copy() {
         let lfo1 = LFO::<f32>::new(5.0, Waveform::Sine, true);
-        let lfo2 = lfo1; // Копирование
-        let lfo3 = lfo1.clone(); // Явное клонирование
+        let lfo2 = lfo1; // Copy
+        let lfo3 = lfo1.clone(); // Explicit clone
 
         assert_eq!(lfo1.frequency(), lfo2.frequency());
         assert_eq!(lfo1.frequency(), lfo3.frequency());

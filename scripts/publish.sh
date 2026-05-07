@@ -9,28 +9,30 @@
 #
 # Dependency order (leaf → root):
 #   1  rill-core
-#   2  rill-core-dsp
-#   3  rill-core-wdf
-#   4  rill-graph
-#   5  rill-telemetry
-#   6  rill-lofi
-#   7  rill-patchbay
-#   8  rill-oscillators
-#   9  rill-digital-filters
-#  10  rill-digital-effects
-#  11  rill-router
-#  12  rill-io
-#  13  rill-analog-filters
-#  14  rill-analog-effects
-#  15  rill-osc
-#  16  rill-sampler
-#  17  rill-adrift
+#   2  rill-core-actor
+#   3  rill-core-dsp
+#   4  rill-core-wdf
+#   5  rill-graph
+#   6  rill-telemetry
+#   7  rill-lofi
+#   8  rill-patchbay
+#   9  rill-oscillators
+#  10  rill-digital-filters
+#  11  rill-digital-effects
+#  12  rill-router
+#  13  rill-io
+#  14  rill-analog-filters
+#  15  rill-analog-effects
+#  16  rill-osc
+#  17  rill-sampler
+#  18  rill-adrift
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 CRATES=(
     rill-core
+    rill-core-actor
     rill-core-dsp
     rill-core-wdf
     rill-graph

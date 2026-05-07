@@ -1,6 +1,6 @@
-//! # Макрос для создания пассивных процессоров (Processor)
+//! # Macro for creating passive processors (Processor)
 
-/// Создаёт пассивный процессор сигнала
+/// Creates a passive signal processor
 #[macro_export]
 macro_rules! processor_node {
     (

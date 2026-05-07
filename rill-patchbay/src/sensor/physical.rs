@@ -1,11 +1,11 @@
-//! Физические сенсоры — чувствуют прикосновения (ручки, кнопки)
+//! Physical sensors — sense touch (knobs, buttons)
 
 use crate::core::{SignalOrigin, SignalValue, WorldSignal};
 use crate::sensor::Sensor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Физический сенсор
+/// Physical sensor
 pub struct PhysicalSensor {
     name: String,
     sensor_type: PhysicalType,
@@ -14,23 +14,23 @@ pub struct PhysicalSensor {
     threshold: u32,
 }
 
-/// Тип физического сенсора
+/// Type of physical sensor
 pub enum PhysicalType {
-    /// Поворотная ручка
+    /// Rotary knob
     Knob {
         min: f32,
         max: f32,
         curve: KnobCurve,
     },
-    /// Кнопка (импульсная)
+    /// Button (momentary)
     Button,
-    /// Переключатель (дискретные позиции)
+    /// Switch (discrete positions)
     Switch {
         positions: Vec<String>,
     },
 }
 
-/// Кривая отклика ручки
+/// Knob response curve
 pub enum KnobCurve {
     Linear,
     Logarithmic,
@@ -38,7 +38,7 @@ pub enum KnobCurve {
 }
 
 impl PhysicalSensor {
-    /// Создать ручку
+    /// Create a knob
     pub fn knob(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -49,11 +49,11 @@ impl PhysicalSensor {
             },
             physical_value: Arc::new(AtomicU32::new(0)),
             last_sent: Arc::new(AtomicU32::new(0)),
-            threshold: 64,  // ~0.1% гистерезис
+            threshold: 64,  // ~0.1% hysteresis
         }
     }
     
-    /// Создать кнопку
+    /// Create a button
     pub fn button(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -64,7 +64,7 @@ impl PhysicalSensor {
         }
     }
     
-    /// Установить диапазон для ручки
+    /// Set range for knob
     pub fn with_range(mut self, min: f32, max: f32) -> Self {
         if let PhysicalType::Knob { ref mut min: m, ref mut max: mx, .. } = self.sensor_type {
             *m = min;
@@ -73,7 +73,7 @@ impl PhysicalSensor {
         self
     }
     
-    /// Установить кривую
+    /// Set curve
     pub fn with_curve(mut self, curve: KnobCurve) -> Self {
         if let PhysicalType::Knob { ref mut curve: c, .. } = self.sensor_type {
             *c = curve;
@@ -81,26 +81,26 @@ impl PhysicalSensor {
         self
     }
     
-    /// Установить физическое значение (0-65535)
+    /// Set physical value (0-65535)
     pub fn set_physical(&self, value: u32) {
         self.physical_value.store(value & 0xFFFF, Ordering::Relaxed);
     }
     
-    /// Нажать кнопку
+    /// Press the button
     pub fn press(&self) {
         if let PhysicalType::Button = self.sensor_type {
             self.physical_value.store(1, Ordering::Relaxed);
         }
     }
     
-    /// Отпустить кнопку
+    /// Release the button
     pub fn release(&self) {
         if let PhysicalType::Button = self.sensor_type {
             self.physical_value.store(0, Ordering::Relaxed);
         }
     }
     
-    /// Преобразовать физическое значение в нормализованное
+    /// Convert physical value to normalized
     fn normalize(&self, phys: u32) -> f32 {
         let norm = phys as f32 / 65535.0;
         

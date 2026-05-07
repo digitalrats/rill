@@ -1,29 +1,29 @@
-//! # Атомарная ячейка для одного значения
+//! # Atomic cell for a single value
 //!
-//! [`AtomicCell`] — простейшая форма коммуникации между потоками,
-//! когда нужно передавать только последнее значение.
+//! [`AtomicCell`] — the simplest form of inter-thread communication,
+//! when only the latest value needs to be transmitted.
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::ptr;
 
-/// Атомарная ячейка для одного значения
+/// Atomic cell for a single value
 ///
-/// Позволяет одному потоку писать, а другому — читать последнее значение.
-/// Потеря промежуточных значений допускается.
+/// Allows one thread to write and another to read the latest value.
+/// Loss of intermediate values is permitted.
 pub struct AtomicCell<T> {
-    /// Указатель на текущее значение
+    /// Pointer to the current value
     value: AtomicPtr<T>,
 }
 
 impl<T> AtomicCell<T> {
-    /// Создать новую атомарную ячейку
+    /// Create a new atomic cell
     pub fn new() -> Self {
         Self {
             value: AtomicPtr::new(ptr::null_mut()),
         }
     }
     
-    /// Создать с начальным значением
+    /// Create with an initial value
     pub fn with_initial(value: T) -> Self {
         let boxed = Box::new(value);
         let ptr = Box::into_raw(boxed);
@@ -32,11 +32,11 @@ impl<T> AtomicCell<T> {
         }
     }
     
-    /// Записать новое значение (перезаписывает старое)
+    /// Write a new value (overwrites the old one)
     ///
     /// # Safety
-    /// Предыдущее значение будет удалено.
-    /// Должно вызываться только из одного потока.
+    /// The previous value will be dropped.
+    /// Must only be called from a single thread.
     pub fn store(&self, new_value: T) {
         let new_ptr = Box::into_raw(Box::new(new_value));
         let old_ptr = self.value.swap(new_ptr, Ordering::AcqRel);
@@ -48,7 +48,7 @@ impl<T> AtomicCell<T> {
         }
     }
     
-    /// Загрузить текущее значение
+    /// Load the current value
     pub fn load(&self) -> Option<&T> {
         let ptr = self.value.load(Ordering::Acquire);
         if ptr.is_null() {
@@ -58,7 +58,7 @@ impl<T> AtomicCell<T> {
         }
     }
     
-    /// Загрузить и клонировать значение
+    /// Load and clone the value
     pub fn load_clone(&self) -> Option<T>
     where
         T: Clone,
@@ -66,7 +66,7 @@ impl<T> AtomicCell<T> {
         self.load().cloned()
     }
     
-    /// Загрузить и извлечь значение (заменяет на None)
+    /// Load and take the value (replaces with None)
     pub fn take(&self) -> Option<T> {
         let ptr = self.value.swap(ptr::null_mut(), Ordering::AcqRel);
         if ptr.is_null() {
@@ -76,7 +76,7 @@ impl<T> AtomicCell<T> {
         }
     }
     
-    /// Проверить, пуста ли ячейка
+    /// Check if the cell is empty
     pub fn is_empty(&self) -> bool {
         self.value.load(Ordering::Relaxed).is_null()
     }

@@ -1,12 +1,12 @@
-//! CPAL бэкенд — callback-driven, без отдельного потока.
+//! CPAL backend — callback-driven, no separate thread.
 //!
-//! Output пишет напрямую в CPAL-буфер через OutputWindow.
-//! Process callback работает на CPAL audio thread.
+//! Output writes directly to the CPAL buffer via OutputWindow.
+//! Process callback runs on the CPAL audio thread.
 //!
-//! `run()` — non‑blocking: создаёт stream, запускает, сохраняет handle,
-//! возвращается. Caller удерживает тред в park‑loop до `stop()`.
-//! `stop()` — дропает stream.
-//! Никаких `std::thread`, `std::sync`.
+//! `run()` — non-blocking: creates stream, starts, saves handle,
+//! returns. Caller keeps the thread in a park-loop until `stop()`.
+//! `stop()` — drops the stream.
+//! No `std::thread`, `std::sync`.
 
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -45,7 +45,7 @@ impl CbSlot {
     }
 }
 
-/// CPAL бэкенд.
+/// CPAL backend.
 pub struct CpalBackend {
     config: AudioConfig,
     process_cb: CbSlot,

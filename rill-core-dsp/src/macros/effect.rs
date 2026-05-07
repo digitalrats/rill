@@ -1,12 +1,12 @@
-//! Макрос для создания эффекта с dry/wet миксом
+//! Macro for creating an effect with dry/wet mix
 //!
-//! # Пример
+//! # Example
 //! ```
 //! use rill_core_dsp::effect_algorithm;
 //! use rill_core::math::Transcendental;
 //!
 //! effect_algorithm! {
-//!     /// Эффект задержки
+//!     /// Delay effect
 //!     #[derive(Debug, Clone, Copy)]
 //!     pub struct Delay<T: Transcendental> {
 //!         params: {
@@ -19,22 +19,22 @@
 //!         },
 //!         wet: T::from_f32(0.5),
 //!         process: |this, input| {
-//!             // Обработка эффекта
+//!             // Process effect
 //!             input
 //!         }
 //!     }
 //! }
 //! ```
 
-/// Макрос для создания эффекта с dry/wet миксом
+/// Macro for creating an effect with dry/wet mix
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core_dsp::effect_algorithm;
 /// use rill_core::math::Transcendental;
 ///
 /// effect_algorithm! {
-///     /// Эффект задержки
+///     /// Delay effect
 ///     #[derive(Debug, Clone, Copy)]
 ///     pub struct Delay<T: Transcendental> {
 ///         params: {
@@ -47,7 +47,7 @@
 ///         },
 ///         wet: T::from_f32(0.5),
 ///         process: |this, input| {
-///             // Обработка эффекта
+///             // Process effect
 ///             input
 ///         }
 ///     }
@@ -86,15 +86,15 @@ macro_rules! effect_algorithm {
                 pub $state_name: $state_type,
             )*
 
-            /// Коэффициент dry/wet (0.0 = только dry, 1.0 = только wet)
+            /// Dry/wet coefficient (0.0 = fully dry, 1.0 = fully wet)
             pub wet: T,
 
-            /// Частота дискретизации
+            /// Sample rate
             pub sample_rate: f32,
         }
 
         impl<$($generic: $bound),+> $name<$($generic),+> {
-            /// Создать новый экземпляр эффекта
+            /// Create a new effect instance
             pub fn new($($param_name: $param_type),*) -> Self {
                 Self {
                     $($param_name),*,
@@ -104,7 +104,7 @@ macro_rules! effect_algorithm {
                 }
             }
 
-            /// Установить соотношение dry/wet
+            /// Set dry/wet ratio
             pub fn set_wet(&mut self, wet: T) {
                 self.wet = wet.clamp(T::ZERO, T::ONE);
             }

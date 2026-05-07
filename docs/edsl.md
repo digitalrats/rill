@@ -1,44 +1,44 @@
-# Domain-Specific Languages в Rill
+# Domain-Specific Languages in Rill
 
-Rill предоставляет два встроенных предметно-ориентированных языка (eDSL) на базе `macro_rules!`:
+Rill provides two built-in domain-specific languages (eDSL) based on `macro_rules!`:
 
-- **Математический eDSL** — векторные операции, типонезависимая арифметика (`rill-core::math`)
-- **WDF eDSL** — описание аналоговых схем через композицию элементов (`rill-core-wdf::macros`)
+- **Mathematical eDSL** — vector operations, type-independent arithmetic (`rill-core::math`)
+- **WDF eDSL** — analog circuit description through element composition (`rill-core-wdf::macros`)
 
-Оба реализованы через `macro_rules!`, не требуют внешних кодогенераторов и раскрываются в плоский код на этапе компиляции.
+Both are implemented via `macro_rules!`, require no external code generators, and expand to flat code at compile time.
 
 ---
 
-## 1. Математический eDSL
+## 1. Mathematical eDSL
 
-### Иерархия числовых трейтов
+### Numeric trait hierarchy
 
 ```
-Scalar                          — арифметика: +, -, *, /, min, max, clamp, abs
+Scalar                          — arithmetic: +, -, *, /, min, max, clamp, abs
   ├── f32, f64
   ├── i8, i16, i32, i64
   │
-  └── Transcendental            — тригонометрия: sin, cos, sqrt, exp, ln, PI
+  └── Transcendental            — trigonometry: sin, cos, sqrt, exp, ln, PI
         └── f32, f64            + from_f32, to_f32
 ```
 
-`Scalar` — базовый трейт для любых числовых типов. Позволяет `Vector<T, N>` работать с `i32`, `i16` и другими целыми типами, не только с `f32`/`f64`.
+`Scalar` — base trait for any numeric types. Allows `Vector<T, N>` to work with `i32`, `i16` and other integer types, not just `f32`/`f64`.
 
-`Transcendental` — расширение для типов с плавающей точкой, добавляющее sin/cos/sqrt/exp/ln.
+`Transcendental` — extension for floating-point types, adding sin/cos/sqrt/exp/ln.
 
-### Векторные типы
+### Vector types
 
-`Vector<T: Scalar, N>` — трейт для N-мерных векторов:
+`Vector<T: Scalar, N>` — trait for N-dimensional vectors:
 
-| Тип | Элементов | Назначение |
+| Type | Elements | Purpose |
 |-----|-----------|------------|
-| `ScalarVector1<T>` | 1 | Скалярная заглушка |
-| `ScalarVector2<T>` | 2 | Стерео |
-| `ScalarVector4<T>` | 4 | SIMD-совместимый (SSE, NEON) |
-| `ScalarVector8<T>` | 8 | AVX-совместимый (заглушка) |
-| `F32x4`, `F64x4` и др. | 4+ | Аппаратный SIMD через крейт `wide` |
+| `ScalarVector1<T>` | 1 | Scalar stub |
+| `ScalarVector2<T>` | 2 | Stereo |
+| `ScalarVector4<T>` | 4 | SIMD-capable (SSE, NEON) |
+| `ScalarVector8<T>` | 8 | AVX-capable (stub) |
+| `F32x4`, `F64x4` etc. | 4+ | Hardware SIMD via `wide` crate |
 
-Базовые операции (доступны для любого `T: Scalar`):
+Basic operations (available for any `T: Scalar`):
 
 ```rust
 use rill_core::math::Scalar;
@@ -46,11 +46,11 @@ use rill_core::math::vector::ScalarVector4;
 
 let a = ScalarVector4::new(1i32, 2, 3, 4);
 let b = ScalarVector4::new(5i32, 6, 7, 8);
-let c = a + b;   // поэлементное сложение
-let d = a * b;   // поэлементное умножение
+let c = a + b;   // element-wise addition
+let d = a * b;   // element-wise multiplication
 ```
 
-Slice-операции:
+Slice operations:
 
 ```rust
 use rill_core::math::vector::ops::add_slices;
@@ -59,14 +59,14 @@ use rill_core::math::vector::math::sin_slice;
 let input = [0.0f32, 0.5, 1.0, 1.5, 2.0];
 let mut output = [0.0f32; 5];
 
-// Работает с любым Scalar
+// Works with any Scalar
 add_slices::<f32, 4, ScalarVector4<f32>>(&input, &input, &mut output);
 
-// Трансцендентные операции требуют Transcendental
+// Transcendental operations require Transcendental
 sin_slice::<f32, 4, ScalarVector4<f32>>(&input, &mut output);
 ```
 
-### Макрос `vec_map!`
+### `vec_map!` macro
 
 ```rust
 use rill_core::prelude::*;
@@ -78,11 +78,11 @@ vec_map!(&input, &mut output, |x| x * 2.0 + 1.0);
 // output = [3.0, 5.0, 7.0, 9.0, 11.0]
 ```
 
-Макрос применяет выражение к каждому чанку из 4 элементов через `ScalarVector4`, затем обрабатывает остаток скалярно. LLVM сворачивает операции в SIMD-инструкции.
+The macro applies the expression to each chunk of 4 elements via `ScalarVector4`, then processes the remainder scalar-wise. LLVM folds operations into SIMD instructions.
 
 ### `VectorTranscendental`
 
-Для операций sin/cos/sqrt над векторами:
+For sin/cos/sqrt operations on vectors:
 
 ```rust
 use rill_core::math::vector::{
@@ -90,7 +90,7 @@ use rill_core::math::vector::{
 };
 
 fn process<T: Transcendental>(v: ScalarVector4<T>) -> ScalarVector4<T> {
-    v.sin()  // только при T: Transcendental
+    v.sin()  // only when T: Transcendental
 }
 ```
 
@@ -98,24 +98,24 @@ fn process<T: Transcendental>(v: ScalarVector4<T>) -> ScalarVector4<T> {
 
 ## 2. WDF eDSL
 
-Wave Digital Filter (WDF) — метод моделирования аналоговых цепей, при котором каждый элемент (резистор, конденсатор, диод) представляется как чёрный ящик с одним портом. Элементы соединяются через последовательные и параллельные адаптеры.
+Wave Digital Filter (WDF) — a method for modeling analog circuits where each element (resistor, capacitor, diode) is represented as a one-port black box. Elements are connected via series and parallel adapters.
 
-Базовый трейт:
+Base trait:
 
 ```rust
 pub trait WdfElement<T: Transcendental>: Send + Sync {
     fn port_resistance(&self) -> T;
     fn process_incident(&mut self, a: T) -> T;   // a → b
-    fn update_state(&mut self);                    // обновление после расчёта
+    fn update_state(&mut self);                    // update after calculation
     fn voltage(&self) -> T;
     fn current(&self) -> T;
     fn reset(&mut self);
 }
 ```
 
-### 2.1 `wdf_element!` — определение элемента
+### 2.1 `wdf_element!` — defining an element
 
-Создаёт структуру и полную имплементацию `WdfElement` из описания черного ящика:
+Creates a struct and full `WdfElement` implementation from a black-box description:
 
 ```rust
 wdf_element! {
@@ -133,23 +133,23 @@ wdf_element! {
 }
 ```
 
-**Синтаксис:**
-- `params` — константы элемента (задаются при создании)
-- `state` — переменные состояния (инициализируются в `T::ZERO`)
-- `port_resistance: |s| expr` — портовое сопротивление
-- `scattering: |s, a| expr` — уравнение рассеяния: по падающей волне `a` вычислить отражённую `b`. `s` — mutable ссылка на self.
-- `update: |s| block` — обновление состояния (вызывается после волнового расчёта)
-- `reset: |s| block` — сброс в начальное состояние
-- `s.voltage` и `s.current` — доступны для записи (хранят последние значения)
+**Syntax:**
+- `params` — element constants (set at creation)
+- `state` — state variables (initialized to `T::ZERO`)
+- `port_resistance: |s| expr` — port resistance
+- `scattering: |s, a| expr` — scattering equation: compute reflected wave `b` from incident wave `a`. `s` — mutable reference to self.
+- `update: |s| block` — state update (called after wave calculation)
+- `reset: |s| block` — reset to initial state
+- `s.voltage` and `s.current` — writable (store latest values)
 
-Генерирует:
-- `struct $name<T>` с полями params, state, `voltage`, `current`
+Generates:
+- `struct $name<T>` with fields params, state, `voltage`, `current`
 - `impl $name<T> { fn new(params...) -> Self }`
 - `impl WdfElement<T> for $name<T>`
 
-### 2.2 `wdf_compose!` — композиция элементов
+### 2.2 `wdf_compose!` — composing elements
 
-**Series** — последовательное соединение:
+**Series** — series connection:
 
 ```rust
 wdf_compose! {
@@ -159,11 +159,11 @@ wdf_compose! {
 }
 ```
 
-Генерирует структуру с полями `left` и `right`, делегирующую `WdfElement`.
-Портовое сопротивление — сумма: `R_total = R_left + R_right`.
-Волны распределяются пропорционально сопротивлениям.
+Generates a struct with `left` and `right` fields, delegating `WdfElement`.
+Port resistance — sum: `R_total = R_left + R_right`.
+Waves distribute proportionally to resistances.
 
-**Parallel** — параллельное соединение:
+**Parallel** — parallel connection:
 
 ```rust
 wdf_compose! {
@@ -173,9 +173,9 @@ wdf_compose! {
 }
 ```
 
-Портовое сопротивление — параллельная комбинация: `R_total = (R1·R2) / (R1 + R2)`.
+Port resistance — parallel combination: `R_total = (R1·R2) / (R1 + R2)`.
 
-### 2.3 `wdf_cascade!` — каскад N секций + feedback
+### 2.3 `wdf_cascade!` — cascade of N sections + feedback
 
 ```rust
 wdf_cascade! {
@@ -197,66 +197,66 @@ wdf_cascade! {
 }
 ```
 
-Генерирует:
-- `struct $name<T>` с полем `poles: [$section; N]` + params + state
-- `fn process_sample(&mut self, input: T) -> T` — развёрнутый каскад
+Generates:
+- `struct $name<T>` with field `poles: [$section; N]` + params + state
+- `fn process_sample(&mut self, input: T) -> T` — unrolled cascade
 - `fn set_cutoff()`, `fn cutoff()`, `fn set_resonance()`, `fn resonance()`, `fn set_sample_rate()`
 - `fn update_coeffs()`, `fn reset()`
 
-Параметры замыканий:
-- `feedback: |s, input, fb_prev| { ... }` — `s` это `&self`, `input` — входной семпл, `fb_prev` — предыдущее выходное значение
-- `update: |s| { ... }` — обновление коэффициентов секций (вызывается при изменении cutoff/resonance)
+Closure parameters:
+- `feedback: |s, input, fb_prev| { ... }` — `s` is `&self`, `input` is the input sample, `fb_prev` is the previous output value
+- `update: |s| { ... }` — updates section coefficients (called when cutoff/resonance changes)
 
-### 2.4 Гигиена макросов
+### 2.4 Macro hygiene
 
-Все выражения внутри макросов получают `self` через именованный параметр замыкания:
+All expressions inside macros receive `self` through a named closure parameter:
 
 ```rust
-// Правильно:
+// Correct:
 port_resistance: |s| { s.rp },
 scattering: |s, a| { s.state + s.alpha * (a - s.state) },
 update: |s| { },
 reset: |s| { s.state = T::ZERO; },
 ```
 
-`self` внутри захваченных `:tt` блоков НЕ работает из-за гигиены `macro_rules!`.
-Использование `s` в качестве имени параметра — конвенция.
+`self` inside captured `:tt` blocks does NOT work due to `macro_rules!` hygiene.
+Using `s` as the parameter name is a convention.
 
-### 2.5 Ограничения
+### 2.5 Limitations
 
-| Конструкция | Поддерживается | Пояснение |
+| Construct | Supported | Description |
 |-------------|---------------|-----------|
-| Двухполюсники (R, C, L, D) | ✅ `wdf_element!` | Один порт, scattering 2×2 |
-| Series<A, B> | ✅ `wdf_compose!` | Статические цепи |
-| Parallel<A, B> | ✅ `wdf_compose!` | Статические цепи |
-| Каскад N+feedback | ✅ `wdf_cascade!` | MoogLadder |
-| Трёхполюсники (транзистор) | ❌ ручной impl | Scattering matrix 3×3 |
-| ОУ, OTA | ❌ ручной impl | Математическая модель |
+| Two-terminal (R, C, L, D) | ✅ `wdf_element!` | One port, scattering 2×2 |
+| Series<A, B> | ✅ `wdf_compose!` | Static circuits |
+| Parallel<A, B> | ✅ `wdf_compose!` | Static circuits |
+| Cascade N+feedback | ✅ `wdf_cascade!` | MoogLadder |
+| Three-terminal (transistor) | ❌ manual impl | Scattering matrix 3×3 |
+| Op-amp, OTA | ❌ manual impl | Mathematical model |
 
 ---
 
-## 3. Примеры
+## 3. Examples
 
-### MoogLadder (4-полюсный ФНЧ с резонансом)
+### MoogLadder (4-pole low-pass with resonance)
 
 ```rust
 use rill_core_wdf::filters::{RcPole, MoogLadder};
 
-// RcPole — однополюсный ФНЧ (wdf_element!)
-// MoogLadder — каскад 4 RcPole + resonance feedback (wdf_cascade!)
+// RcPole — one-pole low-pass filter (wdf_element!)
+// MoogLadder — cascade of 4 RcPole + resonance feedback (wdf_cascade!)
 
 let pole = RcPole::new(0.0);        // alpha = 0 (fully open)
 let mut filter = MoogLadder::new(
     pole, 1000.0, 0.0, 44100.0      // cutoff=1kHz, resonance=0
 );
-filter.update_coeffs();              // расчёт alpha из cutoff
+filter.update_coeffs();              // calculate alpha from cutoff
 
-// Обработка сэмпла
+// Process sample
 let input = 0.5;
 let output = filter.process_sample(input);
 ```
 
-### DiodeClipper (овердрайв)
+### DiodeClipper (overdrive)
 
 ```rust
 use rill_core_wdf::constants::{BOLTZMANN, ELECTRON_CHARGE};
@@ -272,13 +272,13 @@ diode.reset();
 
 let mut clipper = DiodeClipper::new(r, diode);
 
-// Обработка
+// Process
 let b = WdfElement::process_incident(&mut clipper, 10.0);
 clipper.update_state();
 let clipped_voltage: f64 = clipper.right.voltage();  // ≈ 0.6V
 ```
 
-### Векторный MAP (SIMD)
+### Vector MAP (SIMD)
 
 ```rust
 use rill_core::prelude::*;
@@ -291,22 +291,22 @@ vec_map!(&input, &mut output, |x| (x * 2.0 + 1.0).sin());
 
 ---
 
-## 4. Поток компиляции eDSL
+## 4. eDSL compilation flow
 
 ```
-Исходный код (макросы)
+Source code (macros)
     │
     ▼
-macro_rules! раскрытие (compile-time)
+macro_rules! expansion (compile-time)
     │
     ▼
-Плоский Rust-код без indirection
+Flat Rust code with no indirection
     │
     ▼
-LLVM оптимизация (inlining, constant folding, SIMD)
+LLVM optimization (inlining, constant folding, SIMD)
     │
     ▼
-Машинный код
+Machine code
 ```
 
-Все eDSL раскрываются на этапе компиляции в плоские структуры и методы. Никаких трейт-объектов, динамической диспетчеризации или аллокаций в hot path. LLVM дополнительно сворачивает константы и векторизует циклы.
+All eDSLs expand at compile time into flat structures and methods. No trait objects, dynamic dispatch, or allocations in the hot path. LLVM additionally folds constants and vectorizes loops.

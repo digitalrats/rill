@@ -1,14 +1,14 @@
-//! Общие утилиты для тестов rill-io
+//! Common test utilities for rill-io
 
 use std::time::{Duration, Instant};
 use std::thread;
 
-/// Запускает тест с таймаутом
+/// Run a test with a timeout
 ///
 /// # Arguments
-/// * `timeout` - максимальное время выполнения теста
-/// * `name` - имя теста для вывода
-/// * `f` - тестируемая функция
+/// * `timeout` - maximum test execution time
+/// * `name` - test name for display
+/// * `f` - the test function
 pub fn run_with_timeout<F>(timeout: Duration, name: &str, f: F)
 where
     F: FnOnce() + Send + 'static,
@@ -25,16 +25,16 @@ where
         thread::sleep(Duration::from_millis(10));
     }
     
-    // Если таймаут, завершаем тест как пропущенный
+    // If timeout, mark the test as skipped
     println!("⏱️  Test timed out after {:?} - skipping", timeout);
 }
 
-/// Проверяет, нужно ли запускать живые тесты
+/// Check whether to run live tests
 pub fn should_run_live_tests() -> bool {
     std::env::var("RILL_TEST_LIVE_AUDIO").is_ok()
 }
 
-/// Создаёт конфигурацию для тестов
+/// Create test configuration
 pub fn test_config() -> crate::AudioConfig {
     crate::AudioConfig::default()
         .with_sample_rate(44100)
@@ -42,12 +42,12 @@ pub fn test_config() -> crate::AudioConfig {
         .with_channels(2)
 }
 
-/// Подавление вывода ALSA
+/// Suppress ALSA output
 pub fn silence_alsa() {
     std::env::set_var("ALSA_CONFIG_PATH", "/dev/null");
 }
 
-/// Подавление вывода для всех аудио бэкендов
+/// Suppress output for all audio backends
 pub fn silence_all_audio() {
     #[cfg(target_os = "linux")]
     {

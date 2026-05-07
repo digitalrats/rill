@@ -1,31 +1,31 @@
-//! Контекст выполнения DSP-алгоритмов
+//! DSP algorithm execution context
 
 use rill_core::Transcendental;
 
-/// Контекст DSP-обработки
+/// DSP processing context
 ///
-/// Предоставляет информацию о текущем состоянии обработки:
-/// - временные метки
-/// - частота дискретизации
-/// - размер блока
-/// - и т.д.
+/// Provides information about the current processing state:
+/// - timestamps
+/// - sample rate
+/// - block size
+/// - etc.
 #[derive(Debug, Clone)]
 pub struct DspContext<T: Transcendental> {
-    /// Текущая частота дискретизации
+    /// Current sample rate
     pub sample_rate: f32,
 
-    /// Размер текущего обрабатываемого блока
+    /// Current block size
     pub block_size: usize,
 
-    /// Абсолютная позиция текущего блока (в семплах)
+    /// Absolute position of the current block (in samples)
     pub block_position: usize,
 
-    /// Тип данных для текущей обработки
+    /// Data type for current processing
     pub _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T: Transcendental> DspContext<T> {
-    /// Создать новый контекст
+    /// Create a new context
     pub fn new(sample_rate: f32, block_size: usize, block_position: usize) -> Self {
         Self {
             sample_rate,
@@ -35,7 +35,7 @@ impl<T: Transcendental> DspContext<T> {
         }
     }
 
-    /// Получить текущую позицию в секундах
+    /// Get current position in seconds
     pub fn seconds(&self) -> f64 {
         self.block_position as f64 / self.sample_rate as f64
     }

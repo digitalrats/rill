@@ -1,12 +1,12 @@
-//! Запись с микрофона через стандартный pipeline.
+//! Microphone recording through standard pipeline.
 //!
-//! 1. `RecordingSink` регистрируется в Runtime через `register_node_fn`
-//! 2. Топология графа задаётся через `GraphDef`
-//! 3. Бэкенд создаётся фабрикой по имени
+//! 1. `RecordingSink` registered in Runtime via `register_node_fn`
+//! 2. Graph topology defined via `GraphDef`
+//! 3. Backend created by factory name
 //!
 //! Usage:
 //!   cargo run --example record_mic --features pipewire [file.wav]
-//!   cargo run --example record_mic [file.wav]  (ALSA по умолчанию)
+//!   cargo run --example record_mic [file.wav]  (ALSA by default)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "output.wav".into());
 
-    // Выбор бэкенда по активному feature-флагу
+    // Select backend based on active feature flag
     #[cfg(feature = "pipewire")]
     let backend_name = "pipewire";
     #[cfg(all(feature = "jack", not(feature = "pipewire")))]
@@ -185,17 +185,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
 
-    // Runtime — владеет фабриками
+    // Runtime — owns factories
     let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
 
-    // Настраиваем бэкенд по умолчанию
+    // Configure default backend
     let mut p = std::collections::HashMap::new();
     p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
     p.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
     p.insert("channels".into(), ParamValue::Int(2));
     rt.set_default_backend(backend_name, p);
 
-    // Регистрируем кастомный узел
+    // Register custom node
     let rec = recorded.clone();
     rt.register_node_fn("rill/record_sink", move |id: NodeId, params: &Params| {
         let mut sink = RecordingSink::new(rec.clone());
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NodeVariant::Sink(Box::new(sink))
     });
 
-    // Топология графа через GraphDef
+    // Graph topology via GraphDef
     let def = GraphDef {
         format_version: "rill/1".to_string(),
         sample_rate: RATE,
@@ -247,28 +247,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         description: None,
     };
 
-    // Сборка графа
+    // Build graph
     let mut builder = rt.create_builder();
     def.populate(&mut builder)
         .map_err(|e| format!("populate: {e}"))?;
     let graph = builder.build().map_err(|e| format!("graph build: {e}"))?;
     let _actor_ref = graph.handle();
 
-    // Запуск
+    // Start
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
     let audio_thread = std::thread::spawn(move || {
         graph.run(t_run).ok();
     });
 
-    println!("▶ Запись... Нажмите Enter для остановки.");
+    println!("▶ Recording... Press Enter to stop.");
     let mut input_line = String::new();
     std::io::stdin().read_line(&mut input_line)?;
     running.store(false, Ordering::Release);
     audio_thread.thread().unpark();
     let _ = audio_thread.join();
 
-    // Сохранение WAV
+    // Save WAV
     let data = recorded.lock().unwrap();
     let total_samples = data.len();
     let frames = total_samples / 2;
@@ -278,13 +278,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{} max={max_amp:.6}",
         if max_amp < 0.001 {
-            "⚠ Тишина"
+            "⚠ Silence"
         } else {
-            "✓ Сигнал"
+            "✓ Signal"
         }
     );
 
     write_wav(&out_path, wav_rate, 2, &data)?;
-    println!("⏹ Сохранено: {out_path} — {total_samples} семплов");
+    println!("⏹ Saved: {out_path} — {total_samples} samples");
     Ok(())
 }

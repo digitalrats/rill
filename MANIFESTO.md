@@ -1,64 +1,64 @@
-# Манифест Rill
+# The Rill Manifesto
 
-## Дрейфуя по ручью сигналов
+## Drifting along the stream of signals
 
-Мы строим **Rill** — инфраструктуру для распределённого интеллекта, где периферия (Graph) встречается с разумом (Patchbay), а протокол между ними — это нервная система, соединяющая быстрый мир сенсоров и актуаторов с медленным миром мышления и памяти.
+We are building **Rill** — an infrastructure for distributed intelligence, where the periphery (Graph) meets the mind (Patchbay), and the protocol between them is a nervous system connecting the fast world of sensors and actuators with the slow world of thinking and memory.
 
-Rill не родился как архитектура. Он вырос из простого желания: собрать аналог педали Bastl Instruments Thyme+. Но чем глубже я погружался в код, тем яснее видел: за этим стоят принципы, которые работают везде — от аудиоэффектов до промышленной автоматизации, от робототехники до распределённого ИИ.
-
----
-
-## Три принципа Rill
-
-### 1. Разделение миров
-
-- **Мир жёсткого реального времени (Graph)** — быстрый, детерминированный, ограниченный. Здесь живут сенсоры (звук, CAN-шина, температура) и актуаторы (динамики, двигатели, реле). Здесь нет аллокаций, нет блокировок, нет сомнений. Здесь чистый поток данных.
-
-- **Мир управления (Patchbay)** — медленный, сложный, безграничный. Здесь живут автоматы (LFO, огибающие, логика), здесь общаются с пользователем (GUI, MIDI, OSC), здесь хранят историю и принимают решения. Здесь можно думать.
-
-- **Протокол между ними** — асинхронный, отказоустойчивый, масштабируемый. Очереди команд (Soft RT → Hard RT) и телеметрии (Hard RT → Soft RT). Это нервная система, соединяющая рефлексы с интеллектом.
-
-### 2. Блоковая когерентность
-
-Параметры графа не меняются внутри блока. Они фиксируются на его границе и применяются ко всем семплам одинаково.
-
-Это даёт:
-- Предсказуемость (нет щелчков и разрывов)
-- Производительность (SIMD-дружественность)
-- Простоту рассуждения о системе
-
-### 3. Протокол как основа
-
-Graph и Patchbay не обязаны жить в одном процессе — и даже на одном узле.
-
-Локально — `crossbeam_channel` (быстро). Глобально — TCP, UDP, WebSocket, LoRa (надёжно, далеко, дёшево).
-
-Проектируя протокол, мы проектируем будущее. Внутренние Internet-Drafts сегодня — возможные RFC завтра.
+Rill was not born as an architecture. It grew from a simple desire: to build a software analog of the Bastl Instruments Thyme+ pedal. But the deeper I dived into the code, the clearer I saw: behind this lie principles that work everywhere — from audio effects to industrial automation, from robotics to distributed AI.
 
 ---
 
-## Что мы не делаем
+## Three principles of Rill
 
-Мы не гонимся за **идеальной формой**. Мы не пишем код ради кода. Мы не документируем ради документации.
+### 1. Separation of worlds
 
-Каждая строчка Rill отвечает на вопрос: **"Решает ли это реальную проблему в реальном времени?"**
+- **Hard real-time world (Graph)** — fast, deterministic, bounded. Here live sensors (sound, CAN bus, temperature) and actuators (speakers, motors, relays). No allocations, no locks, no doubts. Pure data flow.
 
-Если нет — её не должно быть.
+- **Control world (Patchbay)** — slow, complex, unbounded. Here live automata (LFOs, envelopes, logic), here they communicate with the user (GUI, MIDI, OSC), here they store history and make decisions. Here you can think.
+
+- **Protocol between them** — asynchronous, fault-tolerant, scalable. Command queues (Soft RT → Hard RT) and telemetry (Hard RT → Soft RT). This is the nervous system connecting reflexes with intelligence.
+
+### 2. Block coherence
+
+Graph parameters do not change within a block. They are fixed at its boundary and applied uniformly to all samples.
+
+This gives:
+- Predictability (no clicks or glitches)
+- Performance (SIMD-friendly)
+- Simplicity of reasoning about the system
+
+### 3. Protocol as foundation
+
+Graph and Patchbay do not have to live in the same process — or even on the same node.
+
+Locally — `crossbeam_channel` (fast). Globally — TCP, UDP, WebSocket, LoRa (reliable, far, cheap).
+
+By designing the protocol, we design the future. Internal Internet-Drafts today — potential RFCs tomorrow.
 
 ---
 
-## Почему Rill?
+## What we don't do
 
-**Rill** — это ручей. Не река (слишком мощно), не поток (слишком технологично), а ручей. Он течёт там, где есть уклон. Он не выбирает русло — он его огибает. Он не борется с камнями — он их омывает. Он не обещает океан — но до него доходит.
+We do not chase **perfect form**. We don't write code for code's sake. We don't document for documentation's sake.
 
-**Rill Adrift** — дрейфующий ручей. Он принимает температуру мира, компенсирует его хаос и просто течёт. Потому что данные текут. Сигналы текут. Жизнь течёт.
+Every line of Rill answers the question: **"Does this solve a real problem in real time?"**
+
+If not — it shouldn't exist.
 
 ---
 
-## Присоединяйтесь
+## Why Rill?
 
-Rill — открытая технология. Её код на GitHub и SourceCraft, её документация в Obsidian, её дух — в этом манифесте.
+**Rill** is a stream. Not a river (too powerful), not a flow (too technological), but a stream. It flows where there is a slope. It doesn't choose its bed — it goes around obstacles. It doesn't fight stones — it washes over them. It doesn't promise an ocean — but it gets there.
 
-Коммерциализация? Возможно. Стандартизация? Когда придёт время. Главное — **инфраструктура**, на которой можно строить что угодно, от педали эффектов до облачного ИИ.
+**Rill Adrift** — a drifting stream. It takes the temperature of the world, compensates for its chaos, and simply flows. Because data flows. Signals flow. Life flows.
 
-**Я просто хотел создать программный аналог Bastl Instruments Thyme+, но слегка увлёкся.**
+---
+
+## Join us
+
+Rill is an open technology. Its code is on GitHub and SourceCraft, its documentation is in Obsidian, its spirit — in this manifesto.
+
+Commercialization? Perhaps. Standardization? When the time comes. The main thing is **infrastructure** on which you can build anything, from an effects pedal to cloud AI.
+
+**I just wanted to create a software analog of the Bastl Instruments Thyme+, but got a little carried away.**

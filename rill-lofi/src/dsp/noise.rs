@@ -1,14 +1,14 @@
-//! Генерация различных типов шума
+//! Generation of various noise types
 
 use rand::Rng;
 
-/// Белый шум с заданным уровнем
+/// White noise with given level
 pub fn white_noise(level: f32) -> f32 {
     let mut rng = rand::thread_rng();
     (rng.gen::<f32>() - 0.5) * 2.0 * level
 }
 
-/// Розовый шум (простая аппроксимация)
+/// Pink noise (simple approximation)
 pub fn pink_noise(level: f32, _sample_rate: f32) -> f32 {
     static mut LAST_NOISE: f32 = 0.0;
     static mut FILTER_STATE: [f32; 3] = [0.0; 3];
@@ -16,7 +16,7 @@ pub fn pink_noise(level: f32, _sample_rate: f32) -> f32 {
     let white = white_noise(level);
 
     unsafe {
-        // Простой фильтр нижних частот для окраски
+        // Simple low-pass filter for coloration
         let cutoff = 1000.0 / 44100.0;
         FILTER_STATE[0] = FILTER_STATE[0] + cutoff * (white - FILTER_STATE[0]);
         FILTER_STATE[1] = FILTER_STATE[1] + cutoff * (FILTER_STATE[0] - FILTER_STATE[1]);
@@ -27,7 +27,7 @@ pub fn pink_noise(level: f32, _sample_rate: f32) -> f32 {
     }
 }
 
-/// Треск винила/ленты (случайные импульсы)
+/// Vinyl/tape crackle (random impulses)
 pub fn crackle(probability: f32, level: f32) -> f32 {
     let mut rng = rand::thread_rng();
     if rng.gen::<f32>() < probability {
@@ -37,7 +37,7 @@ pub fn crackle(probability: f32, level: f32) -> f32 {
     }
 }
 
-/// Шум в стиле конкретной системы
+/// System-specific noise
 pub fn system_noise(system: crate::config::ClassicSystem, sample: f32) -> f32 {
     let noise_level = match system {
         crate::config::ClassicSystem::Nes => 0.05,

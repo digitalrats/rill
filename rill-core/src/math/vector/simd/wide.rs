@@ -1,11 +1,11 @@
-//! Кроссплатформенные SIMD реализации через крейт `wide`
+//! Cross-platform SIMD implementations via the `wide` crate
 //!
-//! Этот модуль предоставляет типы векторов, использующие библиотеку `wide`,
-//! которая обеспечивает переносимые SIMD операции с fallback на скалярные реализации.
+//! This module provides vector types using the `wide` library,
+//! which provides portable SIMD operations with fallback to scalar implementations.
 //!
-//! Типы:
-//! - `F32x4`, `F32x8` для `f32`
-//! - `F64x2`, `F64x4` для `f64`
+//! Types:
+//! - `F32x4`, `F32x8` for `f32`
+//! - `F64x2`, `F64x4` for `f64`
 
 use crate::Transcendental;
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
@@ -14,27 +14,27 @@ use wide::{f32x4, f32x8, f64x2, f64x4, CmpEq, CmpGe, CmpGt, CmpLe, CmpLt, CmpNe}
 use crate::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
 
 // -----------------------------------------------------------------------------
-// Обёртки над типами wide для реализации трейта Vector
+// Wrappers around wide types for implementing the Vector trait
 // -----------------------------------------------------------------------------
 
-/// SIMD вектор из 4 элементов `f32`
+/// SIMD vector of 4 `f32` elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct F32x4(f32x4);
 
-/// SIMD вектор из 8 элементов `f32`
+/// SIMD vector of 8 `f32` elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct F32x8(f32x8);
 
-/// SIMD вектор из 2 элементов `f64`
+/// SIMD vector of 2 `f64` elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct F64x2(f64x2);
 
-/// SIMD вектор из 4 элементов `f64`
+/// SIMD vector of 4 `f64` elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct F64x4(f64x4);
 
 // -----------------------------------------------------------------------------
-// Реализации Default
+// Default implementations
 // -----------------------------------------------------------------------------
 
 impl Default for F32x4 {
@@ -62,7 +62,7 @@ impl Default for F64x4 {
 }
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для F32x4
+// Vector implementation for F32x4
 // -----------------------------------------------------------------------------
 
 impl Vector<f32, 4> for F32x4 {
@@ -109,7 +109,7 @@ impl Vector<f32, 4> for F32x4 {
     }
 
     fn rem(&self, other: &Self) -> Self {
-        // wide не предоставляет операцию остатка, реализуем покомпонентно
+        // wide does not provide a remainder operation, implement component-wise
         let a: [f32; 4] = self.0.into();
         let b: [f32; 4] = other.0.into();
         let mut arr = [0.0f32; 4];
@@ -163,7 +163,7 @@ impl VectorTranscendental<f32, 4> for F32x4 {
 }
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для F32x8
+// Vector implementation for F32x8
 // -----------------------------------------------------------------------------
 
 impl Vector<f32, 8> for F32x8 {
@@ -262,7 +262,7 @@ impl VectorTranscendental<f32, 8> for F32x8 {
 }
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для F64x2
+// Vector implementation for F64x2
 // -----------------------------------------------------------------------------
 
 impl Vector<f64, 2> for F64x2 {
@@ -361,7 +361,7 @@ impl VectorTranscendental<f64, 2> for F64x2 {
 }
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для F64x4
+// Vector implementation for F64x4
 // -----------------------------------------------------------------------------
 
 impl Vector<f64, 4> for F64x4 {
@@ -460,7 +460,7 @@ impl VectorTranscendental<f64, 4> for F64x4 {
 }
 
 // -----------------------------------------------------------------------------
-// Реализация VectorMask
+// VectorMask implementation
 // -----------------------------------------------------------------------------
 
 impl VectorMask<f64, 4> for F64x4 {
@@ -506,7 +506,7 @@ impl VectorMask<f64, 4> for F64x4 {
 }
 
 // -----------------------------------------------------------------------------
-// Реализации операторов (Add, Sub, Mul, Div, Rem, Neg)
+// Operator implementations (Add, Sub, Mul, Div, Rem, Neg)
 // -----------------------------------------------------------------------------
 
 impl Add for F32x4 {
@@ -557,7 +557,7 @@ impl Neg for F32x4 {
     }
 }
 
-// Аналогично для F32x8, F64x2, F64x4
+// Similarly for F32x8, F64x2, F64x4
 
 impl Add for F32x8 {
     type Output = Self;

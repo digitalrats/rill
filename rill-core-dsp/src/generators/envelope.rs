@@ -1,4 +1,4 @@
-//! Генераторы огибающих (ADSR, AR, ASR)
+//! Envelope generators (ADSR, AR, ASR)
 
 use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
@@ -134,7 +134,7 @@ impl<T: Transcendental> EnvelopeGenerator<T> {
         }
     }
 
-    /// Обновить счётчики семплов
+    /// Update sample counters
     fn update_samples(&mut self) {
         self.attack_samples = (self.attack * self.sample_rate) as usize;
         self.decay_samples = (self.decay * self.sample_rate) as usize;
@@ -191,14 +191,14 @@ impl<T: Transcendental> Algorithm<T> for EnvelopeGenerator<T> {
         let len = input.len().min(output.len());
         for i in 0..len {
             let gate_signal = input[i];
-            // Обновляем gate из входного сигнала если есть
+            // Update gate from input signal if present
             if gate_signal.to_f32() > 0.5 && !self.gate {
                 self.trigger();
             } else if gate_signal.to_f32() <= 0.5 && self.gate {
                 self.release();
             }
 
-            // Генерация огибающей
+            // Envelope generation
             match self.stage {
                 EnvelopeStage::Attack => {
                     let target = ScalarVector1::splat(T::from_f32(1.0));
@@ -231,7 +231,7 @@ impl<T: Transcendental> Algorithm<T> for EnvelopeGenerator<T> {
                 }
 
                 EnvelopeStage::Sustain => {
-                    // Просто держим уровень
+                    // Hold level
                     self.level = self.sustain;
                 }
 
@@ -253,7 +253,7 @@ impl<T: Transcendental> Algorithm<T> for EnvelopeGenerator<T> {
                 }
             }
 
-            // Применяем сглаживание
+            // Apply smoothing
             output[i] = self.smoother.process_sample(self.level.extract(0));
         }
         Ok(())

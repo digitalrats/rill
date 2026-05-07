@@ -483,7 +483,7 @@ impl<const BUF_SIZE: usize> rill_core::traits::Node<f32, BUF_SIZE> for MixerNode
     }
 }
 
-// ── Router trait — N→M конфигурируемая маршрутизация ────────────────
+// ── Router trait — N→M configurable routing ────────────────
 impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
     fn route(&mut self, clock: &ClockTick, _inputs: &[&[f32; BUF_SIZE]]) -> ProcessResult<()> {
         let _num_buses = self.buses.len();

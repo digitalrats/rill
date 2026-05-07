@@ -1,6 +1,6 @@
-//! # Макрос для создания активных приёмников (Sink)
+//! # Macro for creating active receivers (Sink)
 
-/// Создаёт активный приёмник сигнала
+/// Creates an active signal receiver
 #[macro_export]
 macro_rules! sink_node {
     (

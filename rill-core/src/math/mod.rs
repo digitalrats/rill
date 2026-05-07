@@ -1,11 +1,11 @@
-//! # Математические абстракции
+//! # Mathematical abstractions
 //!
-//! Этот модуль предоставляет:
-//! - `Scalar` — базовый числовой трейт для любых типов (включая целые)
-//! - `Transcendental` — расширение Scalar с тригонометрией (f32/f64)
-//! - Общие математические функции (lerp, db conversion, и т.д.)
-//! - Векторные операции через `vector` подмодуль
-//! - Быстрые аппроксимации для DSP
+//! This module provides:
+//! - `Scalar` — base numeric trait for all types (including integers)
+//! - `Transcendental` — Scalar extension with trigonometry (f32/f64)
+//! - Common mathematical functions (lerp, db conversion, etc.)
+//! - Vector operations through the `vector` submodule
+//! - Fast approximations for DSP
 
 mod conversions;
 mod functions;

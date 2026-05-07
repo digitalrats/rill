@@ -1,8 +1,8 @@
-//! ALSA бэкенд для Linux — без `std::thread`, без `std::sync`.
+//! ALSA backend for Linux — no `std::thread`, no `std::sync`.
 //!
-//! `run()` — блокирующий: открывает PCM, конфигурирует, входит в
-//! `snd_pcm_wait()` loop. Выходит когда `running` становится false.
-//! Очистка происходит внутри `run()` перед возвратом.
+//! `run()` — blocking: opens PCM, configures, enters
+//! `snd_pcm_wait()` loop. Exits when `running` becomes false.
+//! Cleanup happens inside `run()` before returning.
 
 const MAX_BLOCK_SAMPLES: usize = 8192;
 

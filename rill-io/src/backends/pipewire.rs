@@ -1,12 +1,12 @@
-//! PipeWire бэкенд для Linux
+//! PipeWire backend for Linux
 //!
-//! Использует `pipewire` (0.9) с `MainLoopRc` / `ContextRc` / `StreamBox`.
-//! Output пишет напрямую в DMA-буфер PW через OutputWindow (без ring buffer).
-//! Input по-прежнему использует IoRingBuffer.
+//! Uses `pipewire` (0.9) with `MainLoopRc` / `ContextRc` / `StreamBox`.
+//! Output writes directly to the PW DMA buffer via OutputWindow (no ring buffer).
+//! Input still uses IoRingBuffer.
 //!
-//! `run()` — блокирующий: инициализирует PW, создаёт context/core/streams,
-//! входит в mainloop iterate loop. Выходит когда `running` становится false.
-//! Никаких `std::thread`, `std::sync`.
+//! `run()` — blocking: initializes PW, creates context/core/streams,
+//! enters mainloop iterate loop. Exits when `running` becomes false.
+//! No `std::thread`, `std::sync`.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -357,7 +357,7 @@ impl IoBackend<f32> for PipewireBackend {
         if let Some(ref in_st) = in_stream {
             let mut in_ai = spa::param::audio::AudioInfoRaw::new();
             in_ai.set_format(spa::param::audio::AudioFormat::F32LE);
-            // Не задаём rate/channels — пусть PW согласует сам.
+            // Don't set rate/channels — let PW negotiate.
 
             let in_params_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
                 std::io::Cursor::new(Vec::new()),
@@ -472,8 +472,8 @@ impl IoBackend<f32> for PipewireBackend {
         }
 
         // ── PW event loop ───────────────────────────────────────────────────
-        // Без собственного цикла — run() блокирует поток, события
-        // обрабатываются PW. Callback проверяет running и вызывает quit.
+        // No own loop — run() blocks the thread, events are
+        // handled by PW. Callback checks running and calls quit.
         mainloop.run();
 
         if let Some(ref s) = in_stream {

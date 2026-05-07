@@ -1,13 +1,13 @@
-//! # Вспомогательные макросы для работы с параметрами
+//! # Helper macros for working with parameters
 
-// Эти макросы больше не нужны, но можно оставить для совместимости или удалить.
-// Оставляем только __init_ports, который используется.
+// These macros are no longer needed, but can be kept for compatibility or removed.
+// Keep only __init_ports, which is used.
 
-/// Инициализация портов (оставляем)
+/// Port initialization (kept)
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __init_ports {
-    // Для Source (только выходы)
+    // For Source (outputs only)
     (ports { signal_out: $out:expr $(,)? }, $node:expr, $outputs:ident) => {
         for i in 0..$out {
             let port = $crate::Port::output($node.id, i as u16, &format!("out_{}", i));
@@ -15,7 +15,7 @@ macro_rules! __init_ports {
         }
     };
 
-    // Для Sink (только входы)
+    // For Sink (inputs only)
     (ports { signal_in: $in:expr $(,)? }, $node:expr, $inputs:ident) => {
         for i in 0..$in {
             let port = $crate::Port::input($node.id, i as u16, &format!("in_{}", i));
@@ -23,7 +23,7 @@ macro_rules! __init_ports {
         }
     };
 
-    // Для Processor (входы и выходы)
+    // For Processor (inputs and outputs)
     (ports { signal_in: $in:expr, signal_out: $out:expr $(,)? }, $node:expr, $inputs:ident, $outputs:ident, $controls:ident) => {
         for i in 0..$in {
             let port = $crate::Port::input($node.id, i as u16, &format!("in_{}", i));
@@ -36,7 +36,7 @@ macro_rules! __init_ports {
         }
     };
 
-    // С управляющими портами
+    // With control ports
     (ports { signal_in: $in:expr, signal_out: $out:expr, control: $ctrl:expr }, $node:expr, $inputs:ident, $outputs:ident, $controls:ident) => {
         $crate::__init_ports!(
             ports {

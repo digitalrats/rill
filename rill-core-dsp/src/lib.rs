@@ -45,7 +45,7 @@ pub use generators::{
     WavetableOscillator, LFO,
 };
 
-/// Prelude для удобного импорта
+/// Prelude for convenient imports
 pub mod prelude {
     pub use crate::algorithm::{
         Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,

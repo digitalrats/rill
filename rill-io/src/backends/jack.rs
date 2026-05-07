@@ -1,9 +1,9 @@
-//! JACK бэкенд — OutputWindow, без ring buffer для output.
+//! JACK backend — OutputWindow, no ring buffer for output.
 //!
-//! `run()` — non‑blocking: создаёт JACK client, активирует, сохраняет
-//! handle и возвращается. Process callback работает на JACK RT thread.
-//! `stop()` дропает handle → JACK деактивируется.
-//! Никаких `std::thread`, `std::sync`.
+//! `run()` — non-blocking: creates JACK client, activates, saves
+//! the handle and returns. Process callback runs on JACK RT thread.
+//! `stop()` drops the handle → JACK deactivates.
+//! No `std::thread`, `std::sync`.
 
 use std::cell::UnsafeCell;
 use std::fmt;

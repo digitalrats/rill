@@ -76,6 +76,12 @@ mdbook serve docs/                # dev server at localhost:3000
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.
 
+- **Documentation language:**
+    - All crate-level docs (`README.md`, module doc comments, API docs) must be in **English**.
+    - Code comments (inline `//`) should also be in English.
+    - The only exception is `docs/src/guides/world-of-automatons.md` — a full-fledged published article intentionally written in Russian as a deliberate stylistic choice.
+    - Rationale: English is the lingua franca of open-source. One Russian-language article is an exception, not a precedent — do not add more without explicit discussion.
+
 - **Zero-copy data flow:**
     Data copying across node ports is **forbidden** except in these cases:
     1. **Branching (fan-out)** — one source feeds multiple destinations; the router copies.

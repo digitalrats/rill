@@ -19,7 +19,7 @@
 //!
 //! ## Example
 //!
-// В rill-core/src/lib.rs - строка 151 (пример prelude)
+// In rill-core/src/lib.rs - line 151 (prelude example)
 
 //! ## Example
 //!

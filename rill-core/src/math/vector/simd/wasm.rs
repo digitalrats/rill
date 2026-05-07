@@ -1,6 +1,6 @@
-//! # WebAssembly SIMD реализации
+//! # WebAssembly SIMD implementations
 //!
-//! Использует SIMD128 инструкции для векторных операций в WebAssembly.
+//! Uses SIMD128 instructions for vector operations in WebAssembly.
 
 #![cfg(target_arch = "wasm32")]
 #![allow(unused_imports)]
@@ -11,21 +11,20 @@ use crate::math::vector::traits::VectorTranscendental;
 use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
-// SIMD типы
-// -----------------------------------------------------------------------------
+// SIMD types
 
-/// Вектор из 4 элементов f32 (wasm SIMD128)
+/// Vector of 4 f32 elements (wasm SIMD128)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F32x4([f32; 4]);
 
-/// Вектор из 2 элементов f64 (wasm SIMD128)
+/// Vector of 2 f64 elements (wasm SIMD128)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F64x2([f64; 2]);
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для F32x4
+// Vector implementation for F32x4
 // -----------------------------------------------------------------------------
 
 impl Vector<f32, 4> for F32x4 {
@@ -186,7 +185,7 @@ impl Default for F32x4 {
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]

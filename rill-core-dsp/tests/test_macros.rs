@@ -1,14 +1,14 @@
-//! Тесты для макросов DSP алгоритмов
+//! Tests for DSP algorithm macros
 //!
-//! Эти тесты вынесены в отдельный файл, чтобы избежать конфликтов
-//! с экспортом макросов и проблем видимости.
+//! These tests are in a separate file to avoid conflicts
+//! with macro exports and visibility issues.
 
 use rill_core::math::Transcendental;
 use rill_core::time::ClockTick;
 use rill_core::traits::ActionContext;
 use rill_core_dsp::algorithm::Algorithm;
 
-// Макросы доступны напрямую из корня крейта благодаря #[macro_export]
+// Macros available directly from crate root via #[macro_export]
 use rill_core_dsp::{
     effect_algorithm, filter_algorithm, generator_algorithm, parameterized_algorithm,
     simple_algorithm,

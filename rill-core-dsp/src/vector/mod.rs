@@ -1,9 +1,9 @@
-//! # Векторные операции для DSP
+//! # Vector operations for DSP
 //!
-//! Этот модуль реэкспортирует векторную инфраструктуру из `rill-core`.
-//! Смотрите [rill_core::vector] для документации.
+//! This module re-exports the vector infrastructure from `rill-core`.
+//! See [rill_core::vector] for documentation.
 
-/// Prelude для удобного импорта
+/// Prelude for convenient imports
 pub mod prelude {
     pub use rill_core::vector::prelude::*;
 }

@@ -214,7 +214,7 @@ impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T
 }
 
 // =============================================================================
-// Итератор
+// Iterator
 // =============================================================================
 
 /// Iterator over the contents of a [`RingBuffer`], from oldest to newest.
@@ -271,7 +271,7 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
 }
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]

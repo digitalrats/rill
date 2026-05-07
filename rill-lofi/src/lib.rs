@@ -10,13 +10,13 @@ pub mod emulators;
 mod error;
 mod lofi_processor;
 
-// Реэкспорт основных типов
+// Re-export core types
 pub use config::{ClassicSystem, HardwareEmulation, LofiConfig};
 pub use emulators::{AkaiS900Emulator, Ay38910Emulator, NesEmulator};
 pub use error::{LofiError, LofiResult};
 pub use lofi_processor::LofiProcessor;
 
-// Реэкспорт для удобства
+// Re-export for convenience
 pub use rill_core::traits::Node;
 
 #[cfg(test)]

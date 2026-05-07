@@ -1,51 +1,36 @@
-# Ключевые особенности:
+# Key features
 
-## Аутентичная эмуляция:
+## Authentic emulation:
 
-* NES: 7-bit, 5 каналов (2 pulse, triangle, noise, DPCM)
+* NES: 7-bit, 5 channels (2 pulse, triangle, noise, DPCM)
+* Commodore 64: 8-bit SID with non-linear DAC
+* Akai S900: 12-bit with logarithmic encoding
+* Fairlight CMI: 8-bit, 16kHz, the first sampler
 
-* Commodore 64: 8-bit SID с нелинейным ЦАП
+## Hardware artifacts:
 
-* Akai S900: 12-bit с логарифмическим кодированием
+* Clock drift
+* Voltage sag
+* Thermal noise
+* Cross-talk
+* Component aging effects
 
-* Fairlight CMI: 8-bit, 16kHz, первый семплер
+## Flexible configuration:
 
-## Аппаратные артефакты:
+* Presets for classic systems
+* Configurable bit depth (1-16 bit)
+* Adjustable sample rate
+* Dry/wet control
 
-* Дрейф тактовой частоты (clock drift)
+## Integration:
 
-* Падение напряжения (voltage sag)
+* rill-buffers compatible
+* Node implementation
+* Preset serialization
+* Utilities for crafting vintage sounds
 
-* Тепловой шум
+## Educational value:
 
-* Перекрестные помехи
-
-* Эффект старения компонентов
-
-## Гибкая конфигурация:
-
-* Предустановки для классических систем
-
-* Настраиваемая битность (1-16 бит)
-
-* Регулируемая частота дискретизации
-
-* Dry/wet контроль
-
-4. Интеграция:
-
-* Совместимость с rill-buffers
-
-* Node реализация
-
-* Сериализация preset'ов
-
-* Утилиты для создания винтажных звуков
-
-5. Образовательная ценность:
-
-* Показывает эволюцию цифрового аудио
-
-* Демонстрирует ограничения старых систем
-
-* Позволяет создавать аутентичные chiptune звуки
+* Shows the evolution of digital audio
+* Demonstrates the limitations of old systems
+* Makes authentic chiptune sounds achievable
