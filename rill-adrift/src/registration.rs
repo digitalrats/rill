@@ -16,6 +16,7 @@ use std::sync::Arc;
 /// # Type parameters
 ///
 /// - `BUF_SIZE` — block size, must match the target graph.
+///
 /// Register every built-in node type into a [`NodeFactory`].
 pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     register_oscillators(factory);
