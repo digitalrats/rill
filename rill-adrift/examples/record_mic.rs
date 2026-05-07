@@ -186,7 +186,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
 
     // Runtime — владеет фабриками
-    let rt = Runtime::<BUF>::new(RuntimeConfig::default());
+    let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
+
+    // Настраиваем бэкенд по умолчанию
+    let mut p = std::collections::HashMap::new();
+    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
+    p.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+    p.insert("channels".into(), ParamValue::Int(2));
+    rt.set_default_backend(backend_name, p);
 
     // Регистрируем кастомный узел
     let rec = recorded.clone();
@@ -244,19 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = rt.create_builder();
     def.populate(&mut builder)
         .map_err(|e| format!("populate: {e}"))?;
-    let graph = builder
-        .with_backend(backend_name, {
-            let mut p = std::collections::HashMap::new();
-            p.insert(
-                "sample_rate".into(),
-                rill_core::ParamValue::Int(RATE as i32),
-            );
-            p.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
-            p.insert("channels".into(), rill_core::ParamValue::Int(2));
-            p
-        })
-        .build()
-        .map_err(|e| format!("graph build: {e}"))?;
+    let graph = builder.build().map_err(|e| format!("graph build: {e}"))?;
     let _actor_ref = graph.handle();
 
     // Запуск

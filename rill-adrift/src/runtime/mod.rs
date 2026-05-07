@@ -36,11 +36,12 @@
 //! └────────────────────────────────────────────────────────────────┘
 //! ```
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use rill_core::queues::{MpscQueue, SetParameter};
-use rill_core::traits::{NodeId, NodeVariant, Params};
+use rill_core::traits::{NodeId, NodeVariant, ParamValue, Params};
 use rill_core_actor::ActorRef;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};
@@ -125,6 +126,11 @@ pub struct Runtime<const BUF: usize = 64> {
     /// Shared backend factory (populated at construction).
     backend_factory: Arc<BackendFactory<f32>>,
 
+    /// Default backend configuration. When set, every [`GraphBuilder`]
+    /// created by [`create_builder`](Self::create_builder) is pre-configured
+    /// via [`GraphBuilder::with_backend`].
+    default_backend: Option<(String, HashMap<String, ParamValue>)>,
+
     /// Host configuration (stored for serialized graph/patchbay loading).
     #[cfg(feature = "serialization")]
     config: RuntimeConfig,
@@ -164,6 +170,7 @@ impl<const BUF: usize> Runtime<BUF> {
             dead: Arc::new(MpscQueue::new()),
             node_factory: Arc::new(Mutex::new(nf)),
             backend_factory: Arc::new(bf),
+            default_backend: None,
             control: None,
             #[cfg(feature = "serialization")]
             config,
@@ -191,18 +198,30 @@ impl<const BUF: usize> Runtime<BUF> {
         self.node_factory.lock().unwrap().register_fn(type_name, f);
     }
 
+    /// Set the default audio backend for all future builders.
+    ///
+    /// When set, every [`GraphBuilder`] returned by [`create_builder`](Self::create_builder)
+    /// is pre-configured with [`GraphBuilder::with_backend`] using the given
+    /// name and parameters.
+    pub fn set_default_backend(&mut self, name: &str, params: HashMap<String, ParamValue>) {
+        self.default_backend = Some((name.to_string(), params));
+    }
+
     /// Create a [`GraphBuilder`] sharing this runtime's factories.
     ///
     /// The builder uses the runtime's pre-populated node and backend
-    /// factories. Call [`register_node_fn`](Self::register_node_fn)
-    /// first if you need custom node types.
+    /// factories. If a default backend was set via
+    /// [`set_default_backend`](Self::set_default_backend), the builder
+    /// is pre-configured with it.
     pub fn create_builder(&self) -> GraphBuilder<f32, BUF> {
-        GraphBuilder::new(
-            // Clone the Arc'd Mutex contents to get an independent copy
-            // of the factory for the builder.
+        let mut builder = GraphBuilder::new(
             Arc::new(self.node_factory.lock().unwrap().clone()),
             self.backend_factory.clone(),
-        )
+        );
+        if let Some((ref name, ref params)) = self.default_backend {
+            builder = builder.with_backend(name, params.clone());
+        }
+        builder
     }
 
     // ─── File loading ───────────────────────────────────────────────
