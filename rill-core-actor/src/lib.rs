@@ -11,6 +11,7 @@
 //! | [`ActorCell`] | Trait: "I can receive and process messages" | `ActorCell` |
 //! | [`ActorRef<M>`] | Thread-safe handle to send messages to an actor | `ActorRef` |
 //! | [`MessageDispatcher<M>`] | ActorRef + dead letters queue | — |
+//! | [`ActorSystem<M>`] | Named mailbox registry with routing and dead letters | `ActorSystem` |
 //!
 //! ## Architecture
 //!
@@ -289,6 +290,150 @@ impl<M: Send + 'static> MessageDispatcher<M> {
     /// does not need dead letters support (e.g. `PortCombiner`).
     pub fn actor_ref(&self) -> &ActorRef<M> {
         &self.actor_ref
+    }
+}
+
+// ============================================================================
+// ActorSystem
+// ============================================================================
+
+/// Central registry of named mailboxes with dead letters support.
+///
+/// Routes messages to registered actors by name. If a target does not
+/// exist, the message is forwarded to dead letters instead of being
+/// silently dropped.
+///
+/// All actors in a system share the same message type `M`. For systems
+/// that need different message types, create separate `ActorSystem`
+/// instances (one per message type).
+///
+/// # Multiple consumers
+///
+/// Each registered mailbox is an [`Arc<MpscQueue<M>>`] that can be
+/// drained by a dedicated consumer (e.g. audio callback, tokio task,
+/// dedicated thread). This enables multiple actors processing different
+/// streams of the same message type:
+///
+/// ```text
+/// ActorSystem<SetParameter>
+///   │
+///   ├── "graph"   → audio thread consumer (hard RT)
+///   ├── "midi"    → tokio task consumer  (soft RT, future)
+///   └── "monitor" → tokio task consumer  (soft RT, future)
+/// ```
+///
+/// # Dead letters
+///
+/// When [`route`](Self::route) is called with a name that is not
+/// registered, the message goes to the system's dead letters queue.
+/// Use [`drain_dead`](Self::drain_dead) to inspect undelivered messages.
+///
+/// # Example
+///
+/// ```rust
+/// use rill_core_actor::ActorSystem;
+/// use rill_core::queues::MpscQueue;
+/// use std::sync::Arc;
+///
+/// let mut system = ActorSystem::<String>::new();
+///
+/// // Register two actors
+/// let graph_mbox = system.register("graph");
+/// let midi_mbox = system.register("midi");
+///
+/// // Route a message to a specific actor
+/// system.route("graph", "hello graph".to_string());
+/// assert_eq!(graph_mbox.pop(), Some("hello graph".to_string()));
+///
+/// // Unknown actor → dead letters
+/// system.route("unknown", "lost".to_string());
+/// assert_eq!(system.drain_dead(), vec!["lost".to_string()]);
+///
+/// // Broadcast to all registered actors
+/// system.broadcast("to all".to_string());
+/// assert_eq!(graph_mbox.pop(), Some("to all".to_string()));
+/// assert_eq!(midi_mbox.pop(), Some("to all".to_string()));
+/// ```
+pub struct ActorSystem<M: Send + 'static> {
+    actors: Vec<(String, Arc<MpscQueue<M>>)>,
+    dead: Arc<MpscQueue<M>>,
+}
+
+impl<M: Send + 'static> ActorSystem<M> {
+    /// Create an empty system.
+    pub fn new() -> Self {
+        Self {
+            actors: Vec::new(),
+            dead: Arc::new(MpscQueue::new()),
+        }
+    }
+
+    /// Register a new named mailbox and return it.
+    ///
+    /// The caller is responsible for creating a consumer that drains
+    /// the returned `Arc<MpscQueue<M>>`.
+    pub fn register(&mut self, name: &str) -> Arc<MpscQueue<M>> {
+        let mbox = Arc::new(MpscQueue::with_capacity(64));
+        self.actors.push((name.to_string(), mbox.clone()));
+        mbox
+    }
+
+    /// Route a message to a named actor.
+    ///
+    /// If the name is registered, the message is pushed to that actor's
+    /// mailbox. Otherwise it is forwarded to dead letters.
+    pub fn route(&self, name: &str, msg: M) {
+        for (n, mbox) in &self.actors {
+            if n == name {
+                let _ = mbox.push(msg);
+                return;
+            }
+        }
+        let _ = self.dead.push(msg);
+    }
+
+    /// Broadcast a message to all registered actors.
+    ///
+    /// Each actor receives a copy (the message is cloned).
+    /// Messages that cannot be delivered (full mailbox) are silently
+    /// dropped per-actor.
+    pub fn broadcast(&self, msg: M)
+    where
+        M: Clone,
+    {
+        for (_, mbox) in &self.actors {
+            let _ = mbox.push(msg.clone());
+        }
+    }
+
+    /// Drain the dead letters queue for inspection.
+    pub fn drain_dead(&self) -> Vec<M> {
+        let mut msgs = Vec::new();
+        while let Some(msg) = self.dead.pop() {
+            msgs.push(msg);
+        }
+        msgs
+    }
+
+    /// Check whether there are any undelivered messages.
+    pub fn has_dead(&self) -> bool {
+        !self.dead.is_empty()
+    }
+
+    /// Number of registered actors.
+    pub fn actor_count(&self) -> usize {
+        self.actors.len()
+    }
+
+    /// Access the dead letters queue directly.
+    pub fn dead_letters(&self) -> &MpscQueue<M> {
+        &self.dead
+    }
+}
+
+impl<M: Send + 'static> Default for ActorSystem<M> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

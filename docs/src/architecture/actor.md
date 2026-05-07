@@ -4,11 +4,12 @@ Rill implements a lightweight actor model for lock-free message passing
 between threads. The model is inspired by Akka/Pekko but specialised for
 the real-time signal processing use case.
 
-The actor model is **domain-agnostic** — `ActorRef<M>`, `ActorCell`, and
-`MessageDispatcher<M>` are generic over `M: Send + 'static`. They have no
-dependency on audio or signal types. The concrete message type
-(`SetParameter`) and its consumer (`Graph`) belong to higher-level crates
-(`rill-patchbay`, `rill-graph`), not to the actor infrastructure itself.
+The actor model is **domain-agnostic** — `ActorRef<M>`, `ActorCell`,
+`MessageDispatcher<M>`, and `ActorSystem<M>` are generic over
+`M: Send + 'static`. They have no dependency on audio or signal types.
+The concrete message type (`SetParameter`) and its consumer (`Graph`)
+belong to higher-level crates (`rill-patchbay`, `rill-graph`), not to the
+actor infrastructure itself.
 
 ## Core concepts
 
@@ -17,16 +18,17 @@ dependency on audio or signal types. The concrete message type
 │                     rill-core-actor                              │
 │                                                                  │
 │  ┌────────────┐   ┌────────────┐   ┌────────────────────────┐   │
-│  │ ActorCell  │   │ ActorRef   │   │ MessageDispatcher      │   │
-│  │  (trait)   │   │  (handle)  │   │  (system-level)        │   │
-│  └────────────┘   └────────────┘   └────────────────────────┘   │
-│       │                 │                      │                 │
-│       │  receive()      │  send(msg)            │  send()         │
-│       │                 │                      │  send_dead()     │
-│       ▼                 ▼                      ▼                  │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │              MpscQueue (lock-free MPSC)                   │    │
-│  └──────────────────────────────────────────────────────────┘    │
+│  ┌────────────┐   ┌────────────┐   ┌─────────────────────┐   │
+│  │ ActorCell  │   │ ActorRef   │   │  ActorSystem        │   │
+│  │  (trait)   │   │  (handle)  │   │  (named mailboxes   │   │
+│  └────────────┘   └────────────┘   │   + route + dead)   │   │
+│       │                 │          └─────────────────────┘   │
+│       │  receive()      │  send(msg)     │ route(name, msg)  │
+│       │                 │               │ broadcast(msg)    │
+│       ▼                 ▼               ▼                    │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │              MpscQueue (lock-free MPSC)                   │ │
+│  └──────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,6 +100,32 @@ let undelivered = dispatcher.drain_dead();
 The `MessageDispatcher` is the foundation for [`Engine`](https://docs.rs/rill-patchbay)
 — the central dispatcher in the patchbay system.
 
+### `ActorSystem<M>`
+
+Central registry of named mailboxes with routing and dead letters support.
+Designed for multiple consumers — each registered mailbox can be drained
+by a dedicated thread or task.
+
+```rust
+let mut system = ActorSystem::<SetParameter>::new();
+
+// Register named mailboxes — each gets its own consumer
+let graph = system.register("graph");    // audio thread
+let midi  = system.register("midi");     // tokio task (future)
+
+// Route to a specific actor
+system.route("graph", SetParameter::new(...));
+
+// Unknown name → dead letters
+system.route("unknown", SetParameter::new(...));
+
+// Broadcast to all actors
+system.broadcast(SetParameter::new(...));
+
+// Inspect dead letters
+let lost = system.drain_dead();
+```
+
 ## Lifecycle
 
 ```
@@ -142,7 +170,8 @@ are managed at the application level (Runtime) rather than at the ref level.
 rill-core-actor           (new crate, depends on rill-core)
 ├── ActorCell trait       (what processes messages)
 ├── ActorRef<M>           (handle to send messages)
-└── MessageDispatcher<M>  (dispatcher with dead letters)
+├── MessageDispatcher<M>  (dispatcher with dead letters)
+└── ActorSystem<M>        (named mailbox registry + route + broadcast)
 ```
 
 The crate depends on [`rill-core`](https://docs.rs/rill-core) for
