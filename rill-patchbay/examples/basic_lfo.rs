@@ -1,12 +1,12 @@
 use rill_core::NodeId;
 use rill_core_actor::ActorRef;
-use rill_patchbay::{Engine, LfoWaveform};
+use rill_patchbay::{LfoWaveform, Patchbay};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Basic LFO Automation Example ===\n");
 
     let (actor_ref, mailbox) = ActorRef::new_pair();
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
     let node = NodeId(1);
 
     control.add_lfo(

@@ -103,8 +103,8 @@ pub use automaton::{
 };
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{
-    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, Engine, EventPattern,
-    Mapping, NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target, Transform,
+    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
+    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
 };
 
 pub use manager::Manager;

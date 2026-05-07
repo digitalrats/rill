@@ -2,7 +2,7 @@
 //!
 //! `Manager` is a legacy component. It runs in a dedicated
 //! `std::thread` at a fixed update rate. Superseded by the async model:
-//! `Engine::add_automaton_task()` + tokio tasks.
+//! `Patchbay::add_automaton_task()` + tokio tasks.
 //!
 //! Old functionality:
 //! - Automata (LFO, envelopes, sequencers)
@@ -10,9 +10,9 @@
 //! - Servos (automaton-to-parameter bridge)
 //!
 //! Recommended replacements:
-//! - `Engine::add_lfo_task()`
-//! - `Engine::add_automaton_task()`
-//! - `Engine::handle_event()`
+//! - `Patchbay::add_lfo_task()`
+//! - `Patchbay::add_automaton_task()`
+//! - `Patchbay::handle_event()`
 
 use rill_core::prelude::*;
 use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};

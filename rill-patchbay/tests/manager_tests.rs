@@ -2,8 +2,8 @@ use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
 use rill_core_actor::ActorRef;
 use rill_patchbay::{
-    ControlEvent, Engine, EventPattern, FunctionAutomaton, LfoWaveform, Mapping, ParameterMapping,
-    Servo, Target, Transform,
+    ControlEvent, EventPattern, FunctionAutomaton, LfoWaveform, Mapping, ParameterMapping,
+    Patchbay, Servo, Target, Transform,
 };
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ fn param(name: &str) -> String {
 fn test_control_creation() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let control = Engine::new(actor_ref);
+    let control = Patchbay::new(actor_ref);
 
     assert_eq!(control.mappings().len(), 0);
     assert!((control.current_time() - 0.0) < 1e-9);
@@ -25,7 +25,7 @@ fn test_control_creation() {
 fn test_add_lfo_servo() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref.clone());
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_lfo(
         "lfo1",
@@ -46,7 +46,7 @@ fn test_add_lfo_servo() {
 fn test_add_envelope_servo() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref.clone());
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_envelope("env1", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);
 
@@ -57,7 +57,7 @@ fn test_add_envelope_servo() {
 fn test_add_custom_servo() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref.clone());
+    let mut control = Patchbay::new(actor_ref.clone());
 
     let sine = FunctionAutomaton::new("Sine", |t| (t * 2.0).sin() * 0.5 + 0.5);
     let servo = Servo::new(
@@ -78,7 +78,7 @@ fn test_add_custom_servo() {
 fn test_remove_servo() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo1",
@@ -113,7 +113,7 @@ fn test_remove_servo() {
 fn test_clear_servos() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo1",
@@ -159,7 +159,7 @@ fn test_clear_servos() {
 fn test_servo_updates() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref.clone());
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_lfo(
         "lfo1",
@@ -188,7 +188,7 @@ fn test_servo_updates() {
 fn test_multiple_servos() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo1",
@@ -233,7 +233,7 @@ fn test_multiple_servos() {
 fn test_disable_servo() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref.clone());
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_lfo(
         "lfo1",
@@ -285,7 +285,7 @@ fn drain_count(mailbox: &MpscQueue<rill_core::queues::SetParameter>) -> usize {
 fn test_different_servo_types() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo",
@@ -354,7 +354,7 @@ fn test_midi_mapping() {
 fn test_mapping_in_control() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref.clone());
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control
         .add_mapping_str("midi:1:7", NodeId(1), "volume", 0.0, 1.0, Transform::Linear)
@@ -379,7 +379,7 @@ fn test_mapping_in_control() {
 fn test_reset_time() {
     let mailbox = Arc::new(MpscQueue::with_capacity(64));
     let actor_ref = ActorRef::new(&mailbox);
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
 
     control.update(1.0);
     control.update(2.0);

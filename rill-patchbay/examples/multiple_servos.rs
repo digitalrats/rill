@@ -1,12 +1,12 @@
 use rill_core::NodeId;
 use rill_core_actor::ActorRef;
-use rill_patchbay::{Engine, FunctionAutomaton, LfoWaveform, ParameterMapping, Servo};
+use rill_patchbay::{FunctionAutomaton, LfoWaveform, ParameterMapping, Patchbay, Servo};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Multiple Servos Example ===\n");
 
     let (actor_ref, mailbox) = ActorRef::new_pair();
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
     let node = NodeId(1);
 
     // Three different automata
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     control.update(0.0);
 
-    println!("Active servos (implicitly via Engine internals)\n");
+    println!("Active servos (implicitly via Patchbay internals)\n");
     println!("Running 10 updates at 10ms each...\n");
 
     for i in 0..10 {

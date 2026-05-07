@@ -576,7 +576,7 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 /// - **Async** (recommended): automata run as tokio tasks through
 ///   [`add_automaton_task()`](Self::add_automaton_task). Requires an active
 ///   tokio runtime.
-pub struct Engine {
+pub struct Patchbay {
     mappings: Vec<Mapping>,
     servos: HashMap<String, BoxedServo>,
     port_combiners: HashMap<String, PortCombinerHandle>,
@@ -587,7 +587,7 @@ pub struct Engine {
     time: Time,
 }
 
-impl Engine {
+impl Patchbay {
     /// Create a new patchbay controller.
     ///
     /// Async methods (green threads, PortCombiner) require an active
@@ -1051,7 +1051,7 @@ impl Engine {
     }
 }
 
-impl Drop for Engine {
+impl Drop for Patchbay {
     fn drop(&mut self) {
         self.stop_all();
     }
@@ -1143,7 +1143,7 @@ mod tests {
     fn test_lfo_servo() {
         let node = NodeId(1);
         let (actor_ref, _mailbox) = ActorRef::new_pair();
-        let mut control = Engine::new(actor_ref);
+        let mut control = Patchbay::new(actor_ref);
 
         control.add_lfo(
             "test_lfo",
@@ -1168,7 +1168,7 @@ mod tests {
     fn test_envelope_servo() {
         let node = NodeId(1);
         let (actor_ref, _mailbox) = ActorRef::new_pair();
-        let mut control = Engine::new(actor_ref);
+        let mut control = Patchbay::new(actor_ref);
 
         control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
 

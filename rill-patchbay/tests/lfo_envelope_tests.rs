@@ -1,11 +1,11 @@
 use rill_core::NodeId;
 use rill_core_actor::ActorRef;
-use rill_patchbay::{Engine, LfoWaveform};
+use rill_patchbay::{LfoWaveform, Patchbay};
 
 #[test]
 fn test_lfo_automaton_in_control() {
     let (actor_ref, mailbox) = ActorRef::new_pair();
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "test_lfo",
@@ -35,7 +35,7 @@ fn test_lfo_automaton_in_control() {
 #[test]
 fn test_envelope_in_control() {
     let (actor_ref, _mailbox) = ActorRef::new_pair();
-    let mut control = Engine::new(actor_ref);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);
 
