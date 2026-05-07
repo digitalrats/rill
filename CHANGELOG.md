@@ -10,13 +10,52 @@
   - `SignalBuffer` merged into `Buffer<T: Scalar>` — replaces both old `Buffer` and `SignalBuffer` traits
   - `SignalSource` → `SignalOrigin`
 
+- **Actor model** — new `rill-core-actor` crate:
+  - `ActorCell` trait, `ActorRef<M>`, `MessageDispatcher<M>` moved from `rill_core::traits` to `rill-core-actor`
+  - `ActorRef::new_pair()` convenience constructor
+  - `Graph::send_parameter()` removed — use `Graph::handle() -> ActorRef`
+  - `ActorSystem<M>` — named mailbox registry with routing and dead letters
+  - `signal_node!` macro renamed to `node!`
+
+- **`rill-patchbay` restructuring**:
+  - `PatchbayControl` → `Engine` (in `rill_patchbay::engine`)
+  - `PatchbayEngine` removed — all functionality folded into `Engine`
+  - `engine.rs` replaces `control.rs`
+  - `PatchbayManager` → `Manager`
+  - `PatchbayEvent` → `Event`, `PatchbayStats` → `Stats`, `PatchbayConfig` → `Config`
+  - `PatchbayDotConfig` → `DotConfig`
+
+- **Serialization `*Document` → `*Def`**:
+  - `GraphDocument` → `GraphDef` (in `rill_graph::serialization`)
+  - `PatchbayDocument` → `PatchbayDef` (in `rill_patchbay::serialization`)
+  - `SequencerDocument` → `SequencerDef`
+  - `rill-patchbay`: `document.rs` + `dot.rs` consolidated into `serialization/` module
+
+### ✨ New
+
+- **`rill-core-actor` crate** — actor model infrastructure:
+  - `ActorRef<M>` — thread-safe handle, strong `Arc` reference, `send()` is lock-free and RT-safe
+  - `ActorCell` trait — for types that own a mailbox and process messages
+  - `MessageDispatcher<M>` — dispatcher with dead letters support
+  - `ActorSystem<M>` — named mailbox registry, `route()`, `broadcast()`, dead letters
+
 ### 🧹 Removed
 
 - `rill-core-dsp`: removed `unstable` feature (no code behind it, required nightly)
+- `rill-patchbay`: `PatchbayEngine` removed (folded into `Engine`)
+- `rill-core`: `traits::actor` module removed (moved to `rill-core-actor`)
 
 ### 🔧 Fixes
 
 - `rill-io/pipewire`: fixed `AudioBackend::write` stub returning `0` instead of `buffer.len()`
+- `rill-graph`: removed redundant `B as usize` cast, pre-existing clippy warnings fixed
+- `rill-patchbay`, `rill-adrift`: fixed redundant closures, unused imports, unused variables
+
+### 📝 Documentation
+
+- Architecture article: actor model (`docs/src/architecture/actor.md`) with RT boundary section
+- `AGENTS.md`: quoting rules for commit messages with backticks
+- All docs updated to reflect `Engine`, `*Def`, `ActorRef` naming
 
 ## [0.5.0-beta.1] — 2026-05-04
 
