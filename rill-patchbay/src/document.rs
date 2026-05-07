@@ -1,6 +1,10 @@
 #![allow(missing_docs)]
 //! Serializable patchbay document types (de)serialised from JSON/CBOR.
 
+#[cfg(test)]
+use rill_core::queues::SetParameter;
+#[cfg(test)]
+use rill_core::traits::ActorRef;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -582,8 +586,8 @@ mod tests {
     #[test]
     fn test_apply_to_adds_servo() {
         let doc = sample_doc();
-        let q = Arc::new(MpscQueue::new());
-        let mut control = PatchbayControl::new(q);
+        let (actor_ref, _mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mut control = PatchbayControl::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to(&mut control, &registry).unwrap();
         control.update(0.01);
@@ -609,8 +613,8 @@ mod tests {
             osc_surface: vec![],
             description: None,
         };
-        let q = Arc::new(MpscQueue::new());
-        let mut control = PatchbayControl::new(q);
+        let (actor_ref, _mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mut control = PatchbayControl::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         assert!(doc.apply_to(&mut control, &registry).is_err());
     }
@@ -685,13 +689,13 @@ mod tests {
             description: None,
         };
 
-        let q: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
-        let mut control = PatchbayControl::new(q.clone());
+        let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mut control = PatchbayControl::new(actor_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry).unwrap();
 
         // Let the green thread produce a value
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        assert!(!q.is_empty(), "async LFO should have pushed a value");
+        assert!(!mailbox.is_empty(), "async LFO should have pushed a value");
     }
 }

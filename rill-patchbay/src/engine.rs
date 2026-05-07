@@ -6,14 +6,13 @@
 //! ## Использование
 //!
 //! ```no_run
-//! use std::sync::Arc;
 //! use std::time::Duration;
-//! use rill_core::queues::MpscQueue;
+//! use rill_core::traits::ActorRef;
 //! use rill_core::NodeId;
 //! use rill_patchbay::prelude::*;
 //!
-//! let queue = Arc::new(MpscQueue::new());
-//! let mut engine = PatchbayEngine::new(queue.clone());
+//! let cmd_queue = ActorRef::new_pair().0;
+//! let mut engine = PatchbayEngine::new(cmd_queue);
 //!
 //! // LFO как green thread
 //! engine.add_lfo(
@@ -38,12 +37,12 @@
 //! engine.stop();
 //! ```
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use rill_core::queues::telemetry::Telemetry;
-use rill_core::queues::{MpscQueue, SetParameter};
+use rill_core::queues::SetParameter;
+use rill_core::traits::ActorRef;
 use rill_core::NodeId;
 
 use crate::automaton::LfoWaveform;
@@ -71,7 +70,7 @@ impl PatchbayEngine {
     ///
     /// Requires an active tokio runtime (e.g. `#[tokio::main]`).
     /// Panics if `tokio::runtime::Handle::try_current()` fails.
-    pub fn new(command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
+    pub fn new(command_queue: ActorRef<SetParameter>) -> Self {
         let _ = tokio::runtime::Handle::try_current()
             .expect("PatchbayEngine requires an active tokio runtime");
         Self {
@@ -226,21 +225,20 @@ mod tests {
     use crate::automaton::LfoWaveform;
     use crate::control::{midi_cc, ControlEvent, Transform};
     use crate::strategy::ControlStrategy;
-    use rill_core::queues::MpscQueue;
+    use rill_core::traits::ActorRef;
     use rill_core::NodeId;
 
     #[tokio::test]
     async fn test_engine_creation() {
-        let queue = Arc::new(MpscQueue::new());
-        let engine = PatchbayEngine::new(queue);
+        let engine = PatchbayEngine::new(ActorRef::new_pair().0);
         // Just verifying no panic
         drop(engine);
     }
 
     #[tokio::test]
     async fn test_engine_add_lfo_produces_values() {
-        let queue = Arc::new(MpscQueue::with_capacity(64));
-        let mut engine = PatchbayEngine::new(queue.clone());
+        let (cmd_queue, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mut engine = PatchbayEngine::new(cmd_queue);
 
         engine.add_lfo(
             "test_lfo",
@@ -259,13 +257,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
         // Should have produced values
-        assert!(!queue.is_empty());
+        assert!(!mailbox.is_empty());
     }
 
     #[tokio::test]
     async fn test_engine_handle_event_direct() {
-        let queue = Arc::new(MpscQueue::with_capacity(64));
-        let mut engine = PatchbayEngine::new(queue.clone());
+        let (cmd_queue, mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mut engine = PatchbayEngine::new(cmd_queue);
 
         engine.add_mapping(midi_cc(
             7,
@@ -285,15 +283,15 @@ mod tests {
         };
         engine.handle_event(event);
 
-        let cmd = queue.pop().unwrap();
+        let cmd = mailbox.pop().unwrap();
         assert_eq!(cmd.parameter.as_ref(), "volume");
         assert!((cmd.value.as_f32().unwrap() - 0.5).abs() < 1e-6);
     }
 
     #[tokio::test]
     async fn test_engine_stop() {
-        let queue = Arc::new(MpscQueue::new());
-        let mut engine = PatchbayEngine::new(queue.clone());
+        let (cmd_queue, _mailbox) = ActorRef::<SetParameter>::new_pair();
+        let mut engine = PatchbayEngine::new(cmd_queue);
 
         engine.add_lfo(
             "test_lfo",
@@ -314,9 +312,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_drop_stops_tasks() {
-        let queue = Arc::new(MpscQueue::new());
+        let (cmd_queue, _mailbox) = ActorRef::<SetParameter>::new_pair();
         {
-            let mut engine = PatchbayEngine::new(queue.clone());
+            let mut engine = PatchbayEngine::new(cmd_queue);
             engine.add_lfo(
                 "test_lfo",
                 1.0,

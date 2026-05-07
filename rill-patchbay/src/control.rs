@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use rill_core::prelude::*;
 use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
-use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
+use rill_core::queues::{SetParameter, SignalOrigin};
+use rill_core::traits::ActorRef;
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 
@@ -582,13 +583,13 @@ pub struct PatchbayControl {
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
     sequencer_handle: Option<SequencerHandle>,
     sequencer_task: Option<tokio::task::JoinHandle<()>>,
-    command_queue: Arc<MpscQueue<SetParameter>>,
+    command_queue: ActorRef<SetParameter>,
     time: Time,
 }
 
 impl PatchbayControl {
     /// Create a new patchbay controller.
-    pub fn new(command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
+    pub fn new(command_queue: ActorRef<SetParameter>) -> Self {
         Self {
             mappings: Vec::new(),
             servos: HashMap::new(),
@@ -876,7 +877,7 @@ impl PatchbayControl {
                             new_bar,
                         );
                         for cmd in cmds {
-                            let _ = queue.push(cmd);
+                            let _ = queue.send(cmd);
                         }
                     }
                     Err(_) => return,
@@ -929,7 +930,7 @@ impl PatchbayControl {
                         .ui_tx
                         .send(UiCommand::SetValue(cmd.value.as_f32().unwrap_or(0.0) as f64));
                 } else {
-                    let _ = self.command_queue.push(cmd);
+                    let _ = self.command_queue.send(cmd);
                 }
             }
         }
@@ -944,7 +945,7 @@ impl PatchbayControl {
 
         for servo in self.servos.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
-                let _ = self.command_queue.push(cmd);
+                let _ = self.command_queue.send(cmd);
             }
         }
     }
@@ -1078,8 +1079,7 @@ mod tests {
     #[test]
     fn test_lfo_servo() {
         let node = NodeId(1);
-        let queue = Arc::new(MpscQueue::with_capacity(64));
-        let mut control = PatchbayControl::new(queue);
+        let mut control = PatchbayControl::new(ActorRef::new_pair().0);
 
         control.add_lfo(
             "test_lfo",
@@ -1103,8 +1103,7 @@ mod tests {
     #[test]
     fn test_envelope_servo() {
         let node = NodeId(1);
-        let queue = Arc::new(MpscQueue::with_capacity(64));
-        let mut control = PatchbayControl::new(queue.clone());
+        let mut control = PatchbayControl::new(ActorRef::new_pair().0);
 
         control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
 

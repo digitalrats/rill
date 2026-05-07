@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rill_core::queues::{SetParameter, SignalOrigin};
-use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_core::traits::{ActorRef, NodeId, ParamValue, ParameterId, PortId};
 use rill_patchbay::control::{ControlEvent, EventPattern, OscSurface, PatchbayControl};
 
 use crate::osc::osc::{OscMessage, OscType};
@@ -32,7 +32,7 @@ impl OscHandle {
     /// Bind an OSC server, register system + surface handlers, spawn recv loop.
     pub async fn start(
         bind: &str,
-        queue: Arc<rill_core::queues::MpscQueue<SetParameter>>,
+        queue: ActorRef<SetParameter>,
         control: Arc<std::sync::Mutex<PatchbayControl>>,
         surface: OscSurface,
     ) -> Result<Self, String> {
@@ -62,7 +62,7 @@ impl OscHandle {
                 _ => return,
             };
             if let Ok(pid) = ParameterId::new(&param) {
-                let _ = q.push(SetParameter::new(
+                let _ = q.send(SetParameter::new(
                     PortId::param(node, 0),
                     pid,
                     ParamValue::Float(value),
@@ -79,7 +79,9 @@ impl OscHandle {
         // /sys/status
         let q = queue.clone();
         server.handle("/sys/status", move |_: OscMessage, _: SocketAddr| {
-            log::info!("status: queue_empty={}", q.is_empty());
+            let alive = q.is_alive();
+            let dead = q.dead_letters().is_empty();
+            log::info!("status: actor_alive={alive}, dead_letters_empty={dead}");
         });
 
         // ── User surface handlers ──────────────────────────────────────
@@ -105,7 +107,7 @@ impl OscHandle {
                     log::warn!("OSC surface: control lock failed");
                     if let Some(normalized) = event.normalized_value() {
                         if let Ok(pid) = ParameterId::new(&path) {
-                            let _ = q.push(SetParameter::new(
+                            let _ = q.send(SetParameter::new(
                                 PortId::param(NodeId(0), 0),
                                 pid,
                                 ParamValue::Float(normalized),

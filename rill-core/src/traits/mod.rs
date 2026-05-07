@@ -7,6 +7,8 @@
 pub mod action;
 /// Active node trait — nodes that drive graph processing.
 pub mod active;
+/// Actor model — [`ActorCell`] trait + [`ActorRef`] handle.
+pub mod actor;
 /// Algorithm trait and action contexts.
 pub mod algorithm;
 mod error;
@@ -24,6 +26,7 @@ pub mod router;
 // Re-export all public items
 pub use action::*;
 pub use active::*;
+pub use actor::*;
 pub use algorithm::*;
 pub use error::*;
 pub use node::*;
@@ -56,6 +59,8 @@ pub type ControlValue<T> = T;
 pub mod prelude {
     // Re-export from parent modules
     pub use super::{
+        // Actor model
+        ActorRef,
         // Core traits
         Node,
         NodeCategory,

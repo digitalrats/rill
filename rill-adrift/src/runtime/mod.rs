@@ -38,9 +38,8 @@
 
 use std::sync::Arc;
 
-use rill_core::queues::MpscQueue;
 use rill_core::queues::SetParameter;
-use rill_core::traits::ParamValue;
+use rill_core::traits::{ActorRef, ParamValue};
 use rill_core::NodeId;
 #[cfg(feature = "osc")]
 use rill_patchbay::control::{OscSurface, PatchbayControl};
@@ -113,8 +112,8 @@ pub enum RuntimeError {
 /// start, or use the free function run for
 /// the all-in-one lifecycle.
 pub struct Runtime {
-    /// Lock-free command queue (control → audio thread).
-    pub(crate) queue: Arc<MpscQueue<SetParameter>>,
+    /// Actor reference for sending commands to the audio graph.
+    pub(crate) actor_ref: ActorRef<SetParameter>,
 
     /// Host configuration (stored for serialized graph/patchbay loading).
     #[cfg(feature = "serialization")]
@@ -143,8 +142,9 @@ pub struct Runtime {
 impl Runtime {
     /// Create a new (stopped) runtime with the given configuration.
     pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
+        let (actor_ref, _mailbox) = ActorRef::new_pair();
         Self {
-            queue: Arc::new(MpscQueue::new()),
+            actor_ref,
             control: None,
             #[cfg(feature = "serialization")]
             config,
@@ -203,8 +203,7 @@ impl Runtime {
     /// Creates/replaces the [`PatchbayEngine`] and updates the OSC surface.
     #[cfg(feature = "serialization")]
     pub fn load_patchbay(&mut self, doc: PatchbayDocument) -> Result<(), RuntimeError> {
-        let queue = self.queue.clone();
-        let mut engine = PatchbayEngine::new(queue.clone());
+        let mut engine = PatchbayEngine::new(self.actor_ref.clone());
         let registry = FunctionRegistry::builtin();
         engine
             .load_document(&doc, &registry)
@@ -215,7 +214,7 @@ impl Runtime {
         #[cfg(feature = "osc")]
         {
             self.osc_surface = doc.osc_surface.clone();
-            let mut ctrl = PatchbayControl::new(self.queue.clone());
+            let mut ctrl = PatchbayControl::new(self.actor_ref.clone());
             doc.apply_to(&mut ctrl, &registry)
                 .map_err(RuntimeError::Patchbay)?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
@@ -230,7 +229,7 @@ impl Runtime {
     /// Lock-free; safe from any thread.
     pub fn set_param(&self, node: NodeId, param: &str, value: f32) {
         let pid = rill_core::traits::ParameterId::new(param).unwrap();
-        let _ = self.queue.push(SetParameter::new(
+        self.actor_ref.send(SetParameter::new(
             rill_core::traits::PortId::param(node, 0),
             pid,
             ParamValue::Float(value),
@@ -238,9 +237,9 @@ impl Runtime {
         ));
     }
 
-    /// Access the shared command queue.
-    pub fn queue(&self) -> Arc<MpscQueue<SetParameter>> {
-        self.queue.clone()
+    /// Access the shared actor reference for sending commands.
+    pub fn actor_ref(&self) -> ActorRef<SetParameter> {
+        self.actor_ref.clone()
     }
 
     // ─── Lifecycle ─────────────────────────────────────────────────
@@ -265,12 +264,12 @@ impl Runtime {
 
         let control = self.control_shared.clone().unwrap_or_else(|| {
             Arc::new(std::sync::Mutex::new(PatchbayControl::new(
-                self.queue.clone(),
+                self.actor_ref.clone(),
             )))
         });
         let surface = self.osc_surface.clone();
 
-        let handle = OscHandle::start(bind, self.queue.clone(), control, surface)
+        let handle = OscHandle::start(bind, self.actor_ref.clone(), control, surface)
             .await
             .map_err(RuntimeError::Osc)?;
 

@@ -1,15 +1,15 @@
-use rill_core::queues::MpscQueue;
+use rill_core::queues::SetParameter;
+use rill_core::traits::ActorRef;
 use rill_core::NodeId;
 use rill_patchbay::{
     FunctionAutomaton, ParameterMapping, PatchbayControl, Servo, StatefulFunctionAutomaton,
 };
-use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Custom Automaton Examples ===\n");
 
-    let queue = Arc::new(MpscQueue::with_capacity(1024));
-    let mut control = PatchbayControl::new(queue);
+    let (actor_ref, _mailbox) = ActorRef::<SetParameter>::new_pair();
+    let mut control = PatchbayControl::new(actor_ref);
     let node = NodeId(1);
 
     // Example 1: Simple closure

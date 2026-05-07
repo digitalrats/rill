@@ -8,7 +8,7 @@ use rill_core::time::SystemClock;
 use rill_core::time::{ClockSource, ClockTick};
 use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
-use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
+use rill_core::traits::{ActorCell, ActorRef, Node, NodeId, NodeParams, NodeVariant};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -65,6 +65,10 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
     resources: Vec<GraphResource>,
+    /// Optional external command queue. If set, `build()` uses this
+    /// instead of creating a fresh queue, enabling the Runtime to
+    /// provide a single shared queue for both graph and patchbay.
+    command_queue: Option<Arc<MpscQueue<SetParameter>>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
@@ -83,7 +87,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
             resources: Vec::new(),
+            command_queue: None,
         }
+    }
+
+    /// Attach an external command queue.
+    ///
+    /// When set, [`build`](Self::build) uses this queue instead of
+    /// creating a new one, allowing the graph to share a single queue
+    /// with the patchbay and other control subsystems.
+    pub fn with_command_queue(mut self, queue: Arc<MpscQueue<SetParameter>>) -> Self {
+        self.command_queue = Some(queue);
+        self
     }
 
     /// Register a named resource.
@@ -404,8 +419,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             self.nodes.into_iter().map(|e| e.node).collect();
 
         // Auto-start driver node (registers process callback on backend).
-        let mut command_queue: Option<Box<MpscQueue<SetParameter>>> = None;
-        if let Some(ref _backend) = backend_box {
+        let dead = Arc::new(MpscQueue::new());
+        let cmd_queue = if let Some(q) = self.command_queue.take() {
+            q
+        } else {
+            Arc::new(MpscQueue::<SetParameter>::with_capacity(64))
+        };
+        let have_queue = if let Some(ref _backend) = backend_box {
             let driver_idx = nodes
                 .iter()
                 .position(|n| {
@@ -422,8 +442,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 let nodes_ptr = nodes.as_mut_ptr();
                 let len = nodes.len();
                 let source_idx = topo[0];
-                let cmd_queue = Box::new(MpscQueue::<SetParameter>::with_capacity(64));
-                let queue_ptr: *const MpscQueue<SetParameter> = &*cmd_queue;
+                let queue_ptr: *const MpscQueue<SetParameter> = Arc::as_ptr(&cmd_queue);
                 let handle = GraphHandle {
                     nodes: nodes_ptr as *mut u8,
                     len,
@@ -432,9 +451,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     queue: queue_ptr,
                 };
                 nodes[driver_idx].start(handle);
-                command_queue = Some(cmd_queue);
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
+        let command_queue = if have_queue { Some(cmd_queue) } else { None };
 
         let owned_buffers = buffers.into_inner();
 
@@ -449,6 +473,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             buffers: owned_buffers,
             backend: backend_box,
             command_queue,
+            dead,
         })
     }
 }
@@ -474,12 +499,14 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     pub(crate) resources: Vec<GraphResource>,
     /// Named buffers (tape loops, etc.) shared between nodes.
     #[allow(dead_code)]
-    buffers: Vec<Box<dyn Buffer<T>>>,
+    buffers: Vec<Box<dyn Buffer<T> + Send>>,
     /// Shared audio backend (alive for the graph's lifetime).
     #[allow(dead_code)]
     backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
     /// Command queue for sending parameters from control to audio thread.
-    command_queue: Option<Box<MpscQueue<SetParameter>>>,
+    command_queue: Option<Arc<MpscQueue<SetParameter>>>,
+    /// Dead letters — undeliverable messages collected when the actor is gone.
+    dead: Arc<MpscQueue<SetParameter>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
@@ -547,18 +574,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         }
     }
 
+    /// Obtain an [`ActorRef`] for sending commands to this graph.
+    ///
+    /// The returned handle holds a weak reference — when the `Graph` is
+    /// dropped, all subsequent `send` calls route to dead letters.
+    /// Returns `None` if no audio backend was configured (no queue created).
+    pub fn handle(&self) -> Option<ActorRef<SetParameter>> {
+        let mailbox = self.command_queue.as_ref()?;
+        Some(ActorRef::new(mailbox, self.dead.clone()))
+    }
+
     /// Send a parameter change command to the graph's audio thread.
     ///
-    /// The command is pushed into a lock-free queue and drained by the
-    /// audio callback on the next processing cycle. Returns `None` when
-    /// the queue is full (overflow).
-    /// Send a parameter change command to the graph's audio thread.
-    ///
-    /// The command is pushed into a lock-free queue and drained by the
-    /// audio callback on the next processing cycle. Returns `None` when
-    /// the queue is full (overflow) or no queue was created.
+    /// Delegates to [`handle`](Self::handle) internally.
     pub fn send_parameter(&self, cmd: SetParameter) -> Option<()> {
-        self.command_queue.as_ref()?.push(cmd).ok()
+        self.handle()?.send(cmd);
+        Some(())
     }
 
     /// Consume the graph and return its owned parts (test only).
@@ -569,7 +600,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         Vec<NodeVariant<T, BUF_SIZE>>,
         Vec<usize>,
         ClockTick,
-        Vec<Box<dyn Buffer<T>>>,
+        Vec<Box<dyn Buffer<T> + Send>>,
     ) {
         let Self {
             nodes,
@@ -580,8 +611,25 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             buffers,
             backend: _,
             command_queue: _,
+            dead: _,
         } = self;
         (nodes, topo_order, current_tick, buffers)
+    }
+}
+
+// ============================================================================
+// ActorCell implementation
+// ============================================================================
+
+impl<T: Transcendental, const BUF_SIZE: usize> ActorCell for Graph<T, BUF_SIZE> {
+    type Msg = SetParameter;
+
+    /// Process a single parameter command by writing to the target node.
+    fn receive(&mut self, msg: SetParameter) {
+        let idx = msg.port.node_id().inner() as usize;
+        if idx < self.nodes.len() {
+            let _ = self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+        }
     }
 }
 
