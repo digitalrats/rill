@@ -36,9 +36,3 @@ pub use engine::{SequencerCommand, SequencerHandle, SnapshotSequencer};
 pub use pattern::{Pattern, StepPlayMode};
 pub use snapshot::{ParameterTarget, Snapshot};
 pub use step::SequenceStep;
-
-/// Serializable sequencer configuration (serde feature gate).
-#[cfg(feature = "serde")]
-mod def;
-#[cfg(feature = "serde")]
-pub use def::SequencerDef;

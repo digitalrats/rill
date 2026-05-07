@@ -17,7 +17,7 @@ use std::fmt::Write;
 #[cfg(feature = "serde")]
 use crate::serialization::PatchbayDef;
 #[cfg(feature = "serde")]
-use crate::sequencer::SequencerDef;
+use crate::serialization::SequencerDef;
 
 /// Configuration for patchbay DOT generation.
 #[derive(Default)]

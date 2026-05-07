@@ -112,12 +112,12 @@ pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // Sequencer re-exports
-#[cfg(feature = "serde")]
-pub use sequencer::SequencerDef;
 pub use sequencer::{
     ParameterTarget, Pattern, SequenceStep, SequencerHandle, Snapshot, SnapshotSequencer,
     StepPlayMode,
 };
+#[cfg(feature = "serde")]
+pub use serialization::SequencerDef;
 
 // =============================================================================
 // Прелюдия для удобного импорта

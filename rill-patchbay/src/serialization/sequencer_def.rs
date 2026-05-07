@@ -10,7 +10,7 @@
 //!
 //! This module is available only when the `serde` feature is enabled.
 
-use super::{Pattern, Snapshot, SnapshotSequencer};
+use crate::sequencer::{Pattern, Snapshot, SnapshotSequencer};
 
 /// Serializable snapshot-sequencer configuration.
 ///
