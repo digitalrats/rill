@@ -584,14 +584,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         Some(ActorRef::new(mailbox, self.dead.clone()))
     }
 
-    /// Send a parameter change command to the graph's audio thread.
-    ///
-    /// Delegates to [`handle`](Self::handle) internally.
-    pub fn send_parameter(&self, cmd: SetParameter) -> Option<()> {
-        self.handle()?.send(cmd);
-        Some(())
-    }
-
     /// Consume the graph and return its owned parts (test only).
     #[cfg(test)]
     pub fn into_parts(

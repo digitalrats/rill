@@ -140,13 +140,14 @@ fn test_send_parameter_via_queue() {
 
     // Send parameter via queue
     graph
-        .send_parameter(SetParameter::new(
+        .handle()
+        .expect("graph has a command queue")
+        .send(SetParameter::new(
             PortId::param(rill_adrift::rill_core::NodeId(0), 0),
             ParameterId::new("frequency").unwrap(),
             ParamValue::Float(880.0),
             SignalOrigin::Manual,
-        ))
-        .expect("send_parameter should succeed");
+        ));
 
     // Parameter is in the queue — not yet applied (no callback fired).
     // Run graph once — NullBackend fires the callback and returns.

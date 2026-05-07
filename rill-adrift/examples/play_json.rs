@@ -76,13 +76,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_run = running.clone();
     let audio_thread = std::thread::spawn(move || {
         let graph = build_graph(&json, &backend_name);
+        let cmd_queue = graph.handle();
 
         // Override sample file via command queue (before run, applies on first callback)
-        if let Some(ref path) = wav_file {
-            let _ = graph.send_parameter(SetParameter::new(
+        if let (Some(ref path), Some(ref q)) = (wav_file.as_ref(), cmd_queue.as_ref()) {
+            q.send(SetParameter::new(
                 PortId::param(NodeId(0), 0),
                 ParameterId::new("file").unwrap(),
-                ParamValue::String(path.clone()),
+                ParamValue::String(path.to_string()),
                 SignalOrigin::Manual,
             ));
         }

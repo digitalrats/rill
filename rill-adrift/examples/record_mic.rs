@@ -18,12 +18,10 @@ use rill_adrift::io::input::AudioInput;
 use rill_adrift::io::signal_io::IoBackendPtr;
 use rill_adrift::io::AudioConfig;
 use rill_adrift::rill_core::io::IoBackend;
-use rill_adrift::rill_core::queues::MpscQueue;
+use rill_adrift::rill_core::queues::SetParameter;
 use rill_adrift::rill_core::time::{ClockTick, SystemClock};
-use rill_adrift::rill_core::traits::active::GraphHandle;
-use rill_adrift::rill_core::traits::processable::NodeVariant;
 use rill_adrift::rill_core::traits::{
-    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    ActorRef, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     ProcessResult, Sink,
 };
 use rill_adrift::rill_core::Transcendental;
@@ -223,50 +221,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.connect_signal(src, 0, snk, 0);
     builder.connect_signal(src, 1, snk, 1);
 
-    let mut graph = builder
+    let (actor_ref, mailbox) = ActorRef::<SetParameter>::new_pair();
+    let graph = builder
+        .with_command_queue(mailbox)
         .build(Box::new(SystemClock::with_sample_rate(RATE)), None)
         .expect("graph build");
 
-    let topo = graph.topo_order().to_vec();
-    let source_idx = topo[0];
-    let nodes_ptr = graph.nodes_mut() as *mut [NodeVariant<f32, BUF>] as *mut u8;
-    let len = graph.nodes().len();
-
-    // ── Push model: AudioInput управляет графом ───────────────────────────
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let handle = GraphHandle {
-        nodes: nodes_ptr,
-        len,
-        source_idx,
-        sample_rate: RATE,
-        queue: Arc::as_ptr(&queue) as *const _,
-    };
-
-    let audio_input: &mut AudioInput<f32, BUF> = {
-        let n = &mut graph.nodes_mut()[source_idx];
-        if let NodeVariant::Source(ref mut s) = n {
-            unsafe {
-                &mut *(s.as_mut() as *mut dyn rill_adrift::rill_core::traits::Source<f32, BUF>
-                    as *mut AudioInput<f32, BUF>)
-            }
-        } else {
-            panic!("expected AudioInput at index {source_idx}");
-        }
-    };
-
-    use rill_adrift::rill_core::traits::active::ActiveNode;
-
-    ActiveNode::start(&mut *audio_input, handle);
-
     // ── Запуск аудиотреда ─────────────────────────────────────────────────
     let running = Arc::new(AtomicBool::new(true));
-    let t_running = running.clone();
+    let t_run = running.clone();
     let audio_thread = std::thread::spawn(move || {
-        let _ = backend.run(t_running.clone());
-        while t_running.load(Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = backend.stop();
+        graph.run(t_run).ok();
     });
 
     let start = std::time::Instant::now();
@@ -279,21 +244,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     running.store(false, Ordering::Release);
     audio_thread.thread().unpark();
     let _ = audio_thread.join();
-
-    // ── Счётчик вызовов из RecordingSink ──────────────────────────────────
-    let _sink_calls = {
-        let sink_idx = topo[1];
-        let n = &mut graph.nodes_mut()[sink_idx];
-        if let NodeVariant::Sink(ref mut s) = n {
-            let rs: &mut RecordingSink<f32, BUF> = unsafe {
-                &mut *(s.as_mut() as *mut dyn rill_adrift::rill_core::traits::Sink<f32, BUF>
-                    as *mut RecordingSink<f32, BUF>)
-            };
-            rs.call_count()
-        } else {
-            0
-        }
-    };
 
     // ── Сохранение WAV ────────────────────────────────────────────────────
     let data = recorded.lock().unwrap();
