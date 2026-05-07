@@ -10,6 +10,14 @@
   - `SignalBuffer` merged into `Buffer<T: Scalar>` — replaces both old `Buffer` and `SignalBuffer` traits
   - `SignalSource` → `SignalOrigin`
 
+### 🧹 Removed
+
+- `rill-core-dsp`: removed `unstable` feature (no code behind it, required nightly)
+
+### 🔧 Fixes
+
+- `rill-io/pipewire`: fixed `AudioBackend::write` stub returning `0` instead of `buffer.len()`
+
 ## [0.5.0-beta.1] — 2026-05-04
 
 ### 🎉 First beta release
