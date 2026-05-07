@@ -50,7 +50,7 @@ pub use telemetry_block::TelemetryBlock;
 // Re-export key signal types
 pub use signal::{
     AutomatonCommand, CalibrationKind, CommandEnum, MappingType, SensorCommand, ServoCommand,
-    SetParameter, SignalSource,
+    SetParameter, SignalOrigin,
 };
 
 // =============================================================================

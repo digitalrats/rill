@@ -60,7 +60,7 @@ macro_rules! processor_node {
         }
 
         impl<$T: $signal_num, const $BUF: usize>
-            $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
+            $crate::Node<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
             fn node_type_id(&self) -> $crate::NodeTypeId

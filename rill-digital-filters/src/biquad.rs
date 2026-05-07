@@ -5,8 +5,8 @@
 
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessError,
-    ProcessResult, Processor, SignalNode, Transcendental,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    ProcessError, ProcessResult, Processor, Transcendental,
 };
 use rill_core_dsp::algorithm::ParameterizedAlgorithm;
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
@@ -168,9 +168,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-    for BiquadProcessor<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,

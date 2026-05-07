@@ -17,18 +17,18 @@
 
 use crate::math::Transcendental;
 use crate::time::ClockTick;
-use crate::traits::node::SignalNode;
+use crate::traits::node::Node;
 use crate::traits::ProcessResult;
 
 /// Маршрутизатор сигналов — N входов, M выходов, конфигурируемая матрица.
 ///
 /// В отличие от `Processor::process()`, который выполняет DSP, `Router`
 /// только перераспределяет входные сигналы по выходам. Маршрутизатор
-/// сам управляет своими выходными портами через `SignalNode::output_port_mut()`.
+/// сам управляет своими выходными портами через `Node::output_port_mut()`.
 ///
 /// `TapeLoop` получается не через этот трейт, а через реестр ресурсов графа
-/// — см. `GraphBuilder::add_resource()` и `SignalNode::init()`.
-pub trait Router<T: Transcendental, const BUF_SIZE: usize>: SignalNode<T, BUF_SIZE> {
+/// — см. `GraphBuilder::add_resource()` и `Node::init()`.
+pub trait Router<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
     /// Выполнить маршрутизацию одного блока.
     ///
     /// Реализация должна прочитать сигналы из `inputs` и записать

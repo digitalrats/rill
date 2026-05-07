@@ -27,7 +27,7 @@
 //! let param = ParameterId::new("gain").unwrap();
 //!
 //! // Где-то в мире автоматов
-//! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalSource::Automaton("lfo".into()));
+//! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalOrigin::Automaton("lfo".into()));
 //! queue.send(CommandEnum::SetParameter(cmd)).unwrap();
 //!
 //! // Где-то в звуковом мире
@@ -45,7 +45,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 //==============================================================================
-// SignalSource — источник сигнала
+// SignalOrigin — источник сигнала
 //==============================================================================
 
 /// Origin of a signal or command.
@@ -53,7 +53,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Used for tracking command provenance, feedback-loop prevention,
 /// and telemetry attribution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum SignalSource {
+pub enum SignalOrigin {
     /// Command from an automaton (LFO, envelope, sequencer).
     Automaton(String),
     /// Command from a sensor (physical input device).
@@ -68,41 +68,41 @@ pub enum SignalSource {
     Script,
 }
 
-impl SignalSource {
+impl SignalOrigin {
     /// Return the human-readable name of this source.
     pub fn name(&self) -> &str {
         match self {
-            SignalSource::Automaton(name) => name,
-            SignalSource::Sensor(name) => name,
-            SignalSource::Servo(name) => name,
-            SignalSource::External(name) => name,
-            SignalSource::Manual => "manual",
-            SignalSource::Script => "script",
+            SignalOrigin::Automaton(name) => name,
+            SignalOrigin::Sensor(name) => name,
+            SignalOrigin::Servo(name) => name,
+            SignalOrigin::External(name) => name,
+            SignalOrigin::Manual => "manual",
+            SignalOrigin::Script => "script",
         }
     }
 
     /// Return the type category of this source (e.g. "automaton", "sensor").
     pub fn kind(&self) -> &'static str {
         match self {
-            SignalSource::Automaton(_) => "automaton",
-            SignalSource::Sensor(_) => "sensor",
-            SignalSource::Servo(_) => "servo",
-            SignalSource::External(_) => "external",
-            SignalSource::Manual => "manual",
-            SignalSource::Script => "script",
+            SignalOrigin::Automaton(_) => "automaton",
+            SignalOrigin::Sensor(_) => "sensor",
+            SignalOrigin::Servo(_) => "servo",
+            SignalOrigin::External(_) => "external",
+            SignalOrigin::Manual => "manual",
+            SignalOrigin::Script => "script",
         }
     }
 }
 
-impl fmt::Display for SignalSource {
+impl fmt::Display for SignalOrigin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SignalSource::Automaton(name) => write!(f, "⚙️ {}", name),
-            SignalSource::Sensor(name) => write!(f, "👁️ {}", name),
-            SignalSource::Servo(name) => write!(f, "🦾 {}", name),
-            SignalSource::External(name) => write!(f, "🌍 {}", name),
-            SignalSource::Manual => write!(f, "👤 manual"),
-            SignalSource::Script => write!(f, "📜 script"),
+            SignalOrigin::Automaton(name) => write!(f, "⚙️ {}", name),
+            SignalOrigin::Sensor(name) => write!(f, "👁️ {}", name),
+            SignalOrigin::Servo(name) => write!(f, "🦾 {}", name),
+            SignalOrigin::External(name) => write!(f, "🌍 {}", name),
+            SignalOrigin::Manual => write!(f, "👤 manual"),
+            SignalOrigin::Script => write!(f, "📜 script"),
         }
     }
 }
@@ -119,7 +119,7 @@ pub struct SetParameter {
     /// New parameter value.
     pub value: ParamValue,
     /// Origin of this command.
-    pub source: SignalSource,
+    pub source: SignalOrigin,
     /// Unix timestamp (microseconds).
     pub timestamp: u64,
 }
@@ -130,7 +130,7 @@ impl SetParameter {
         port: PortId,
         parameter: ParameterId,
         value: ParamValue,
-        source: SignalSource,
+        source: SignalOrigin,
     ) -> Self {
         Self {
             port,
@@ -146,7 +146,7 @@ impl SetParameter {
         port: PortId,
         parameter: ParameterId,
         value: ParamValue,
-        source: SignalSource,
+        source: SignalOrigin,
         timestamp: u64,
     ) -> Self {
         Self {

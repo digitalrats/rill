@@ -1,3 +1,4 @@
+use crate::buffer::Buffer;
 use crate::math::Transcendental;
 use std::fmt;
 
@@ -161,6 +162,37 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
 impl<T: Transcendental, const N: usize> Default for RingBuffer<T, N> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T: Transcendental, const N: usize> Buffer<T> for RingBuffer<T, N> {
+    fn capacity(&self) -> usize {
+        N
+    }
+    fn len(&self) -> usize {
+        RingBuffer::len(self)
+    }
+    fn is_empty(&self) -> bool {
+        RingBuffer::is_empty(self)
+    }
+    fn is_full(&self) -> bool {
+        RingBuffer::is_full(self)
+    }
+    fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+    fn fill(&mut self, value: T) {
+        self.data.fill(value);
+    }
+    fn copy_from(&mut self, src: &[T]) {
+        let len = src.len().min(N);
+        self.data[..len].copy_from_slice(&src[..len]);
+    }
+    fn clear(&mut self) {
+        RingBuffer::clear(self);
     }
 }
 

@@ -8,7 +8,7 @@ mod graph_pipewire_it {
     use std::time::Duration;
 
     use rill_core::io::IoBackend;
-    use rill_core::traits::{SignalNode, Sink, Source};
+    use rill_core::traits::{Node, Sink, Source};
     use rill_core::ClockTick;
     use rill_io::audio_io::AudioIoPtr;
     use rill_io::AudioBackend;

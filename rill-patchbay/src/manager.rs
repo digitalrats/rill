@@ -15,7 +15,7 @@
 //! - `PatchbayControl::handle_event()`
 
 use rill_core::prelude::*;
-use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -635,7 +635,7 @@ impl AnyServo for TestServo {
                 PortId::param(self.target_node, 0),
                 ParameterId::new(&self.target_param).unwrap(),
                 ParamValue::Float(value as f32),
-                SignalSource::Manual,
+                SignalOrigin::Manual,
             ))
         } else {
             None

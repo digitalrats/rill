@@ -52,8 +52,8 @@ impl<T> Default for BackendFactory<T> {
     }
 }
 
-/// Backend configuration passed to [`GraphBuilder::build`](crate::SignalGraph::build).
-/// Backend configuration passed to [`GraphBuilder::build`](crate::SignalGraph::build).
+/// Backend configuration passed to [`GraphBuilder::build`](crate::Graph::build).
+/// Backend configuration passed to [`GraphBuilder::build`](crate::Graph::build).
 pub struct BackendConfig<'a, T> {
     /// Backend factory to use for construction.
     pub factory: &'a BackendFactory<T>,

@@ -15,7 +15,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rill_core::queues::{SetParameter, SignalSource};
+use rill_core::queues::{SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 use rill_patchbay::control::{ControlEvent, EventPattern, OscSurface, PatchbayControl};
 
@@ -66,7 +66,7 @@ impl OscHandle {
                     PortId::param(node, 0),
                     pid,
                     ParamValue::Float(value),
-                    SignalSource::External("osc".into()),
+                    SignalOrigin::External("osc".into()),
                 ));
             }
         });
@@ -109,7 +109,7 @@ impl OscHandle {
                                 PortId::param(NodeId(0), 0),
                                 pid,
                                 ParamValue::Float(normalized),
-                                SignalSource::External("osc".into()),
+                                SignalOrigin::External("osc".into()),
                             ));
                         }
                     }

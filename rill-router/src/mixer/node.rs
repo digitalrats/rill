@@ -3,8 +3,8 @@
 use super::channel::{ChannelConfig, ChannelState};
 use super::send::{SendConfig, SendType};
 use rill_core::traits::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange,
-    ParamType, ParamValue, ParameterId, Port, SignalNode,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange,
+    ParamType, ParamValue, ParameterId, Port,
 };
 use rill_core::ClockTick;
 use rill_core::{ProcessError, ProcessResult};
@@ -232,7 +232,7 @@ impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> rill_core::traits::SignalNode<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
+impl<const BUF_SIZE: usize> rill_core::traits::Node<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         let mut params = vec![ParamMetadata {
             name: "master_volume".to_string(),

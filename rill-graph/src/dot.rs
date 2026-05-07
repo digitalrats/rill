@@ -1,6 +1,6 @@
 //! DOT graph serialization for Graphviz visualization.
 //!
-//! Generates `digraph` DOT format from a [`SignalGraph`].  Uses
+//! Generates `digraph` DOT format from a [`Graph`].  Uses
 //! Р-схема (Glushkov R-scheme) inspired node shapes:
 //!
 //! | NodeCategory | DOT shape | Color | Meaning |
@@ -19,10 +19,10 @@
 use std::fmt::Write;
 
 use rill_core::traits::processable::NodeVariant;
-use rill_core::traits::{NodeCategory, SignalNode};
+use rill_core::traits::{Node, NodeCategory};
 use rill_core::Transcendental;
 
-use crate::graph::SignalGraph;
+use crate::graph::Graph;
 
 /// Configuration for DOT graph generation.
 pub struct DotConfig {
@@ -52,7 +52,7 @@ impl Default for DotConfig {
 
 /// Generate a DOT string from a signal graph.
 pub fn to_dot<T: Transcendental, const B: usize>(
-    graph: &SignalGraph<T, B>,
+    graph: &Graph<T, B>,
     config: &DotConfig,
 ) -> String {
     let mut dot = String::new();

@@ -50,7 +50,7 @@ let osc = builder.add_source(
     Box::new(SineOsc::<f32, BUF_SIZE>::new().with_frequency(440.0))
 );
 // Add processors, sinks, connections via builder...
-// Then call builder.build() to obtain the immutable SignalGraph.
+// Then call builder.build() to obtain the immutable Graph.
 ```
 
 ## Crates

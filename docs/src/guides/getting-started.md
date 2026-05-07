@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // Minimal sink that prints RMS every block
 struct MySink<const BUF_SIZE: usize> { .. }
-impl SignalNode<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
+impl Node<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 impl Sink<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 ```
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rill_core::prelude::*;
 use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
-use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 
@@ -343,7 +343,7 @@ impl Mapping {
                 PortId::param(self.target.node_id, 0),
                 pid,
                 ParamValue::Float(value),
-                SignalSource::External(self.name.clone()),
+                SignalOrigin::External(self.name.clone()),
             )
         })
     }
@@ -513,7 +513,7 @@ impl<A: Automaton> Servo<A> {
                     PortId::param(self.target_node, 0),
                     pid,
                     ParamValue::Float(clamped as f32),
-                    SignalSource::Automaton(self.id.clone()),
+                    SignalOrigin::Automaton(self.id.clone()),
                 ));
             }
         }

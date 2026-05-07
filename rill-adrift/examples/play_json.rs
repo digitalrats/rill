@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::registration;
-use rill_adrift::rill_core::queues::{SetParameter, SignalSource};
+use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
@@ -20,7 +20,7 @@ use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
-type Graph = rill_adrift::rill_graph::SignalGraph<f32, BUF>;
+type Graph = rill_adrift::rill_graph::Graph<f32, BUF>;
 
 fn build_graph(json: &str, backend_name: &str) -> Graph {
     let builder = registration::load_graph_json::<BUF>(json).expect("load_graph_json");
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PortId::param(NodeId(0), 0),
                 ParameterId::new("file").unwrap(),
                 ParamValue::String(path.clone()),
-                SignalSource::Manual,
+                SignalOrigin::Manual,
             ));
         }
 

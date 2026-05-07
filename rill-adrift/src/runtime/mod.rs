@@ -234,7 +234,7 @@ impl Runtime {
             rill_core::traits::PortId::param(node, 0),
             pid,
             ParamValue::Float(value),
-            rill_core::queues::SignalSource::Manual,
+            rill_core::queues::SignalOrigin::Manual,
         ));
     }
 

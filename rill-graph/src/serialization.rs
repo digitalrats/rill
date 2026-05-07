@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{NodeId, NodeParams, NodeVariant, ParamValue, SignalNode};
+use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParameterId;
 
 use crate::graph::GraphBuilder;
@@ -216,7 +216,7 @@ impl GraphDocument {
 }
 
 // ============================================================================
-// Export (SignalGraph → GraphDocument)
+// Export (Graph → GraphDocument)
 // ============================================================================
 
 impl GraphDocument {
@@ -224,7 +224,7 @@ impl GraphDocument {
     ///
     /// Iterates every node, reads its metadata and current parameters,
     /// and reconstructs all connections from port routing state.
-    pub fn from_graph<T: Transcendental, const B: usize>(graph: &super::SignalGraph<T, B>) -> Self {
+    pub fn from_graph<T: Transcendental, const B: usize>(graph: &super::Graph<T, B>) -> Self {
         let nodes_slice = graph.nodes();
         let sample_rate = graph.sample_rate();
 
@@ -489,7 +489,7 @@ fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
 
 /// Serialise a graph to pretty-printed JSON.
 pub fn to_json<T: Transcendental, const B: usize>(
-    graph: &super::SignalGraph<T, B>,
+    graph: &super::Graph<T, B>,
 ) -> Result<String, SerializationError> {
     let doc = GraphDocument::from_graph(graph);
     serde_json::to_string_pretty(&doc).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
@@ -507,7 +507,7 @@ pub fn from_json<T: Transcendental, const B: usize>(
 
 /// Serialise a graph to CBOR binary.
 pub fn to_cbor<T: Transcendental, const B: usize>(
-    graph: &super::SignalGraph<T, B>,
+    graph: &super::Graph<T, B>,
 ) -> Result<Vec<u8>, SerializationError> {
     let doc = GraphDocument::from_graph(graph);
     serde_cbor::to_vec(&doc).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
@@ -530,7 +530,7 @@ pub fn from_cbor<T: Transcendental, const B: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::SignalGraph;
+    use crate::graph::Graph;
     use crate::registry::NodeConstructor;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
@@ -594,7 +594,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const B: usize> SignalNode<T, B> for TestNode<T, B> {
+    impl<T: Transcendental, const B: usize> Node<T, B> for TestNode<T, B> {
         fn metadata(&self) -> rill_core::traits::NodeMetadata {
             NodeMetadata {
                 name: "TestNode".to_string(),
@@ -735,7 +735,7 @@ mod tests {
         r
     }
 
-    fn build_small_graph(registry: &NodeRegistry<f32, 64>) -> SignalGraph<f32, 64> {
+    fn build_small_graph(registry: &NodeRegistry<f32, 64>) -> Graph<f32, 64> {
         let mut b = GraphBuilder::new();
         let src = b
             .add_node(registry, "rill/test", &NodeParams::new(44100.0))
@@ -1019,7 +1019,7 @@ mod tests {
             .expect("build");
 
         let json = to_json(&graph).expect("to_json");
-        let mut restored = from_json(&json, &reg).expect("from_json");
+        let restored = from_json(&json, &reg).expect("from_json");
         assert_eq!(restored.node_count(), 3);
 
         // Verify connections

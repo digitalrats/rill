@@ -23,8 +23,8 @@ use rill_adrift::rill_core::time::{ClockTick, SystemClock};
 use rill_adrift::rill_core::traits::active::GraphHandle;
 use rill_adrift::rill_core::traits::processable::NodeVariant;
 use rill_adrift::rill_core::traits::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessResult,
-    SignalNode, Sink,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    ProcessResult, Sink,
 };
 use rill_adrift::rill_core::Transcendental;
 use rill_adrift::rill_graph::GraphBuilder;
@@ -64,7 +64,7 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
     }
 }
 
-impl<T: Transcendental, const B: usize> SignalNode<T, B> for RecordingSink<T, B> {
+impl<T: Transcendental, const B: usize> Node<T, B> for RecordingSink<T, B> {
     fn node_type_id(&self) -> rill_adrift::rill_core::NodeTypeId
     where
         Self: 'static + Sized,

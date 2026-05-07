@@ -8,7 +8,7 @@ use rill_core::time::SystemClock;
 use rill_core::time::{ClockSource, ClockTick};
 use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
-use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
+use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -238,7 +238,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Build the immutable SignalGraph.
+    /// Build the immutable Graph.
     ///
     /// # Errors
     ///
@@ -247,7 +247,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         mut self,
         clock_source: Box<dyn ClockSource>,
         backend: Option<&backend_factory::BackendConfig<'_, T>>,
-    ) -> Result<SignalGraph<T, BUF_SIZE>, BuildError> {
+    ) -> Result<Graph<T, BUF_SIZE>, BuildError> {
         let num_nodes = self.nodes.len();
 
         // --- adjacency for Kahn (audio edges only; feedback is not a DAG edge) ---
@@ -440,7 +440,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let allocated = self.resources.clone();
 
-        Ok(SignalGraph {
+        Ok(Graph {
             nodes,
             topo_order: topo,
             clock_source,
@@ -454,7 +454,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 }
 
 // ============================================================================
-// SignalGraph (Static DAG)
+// Graph (Static DAG)
 // ============================================================================
 
 /// Immutable signal graph with static DAG topology.
@@ -464,7 +464,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 /// port-level methods (`pre_process`, `snapshot_feedback`, `propagate`)
 /// called from external code (e.g. a real-time signal callback or an
 /// offline renderer).
-pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
+pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeVariant<T, BUF_SIZE>>,
     topo_order: Vec<usize>,
     #[allow(dead_code)]
@@ -482,7 +482,7 @@ pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
     command_queue: Option<Box<MpscQueue<SetParameter>>>,
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     // ========================================================================
     // Accessors
     // ========================================================================
@@ -594,8 +594,8 @@ mod tests {
     use rill_core::traits::algorithm::ActionContext;
     use rill_core::traits::processable::{ProcessContext, Processable};
     use rill_core::traits::{
-        NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-        PortDirection, PortId, ProcessResult, Processor, SignalNode, Sink, Source,
+        Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+        PortDirection, PortId, ProcessResult, Processor, Sink, Source,
     };
     use std::sync::Arc;
 
@@ -635,9 +635,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-        for ConstantSource<T, BUF_SIZE>
-    {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -750,9 +748,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-        for NoopProcessor<T, BUF_SIZE>
-    {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -839,7 +835,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -993,7 +989,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for TestSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for TestSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -1103,9 +1099,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-        for GainProcessor<T, BUF_SIZE>
-    {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for GainProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -1278,7 +1272,7 @@ mod tests {
 
     #[test]
     fn test_command_queue_drain() {
-        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
         use rill_core::traits::PortId;
 
         const BUF: usize = 64;
@@ -1299,7 +1293,7 @@ mod tests {
             PortId::control_in(NodeId(0), 0),
             ParameterId::new("multiplier").unwrap(),
             ParamValue::Float(5.0),
-            SignalSource::Manual,
+            SignalOrigin::Manual,
         ));
 
         while let Some(cmd) = queue.pop() {
@@ -1321,7 +1315,7 @@ mod tests {
 
     #[test]
     fn test_command_then_propagate() {
-        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         use rill_core::traits::PortId;
@@ -1350,7 +1344,7 @@ mod tests {
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
             ParamValue::Float(4.0),
-            SignalSource::Manual,
+            SignalOrigin::Manual,
         ));
         while let Some(cmd) = queue.pop() {
             let idx = cmd.port.node_id().inner() as usize;
@@ -1435,7 +1429,7 @@ mod tests {
 
     #[test]
     fn test_drain_fn_before_propagate() {
-        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         use rill_core::traits::PortId;
@@ -1464,7 +1458,7 @@ mod tests {
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
             ParamValue::Float(3.0),
-            SignalSource::Manual,
+            SignalOrigin::Manual,
         ));
 
         // Drain

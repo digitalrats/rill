@@ -123,6 +123,10 @@ impl<T: Transcendental> TapeLoop<T> {
 // ── Buffer trait impl ──────────────────────────────────────────────
 
 impl<T: Transcendental> Buffer<T> for TapeLoop<T> {
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     fn len(&self) -> usize {
         self.capacity
     }
@@ -135,21 +139,22 @@ impl<T: Transcendental> Buffer<T> for TapeLoop<T> {
         &mut self.buffer
     }
 
-    fn fill(&mut self, value: T)
-    where
-        T: Copy,
-    {
+    fn fill(&mut self, value: T) {
         for slot in self.buffer.iter_mut() {
             *slot = value;
         }
     }
 
-    fn copy_from(&mut self, src: &[T])
-    where
-        T: Copy,
-    {
+    fn copy_from(&mut self, src: &[T]) {
         let len = src.len().min(self.capacity);
         self.buffer[..len].copy_from_slice(&src[..len]);
+    }
+
+    fn clear(&mut self) {
+        for slot in self.buffer.iter_mut() {
+            *slot = T::ZERO;
+        }
+        self.write_pos = 0;
     }
 }
 

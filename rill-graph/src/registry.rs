@@ -1,5 +1,5 @@
 use rill_core::math::Transcendental;
-use rill_core::traits::{NodeId, NodeMetadata, NodeParams, NodeVariant, SignalNode};
+use rill_core::traits::{Node, NodeId, NodeMetadata, NodeParams, NodeVariant};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -42,8 +42,8 @@ pub trait NodeConstructor<T: Transcendental, const BUF_SIZE: usize>: Send + Sync
     /// Implementations should:
     /// 1. Extract parameters from `params`.
     /// 2. Create the concrete node.
-    /// 3. Call [`SignalNode::set_id`] with the given `id`.
-    /// 4. Call [`SignalNode::init`] with `params.sample_rate`.
+    /// 3. Call [`Node::set_id`] with the given `id`.
+    /// 4. Call [`Node::init`] with `params.sample_rate`.
     /// 5. Wrap in the correct [`NodeVariant`] variant.
     fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, BUF_SIZE>;
 }
@@ -192,7 +192,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeConstructor<T, BUF_SIZE>
 ///
 /// ```rust
 /// use rill_graph::{node_ctor, NodeRegistry};
-/// use rill_core::traits::{NodeId, NodeParams, NodeVariant, Source, SignalNode};
+/// use rill_core::traits::{NodeId, NodeParams, NodeVariant, Source, Node};
 ///
 /// // Inside a function that has access to a &mut NodeRegistry<f32, 64>:
 /// fn register(registry: &mut NodeRegistry<f32, 64>) {
@@ -251,7 +251,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const B: usize> SignalNode<T, B> for TestSource<T, B> {
+    impl<T: Transcendental, const B: usize> Node<T, B> for TestSource<T, B> {
         fn metadata(&self) -> rill_core::traits::NodeMetadata {
             rill_core::traits::NodeMetadata::new(self.meta_name, self.meta_cat)
         }

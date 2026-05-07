@@ -5,7 +5,7 @@ Processing is driven by `Port::propagate` (not an external engine).
 
 ## Key components
 
-- **`SignalGraph`** — immutable DAG container, topology is fixed at build time
+- **`Graph`** — immutable DAG container, topology is fixed at build time
 - **`GraphBuilder`** — the only way to build a graph (`Source` → `Processor` → `Sink`),
   fills `downstream_input_ptrs`, `parent`, `upstream_buffer` for zero-copy routing
 - **Kahn's algorithm** — topological sort with cycle detection
@@ -36,7 +36,7 @@ own processing callback. The callback drains the command queue, calls
 
 ## Dependencies
 
-- `rill-core` — `SignalNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`
+- `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`
 
 ## Links
 

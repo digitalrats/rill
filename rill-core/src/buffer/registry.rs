@@ -3,7 +3,7 @@
 //! [`BufferRegistry`] — a temporary registry used during graph assembly.
 //! Each node that requires a resource buffer receives a pointer through
 //! the registry during `GraphBuilder::build()`.
-//! After assembly the registry is retained in `SignalGraph` to manage
+//! After assembly the registry is retained in `Graph` to manage
 //! buffer lifetimes.
 
 use std::collections::HashMap;

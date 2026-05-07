@@ -9,7 +9,7 @@ use rill_core::{
     traits::{
         active::{ActiveNode, GraphHandle},
         algorithm::ActionContext,
-        node::SignalNode,
+        node::Node,
         processable::{NodeVariant, ProcessContext, Processable},
         NodeCategory, NodeMetadata, NodeState, Sink,
     },
@@ -87,7 +87,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
 /// Backward-compatible alias.
 pub type AudioOutput<T, const B: usize> = Output<T, B>;
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -193,10 +193,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Outpu
 
 impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for Output<T, BUF_SIZE> {
     fn start(&mut self, handle: GraphHandle) {
-        SignalNode::start(self, handle);
+        Node::start(self, handle);
     }
     fn stop(&mut self) {
-        SignalNode::stop(self);
+        Node::stop(self);
     }
 }
 
@@ -229,7 +229,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::traits::SignalNode;
+    use rill_core::traits::Node;
 
     #[test]
     fn test_audio_output_creation() {

@@ -1,7 +1,7 @@
 //! Parameter handling for audio nodes
 //!
 //! Defines the fundamental building blocks of the signal graph:
-//! - `SignalNode`: Base trait for all nodes
+//! - `Node`: Base trait for all nodes
 //! - `Source`: Active generator (has no inputs)
 //! - `Processor`: Passive processor (has inputs and outputs)
 //! - `Sink`: Active consumer (has no outputs)

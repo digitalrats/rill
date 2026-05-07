@@ -43,7 +43,7 @@ pub struct NodeDef {
 
 - `type_name` comes from [`NodeMetadata::type_name`](crate::NodeMetadata).
   When `type_name` is `None`, the `name` field is used as fallback.
-- `parameters` are read from each node via [`SignalNode::get_parameter`],
+- `parameters` are read from each node via [`Node::get_parameter`],
   iterating over [`NodeMetadata::parameters`].
 
 ### `ConnectionDef`
@@ -72,12 +72,12 @@ Control and clock connections currently store only the metadata (they are
 round-tripped via the document), but the port-level routing for these signal
 kinds is not yet tracked by the engine — this is reserved for future use.
 
-## Export (SignalGraph → JSON/CBOR)
+## Export (Graph → JSON/CBOR)
 
 ```rust
 use rill_graph::serialization::{to_json, to_cbor};
 
-let graph: SignalGraph<f32, 64> = /* … */;
+let graph: Graph<f32, 64> = /* … */;
 
 let json = to_json(&graph)?;             // pretty-printed JSON
 let cbor = to_cbor(&graph)?;             // compact binary (Vec<u8>)
@@ -115,7 +115,7 @@ Each node type that participates in serialisation must register a constructor:
 
 ```rust
 use rill_graph::registry::{NodeConstructor, NodeRegistry};
-use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
+use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
 
 struct SineCtor;
 impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for SineCtor {
@@ -321,7 +321,7 @@ For reusable constructors with parameter validation:
 
 ```rust
 use rill_graph::registry::{NodeConstructor, NodeRegistry};
-use rill_core::traits::{SignalNode, NodeId, NodeParams, NodeVariant};
+use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
 
 struct TremoloCtor;
 
@@ -343,12 +343,12 @@ registry.register(TremoloCtor);
 
 ### Level 3: Full custom graph node
 
-Implementing the `SignalNode`, `Source`, `Processor`, or `Sink` trait:
+Implementing the `Node`, `Source`, `Processor`, or `Sink` trait:
 
 ```rust
 use rill_core::math::Transcendental;
 use rill_core::traits::{
-    SignalNode, Processor, NodeId, NodeMetadata, NodeCategory,
+    Node, Processor, NodeId, NodeMetadata, NodeCategory,
     NodeState, ParamValue, ParameterId, Port, PortId, PortDirection, PortType,
     ProcessResult,
 };
@@ -384,7 +384,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Tremolo<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for Tremolo<T, BUF_SIZE>
 {
     fn metadata(&self) -> NodeMetadata {

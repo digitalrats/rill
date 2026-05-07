@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 
 use tokio::sync::{mpsc, watch};
@@ -117,7 +117,7 @@ async fn combiner_loop(
                 let value = combine(mod_val, base, control, min, max);
                 let pid = ParameterId::new(&param_name).unwrap();
                 let _ = output_queue.push(SetParameter::new(
-                    PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalSource::Manual,
+                    PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalOrigin::Manual,
                 ));
             }
 
@@ -128,7 +128,7 @@ async fn combiner_loop(
                         frozen = true;
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalOrigin::Manual,
                         ));
                     }
 
@@ -137,14 +137,14 @@ async fn combiner_loop(
                         let value = combine(latest_mod, v, control, min, max);
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalOrigin::Manual,
                         ));
                     }
 
                     (UiCommand::SetValue(v), ConflictStrategy::LastWriteWins) => {
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalOrigin::Manual,
                         ));
                     }
 
@@ -153,7 +153,7 @@ async fn combiner_loop(
                         let value = combine(latest_mod, base, control, min, max);
                         let pid = ParameterId::new(&param_name).unwrap();
                         let _ = output_queue.push(SetParameter::new(
-                            PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalSource::Manual,
+                            PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalOrigin::Manual,
                         ));
                     }
 

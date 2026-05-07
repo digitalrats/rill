@@ -12,7 +12,7 @@
 //! register_all(&mut registry);
 //! ```
 
-use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
+use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
 use rill_graph::{node_ctor, NodeRegistry};
 
 #[cfg(feature = "io")]
@@ -81,8 +81,8 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
         |id: NodeId, params: &NodeParams| {
             let ch = params.get_f32("channels", 2.0) as usize;
             let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(ch);
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             NodeVariant::Sink(Box::new(n))
         }
     );
@@ -90,8 +90,8 @@ fn register_io<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_SIZE>
     node_ctor!(registry, "rill/input", |id: NodeId, params: &NodeParams| {
         let ch = params.get_f32("channels", 2.0) as usize;
         let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(ch);
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
     });
 }
@@ -115,8 +115,8 @@ fn register_sampler<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, BUF_
         "rill/sampler",
         |id: NodeId, params: &NodeParams| {
             let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             if let Some(path) = params.get("file").and_then(|v| v.as_str()) {
                 if let Ok(sample) = load_wav(path) {
                     n.load(sample);
@@ -141,8 +141,8 @@ fn register_oscillators<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, 
         let mut n = SineOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
             .with_amplitude(params.get_f32("amp", 0.5));
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
     });
 
@@ -150,8 +150,8 @@ fn register_oscillators<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, 
         let mut n = SawOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
             .with_amplitude(params.get_f32("amp", 0.5));
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
     });
 
@@ -162,8 +162,8 @@ fn register_oscillators<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f32, 
             _ => NoiseType::White,
         };
         let mut n = NoiseOsc::<BUF_SIZE>::new().with_type(t);
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
     });
 }
@@ -192,8 +192,8 @@ fn register_digital_filters<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
                 params.get_f32("q", 0.707),
                 0.0,
             );
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             NodeVariant::Processor(Box::new(n))
         }
     );
@@ -214,8 +214,8 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
             params.get_f32("feedback", 0.4),
             params.get_f32("mix", 0.5),
         );
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
         NodeVariant::Processor(Box::new(n))
     });
 
@@ -229,8 +229,8 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
                 params.get_f32("drive", 1.0),
                 1.0,
             );
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             NodeVariant::Processor(Box::new(n))
         }
     );
@@ -246,8 +246,8 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
                 params.get_f32("release", 50.0),
                 0.0,
             );
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             NodeVariant::Processor(Box::new(n))
         }
     );
@@ -257,8 +257,8 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
         "rill/dry_wet_mix",
         |id: NodeId, params: &NodeParams| {
             let mut n = DryWetMix::<f32, BUF_SIZE>::new();
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             NodeVariant::Processor(Box::new(n))
         }
     );
@@ -272,8 +272,8 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
                 .and_then(|v| v.as_str())
                 .unwrap_or("tape_0");
             let mut n = WriteHead::<f32, BUF_SIZE>::with_resource(params.sample_rate, resource);
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             NodeVariant::Processor(Box::new(n))
         }
     );
@@ -287,16 +287,16 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
                 .and_then(|v| v.as_str())
                 .unwrap_or("tape_0");
             let mut n = ReadHead::<f32, BUF_SIZE>::with_resource(resource);
-            SignalNode::set_id(&mut n, id);
-            SignalNode::init(&mut n, params.sample_rate);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
             NodeVariant::Source(Box::new(n))
         }
     );
 
     node_ctor!(registry, "rill/mixer", |id: NodeId, params: &NodeParams| {
         let mut n = MixerNode::<BUF_SIZE>::new(4, 0);
-        SignalNode::set_id(&mut n, id);
-        SignalNode::init(&mut n, params.sample_rate);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
         NodeVariant::Router(Box::new(n))
     });
 }

@@ -1,11 +1,11 @@
 #[cfg(feature = "serialization")]
 use rill_adrift::registration;
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_core::queues::{SetParameter, SignalSource};
+use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::time::SystemClock;
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_core::traits::SignalNode;
+use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
 #[cfg(feature = "serialization")]
@@ -79,7 +79,7 @@ fn test_deserialize_input_biquad_output() {
         .build(clock, Some(&backend_cfg))
         .expect("graph build should succeed");
 
-    // Treat SignalGraph as a black box — read metadata only.
+    // Treat Graph as a black box — read metadata only.
     assert_eq!(graph.node_count(), 3, "should have 3 nodes");
     assert_eq!(
         graph.topo_order().len(),
@@ -144,7 +144,7 @@ fn test_send_parameter_via_queue() {
             PortId::param(rill_adrift::rill_core::NodeId(0), 0),
             ParameterId::new("frequency").unwrap(),
             ParamValue::Float(880.0),
-            SignalSource::Manual,
+            SignalOrigin::Manual,
         ))
         .expect("send_parameter should succeed");
 

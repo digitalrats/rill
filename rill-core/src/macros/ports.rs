@@ -2,7 +2,7 @@
 
 /// Общий макрос для создания любого типа узла
 #[macro_export]
-macro_rules! signal_node {
+macro_rules! node {
     (
         $(#[$meta:meta])*
         source $name:ident<$T:ident: $crate::math::Transcendental, const $BUF:ident: usize>

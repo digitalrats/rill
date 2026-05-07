@@ -1,24 +1,31 @@
-//! # Buffer trait — abstract audio buffer
+//! # Buffer trait — common interface for all signal buffer types
 //!
-//! Defines the common interface for all buffer types used in the signal
-//! graph: per-port fixed buffers, heap-allocated buffers, TapeLoop.
+//! Unified trait covering both storage buffers (fixed-size, heap-allocated)
+//! and queue-style buffers (pipe, delay, fan-out, fan-in, ring).
 //!
-//! Buffer size is an internal implementation detail — the trait is not
-//! parameterised by size.
+//! Generic over [`crate::math::Scalar`] — supports f32, f64, and integer types.
 
 use core::ops::{Deref, DerefMut};
 
-/// Common interface for audio buffers of arbitrary size.
-///
-/// Enables storing buffers of different types and sizes in a single graph
-/// resource registry (`GraphResources`).
-pub trait Buffer<T> {
-    /// Number of samples in the buffer.
+use crate::buffer::BufferStats;
+use crate::math::Scalar;
+
+/// Common interface for all buffer types used in the signal graph.
+pub trait Buffer<T: Scalar> {
+    /// Maximum number of elements the buffer can hold.
+    fn capacity(&self) -> usize;
+
+    /// Current number of elements in the buffer.
     fn len(&self) -> usize;
 
-    /// Whether the buffer is empty.
+    /// Whether the buffer is empty (`len() == 0`).
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Whether the buffer is full (`len() == capacity()`).
+    fn is_full(&self) -> bool {
+        self.len() == self.capacity()
     }
 
     /// Read-only access to the buffer data.
@@ -28,14 +35,21 @@ pub trait Buffer<T> {
     fn as_mut_slice(&mut self) -> &mut [T];
 
     /// Fill the entire buffer with a value.
-    fn fill(&mut self, value: T)
-    where
-        T: Copy;
+    fn fill(&mut self, value: T);
 
     /// Copy data from a slice. Copies `min(src.len(), self.len())` samples.
-    fn copy_from(&mut self, src: &[T])
-    where
-        T: Copy;
+    fn copy_from(&mut self, src: &[T]);
+
+    /// Remove all items from the buffer.
+    fn clear(&mut self);
+
+    /// Snapshot of performance statistics.
+    fn stats(&self) -> BufferStats {
+        BufferStats::new()
+    }
+
+    /// Reset performance counters (not the data).
+    fn reset_stats(&mut self) {}
 }
 
 // ============================================================================
@@ -48,7 +62,7 @@ pub struct FixedBuffer<T, const SIZE: usize> {
     data: [T; SIZE],
 }
 
-impl<T: Copy + Default, const SIZE: usize> FixedBuffer<T, SIZE> {
+impl<T: Scalar, const SIZE: usize> FixedBuffer<T, SIZE> {
     /// Create a new buffer filled with `T::default()`.
     pub fn new() -> Self {
         Self {
@@ -62,10 +76,7 @@ impl<T: Copy + Default, const SIZE: usize> FixedBuffer<T, SIZE> {
     }
 
     /// Create a buffer from a slice, truncating or padding with `T::default()` as needed.
-    pub fn from_slice(slice: &[T]) -> Self
-    where
-        T: Copy,
-    {
+    pub fn from_slice(slice: &[T]) -> Self {
         let mut data = [T::default(); SIZE];
         let len = slice.len().min(SIZE);
         data[..len].copy_from_slice(&slice[..len]);
@@ -83,32 +94,36 @@ impl<T: Copy + Default, const SIZE: usize> FixedBuffer<T, SIZE> {
     }
 }
 
-impl<T: Copy + Default, const SIZE: usize> Default for FixedBuffer<T, SIZE> {
+impl<T: Scalar, const SIZE: usize> Default for FixedBuffer<T, SIZE> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T, const SIZE: usize> Deref for FixedBuffer<T, SIZE> {
+impl<T: Scalar, const SIZE: usize> Deref for FixedBuffer<T, SIZE> {
     type Target = [T; SIZE];
     fn deref(&self) -> &Self::Target {
         &self.data
     }
 }
 
-impl<T, const SIZE: usize> DerefMut for FixedBuffer<T, SIZE> {
+impl<T: Scalar, const SIZE: usize> DerefMut for FixedBuffer<T, SIZE> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.data
     }
 }
 
-impl<T: Copy + Default, const SIZE: usize> From<[T; SIZE]> for FixedBuffer<T, SIZE> {
+impl<T: Scalar, const SIZE: usize> From<[T; SIZE]> for FixedBuffer<T, SIZE> {
     fn from(data: [T; SIZE]) -> Self {
         Self::from_array(data)
     }
 }
 
-impl<T: Default + Copy, const SIZE: usize> Buffer<T> for FixedBuffer<T, SIZE> {
+impl<T: Scalar, const SIZE: usize> Buffer<T> for FixedBuffer<T, SIZE> {
+    fn capacity(&self) -> usize {
+        SIZE
+    }
+
     fn len(&self) -> usize {
         SIZE
     }
@@ -121,19 +136,17 @@ impl<T: Default + Copy, const SIZE: usize> Buffer<T> for FixedBuffer<T, SIZE> {
         &mut self.data
     }
 
-    fn fill(&mut self, value: T)
-    where
-        T: Copy,
-    {
+    fn fill(&mut self, value: T) {
         self.data.fill(value);
     }
 
-    fn copy_from(&mut self, src: &[T])
-    where
-        T: Copy,
-    {
+    fn copy_from(&mut self, src: &[T]) {
         let len = src.len().min(SIZE);
         self.data[..len].copy_from_slice(&src[..len]);
+    }
+
+    fn clear(&mut self) {
+        self.data.fill(T::default());
     }
 }
 
@@ -150,7 +163,7 @@ pub struct HeapBuffer<T> {
     data: Vec<T>,
 }
 
-impl<T: Default + Copy> HeapBuffer<T> {
+impl<T: Scalar> HeapBuffer<T> {
     /// Create a new buffer with `size` samples, all initialized to `T::default()`.
     pub fn new(size: usize) -> Self {
         Self {
@@ -164,7 +177,11 @@ impl<T: Default + Copy> HeapBuffer<T> {
     }
 }
 
-impl<T: Default + Copy> Buffer<T> for HeapBuffer<T> {
+impl<T: Scalar> Buffer<T> for HeapBuffer<T> {
+    fn capacity(&self) -> usize {
+        self.data.capacity()
+    }
+
     fn len(&self) -> usize {
         self.data.len()
     }
@@ -177,18 +194,16 @@ impl<T: Default + Copy> Buffer<T> for HeapBuffer<T> {
         &mut self.data
     }
 
-    fn fill(&mut self, value: T)
-    where
-        T: Copy,
-    {
+    fn fill(&mut self, value: T) {
         self.data.fill(value);
     }
 
-    fn copy_from(&mut self, src: &[T])
-    where
-        T: Copy,
-    {
+    fn copy_from(&mut self, src: &[T]) {
         let len = src.len().min(self.data.len());
         self.data[..len].copy_from_slice(&src[..len]);
+    }
+
+    fn clear(&mut self) {
+        self.data.clear();
     }
 }

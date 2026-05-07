@@ -17,7 +17,7 @@ pub use error::{LofiError, LofiResult};
 pub use lofi_processor::LofiProcessor;
 
 // Реэкспорт для удобства
-pub use rill_core::traits::SignalNode;
+pub use rill_core::traits::Node;
 
 #[cfg(test)]
 mod tests {

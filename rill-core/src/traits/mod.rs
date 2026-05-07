@@ -10,7 +10,7 @@ pub mod active;
 /// Algorithm trait and action contexts.
 pub mod algorithm;
 mod error;
-/// Core node trait (`SignalNode`) and related types.
+/// Core node trait (`Node`) and related types.
 pub mod node;
 /// Parameter types and IDs (`ParameterId`, `ParamValue`, `ParamType`, etc.).
 pub mod param;
@@ -56,6 +56,8 @@ pub type ControlValue<T> = T;
 pub mod prelude {
     // Re-export from parent modules
     pub use super::{
+        // Core traits
+        Node,
         NodeCategory,
         // Node types
         NodeId,
@@ -84,8 +86,6 @@ pub mod prelude {
         ProcessResult,
         Processor,
         Router,
-        // Core traits
-        SignalNode,
         Sink,
 
         Source,

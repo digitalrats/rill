@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### 💥 Breaking changes
+
+- **`Signal` → prefix removal** across the entire API surface:
+  - `SignalGraph` → `Graph` (in `rill_graph::Graph`)
+  - `SignalNode` → `Node` (in `rill_core::Node`)
+  - `SignalBuffer` merged into `Buffer<T: Scalar>` — replaces both old `Buffer` and `SignalBuffer` traits
+  - `SignalSource` → `SignalOrigin`
+
 ## [0.5.0-beta.1] — 2026-05-04
 
 ### 🎉 First beta release

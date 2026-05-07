@@ -36,7 +36,7 @@
 
 * Совместимость с rill-buffers
 
-* SignalNode реализация
+* Node реализация
 
 * Сериализация preset'ов
 

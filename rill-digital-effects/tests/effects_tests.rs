@@ -1,5 +1,5 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{ParamValue, ParameterId, SignalNode};
+use rill_core::traits::{Node, ParamValue, ParameterId};
 use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter};
 
 const BUF_SIZE: usize = 1024;
@@ -49,32 +49,32 @@ fn test_delay_parameters() {
     let mix_id = ParameterId::new("mix").unwrap();
 
     assert_eq!(
-        SignalNode::get_parameter(&delay, &delay_time_id),
+        Node::get_parameter(&delay, &delay_time_id),
         Some(ParamValue::Float(0.2))
     );
     assert_eq!(
-        SignalNode::get_parameter(&delay, &feedback_id),
+        Node::get_parameter(&delay, &feedback_id),
         Some(ParamValue::Float(0.3))
     );
     assert_eq!(
-        SignalNode::get_parameter(&delay, &mix_id),
+        Node::get_parameter(&delay, &mix_id),
         Some(ParamValue::Float(0.7))
     );
 
-    SignalNode::set_parameter(&mut delay, &delay_time_id, ParamValue::Float(0.5)).unwrap();
-    SignalNode::set_parameter(&mut delay, &feedback_id, ParamValue::Float(0.8)).unwrap();
-    SignalNode::set_parameter(&mut delay, &mix_id, ParamValue::Float(0.4)).unwrap();
+    Node::set_parameter(&mut delay, &delay_time_id, ParamValue::Float(0.5)).unwrap();
+    Node::set_parameter(&mut delay, &feedback_id, ParamValue::Float(0.8)).unwrap();
+    Node::set_parameter(&mut delay, &mix_id, ParamValue::Float(0.4)).unwrap();
 
     assert_eq!(
         delay.get_parameter(&delay_time_id),
         Some(ParamValue::Float(0.5))
     );
     assert_eq!(
-        SignalNode::get_parameter(&delay, &feedback_id),
+        Node::get_parameter(&delay, &feedback_id),
         Some(ParamValue::Float(0.8))
     );
     assert_eq!(
-        SignalNode::get_parameter(&delay, &mix_id),
+        Node::get_parameter(&delay, &mix_id),
         Some(ParamValue::Float(0.4))
     );
 }
@@ -108,17 +108,17 @@ fn test_distortion_parameters() {
     let type_id = ParameterId::new("type").unwrap();
 
     assert_eq!(
-        SignalNode::get_parameter(&dist, &drive_id),
+        Node::get_parameter(&dist, &drive_id),
         Some(ParamValue::Float(2.0))
     );
     assert_eq!(
-        SignalNode::get_parameter(&dist, &output_gain_id),
+        Node::get_parameter(&dist, &output_gain_id),
         Some(ParamValue::Float(0.8))
     );
 
-    SignalNode::set_parameter(&mut dist, &drive_id, ParamValue::Float(5.0)).unwrap();
-    SignalNode::set_parameter(&mut dist, &output_gain_id, ParamValue::Float(1.2)).unwrap();
-    SignalNode::set_parameter(
+    Node::set_parameter(&mut dist, &drive_id, ParamValue::Float(5.0)).unwrap();
+    Node::set_parameter(&mut dist, &output_gain_id, ParamValue::Float(1.2)).unwrap();
+    Node::set_parameter(
         &mut dist,
         &type_id,
         ParamValue::Choice("hard_clip".to_string()),
@@ -126,11 +126,11 @@ fn test_distortion_parameters() {
     .unwrap();
 
     assert_eq!(
-        SignalNode::get_parameter(&dist, &drive_id),
+        Node::get_parameter(&dist, &drive_id),
         Some(ParamValue::Float(5.0))
     );
     assert_eq!(
-        SignalNode::get_parameter(&dist, &output_gain_id),
+        Node::get_parameter(&dist, &output_gain_id),
         Some(ParamValue::Float(1.2))
     );
 }
@@ -333,41 +333,41 @@ fn test_limiter_parameters() {
     let output_gain_id = ParameterId::new("output_gain").unwrap();
 
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &threshold_id),
+        Node::get_parameter(&limiter, &threshold_id),
         Some(ParamValue::Float(-3.0))
     );
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &attack_id),
+        Node::get_parameter(&limiter, &attack_id),
         Some(ParamValue::Float(0.01))
     );
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &release_id),
+        Node::get_parameter(&limiter, &release_id),
         Some(ParamValue::Float(0.2))
     );
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &output_gain_id),
+        Node::get_parameter(&limiter, &output_gain_id),
         Some(ParamValue::Float(1.5))
     );
 
-    SignalNode::set_parameter(&mut limiter, &threshold_id, ParamValue::Float(-10.0)).unwrap();
-    SignalNode::set_parameter(&mut limiter, &attack_id, ParamValue::Float(0.02)).unwrap();
-    SignalNode::set_parameter(&mut limiter, &release_id, ParamValue::Float(0.3)).unwrap();
-    SignalNode::set_parameter(&mut limiter, &output_gain_id, ParamValue::Float(0.8)).unwrap();
+    Node::set_parameter(&mut limiter, &threshold_id, ParamValue::Float(-10.0)).unwrap();
+    Node::set_parameter(&mut limiter, &attack_id, ParamValue::Float(0.02)).unwrap();
+    Node::set_parameter(&mut limiter, &release_id, ParamValue::Float(0.3)).unwrap();
+    Node::set_parameter(&mut limiter, &output_gain_id, ParamValue::Float(0.8)).unwrap();
 
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &threshold_id),
+        Node::get_parameter(&limiter, &threshold_id),
         Some(ParamValue::Float(-10.0))
     );
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &attack_id),
+        Node::get_parameter(&limiter, &attack_id),
         Some(ParamValue::Float(0.02))
     );
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &release_id),
+        Node::get_parameter(&limiter, &release_id),
         Some(ParamValue::Float(0.3))
     );
     assert_eq!(
-        SignalNode::get_parameter(&limiter, &output_gain_id),
+        Node::get_parameter(&limiter, &output_gain_id),
         Some(ParamValue::Float(0.8))
     );
 
