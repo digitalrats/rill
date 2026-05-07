@@ -356,7 +356,7 @@ impl ParamMetadata {
 }
 
 // ============================================================================
-// NodeParams — bag of parameters for factory-based node construction
+// Params — bag of parameters for factory-based node construction
 // ============================================================================
 
 /// A flexible set of parameters passed to a node constructor.
@@ -368,7 +368,7 @@ impl ParamMetadata {
 /// See `NodeConstructor` (in `rill-graph`) for how builder uses this.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct NodeParams {
+pub struct Params {
     /// Sample rate the node will be initialized with.
     pub sample_rate: f32,
 
@@ -376,7 +376,7 @@ pub struct NodeParams {
     pub parameters: HashMap<String, ParamValue>,
 }
 
-impl NodeParams {
+impl Params {
     /// Create params with a given sample rate.
     pub fn new(sample_rate: f32) -> Self {
         Self {

@@ -6,7 +6,7 @@ use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::time::ClockTick;
 use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
-use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
+use rill_core::traits::{Node, NodeId, NodeVariant, Params};
 use rill_core_actor::{ActorCell, ActorRef};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -124,11 +124,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     ///
     /// Returns [`RegistryError`] if no factory is set or the type name
     /// is not registered.
-    pub fn add_node(
-        &mut self,
-        type_name: &str,
-        params: &NodeParams,
-    ) -> Result<usize, RegistryError> {
+    pub fn add_node(&mut self, type_name: &str, params: &Params) -> Result<usize, RegistryError> {
         let id = NodeId(self.nodes.len() as u32);
         self.add_node_with_id(type_name, params, id)
     }
@@ -141,7 +137,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     pub fn add_node_with_id(
         &mut self,
         type_name: &str,
-        params: &NodeParams,
+        params: &Params,
         id: NodeId,
     ) -> Result<usize, RegistryError> {
         let node = self.factory.construct(type_name, id, params)?;

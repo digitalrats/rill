@@ -62,7 +62,6 @@ pub use crate::traits::{
     // Node identification
     NodeId,
     NodeMetadata,
-    NodeParams,
     NodeState,
 
     NodeTypeId,
@@ -75,6 +74,7 @@ pub use crate::traits::{
     // Parameter handling
     ParameterId,
     ParameterResult,
+    Params,
     Port,
 
     PortDirection,

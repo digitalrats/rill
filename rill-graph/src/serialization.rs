@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant, ParamValue};
+use rill_core::traits::{Node, NodeId, NodeVariant, ParamValue, Params};
 use rill_core::ParameterId;
 
 #[cfg(test)]
@@ -363,7 +363,7 @@ impl GraphDef {
 
         // ── construct nodes (uses builder's internal registry) ──
         for nd in &self.nodes {
-            let mut p = NodeParams::new(self.sample_rate);
+            let mut p = Params::new(self.sample_rate);
             for (k, v) in &nd.parameters {
                 p = p.with(k.clone(), v.clone());
             }
@@ -694,7 +694,7 @@ mod tests {
         fn type_name(&self) -> &'static str {
             "rill/test"
         }
-        fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, B> {
+        fn construct(&self, id: NodeId, params: &Params) -> NodeVariant<T, B> {
             let mut node = TestNode::<T, B>::source().with_type_name("rill/test");
             node.set_id(id);
             node.init(params.sample_rate);
@@ -710,7 +710,7 @@ mod tests {
         fn type_name(&self) -> &'static str {
             "rill/param"
         }
-        fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, B> {
+        fn construct(&self, id: NodeId, params: &Params) -> NodeVariant<T, B> {
             let mut node = TestNode::<T, B>::processor()
                 .with_type_name("rill/param")
                 .with_param("frequency", 440.0)
@@ -745,8 +745,8 @@ mod tests {
 
     fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
         let mut b = GraphBuilder::new(Arc::new(factory.clone()), empty_backends());
-        let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
-        let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
+        let src = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
+        let proc = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
         b.build().expect("build")
     }
@@ -815,7 +815,7 @@ mod tests {
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         b.add_node(
             "rill/param",
-            &NodeParams::new(44100.0)
+            &Params::new(44100.0)
                 .with("frequency", PV::Float(220.0))
                 .with("amplitude", PV::Float(0.8)),
         )
@@ -837,7 +837,7 @@ mod tests {
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         b.add_node(
             "rill/param",
-            &NodeParams::new(48000.0)
+            &Params::new(48000.0)
                 .with("frequency", PV::Float(55.0))
                 .with("amplitude", PV::Float(0.25)),
         )
@@ -860,8 +860,8 @@ mod tests {
     fn test_export_feedback_connection() {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
-        let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
+        let src = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
+        let proc = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
         let graph = b.build().expect("build");
@@ -882,7 +882,7 @@ mod tests {
         // ParamCtor declares type_name = Some("rill/param")
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
+        b.add_node("rill/param", &Params::new(44100.0)).unwrap();
         let graph = b.build().expect("build");
 
         let doc = GraphDef::from_graph(&graph);
@@ -898,7 +898,7 @@ mod tests {
             fn type_name(&self) -> &'static str {
                 "rill/fallback"
             }
-            fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, B> {
+            fn construct(&self, id: NodeId, params: &Params) -> NodeVariant<T, B> {
                 let mut node = TestNode::<T, B>::source();
                 node.set_id(id);
                 node.init(params.sample_rate);
@@ -912,8 +912,7 @@ mod tests {
         let reg = Arc::new(reg);
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
 
-        b.add_node("rill/fallback", &NodeParams::new(44100.0))
-            .unwrap();
+        b.add_node("rill/fallback", &Params::new(44100.0)).unwrap();
         let graph = b.build().expect("build");
 
         let doc = GraphDef::from_graph(&graph);
@@ -929,9 +928,9 @@ mod tests {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         // Explicit IDs via add_node_with_id
-        b.add_node_with_id("rill/test", &NodeParams::new(44100.0), NodeId(100))
+        b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100))
             .unwrap();
-        b.add_node_with_id("rill/param", &NodeParams::new(44100.0), NodeId(200))
+        b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200))
             .unwrap();
         b.connect_signal(0, 0, 1, 0);
         let graph = b.build().expect("build");
@@ -954,9 +953,9 @@ mod tests {
     fn test_roundtrip_complex_topology() {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        let s0 = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
-        let p1 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
-        let p2 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
+        let s0 = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
+        let p1 = b.add_node("rill/param", &Params::new(44100.0)).unwrap();
+        let p2 = b.add_node("rill/param", &Params::new(44100.0)).unwrap();
         b.connect_signal(s0, 0, p1, 0);
         b.connect_signal(p1, 0, p2, 0);
 

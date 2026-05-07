@@ -3,7 +3,7 @@
 //! Provides `register_all_nodes` and `register_all_backends` for
 //! populating factories before creating a [`GraphBuilder`].
 
-use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
+use rill_core::traits::{Node, NodeId, NodeVariant, Params};
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{node_ctor, NodeFactory};
 use std::sync::Arc;
@@ -29,7 +29,7 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
 
 #[cfg(feature = "io")]
 fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    node_ctor!(factory, "rill/output", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/output", |id: NodeId, params: &Params| {
         let ch = params.get_f32("channels", 2.0) as usize;
         let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(ch);
         Node::set_id(&mut n, id);
@@ -37,7 +37,7 @@ fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) 
         NodeVariant::Sink(Box::new(n))
     });
 
-    node_ctor!(factory, "rill/input", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/input", |id: NodeId, params: &Params| {
         let ch = params.get_f32("channels", 2.0) as usize;
         let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(ch);
         Node::set_id(&mut n, id);
@@ -60,24 +60,20 @@ fn register_sampler<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SI
     use rill_sampler::player::SamplePlayerNode;
     use rill_sampler::wav::load_wav;
 
-    node_ctor!(
-        factory,
-        "rill/sampler",
-        |id: NodeId, params: &NodeParams| {
-            let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            if let Some(path) = params.get("file").and_then(|v| v.as_str()) {
-                if let Ok(sample) = load_wav(path) {
-                    n.load(sample);
-                    n.play();
-                } else {
-                    eprintln!("SamplePlayer: could not load {path}");
-                }
+    node_ctor!(factory, "rill/sampler", |id: NodeId, params: &Params| {
+        let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        if let Some(path) = params.get("file").and_then(|v| v.as_str()) {
+            if let Ok(sample) = load_wav(path) {
+                n.load(sample);
+                n.play();
+            } else {
+                eprintln!("SamplePlayer: could not load {path}");
             }
-            NodeVariant::Source(Box::new(n))
         }
-    );
+        NodeVariant::Source(Box::new(n))
+    });
 }
 
 // ============================================================================
@@ -87,7 +83,7 @@ fn register_sampler<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SI
 fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_oscillators::audio::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
-    node_ctor!(factory, "rill/sine", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/sine", |id: NodeId, params: &Params| {
         let mut n = SineOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
             .with_amplitude(params.get_f32("amp", 0.5));
@@ -96,7 +92,7 @@ fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BU
         NodeVariant::Source(Box::new(n))
     });
 
-    node_ctor!(factory, "rill/saw", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/saw", |id: NodeId, params: &Params| {
         let mut n = SawOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
             .with_amplitude(params.get_f32("amp", 0.5));
@@ -105,7 +101,7 @@ fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BU
         NodeVariant::Source(Box::new(n))
     });
 
-    node_ctor!(factory, "rill/noise", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/noise", |id: NodeId, params: &Params| {
         let t = match params.get("type").and_then(|v| v.as_f32()) {
             Some(2.0) => NoiseType::Brown,
             Some(1.0) => NoiseType::Pink,
@@ -126,7 +122,7 @@ fn register_digital_filters<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
     use rill_core_dsp::filters::FilterType;
     use rill_digital_filters::biquad::BiquadProcessor;
 
-    node_ctor!(factory, "rill/biquad", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/biquad", |id: NodeId, params: &Params| {
         let ft = match params.get("filter").and_then(|v| v.as_f32()) {
             Some(1.0) => FilterType::LowPass,
             Some(2.0) => FilterType::HighPass,
@@ -153,7 +149,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
     use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter, ReadHead, WriteHead};
     use rill_router::{DryWetMix, MixerNode};
 
-    node_ctor!(factory, "rill/delay", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/delay", |id: NodeId, params: &Params| {
         let mut n = Delay::<f32, BUF_SIZE>::with_params(
             params.sample_rate,
             params.get_f32("time", 0.3),
@@ -165,43 +161,35 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         NodeVariant::Processor(Box::new(n))
     });
 
-    node_ctor!(
-        factory,
-        "rill/distortion",
-        |id: NodeId, params: &NodeParams| {
-            let mut n = Distortion::<f32, BUF_SIZE>::with_params(
-                params.sample_rate,
-                DistortionType::SoftClip,
-                params.get_f32("drive", 1.0),
-                1.0,
-            );
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            NodeVariant::Processor(Box::new(n))
-        }
-    );
+    node_ctor!(factory, "rill/distortion", |id: NodeId, params: &Params| {
+        let mut n = Distortion::<f32, BUF_SIZE>::with_params(
+            params.sample_rate,
+            DistortionType::SoftClip,
+            params.get_f32("drive", 1.0),
+            1.0,
+        );
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
 
-    node_ctor!(
-        factory,
-        "rill/limiter",
-        |id: NodeId, params: &NodeParams| {
-            let mut n = Limiter::<f32, BUF_SIZE>::new(
-                params.sample_rate,
-                params.get_f32("threshold", -6.0),
-                params.get_f32("attack", 1.0),
-                params.get_f32("release", 50.0),
-                0.0,
-            );
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            NodeVariant::Processor(Box::new(n))
-        }
-    );
+    node_ctor!(factory, "rill/limiter", |id: NodeId, params: &Params| {
+        let mut n = Limiter::<f32, BUF_SIZE>::new(
+            params.sample_rate,
+            params.get_f32("threshold", -6.0),
+            params.get_f32("attack", 1.0),
+            params.get_f32("release", 50.0),
+            0.0,
+        );
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
 
     node_ctor!(
         factory,
         "rill/dry_wet_mix",
-        |id: NodeId, params: &NodeParams| {
+        |id: NodeId, params: &Params| {
             let mut n = DryWetMix::<f32, BUF_SIZE>::new();
             Node::set_id(&mut n, id);
             Node::init(&mut n, params.sample_rate);
@@ -209,37 +197,29 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         }
     );
 
-    node_ctor!(
-        factory,
-        "rill/write_head",
-        |id: NodeId, params: &NodeParams| {
-            let resource = params
-                .get("tape")
-                .and_then(|v| v.as_str())
-                .unwrap_or("tape_0");
-            let mut n = WriteHead::<f32, BUF_SIZE>::with_resource(params.sample_rate, resource);
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            NodeVariant::Processor(Box::new(n))
-        }
-    );
+    node_ctor!(factory, "rill/write_head", |id: NodeId, params: &Params| {
+        let resource = params
+            .get("tape")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tape_0");
+        let mut n = WriteHead::<f32, BUF_SIZE>::with_resource(params.sample_rate, resource);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
 
-    node_ctor!(
-        factory,
-        "rill/read_head",
-        |id: NodeId, params: &NodeParams| {
-            let resource = params
-                .get("tape")
-                .and_then(|v| v.as_str())
-                .unwrap_or("tape_0");
-            let mut n = ReadHead::<f32, BUF_SIZE>::with_resource(resource);
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            NodeVariant::Source(Box::new(n))
-        }
-    );
+    node_ctor!(factory, "rill/read_head", |id: NodeId, params: &Params| {
+        let resource = params
+            .get("tape")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tape_0");
+        let mut n = ReadHead::<f32, BUF_SIZE>::with_resource(resource);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Source(Box::new(n))
+    });
 
-    node_ctor!(factory, "rill/mixer", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/mixer", |id: NodeId, params: &Params| {
         let mut n = MixerNode::<BUF_SIZE>::new(4, 0);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);

@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rill_adrift::rill_core::traits::{
-    Node, NodeCategory, NodeId, NodeMetadata, NodeParams, NodeState, NodeVariant, ParamValue,
-    ParameterId, Port, ProcessResult, Sink,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, NodeVariant, ParamValue, ParameterId,
+    Params, Port, ProcessResult, Sink,
 };
 use rill_adrift::rill_core::Transcendental;
 use rill_adrift::rill_graph::serialization::{ConnectionDef, GraphDef, NodeDef, SignalKind};
@@ -190,15 +190,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Регистрируем кастомный узел
     let rec = recorded.clone();
-    rt.register_node_fn(
-        "rill/record_sink",
-        move |id: NodeId, params: &NodeParams| {
-            let mut sink = RecordingSink::new(rec.clone());
-            Node::set_id(&mut sink, id);
-            Node::init(&mut sink, params.sample_rate);
-            NodeVariant::Sink(Box::new(sink))
-        },
-    );
+    rt.register_node_fn("rill/record_sink", move |id: NodeId, params: &Params| {
+        let mut sink = RecordingSink::new(rec.clone());
+        Node::set_id(&mut sink, id);
+        Node::init(&mut sink, params.sample_rate);
+        NodeVariant::Sink(Box::new(sink))
+    });
 
     // Топология графа через GraphDef
     let def = GraphDef {

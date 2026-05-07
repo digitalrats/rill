@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use rill_core::queues::{MpscQueue, SetParameter};
-use rill_core::traits::{NodeId, NodeParams, NodeVariant};
+use rill_core::traits::{NodeId, NodeVariant, Params};
 use rill_core_actor::ActorRef;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};
@@ -181,12 +181,12 @@ impl<const BUF: usize> Runtime<BUF> {
     /// Register a custom node type via a closure.
     ///
     /// Must be called before [`create_builder`](Self::create_builder).
-    /// The closure receives `(NodeId, &NodeParams)` and must return a
+    /// The closure receives `(NodeId, &Params)` and must return a
     /// fully initialised [`NodeVariant`].
     pub fn register_node_fn(
         &self,
         type_name: &'static str,
-        f: impl Fn(NodeId, &NodeParams) -> NodeVariant<f32, BUF> + Send + Sync + 'static,
+        f: impl Fn(NodeId, &Params) -> NodeVariant<f32, BUF> + Send + Sync + 'static,
     ) {
         self.node_factory.lock().unwrap().register_fn(type_name, f);
     }
