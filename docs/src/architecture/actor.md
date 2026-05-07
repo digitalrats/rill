@@ -11,6 +11,39 @@ The concrete message type (`SetParameter`) and its consumer (`Graph`)
 belong to higher-level crates (`rill-patchbay`, `rill-graph`), not to the
 actor infrastructure itself.
 
+## RT boundary
+
+The mailbox marks the **exact boundary** between soft-RT and hard-RT:
+
+```
+Soft-RT (any thread)                         Hard-RT (actor's thread)
+┌──────────────────────────┐                 ┌────────────────────────┐
+│ Engine::handle_event()   │                 │ Graph::receive()      │
+│ OSC dispatch             │    send()       │   nodes[idx].set()    │
+│ PortCombiner (tokio)     │  ────────────→  │   Port::propagate()   │
+│ Sequencer                │    mailbox      │   (no alloc, no lock) │
+│ ANY producer             │                 │                        │
+└──────────────────────────┘                 └────────────────────────┘
+         ▲ soft-RT allowed                          ▲ hard-RT only
+         │ heap, locks, IO                          │ alloc-free, lock-free
+```
+
+### Who guarantees RT safety?
+
+**The actor implementation, not the framework.** `rill-core-actor` provides:
+
+| Method | RT-safe? | Notes |
+|--------|----------|-------|
+| `ActorRef::send()` | ✅ Hard RT | Lock-free, bounded queue (cap 64) |
+| `ActorCell::receive()` | ⚠️ Depends on actor's thread | Called by the consumer — shares its RT profile |
+| `ActorSystem::route()` | ❌ Soft RT only | Heap iteration |
+| `ActorSystem::broadcast()` | ❌ Soft RT only | Heap iteration + clone |
+
+The mailbox is the **firewall**: everything before `send()` can be tokio,
+allocation-heavy, whatever. Everything after `pop()` / `receive()` runs
+on the actor's thread and must obey its RT constraints — this is the
+actor's responsibility, not the framework's.
+
 ## Core concepts
 
 ```
@@ -150,14 +183,14 @@ routes subsequent messages to dead letters explicitly.
 
 ## Relation to Akka/Pekko
 
-| Akka | Rill |
-|------|------|
-| `ActorCell` | `ActorCell` trait |
-| `ActorRef` | `ActorRef<M>` |
-| `ActorSystem` | `MessageDispatcher<M>` |
-| `DeadLetterActorRef` | `Arc<MpscQueue<M>>` (application-level) |
-| `Mailbox` | `MpscQueue<M>` |
-| `context.watch()` | Application-level health check |
+| Akka | Rill | RT-safe? |
+|------|------|----------|
+| `ActorCell` | `ActorCell` trait | ⚠️ depends on consumer |
+| `ActorRef` | `ActorRef<M>` | ✅ `send()` hard-RT |
+| `ActorSystem` | `MessageDispatcher<M>` / `ActorSystem<M>` | ❌ soft-RT only |
+| `DeadLetterActorRef` | `Arc<MpscQueue<M>>` (application-level) | ✅ push hard-RT |
+| `Mailbox` | `MpscQueue<M>` | ✅ lock-free, bounded |
+| `context.watch()` | Application-level health check | — |
 
 The main difference: Rill has a **single actor** (Graph) that processes
 `SetParameter` messages. The actor system is simple by design — there is

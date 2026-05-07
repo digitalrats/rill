@@ -13,6 +13,30 @@
 //! | [`MessageDispatcher<M>`] | ActorRef + dead letters queue | — |
 //! | [`ActorSystem<M>`] | Named mailbox registry with routing and dead letters | `ActorSystem` |
 //!
+//! ## RT boundary
+//!
+//! The mailbox is the **hard boundary** between soft-RT and hard-RT code:
+//!
+//! ```text
+//! Soft-RT (any thread, tokio, OS calls)      Hard-RT (actor's thread)
+//! ┌────────────────────────────┐             ┌────────────────────────┐
+//! │ Engine::handle_event()     │             │ Graph::receive()      │
+//! │ OSC dispatcher             │   send()    │   nodes[idx].set()    │
+//! │ PortCombiner (tokio task)  │ ──────────→ │   Port::propagate()   │
+//! │ Sequencer (spawn_blocking) │   mailbox   │   (no alloc, no lock) │
+//! └────────────────────────────┘             └────────────────────────┘
+//! ```
+//!
+//! - **`send()`** — lock-free, safe from any thread including RT. Bounded
+//!   queue (capacity 64) prevents RT thread overload.
+//! - **`receive()`** — runs on the **actor's thread**. The actor
+//!   implementation determines the RT guarantees. If called from an audio
+//!   callback, it must obey the callback's RT constraints (no alloc, no
+//!   syscalls, no locks). The actor framework itself does not enforce this
+//!   — it is the actor's responsibility.
+//! - **`route()` / `broadcast()`** — soft-RT (may use heap iteration).
+//!   Call from non-RT threads only.
+//!
 //! ## Architecture
 //!
 //! The actor owns its mailbox (`Arc<MpscQueue<M>>`). `ActorRef` holds a
@@ -95,8 +119,24 @@ pub trait ActorCell: Send + 'static {
 
     /// Process a single message.
     ///
-    /// Called when the actor's mailbox is drained, typically at the start of
-    /// every processing cycle. The implementation must not block or allocate.
+    /// Called when the actor drains its mailbox. Runs on the actor's own
+    /// thread or processing loop — the actor implementation determines its
+    /// own real-time guarantees.
+    ///
+    /// # RT safety
+    ///
+    /// `rill-core-actor` itself does not enforce RT constraints. The caller
+    /// (the actor's consumer, e.g. an audio callback) decides the RT profile:
+    ///
+    /// - **Hard RT** (audio callback): `receive()` must not allocate, block,
+    ///   or make syscalls. The mailbox is lock-free and bounded, so `send()`
+    ///   is safe from any thread, but the actor's `receive()` shares the
+    ///   callback's RT constraints.
+    /// - **Soft RT** (tokio task, dedicated thread): `receive()` may use
+    ///   heap, locks, or I/O as appropriate for its thread.
+    ///
+    /// The actor framework provides the mailbox; the actor implementation
+    /// provides the discipline.
     fn receive(&mut self, msg: Self::Msg);
 }
 
@@ -174,10 +214,17 @@ impl<M: Send + 'static> ActorRef<M> {
 
     /// Send a message to the actor.
     ///
-    /// The message is pushed into the actor's lock-free MPSC queue.
-    /// If the queue is full the message is silently dropped (bounded queue).
+    /// Pushes the message into the actor's lock-free MPSC queue. If the
+    /// queue is full the message is silently dropped (bounded queue —
+    /// capacity 64 prevents RT thread overload).
     ///
-    /// This method never blocks and can be called from real-time threads.
+    /// # RT safety
+    ///
+    /// Lock-free, no allocation on the hot path. Safe to call from **any
+    /// thread** including real-time audio callbacks. This is the only
+    /// actor infrastructure method that is RT-safe — the actor's
+    /// [`receive`](ActorCell::receive) runs on the consumer's thread
+    /// and must obey that thread's RT constraints.
     pub fn send(&self, msg: M) {
         let _ = self.mailbox.push(msg);
     }
@@ -382,6 +429,11 @@ impl<M: Send + 'static> ActorSystem<M> {
     ///
     /// If the name is registered, the message is pushed to that actor's
     /// mailbox. Otherwise it is forwarded to dead letters.
+    ///
+    /// # RT safety
+    ///
+    /// **Soft-RT only.** Iterates the actor list (heap access).
+    /// Must not be called from hard-RT threads (audio callbacks).
     pub fn route(&self, name: &str, msg: M) {
         for (n, mbox) in &self.actors {
             if n == name {
@@ -397,6 +449,11 @@ impl<M: Send + 'static> ActorSystem<M> {
     /// Each actor receives a copy (the message is cloned).
     /// Messages that cannot be delivered (full mailbox) are silently
     /// dropped per-actor.
+    ///
+    /// # RT safety
+    ///
+    /// **Soft-RT only.** May clone the message (allocation) and iterate
+    /// the actor list. Must not be called from hard-RT threads.
     pub fn broadcast(&self, msg: M)
     where
         M: Clone,
