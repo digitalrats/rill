@@ -158,6 +158,6 @@ mod tests {
         // Просто проверяем, что всё импортируется
         let _ = automaton::LfoWaveform::Sine;
         let _ = engine::Transform::Linear;
-        let _ = manager::PatchbayConfig::default();
+        let _ = manager::Config::default();
     }
 }

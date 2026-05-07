@@ -35,7 +35,7 @@ use crate::engine::{
 
 /// Events emitted by the patchbay manager for logging and debugging.
 #[derive(Debug, Clone)]
-pub enum PatchbayEvent {
+pub enum Event {
     /// An automaton was updated with a new value.
     AutomatonUpdated {
         /// Automaton identifier.
@@ -66,7 +66,7 @@ pub enum PatchbayEvent {
 
 /// Runtime statistics for the patchbay.
 #[derive(Debug, Clone, Default)]
-pub struct PatchbayStats {
+pub struct Stats {
     /// Number of active automata.
     pub automaton_count: usize,
     /// Number of active mappings.
@@ -83,7 +83,7 @@ pub struct PatchbayStats {
     pub error_count: u64,
 }
 
-impl PatchbayStats {
+impl Stats {
     /// Update statistics with the measured duration of one update cycle.
     pub fn update(&mut self, update_duration: Duration) {
         let us = update_duration.as_micros() as f64;
@@ -99,7 +99,7 @@ impl PatchbayStats {
 
 /// Configuration for the patchbay.
 #[derive(Debug, Clone)]
-pub struct PatchbayConfig {
+pub struct Config {
     /// Automaton update rate in Hz.
     pub update_rate_hz: f64,
     /// Command queue capacity.
@@ -110,7 +110,7 @@ pub struct PatchbayConfig {
     pub log_events: bool,
 }
 
-impl Default for PatchbayConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
             update_rate_hz: 1000.0,
@@ -130,22 +130,22 @@ impl Default for PatchbayConfig {
 /// Coordinates all control and automation components. Runs in a dedicated
 /// thread at a configurable update rate.
 pub struct Manager {
-    config: PatchbayConfig,
+    config: Config,
     automata: HashMap<String, Box<dyn std::any::Any + Send>>,
     automaton_states: HashMap<String, Box<dyn std::any::Any + Send>>,
     servos: HashMap<String, BoxedServo>,
     mappings: Vec<Mapping>,
     command_queue: Arc<MpscQueue<SetParameter>>,
-    event_tx: Option<crossbeam_channel::Sender<PatchbayEvent>>,
+    event_tx: Option<crossbeam_channel::Sender<Event>>,
     time: f64,
-    stats: PatchbayStats,
+    stats: Stats,
     running: Arc<AtomicBool>,
     update_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Manager {
     /// Create a new patchbay manager.
-    pub fn new(config: PatchbayConfig, command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
+    pub fn new(config: Config, command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
         Self {
             config,
             automata: HashMap::new(),
@@ -155,14 +155,14 @@ impl Manager {
             command_queue,
             event_tx: None,
             time: 0.0,
-            stats: PatchbayStats::default(),
+            stats: Stats::default(),
             running: Arc::new(AtomicBool::new(false)),
             update_thread: None,
         }
     }
 
     /// Set the event notification channel.
-    pub fn with_event_channel(mut self, tx: crossbeam_channel::Sender<PatchbayEvent>) -> Self {
+    pub fn with_event_channel(mut self, tx: crossbeam_channel::Sender<Event>) -> Self {
         self.event_tx = Some(tx);
         self
     }
@@ -459,7 +459,7 @@ impl Manager {
                 commands.push(cmd);
 
                 if self.config.log_events {
-                    self.emit_event(PatchbayEvent::MappingTriggered {
+                    self.emit_event(Event::MappingTriggered {
                         pattern: format!("{:?}", mapping.pattern),
                         target: format!(
                             "{}:{}",
@@ -476,7 +476,7 @@ impl Manager {
             self.stats.commands_sent += 1;
 
             if self.config.log_events {
-                self.emit_event(PatchbayEvent::CommandSent(cmd));
+                self.emit_event(Event::CommandSent(cmd));
             }
         }
     }
@@ -501,7 +501,7 @@ impl Manager {
         self.handle_event(event);
     }
 
-    fn emit_event(&self, event: PatchbayEvent) {
+    fn emit_event(&self, event: Event) {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(event);
         }
@@ -535,7 +535,7 @@ impl Manager {
 
         self.update_thread = Some(std::thread::spawn(move || {
             let mut last_time = Instant::now();
-            let mut stats = PatchbayStats::default();
+            let mut stats = Stats::default();
             let mut time = 0.0;
 
             while running.load(Ordering::Relaxed) {
@@ -587,13 +587,13 @@ impl Manager {
     }
 
     /// Return a reference to the runtime statistics.
-    pub fn stats(&self) -> &PatchbayStats {
+    pub fn stats(&self) -> &Stats {
         &self.stats
     }
 
     /// Reset the runtime statistics.
     pub fn reset_stats(&mut self) {
-        self.stats = PatchbayStats::default();
+        self.stats = Stats::default();
     }
 
     /// Return the current internal time in seconds.
@@ -655,23 +655,23 @@ impl AnyServo for TestServo {
 
 /// Builder for creating a [`Manager`] with a fluent API.
 pub struct ManagerBuilder {
-    config: PatchbayConfig,
+    config: Config,
     command_queue: Option<Arc<MpscQueue<SetParameter>>>,
-    event_channel: Option<crossbeam_channel::Sender<PatchbayEvent>>,
+    event_channel: Option<crossbeam_channel::Sender<Event>>,
 }
 
 impl ManagerBuilder {
     /// Create a new builder with default configuration.
     pub fn new() -> Self {
         Self {
-            config: PatchbayConfig::default(),
+            config: Config::default(),
             command_queue: None,
             event_channel: None,
         }
     }
 
     /// Set the patchbay configuration.
-    pub fn with_config(mut self, config: PatchbayConfig) -> Self {
+    pub fn with_config(mut self, config: Config) -> Self {
         self.config = config;
         self
     }
@@ -689,7 +689,7 @@ impl ManagerBuilder {
     }
 
     /// Set the event notification channel.
-    pub fn with_event_channel(mut self, tx: crossbeam_channel::Sender<PatchbayEvent>) -> Self {
+    pub fn with_event_channel(mut self, tx: crossbeam_channel::Sender<Event>) -> Self {
         self.event_channel = Some(tx);
         self.config.log_events = true;
         self
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn test_manager_creation() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let manager = Manager::new(PatchbayConfig::default(), queue);
+        let manager = Manager::new(Config::default(), queue);
 
         assert_eq!(manager.automata.len(), 0);
         assert_eq!(manager.mappings.len(), 0);
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn test_add_automaton() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = Manager::new(PatchbayConfig::default(), queue);
+        let mut manager = Manager::new(Config::default(), queue);
 
         let result = manager.add_lfo("test_lfo", 1.0, 0.5, 0.0, LfoWaveform::Sine);
         assert!(result.is_ok());
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn test_add_mapping() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = Manager::new(PatchbayConfig::default(), queue);
+        let mut manager = Manager::new(Config::default(), queue);
 
         manager.add_midi_mapping(7, None, NodeId(1), "volume", 0.0, 1.0, Transform::Linear);
         assert_eq!(manager.mappings.len(), 1);
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn test_handle_event() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = Manager::new(PatchbayConfig::default(), queue.clone());
+        let mut manager = Manager::new(Config::default(), queue.clone());
 
         manager.add_midi_mapping(7, None, NodeId(1), "volume", 0.0, 1.0, Transform::Linear);
 
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn test_start_stop() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = Manager::new(PatchbayConfig::default(), queue);
+        let mut manager = Manager::new(Config::default(), queue);
 
         let result = manager.start();
         assert!(result.is_ok());
