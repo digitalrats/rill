@@ -113,7 +113,7 @@ pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // Sequencer re-exports
 #[cfg(feature = "serde")]
-pub use sequencer::SequencerDocument;
+pub use sequencer::SequencerDef;
 pub use sequencer::{
     ParameterTarget, Pattern, SequenceStep, SequencerHandle, Snapshot, SnapshotSequencer,
     StepPlayMode,

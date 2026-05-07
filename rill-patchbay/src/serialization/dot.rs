@@ -10,14 +10,14 @@
 //! # Feature gate
 //!
 //! Requires the `serde` feature (for [`PatchbayDef`](crate::serialization::PatchbayDef)
-//! and [`SequencerDocument`](crate::sequencer::SequencerDocument) access).
+//! and [`SequencerDef`](crate::sequencer::SequencerDef) access).
 
 use std::fmt::Write;
 
 #[cfg(feature = "serde")]
 use crate::serialization::PatchbayDef;
 #[cfg(feature = "serde")]
-use crate::sequencer::SequencerDocument;
+use crate::sequencer::SequencerDef;
 
 /// Configuration for patchbay DOT generation.
 #[derive(Default)]
@@ -28,11 +28,11 @@ pub struct DotConfig {
     pub verbose: bool,
 }
 
-/// Generate DOT from a PatchbayDef and optional SequencerDocument.
+/// Generate DOT from a PatchbayDef and optional SequencerDef.
 #[cfg(feature = "serde")]
 pub fn patchbay_to_dot(
     patchbay: &PatchbayDef,
-    sequencer: Option<&SequencerDocument>,
+    sequencer: Option<&SequencerDef>,
     _config: &DotConfig,
 ) -> String {
     let mut dot = String::new();
@@ -117,7 +117,7 @@ pub fn patchbay_to_dot(
         .ok();
     }
 
-    // ── SequencerDocument overlay ─────────────────────────────────
+    // ── SequencerDef overlay ─────────────────────────────────
     if let Some(seq) = sequencer {
         writeln!(dot, "    subgraph cluster_sequencer {{").ok();
         writeln!(dot, "        label=\"Snapshot Sequencer\";").ok();
@@ -163,7 +163,7 @@ pub fn patchbay_to_dot(
 
 /// Generate DOT for sequencer alone.
 #[cfg(feature = "serde")]
-pub fn sequencer_to_dot(seq: &SequencerDocument) -> String {
+pub fn sequencer_to_dot(seq: &SequencerDef) -> String {
     let cfg = DotConfig::default();
     let empty = PatchbayDef::new();
     patchbay_to_dot(&empty, Some(seq), &cfg)

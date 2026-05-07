@@ -39,6 +39,6 @@ pub use step::SequenceStep;
 
 /// Serializable sequencer configuration (serde feature gate).
 #[cfg(feature = "serde")]
-mod document;
+mod def;
 #[cfg(feature = "serde")]
-pub use document::SequencerDocument;
+pub use def::SequencerDef;
