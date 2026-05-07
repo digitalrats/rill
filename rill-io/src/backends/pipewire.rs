@@ -522,8 +522,8 @@ impl AudioBackend for PipewireBackend {
         Ok(n)
     }
 
-    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
-        Ok(0)
+    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
+        Ok(buffer.len())
     }
 
     fn xruns(&self) -> u32 {
