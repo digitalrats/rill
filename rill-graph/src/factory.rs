@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use rill_core::math::Transcendental;
 use rill_core::traits::{Node, NodeId, NodeMetadata, NodeParams, NodeVariant};
-use std::collections::HashMap;
 
 // ============================================================================
 // Registry Error
@@ -46,6 +48,9 @@ pub trait NodeConstructor<T: Transcendental, const BUF_SIZE: usize>: Send + Sync
     /// 4. Call [`Node::init`] with `params.sample_rate`.
     /// 5. Wrap in the correct [`NodeVariant`] variant.
     fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, BUF_SIZE>;
+
+    /// Clone this constructor into a boxed trait object.
+    fn clone_box(&self) -> Box<dyn NodeConstructor<T, BUF_SIZE>>;
 }
 
 // ============================================================================
@@ -63,6 +68,18 @@ pub trait NodeConstructor<T: Transcendental, const BUF_SIZE: usize>: Send + Sync
 /// - `BUF_SIZE` — block size (must match the target graph)
 pub struct NodeFactory<T: Transcendental, const BUF_SIZE: usize> {
     entries: HashMap<&'static str, Box<dyn NodeConstructor<T, BUF_SIZE>>>,
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> Clone for NodeFactory<T, BUF_SIZE> {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .map(|(k, v)| (*k, v.clone_box()))
+                .collect(),
+        }
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for NodeFactory<T, BUF_SIZE> {
@@ -102,7 +119,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeFactory<T, BUF_SIZE> {
             type_name,
             Box::new(ClosureCtor {
                 type_name,
-                f: Box::new(f),
+                f: Arc::new(f),
             }),
         );
     }
@@ -164,7 +181,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeFactory<T, BUF_SIZE> {
 #[allow(clippy::type_complexity)]
 struct ClosureCtor<T: Transcendental, const BUF_SIZE: usize> {
     type_name: &'static str,
-    f: Box<dyn Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + Send + Sync>,
+    f: Arc<dyn Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + Send + Sync>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> NodeConstructor<T, BUF_SIZE>
@@ -176,6 +193,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeConstructor<T, BUF_SIZE>
 
     fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, BUF_SIZE> {
         (self.f)(id, params)
+    }
+
+    fn clone_box(&self) -> Box<dyn NodeConstructor<T, BUF_SIZE>> {
+        Box::new(ClosureCtor {
+            type_name: self.type_name,
+            f: self.f.clone(),
+        })
     }
 }
 
@@ -344,6 +368,9 @@ mod tests {
             node.set_id_and_init(id, params.sample_rate);
             NodeVariant::Source(Box::new(node))
         }
+        fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
+            Box::new(Self)
+        }
     }
 
     struct TestProcessorCtor;
@@ -357,6 +384,9 @@ mod tests {
             node.meta_cat = NodeCategory::Processor;
             node.set_id_and_init(id, params.sample_rate);
             NodeVariant::Processor(Box::new(node))
+        }
+        fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
+            Box::new(Self)
         }
     }
 

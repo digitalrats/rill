@@ -45,6 +45,10 @@ serde_json = { version = "1.0", optional = true }
 name = "play_json"
 required-features = ["serialization", "sampler"]
 
+[[example]]
+name = "record_mic"
+required-features = ["serialization", "io", "sampler"]
+
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "cpal"]
 
