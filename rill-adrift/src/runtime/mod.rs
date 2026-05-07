@@ -161,16 +161,26 @@ impl<const BUF: usize> Runtime<BUF> {
     /// Initialises the node and backend factories with all built-in types.
     /// Use [`register_node_fn`](Self::register_node_fn) to add custom node
     /// types before calling [`create_builder`](Self::create_builder).
+    /// If `config.backend_name` is set, the default backend is configured
+    /// automatically from the config's string-typed parameters.
     pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
         let mut nf = NodeFactory::new();
         crate::registration::register_all_nodes(&mut nf);
         let mut bf = BackendFactory::new();
         crate::registration::register_backends(&mut bf);
+        let default_backend = config.backend_name.clone().map(|n| {
+            let params = config
+                .backend_params
+                .iter()
+                .map(|(k, v)| (k.clone(), str_to_param(v)))
+                .collect();
+            (n, params)
+        });
         Self {
             dead: Arc::new(MpscQueue::new()),
             node_factory: Arc::new(Mutex::new(nf)),
             backend_factory: Arc::new(bf),
-            default_backend: None,
+            default_backend,
             control: None,
             #[cfg(feature = "serialization")]
             config,
@@ -351,6 +361,24 @@ impl<const BUF: usize> Runtime<BUF> {
 
         log::info!("runtime stopped");
     }
+}
+
+/// Convert a string from config to [`ParamValue`].
+///
+/// Tries i32, f32, bool, then falls back to string.
+fn str_to_param(s: &str) -> ParamValue {
+    if let Ok(i) = s.parse::<i32>() {
+        return ParamValue::Int(i);
+    }
+    if let Ok(f) = s.parse::<f32>() {
+        return ParamValue::Float(f);
+    }
+    match s {
+        "true" | "yes" | "1" => return ParamValue::Bool(true),
+        "false" | "no" | "0" => return ParamValue::Bool(false),
+        _ => {}
+    }
+    ParamValue::String(s.to_string())
 }
 
 impl<const BUF: usize> Drop for Runtime<BUF> {
