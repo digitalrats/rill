@@ -21,7 +21,7 @@ const RATE: f32 = 44100.0;
 type Graph = rill_adrift::rill_graph::Graph<f32, BUF>;
 
 fn build_graph(json: &str, backend_name: &str) -> Graph {
-    let mut builder = registration::load_graph_json::<BUF>(json).expect("load_graph_json");
+    let builder = registration::load_graph_json::<BUF>(json).expect("load_graph_json");
 
     builder
         .build(Some(backend_name), RATE as u32, BUF as u32, 2)

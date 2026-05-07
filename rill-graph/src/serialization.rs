@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn test_export_feedback_connection() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
@@ -881,7 +881,7 @@ mod tests {
     fn test_export_type_name_explicit() {
         // ParamCtor declares type_name = Some("rill/param")
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         let graph = b.build(None, 0, 0, 0).expect("build");
 
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn test_roundtrip_preserves_node_ids() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         // Explicit IDs via add_node_with_id
         b.add_node_with_id("rill/test", &NodeParams::new(44100.0), NodeId(100))
             .unwrap();
@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn test_roundtrip_complex_topology() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         let s0 = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let p1 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         let p2 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
@@ -1056,7 +1056,7 @@ mod tests {
 
     #[test]
     fn test_invalid_json() {
-        let reg = empty_factory();
+        let _reg = empty_factory();
         assert!(from_json("not json").is_err());
     }
 }
