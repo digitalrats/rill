@@ -10,7 +10,7 @@
 //! - **JSON** — human-readable, for debugging / manual editing.
 //! - **CBOR** — compact binary, for network transfer and preset storage.
 //!
-//! Both encode the same [`GraphDocument`] structure.
+//! Both encode the same [`GraphDef`] structure.
 
 use std::collections::{HashMap, HashSet};
 
@@ -26,7 +26,7 @@ use serde::de;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
-// PatchbayDocument structure
+// PatchbayDef structure
 // ============================================================================
 
 /// A named resource (e.g. a tape loop) shared between graph nodes.
@@ -45,7 +45,7 @@ pub struct ResourceDef {
 /// Contains everything needed to reconstruct a signal graph:
 /// node definitions with parameters, named resources, and connections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphDocument {
+pub struct GraphDef {
     /// Format identifier for forward compatibility (e.g. `"rill/1"`).
     pub format_version: String,
 
@@ -169,7 +169,7 @@ impl std::error::Error for SerializationError {}
 // Construction helpers (for incremental / interactive graph building)
 // ============================================================================
 
-impl GraphDocument {
+impl GraphDef {
     /// Create an empty document with sensible defaults.
     pub fn new(sample_rate: f32, block_size: usize) -> Self {
         Self {
@@ -216,10 +216,10 @@ impl GraphDocument {
 }
 
 // ============================================================================
-// Export (Graph → GraphDocument)
+// Export (Graph → GraphDef)
 // ============================================================================
 
-impl GraphDocument {
+impl GraphDef {
     /// Build a document from an in-memory graph.
     ///
     /// Iterates every node, reads its metadata and current parameters,
@@ -316,10 +316,10 @@ fn extract_connections<T: Transcendental, const B: usize>(
 }
 
 // ============================================================================
-// Import (GraphDocument → GraphBuilder)
+// Import (GraphDef → GraphBuilder)
 // ============================================================================
 
-impl GraphDocument {
+impl GraphDef {
     /// Reconstitute a mutable graph builder from this document.
     ///
     /// Validates that all node types are registered and no [`NodeId`] is
@@ -491,7 +491,7 @@ fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
 pub fn to_json<T: Transcendental, const B: usize>(
     graph: &super::Graph<T, B>,
 ) -> Result<String, SerializationError> {
-    let doc = GraphDocument::from_graph(graph);
+    let doc = GraphDef::from_graph(graph);
     serde_json::to_string_pretty(&doc).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
 }
 
@@ -500,7 +500,7 @@ pub fn from_json<T: Transcendental, const B: usize>(
     json: &str,
     registry: &NodeRegistry<T, B>,
 ) -> Result<GraphBuilder<T, B>, SerializationError> {
-    let doc: GraphDocument =
+    let doc: GraphDef =
         serde_json::from_str(json).map_err(|e| SerializationError::InvalidFormat(e.to_string()))?;
     doc.into_builder(registry)
 }
@@ -509,7 +509,7 @@ pub fn from_json<T: Transcendental, const B: usize>(
 pub fn to_cbor<T: Transcendental, const B: usize>(
     graph: &super::Graph<T, B>,
 ) -> Result<Vec<u8>, SerializationError> {
-    let doc = GraphDocument::from_graph(graph);
+    let doc = GraphDef::from_graph(graph);
     serde_cbor::to_vec(&doc).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
 }
 
@@ -518,7 +518,7 @@ pub fn from_cbor<T: Transcendental, const B: usize>(
     bytes: &[u8],
     registry: &NodeRegistry<T, B>,
 ) -> Result<GraphBuilder<T, B>, SerializationError> {
-    let doc: GraphDocument = serde_cbor::from_slice(bytes)
+    let doc: GraphDef = serde_cbor::from_slice(bytes)
         .map_err(|e| SerializationError::InvalidFormat(e.to_string()))?;
     doc.into_builder(registry)
 }
@@ -830,7 +830,7 @@ mod tests {
             )
             .expect("build");
 
-        let doc = GraphDocument::from_graph(&graph);
+        let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes.len(), 1);
 
         let nd = &doc.nodes[0];
@@ -893,7 +893,7 @@ mod tests {
             )
             .expect("build");
 
-        let doc = GraphDocument::from_graph(&graph);
+        let doc = GraphDef::from_graph(&graph);
         let sigs: Vec<SignalKind> = doc.connections.iter().map(|c| c.kind).collect();
         assert!(sigs.contains(&SignalKind::Signal));
         assert!(sigs.contains(&SignalKind::Feedback));
@@ -918,7 +918,7 @@ mod tests {
             )
             .expect("build");
 
-        let doc = GraphDocument::from_graph(&graph);
+        let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes[0].type_name, "rill/param");
     }
 
@@ -952,7 +952,7 @@ mod tests {
             )
             .expect("build");
 
-        let doc = GraphDocument::from_graph(&graph);
+        let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes[0].type_name, "TestNode");
     }
 
@@ -1041,7 +1041,7 @@ mod tests {
     #[test]
     fn test_unknown_type_error() {
         let reg = empty_registry();
-        let doc = GraphDocument {
+        let doc = GraphDef {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 64,
@@ -1062,7 +1062,7 @@ mod tests {
     #[test]
     fn test_duplicate_id_error() {
         let reg = empty_registry();
-        let doc = GraphDocument {
+        let doc = GraphDef {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 64,
@@ -1092,7 +1092,7 @@ mod tests {
 
     #[test]
     fn test_block_size_mismatch() {
-        let doc = GraphDocument {
+        let doc = GraphDef {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
             block_size: 128,

@@ -9,13 +9,13 @@
 //!
 //! # Feature gate
 //!
-//! Requires the `serde` feature (for [`PatchbayDocument`](crate::serialization::PatchbayDocument)
+//! Requires the `serde` feature (for [`PatchbayDef`](crate::serialization::PatchbayDef)
 //! and [`SequencerDocument`](crate::sequencer::SequencerDocument) access).
 
 use std::fmt::Write;
 
 #[cfg(feature = "serde")]
-use crate::serialization::PatchbayDocument;
+use crate::serialization::PatchbayDef;
 #[cfg(feature = "serde")]
 use crate::sequencer::SequencerDocument;
 
@@ -28,10 +28,10 @@ pub struct DotConfig {
     pub verbose: bool,
 }
 
-/// Generate DOT from a PatchbayDocument and optional SequencerDocument.
+/// Generate DOT from a PatchbayDef and optional SequencerDocument.
 #[cfg(feature = "serde")]
 pub fn patchbay_to_dot(
-    patchbay: &PatchbayDocument,
+    patchbay: &PatchbayDef,
     sequencer: Option<&SequencerDocument>,
     _config: &DotConfig,
 ) -> String {
@@ -165,6 +165,6 @@ pub fn patchbay_to_dot(
 #[cfg(feature = "serde")]
 pub fn sequencer_to_dot(seq: &SequencerDocument) -> String {
     let cfg = DotConfig::default();
-    let empty = PatchbayDocument::new();
+    let empty = PatchbayDef::new();
     patchbay_to_dot(&empty, Some(seq), &cfg)
 }

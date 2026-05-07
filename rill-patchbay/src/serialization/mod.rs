@@ -184,16 +184,16 @@ pub struct MappingDef {
 }
 
 // ============================================================================
-// PatchbayDocument
+// PatchbayDef
 // ============================================================================
 
 /// Serializable patchbay configuration.
 ///
-/// Analogous to `rill_graph::serialization::GraphDocument`, linked through
+/// Analogous to `rill_graph::serialization::GraphDef`, linked through
 /// shared `node_id` values.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
-pub struct PatchbayDocument {
+pub struct PatchbayDef {
     pub automata: Vec<AutomatonDef>,
     pub servos: Vec<ServoDef>,
     pub mappings: Vec<MappingDef>,
@@ -209,7 +209,7 @@ pub struct PatchbayDocument {
     pub description: Option<String>,
 }
 
-impl PatchbayDocument {
+impl PatchbayDef {
     pub fn new() -> Self {
         Self {
             automata: Vec::new(),
@@ -498,7 +498,7 @@ impl PatchbayDocument {
     }
 }
 
-impl Default for PatchbayDocument {
+impl Default for PatchbayDef {
     fn default() -> Self {
         Self::new()
     }
@@ -509,22 +509,22 @@ impl Default for PatchbayDocument {
 // ============================================================================
 
 #[cfg(feature = "json")]
-pub fn to_json(doc: &PatchbayDocument) -> Result<String, String> {
+pub fn to_json(doc: &PatchbayDef) -> Result<String, String> {
     serde_json::to_string_pretty(doc).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "json")]
-pub fn from_json(json: &str) -> Result<PatchbayDocument, String> {
+pub fn from_json(json: &str) -> Result<PatchbayDef, String> {
     serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "cbor")]
-pub fn to_cbor(doc: &PatchbayDocument) -> Result<Vec<u8>, String> {
+pub fn to_cbor(doc: &PatchbayDef) -> Result<Vec<u8>, String> {
     serde_cbor::to_vec(doc).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "cbor")]
-pub fn from_cbor(bytes: &[u8]) -> Result<PatchbayDocument, String> {
+pub fn from_cbor(bytes: &[u8]) -> Result<PatchbayDef, String> {
     serde_cbor::from_slice(bytes).map_err(|e| e.to_string())
 }
 
@@ -537,8 +537,8 @@ mod tests {
     use super::*;
     use rill_core::queues::MpscQueue;
 
-    fn sample_doc() -> PatchbayDocument {
-        PatchbayDocument {
+    fn sample_doc() -> PatchbayDef {
+        PatchbayDef {
             automata: vec![AutomatonDef::Lfo {
                 id: "lfo1".into(),
                 frequency: 0.3,
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_missing_automaton_error() {
-        let doc = PatchbayDocument {
+        let doc = PatchbayDef {
             automata: vec![],
             servos: vec![ServoDef {
                 automaton_id: "nonexistent".into(),
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn test_apply_to_async_roundtrip() {
-        let doc = PatchbayDocument {
+        let doc = PatchbayDef {
             automata: vec![AutomatonDef::Lfo {
                 id: "lfo1".into(),
                 frequency: 1.0,
@@ -666,7 +666,7 @@ mod tests {
     async fn test_apply_to_async_spawns_tasks() {
         use rill_core::queues::{MpscQueue, SetParameter};
 
-        let doc = PatchbayDocument {
+        let doc = PatchbayDef {
             automata: vec![AutomatonDef::Lfo {
                 id: "lfo1".into(),
                 frequency: 10.0,

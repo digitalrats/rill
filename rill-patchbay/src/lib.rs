@@ -90,7 +90,7 @@ pub mod sequencer;
 pub mod serialization;
 
 #[cfg(feature = "serde")]
-pub use serialization::PatchbayDocument;
+pub use serialization::PatchbayDef;
 
 // =============================================================================
 // Реэкспорты для удобства

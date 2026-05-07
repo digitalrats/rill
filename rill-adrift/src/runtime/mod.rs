@@ -2,8 +2,8 @@
 //!
 //! Creates a fully configured "rill world" from serialised documents:
 //!
-//! * GraphDocument — signal topology (nodes, connections, resources)
-//! * PatchbayDocument — control system (LFO, envelope, mappings)
+//! * GraphDef — signal topology (nodes, connections, resources)
+//! * PatchbayDef — control system (LFO, envelope, mappings)
 //!   including the [`OscSurface`] that maps OSC paths to controller IDs
 //!
 //! ## Feature gates
@@ -47,9 +47,9 @@ use rill_patchbay::engine::{Engine, OscSurface};
 use rill_patchbay::function_registry::FunctionRegistry;
 
 #[cfg(feature = "serialization")]
-use rill_graph::serialization::GraphDocument;
+use rill_graph::serialization::GraphDef;
 #[cfg(feature = "serialization")]
-use rill_patchbay::serialization::PatchbayDocument;
+use rill_patchbay::serialization::PatchbayDef;
 
 mod config;
 pub use config::RuntimeConfig;
@@ -121,7 +121,7 @@ pub struct Runtime {
 
     /// Current graph document (loaded, not yet built).
     #[cfg(feature = "serialization")]
-    graph_doc: Option<GraphDocument>,
+    graph_doc: Option<GraphDef>,
 
     /// Control engine: automata, mappings, port combiners.
     control: Option<Engine>,
@@ -166,7 +166,7 @@ impl Runtime {
         if let Some(ref path) = self.config.graph_path {
             let json = std::fs::read_to_string(path)
                 .map_err(|e| RuntimeError::Graph(format!("read '{:?}': {e}", path)))?;
-            let doc: GraphDocument = serde_json::from_str(&json)
+            let doc: GraphDef = serde_json::from_str(&json)
                 .map_err(|e| RuntimeError::Graph(format!("parse '{:?}': {e}", path)))?;
             self.load_graph(doc);
         }
@@ -176,12 +176,12 @@ impl Runtime {
 
     // ─── Public API ─────────────────────────────────────────────────
 
-    /// Load a [`GraphDocument`] into the runtime.
+    /// Load a [`GraphDef`] into the runtime.
     ///
     /// The graph is **not** built or started until [`start_audio`] or
     /// `/sys/graph/start` is received.
     #[cfg(feature = "serialization")]
-    pub fn load_graph(&mut self, doc: GraphDocument) {
+    pub fn load_graph(&mut self, doc: GraphDef) {
         self.graph_doc = Some(doc);
         log::info!(
             "graph document loaded ({} nodes)",
@@ -189,7 +189,7 @@ impl Runtime {
         );
     }
 
-    /// Load and apply a [`PatchbayDocument`] with the given command channel.
+    /// Load and apply a [`PatchbayDef`] with the given command channel.
     ///
     /// The `cmd_queue` is typically obtained from a built [`Graph`](rill_graph::Graph)
     /// via [`Graph::handle`](rill_graph::Graph::handle).
@@ -197,7 +197,7 @@ impl Runtime {
     #[cfg(feature = "serialization")]
     pub fn load_patchbay(
         &mut self,
-        doc: PatchbayDocument,
+        doc: PatchbayDef,
         cmd_queue: ActorRef<SetParameter>,
     ) -> Result<(), RuntimeError> {
         let mut control = Engine::new(cmd_queue.clone());

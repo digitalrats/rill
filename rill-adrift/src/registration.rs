@@ -301,11 +301,11 @@ fn register_digital_effects<const BUF_SIZE: usize>(registry: &mut NodeRegistry<f
     });
 }
 
-/// Load a [`GraphDocument`](rill_graph::serialization::GraphDocument) into a
+/// Load a [`GraphDef`](rill_graph::serialization::GraphDef) into a
 /// [`GraphBuilder`] using the global registry. No external registry needed.
 #[cfg(feature = "serialization")]
 pub fn load_graph_document<const B: usize>(
-    doc: rill_graph::serialization::GraphDocument,
+    doc: rill_graph::serialization::GraphDef,
 ) -> Result<rill_graph::GraphBuilder<f32, B>, rill_graph::serialization::SerializationError> {
     doc.into_builder(registry::<B>())
 }

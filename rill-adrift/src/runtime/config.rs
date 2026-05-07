@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 /// Host-level configuration for a [`Runtime`](super::Runtime).
 ///
-/// Separate from `rill_graph::serialization::GraphDocument` and
-/// `rill_patchbay::serialization::PatchbayDocument` — this struct holds
+/// Separate from `rill_graph::serialization::GraphDef` and
+/// `rill_patchbay::serialization::PatchbayDef` — this struct holds
 /// **host-level** parameters: sample rate, OSC bind address,
 /// and optional paths to initial preset files.
 pub struct RuntimeConfig {
@@ -14,11 +14,11 @@ pub struct RuntimeConfig {
     /// Block / buffer size (default 256).
     pub block_size: usize,
 
-    /// Optional path to a `GraphDocument` JSON file to load at startup.
+    /// Optional path to a `GraphDef` JSON file to load at startup.
     #[cfg(feature = "serialization")]
     pub graph_path: Option<PathBuf>,
 
-    /// Optional path to a `PatchbayDocument` JSON file to load at startup.
+    /// Optional path to a `PatchbayDef` JSON file to load at startup.
     #[cfg(feature = "serialization")]
     pub patchbay_path: Option<PathBuf>,
 

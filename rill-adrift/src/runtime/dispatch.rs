@@ -8,7 +8,7 @@
 //! | `/sys/graph/stop` | — | Log stop request |
 //! | `/sys/status` | — | Print runtime state |
 //!
-//! **User paths** — registered from `PatchbayDocument::osc_surface`.
+//! **User paths** — registered from `PatchbayDef::osc_surface`.
 //! Each entry maps an OSC address to an `EventPattern`; the value is
 //! extracted from the first OSC argument (treated as normalized 0..1).
 
