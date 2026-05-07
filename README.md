@@ -1,8 +1,8 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests](https://img.shields.io/badge/tests-487-green)](https://github.com/DigitalRats/rill)
-[![version](https://img.shields.io/badge/version-0.5.0--beta.2-blue)](https://github.com/DigitalRats/rill)
+[![tests](https://img.shields.io/badge/tests-543-green)](https://github.com/DigitalRats/rill)
+[![version](https://img.shields.io/badge/version-0.5.0--beta.3-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 Modular signal-processing ecosystem for Rust. 17 crates, from lock-free
