@@ -1,0 +1,9 @@
+[package]
+name = "rill-core-actor"
+version = "0.5.0-beta.2"
+edition = "2021"
+description = "Actor model infrastructure for the Rill ecosystem"
+documentation = "https://docs.rs/rill-core-actor"
+
+[dependencies]
+rill-core = { workspace = true }

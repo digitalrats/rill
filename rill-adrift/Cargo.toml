@@ -14,6 +14,7 @@ hound = "3.5"
 
 [dependencies]
 rill-core = { workspace = true }
+rill-core-actor = { workspace = true }
 rill-core-dsp = { workspace = true }
 rill-graph = { workspace = true }
 rill-oscillators = { workspace = true }
@@ -65,3 +66,4 @@ alsa = ["rill-io/alsa"]
 cpal = ["rill-io/cpal"]
 jack = ["rill-io/jack"]
 pipewire = ["rill-io/pipewire"]
+

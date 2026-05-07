@@ -4,7 +4,7 @@
 #[cfg(test)]
 use rill_core::queues::SetParameter;
 #[cfg(test)]
-use rill_core::traits::ActorRef;
+use rill_core_actor::ActorRef;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

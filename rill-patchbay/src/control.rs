@@ -12,7 +12,7 @@ use std::time::Duration;
 use rill_core::prelude::*;
 use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
 use rill_core::queues::{SetParameter, SignalOrigin};
-use rill_core::traits::ActorRef;
+use rill_core_actor::ActorRef;
 
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 
@@ -1079,7 +1079,8 @@ mod tests {
     #[test]
     fn test_lfo_servo() {
         let node = NodeId(1);
-        let mut control = PatchbayControl::new(ActorRef::new_pair().0);
+        let (actor_ref, _mailbox) = ActorRef::new_pair();
+        let mut control = PatchbayControl::new(actor_ref);
 
         control.add_lfo(
             "test_lfo",
@@ -1103,7 +1104,8 @@ mod tests {
     #[test]
     fn test_envelope_servo() {
         let node = NodeId(1);
-        let mut control = PatchbayControl::new(ActorRef::new_pair().0);
+        let (actor_ref, _mailbox) = ActorRef::new_pair();
+        let mut control = PatchbayControl::new(actor_ref);
 
         control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
 

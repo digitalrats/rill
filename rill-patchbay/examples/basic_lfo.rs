@@ -1,13 +1,11 @@
-use rill_core::queues::SetParameter;
-use rill_core::traits::ActorRef;
 use rill_core::NodeId;
+use rill_core_actor::ActorRef;
 use rill_patchbay::{LfoWaveform, PatchbayControl};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Basic LFO Automation Example ===\n");
 
-    let mailbox = Arc::new(MpscQueue::with_capacity(64));
-    let actor_ref = ActorRef::new(&mailbox);
+    let (actor_ref, mailbox) = ActorRef::new_pair();
     let mut control = PatchbayControl::new(actor_ref);
     let node = NodeId(1);
 

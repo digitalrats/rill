@@ -1,10 +1,11 @@
 use rill_core::queues::{MpscQueue, SetParameter};
-use rill_core::traits::ActorRef;
 use rill_core::NodeId;
+use rill_core_actor::ActorRef;
 use rill_patchbay::{
     ControlEvent, EventPattern, FunctionAutomaton, LfoWaveform, Mapping, ParameterMapping,
     PatchbayControl, Servo, Target, Transform,
 };
+use std::sync::Arc;
 
 fn param(name: &str) -> String {
     name.to_string()

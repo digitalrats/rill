@@ -39,8 +39,8 @@
 use std::sync::Arc;
 
 use rill_core::queues::{MpscQueue, SetParameter};
-use rill_core::traits::{ActorRef, ParamValue};
 use rill_core::NodeId;
+use rill_core_actor::ActorRef;
 #[cfg(feature = "osc")]
 use rill_patchbay::control::{OscSurface, PatchbayControl};
 use rill_patchbay::engine::PatchbayEngine;
@@ -112,8 +112,9 @@ pub enum RuntimeError {
 /// start, or use the free function run for
 /// the all-in-one lifecycle.
 pub struct Runtime {
-    /// Actor reference for sending commands to the audio graph.
-    pub(crate) actor_ref: ActorRef<SetParameter>,
+    /// Dead letters — undeliverable commands collected when the graph
+    /// is not running (stale queue detected by the application layer).
+    dead: Arc<MpscQueue<SetParameter>>,
 
     /// Host configuration (stored for serialized graph/patchbay loading).
     #[cfg(feature = "serialization")]
@@ -142,10 +143,8 @@ pub struct Runtime {
 impl Runtime {
     /// Create a new (stopped) runtime with the given configuration.
     pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
-        let _mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let actor_ref = ActorRef::new(&_mailbox);
         Self {
-            actor_ref,
+            dead: Arc::new(MpscQueue::new()),
             control: None,
             #[cfg(feature = "serialization")]
             config,
@@ -173,14 +172,6 @@ impl Runtime {
             self.load_graph(doc);
         }
 
-        if let Some(ref path) = self.config.patchbay_path {
-            let json = std::fs::read_to_string(path)
-                .map_err(|e| RuntimeError::Patchbay(format!("read '{:?}': {e}", path)))?;
-            let doc = rill_patchbay::document::from_json(&json)
-                .map_err(|e| RuntimeError::Patchbay(format!("parse '{:?}': {e}", path)))?;
-            self.load_patchbay(doc)?;
-        }
-
         Ok(())
     }
 
@@ -199,12 +190,18 @@ impl Runtime {
         );
     }
 
-    /// Load and apply a [`PatchbayDocument`].
+    /// Load and apply a [`PatchbayDocument`] with the given command channel.
     ///
+    /// The `cmd_queue` is typically obtained from a built [`Graph`](rill_graph::Graph)
+    /// via [`Graph::handle`](rill_graph::Graph::handle).
     /// Creates/replaces the [`PatchbayEngine`] and updates the OSC surface.
     #[cfg(feature = "serialization")]
-    pub fn load_patchbay(&mut self, doc: PatchbayDocument) -> Result<(), RuntimeError> {
-        let mut engine = PatchbayEngine::new(self.actor_ref.clone());
+    pub fn load_patchbay(
+        &mut self,
+        doc: PatchbayDocument,
+        cmd_queue: ActorRef<SetParameter>,
+    ) -> Result<(), RuntimeError> {
+        let mut engine = PatchbayEngine::new(cmd_queue.clone());
         let registry = FunctionRegistry::builtin();
         engine
             .load_document(&doc, &registry)
@@ -215,7 +212,7 @@ impl Runtime {
         #[cfg(feature = "osc")]
         {
             self.osc_surface = doc.osc_surface.clone();
-            let mut ctrl = PatchbayControl::new(self.actor_ref.clone());
+            let mut ctrl = PatchbayControl::new(cmd_queue);
             doc.apply_to(&mut ctrl, &registry)
                 .map_err(RuntimeError::Patchbay)?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
@@ -225,22 +222,13 @@ impl Runtime {
         Ok(())
     }
 
-    /// Push a parameter command to the audio thread's queue.
-    ///
-    /// Lock-free; safe from any thread.
-    pub fn set_param(&self, node: NodeId, param: &str, value: f32) {
-        let pid = rill_core::traits::ParameterId::new(param).unwrap();
-        self.actor_ref.send(SetParameter::new(
-            rill_core::traits::PortId::param(node, 0),
-            pid,
-            ParamValue::Float(value),
-            rill_core::queues::SignalOrigin::Manual,
-        ));
-    }
-
-    /// Access the shared actor reference for sending commands.
-    pub fn actor_ref(&self) -> ActorRef<SetParameter> {
-        self.actor_ref.clone()
+    /// Drain the dead letters queue, returning all undeliverable messages.
+    pub fn drain_dead_letters(&self) -> Vec<SetParameter> {
+        let mut msgs = Vec::new();
+        while let Some(msg) = self.dead.pop() {
+            msgs.push(msg);
+        }
+        msgs
     }
 
     // ─── Lifecycle ─────────────────────────────────────────────────
@@ -250,7 +238,8 @@ impl Runtime {
     pub async fn start(&mut self) -> Result<(), RuntimeError> {
         #[cfg(feature = "osc")]
         if let Some(ref bind) = self.config.osc_bind.clone() {
-            self.start_osc(bind).await?;
+            // OSC server needs a command queue — provide via start_osc
+            // or use the dead letters queue as a sink.
         }
 
         Ok(())
@@ -258,19 +247,23 @@ impl Runtime {
 
     /// Start the OSC server with system and user surface handlers.
     #[cfg(feature = "osc")]
-    pub async fn start_osc(&mut self, bind: &str) -> Result<(), RuntimeError> {
+    pub async fn start_osc(
+        &mut self,
+        bind: &str,
+        cmd_queue: ActorRef<SetParameter>,
+    ) -> Result<(), RuntimeError> {
         if self.osc.is_some() {
             return Err(RuntimeError::Osc("already running".into()));
         }
 
         let control = self.control_shared.clone().unwrap_or_else(|| {
-            Arc::new(std::sync::Mutex::new(PatchbayControl::new(
-                self.actor_ref.clone(),
-            )))
+            Arc::new(std::sync::Mutex::new(PatchbayControl::new(ActorRef::new(
+                &Arc::new(MpscQueue::with_capacity(64)),
+            ))))
         });
         let surface = self.osc_surface.clone();
 
-        let handle = OscHandle::start(bind, self.actor_ref.clone(), control, surface)
+        let handle = OscHandle::start(bind, cmd_queue, control, surface)
             .await
             .map_err(RuntimeError::Osc)?;
 

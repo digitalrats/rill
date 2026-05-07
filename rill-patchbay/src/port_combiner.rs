@@ -11,7 +11,8 @@
 #[cfg(test)]
 use rill_core::queues::MpscQueue;
 use rill_core::queues::{SetParameter, SignalOrigin};
-use rill_core::traits::{ActorRef, NodeId, ParamValue, ParameterId, PortId};
+use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_core_actor::ActorRef;
 #[cfg(test)]
 use std::sync::Arc;
 

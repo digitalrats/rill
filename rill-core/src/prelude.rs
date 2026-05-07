@@ -47,8 +47,6 @@ pub use crate::traits::{
     Action,
     ActionContext,
 
-    // Actor model
-    ActorRef,
     // Algorithm / Action
     Algorithm,
     AlgorithmCategory,

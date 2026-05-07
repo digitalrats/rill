@@ -16,7 +16,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rill_core::queues::{SetParameter, SignalOrigin};
-use rill_core::traits::{ActorRef, NodeId, ParamValue, ParameterId, PortId};
+use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_core_actor::ActorRef;
 use rill_patchbay::control::{ControlEvent, EventPattern, OscSurface, PatchbayControl};
 
 use crate::osc::osc::{OscMessage, OscType};

@@ -7,7 +7,7 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! use rill_core::traits::ActorRef;
+//! use rill_core_actor::ActorRef;
 //! use rill_core::NodeId;
 //! use rill_patchbay::prelude::*;
 //!
@@ -42,8 +42,8 @@ use std::time::Duration;
 use crossbeam_channel::Receiver as CrossbeamReceiver;
 use rill_core::queues::telemetry::Telemetry;
 use rill_core::queues::SetParameter;
-use rill_core::traits::ActorRef;
 use rill_core::NodeId;
+use rill_core_actor::ActorRef;
 
 use crate::automaton::LfoWaveform;
 use crate::control::{ControlEvent, Mapping, PatchbayControl};
@@ -225,8 +225,10 @@ mod tests {
     use crate::automaton::LfoWaveform;
     use crate::control::{midi_cc, ControlEvent, Transform};
     use crate::strategy::ControlStrategy;
-    use rill_core::traits::ActorRef;
+    use rill_core::queues::MpscQueue;
     use rill_core::NodeId;
+    use rill_core_actor::ActorRef;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_engine_creation() {
@@ -292,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_stop() {
-        let (cmd_queue, _mailbox) = ActorRef::<SetParameter>::new_pair();
+        let cmd_queue = ActorRef::new_pair().0;
         let mut engine = PatchbayEngine::new(cmd_queue);
 
         engine.add_lfo(
@@ -314,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_drop_stops_tasks() {
-        let (cmd_queue, _mailbox) = ActorRef::<SetParameter>::new_pair();
+        let cmd_queue = ActorRef::new_pair().0;
         {
             let mut engine = PatchbayEngine::new(cmd_queue);
             engine.add_lfo(

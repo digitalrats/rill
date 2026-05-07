@@ -191,10 +191,10 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    ActorCell, ActorRef, ClockError, ClockResult, ConnectionError, ConnectionResult, Node,
-    NodeCategory, NodeId, NodeMetadata, NodeParams, NodeState, NodeTypeId, ParamMetadata,
-    ParamRange, ParamType, ParamValue, ParameterError, ParameterId, Port, PortDirection, PortError,
-    PortId, PortResult, PortType, ProcessError, ProcessResult, Processor, Sink, Source,
+    ClockError, ClockResult, ConnectionError, ConnectionResult, Node, NodeCategory, NodeId,
+    NodeMetadata, NodeParams, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType,
+    ParamValue, ParameterError, ParameterId, Port, PortDirection, PortError, PortId, PortResult,
+    PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };
 
 // Re-export math abstractions
