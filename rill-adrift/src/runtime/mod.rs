@@ -39,7 +39,6 @@
 use std::sync::Arc;
 
 use rill_core::queues::{MpscQueue, SetParameter};
-use rill_core::NodeId;
 use rill_core_actor::ActorRef;
 #[cfg(feature = "osc")]
 use rill_patchbay::engine::{Engine, OscSurface};
@@ -203,7 +202,7 @@ impl Runtime {
         let mut control = Engine::new(cmd_queue.clone());
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry)
-            .map_err(|e| RuntimeError::Patchbay(e))?;
+            .map_err(RuntimeError::Patchbay)?;
 
         self.control = Some(control);
 
@@ -212,7 +211,7 @@ impl Runtime {
             self.osc_surface = doc.osc_surface.clone();
             let mut ctrl = Engine::new(cmd_queue);
             doc.apply_to(&mut ctrl, &registry)
-                .map_err(|e| RuntimeError::Patchbay(e))?;
+                .map_err(RuntimeError::Patchbay)?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
         }
 
@@ -235,7 +234,7 @@ impl Runtime {
     #[cfg(feature = "serialization")]
     pub async fn start(&mut self) -> Result<(), RuntimeError> {
         #[cfg(feature = "osc")]
-        if let Some(ref bind) = self.config.osc_bind.clone() {
+        if let Some(ref _bind) = self.config.osc_bind.clone() {
             // OSC server needs a command queue — provide via start_osc
             // or use the dead letters queue as a sink.
         }
