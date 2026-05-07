@@ -165,6 +165,11 @@ under `pw‑loopback` or similar virtual device to detect xruns.
 Conventional commits: `<type>(<scope>): <description>`.
 Start a feature branch: `git flow feature start <name>`.
 
+> **Commit messages with backticks:** always use **single quotes** (`'...'`) for
+> `git commit -m`, never double quotes. In double quotes the shell interprets
+> backticks as command substitution (`\`cmd\`` → runs `cmd`), which silently
+> corrupts the message and may execute arbitrary text.
+
 > **Before any work:** if the current branch is `develop`, you **must** create a
 > `feature/*` branch first (`git flow feature start <name>`). Directly editing
 > `develop` is not allowed.
