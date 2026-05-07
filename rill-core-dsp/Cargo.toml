@@ -22,4 +22,3 @@ default = []
 simd = ["rill-core/simd"]  # SIMD оптимизации через rill-core
 f64 = []                   # Включить поддержку f64
 fast_math = []             # Быстрые приближённые математические функции (меньшая точность)
-unstable = []              # Нестабильные фичи (generic_const_exprs)
