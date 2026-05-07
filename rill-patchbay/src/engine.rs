@@ -1118,7 +1118,6 @@ fn target_key(node_id: NodeId, param_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::queues::MpscQueue;
 
     #[test]
     fn test_midi_mapping() {

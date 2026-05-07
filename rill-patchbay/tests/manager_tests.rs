@@ -1,4 +1,4 @@
-use rill_core::queues::{MpscQueue, SetParameter};
+use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
 use rill_core_actor::ActorRef;
 use rill_patchbay::{

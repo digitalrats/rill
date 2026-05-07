@@ -2,8 +2,6 @@
 //! Serializable patchbay document types (de)serialised from JSON/CBOR.
 
 #[cfg(test)]
-use rill_core::queues::SetParameter;
-#[cfg(test)]
 use rill_core_actor::ActorRef;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -668,7 +666,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_to_async_spawns_tasks() {
-        use rill_core::queues::{MpscQueue, SetParameter};
+        use rill_core::queues::MpscQueue;
 
         let doc = PatchbayDef {
             automata: vec![AutomatonDef::Lfo {

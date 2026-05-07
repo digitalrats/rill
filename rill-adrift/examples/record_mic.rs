@@ -17,8 +17,7 @@ use std::sync::{Arc, Mutex};
 use rill_adrift::io::input::AudioInput;
 use rill_adrift::io::signal_io::IoBackendPtr;
 use rill_adrift::io::AudioConfig;
-use rill_adrift::rill_core::io::IoBackend;
-use rill_adrift::rill_core::queues::SetParameter;
+
 use rill_adrift::rill_core::time::{ClockTick, SystemClock};
 use rill_adrift::rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
@@ -26,7 +25,6 @@ use rill_adrift::rill_core::traits::{
 };
 use rill_adrift::rill_core::Transcendental;
 use rill_adrift::rill_graph::GraphBuilder;
-use rill_core_actor::ActorRef;
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
@@ -225,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let graph = builder
         .build(Box::new(SystemClock::with_sample_rate(RATE)), None)
         .expect("graph build");
-    let actor_ref = graph.handle();
+    let _actor_ref = graph.handle();
 
     // ── Запуск аудиотреда ─────────────────────────────────────────────────
     let running = Arc::new(AtomicBool::new(true));

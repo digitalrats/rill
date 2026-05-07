@@ -1,4 +1,3 @@
-use rill_core::queues::SetParameter;
 use rill_core::NodeId;
 use rill_core_actor::ActorRef;
 use rill_patchbay::{Engine, LfoWaveform};
