@@ -10,7 +10,7 @@
 //! - **JSON** — human-readable, for debugging / manual editing.
 //! - **CBOR** — compact binary, for network transfer and preset storage.
 //!
-//! Both encode the same [`GraphDef`] structure.
+//! Both encode the same `GraphDef` structure.
 
 use std::collections::{HashMap, HashSet};
 
@@ -198,7 +198,7 @@ impl GraphDef {
 
     /// Append a connection.
     ///
-    /// Validity of the node IDs is checked only at [`into_builder`] time.
+    /// Validity of the node IDs is checked only at [`populate`](Self::populate) time.
     pub fn add_connection(&mut self, conn: ConnectionDef) {
         self.connections.push(conn);
     }
@@ -328,8 +328,8 @@ impl GraphDef {
     /// duplicated, then constructs every node and wires every connection.
     /// Populate an existing [`GraphBuilder`] from this definition.
     ///
-    /// The builder must already have node types registered via
-    /// [`GraphBuilder::register_node`] before calling this method.
+    /// The builder must already have node types registered in its
+    /// [`NodeFactory`](crate::NodeFactory) before calling this method.
     /// Validates IDs, resources, and connections, then adds nodes
     /// and edges to the builder using its internal registry.
     pub fn populate<T: Transcendental, const B: usize>(

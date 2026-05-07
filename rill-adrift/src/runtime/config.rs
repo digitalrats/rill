@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use std::collections::HashMap;
 
+#[cfg(feature = "serialization")]
+use serde::Deserialize;
+
 /// Host-level configuration for a [`Runtime`](super::Runtime).
 ///
 /// Separate from `rill_graph::serialization::GraphDef` and
@@ -14,6 +17,7 @@ use std::collections::HashMap;
 /// backend via [`Runtime::set_default_backend`](super::Runtime::set_default_backend)
 /// at construction time. All values in `backend_params` are strings —
 /// each backend constructor is responsible for parsing them.
+#[cfg_attr(feature = "serialization", derive(Deserialize))]
 pub struct RuntimeConfig {
     /// Audio sample rate (default 48000.0).
     pub sample_rate: f32,

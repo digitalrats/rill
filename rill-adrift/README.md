@@ -13,7 +13,7 @@ crates for signal processing application development.
 | `osc` | `rill-osc` (OSC server, requires tokio) | yes |
 | `sampler` | `rill-sampler` (sample playback) | yes |
 | `analog` | `rill-core-wdf` + `rill-analog-filters` + `rill-analog-effects` | no |
-| `serialization` | graph/patchbay serialization (JSON/CBOR) | no |
+| `serialization` | graph/patchbay serialization (JSON/CBOR) | yes |
 | `alsa` | ALSA backend (implies `io`) | no |
 | `cpal` | CPAL backend (implies `io`) | no |
 | `jack` | JACK backend (implies `io`) | no |

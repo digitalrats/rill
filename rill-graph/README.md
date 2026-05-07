@@ -28,10 +28,7 @@ Processing is driven by `Port::propagate` (not an external engine).
 - **Feedback support** — `port.pre_process` / `port.snapshot_feedback`
 - **Port types** — `Signal`, `Control`, `Clock`, `Feedback`, `Param`
 
-## Top-level processing entry point
-
-No `Port::propagate`. The source node (e.g. `AudioInput` from `rill-io`) creates its
-own processing callback. The callback drains the command queue, calls
+## Top-level processing entry point The processing callback drains the command queue, calls
 `Source::generate`, then `Port::propagate` to cascade through the DAG.
 
 ## Dependencies

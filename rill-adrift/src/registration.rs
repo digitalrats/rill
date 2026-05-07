@@ -1,14 +1,19 @@
 //! Centralized registration of all built-in node types and backends.
 //!
 //! Provides `register_all_nodes` and `register_all_backends` for
-//! populating factories before creating a [`GraphBuilder`].
+//! populating factories before creating a
+//! [rill_graph::GraphBuilder].
 
-use rill_core::traits::{Node, NodeId, NodeVariant, ParamValue, Params};
+use rill_core::traits::{Node, NodeId, NodeVariant, Params};
 use rill_graph::{node_ctor, NodeFactory};
-use std::collections::HashMap;
 
 #[cfg(feature = "io")]
-/// Register every built-in node type on a [`GraphBuilder`].
+use rill_core::traits::ParamValue;
+#[cfg(feature = "io")]
+use std::collections::HashMap;
+
+/// Register every built-in node type on a
+/// [rill_graph::GraphBuilder].
 ///
 /// Typically called once at application startup before loading graph presets.
 ///
@@ -21,9 +26,15 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
     register_oscillators(factory);
     register_digital_filters(factory);
     register_digital_effects(factory);
+    register_router(factory);
+    #[cfg(feature = "io")]
     register_io(factory);
     #[cfg(feature = "sampler")]
     register_sampler::<BUF_SIZE>(factory);
+    #[cfg(feature = "lofi")]
+    register_lofi::<BUF_SIZE>(factory);
+    #[cfg(feature = "analog")]
+    register_analog::<BUF_SIZE>(factory);
 }
 
 #[cfg(feature = "io")]
@@ -43,11 +54,6 @@ fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) 
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
     });
-}
-
-#[cfg(not(feature = "io"))]
-fn register_io<const BUF_SIZE: usize>(_factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    // No I/O nodes available without "io" feature.
 }
 
 // ============================================================================
@@ -73,6 +79,97 @@ fn register_sampler<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SI
         }
         NodeVariant::Source(Box::new(n))
     });
+}
+
+// ============================================================================
+// Rill Lo-Fi
+// ============================================================================
+
+#[cfg(feature = "lofi")]
+fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    use rill_lofi::LofiProcessor;
+
+    node_ctor!(factory, "rill/lofi", |id: NodeId, params: &Params| {
+        use rill_core::traits::ParamValue;
+        let mut n = LofiProcessor::<BUF_SIZE>::new(rill_lofi::LofiConfig::default());
+        Node::set_id(&mut n, id);
+        if let Some(v) = params.get("dry_wet").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("dry_wet").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
+        if let Some(v) = params.get("output_gain").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("output_gain").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
+        if let Some(v) = params.get("bit_depth").and_then(|v| v.as_i32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("bit_depth").unwrap(),
+                ParamValue::Int(v),
+            );
+        }
+        if let Some(v) = params.get("enable_bitcrush").and_then(|v| v.as_bool()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("enable_bitcrush").unwrap(),
+                ParamValue::Bool(v),
+            );
+        }
+        if let Some(v) = params.get("enable_sr_reduction").and_then(|v| v.as_bool()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("enable_sr_reduction").unwrap(),
+                ParamValue::Bool(v),
+            );
+        }
+        if let Some(v) = params.get("enable_noise").and_then(|v| v.as_bool()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("enable_noise").unwrap(),
+                ParamValue::Bool(v),
+            );
+        }
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
+}
+
+// ============================================================================
+// Rill Analog (filters + effects)
+// ============================================================================
+
+#[cfg(feature = "analog")]
+fn register_analog<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    use rill_analog_effects::CassetteDeckProcessor;
+    use rill_analog_filters::WdfMoogLadderProcessor;
+
+    node_ctor!(
+        factory,
+        "rill/analog_moog_ladder",
+        |id: NodeId, params: &Params| {
+            let mut n = WdfMoogLadderProcessor::<f32, BUF_SIZE>::new(params.sample_rate);
+            Node::set_id(&mut n, id);
+            n.cutoff = params.get_f32("cutoff", 1000.0);
+            n.resonance = params.get_f32("resonance", 0.0);
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
+
+    node_ctor!(
+        factory,
+        "rill/cassette_deck",
+        |id: NodeId, params: &Params| {
+            let mut n = CassetteDeckProcessor::<f32, BUF_SIZE>::new(params.sample_rate);
+            Node::set_id(&mut n, id);
+            n.tape_speed = params.get_f32("tape_speed", 4.76);
+            n.bias_level = params.get_f32("bias_level", 0.8);
+            n.noise_floor = params.get_f32("noise_floor", 0.0001);
+            n.wow_flutter = params.get_f32("wow_flutter", 0.002);
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 }
 
 // ============================================================================
@@ -120,6 +217,7 @@ fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BU
 fn register_digital_filters<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_core_dsp::filters::FilterType;
     use rill_digital_filters::biquad::BiquadProcessor;
+    use rill_digital_filters::moog_ladder::MoogLadderProcessor;
 
     node_ctor!(factory, "rill/biquad", |id: NodeId, params: &Params| {
         let ft = match params.get("filter").and_then(|v| v.as_f32()) {
@@ -138,6 +236,19 @@ fn register_digital_filters<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Processor(Box::new(n))
     });
+
+    node_ctor!(
+        factory,
+        "rill/moog_ladder",
+        |id: NodeId, params: &Params| {
+            let mut n = MoogLadderProcessor::<f32, BUF_SIZE>::new(params.sample_rate);
+            Node::set_id(&mut n, id);
+            n.cutoff = params.get_f32("cutoff", 1000.0);
+            n.resonance = params.get_f32("resonance", 0.0);
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 }
 
 // ============================================================================
@@ -146,7 +257,6 @@ fn register_digital_filters<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
 
 fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter, ReadHead, WriteHead};
-    use rill_router::{DryWetMix, MixerNode};
 
     node_ctor!(factory, "rill/delay", |id: NodeId, params: &Params| {
         let mut n = Delay::<f32, BUF_SIZE>::with_params(
@@ -185,17 +295,6 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         NodeVariant::Processor(Box::new(n))
     });
 
-    node_ctor!(
-        factory,
-        "rill/dry_wet_mix",
-        |id: NodeId, params: &Params| {
-            let mut n = DryWetMix::<f32, BUF_SIZE>::new();
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            NodeVariant::Processor(Box::new(n))
-        }
-    );
-
     node_ctor!(factory, "rill/write_head", |id: NodeId, params: &Params| {
         let resource = params
             .get("tape")
@@ -217,6 +316,59 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
     });
+}
+
+// ============================================================================
+// Rill Router (EQ + mixer + dry_wet)
+// ============================================================================
+// Rill Router (EQ + mixer)
+// ============================================================================
+
+fn register_router<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    use rill_router::eq::{GraphicEqProcessor, ParametricEqProcessor};
+    use rill_router::{DryWetMix, MixerNode};
+
+    node_ctor!(
+        factory,
+        "rill/parametric_eq",
+        |id: NodeId, params: &Params| {
+            let bands = params.get_f32("bands", 10.0) as usize;
+            let mut n = ParametricEqProcessor::<f32, BUF_SIZE>::new(params.sample_rate, bands);
+            Node::set_id(&mut n, id);
+            if let Some(v) = params.get("output_gain").and_then(|v| v.as_f32()) {
+                let _ = n.set_parameter(
+                    &rill_core::traits::ParameterId::new("output_gain").unwrap(),
+                    rill_core::traits::ParamValue::Float(v),
+                );
+            }
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
+
+    node_ctor!(factory, "rill/graphic_eq", |id: NodeId, params: &Params| {
+        let mut n = GraphicEqProcessor::<f32, BUF_SIZE>::new_third_octave(params.sample_rate);
+        Node::set_id(&mut n, id);
+        if let Some(v) = params.get("output_gain").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("output_gain").unwrap(),
+                rill_core::traits::ParamValue::Float(v),
+            );
+        }
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
+
+    node_ctor!(
+        factory,
+        "rill/dry_wet_mix",
+        |id: NodeId, params: &Params| {
+            let mut n = DryWetMix::<f32, BUF_SIZE>::new();
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        }
+    );
 
     node_ctor!(factory, "rill/mixer", |id: NodeId, params: &Params| {
         let mut n = MixerNode::<BUF_SIZE>::new(4, 0);
@@ -224,9 +376,10 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Router(Box::new(n))
     });
-}
+} // end register_router
 
-/// Deserialise a JSON graph string into a [`GraphDef`].
+/// Deserialise a JSON graph string into a
+/// [rill_graph::serialization::GraphDef].
 ///
 /// Use [`Runtime::create_builder`](crate::runtime::Runtime::create_builder)
 /// to build a graph from the definition.
@@ -275,6 +428,7 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     });
 }
 
+#[cfg(feature = "io")]
 fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let sr = p
         .get("sample_rate")

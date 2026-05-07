@@ -39,18 +39,24 @@ rill-sampler = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
 tokio = { workspace = true, optional = true, features = ["signal"] }
+serde = { workspace = true, optional = true }
 serde_json = { version = "1.0", optional = true }
+toml = { version = "0.8", optional = true }
 
 [[example]]
-name = "play_json"
+name = "play_wav"
+required-features = ["io", "sampler"]
+
+[[example]]
+name = "player"
 required-features = ["serialization", "sampler"]
 
 [[example]]
 name = "record_mic"
-required-features = ["serialization", "io", "sampler"]
+required-features = ["io", "serialization", "sampler"]
 
 [features]
-default = ["io", "lofi", "telemetry", "osc", "sampler", "cpal"]
+default = ["io", "lofi", "telemetry", "osc", "sampler", "cpal", "serialization"]
 
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi"]
@@ -61,7 +67,9 @@ sampler = ["dep:rill-sampler"]
 serialization = [
     "rill-graph/serialization",
     "rill-patchbay/serialization",
+    "dep:serde",
     "dep:serde_json",
+    "dep:toml",
 ]
 dot = ["rill-graph/dot"]
 

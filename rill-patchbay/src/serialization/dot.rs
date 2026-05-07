@@ -9,8 +9,7 @@
 //!
 //! # Feature gate
 //!
-//! Requires the `serde` feature (for [`PatchbayDef`](crate::serialization::PatchbayDef)
-//! and [`SequencerDef`](crate::sequencer::SequencerDef) access).
+//! Requires the `serde` feature (for [`PatchbayDef`] and [`SequencerDef`] access).
 
 use std::fmt::Write;
 

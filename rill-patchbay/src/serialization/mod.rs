@@ -200,7 +200,7 @@ pub struct PatchbayDef {
     pub servos: Vec<ServoDef>,
     pub mappings: Vec<MappingDef>,
 
-    /// OSC → EventPattern bridge (see [`OscSurfaceEntry`]).
+    /// OSC → EventPattern bridge (see [`OscSurfaceEntry`](crate::engine::OscSurfaceEntry)).
     /// Consumed by the host runtime to register user‑facing OSC handlers.
     #[serde(default)]
     pub osc_surface: OscSurface,

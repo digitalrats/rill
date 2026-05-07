@@ -165,7 +165,7 @@ let lost = system.drain_dead();
 Runtime::new()
   │
   ├── GraphBuilder::build()
-  │     └── creates mailbox (Arc<MpsqQueue>)
+  │     └── creates mailbox (Arc<MpscQueue>)
   │     └── Graph owns the mailbox
   │     └── Graph::handle() → ActorRef
   │

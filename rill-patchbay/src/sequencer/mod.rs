@@ -22,7 +22,6 @@
 //! ## Integration
 //!
 //! Use [`Patchbay::attach_sequencer`](crate::engine::Patchbay::attach_sequencer)
-//! or [`PatchbayEngine::attach_sequencer`](crate::engine::PatchbayEngine::attach_sequencer)
 //! to spawn the sequencer task and start listening for clock ticks.
 //! A [`SequencerHandle`] is returned for external control (start/stop/pattern
 //! select).

@@ -50,7 +50,7 @@
 //!   │
 //!   └── Graph::handle() → ActorRef<SetParameter>  (shared handle)
 //!                              │
-//!                              ├── cloned for PatchbayControl
+//!                              ├── cloned for Engine
 //!                              ├── cloned for PortCombiner
 //!                              └── cloned for OSC dispatcher
 //! ```

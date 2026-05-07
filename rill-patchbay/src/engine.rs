@@ -567,7 +567,7 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 /// The central patchbay controller.
 ///
 /// Operates on the **control thread** (soft RT) and sends parameter commands
-/// to the audio thread via [`MpscQueue<SetParameter>`].
+/// to the audio thread via [`MpscQueue<SetParameter>`](rill_core::queues::MpscQueue).
 ///
 /// ## Operation modes
 ///

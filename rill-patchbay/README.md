@@ -44,17 +44,17 @@ use rill_patchbay::prelude::*;
 let (actor_ref, _mailbox) = ActorRef::new_pair();
 let mut engine = Engine::new(actor_ref);
 
-control.add_lfo(
+engine.add_lfo(
     "vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine,
     osc_node_id, "frequency", 400.0, 480.0,
 );
 
-control.add_envelope(
+engine.add_envelope(
     "amp", 0.01, 0.1, 0.7, 0.2,
     vca_node_id, "gain", 0.0, 1.0,
 );
 
-control.update(1.0 / 60.0);
+engine.update(1.0 / 60.0);
 ```
 
 ## Feature flags

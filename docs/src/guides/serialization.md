@@ -1,7 +1,7 @@
 # Graph Serialization
 
 Rill graphs can be serialised to JSON (human-readable) or CBOR (compact binary)
-and restored via the `NodeRegistry`. This enables preset storage, network transfer,
+and restored via a [`NodeFactory`]. This enables preset storage, network transfer,
 and offline editing of graph topologies.
 
 ## Feature gate
@@ -51,14 +51,14 @@ pub struct NodeDef {
 ```rust
 pub struct ConnectionDef {
     pub kind: SignalKind,
-    pub from_node: usize,     // index in nodes array
+    pub from_node: u32,       // NodeId
     pub from_port: usize,
-    pub to_node: usize,
+    pub to_node: u32,         // NodeId
     pub to_port: usize,
 }
 
 pub enum SignalKind {
-    Audio,
+    Signal,
     Control,
     Clock,
     Feedback,
@@ -90,77 +90,48 @@ Under the hood [`GraphDef::from_graph`] iterates every node, reads
 
 ```rust
 use rill_graph::serialization::from_json;
-use rill_graph::registry::NodeRegistry;
-
-let registry = NodeRegistry::<f32, 64>::new();
-registry.register(MySineCtor);
-// …
 
 let json = std::fs::read_to_string("preset.json")?;
-let mut builder: GraphBuilder<f32, 64> = from_json(&json, &registry)?;
-let graph = builder.build(clock_source)?;
+
+let mut builder: GraphBuilder<f32, 64> = GraphBuilder::new();
+let def = from_json(&json)?;
+def.populate(&mut builder)?;
+let graph = builder.build()?;
 ```
 
 ### Validation
 
-On import [`GraphDef::into_builder`] performs:
+On import [`GraphDef::populate`] performs:
 
 1. **Duplicate NodeId check** — every `NodeDef.id` must be unique.
-2. **Block size match** — the document's `block_size` must equal `B`.
-3. **Type resolution** — every `type_name` must be registered in the `NodeRegistry`.
+2. **Block size match** — the document's `block_size` must equal the builder's `B`.
+3. **Type resolution** — every `type_name` must be registered in the builder's `NodeFactory`.
 
-## Type names and the registry
+## Type names and the factory
 
-Each node type that participates in serialisation must register a constructor:
-
-```rust
-use rill_graph::registry::{NodeConstructor, NodeRegistry};
-use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
-
-struct SineCtor;
-impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for SineCtor {
-    fn type_name(&self) -> &'static str { "rill/sine_osc" }
-    fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, B> {
-        let freq = params.get_f32("frequency", 440.0);
-        let mut osc = SineOsc::<T, B>::new().with_frequency(freq);
-        osc.set_id(id);
-        osc.init(params.sample_rate);
-        NodeVariant::Source(Box::new(osc))
-    }
-}
-
-let mut registry = NodeRegistry::<f32, 64>::new();
-registry.register(SineCtor);
-```
-
-The `type_name` returned by the constructor should match the `type_name`
-exposed in [`NodeMetadata`] so that export and import are consistent:
-
-- `NodeConstructor::type_name()` → used as the factory lookup key on import.
-- `NodeMetadata::type_name` (with `name` fallback) → written into the document
-  on export.
-
-To set an explicit type name in metadata:
+Each node type that participates in serialisation must be registered in a
+[`NodeFactory`] via the [`node_ctor!`] macro or [`register_fn`]:
 
 ```rust
-fn metadata(&self) -> NodeMetadata {
-    NodeMetadata {
-        type_name: Some("rill/sine_osc".into()),
-        ..NodeMetadata::new("Sine", NodeCategory::Source)
-    }
-}
-```
+use rill_core::traits::{Node, NodeId, Params, NodeVariant};
+use rill_graph::{node_ctor, NodeFactory};
 
-### Convenience: closure registration
-
-```rust
-registry.register_fn("rill/sine_osc", |id, params| {
-    let mut osc = SineOsc::new().with_frequency(params.get_f32("freq", 440.0));
+let mut factory = NodeFactory::<f32, 64>::new();
+node_ctor!(factory, "rill/sine_osc", |id: NodeId, params: &Params| {
+    let freq = params.get_f32("frequency", 440.0);
+    let mut osc = SineOsc::<f32, 64>::new().with_frequency(freq);
     osc.set_id(id);
     osc.init(params.sample_rate);
     NodeVariant::Source(Box::new(osc))
 });
 ```
+
+The `type_name` in the factory should match the `type_name`
+exposed in [`NodeMetadata`] so that export and import are consistent:
+
+- `node_ctor!` / `register_fn` key → used as the factory lookup key on import.
+- `NodeMetadata::type_name` (with `name` fallback) → written into the document
+  on export.
 
 ## Node IDs
 
@@ -189,17 +160,19 @@ use rill_graph::prelude::*;
 
 // Build
 let mut builder = GraphBuilder::<f32, 64>::new();
-builder.add_node(&registry, "rill/sine", &NodeParams::new(44100.0))?;
-builder.add_node(&registry, "rill/delay", &NodeParams::new(44100.0))?;
+builder.add_node(&registry, "rill/sine", &Params::new(44100.0))?;
+builder.add_node(&registry, "rill/delay", &Params::new(44100.0))?;
 builder.connect_signal(0, 0, 1, 0);
-let graph = builder.build(clock)?;
+let graph = builder.build()?;
 
 // Export
 let json = rill_graph::serialization::to_json(&graph)?;
 
 // Import
-let mut restored = rill_graph::serialization::from_json(&json, &registry)?;
-let graph2 = restored.build(clock)?;
+let def = rill_graph::serialization::from_json(&json)?;
+let mut restored_builder = GraphBuilder::new();
+def.populate(&mut restored_builder)?;
+let graph2 = restored_builder.build()?;
 ```
 
 ## Error types
@@ -233,61 +206,40 @@ Coverage includes:
 
 ## Automatic node registration (rill-adrift)
 
-The umbrella crate `rill-adrift` provides a **centralised registry** that
+The umbrella crate `rill-adrift` provides [`register_all_nodes`] which
 pre-registers every built-in node type from all rill crates:
 
 ```rust
-use rill_adrift::registration::{register_all, registry};
+use rill_adrift::registration::register_all_nodes;
 
-// Option A: create and populate your own registry
-let mut my_reg = rill_graph::NodeRegistry::<f32, 64>::new();
-register_all(&mut my_reg);
-my_reg.register_fn("app/custom_node", |id, params| { /* … */ });
-
-// Option B: use the lazily-initialized global singleton
-let reg = registry::<64>();
-// Equivalent to calling register_all once, then reusing forever.
+let mut factory = rill_graph::NodeFactory::<f32, 256>::new();
+register_all_nodes(&mut factory);
+factory.register_fn("app/custom_node", |id, params| { /* … */ });
 ```
 
-### Global `registry::<B>()`
-
-`rill_adrift::registration::registry::<B>()` returns a `&'static NodeRegistry`
-initialised **once** on first call. Supported block sizes: 64, 128, 256, 512.
+To build a factory shared across multiple graphs, wrap it in an `Arc`:
 
 ```rust
-use rill_adrift::registration;
-
-let reg_64  = registration::registry::<64>();
-let reg_256 = registration::registry::<256>();  // separate singleton per size
+use std::sync::Arc;
+let shared_factory = Arc::new(factory);
+let mut builder = rill_graph::GraphBuilder::new(shared_factory);
 ```
 
-This is especially useful for quick prototyping and applications that only
-use built-in node types. Drift, for example, relies entirely on the global
-registry:
+[`register_all_nodes`]: https://docs.rs/rill-adrift/latest/rill_adrift/registration/fn.register_all_nodes.html
+
+### Convenience deserialisation helper
+
+`rill-adrift` re-exports [`load_graph_json`] for quick graph loading:
 
 ```rust
-// drift/src/server/mod.rs
-let registry = rill_adrift::registration::registry::<BUF_SIZE>();
-match doc.into_builder::<f32, BUF_SIZE>(registry) { … }
+use rill_adrift::registration::load_graph_json;
+
+let def = load_graph_json(r#"{"nodes":[…], "connections":[…]}"#)?;
+// Then populate into a builder:
+// def.populate(&mut builder)?;
 ```
 
-### Convenience deserialisation helpers
-
-When using the global registry you can skip the registry parameter entirely:
-
-```rust
-#[cfg(feature = "serialization")]
-use rill_adrift::registration::{load_graph_json, load_graph_def};
-
-// Load from JSON string → GraphBuilder
-let builder = load_graph_json::<256>(r#"{"nodes":[…], "connections":[…]}"#)?;
-
-// Load from deserialized GraphDef
-let doc: GraphDef = serde_json::from_str(&json)?;
-let builder = load_graph_def::<256>(doc)?;
-```
-
-Both functions use `registry::<B>()` internally.
+[`load_graph_json`]: https://docs.rs/rill-adrift/latest/rill_adrift/registration/fn.load_graph_json.html
 
 ---
 
@@ -296,12 +248,16 @@ Both functions use `registry::<B>()` internally.
 Applications can define their own graph nodes and register them alongside
 the built-in rill types. There are three levels of integration.
 
-### Level 1: Register a closure (no custom type)
+### Level 1: Register a closure
 
-For simple one-off processing, use `register_fn`:
+For simple one-off processing, use `register_fn` on [`NodeFactory`]:
 
 ```rust
-registry.register_fn("app/gain", |id: NodeId, params: &NodeParams| {
+use rill_core::traits::{Node, NodeId, Params, NodeVariant};
+use rill_graph::NodeFactory;
+
+let mut factory = NodeFactory::<f32, 64>::new();
+factory.register_fn("app/gain", |id: NodeId, params: &Params| {
     let mut n = GainNode::<f32, 64>::new(params.get_f32("gain", 1.0));
     n.set_id(id);
     n.init(params.sample_rate);
@@ -315,33 +271,10 @@ The type name `"app/gain"` can then be used in JSON documents:
 {"id": 0, "type_name": "app/gain", "name": "Volume", "parameters": {"gain": 0.8}}
 ```
 
-### Level 2: Implement `NodeConstructor` trait
+[`NodeFactory`]: https://docs.rs/rill-graph/latest/rill_graph/factory/struct.NodeFactory.html
+[`register_fn`]: https://docs.rs/rill-graph/latest/rill_graph/factory/struct.NodeFactory.html#method.register_fn
 
-For reusable constructors with parameter validation:
-
-```rust
-use rill_graph::registry::{NodeConstructor, NodeRegistry};
-use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
-
-struct TremoloCtor;
-
-impl NodeConstructor<f32, 64> for TremoloCtor {
-    fn type_name(&self) -> &'static str { "app/tremolo" }
-
-    fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<f32, 64> {
-        let rate = params.get_f32("rate", 5.0).clamp(0.1, 50.0);
-        let depth = params.get_f32("depth", 0.5).clamp(0.0, 1.0);
-        let mut n = Tremolo::<f32, 64>::new(rate, depth);
-        n.set_id(id);
-        n.init(params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    }
-}
-
-registry.register(TremoloCtor);
-```
-
-### Level 3: Full custom graph node
+### Level 2: Full custom graph node
 
 Implementing the `Node`, `Source`, `Processor`, or `Sink` trait:
 
@@ -370,10 +303,10 @@ pub struct Tremolo<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> Tremolo<T, BUF_SIZE> {
     pub fn new(rate: f32, depth: f32) -> Self {
         let mut inputs = Vec::with_capacity(1);
-        inputs.push(Port::audio_input(PortId::new(0, PortType::Signal)));
+        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
 
         let mut outputs = Vec::with_capacity(1);
-        outputs.push(Port::audio_output(PortId::new(0, PortType::Signal)));
+        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         Self {
             id: NodeId(0),
@@ -443,7 +376,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     ) -> ProcessResult<()> {
         let dt = clock.delta_seconds();
         let out = self.output_port_mut(0).unwrap();
-        let buf = out.audio_buffer_mut().as_mut_array();
+        let buf = out.buffer.as_mut_array();
 
         for i in 0..BUF_SIZE {
             self.phase += self.rate * dt / BUF_SIZE as f32;
@@ -459,25 +392,33 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
 }
 ```
 
-### Wiring custom nodes into the registry
+### Wiring custom nodes into the factory
 
 ```rust
-use rill_graph::NodeRegistry;
+use rill_graph::NodeFactory;
 
-let mut registry = NodeRegistry::<f32, 64>::new();
+let mut factory = NodeFactory::<f32, 64>::new();
 
 // Built-in rill nodes
-rill_adrift::registration::register_all(&mut registry);
+rill_adrift::registration::register_all_nodes(&mut factory);
 
 // Custom app nodes
-registry.register_fn("app/gain", |id, params| {
+factory.register_fn("app/gain", |id, params| {
     /* … */
 });
-registry.register(TremoloCtor);
+factory.register_fn("app/tremolo", |id, params| {
+    let rate = params.get_f32("rate", 5.0).clamp(0.1, 50.0);
+    let depth = params.get_f32("depth", 0.5).clamp(0.0, 1.0);
+    let mut n = Tremolo::<f32, 64>::new(rate, depth);
+    n.set_id(id);
+    n.init(params.sample_rate);
+    NodeVariant::Processor(Box::new(n))
+});
 
-// Serialize/deserialize with the combined registry
-let json = r#"{"nodes":[{"id":0,"type_name":"app/tremolo","name":"MyTrem","parameters":{"rate":4.0}}]}"#;
-let mut builder = rill_graph::serialization::from_json(&json, &registry)?;
+// Serialize/deserialize
+use rill_graph::serialization::{to_json, from_json};
+let mut builder = GraphBuilder::new(factory);
+// … populate builder, build, export/import
 ```
 
 ### Referencing custom nodes from GraphDef
@@ -510,34 +451,24 @@ all serialisation formats:
 }
 ```
 
-### Adding custom nodes to the global registry
+### Building a custom factory
 
-To make custom nodes available in the `registry::<B>()` singleton without
-passing a custom registry around, call `register_all` and then extend the
-global registry before first use:
-
-```rust
-// Force initialisation, then extend
-let reg = rill_adrift::registration::registry::<64>();
-// registry is immutable after first init — this only works if called
-// BEFORE any other code accesses registry::<64>().
-//
-// For complete control, build your own NodeRegistry instead.
-```
-
-For production applications the recommended pattern is to build a dedicated
-registry at startup rather than mutating the global singleton:
+The recommended pattern for production applications is to build a dedicated
+factory at startup:
 
 ```rust
-fn build_app_registry() -> NodeRegistry<f32, 64> {
-    let mut reg = NodeRegistry::new();
-    rill_adrift::registration::register_all(&mut reg);
-    reg.register_fn("app/tremolo", |id, params| { /* … */ });
-    reg
+use rill_graph::NodeFactory;
+
+fn build_app_factory() -> NodeFactory<f32, 64> {
+    let mut factory = NodeFactory::new();
+    rill_adrift::registration::register_all_nodes(&mut factory);
+    factory.register_fn("app/tremolo", |id, params| { /* … */ });
+    factory
 }
 
 fn main() {
-    let registry = build_app_registry();
-    // pass &registry to serialization, graph building, etc.
+    let factory = build_app_factory();
+    let mut builder = GraphBuilder::new(factory);
+    // … add nodes, build
 }
 ```

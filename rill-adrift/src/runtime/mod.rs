@@ -22,7 +22,7 @@
 //! │                    RILL_ADRIFT::RUNTIME                         │
 //! │                                                                │
 //! │  ┌──────────────┐   ┌──────────────────────────────────────┐  │
-//! │  │  OscServer    │   │  PatchbayEngine                      │  │
+//! │  │  OscServer    │   │  Engine                          │  │
 //! │  │  (tokio)      │   │  (tokio tasks: LFO, envelope, …)    │  │
 //! │  │               │   │                                      │  │
 //! │  │  /sys/*       │   │  handle_event(event) ──→ mapping    │  │
@@ -42,11 +42,13 @@ use std::sync::Mutex;
 
 use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::traits::{NodeId, NodeVariant, ParamValue, Params};
+#[cfg(any(feature = "osc", feature = "serialization"))]
 use rill_core_actor::ActorRef;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};
 #[cfg(feature = "osc")]
-use rill_patchbay::engine::{OscSurface, Patchbay};
+use rill_patchbay::engine::OscSurface;
+use rill_patchbay::engine::Patchbay;
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
 
@@ -126,7 +128,8 @@ pub struct Runtime<const BUF: usize = 64> {
     /// Shared backend factory (populated at construction).
     backend_factory: Arc<BackendFactory<f32>>,
 
-    /// Default backend configuration. When set, every [`GraphBuilder`]
+    /// Default backend configuration. When set, every
+    /// [rill_graph::GraphBuilder]
     /// created by [`create_builder`](Self::create_builder) is pre-configured
     /// via [`GraphBuilder::with_backend`].
     default_backend: Option<(String, HashMap<String, ParamValue>)>,
@@ -166,8 +169,13 @@ impl<const BUF: usize> Runtime<BUF> {
     pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
         let mut nf = NodeFactory::new();
         crate::registration::register_all_nodes(&mut nf);
-        let mut bf = BackendFactory::new();
-        crate::registration::register_backends(&mut bf);
+        let bf = {
+            #[allow(unused_mut)]
+            let mut bf = BackendFactory::new();
+            #[cfg(feature = "io")]
+            crate::registration::register_backends(&mut bf);
+            bf
+        };
         let default_backend = config.backend_name.clone().map(|n| {
             let params = config
                 .backend_params
@@ -210,14 +218,15 @@ impl<const BUF: usize> Runtime<BUF> {
 
     /// Set the default audio backend for all future builders.
     ///
-    /// When set, every [`GraphBuilder`] returned by [`create_builder`](Self::create_builder)
+    /// When set, every [rill_graph::GraphBuilder] returned by
+    /// [`create_builder`](Self::create_builder)
     /// is pre-configured with [`GraphBuilder::with_backend`] using the given
     /// name and parameters.
     pub fn set_default_backend(&mut self, name: &str, params: HashMap<String, ParamValue>) {
         self.default_backend = Some((name.to_string(), params));
     }
 
-    /// Create a [`GraphBuilder`] sharing this runtime's factories.
+    /// Create a [rill_graph::GraphBuilder] sharing this runtime's factories.
     ///
     /// The builder uses the runtime's pre-populated node and backend
     /// factories. If a default backend was set via
@@ -252,10 +261,10 @@ impl<const BUF: usize> Runtime<BUF> {
 
     // ─── Public API ─────────────────────────────────────────────────
 
-    /// Load a [`GraphDef`] into the runtime.
+    /// Load a [rill_graph::serialization::GraphDef] into the runtime.
     ///
-    /// The graph is **not** built or started until [`start_audio`] or
-    /// `/sys/graph/start` is received.
+    /// The graph is **not** built or started until the graph is started via
+    /// `Graph::run` or `Graph::stop`.
     #[cfg(feature = "serialization")]
     pub fn load_graph(&mut self, doc: GraphDef) {
         self.graph_doc = Some(doc);

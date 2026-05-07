@@ -70,11 +70,8 @@ pub struct GraphResource {
 ///
 /// # Node factory
 ///
-/// The builder can hold an [`Arc<NodeFactory>`] for constructing nodes by
-/// type name. Set via [`with_factory`](Self::with_factory) or provide
-/// one in [`new_with_factory`](Self::new_with_factory). Without a factory
-/// the typed `add_source` / `add_processor` / `add_sink` / `add_router`
-/// methods can still be used.
+/// The builder holds an [`Arc<NodeFactory>`] for constructing nodes by
+/// type name, provided at construction via [`GraphBuilder::new`].
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     signal_edges: Vec<(usize, usize, usize, usize)>,
@@ -113,9 +110,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
     /// Add a node by type name using the internal factory.
     ///
-    /// The factory must have been set via [`with_factory`](Self::with_factory)
-    /// or [`new_with_factory`](Self::new_with_factory), and the type must
-    /// have been registered before calling this method.
+    /// The type must have been registered in the factory before calling
+    /// this method.
     ///
     /// Returns the index of the newly added node.
     ///
