@@ -23,11 +23,12 @@ crates for signal processing application development.
 
 ```rust,no_run
 use rill_adrift::rill_oscillators::audio::SineOsc;
-use rill_adrift::registration;
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
 
 const BUF_SIZE: usize = 256;
 
-let mut builder = registration::create_builder::<BUF_SIZE>();
+let mut rt = Runtime::<BUF_SIZE>::new(RuntimeConfig::default());
+let mut builder = rt.create_builder();
 let osc = builder.add_source(
     Box::new(SineOsc::<f32, BUF_SIZE>::new().with_frequency(440.0))
 );

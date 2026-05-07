@@ -11,6 +11,7 @@ use std::sync::Arc;
 use rill_adrift::io::output::Output;
 use rill_adrift::registration;
 use rill_adrift::rill_digital_filters::BiquadProcessor;
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
 use rill_adrift::sampler::player::SamplePlayerNode;
 use rill_adrift::sampler::wav::load_wav;
 
@@ -44,7 +45,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sample.len()
         );
 
-        let mut builder = registration::create_builder::<BUF>();
+        let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
+
+        let mut params = std::collections::HashMap::new();
+        params.insert(
+            "sample_rate".into(),
+            rill_core::ParamValue::Int(RATE as i32),
+        );
+        params.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
+        params.insert("channels".into(), rill_core::ParamValue::Int(2));
+        rt.set_default_backend(&backend_name, params);
+
+        let mut builder = rt.create_builder();
 
         let mut player = SamplePlayerNode::<f32, BUF>::new();
         player.load(sample);
@@ -62,19 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.connect_signal(fx, 0, snk, 0);
         builder.connect_signal(src, 1, snk, 1);
 
-        let graph = builder
-            .with_backend(&backend_name, {
-                let mut p = std::collections::HashMap::new();
-                p.insert(
-                    "sample_rate".into(),
-                    rill_core::ParamValue::Int(RATE as i32),
-                );
-                p.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
-                p.insert("channels".into(), rill_core::ParamValue::Int(2));
-                p
-            })
-            .build()
-            .expect("graph build");
+        let graph = builder.build().expect("graph build");
 
         graph.run(t_run).ok();
     });

@@ -4,10 +4,8 @@
 //! populating factories before creating a [`GraphBuilder`].
 
 use rill_core::traits::{Node, NodeId, NodeVariant, ParamValue, Params};
-use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{node_ctor, NodeFactory};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[cfg(feature = "io")]
 /// Register every built-in node type on a [`GraphBuilder`].
@@ -228,40 +226,15 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
     });
 }
 
-/// Create a [`GraphBuilder`] pre-populated with the global node factory.
+/// Deserialise a JSON graph string into a [`GraphDef`].
 ///
-/// The factory is initialized once with all built-in node types from all
-/// rill crates. Multiple calls return independent builders sharing the
-/// same factory via `Arc`.
-pub fn create_builder<const B: usize>() -> rill_graph::GraphBuilder<f32, B> {
-    let mut node_factory = NodeFactory::new();
-    let mut backend_factory = BackendFactory::new();
-    register_all_nodes(&mut node_factory);
-    register_backends(&mut backend_factory);
-    rill_graph::GraphBuilder::new(Arc::new(node_factory), Arc::new(backend_factory))
-}
-
-/// Load a [`GraphDef`](rill_graph::serialization::GraphDef) into a
-/// [`GraphBuilder`] using the global factory.
+/// Use [`Runtime::create_builder`](crate::runtime::Runtime::create_builder)
+/// to build a graph from the definition.
 #[cfg(feature = "serialization")]
-pub fn load_graph_document<const B: usize>(
-    doc: rill_graph::serialization::GraphDef,
-) -> Result<rill_graph::GraphBuilder<f32, B>, rill_graph::serialization::SerializationError> {
-    let mut builder = create_builder::<B>();
-    doc.populate(&mut builder)?;
-    Ok(builder)
-}
-
-/// Deserialise a JSON graph string into a [`GraphBuilder`] using the global
-/// factory. Convenience wrapper around [`from_json`].
-#[cfg(feature = "serialization")]
-pub fn load_graph_json<const B: usize>(
+pub fn load_graph_json(
     json: &str,
-) -> Result<rill_graph::GraphBuilder<f32, B>, rill_graph::serialization::SerializationError> {
-    let doc = rill_graph::serialization::from_json(json)?;
-    let mut builder = create_builder::<B>();
-    doc.populate(&mut builder)?;
-    Ok(builder)
+) -> Result<rill_graph::serialization::GraphDef, rill_graph::serialization::SerializationError> {
+    rill_graph::serialization::from_json(json)
 }
 
 /// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).

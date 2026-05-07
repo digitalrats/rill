@@ -14,6 +14,7 @@ use std::sync::Arc;
 use rill_adrift::registration;
 use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -21,21 +22,21 @@ const RATE: f32 = 44100.0;
 type Graph = rill_adrift::rill_graph::Graph<f32, BUF>;
 
 fn build_graph(json: &str, backend_name: &str) -> Graph {
-    let builder = registration::load_graph_json::<BUF>(json).expect("load_graph_json");
+    let def = registration::load_graph_json(json).expect("load_graph_json");
+    let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
 
-    builder
-        .with_backend(backend_name, {
-            let mut p = std::collections::HashMap::new();
-            p.insert(
-                "sample_rate".into(),
-                rill_core::ParamValue::Int(RATE as i32),
-            );
-            p.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
-            p.insert("channels".into(), rill_core::ParamValue::Int(2));
-            p
-        })
-        .build()
-        .expect("graph build")
+    let mut params = std::collections::HashMap::new();
+    params.insert(
+        "sample_rate".into(),
+        rill_core::ParamValue::Int(RATE as i32),
+    );
+    params.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
+    params.insert("channels".into(), rill_core::ParamValue::Int(2));
+    rt.set_default_backend(backend_name, params);
+
+    let mut builder = rt.create_builder();
+    def.populate(&mut builder).expect("populate");
+    builder.build().expect("graph build")
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -3,16 +3,15 @@ use rill_adrift::registration;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 #[cfg(feature = "serialization")]
-#[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
 #[cfg(feature = "serialization")]
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
+#[cfg(feature = "serialization")]
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "serialization")]
 use std::sync::Arc;
-
-#[cfg(feature = "serialization")]
 const RATE: f32 = 48000.0;
 
 #[cfg(feature = "serialization")]
@@ -58,21 +57,17 @@ fn test_deserialize_input_biquad_output() {
         "description": null
     }"#;
 
-    let builder = registration::load_graph_json::<B>(json).expect("load_graph_json should succeed");
+    let def = registration::load_graph_json(json).expect("load_graph_json");
+    let mut rt = Runtime::<B>::new(RuntimeConfig::default());
+    let mut p = std::collections::HashMap::new();
+    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
+    p.insert("buffer_size".into(), ParamValue::Int(B as i32));
+    p.insert("channels".into(), ParamValue::Int(2));
+    rt.set_default_backend("null", p);
 
-    let graph = builder
-        .with_backend("null", {
-            let mut p = std::collections::HashMap::new();
-            p.insert(
-                "sample_rate".into(),
-                rill_core::ParamValue::Int(RATE as i32),
-            );
-            p.insert("buffer_size".into(), rill_core::ParamValue::Int(B as i32));
-            p.insert("channels".into(), rill_core::ParamValue::Int(2));
-            p
-        })
-        .build()
-        .expect("graph build should succeed");
+    let mut builder = rt.create_builder();
+    def.populate(&mut builder).expect("populate");
+    let graph = builder.build().expect("graph build should succeed");
 
     // Treat Graph as a black box — read metadata only.
     assert_eq!(graph.node_count(), 3, "should have 3 nodes");
@@ -96,7 +91,7 @@ fn test_send_parameter_via_queue() {
     const B: usize = 256;
 
     // Build a graph: sine → null output
-    let builder = registration::load_graph_json::<B>(
+    let def = registration::load_graph_json(
         r#"{
         "format_version": "rill/1",
         "sample_rate": 48000.0,
@@ -114,20 +109,16 @@ fn test_send_parameter_via_queue() {
     }"#,
     )
     .expect("load_graph_json");
+    let mut rt = Runtime::<B>::new(RuntimeConfig::default());
+    let mut p = std::collections::HashMap::new();
+    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
+    p.insert("buffer_size".into(), ParamValue::Int(B as i32));
+    p.insert("channels".into(), ParamValue::Int(2));
+    rt.set_default_backend("null", p);
 
-    let graph = builder
-        .with_backend("null", {
-            let mut p = std::collections::HashMap::new();
-            p.insert(
-                "sample_rate".into(),
-                rill_core::ParamValue::Int(RATE as i32),
-            );
-            p.insert("buffer_size".into(), rill_core::ParamValue::Int(B as i32));
-            p.insert("channels".into(), rill_core::ParamValue::Int(2));
-            p
-        })
-        .build()
-        .expect("graph build");
+    let mut builder = rt.create_builder();
+    def.populate(&mut builder).expect("populate");
+    let graph = builder.build().expect("graph build");
 
     // Send parameter via queue
     graph
