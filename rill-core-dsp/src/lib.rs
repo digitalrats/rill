@@ -21,8 +21,6 @@
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
-// Для сложных const expr (опционально)
-#![cfg_attr(feature = "unstable", feature(generic_const_exprs))]
 
 pub mod algorithm;
 pub mod analyzer;
@@ -47,7 +45,7 @@ pub use generators::{
     WavetableOscillator, LFO,
 };
 
-/// Prelude для удобного импорта
+/// Prelude for convenient imports
 pub mod prelude {
     pub use crate::algorithm::{
         Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,

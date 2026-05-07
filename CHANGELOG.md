@@ -1,5 +1,56 @@
 # CHANGELOG
 
+## [0.5.0-beta.3] — 2026-05-07
+
+### ✨ New
+
+- **`rill-core-actor` crate** — actor model infrastructure:
+  - `ActorRef<M>` — thread-safe handle, strong `Arc` reference, `send()` is lock-free and RT-safe
+  - `ActorCell` trait — for types that own a mailbox and process messages
+  - `MessageDispatcher<M>` — dispatcher with dead letters support
+  - `ActorSystem<M>` — named mailbox registry, `route()`, `broadcast()`, dead letters
+
+- **`rill-adrift`**: `serialization` added to default features — `serde` + `toml` available out of the box
+- **`rill-adrift`: `config.toml`** — new example config file with `backend_name`, `backend_params`, `sample_rate`, `block_size`
+- **`rill-adrift`: `RuntimeConfig`** now derives `serde::Deserialize` (behind `serialization` feature)
+- **Missing graph nodes registered**:
+  - `rill/moog_ladder` — digital Moog ladder filter (`rill-digital-filters`)
+  - `rill/lofi` — lo-fi processor (`rill-lofi`, gated behind `lofi`)
+  - `rill/analog_moog_ladder` — WDF Moog ladder filter (`rill-analog-filters`, gated behind `analog`)
+  - `rill/cassette_deck` — cassette deck emulation (`rill-analog-effects`, gated behind `analog`)
+  - `rill/parametric_eq` — parametric equalizer (`rill-router`)
+  - `rill/graphic_eq` — graphic equalizer (`rill-router`)
+  - All router nodes (`dry_wet_mix`, `mixer`, EQ) consolidated into `register_router()`
+
+### 🧹 Removed
+
+- `rill-core-dsp`: removed `unstable` feature (no code behind it, required nightly)
+- `rill-patchbay`: `PatchbayEngine` removed (folded into `Engine`)
+- `rill-core`: `traits::actor` module removed (moved to `rill-core-actor`)
+
+### 🔧 Fixes
+
+- `rill-io/pipewire`: fixed `AudioBackend::write` stub returning `0` instead of `buffer.len()`
+- `rill-graph`: removed redundant `B as usize` cast, pre-existing clippy warnings fixed
+- `rill-patchbay`, `rill-adrift`: fixed redundant closures, unused imports, unused variables
+- **`rill-adrift`: `--no-default-features` compilation fixed**:
+  - `register_all_nodes` no longer gated behind `io` (oscillators, filters, effects available without I/O)
+  - `register_backends` call in `Runtime::new()` gated behind `io`
+  - `cfg_from_params()` gated behind `io`
+  - `Patchbay` import decoupled from `osc` feature
+  - `ActorRef` import gated behind `any(osc, serialization)`
+  - Dead `register_io` stub removed
+- **`rill-adrift` examples**:
+  - `play_json` renamed to `player` — now reads `config.toml` instead of hardcoded paths
+  - All examples have explicit `required-features` (clear error with `--no-default-features`)
+  - `play_wav`: unused `registration` import removed
+
+### 📝 Documentation
+
+- Architecture article: actor model (`docs/src/architecture/actor.md`) with RT boundary section
+- `AGENTS.md`: quoting rules for commit messages with backticks
+- All docs updated to reflect `Engine`, `*Def`, `ActorRef` naming
+
 ## [0.5.0-beta.1] — 2026-05-04
 
 ### 🎉 First beta release

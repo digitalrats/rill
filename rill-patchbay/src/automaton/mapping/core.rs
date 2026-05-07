@@ -1,50 +1,49 @@
-//! Базовые типы для маппинга
+//! Core types for mapping
 
 use rill_core::traits::{ParameterId, PortId};
 use std::sync::Arc;
 
-/// Тип преобразования значения
+/// Value transform type
 #[derive(Debug, Clone)]
 pub enum Transform {
-    /// Линейное: y = x
+    /// Linear: y = x
     Linear,
     
-    /// Экспоненциальное: y = x²
+    /// Exponential: y = x²
     Exponential,
     
-    /// Логарифмическое: y = log10(1 + 9x)
+    /// Logarithmic: y = log10(1 + 9x)
     Logarithmic,
     
-    /// Инвертированное: y = 1 - x
+    /// Inverted: y = 1 - x
     Inverted,
     
-    /// Масштабирование: y = x * scale + offset
+    /// Scale: y = x * scale + offset
     Scale { scale: f32, offset: f32 },
     
-    /// Порог: y = 1 if x > threshold else 0
+    /// Threshold: y = 1 if x > threshold else 0
     Threshold { level: f32, hysteresis: f32 },
     
-    /// Сглаживание (экспоненциальное)
+    /// Smoothing (exponential)
     Smooth { coefficient: f32 },
     
-    /// RMS (для аудио)
+    /// RMS (for audio)
     Rms { window_size: usize },
     
-    /// Пиковый детектор
+    /// Peak detector
     Peak { decay: f32 },
     
     /// Envelope follower
-    Envelope { attack: f32, release: f32 },
     
-    /// Частота (zero-crossing)
+    /// Frequency (zero-crossing)
     Frequency { min_freq: f32, max_freq: f32 },
     
-    /// Пользовательская функция
+    /// Custom function
     Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>),
 }
 
 impl Transform {
-    /// Применить преобразование к нормализованному значению (0-1)
+    /// Apply transform to a normalized value (0-1)
     pub fn apply(&self, x: f32) -> f32 {
         let x = x.clamp(0.0, 1.0);
         
@@ -79,38 +78,38 @@ impl Transform {
                     LAST
                 }
             }
-            _ => x, // Для остальных пока заглушка
+            _ => x, // Placeholder for others for now
         }
     }
 }
 
-/// Правило маппинга
+/// Mapping rule
 #[derive(Debug, Clone)]
 pub struct MappingRule {
-    /// Имя входного сигнала (для мира автоматов)
+    /// Input signal name (for automaton world)
     pub input_name: String,
     
-    /// Индекс входного канала (для аудиографа)
+    /// Input channel index (for audio graph)
     pub input_channel: usize,
     
-    /// Преобразование
+    /// Transform
     pub transform: Transform,
     
-    /// Имя выходного сигнала (для мира автоматов)
+    /// Output signal name (for automaton world)
     pub output_name: String,
     
-    /// Целевой порт (для прямого управления в аудиографе)
+    /// Target port (for direct control in audio graph)
     pub target_port: Option<PortId>,
     
-    /// Целевой параметр
+    /// Target parameter
     pub target_parameter: Option<ParameterId>,
     
-    /// Диапазон выходных значений
+    /// Output value range
     pub output_range: (f32, f32),
 }
 
 impl MappingRule {
-    /// Создать новое правило
+    /// Create a new rule
     pub fn new(input_name: impl Into<String>, output_name: impl Into<String>) -> Self {
         Self {
             input_name: input_name.into(),
@@ -123,32 +122,32 @@ impl MappingRule {
         }
     }
     
-    /// Установить преобразование
+    /// Set the transform
     pub fn with_transform(mut self, transform: Transform) -> Self {
         self.transform = transform;
         self
     }
     
-    /// Установить диапазон выхода
+    /// Set output range
     pub fn with_range(mut self, min: f32, max: f32) -> Self {
         self.output_range = (min, max);
         self
     }
     
-    /// Установить входной канал (для аудио)
+    /// Set input channel (for audio)
     pub fn with_channel(mut self, channel: usize) -> Self {
         self.input_channel = channel;
         self
     }
     
-    /// Установить целевой параметр (для микро-контроля)
+    /// Set target parameter (for micro-control)
     pub fn with_target(mut self, port: PortId, parameter: ParameterId) -> Self {
         self.target_port = Some(port);
         self.target_parameter = Some(parameter);
         self
     }
     
-    /// Применить правило к значению
+    /// Apply rule to the value
     pub fn apply(&self, x: f32) -> f32 {
         let transformed = self.transform.apply(x);
         self.output_range.0 + transformed * (self.output_range.1 - self.output_range.0)

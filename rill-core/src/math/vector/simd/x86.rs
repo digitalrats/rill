@@ -1,6 +1,6 @@
-//! # x86/x86_64 SIMD реализации
+//! # x86/x86_64 SIMD implementations
 //!
-//! Использует SSE2, SSE4.1, AVX, AVX2 и AVX512 инструкции для векторных операций.
+//! Uses SSE2, SSE4.1, AVX, AVX2 and AVX512 instructions for vector operations.
 
 #![cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #![allow(unused_imports)]
@@ -10,41 +10,40 @@ use super::super::traits::*;
 use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
-// SIMD типы
-// -----------------------------------------------------------------------------
+// SIMD types
 
-/// Вектор из 4 элементов f32 (SSE)
+/// Vector of 4 f32 elements (SSE)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F32x4([f32; 4]);
 
-/// Вектор из 8 элементов f32 (AVX)
+/// Vector of 8 f32 elements (AVX)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F32x8([f32; 8]);
 
-/// Вектор из 16 элементов f32 (AVX512)
+/// Vector of 16 f32 elements (AVX512)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F32x16([f32; 16]);
 
-/// Вектор из 2 элементов f64 (SSE2)
+/// Vector of 2 f64 elements (SSE2)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F64x2([f64; 2]);
 
-/// Вектор из 4 элементов f64 (AVX)
+/// Vector of 4 f64 elements (AVX)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F64x4([f64; 4]);
 
-/// Вектор из 8 элементов f64 (AVX512)
+/// Vector of 8 f64 elements (AVX512)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F64x8([f64; 8]);
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для F32x4
+// Vector implementation for F32x4
 // -----------------------------------------------------------------------------
 
 impl Vector<f32, 4> for F32x4 {
@@ -136,8 +135,8 @@ impl VectorTranscendental<f32, 4> for F32x4 {
     }
 }
 
-// Пока реализуем остальные типы как заглушки (скалярные версии)
-// В будущем здесь будут настоящие SIMD инструкции через core::arch::x86_64
+// For now, implement remaining types as stubs (scalar versions)
+// In the future, real SIMD instructions via core::arch::x86_64 will go here
 
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 
@@ -196,7 +195,7 @@ impl Default for F32x4 {
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]

@@ -1,15 +1,14 @@
-//! # Арифметические операции для векторов
+//! # Arithmetic operations for vectors
 //!
-//! Реализация базовых арифметических операций для векторных типов.
+//! Implementation of basic arithmetic operations for vector types.
 
 use super::traits::*;
 use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
-// Вспомогательные функции
-// -----------------------------------------------------------------------------
+// Helper functions
 
-/// Поэлементное сложение двух слайсов с сохранением результата в третий
+/// Element-wise addition of two slices, storing the result in a third
 pub fn add_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
@@ -28,7 +27,7 @@ where
         result.store(&mut out[start..start + N]);
     }
 
-    // Обработка остатка
+    // Handle remainder
     if remainder > 0 {
         let start = chunks * N;
         for i in 0..remainder {
@@ -37,7 +36,7 @@ where
     }
 }
 
-/// Поэлементное вычитание двух слайсов
+/// Element-wise subtraction of two slices
 pub fn sub_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
@@ -64,7 +63,7 @@ where
     }
 }
 
-/// Поэлементное умножение двух слайсов
+/// Element-wise multiplication of two slices
 pub fn mul_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
@@ -91,7 +90,7 @@ where
     }
 }
 
-/// Поэлементное деление двух слайсов
+/// Element-wise division of two slices
 pub fn div_slices<T: Transcendental, const N: usize, V>(a: &[T], b: &[T], out: &mut [T])
 where
     V: Vector<T, N>,
@@ -118,7 +117,7 @@ where
     }
 }
 
-/// Умножение слайса на скаляр
+/// Multiply a slice by a scalar
 pub fn mul_scalar_slice<T: Transcendental, const N: usize, V>(a: &[T], scalar: T, out: &mut [T])
 where
     V: Vector<T, N>,
@@ -144,7 +143,7 @@ where
     }
 }
 
-/// Сложение слайса со скаляром
+/// Add a scalar to a slice
 pub fn add_scalar_slice<T: Transcendental, const N: usize, V>(a: &[T], scalar: T, out: &mut [T])
 where
     V: Vector<T, N>,
@@ -171,14 +170,14 @@ where
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Тестовые реализации для скалярных векторов будут добавлены позже
+    // Test implementations for scalar vectors will be added later
     // #[test]
     // fn test_add_slices() {
     // }

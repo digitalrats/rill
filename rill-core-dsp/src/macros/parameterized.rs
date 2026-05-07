@@ -1,63 +1,63 @@
-//! Макрос для создания алгоритма с параметрами
+//! Macro for creating a parameterized algorithm
 //!
-//! # Пример
+//! # Example
 //! ```
 //! use rill_core_dsp::parameterized_algorithm;
 //! use rill_core::math::Transcendental;
 //!
 //! parameterized_algorithm! {
-//!     /// Фильтр с изменяемой частотой среза
+//!     /// Filter with variable cutoff frequency
 //!     #[derive(Debug, Clone, Copy)]
 //!     pub struct LowPass<T: Transcendental> {
 //!         params: {
-//!             /// Частота среза в Hz
+//!             /// Cutoff frequency in Hz
 //!             cutoff: T = T::from_f32(1000.0),
-//!             /// Добротность
+//!             /// Quality factor
 //!             q: T = T::from_f32(0.707),
 //!         },
 //!         state: {
-//!             /// Внутреннее состояние фильтра
+//!             /// Internal filter state
 //!             y1: T = T::ZERO,
 //!             y2: T = T::ZERO,
 //!         },
 //!         update: |this| {
-//!             // Обновление коэффициентов при изменении параметров
+//!             // Update coefficients when parameters change
 //!         },
 //!         process: |this, input| {
-//!             // Процессинг с текущими параметрами
+//!             // Process with current parameters
 //!             input
 //!         }
 //!     }
 //! }
 //! ```
 
-/// Макрос для создания алгоритма с параметрами
+/// Macro for creating a parameterized algorithm
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core_dsp::parameterized_algorithm;
 /// use rill_core::math::Transcendental;
 ///
 /// parameterized_algorithm! {
-///     /// Фильтр с изменяемой частотой среза
+///     /// Filter with variable cutoff frequency
 ///     #[derive(Debug, Clone, Copy)]
 ///     pub struct LowPass<T: Transcendental> {
 ///         params: {
-///             /// Частота среза в Hz
+///             /// Cutoff frequency in Hz
 ///             cutoff: T = T::from_f32(1000.0),
-///             /// Добротность
+///             /// Quality factor
 ///             q: T = T::from_f32(0.707),
 ///         },
 ///         state: {
-///             /// Внутреннее состояние фильтра
+///             /// Internal filter state
 ///             y1: T = T::ZERO,
 ///             y2: T = T::ZERO,
 ///         },
 ///         update: |this| {
-///             // Обновление коэффициентов при изменении параметров
+///             // Update coefficients when parameters change
 ///         },
 ///         process: |this, input| {
-///             // Процессинг с текущими параметрами
+///             // Process with current parameters
 ///             input
 ///         }
 ///     }
@@ -96,12 +96,12 @@ macro_rules! parameterized_algorithm {
                 pub $state_name: $state_type,
             )*
 
-            /// Частота дискретизации
+            /// Sample rate
             pub sample_rate: f32,
         }
 
         impl<$($generic: $bound),+> $name<$($generic),+> {
-            /// Создать новый экземпляр алгоритма
+            /// Create a new algorithm instance
             pub fn new($($param_name: $param_type),*) -> Self {
                 Self {
                     $($param_name),*,
@@ -110,7 +110,7 @@ macro_rules! parameterized_algorithm {
                 }
             }
 
-            /// Обновить внутренние коэффициенты
+            /// Update internal coefficients
             pub fn update_coeffs(&mut self) {
                 let update_fn: fn(&mut Self) = $update;
                 update_fn(self);

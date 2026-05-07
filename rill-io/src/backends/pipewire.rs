@@ -1,12 +1,12 @@
-//! PipeWire бэкенд для Linux
+//! PipeWire backend for Linux
 //!
-//! Использует `pipewire` (0.9) с `MainLoopRc` / `ContextRc` / `StreamBox`.
-//! Output пишет напрямую в DMA-буфер PW через OutputWindow (без ring buffer).
-//! Input по-прежнему использует IoRingBuffer.
+//! Uses `pipewire` (0.9) with `MainLoopRc` / `ContextRc` / `StreamBox`.
+//! Output writes directly to the PW DMA buffer via OutputWindow (no ring buffer).
+//! Input still uses IoRingBuffer.
 //!
-//! `run()` — блокирующий: инициализирует PW, создаёт context/core/streams,
-//! входит в mainloop iterate loop. Выходит когда `running` становится false.
-//! Никаких `std::thread`, `std::sync`.
+//! `run()` — blocking: initializes PW, creates context/core/streams,
+//! enters mainloop iterate loop. Exits when `running` becomes false.
+//! No `std::thread`, `std::sync`.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -176,7 +176,7 @@ impl IoBackend<f32> for PipewireBackend {
             let cap = win.capacity().min(frames * 2);
             let dst = win.as_mut_slice();
             for i in 0..(cap / 2) {
-                if let Some(ch) = channels.get(0) {
+                if let Some(ch) = channels.first() {
                     dst[i * 2] = ch[i];
                 }
                 if let Some(ch) = channels.get(1) {
@@ -284,7 +284,7 @@ impl IoBackend<f32> for PipewireBackend {
             let mut audio_info = spa::param::audio::AudioInfoRaw::new();
             audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
             audio_info.set_rate(sample_rate);
-            audio_info.set_channels(out_chan as u32);
+            audio_info.set_channels(out_chan);
             let mut position = [0; spa::param::audio::MAX_CHANNELS];
             if out_chan >= 1 {
                 position[0] = spa_sys::SPA_AUDIO_CHANNEL_FL;
@@ -357,7 +357,7 @@ impl IoBackend<f32> for PipewireBackend {
         if let Some(ref in_st) = in_stream {
             let mut in_ai = spa::param::audio::AudioInfoRaw::new();
             in_ai.set_format(spa::param::audio::AudioFormat::F32LE);
-            // Не задаём rate/channels — пусть PW согласует сам.
+            // Don't set rate/channels — let PW negotiate.
 
             let in_params_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
                 std::io::Cursor::new(Vec::new()),
@@ -435,12 +435,12 @@ impl IoBackend<f32> for PipewireBackend {
                     let n_samp = (chunk_size as usize / stride) * actual_channels;
                     let len = n_samp.min(MAX_BLOCK_SAMPLES);
                     let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                    for i in 0..len {
+                    for (i, item) in temp.iter_mut().enumerate().take(len) {
                         let off = i * 4;
                         if off + 4 <= slice.len() {
                             let mut bytes = [0u8; 4];
                             bytes.copy_from_slice(&slice[off..off + 4]);
-                            temp[i] = f32::from_le_bytes(bytes);
+                            *item = f32::from_le_bytes(bytes);
                         }
                     }
                     let block_samps = buf_frames * actual_channels;
@@ -472,8 +472,8 @@ impl IoBackend<f32> for PipewireBackend {
         }
 
         // ── PW event loop ───────────────────────────────────────────────────
-        // Без собственного цикла — run() блокирует поток, события
-        // обрабатываются PW. Callback проверяет running и вызывает quit.
+        // No own loop — run() blocks the thread, events are
+        // handled by PW. Callback checks running and calls quit.
         mainloop.run();
 
         if let Some(ref s) = in_stream {
@@ -522,8 +522,8 @@ impl AudioBackend for PipewireBackend {
         Ok(n)
     }
 
-    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
-        Ok(0)
+    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
+        Ok(buffer.len())
     }
 
     fn xruns(&self) -> u32 {

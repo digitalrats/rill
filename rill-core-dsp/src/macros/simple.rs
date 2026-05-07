@@ -1,20 +1,20 @@
-//! Макрос для создания простого алгоритма без параметров
+//! Macro for creating a simple algorithm without parameters
 //!
-//! # Пример
+//! # Example
 //! ```
 //! use rill_core_dsp::simple_algorithm;
 //! use rill_core::math::Transcendental;
 //!
 //! simple_algorithm! {
-//!     /// Простой усилитель
+//!     /// Simple gain
 //!     #[derive(Debug, Clone, Copy)]
 //!     pub struct Gain<T: Transcendental> {
 //!         params: {
-//!             /// Коэффициент усиления
+//!     /// Gain coefficient
 //!             gain: T = T::from_f32(1.0),
 //!         },
 //!         state: {
-//!             /// Последнее значение (для статистики)
+//!     /// Last output value (for statistics)
 //!             last_output: T = T::ZERO,
 //!         },
 //!         process: |this, input| {
@@ -26,23 +26,23 @@
 //! }
 //! ```
 
-/// Макрос для создания простого алгоритма без параметров
+/// Macro for creating a simple algorithm without parameters
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core_dsp::simple_algorithm;
 /// use rill_core::math::Transcendental;
 ///
 /// simple_algorithm! {
-///     /// Простой усилитель
+///     /// Simple gain
 ///     #[derive(Debug, Clone, Copy)]
 ///     pub struct Gain<T: Transcendental> {
 ///         params: {
-///             /// Коэффициент усиления
+///     /// Gain coefficient
 ///             gain: T = T::from_f32(1.0),
 ///         },
 ///         state: {
-///             /// Последнее значение (для статистики)
+///     /// Last output value (for statistics)
 ///             last_output: T = T::ZERO,
 ///         },
 ///         process: |this, input| {
@@ -87,7 +87,7 @@ macro_rules! simple_algorithm {
         }
 
         impl<$($generic: $bound),+> $name<$($generic),+> {
-            /// Создать новый экземпляр алгоритма
+            /// Create a new algorithm instance
             pub fn new($($param_name: $param_type),*) -> Self {
                 Self {
                     $($param_name),*,

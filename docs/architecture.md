@@ -1,130 +1,130 @@
-# Архитектура Rill (версия 0.5.0-beta.2)
+# Rill Architecture (version 0.5.0-beta.2)
 
-## Общая концепция
+## General Concept
 
-Rill — это **модульная экосистема**, построенная вокруг минимального ядра с трейтами. Каждый крейт имеет чёткую ответственность и может использоваться независимо. После масштабного рефакторинга 0.5.0-beta.2 все крейты используют единое ядро `rill-core`.
+Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.5.0-beta.2, all crates use a unified `rill-core`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         Продукты                             │
+│                         Products                              │
 │  ┌──────────┐                                                │
-│  │  drift   │  (сервер эффектов для live coding)            │
+│  │  drift   │  (effects server for live coding)             │
 │  └──────────┘                                                │
 ├─────────────────────────────────────────────────────────────┤
-│                       Инфраструктура                          │
+│                      Infrastructure                            │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
 │   │rill-osc │  │rill-graph  │  │rill-patchbay│  │rill- │   │
-│   │(в разработке)│ │(аудиограф) │ │(автоматизация)│ │sampler│   │
+│   │(in development)│ │(audio graph) │ │(automation) │ │sampler│   │
 │   └────────────┘  └────────────┘  └────────────┘  └──────┘   │
 ├─────────────────────────────────────────────────────────────┤
-│                      Обработка звука                          │
+│                      Audio Processing                        │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │    rill-core-dsp (алгоритмы + векторные операции)  │    │
-│  │   Algorithm trait, генераторы, фильтры, задержки     │    │
+│  │    rill-core-dsp (algorithms + vector operations)  │    │
+│  │   Algorithm trait, generators, filters, delays       │    │
 │  └─────────────────────────────────────────────────────┘    │
 │  ┌──────────┐ ┌───────────────┐ ┌───────────────┐ ┌──────┐ │
 │  │rill-osc  │ │rill-digital-  │ │rill-digital-  │ │rill- │ │
-│  │(узлы     │ │filters        │ │effects        │ │router│ │
-│  │осциллят.)│ │(узлы фильтров)│ │(узлы эффектов)│ │роутер│ │
-│  │ активен  │ │ активен       │ │ активен       │ │актив │ │
+│  │(oscillator│ │filters        │ │effects        │ │router│ │
+│  │ nodes)   │ │(filter nodes) │ │(effect nodes) │ │router│ │
+│  │ active   │ │ active        │ │ active        │ │active│ │
 │  └──────────┘ └───────────────┘ └───────────────┘ └──────┘ │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │              Аналоговое моделирование                │   │
+│  │              Analog Modeling                          │   │
 │  │  ┌──────────────┐ ┌───────────────┐ ┌──────────────┐ │   │
 │  │  │rill-core-wdf │ │rill-analog-   │ │rill-analog-  │ │   │
-│  │  │(WDF ядро)    │ │filters        │ │effects       │ │   │
-│  │  │ активен      │ │(WdfMoogLadder)│ │(op-amp, tape)│ │   │
+│  │  │(WDF core)    │ │filters        │ │effects       │ │   │
+│  │  │ active       │ │(WdfMoogLadder)│ │(op-amp, tape)│ │   │
 │  │  └──────────────┘ └───────────────┘ └──────────────┘ │   │
 │  └──────────────────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────────────────┤
-│                      Ввод-вывод                              │
+│                      Input/Output                            │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐      │
 │  │  ALSA    │ │  CPAL    │ │ PipeWire │ │   JACK   │      │
 │  │(rill-io) │ │(rill-io) │ │(rill-io) │ │(rill-io) │      │
-│  │ активен  │ │ активен  │ │ активен  │ │ активен  │      │
-│  │ отключен │ │ отключен │ │ отключен │ │ отключен │      │
+│  │ active   │ │ active   │ │ active   │ │ active   │      │
+│  │ disabled │ │ disabled │ │ disabled │ │ disabled │      │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘      │
 ├─────────────────────────────────────────────────────────────┤
-│                         Ядро                                 │
+│                         Core                                  │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │                   rill-core                          │    │
 │  │  ┌─────────────┐  ┌─────────────┐                  │    │
 │  │  │   traits    │  │   queues    │                  │    │
-│  │  │ (трейты)    │  │  (очереди)  │                  │    │
+│  │  │ (traits)    │  │  (queues)  │                  │    │
 │  │  └─────────────┘  └─────────────┘                  │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Единое ядро: rill-core
+## Unified core: rill-core
 
-### Структура
+### Structure
 
 ```
 rill-core/
 ├── src/
-│   ├── lib.rs                 # Корневой модуль, реэкспорты
-│   ├── prelude.rs             # Прелюдия для удобного импорта
-│   ├── config.rs              # Конфигурация
-│   ├── error.rs               # Система ошибок
-│   ├── event.rs               # События и сигналы
-│   ├── graph.rs               # Базовые типы для графа
-│   ├── utils.rs               # Утилиты
+│   ├── lib.rs                 # Root module, re-exports
+│   ├── prelude.rs             # Prelude for convenient imports
+│   ├── config.rs              # Configuration
+│   ├── error.rs               # Error system
+│   ├── event.rs               # Events and signals
+│   ├── graph.rs               # Basic graph types
+│   ├── utils.rs               # Utilities
 │   ├── traits/
-│   │   ├── mod.rs             # Трейты узлов (SignalNode, Source, Processor, Sink)
-│   │   ├── node.rs            # Узлы и идентификаторы
-│   │   ├── port.rs            # Порты
-│   │   ├── param.rs           # Параметры
-│   │   ├── processable.rs     # Интерфейс обработки
-│   │   └── error.rs           # Ошибки трейтов
+│   │   ├── mod.rs             # Node traits (Node, Source, Processor, Sink)
+│   │   ├── node.rs            # Nodes and identifiers
+│   │   ├── port.rs            # Ports
+│   │   ├── param.rs           # Parameters
+│   │   ├── processable.rs     # Processing interface
+│   │   └── error.rs           # Trait errors
 │   ├── math/
-│   │   ├── mod.rs             # Абстракции числовых типов
-│   │   ├── num.rs             # AudioNum трейт
-│   │   ├── conversions.rs     # Преобразования
-│   │   └── functions.rs       # Функции
+│   │   ├── mod.rs             # Numeric type abstractions
+│   │   ├── num.rs             # AudioNum trait
+│   │   ├── conversions.rs     # Conversions
+│   │   └── functions.rs       # Functions
 │   ├── buffer/
-│   │   ├── mod.rs             # Буферы (PipeBuffer, FanOutBuffer и др.)
-│   │   ├── pipe.rs            # Прямые соединения
-│   │   ├── fan.rs             # Разветвление и суммирование
-│   │   ├── delay.rs           # Линия задержки
-│   │   ├── ring.rs            # Кольцевой буфер
+│   │   ├── mod.rs             # Buffers (PipeBuffer, FanOutBuffer, etc.)
+│   │   ├── pipe.rs            # Direct connections
+│   │   ├── fan.rs             # Fan-out and summing
+│   │   ├── delay.rs           # Delay line
+│   │   ├── ring.rs            # Ring buffer
 │   │   ├── storage.rs         # AtomicCell
-│   │   └── pool.rs            # Пул буферов
+│   │   └── pool.rs            # Buffer pool
 │   ├── queues/
-│   │   ├── mod.rs             # Очереди команд и телеметрии
-│   │   ├── rt_queue.rs        # Real-time очередь
+│   │   ├── mod.rs             # Command and telemetry queues
+│   │   ├── rt_queue.rs        # Real-time queue
 │   │   ├── spsc.rs            # Single-producer single-consumer
 │   │   ├── mpsc.rs            # Multi-producer single-consumer
-│   │   ├── ring.rs            # Кольцевая очередь
-│   │   ├── command.rs         # Команды
-│   │   ├── telemetry.rs       # Телеметрия
-│   │   ├── signal.rs          # Сигналы
-│   │   ├── observer.rs        # Наблюдатели
-│   │   ├── atomic.rs          # Атомарные операции
-│   │   └── error.rs           # Ошибки очередей
+│   │   ├── ring.rs            # Ring queue
+│   │   ├── command.rs         # Commands
+│   │   ├── telemetry.rs       # Telemetry
+│   │   ├── signal.rs          # Signals
+│   │   ├── observer.rs        # Observers
+│   │   ├── atomic.rs          # Atomic operations
+│   │   └── error.rs           # Queue errors
 │   ├── time/
-│   │   ├── mod.rs             # Время и тактовые сигналы
-│   │   ├── clock.rs           # Трейты Clock и ClockSource
-│   │   ├── source.rs          # Реализации источников времени
+│   │   ├── mod.rs             # Time and clock signals
+│   │   ├── clock.rs           # Clock and ClockSource traits
+│   │   ├── source.rs          # Time source implementations
 │   │   ├── tick.rs            # ClockTick
-│   │   └── error.rs           # Ошибки времени
+│   │   └── error.rs           # Time errors
 │   ├── macros/
-│   │   ├── mod.rs             # Макросы
+│   │   ├── mod.rs             # Macros
 │   │   ├── source.rs          # source_node!
 │   │   ├── processor.rs       # processor_node!
 │   │   ├── sink.rs            # sink_node!
-│   │   ├── params.rs          # Параметры
-│   │   ├── ports.rs           # Порты
-│   │   └── tests.rs           # Тесты макросов
+│   │   ├── params.rs          # Parameters
+│   │   ├── ports.rs           # Ports
+│   │   └── tests.rs           # Macro tests
 │   └── executor/
-│       └── mod.rs             # Исполнитель графа
+│       └── mod.rs             # Graph executor
 ```
 
-### Ключевые компоненты ядра
+### Key core components
 
-#### buffer (буферы)
+#### buffer (buffers)
 
-Предоставляет типы буферов для передачи аудиоданных между узлами: `PipeBuffer` (однопоточный канал), `FanOutBuffer` (разветвление), `FanInBuffer` (суммирование), `DelayLine` (линия задержки), `RingBuffer` (кольцевой буфер). Все буферы реализуют трейт `SignalBuffer` и поддерживают статистику использования.
+Provides buffer types for transferring audio data between nodes: `PipeBuffer` (single-threaded channel), `FanOutBuffer` (fan-out), `FanInBuffer` (summing), `DelayLine` (delay line), `RingBuffer` (ring buffer). All buffers implement the `Buffer` trait and support usage statistics.
 
 ```rust
 use rill_core::buffer::{PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer};
@@ -134,9 +134,9 @@ pipe.write(&[1.0, 2.0, 3.0]);
 let read = pipe.read(3);
 ```
 
-#### macros (макросы)
+#### macros
 
-Содержит макросы для удобного создания узлов: `processor!`, `sink!`, `source!`. Упрощают написание пользовательских процессоров, источников и приёмников без boilerplate кода.
+Contains macros for convenient node creation: `processor!`, `sink!`, `source!`. Simplifies writing custom processors, sources, and sinks without boilerplate code.
 
 ```rust
 use rill_core::macros::{processor, sink, source};
@@ -146,20 +146,20 @@ sink!(Logger, |sample, _| println!("{}", sample));
 source!(Silence, || 0.0);
 ```
 
-#### math (математика)
+#### math
 
-Определяет трейт `AudioNum` для аудио‑специфичных числовых операций (преобразование дБ, обёртка фазы), а также функции конвертации и утилиты.
+Defines the `AudioNum` trait for audio-specific numeric operations (dB conversion, phase wrapping), as well as conversion functions and utilities.
 
 ```rust
 use rill_core::math::AudioNum;
 
 let db = (-6.0).db_to_linear(); // ≈ 0.501
-let phase = 3.0.wrap_phase();   // в диапазоне [0, 2π)
+let phase = 3.0.wrap_phase();   // in range [0, 2π)
 ```
 
-#### queues (очереди)
+#### queues
 
-Реализует неблокирующие очереди команд и телеметрии для связи между аудио‑графом и внешним миром. Содержит `CommandQueue`, `TelemetryQueue`, `SignalSource`, `MicroControlObserver` и другие компоненты для управления параметрами в реальном времени.
+Implements non-blocking command and telemetry queues for communication between the audio graph and the outside world. Contains `CommandQueue`, `TelemetryQueue`, `SignalOrigin`, `MicroControlObserver` and other components for real-time parameter control.
 
 ```rust
 use rill_core::queues::{CommandQueue, CommandEnum, SetParameter};
@@ -172,9 +172,9 @@ queue.send(CommandEnum::SetParameter(SetParameter {
 }));
 ```
 
-#### time (время)
+#### time
 
-Абстракции времени и темпа: трейты `Clock` и `ClockSource`, структуры `SystemClock`, `ClockTick`. Позволяют узлам синхронизироваться с системным временем или внешним темпом.
+Time and tempo abstractions: `Clock` and `ClockSource` traits, `SystemClock`, `ClockTick` structures. Allow nodes to synchronize with system time or external tempo.
 
 ```rust
 use rill_core::time::{Clock, SystemClock};
@@ -184,9 +184,9 @@ let pos = clock.position_samples();
 clock.advance(64);
 ```
 
-#### error (ошибки)
+#### error
 
-Крейт‑уровневые типы ошибок `SignalError` и `SignalResult`. Отделены от `traits/error.rs` (который содержит ошибки трейтов) и используются во всех публичных API ядра.
+Crate-level error types `SignalError` and `SignalResult`. Separate from `traits/error.rs` (which contains trait errors) and used across all public core APIs.
 
 ```rust
 use rill_core::{SignalError, SignalResult};
@@ -196,94 +196,93 @@ fn safe_process() -> SignalResult<()> {
 }
 ```
 
-#### prelude (прелюдия)
+#### prelude
 
-Удобный реэкспорт наиболее часто используемых типов из всех модулей ядра. Рекомендуется импортировать `use rill_core::prelude::*;` в пользовательском коде.
+Convenient re-export of the most commonly used types from all core modules. It is recommended to import `use rill_core::prelude::*;` in user code.
 
 ```rust
 use rill_core::prelude::*;
-// Теперь доступны SignalNode, AudioNum, PipeBuffer, CommandQueue, Clock и др.
+// Now available: Node, AudioNum, PipeBuffer, CommandQueue, Clock, etc.
 ```
 
-## Инфраструктурные крейты
-
+## Infrastructure crates
 
 
 ### `rill-graph` (0.5.0-beta.2)
-Аудиограф с топологической сортировкой.
+Audio graph with topological sort.
 
 ```rust
-let mut graph = SignalGraph::new(44100.0);
+let mut graph = Graph::new(44100.0);
 let osc_id = graph.add_node(Box::new(SineOsc::new(440.0)));
 let filter_id = graph.add_node(Box::new(BiquadFilter::lowpass(1000.0, 0.707)));
 
 graph.connect(PortId::output(osc_id, 0), PortId::input(filter_id, 0), 1.0)?;
 
-// Автоматическая топологическая сортировка
+// Automatic topological sort
 for &node_id in graph.processing_order() {
-    // узлы в правильном порядке
+    // nodes in correct order
 }
 ```
 
-#### Архитектура аудио-графа
+#### Audio graph architecture
 
-Граф Rill построен на строгой математической основе — **теории категорий**, что обеспечивает типобезопасность, композиционность и предсказуемость поведения.
+The Rill graph is built on a rigorous mathematical foundation — **category theory**, which ensures type safety, compositionality, and predictable behavior.
 
-**Ключевые концепции:**
+**Key concepts:**
 
-- **Объекты** — блоки семплов фиксированного размера (`[T; BUF_SIZE]`), значения управления (`Control`) и тактовые сигналы (`Clock`).
-- **Стрелки (морфизмы)** — процессоры, преобразующие блоки (источники `Source`, процессоры `Processor`, приёмники `Sink`).
-- **Композиция** — последовательное соединение узлов образует цепочку обработки.
-- **Произведение** — параллельная обработка нескольких сигналов (например, многоканальный миксер).
+- **Objects** — fixed-size sample blocks (`[T; BUF_SIZE]`), control values (`Control`), and clock signals (`Clock`).
+- **Arrows (morphisms)** — processors that transform blocks (sources `Source`, processors `Processor`, sinks `Sink`).
+- **Composition** — sequential node connections form a processing chain.
+- **Product** — parallel processing of multiple signals (e.g., multi-channel mixer).
 
-**Типы портов:** каждый порт характеризуется типом сигнала (`Audio`, `Control`, `Clock`, `Feedback`, `Param`), направлением (вход/выход) и индексом.
+**Port types:** each port is characterized by signal type (`Audio`, `Control`, `Clock`, `Feedback`, `Param`), direction (input/output), and index.
 
-**Топологическая сортировка:** граф автоматически определяет порядок обработки узлов, исключая циклические зависимости (за исключением преднамеренных петель обратной связи).
+**Topological sort:** the graph automatically determines node processing order, excluding cyclic dependencies (except for intentional feedback loops).
 
-**Реальное время:** все операции над графом гарантированно выполняются за ограниченное время, что критично для аудио‑приложений.
+**Real-time:** all graph operations are guaranteed to execute in bounded time, which is critical for audio applications.
 
-**Блочная обработка:** данные передаются блоками фиксированного размера, что улучшает производительность за счёт локальности кэша и позволяет использовать SIMD‑оптимизации.
+**Block processing:** data is transferred in fixed-size blocks, improving performance through cache locality and enabling SIMD optimizations.
 
-### `rill-patchbay` (0.5.0-beta.2, ✅ активен)
-Автоматизация параметров SignalGraph — унификация крейтов `rill-automation` и `rill-control`. Представляет собой центральный фреймворк автоматов (LFO, огибающие, случайные блуждания, секвенсоры), сенсоров (акустические, физические) и сервоприводов, связанных неблокирующими очередями команд и телеметрии. Подробности см. в разделе «Мир автоматов».
+### `rill-patchbay` (0.5.0-beta.2, ✅ active)
+Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automata (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automata" section for details.
 
 ```rust
 use rill_patchbay::prelude::*;
 use rill_core::queues::MpscQueue;
 use std::sync::Arc;
 
-// Создаем очередь команд и PatchbayControl
+// Create command queue and Engine
 let cmd_queue = Arc::new(MpscQueue::new(1024));
-let mut control = PatchbayControl::new(cmd_queue);
+let mut control = Engine::new(cmd_queue);
 
-// Добавляем LFO-серво
+// Add LFO servo
 control.add_lfo(
     "vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine,
     osc_node_id, "frequency", 400.0, 480.0,
 );
 
-// Добавляем ADSR-серво
+// Add ADSR servo
 control.add_envelope(
     "amp", 0.01, 0.1, 0.7, 0.2,
     vca_node_id, "gain", 0.0, 1.0,
 );
 
-// Маппинг внешних событий (MIDI, OSC)
+// External event mapping (MIDI, OSC)
 control.add_mapping_str(
     "midi:7:1",
     filter_node_id, "cutoff",
     20.0, 20000.0, Transform::Logarithmic,
 );
 
-// Обновляем автоматы в цикле
+// Update automata in a loop
 control.update(1.0 / 60.0);
 ```
 
-Либо через `PatchbayManager` с отдельным потоком обновления:
+Or via `Manager` with a separate update thread:
 
 ```rust
-let mut manager = PatchbayManager::new(
-    PatchbayConfig::default(),
+let mut manager = Manager::new(
+    Config::default(),
     Arc::new(MpscQueue::new(1024)),
 );
 
@@ -293,24 +292,24 @@ manager.add_lfo_servo(
     ParameterMapping::Linear, 400.0, 480.0,
 )?;
 
-manager.start()?;  // Автоматы начинают жить своей жизнью
+manager.start()?;  // Automata begin their own life
 ```
 
 
 
-## DSP инфраструктура
+## DSP infrastructure
 
 ### `rill-core-dsp` (0.5.0-beta.2)
-Единая DSP инфраструктура с векторными операциями, алгоритмами и макросами. Включает:
+Unified DSP infrastructure with vector operations, algorithms, and macros. Includes:
 
-- **Векторные абстракции** (`ScalarVector1`, `ScalarVector2`, `ScalarVector4`) — обобщённые числовые типы для переносимых SIMD-операций
-- **Генераторы** (`generators/`) — осцилляторы (синус, пила, треугольник, квадрат, пульс), шум, LFO, FM-синтез, огибающие
-- **Фильтры** (`filters/`) — биквадратные, однополюсные, SVF, Butterworth, Chebyshev, гребенчатые фильтры
-- **Алгоритмы задержки** (`delay`) — Delay, MultiTapDelay, DiffusionDelay, ModulatedDelay
-- **Макросы** (`macros/`) — `simple_algorithm!`, `parameterized_algorithm!`, `filter_algorithm!`, `effect_algorithm!`, `generator_algorithm!` для быстрого создания алгоритмов
-- **Трейт `Algorithm`** — единый интерфейс для всех DSP-компонентов с блочной обработкой (`process_block`)
+- **Vector abstractions** (`ScalarVector1`, `ScalarVector2`, `ScalarVector4`) — generic numeric types for portable SIMD operations
+- **Generators** (`generators/`) — oscillators (sine, saw, triangle, square, pulse), noise, LFO, FM synthesis, envelopes
+- **Filters** (`filters/`) — biquad, one-pole, SVF, Butterworth, Chebyshev, comb filters
+- **Delay algorithms** (`delay`) — Delay, MultiTapDelay, DiffusionDelay, ModulatedDelay
+- **Macros** (`macros/`) — `simple_algorithm!`, `parameterized_algorithm!`, `filter_algorithm!`, `effect_algorithm!`, `generator_algorithm!` for rapid algorithm creation
+- **`Algorithm` trait** — unified interface for all DSP components with block processing (`process_block`)
 
-Все компоненты используют абстракции `AudioNum` из `rill-core/math` и векторные операции, что обеспечивает переносимость и производительность.
+All components use `AudioNum` abstractions from `rill-core/math` and vector operations, ensuring portability and performance.
 
 ```rust
 use rill_core::math::AudioNum;
@@ -320,11 +319,11 @@ use rill_core_dsp::algorithm::Algorithm;
 
 let sample_rate = 44100.0;
 
-// Создание генератора синуса
+// Create sine oscillator
 let mut osc = SineOsc::<f32>::new(440.0, sample_rate);
 osc.set_amplitude(0.5);
 
-// Создание биквадратного фильтра низких частот
+// Create biquad low-pass filter
 let mut filter = BiquadFilter::<f32>::new(FilterParams {
     filter_type: FilterType::LowPass,
     cutoff: 1000.0,
@@ -332,24 +331,24 @@ let mut filter = BiquadFilter::<f32>::new(FilterParams {
     gain_db: 0.0,
 });
 
-// Обработка блока данных
+// Process data block
 let mut input = vec![0.0f32; 64];
 let mut output = vec![0.0f32; 64];
 osc.process_block(&[], &mut input);
 filter.process_block(&input, &mut output);
 ```
 
-### `rill-oscillators` (0.5.0-beta.2, ✅ активен)
-Узлы графа для осцилляторов (синус, пила, треугольник, квадрат, пульс), шума, LFO и огибающих. Реализует трейты `Source`/`Processor` из `rill-core`, используя DSP-алгоритмы из `rill-core-dsp::generators` и векторные абстракции `ScalarVectorN<T>`.
+### `rill-oscillators` (0.5.0-beta.2, ✅ active)
+Graph nodes for oscillators (sine, saw, triangle, square, pulse), noise, LFO, and envelopes. Implements `Source`/`Processor` traits from `rill-core`, using DSP algorithms from `rill-core-dsp::generators` and `ScalarVectorN<T>` vector abstractions.
 
-### `rill-digital-filters` (0.5.0-beta.2, ✅ активен)
-Узлы графа для цифровых фильтров: биквадратные, однополюсные, SVF, Butterworth, Chebyshev, гребенчатые. Реализует трейт `Processor` из `rill-core` на базе DSP-алгоритмов из `rill-core-dsp::filters`.
+### `rill-digital-filters` (0.5.0-beta.2, ✅ active)
+Graph nodes for digital filters: biquad, one-pole, SVF, Butterworth, Chebyshev, comb. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp::filters`.
 
-### `rill-digital-effects` (0.5.0-beta.2, ✅ активен)
-Узлы графа для цифровых эффектов: Delay, Distortion, Limiter. Реализует трейт `Processor` из `rill-core`, используя алгоритмы задержки из `rill-core-dsp::delay`. Опциональная фича `modulation` подключает `rill-oscillators` для LFO-модуляции.
+### `rill-digital-effects` (0.5.0-beta.2, ✅ active)
+Graph nodes for digital effects: Delay, Distortion, Limiter. Implements the `Processor` trait from `rill-core`, using delay algorithms from `rill-core-dsp::delay`. Optional `modulation` feature enables `rill-oscillators` for LFO modulation.
 
 ### `rill-router` (0.5.0-beta.2)
-Роутер, объединяющий функциональность эквалайзеров (`rill-eq`) и микшера (`rill-mixer`) с возможностью матричной маршрутизации. Включает модули `eq` (графический и параметрический эквалайзеры) и `mixer` (микшер с каналами, посылами, мастером). Планируется добавление модуля `matrix` для гибкой маршрутизации сигналов.
+Router combining equalizer (`rill-eq`) and mixer (`rill-mixer`) functionality with matrix routing capabilities. Includes `eq` (graphic and parametric equalizers) and `mixer` (mixer with channels, sends, master) modules. A `matrix` module is planned for flexible signal routing.
 
 ```rust
 use rill_router::eq::{GraphicEq, ParametricEq};
@@ -363,13 +362,13 @@ mixer.set_channel_pan(0, -0.5)?;
 mixer.set_channel_volume(1, 0.8)?;
 ```
 
-## Специализированные крейты
+## Specialized crates
 
-### `rill-lofi` (0.5.0-beta.2, ✅ активен)
-Lo-Fi эмуляция классических систем (NES, AY-3-8910, Akai S900). Реализует узлы графа (`SignalNode`) на базе `rill-core`, использующие внутренние DSP-алгоритмы для эмуляции битности, частоты дискретизации и характерных шумов ретро-систем.
+### `rill-lofi` (0.5.0-beta.2, ✅ active)
+Lo-Fi emulation of classic systems (NES, AY-3-8910, Akai S900). Implements graph nodes (`Node`) based on `rill-core`, using internal DSP algorithms to emulate bit depth, sample rate, and characteristic noise of retro systems.
 
 ```rust
-// NES эмулятор
+// NES emulator
 let mut nes = NesEmulator::new(44100.0);
 
 // Akai S900 (12-bit)
@@ -377,11 +376,11 @@ let akai_config = LofiConfig::for_system(ClassicSystem::AkaiS900);
 let mut akai = LofiProcessor::new(akai_config);
 ```
 
-### `rill-telemetry` (0.5.0-beta.2, ✅ активен)
-Пробники и коллекторы данных для мониторинга audio-потока и управления. Предоставляет механизмы сбора статистики производительности, отслеживания нарушений real-time безопасности и обратной связи для внешних систем.
+### `rill-telemetry` (0.5.0-beta.2, ✅ active)
+Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
 
-### `rill-core-wdf` (0.5.0-beta.2, ✅ активен)
-Wave Digital Filter (WDF) ядро — элементы (Resistor, Capacitor, Inductor, Diode), адаптеры (SeriesAdapter, ParallelAdapter), функции анализа (частотная характеристика, искажения) и WDF-фильтры (WdfMoogLadder). Generic над `rill_core::AudioNum` — поддерживает `f32` и `f64`. Опциональная фича `simd` включает SIMD-векторизацию через `rill_core::vector::F64x4` (backed by `wide`).
+### `rill-core-wdf` (0.5.0-beta.2, ✅ active)
+Wave Digital Filter (WDF) core — elements (Resistor, Capacitor, Inductor, Diode), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion) and WDF filters (WdfMoogLadder). Generic over `rill_core::AudioNum` — supports `f32` and `f64`. Optional `simd` feature enables SIMD vectorization via `rill_core::vector::F64x4` (backed by `wide`).
 
 ```rust
 use rill_core_wdf::{Resistor, Capacitor, WdfElement, WaveVariables};
@@ -397,8 +396,8 @@ ladder.set_resonance(0.7);
 let y = ladder.process_sample(0.5);
 ```
 
-### `rill-analog-filters` (0.5.0-beta.2, ✅ активен)
-WDF-основанные аналоговые фильтры. Включает `WdfMoogLadderProcessor` — SignalNode-обёртку над `rill_core_wdf::filters::MoogLadder<f64>`. Предоставляет узлы графа для процессора.
+### `rill-analog-filters` (0.5.0-beta.2, ✅ active)
+WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_wdf::filters::MoogLadder<f64>`. Provides graph nodes for the processor.
 
 ```rust
 use rill_analog_filters::WdfMoogLadderProcessor;
@@ -407,8 +406,8 @@ let mut processor = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
 processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(5000.0));
 ```
 
-### `rill-analog-effects` (0.5.0-beta.2, ✅ активен)
-Модели аналоговых схем: операционные усилители (OperationalAmplifier со slew-rate, bandwidth, rail-clamping), ленточные деки (CassetteDeckModel с эмуляцией насыщения ленты, детонации, шума), преампы. Зависит от `rill-core` и `rill-core-wdf`.
+### `rill-analog-effects` (0.5.0-beta.2, ✅ active)
+Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-wdf`.
 
 ```rust
 use rill_analog_effects::OperationalAmplifier;
@@ -418,57 +417,57 @@ opamp.set_slew_rate(0.5);
 let output = opamp.process(0.3);
 ```
 
-### `rill-io` (0.5.0-beta.2, активен)
-Аудио ввод-вывод. Pure I/O backends — без движка, без процессоров.
+### `rill-io` (0.5.0-beta.2, active)
+Audio input/output. Pure I/O backends — no engine, no processors.
 
-Два трейта:
+Two traits:
 
-- [`AudioBackend`] — низкоуровневый (`read`/`write`, используется внутри бэкендов)
-- [`AudioIo`] — реактивный поток (`set_process_callback`, `read_input`/`write_output`)
+- [`AudioBackend`] — low-level (`read`/`write`, used inside backends)
+- [`AudioIo`] — reactive stream (`set_process_callback`, `read_input`/`write_output`)
 
-Два узла графа:
+Two graph nodes:
 
-- **`AudioInput`** (Source) — push модель. Владеет бэкендом (`Box<dyn AudioIo>`).
-  Бэкенд можно создать внешне через `set_backend()` или по имени через
-  `init_backend("pipewire", config)`. `start()` устанавливает callback.
-- **`AudioOutput`** (Sink) — push или pull модель. Заимствует бэкенд через
-  `AudioIoPtr`. В pull модели: `set_active(source_idx)`. `start()` дёргает
-  `generate()` на Source, затем `propagate()`.
+- **`AudioInput`** (Source) — push model. Owns the backend (`Box<dyn AudioIo>`).
+  The backend can be created externally via `set_backend()` or by name via
+  `init_backend("pipewire", config)`. `start()` sets the callback.
+- **`AudioOutput`** (Sink) — push or pull model. Borrows the backend via
+  `AudioIoPtr`. In pull model: `set_active(source_idx)`. `start()` calls
+  `generate()` on Source, then `propagate()`.
 
-Оба узла используют одинаковый callback:
+Both nodes use the same callback:
 1. Drain `MpscQueue<ParameterCommand>`
 2. `process_block(source)` — `generate()` / `process()` / `consume()`
-3. `Port::propagate()` — рекурсивный обход DAG
- 4. `AudioOutput::consume()` читает из своих входных портов → `write_output()`
+3. `Port::propagate()` — recursive DAG traversal
+  4. `AudioOutput::consume()` reads from its input ports → `write_output()`
 
-### Обработка графа
+### Graph processing
 
-Граф не имеет внешнего движка. `Port::propagate()` — рекурсивный обход DAG:
+The graph has no external engine. `Port::propagate()` — recursive DAG traversal:
 
-1. Копирует выходной буфер во входные порты downstream-узлов (zero-copy для 1:1)
-2. Вызывает `process_block()` на каждом downstream-узле:
+1. Copies the output buffer to downstream node input ports (zero-copy for 1:1)
+2. Calls `process_block()` on each downstream node:
    - **Source** — `generate()`
    - **Processor** — `process()`
-   - **Sink** — `consume()` (читает из своих входных портов)
-3. Рекурсивно обходит выходные порты каждого узла
+   - **Sink** — `consume()` (reads from its input ports)
+3. Recursively traverses each node's output ports
 
-`AudioInput::start()` / `AudioOutput::start()` устанавливают callback на
-бэкенд, который вызывает `process_block(source)` → `propagate()` при
-каждом аудио-тике. Никакого внешнего цикла. Двухпоточная архитектура:
-audio I/O thread (hard или soft RT) + control thread (tokio, patchbay).
+`AudioInput::start()` / `AudioOutput::start()` set the callback on
+the backend, which calls `process_block(source)` → `propagate()` on
+each audio tick. No external loop. Two-thread architecture:
+audio I/O thread (hard or soft RT) + control thread (tokio, patchbay).
 
-## Ключевые принципы архитектуры
+## Key architectural principles
 
-1. **Единое ядро** — `rill-core` объединяет все базовые трейты и сигнальную систему
-2. **Минимальные зависимости** — каждый крейт зависит только от того, что реально использует
-3. **Модульность** — каждый крейт имеет чёткую ответственность
-4. **Композиция** — сложные узлы строятся из простых
-5. **Производительность** — zero-cost abstractions, real-time safety
-6. **Тестируемость** — все компоненты тестируются изолированно
+1. **Unified core** — `rill-core` unifies all base traits and the signal system
+2. **Minimal dependencies** — each crate depends only on what it actually uses
+3. **Modularity** — each crate has a clear responsibility
+4. **Composition** — complex nodes are built from simple ones
+5. **Performance** — zero-cost abstractions, real-time safety
+6. **Testability** — all components are tested in isolation
 
-## Зависимости между крейтами (версия 0.5.0-beta.2)
+## Crate dependencies (version 0.5.0-beta.2)
 
-Диаграмма зависимостей между крейтами (сплошные стрелки — обязательные зависимости, пунктирные — опциональные):
+Dependency diagram between crates (solid arrows — mandatory dependencies, dashed — optional):
 
 ```mermaid
 graph TD
@@ -503,29 +502,29 @@ graph TD
     style ANALOG_FILTERS fill:#90ee90
     style ANALOG_EFFECTS fill:#90ee90
     
-    %% Планируемые
-    SERVER[rill-osc<br/>(в разработке)]
+    %% Planned
+    SERVER[rill-osc<br/>(in development)]
     
     CORE -.-> SERVER
     
     style SERVER fill:#cccccc
 ```
 
-## Мир автоматов
+## World of Automata
 
-**Rill Patchbay** — это не просто система управления. Это **мир**, в котором живут **автоматы** — загадочные существа, которые чувствуют окружающую среду и влияют на неё. Они общаются на языке сигналов, слышат звук через сенсоры и через серво воздействуют на SignalGraph.
+**Rill Patchbay** is not just a control system. It is a **world** where **automata** live — mysterious beings that sense the environment and influence it. They communicate in the language of signals, hear sound through sensors, and affect the Graph through servos.
 
-### 🧠 Архитектура мира
+### 🧠 World architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                 МИР АВТОМАТОВ                         │
-│  (ваше приложение на Rill)                      │
+│             WORLD OF AUTOMATA                        │
+│  (your Rill application)                       │
 │                                                       │
 │  ┌─────────────────────────────────────────────────┐ │
 │  │                    PATCHBAY                       │ │
 │  │  ┌─────────────────────────────────────────┐    │ │
-│  │  │           АВТОМАТЫ (разум)              │    │ │
+│  │  │           AUTOMATA (mind)              │    │ │
 │  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐ │ │
 │  │  │  │   LFO    │  │   ENV    │  │  RANDOM  │ │ │
 │  │  │  └────┬─────┘  └────┬─────┘  └────┬─────┘ │ │
@@ -534,90 +533,90 @@ graph TD
 │  │          │             │             │         │ │
 │  │          ▼             ▼             ▼         │ │
 │  │  ┌─────────────────────────────────────────┐   │ │
-│  │  │           СЕНСОРЫ (чувства)              │   │ │
-│  │  │  • Слышат звук (акустические)           │   │ │
-│  │  │  • Чувствуют прикосновения (физические) │   │ │
-│  │  │  • Видят MIDI/CV                         │   │ │
+│  │  │           SENSORS (senses)              │   │ │
+│  │  │  • Hear sound (acoustic)           │   │ │
+│  │  │  • Feel touch (physical) │   │ │
+│  │  │  • See MIDI/CV                         │   │ │
 │  │  └─────────────────────────────────────────┘   │ │
 │  │                   │                              │ │
-│  │                   │ Сигналы                      │ │
+│  │                   │ Signals                      │ │
 │  │                   ▼                              │ │
 │  │  ┌─────────────────────────────────────────┐   │ │
-│  │  │           СЕРВО (руки)                   │   │ │
-│  │  │    Применяют сигналы к SignalGraph       │   │ │
+│  │  │           SERVO (hands)                   │   │ │
+│  │  │    Apply signals to Graph       │   │ │
 │  │  └─────────────────────────────────────────┘   │ │
 │  └──────────────────────┬──────────────────────────┘ │
-│                         │ Неблокирующие очереди      │
+│                         │ Non-blocking queues        │
 │                         ▼ (Command/Telemetry)        │
 │  ┌─────────────────────────────────────────────────┐ │
 │  │                 AUDIOGRAPH                        │ │
-│  │          (внутренняя схема устройства)            │ │
+│  │          (internal device schematic)            │ │
 │  │                                                   │ │
-│  │  Осцилляторы → Фильтры → Эффекты → Микшер        │ │
+│  │  Oscillators → Filters → Effects → Mixer        │ │
 │  └─────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────┘
 ```
 
-### 🦾 Автоматы — разум (Automaton)
+### 🦾 Automata — mind (Automaton)
 
-Автоматы — это разумные существа, которые принимают решения и генерируют сигналы. Они могут быть простыми (LFO, огибающая) или сложными (логические схемы, математические преобразователи).
+Automata are intelligent beings that make decisions and generate signals. They can be simple (LFO, envelope) or complex (logic circuits, mathematical transformers).
 
-| Автомат | Описание | Как выглядит в коде |
+| Automaton | Description | Code example |
 |---------|----------|---------------------|
-| **LFO** | Пульсирует с заданной частотой | `LfoAutomaton::new("vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine)` |
-| **Envelope** | Реагирует на события (нажатия) | `EnvelopeAutomaton::adsr("amp", 0.01, 0.1, 0.7, 0.2)` |
-| **Random Walk** | Блуждает случайным образом | `RandomAutomaton::walk("chaos", 10.0)` |
-| **Sequencer** | Проигрывает последовательность шагов | `SequencerAutomaton::new("seq", steps)` |
-| **Function** | Произвольная функция времени | `FunctionAutomaton::new("math", \|t\| (t * 0.5).sin())` |
-| **Cellular** | Клеточный автомат (Game of Life, Rule 30) | `CellularAutomaton::game_of_life("life", 16, 16)` |
+| **LFO** | Pulses at a given frequency | `LfoAutomaton::new("vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine)` |
+| **Envelope** | Reacts to events (triggers) | `EnvelopeAutomaton::adsr("amp", 0.01, 0.1, 0.7, 0.2)` |
+| **Random Walk** | Wanders randomly | `RandomAutomaton::walk("chaos", 10.0)` |
+| **Sequencer** | Plays a sequence of steps | `SequencerAutomaton::new("seq", steps)` |
+| **Function** | Arbitrary time function | `FunctionAutomaton::new("math", \|t\| (t * 0.5).sin())` |
+| **Cellular** | Cellular automaton (Game of Life, Rule 30) | `CellularAutomaton::game_of_life("life", 16, 16)` |
 
-### 👁️ Сенсоры — чувства (Sensors)
+### 👁️ Sensors — senses
 
-Чтобы автоматы могли воспринимать мир, им нужны органы чувств. Сенсоры преобразуют внешние воздействия в сигналы, понятные автоматам.
+For automata to perceive the world, they need sensory organs. Sensors convert external stimuli into signals understandable by automata.
 
-#### Акустические сенсоры (слышат звук)
+#### Acoustic sensors (hear sound)
 
 ```rust
-// Слышит высоту тона
+// Hears pitch
 let pitch = AcousticSensor::new("pitch", 
     Box::new(PitchDetector::new(44100.0)))
-    .listening_to("osc1_out");  // Слушает выход осциллятора
+    .listening_to("osc1_out");  // Listens to oscillator output
 
-// Слышит громкость
+// Hears loudness
 let envelope = AcousticSensor::new("envelope",
     Box::new(EnvelopeFollower::new(44100.0)
         .with_attack(0.01)
         .with_release(0.1)))
     .listening_to("vca_out");
 
-// Слышит ритм (пересечения нуля)
+// Hears rhythm (zero crossings)
 let rhythm = AcousticSensor::new("rhythm",
     Box::new(ZeroCrossing::new(44100.0)))
     .listening_to("kick_out");
 ```
 
-#### Физические сенсоры (чувствуют прикосновения)
+#### Physical sensors (feel touch)
 
 ```rust
-// Ручка на передней панели
+// Front panel knob
 let cutoff = PhysicalSensor::knob("filter_cutoff")
     .with_range(20.0, 20000.0)
     .with_curve(KnobCurve::Logarithmic);
 
-// Кнопка
+// Button
 let button = PhysicalSensor::button("arpeggio_on");
 
-// Переключатель
+// Switch
 let mode = PhysicalSensor::switch("filter_mode")
     .with_positions(vec!["LPF", "BPF", "HPF"]);
 ```
 
-#### MIDI/CV сенсоры (видят внешний мир)
+#### MIDI/CV sensors (see the outside world)
 
-> **API в разработке.** MIDI и CV сенсоры пока не реализованы — в текущей версии внешние события обрабатываются через `PatchbayControl::handle_event()` и `Mapping`.
+> **API in development.** MIDI and CV sensors are not yet implemented — in the current version, external events are handled via `Engine::handle_event()` and `Mapping`.
 
 ```rust
-// Планируемый API:
+// Planned API:
 // let midi_note = MidiSensor::note("keyboard")
 //     .with_channel(1);
 // 
@@ -625,45 +624,45 @@ let mode = PhysicalSensor::switch("filter_mode")
 //     .with_range(0.0, 5.0);
 ```
 
-### 🎯 Серво — руки (Servo)
+### 🎯 Servo — hands
 
-Серво — это **исполнительные механизмы** автоматов. Подчиняясь законам природы (неблокирующим очередям), они передают сигналы из мира автоматов в SignalGraph, изменяя параметры звука.
+Servos are the **actuators** of automata. Obeying the laws of nature (non-blocking queues), they transmit signals from the world of automata to the Graph, changing sound parameters.
 
 ```rust
-// Серво, управляющее частотой фильтра
+// Servo controlling filter cutoff
 let filter_servo = Servo::new(
     "filter_servo",
-    lfo_automaton,          // Какой автомат дает сигнал
-    filter_node_id,         // ID узла в SignalGraph
-    "cutoff",               // Имя параметра
+    lfo_automaton,          // Which automaton provides the signal
+    filter_node_id,         // Node ID in Graph
+    "cutoff",               // Parameter name
     ParameterMapping::Linear,
-    20.0, 20000.0           // Диапазон значений
+    20.0, 20000.0           // Value range
 );
 ```
 
-### ⚡ Законы природы (неблокирующие очереди)
+### ⚡ Laws of nature (non-blocking queues)
 
-Мир автоматов и мир звука существуют параллельно. Они связаны **неблокирующими очередями**:
+The world of automata and the world of sound exist in parallel. They are connected by **non-blocking queues**:
 
-- **Command Queue** — серво отправляют команды в SignalGraph
-- **Telemetry Queue** — сенсоры получают данные из SignalGraph
+- **Command Queue** — servos send commands to the Graph
+- **Telemetry Queue** — sensors receive data from the Graph
 
-Это позволяет автоматам "думать" в своем темпе, не мешая звуковому потоку.
+This allows automata to "think" at their own pace without interfering with the audio stream.
 
-### 🏭 Пространство автоматов (Patchbay)
+### 🏭 Automaton Space (Patchbay)
 
-**Patchbay** — это место, где живут все ваши автоматы, где расположены их чувства и руки.
+**Patchbay** is the place where all your automata live, where their senses and hands are located.
 
 ```rust
 use rill_patchbay::prelude::*;
 use rill_core::queues::MpscQueue;
 use std::sync::Arc;
 
-// Создаем очередь команд и PatchbayControl
+// Create command queue and Engine
 let cmd_queue = Arc::new(MpscQueue::new(1024));
-let mut control = PatchbayControl::new(cmd_queue);
+let mut control = Engine::new(cmd_queue);
 
-// Добавляем LFO-серво (разум + руки)
+// Add LFO servo (mind + hands)
 control.add_lfo(
     "vibrato", 5.0, 0.5, 0.0,
     LfoWaveform::Sine,
@@ -671,25 +670,25 @@ control.add_lfo(
     400.0, 480.0,
 );
 
-// Добавляем ADSR-серво
+// Add ADSR servo
 control.add_envelope(
     "amp", 0.01, 0.1, 0.7, 0.2,
     vca_node_id, "gain",
     0.0, 1.0,
 );
 
-// Обновляем автоматы в цикле
+// Update automata in a loop
 loop {
     control.update(1.0 / 60.0);
     std::thread::sleep(std::time::Duration::from_millis(16));
 }
 ```
 
-Либо через `PatchbayManager` с отдельным потоком обновления:
+Or via `Manager` with a separate update thread:
 
 ```rust
-let mut manager = PatchbayManager::new(
-    PatchbayConfig::default(),
+let mut manager = Manager::new(
+    Config::default(),
     Arc::new(MpscQueue::new(1024)),
 );
 
@@ -699,62 +698,62 @@ manager.add_lfo_servo(
     ParameterMapping::Linear, 400.0, 480.0,
 )?;
 
-manager.start()?;  // Автоматы начинают жить своей жизнью
+manager.start()?;  // Automata begin their own life
 ```
 
-## Планы на будущие версии
+## Plans for future versions
 
-- 🔌 **Развитие rill-core-dsp** — добавление новых алгоритмов, оптимизация векторных операций, SIMD
-- 🌐 **rill-osc** — OSC-сервер для удалённого управления (в разработке)
-- 🧩 **Аналоговое моделирование** — расширение библиотеки WDF-элементов и аналоговых моделей
-- 🚦 **Развитие rill-router** — добавление матричной маршрутизации, расширение модуля `mixer`, интеграция с аудиографом
-- 🧪 **Интеграционные тесты** — cross-crate тесты в per-crate `tests/` (пример: patchbay + graph)
+- 🔌 **rill-core-dsp development** — adding new algorithms, optimizing vector operations, SIMD
+- 🌐 **rill-osc** — OSC server for remote control (in development)
+- 🧩 **Analog modeling** — expanding the WDF element library and analog models
+- 🚦 **rill-router development** — adding matrix routing, expanding the `mixer` module, integration with audio graph
+- 🧪 **Integration tests** — cross-crate tests in per-crate `tests/` (example: patchbay + graph)
 
-### 🧪 Тестирование
+### 🧪 Testing
 
-Rill использует комплексную систему тестирования. Для запуска всех тестов выполните:
+Rill uses a comprehensive testing system. To run all tests, execute:
 
 ```bash
-# Все тесты
+# All tests
 cargo test --workspace
 
-# Тесты конкретного крейта
+# Test a specific crate
 cargo test -p rill-patchbay
 
 cargo test -p rill-digital-effects
 ```
 
-### 📚 Документация
+### 📚 Documentation
 
-- [README.md](README.md) — общее описание проекта и быстрый старт
-- [Архитектура проекта](architecture.md) — детальное описание всех компонентов
-- [План разработки](plans/two_thread_architecture.md) — двухпоточная архитектура
-- [Примеры](examples/) — примеры использования каждого крейта
+- [README.md](README.md) — project overview and quick start
+- [Project Architecture](architecture.md) — detailed description of all components
+- [Development Plan](plans/two_thread_architecture.md) — two-thread architecture
+- [Examples](examples/) — usage examples for each crate
 
-### 📄 Лицензия
+### 📄 License
 
-Проект распространяется под лицензией **Apache 2.0**. Это означает, что вы можете:
+The project is distributed under the **Apache 2.0** license. This means you can:
 
-- ✅ Использовать в коммерческих продуктах
-- ✅ Модифицировать и распространять
-- ✅ Использовать патентные права
-- ❗ При изменениях указывать авторов
-- ❗ Сохранять уведомление об авторстве
+- ✅ Use in commercial products
+- ✅ Modify and distribute
+- ✅ Use patent rights
+- ❗ Attribute authors when making changes
+- ❗ Retain copyright notice
 
-Полный текст лицензии: [LICENSE.md](../LICENSE.md)
+Full license text: [LICENSE.md](../LICENSE.md)
 
-## Заключение
+## Conclusion
 
-Архитектура Rill версии 0.5.0-beta.2 обеспечивает:
+Rill architecture version 0.5.0-beta.2 provides:
 
-- ✅ **Стабильное ядро** — единый крейт `rill-core` с чётким API
-- ✅ **DSP-алгоритмы** — `rill-core-dsp` содержит трейт `Algorithm` и реализации DSP-алгоритмов (генераторы, фильтры, задержка) с векторными операциями; специализированные крейты (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) предоставляют узлы графа (`SignalNode`) на их основе
-- ✅ **Векторные абстракции** — переносимость и производительность через `ScalarVectorN<T>` и трейт `AudioNum`
-- ✅ **Чистую модульность** — каждый крейт имеет свою ответственность (некоторые временно отключены)
-- ✅ **Производительность** — оптимизирована для real-time, блочная обработка
-- ✅ **Надёжность** — все компоненты тщательно протестированы (487 unit-тестов во всём workspace)
-- ✅ **Расширяемость** — легко добавлять новые алгоритмы через макросы и трейт `Algorithm`
-- ✅ **Согласованность** — все крейты используют одну версию ядра
-- ✅ **Объединение функциональности** — крейты `rill-eq` и `rill-mixer` объединены в `rill-router` (0.5.0-beta.2) с модулями эквалайзеров и микшера
+- ✅ **Stable core** — unified `rill-core` crate with a clear API
+- ✅ **DSP algorithms** — `rill-core-dsp` contains the `Algorithm` trait and DSP algorithm implementations (generators, filters, delay) with vector operations; specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) based on them
+- ✅ **Vector abstractions** — portability and performance via `ScalarVectorN<T>` and the `AudioNum` trait
+- ✅ **Clean modularity** — each crate has its own responsibility (some temporarily disabled)
+- ✅ **Performance** — optimized for real-time, block processing
+- ✅ **Reliability** — all components thoroughly tested (487 unit tests across the entire workspace)
+- ✅ **Extensibility** — easy to add new algorithms via macros and the `Algorithm` trait
+- ✅ **Consistency** — all crates use the same core version
+- ✅ **Feature unification** — `rill-eq` and `rill-mixer` crates merged into `rill-router` (0.5.0-beta.2) with equalizer and mixer modules
 
-Рефакторинг 0.5.0-beta.2 завершён: все крейты переведены на единое ядро `rill-core` и блочную обработку. DSP-алгоритмы собраны в `rill-core-dsp` (трейт `Algorithm`, генераторы, фильтры, задержки, векторные операции). Специализированные крейты (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) предоставляют узлы графа (`SignalNode`), использующие эти алгоритмы. `rill-router` добавлен как единая точка входа для маршрутизации, микширования и эквализации аудиосигналов. Ядро стабилизировано и готово к следующему этапу развития.
+The 0.5.0-beta.2 refactoring is complete: all crates have been migrated to a unified `rill-core` and block processing. DSP algorithms are collected in `rill-core-dsp` (the `Algorithm` trait, generators, filters, delays, vector operations). Specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) using these algorithms. `rill-router` has been added as a single entry point for routing, mixing, and equalization of audio signals. The core is stabilized and ready for the next phase of development.

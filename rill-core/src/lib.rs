@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! rill-core/
-//! ├── traits/           # Core traits (SignalNode, Source, Processor, Sink, etc.)
+//! ├── traits/           # Core traits (Node, Source, Processor, Sink, etc.)
 //! ├── math/             # Mathematical abstractions (Scalar, Transcendental, Vector)
 //! │   └── vector/       # Vector types, SIMD abstractions, slice operations
 //! ├── buffer/           # Lock-free signal buffers with AtomicCell safety
@@ -24,7 +24,7 @@
 //! - **Scalar**: Base numeric trait for any type (floats and integers)
 //! - **Transcendental**: Float numeric abstraction with sin/cos/sqrt
 //! - **AtomicCell**: Safe atomic wrapper for lock-free data structures
-//! - **SignalNode**: Base trait for all nodes in the signal graph
+//! - **Node**: Base trait for all nodes in the signal graph
 //! - **Source**: Active generators (oscillators, file readers)
 //! - **Processor**: Passive processors (filters, effects)
 //! - **Sink**: Active outputs (sound cards, file writers)
@@ -47,7 +47,7 @@
 //!     sample_rate: T,
 //! }
 //!
-//! impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
+//! impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn metadata(&self) -> NodeMetadata {
 //!         NodeMetadata {
 //!             name: "Sine".to_string(),
@@ -191,10 +191,10 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    ClockError, ClockResult, ConnectionError, ConnectionResult, NodeCategory, NodeId, NodeMetadata,
-    NodeParams, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
-    ParameterError, ParameterId, Port, PortDirection, PortError, PortId, PortResult, PortType,
-    ProcessError, ProcessResult, Processor, SignalNode, Sink, Source,
+    ClockError, ClockResult, ConnectionError, ConnectionResult, Node, NodeCategory, NodeId,
+    NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
+    ParameterError, ParameterId, Params, Port, PortDirection, PortError, PortId, PortResult,
+    PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };
 
 // Re-export math abstractions
@@ -202,8 +202,8 @@ pub use math::{Scalar, Transcendental};
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
-    AtomicCell, AtomicCellError, AtomicStats, BufferError, BufferResult, BufferStats, DelayLine,
-    FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer, SignalBuffer,
+    AtomicCell, AtomicCellError, AtomicStats, Buffer, BufferError, BufferResult, BufferStats,
+    DelayLine, FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
 };
 
 // Re-export queue types (from rill-patchbay integration)

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::pattern::{Pattern, StepPlayMode};
 use super::snapshot::Snapshot;
-use rill_core::queues::{SetParameter, SignalSource};
+use rill_core::queues::{SetParameter, SignalOrigin};
 use rill_core::traits::ParamValue;
 use rill_core::traits::{ParameterId, PortId};
 
@@ -258,7 +258,7 @@ impl SnapshotSequencer {
                                 PortId::param(p.node_id, 0),
                                 ParameterId::new(&p.param_name).unwrap(),
                                 ParamValue::Float(p.value),
-                                SignalSource::Manual,
+                                SignalOrigin::Manual,
                             )
                         })
                         .collect();

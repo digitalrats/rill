@@ -1,5 +1,5 @@
 use float_cmp::approx_eq;
-use rill_core::traits::{Router, SignalNode};
+use rill_core::traits::{Node, Router};
 use rill_core::ClockTick;
 
 #[test]

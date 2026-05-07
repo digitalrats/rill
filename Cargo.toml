@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "rill-core",
+    "rill-core-actor",
     "rill-core-dsp",
     "rill-graph",
     "rill-patchbay",
@@ -42,6 +43,7 @@ tokio = "1.0"
 
 # Internal workspace crates
 rill-core = { path = "rill-core", version = "0.5.0-beta.2" }
+rill-core-actor = { path = "rill-core-actor", version = "0.5.0-beta.2" }
 rill-core-dsp = { path = "rill-core-dsp", version = "0.5.0-beta.2" }
 rill-core-wdf = { path = "rill-core-wdf", version = "0.5.0-beta.2" }
 rill-graph = { path = "rill-graph", version = "0.5.0-beta.2" }

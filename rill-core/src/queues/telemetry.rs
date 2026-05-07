@@ -5,15 +5,15 @@ use crate::traits::{NodeId, ParameterId, PortId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Константы для телеметрии часов (clock)
+/// Constants for clock telemetry
 ///
-/// Формат `CLOCK_TICK` (Telemetry::Event с kind="clock_tick"):
-/// - `data[0]` — `sample_pos` (абсолютная позиция сэмпла, f32)
-/// - `data[1]` — `sample_rate` (частота дискретизации, Hz)
-/// - `data[2]` — `tempo` (BPM, 0.0 если неизвестен)
-/// - `data[3]` — `beat_position` (дробная позиция бита, 0.0 если нет темпа)
-/// - `data[4]` — `is_new_beat` (1.0 если это начало нового бита, иначе 0.0)
-/// - `data[5]` — `is_new_bar` (1.0 если это начало нового такта, иначе 0.0)
+/// Format of `CLOCK_TICK` (Telemetry::Event with kind="clock_tick"):
+/// - `data[0]` — `sample_pos` (absolute sample position, f32)
+/// - `data[1]` — `sample_rate` (sample rate, Hz)
+/// - `data[2]` — `tempo` (BPM, 0.0 if unknown)
+/// - `data[3]` — `beat_position` (fractional beat position, 0.0 if no tempo)
+/// - `data[4]` — `is_new_beat` (1.0 if this is the start of a new beat, otherwise 0.0)
+/// - `data[5]` — `is_new_bar` (1.0 if this is the start of a new bar, otherwise 0.0)
 /// Event kind for clock tick telemetry.
 pub const CLOCK_TICK: &str = "clock_tick";
 /// Event kind for clock tempo telemetry.
@@ -151,7 +151,7 @@ pub enum Telemetry {
     },
 }
 
-// Реализуем трейт Command для Telemetry
+// Implement the Command trait for Telemetry
 impl Command for Telemetry {}
 
 impl Telemetry {
@@ -377,13 +377,13 @@ impl fmt::Display for Telemetry {
                 if let Some(v) = value {
                     write!(
                         f,
-                        "[{}] ⚠️ {} нарушение: {}нс > {}нс, value={:.3}",
+                        "[{}] ⚠️ {} violation: {}ns > {}ns, value={:.3}",
                         timestamp, component, actual_ns, expected_ns, v
                     )
                 } else {
                     write!(
                         f,
-                        "[{}] ⚠️ {} нарушение: {}нс > {}нс",
+                        "[{}] ⚠️ {} violation: {}ns > {}ns",
                         timestamp, component, actual_ns, expected_ns
                     )
                 }

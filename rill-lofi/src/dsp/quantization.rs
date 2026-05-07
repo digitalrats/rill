@@ -1,6 +1,6 @@
-//! Функции для квантования и понижения битности
+//! Functions for quantization and bit reduction
 
-/// Базовое квантование с понижением битности
+/// Basic quantization with bit depth reduction
 pub fn bitcrush(sample: f32, bit_depth: u8, dither: bool) -> f32 {
     if bit_depth >= 24 {
         return sample;
@@ -20,7 +20,7 @@ pub fn bitcrush(sample: f32, bit_depth: u8, dither: bool) -> f32 {
     }
 }
 
-/// Понижение частоты дискретизации с удержанием значения
+/// Sample rate reduction with sample-and-hold
 pub fn sample_rate_reduce(sample: f32, factor: usize, hold: &mut f32, counter: &mut usize) -> f32 {
     *counter += 1;
     if *counter >= factor {
@@ -30,12 +30,12 @@ pub fn sample_rate_reduce(sample: f32, factor: usize, hold: &mut f32, counter: &
     *hold
 }
 
-/// Расчёт коэффициента понижения частоты
+/// Calculate reduction factor
 pub fn calculate_reduction_factor(input_sr: f32, target_sr: f32) -> usize {
     (input_sr / target_sr).ceil() as usize
 }
 
-/// Нелинейное квантование (μ-law)
+/// Nonlinear quantization (μ-law)
 pub fn nonlinear_quantize(sample: f32, bit_depth: u8) -> f32 {
     let sign = sample.signum();
     let abs_sample = sample.abs().min(1.0);

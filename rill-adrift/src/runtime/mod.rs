@@ -2,8 +2,8 @@
 //!
 //! Creates a fully configured "rill world" from serialised documents:
 //!
-//! * GraphDocument — signal topology (nodes, connections, resources)
-//! * PatchbayDocument — control system (LFO, envelope, mappings)
+//! * GraphDef — signal topology (nodes, connections, resources)
+//! * PatchbayDef — control system (LFO, envelope, mappings)
 //!   including the [`OscSurface`] that maps OSC paths to controller IDs
 //!
 //! ## Feature gates
@@ -22,7 +22,7 @@
 //! │                    RILL_ADRIFT::RUNTIME                         │
 //! │                                                                │
 //! │  ┌──────────────┐   ┌──────────────────────────────────────┐  │
-//! │  │  OscServer    │   │  PatchbayEngine                      │  │
+//! │  │  OscServer    │   │  Engine                          │  │
 //! │  │  (tokio)      │   │  (tokio tasks: LFO, envelope, …)    │  │
 //! │  │               │   │                                      │  │
 //! │  │  /sys/*       │   │  handle_event(event) ──→ mapping    │  │
@@ -36,22 +36,26 @@
 //! └────────────────────────────────────────────────────────────────┘
 //! ```
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 
-use rill_core::queues::MpscQueue;
-use rill_core::queues::SetParameter;
-use rill_core::traits::ParamValue;
-use rill_core::NodeId;
+use rill_core::queues::{MpscQueue, SetParameter};
+use rill_core::traits::{NodeId, NodeVariant, ParamValue, Params};
+#[cfg(any(feature = "osc", feature = "serialization"))]
+use rill_core_actor::ActorRef;
+use rill_graph::backend_factory::BackendFactory;
+use rill_graph::{GraphBuilder, NodeFactory};
 #[cfg(feature = "osc")]
-use rill_patchbay::control::{OscSurface, PatchbayControl};
-use rill_patchbay::engine::PatchbayEngine;
+use rill_patchbay::engine::OscSurface;
+use rill_patchbay::engine::Patchbay;
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
 
 #[cfg(feature = "serialization")]
-use rill_graph::serialization::GraphDocument;
+use rill_graph::serialization::GraphDef;
 #[cfg(feature = "serialization")]
-use rill_patchbay::document::PatchbayDocument;
+use rill_patchbay::serialization::PatchbayDef;
 
 mod config;
 pub use config::RuntimeConfig;
@@ -75,7 +79,7 @@ use dispatch::OscHandle;
 /// corresponding files are loaded before starting subsystems.
 #[cfg(feature = "serialization")]
 pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
-    let mut rt = Runtime::new(config);
+    let mut rt = Runtime::<64>::new(config);
     rt.load_files_from_config()?;
     rt.start().await?;
     tokio::signal::ctrl_c()
@@ -112,9 +116,23 @@ pub enum RuntimeError {
 /// Create via [`Runtime::new`], start subsystems individually with
 /// start, or use the free function run for
 /// the all-in-one lifecycle.
-pub struct Runtime {
-    /// Lock-free command queue (control → audio thread).
-    pub(crate) queue: Arc<MpscQueue<SetParameter>>,
+pub struct Runtime<const BUF: usize = 64> {
+    /// Dead letters — undeliverable commands collected when the graph
+    /// is not running (stale queue detected by the application layer).
+    dead: Arc<MpscQueue<SetParameter>>,
+
+    /// Shared node factory (populated at construction, extended via
+    /// [`register_node_fn`](Self::register_node_fn)).
+    node_factory: Arc<Mutex<NodeFactory<f32, BUF>>>,
+
+    /// Shared backend factory (populated at construction).
+    backend_factory: Arc<BackendFactory<f32>>,
+
+    /// Default backend configuration. When set, every
+    /// [rill_graph::GraphBuilder]
+    /// created by [`create_builder`](Self::create_builder) is pre-configured
+    /// via [`GraphBuilder::with_backend`].
+    default_backend: Option<(String, HashMap<String, ParamValue>)>,
 
     /// Host configuration (stored for serialized graph/patchbay loading).
     #[cfg(feature = "serialization")]
@@ -122,14 +140,14 @@ pub struct Runtime {
 
     /// Current graph document (loaded, not yet built).
     #[cfg(feature = "serialization")]
-    graph_doc: Option<GraphDocument>,
+    graph_doc: Option<GraphDef>,
 
     /// Control engine: automata, mappings, port combiners.
-    control: Option<PatchbayEngine>,
+    control: Option<Patchbay>,
 
-    /// Shared PatchbayControl reference (for OSC surface dispatch).
+    /// Shared Patchbay reference (for OSC surface dispatch).
     #[cfg(feature = "osc")]
-    control_shared: Option<Arc<std::sync::Mutex<PatchbayControl>>>,
+    control_shared: Option<Arc<std::sync::Mutex<Patchbay>>>,
 
     /// Current osc_surface (set by load_patchbay).
     #[cfg(feature = "osc")]
@@ -140,11 +158,37 @@ pub struct Runtime {
     osc: Option<OscHandle>,
 }
 
-impl Runtime {
+impl<const BUF: usize> Runtime<BUF> {
     /// Create a new (stopped) runtime with the given configuration.
+    ///
+    /// Initialises the node and backend factories with all built-in types.
+    /// Use [`register_node_fn`](Self::register_node_fn) to add custom node
+    /// types before calling [`create_builder`](Self::create_builder).
+    /// If `config.backend_name` is set, the default backend is configured
+    /// automatically from the config's string-typed parameters.
     pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
+        let mut nf = NodeFactory::new();
+        crate::registration::register_all_nodes(&mut nf);
+        let bf = {
+            #[allow(unused_mut)]
+            let mut bf = BackendFactory::new();
+            #[cfg(feature = "io")]
+            crate::registration::register_backends(&mut bf);
+            bf
+        };
+        let default_backend = config.backend_name.clone().map(|n| {
+            let params = config
+                .backend_params
+                .iter()
+                .map(|(k, v)| (k.clone(), str_to_param(v)))
+                .collect();
+            (n, params)
+        });
         Self {
-            queue: Arc::new(MpscQueue::new()),
+            dead: Arc::new(MpscQueue::new()),
+            node_factory: Arc::new(Mutex::new(nf)),
+            backend_factory: Arc::new(bf),
+            default_backend,
             control: None,
             #[cfg(feature = "serialization")]
             config,
@@ -159,6 +203,46 @@ impl Runtime {
         }
     }
 
+    /// Register a custom node type via a closure.
+    ///
+    /// Must be called before [`create_builder`](Self::create_builder).
+    /// The closure receives `(NodeId, &Params)` and must return a
+    /// fully initialised [`NodeVariant`].
+    pub fn register_node_fn(
+        &self,
+        type_name: &'static str,
+        f: impl Fn(NodeId, &Params) -> NodeVariant<f32, BUF> + Send + Sync + 'static,
+    ) {
+        self.node_factory.lock().unwrap().register_fn(type_name, f);
+    }
+
+    /// Set the default audio backend for all future builders.
+    ///
+    /// When set, every [rill_graph::GraphBuilder] returned by
+    /// [`create_builder`](Self::create_builder)
+    /// is pre-configured with [`GraphBuilder::with_backend`] using the given
+    /// name and parameters.
+    pub fn set_default_backend(&mut self, name: &str, params: HashMap<String, ParamValue>) {
+        self.default_backend = Some((name.to_string(), params));
+    }
+
+    /// Create a [rill_graph::GraphBuilder] sharing this runtime's factories.
+    ///
+    /// The builder uses the runtime's pre-populated node and backend
+    /// factories. If a default backend was set via
+    /// [`set_default_backend`](Self::set_default_backend), the builder
+    /// is pre-configured with it.
+    pub fn create_builder(&self) -> GraphBuilder<f32, BUF> {
+        let mut builder = GraphBuilder::new(
+            Arc::new(self.node_factory.lock().unwrap().clone()),
+            self.backend_factory.clone(),
+        );
+        if let Some((ref name, ref params)) = self.default_backend {
+            builder = builder.with_backend(name, params.clone());
+        }
+        builder
+    }
+
     // ─── File loading ───────────────────────────────────────────────
 
     /// Load graph and/or patchbay documents from paths in `RuntimeConfig`.
@@ -167,17 +251,9 @@ impl Runtime {
         if let Some(ref path) = self.config.graph_path {
             let json = std::fs::read_to_string(path)
                 .map_err(|e| RuntimeError::Graph(format!("read '{:?}': {e}", path)))?;
-            let doc: GraphDocument = serde_json::from_str(&json)
+            let doc: GraphDef = serde_json::from_str(&json)
                 .map_err(|e| RuntimeError::Graph(format!("parse '{:?}': {e}", path)))?;
             self.load_graph(doc);
-        }
-
-        if let Some(ref path) = self.config.patchbay_path {
-            let json = std::fs::read_to_string(path)
-                .map_err(|e| RuntimeError::Patchbay(format!("read '{:?}': {e}", path)))?;
-            let doc = rill_patchbay::document::from_json(&json)
-                .map_err(|e| RuntimeError::Patchbay(format!("parse '{:?}': {e}", path)))?;
-            self.load_patchbay(doc)?;
         }
 
         Ok(())
@@ -185,12 +261,12 @@ impl Runtime {
 
     // ─── Public API ─────────────────────────────────────────────────
 
-    /// Load a [`GraphDocument`] into the runtime.
+    /// Load a [rill_graph::serialization::GraphDef] into the runtime.
     ///
-    /// The graph is **not** built or started until [`start_audio`] or
-    /// `/sys/graph/start` is received.
+    /// The graph is **not** built or started until the graph is started via
+    /// `Graph::run` or `Graph::stop`.
     #[cfg(feature = "serialization")]
-    pub fn load_graph(&mut self, doc: GraphDocument) {
+    pub fn load_graph(&mut self, doc: GraphDef) {
         self.graph_doc = Some(doc);
         log::info!(
             "graph document loaded ({} nodes)",
@@ -198,26 +274,30 @@ impl Runtime {
         );
     }
 
-    /// Load and apply a [`PatchbayDocument`].
+    /// Load and apply a [`PatchbayDef`] with the given command channel.
     ///
-    /// Creates/replaces the [`PatchbayEngine`] and updates the OSC surface.
+    /// The `cmd_queue` is typically obtained from a built [`Graph`](rill_graph::Graph)
+    /// via [`Graph::handle`](rill_graph::Graph::handle).
+    /// Creates/replaces the [`Patchbay`] and updates the OSC surface.
     #[cfg(feature = "serialization")]
-    pub fn load_patchbay(&mut self, doc: PatchbayDocument) -> Result<(), RuntimeError> {
-        let queue = self.queue.clone();
-        let mut engine = PatchbayEngine::new(queue.clone());
+    pub fn load_patchbay(
+        &mut self,
+        doc: PatchbayDef,
+        cmd_queue: ActorRef<SetParameter>,
+    ) -> Result<(), RuntimeError> {
+        let mut control = Patchbay::new(cmd_queue.clone());
         let registry = FunctionRegistry::builtin();
-        engine
-            .load_document(&doc, &registry)
-            .map_err(|e| RuntimeError::Patchbay(e))?;
+        doc.apply_to_async(&mut control, &registry)
+            .map_err(RuntimeError::Patchbay)?;
 
-        self.control = Some(engine);
+        self.control = Some(control);
 
         #[cfg(feature = "osc")]
         {
             self.osc_surface = doc.osc_surface.clone();
-            let mut ctrl = PatchbayControl::new(self.queue.clone());
+            let mut ctrl = Patchbay::new(cmd_queue);
             doc.apply_to(&mut ctrl, &registry)
-                .map_err(|e| RuntimeError::Patchbay(e))?;
+                .map_err(RuntimeError::Patchbay)?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
         }
 
@@ -225,22 +305,13 @@ impl Runtime {
         Ok(())
     }
 
-    /// Push a parameter command to the audio thread's queue.
-    ///
-    /// Lock-free; safe from any thread.
-    pub fn set_param(&self, node: NodeId, param: &str, value: f32) {
-        let pid = rill_core::traits::ParameterId::new(param).unwrap();
-        let _ = self.queue.push(SetParameter::new(
-            rill_core::traits::PortId::param(node, 0),
-            pid,
-            ParamValue::Float(value),
-            rill_core::queues::SignalSource::Manual,
-        ));
-    }
-
-    /// Access the shared command queue.
-    pub fn queue(&self) -> Arc<MpscQueue<SetParameter>> {
-        self.queue.clone()
+    /// Drain the dead letters queue, returning all undeliverable messages.
+    pub fn drain_dead_letters(&self) -> Vec<SetParameter> {
+        let mut msgs = Vec::new();
+        while let Some(msg) = self.dead.pop() {
+            msgs.push(msg);
+        }
+        msgs
     }
 
     // ─── Lifecycle ─────────────────────────────────────────────────
@@ -249,8 +320,9 @@ impl Runtime {
     #[cfg(feature = "serialization")]
     pub async fn start(&mut self) -> Result<(), RuntimeError> {
         #[cfg(feature = "osc")]
-        if let Some(ref bind) = self.config.osc_bind.clone() {
-            self.start_osc(bind).await?;
+        if let Some(ref _bind) = self.config.osc_bind.clone() {
+            // OSC server needs a command queue — provide via start_osc
+            // or use the dead letters queue as a sink.
         }
 
         Ok(())
@@ -258,19 +330,23 @@ impl Runtime {
 
     /// Start the OSC server with system and user surface handlers.
     #[cfg(feature = "osc")]
-    pub async fn start_osc(&mut self, bind: &str) -> Result<(), RuntimeError> {
+    pub async fn start_osc(
+        &mut self,
+        bind: &str,
+        cmd_queue: ActorRef<SetParameter>,
+    ) -> Result<(), RuntimeError> {
         if self.osc.is_some() {
             return Err(RuntimeError::Osc("already running".into()));
         }
 
         let control = self.control_shared.clone().unwrap_or_else(|| {
-            Arc::new(std::sync::Mutex::new(PatchbayControl::new(
-                self.queue.clone(),
-            )))
+            Arc::new(std::sync::Mutex::new(Patchbay::new(ActorRef::new(
+                &Arc::new(MpscQueue::with_capacity(64)),
+            ))))
         });
         let surface = self.osc_surface.clone();
 
-        let handle = OscHandle::start(bind, self.queue.clone(), control, surface)
+        let handle = OscHandle::start(bind, cmd_queue, control, surface)
             .await
             .map_err(RuntimeError::Osc)?;
 
@@ -288,15 +364,33 @@ impl Runtime {
             o.task.abort();
         }
 
-        if let Some(ref mut pe) = self.control {
-            pe.stop();
+        if let Some(ref mut ctrl) = self.control {
+            ctrl.stop_all();
         }
 
         log::info!("runtime stopped");
     }
 }
 
-impl Drop for Runtime {
+/// Convert a string from config to [`ParamValue`].
+///
+/// Tries i32, f32, bool, then falls back to string.
+fn str_to_param(s: &str) -> ParamValue {
+    if let Ok(i) = s.parse::<i32>() {
+        return ParamValue::Int(i);
+    }
+    if let Ok(f) = s.parse::<f32>() {
+        return ParamValue::Float(f);
+    }
+    match s {
+        "true" | "yes" | "1" => return ParamValue::Bool(true),
+        "false" | "no" | "0" => return ParamValue::Bool(false),
+        _ => {}
+    }
+    ParamValue::String(s.to_string())
+}
+
+impl<const BUF: usize> Drop for Runtime<BUF> {
     fn drop(&mut self) {
         self.stop();
     }

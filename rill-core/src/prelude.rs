@@ -6,7 +6,7 @@
 //!
 //! ## What's included
 //!
-//! - Core traits (`SignalNode`, `Source`, `Processor`, `Sink`)
+//! - Core traits (`Node`, `Source`, `Processor`, `Sink`)
 //! - Node identification (`NodeId`, `NodeMetadata`, `NodeCategory`)
 //! - Parameter handling (`ParameterId`, `ParamValue`, `ParamType`)
 //! - Ports (`PortId`, `PortType`, `PortDirection`)
@@ -19,7 +19,7 @@
 //!
 //! ## Example
 //!
-// В rill-core/src/lib.rs - строка 151 (пример prelude)
+// In rill-core/src/lib.rs - line 151 (prelude example)
 
 //! ## Example
 //!
@@ -56,11 +56,12 @@ pub use crate::traits::{
     // Parameter conversion
     IntoParamValue,
 
+    // Core node traits
+    Node,
     NodeCategory,
     // Node identification
     NodeId,
     NodeMetadata,
-    NodeParams,
     NodeState,
 
     NodeTypeId,
@@ -73,6 +74,7 @@ pub use crate::traits::{
     // Parameter handling
     ParameterId,
     ParameterResult,
+    Params,
     Port,
 
     PortDirection,
@@ -85,8 +87,6 @@ pub use crate::traits::{
     // Error handling
     ProcessResult,
     Processor,
-    // Core node traits
-    SignalNode,
     Sink,
 
     Source,
@@ -136,7 +136,7 @@ pub use crate::buffer::{
     AtomicCellError,
     AtomicStats,
 
-    // Port buffer
+    // Core buffer trait (unified Buffer replaces old Buffer + SignalBuffer)
     Buffer,
 
     // Error types
@@ -152,8 +152,6 @@ pub use crate::buffer::{
     // Buffer implementations
     PipeBuffer,
     RingBuffer,
-    // Core buffer trait
-    SignalBuffer,
 };
 
 // ============================================================================
@@ -288,8 +286,8 @@ pub mod time_prelude {
 /// Prelude for working with buffers
 pub mod buffer_prelude {
     pub use crate::buffer::{
-        utils, AtomicCell, AtomicStats, BufferError, BufferResult, BufferStats, DelayLine,
-        FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer, SignalBuffer,
+        utils, AtomicCell, AtomicStats, Buffer, BufferError, BufferResult, BufferStats, DelayLine,
+        FanInBuffer, FanOutBuffer, PipeBuffer, RingBuffer,
     };
 }
 
@@ -314,7 +312,7 @@ pub mod port_prelude {
 /// Prelude for working with nodes
 pub mod node_prelude {
     pub use crate::traits::{
-        NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, SignalNode, Sink, Source,
+        Node, NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, Sink, Source,
     };
 }
 

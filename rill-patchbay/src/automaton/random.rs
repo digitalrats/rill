@@ -1,63 +1,63 @@
-//! # Случайные процессы
+//! # Random processes
 //!
-//! Автоматы для генерации случайных и псевдослучайных последовательностей:
-//! - Random Walk (случайное блуждание)
-//! - Chaos (детерминированный хаос)
-//! - Noise (белый, розовый, коричневый шум)
+//! Automata for generating random and pseudo-random sequences:
+//! - Random Walk
+//! - Chaos (deterministic chaos)
+//! - Noise (white, pink, brown noise)
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 
-/// Тип случайного процесса
+/// Type of random process
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RandomType {
-    /// Случайное блуждание
+    /// Random walk
     Walk,
-    /// Логистическое отображение (хаос)
+    /// Logistic map (chaos)
     Logistic,
-    /// Отображение Эно
+    /// Hénon map
     Henon,
-    /// Отображение Лоренца
+    /// Lorenz system
     Lorenz,
-    /// Белый шум
+    /// White noise
     WhiteNoise,
-    /// Розовый шум (1/f)
+    /// Pink noise (1/f)
     PinkNoise,
-    /// Коричневый шум (1/f²)
+    /// Brown noise (1/f²)
     BrownNoise,
 }
 
-/// Состояние случайного процесса
+/// State of the random process
 #[derive(Debug, Clone)]
 pub struct RandomState {
-    /// Текущее значение
+    /// Current value
     pub value: f64,
-    /// Внутреннее состояние RNG
+    /// Internal RNG state
     pub rng_state: u64,
-    /// Дополнительные состояния для сложных процессов
+    /// Extra states for complex processes
     pub extra: Vec<f64>,
-    /// Время последнего обновления
+    /// Time of last update
     pub last_time: Time,
 }
 
-/// Автомат случайного процесса
+/// Random process automaton
 #[derive(Debug, Clone)]
 pub struct RandomAutomaton {
-    /// Имя автомата
+    /// Automaton name
     name: String,
-    /// Тип случайного процесса
+    /// Type of random process
     rng_type: RandomType,
-    /// Диапазон выходных значений
+    /// Output value range
     range: Range,
-    /// Скорость изменения (для Walk)
+    /// Rate of change (for Walk)
     rate: f64,
-    /// Параметры хаоса
-    chaos_params: (f64, f64, f64), // r, a, b и т.д.
-    /// Частота обновления (для шума)
+    /// Chaos parameters
+    chaos_params: (f64, f64, f64), // r, a, b etc.
+    /// Update rate (for noise)
     update_rate: f64,
 }
 
 impl RandomAutomaton {
-    /// Создать новый Random Walk
+    /// Create a new Random Walk
     pub fn walk(name: &str, rate: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -69,7 +69,7 @@ impl RandomAutomaton {
         }
     }
 
-    /// Создать логистическое отображение (хаос)
+    /// Create logistic map (chaos)
     pub fn logistic(name: &str, r: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -81,7 +81,7 @@ impl RandomAutomaton {
         }
     }
 
-    /// Создать отображение Эно
+    /// Create Hénon map
     pub fn henon(name: &str, a: f64, b: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -93,7 +93,7 @@ impl RandomAutomaton {
         }
     }
 
-    /// Создать генератор белого шума
+    /// Create white noise generator
     pub fn white_noise(name: &str, update_rate: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -105,7 +105,7 @@ impl RandomAutomaton {
         }
     }
 
-    /// Установить диапазон
+    /// Set the range
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
@@ -121,24 +121,24 @@ impl RandomAutomaton {
         x
     }
 
-    /// Случайное число в диапазоне [0, 1)
+    /// Random number in the range [0, 1)
     fn random_f64(&self, state: &mut u64) -> f64 {
         self.xorshift(state) as f64 / u64::MAX as f64
     }
 
-    /// Обновить Random Walk
+    /// Update Random Walk
     fn update_walk(&self, state: &mut RandomState, dt: Time) {
         let step = (self.random_f64(&mut state.rng_state) - 0.5) * 2.0 * self.rate * dt;
         state.value = (state.value + step).clamp(-1.0, 1.0);
     }
 
-    /// Обновить логистическое отображение
+    /// Update logistic map
     fn update_logistic(&self, state: &mut RandomState, _dt: Time) {
         let r = self.chaos_params.0;
         state.value = r * state.value * (1.0 - state.value);
     }
 
-    /// Обновить отображение Эно
+    /// Update Hénon map
     fn update_henon(&self, state: &mut RandomState, _dt: Time) {
         let a = self.chaos_params.0;
         let b = self.chaos_params.1;
@@ -154,7 +154,7 @@ impl RandomAutomaton {
         state.extra[0] = b * x;
     }
 
-    /// Обновить белый шум
+    /// Update white noise
     fn update_white_noise(&self, state: &mut RandomState, dt: Time) {
         state.last_time += dt;
         if state.last_time >= 1.0 / self.update_rate {

@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // Minimal sink that prints RMS every block
 struct MySink<const BUF_SIZE: usize> { .. }
-impl SignalNode<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
+impl Node<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 impl Sink<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 ```
 
@@ -104,7 +104,7 @@ output.start(nodes_ptr, drain_fn, 44100.0);
 - **Audio thread** (hard or soft RT) — runs the process callback:
   drain `MpscQueue`, `generate()`, `propagate()`, `consume()`.
   No heap allocs, no locks, no syscalls.
-- **Control thread** (tokio green threads) — runs `PatchbayManager`
+- **Control thread** (tokio green threads) — runs `Manager`
   with automatons (LFO, envelopes, sequencers). Communicates via
   lock-free `MpscQueue<ParameterCommand>`.
 

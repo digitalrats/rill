@@ -1,9 +1,9 @@
-//! Гребенчатый фильтр (Comb Filter)
+//! Comb filter
 //!
-//! Используется в:
-//! - Реверберации (серии гребенчатых фильтров)
-//! - Эффектах "металлического" звука
-//! - Физическом моделировании струн
+//! Used in:
+//! - Reverb (series of comb filters)
+//! - "Metallic" sound effects
+//! - Physical string modeling
 use super::FilterParams;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
@@ -11,7 +11,7 @@ use rill_core::buffer::DelayLine;
 use rill_core::math::Transcendental;
 use rill_core::traits::{ActionContext, ProcessResult};
 
-/// Гребенчатый фильтр
+/// Comb filter
 pub struct CombFilter<T: Transcendental, const MAX_DELAY: usize> {
     params: FilterParams,
     delay: DelayLine<T, MAX_DELAY>,
@@ -21,7 +21,7 @@ pub struct CombFilter<T: Transcendental, const MAX_DELAY: usize> {
 }
 
 impl<T: Transcendental, const MAX_DELAY: usize> CombFilter<T, MAX_DELAY> {
-    /// Создать новый гребенчатый фильтр
+    /// Create a new comb filter
     pub fn new(params: FilterParams, feedback: f32) -> Self {
         Self {
             params,
@@ -32,14 +32,14 @@ impl<T: Transcendental, const MAX_DELAY: usize> CombFilter<T, MAX_DELAY> {
         }
     }
 
-    /// Обновить задержку на основе частоты среза
+    /// Update delay based on cutoff frequency
     fn update_delay(&mut self) {
-        // Для гребенчатого фильтра задержка = sample_rate / cutoff
+        // For comb filter, delay = sample_rate / cutoff
         self.delay_samples = (self.sample_rate / self.params.cutoff) as usize;
         self.delay.set_delay_samples(self.delay_samples);
     }
 
-    /// Установить обратную связь
+    /// Set feedback
     pub fn set_feedback(&mut self, feedback: f32) {
         self.feedback = ScalarVector1::splat(T::from_f32(feedback));
     }
@@ -65,13 +65,13 @@ impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, M
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
-            // Читаем задержанный сигнал
+            // Read delayed signal
             let delayed = self.delay.read_delayed(self.delay_samples);
 
-            // Выход - задержанный сигнал
+            // Output is the delayed signal
             output[i] = delayed;
 
-            // Записываем с обратной связью
+            // Write with feedback
             let write_signal = input[i] + delayed * self.feedback.extract(0);
             let _ = self.delay.write(write_signal);
         }
@@ -104,4 +104,4 @@ impl<T: Transcendental, const MAX_DELAY: usize> ParameterizedAlgorithm<T>
     }
 }
 
-// Blanket implementation в mod.rs возьмёт на себя Filter
+// Blanket implementation in mod.rs handles Filter

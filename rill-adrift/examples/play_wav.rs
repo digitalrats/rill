@@ -9,10 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::io::output::Output;
-use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_digital_filters::BiquadProcessor;
-use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
-use rill_adrift::rill_graph::GraphBuilder;
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
 use rill_adrift::sampler::player::SamplePlayerNode;
 use rill_adrift::sampler::wav::load_wav;
 
@@ -46,7 +44,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sample.len()
         );
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
+
+        let mut params = std::collections::HashMap::new();
+        params.insert(
+            "sample_rate".into(),
+            rill_core::ParamValue::Int(RATE as i32),
+        );
+        params.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
+        params.insert("channels".into(), rill_core::ParamValue::Int(2));
+        rt.set_default_backend(&backend_name, params);
+
+        let mut builder = rt.create_builder();
 
         let mut player = SamplePlayerNode::<f32, BUF>::new();
         player.load(sample);
@@ -64,22 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.connect_signal(fx, 0, snk, 0);
         builder.connect_signal(src, 1, snk, 1);
 
-        let mut backend_factory = BackendFactory::<f32>::new();
-        rill_adrift::registration::register_backends(&mut backend_factory);
-
-        let clock = Box::new(SystemClock::with_sample_rate(RATE));
-        let graph = builder
-            .build(
-                clock,
-                Some(&BackendConfig {
-                    factory: &backend_factory,
-                    name: &backend_name,
-                    sample_rate: RATE as u32,
-                    buffer_size: BUF as u32,
-                    channels: 2,
-                }),
-            )
-            .expect("graph build");
+        let graph = builder.build().expect("graph build");
 
         graph.run(t_run).ok();
     });

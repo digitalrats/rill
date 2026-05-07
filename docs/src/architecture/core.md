@@ -16,7 +16,7 @@ rill-core/
 ├── utils.rs               # Utilities
 ├── interpolate.rs         # Fractional-index interpolation
 ├── traits/
-│   ├── mod.rs             # SignalNode, Source, Processor, Sink
+│   ├── mod.rs             # Node, Source, Processor, Sink
 │   ├── node.rs            # Nodes and identifiers
 │   ├── port.rs            # Ports
 │   ├── param.rs           # Parameters
@@ -167,5 +167,5 @@ Convenience re-export of common types:
 
 ```rust
 use rill_core::prelude::*;
-// SignalNode, Scalar, Transcendental, PipeBuffer, CommandQueue, Clock, etc.
+// Node, Scalar, Transcendental, PipeBuffer, CommandQueue, Clock, etc.
 ```

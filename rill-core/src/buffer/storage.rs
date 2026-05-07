@@ -113,7 +113,7 @@ impl fmt::Display for AtomicCellError {
 
 impl std::error::Error for AtomicCellError {}
 
-// AtomicCell может быть Send/Sync только если T: Send/Sync
+// AtomicCell can only be Send/Sync if T: Send/Sync
 #[allow(unsafe_code)]
 unsafe impl<T: Send> Send for AtomicCell<T> {}
 #[allow(unsafe_code)]

@@ -1,7 +1,7 @@
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    Algorithm, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    SignalNode, Source,
+    Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -135,9 +135,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SamplePlayerNode<T, B
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-    for SamplePlayerNode<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SamplePlayerNode<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SamplePlayer".to_string(),
@@ -429,7 +427,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::traits::SignalNode;
+    use rill_core::traits::Node;
 
     #[test]
     fn test_set_and_get_parameter() {

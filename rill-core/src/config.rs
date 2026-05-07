@@ -1,49 +1,49 @@
-//! # Конфигурация
+//! # Configuration
 //!
-//! Типы для конфигурации компонентов системы.
+//! Types for configuring system components.
 
-/// Режим работы
+    /// Operating mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Режим реального времени (максимальная производительность)
+    /// Real-time mode (maximum performance)
     Realtime,
-    /// Режим низкой задержки (для live-coding)
+    /// Low latency mode (for live-coding)
     LowLatency,
-    /// Экономичный режим (меньше CPU)
+    /// Eco mode (less CPU)
     Eco,
-    /// Отладочный режим (проверки, логи)
+    /// Debug mode (checks, logs)
     Debug,
 }
 
-/// Приоритет потока
+    /// Thread priority
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadPriority {
-    /// Низкий (background)
+    /// Low (background)
     Low,
-    /// Нормальный
+    /// Normal
     Normal,
-    /// Высокий
+    /// High
     High,
-    /// Максимальный (для аудиопотока)
+    /// Maximum (for audio thread)
     Realtime,
-    /// Пользовательский
+    /// Custom
     Custom(i32),
 }
 
-/// Конфигурация аудио
+/// Audio configuration
 #[derive(Debug, Clone)]
 pub struct AudioConfig {
-    /// Частота дискретизации
+    /// Sample rate
     pub sample_rate: u32,
-    /// Размер буфера
+    /// Buffer size
     pub buffer_size: usize,
-    /// Количество каналов
+    /// Number of channels
     pub channels: u16,
-    /// Режим работы
+/// Operating mode
     pub mode: Mode,
-    /// Приоритет потока
+/// Thread priority
     pub thread_priority: ThreadPriority,
-    /// Имя устройства (опционально)
+    /// Device name (optional)
     pub device_name: Option<String>,
 }
 
@@ -61,7 +61,7 @@ impl Default for AudioConfig {
 }
 
 impl AudioConfig {
-    /// Создать новую конфигурацию
+    /// Create a new configuration
     pub fn new(sample_rate: u32, buffer_size: usize) -> Self {
         Self {
             sample_rate,
@@ -70,47 +70,47 @@ impl AudioConfig {
         }
     }
     
-    /// Установить количество каналов
+    /// Set the number of channels
     pub fn with_channels(mut self, channels: u16) -> Self {
         self.channels = channels;
         self
     }
     
-    /// Установить режим
+    /// Set the mode
     pub fn with_mode(mut self, mode: Mode) -> Self {
         self.mode = mode;
         self
     }
     
-    /// Установить приоритет
+    /// Set the priority
     pub fn with_priority(mut self, priority: ThreadPriority) -> Self {
         self.thread_priority = priority;
         self
     }
     
-    /// Установить имя устройства
+    /// Set the device name
     pub fn with_device(mut self, name: impl Into<String>) -> Self {
         self.device_name = Some(name.into());
         self
     }
     
-    /// Получить задержку в секундах
+    /// Get latency in seconds
     pub fn latency_seconds(&self) -> f64 {
         self.buffer_size as f64 / self.sample_rate as f64
     }
     
-    /// Получить задержку в миллисекундах
+    /// Get latency in milliseconds
     pub fn latency_ms(&self) -> f64 {
         self.latency_seconds() * 1000.0
     }
 }
 
-/// Конфигурация очереди
+/// Queue configuration
 #[derive(Debug, Clone)]
 pub struct QueueConfig {
-    /// Размер очереди
+    /// Queue size
     pub size: usize,
-    /// Режим переполнения
+    /// Overflow mode
     pub overflow_policy: queue::OverflowPolicy,
 }
 

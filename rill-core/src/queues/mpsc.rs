@@ -1,15 +1,14 @@
-//! # Multiple-Producer Single-Consumer очередь
+//! # Multiple-Producer Single-Consumer queue
 //!
-//! Позволяет нескольким производителям отправлять данные
-//! одному потребителю. Использует атомарные операции для
-//! синхронизации производителей.
+//! Allows multiple producers to send data to a single consumer.
+//! Uses atomic operations for producer synchronization.
 #![allow(unsafe_code)]
 
 use super::{QueueError, QueueResult, QueueStats};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-/// Узел связного списка для MPSC очереди
+/// Linked list node for MPSC queue
 struct Node<T> {
     value: Option<T>,
     next: AtomicPtr<Node<T>>,
@@ -31,21 +30,20 @@ impl<T> Node<T> {
     }
 }
 
-/// Multiple-Producer Single-Consumer очередь
+/// Multiple-Producer Single-Consumer queue
 ///
-/// Реализована как lock-free очередь Майкла-Скотта.
-/// Производители никогда не блокируются, потребитель
-/// может ждать появления данных.
+/// Implemented as a Michael-Scott lock-free queue.
+/// Producers never block, the consumer can wait for data.
 pub struct MpscQueue<T> {
-    /// Голова очереди (первый элемент для чтения)
+    /// Queue head (first element to read)
     head: AtomicPtr<Node<T>>,
-    /// Хвост очереди (последний элемент для записи)
+    /// Queue tail (last element to write)
     tail: AtomicPtr<Node<T>>,
-    /// Счётчик для статистики
+    /// Counter for statistics
     stats: QueueStats,
-    /// Максимальный размер (0 = неограничен)
+    /// Maximum capacity (0 = unlimited)
     max_capacity: usize,
-    /// Текущий размер (приблизительный)
+    /// Current size (approximate)
     size: AtomicUsize,
 }
 
@@ -56,7 +54,7 @@ impl<T> Default for MpscQueue<T> {
 }
 
 impl<T> MpscQueue<T> {
-    /// Создать новую очередь
+    /// Create a new queue
     pub fn new() -> Self {
         let stub = Node::<T>::stub();
         Self {
@@ -68,16 +66,16 @@ impl<T> MpscQueue<T> {
         }
     }
 
-    /// Создать очередь с ограниченной ёмкостью
+    /// Create a queue with a limited capacity
     pub fn with_capacity(capacity: usize) -> Self {
         let mut queue = Self::new();
         queue.max_capacity = capacity;
         queue
     }
 
-    /// Добавить элемент (может вызываться из нескольких потоков)
+    /// Push an element (can be called from multiple threads)
     pub fn push(&self, value: T) -> QueueResult<()> {
-        // Проверка на переполнение
+        // Check for overflow
         if self.max_capacity > 0 {
             let size = self.size.load(Ordering::Relaxed);
             if size >= self.max_capacity {
@@ -93,7 +91,7 @@ impl<T> MpscQueue<T> {
             let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
             if next.is_null() {
-                // Пытаемся добавить новый узел
+                // Try to add a new node
                 match unsafe {
                     (*tail).next.compare_exchange_weak(
                         ptr::null_mut(),
@@ -103,7 +101,7 @@ impl<T> MpscQueue<T> {
                     )
                 } {
                     Ok(_) => {
-                        // Обновляем tail
+                        // Update tail
                         let _ = self.tail.compare_exchange(
                             tail,
                             node,
@@ -115,7 +113,7 @@ impl<T> MpscQueue<T> {
                         return Ok(());
                     }
                     Err(new_next) => {
-                        // Другой поток уже добавил узел, обновляем tail
+                        // Another thread already added a node, update tail
                         let _ = self.tail.compare_exchange(
                             tail,
                             new_next,
@@ -126,7 +124,7 @@ impl<T> MpscQueue<T> {
                     }
                 }
             } else {
-                // Продвигаем tail
+                // Advance tail
                 let _ =
                     self.tail
                         .compare_exchange(tail, next, Ordering::Release, Ordering::Relaxed);
@@ -135,7 +133,7 @@ impl<T> MpscQueue<T> {
         }
     }
 
-    /// Извлечь элемент (только consumer)
+    /// Pop an element (consumer only)
     pub fn pop(&self) -> Option<T> {
         loop {
             let head = self.head.load(Ordering::Acquire);
@@ -171,17 +169,17 @@ impl<T> MpscQueue<T> {
         }
     }
 
-    /// Текущий размер (приблизительный)
+    /// Current size (approximate)
     pub fn size(&self) -> usize {
         self.size.load(Ordering::Relaxed)
     }
 
-    /// Вместимость (0 = неограничена)
+    /// Capacity (0 = unlimited)
     pub fn capacity(&self) -> usize {
         self.max_capacity
     }
 
-    /// Проверить, пуста ли очередь
+    /// Check if the queue is empty
     pub fn is_empty(&self) -> bool {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);

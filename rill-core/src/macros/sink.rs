@@ -1,6 +1,6 @@
-//! # Макрос для создания активных приёмников (Sink)
+//! # Macro for creating active receivers (Sink)
 
-/// Создаёт активный приёмник сигнала
+/// Creates an active signal receiver
 #[macro_export]
 macro_rules! sink_node {
     (
@@ -56,7 +56,7 @@ macro_rules! sink_node {
         }
 
         impl<$T: $signal_num, const $BUF: usize>
-            $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
+            $crate::Node<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
             fn node_type_id(&self) -> $crate::NodeTypeId

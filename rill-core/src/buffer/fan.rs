@@ -1,5 +1,5 @@
 use super::array_from_fn;
-use crate::buffer::{AtomicStats, BufferStats, SignalBuffer, CACHE_LINE_SIZE};
+use crate::buffer::{AtomicStats, Buffer, BufferStats, CACHE_LINE_SIZE};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use std::fmt;
@@ -98,7 +98,7 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> FanOutBuffer<T, 
     }
 }
 
-impl<T: Transcendental, const N: usize, const CONSUMERS: usize> SignalBuffer<T>
+impl<T: Transcendental, const N: usize, const CONSUMERS: usize> Buffer<T>
     for FanOutBuffer<T, N, CONSUMERS>
 {
     fn capacity(&self) -> usize {
@@ -116,6 +116,19 @@ impl<T: Transcendental, const N: usize, const CONSUMERS: usize> SignalBuffer<T>
     }
     fn is_full(&self) -> bool {
         self.valid
+    }
+    fn as_slice(&self) -> &[T] {
+        &self.storage
+    }
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.storage
+    }
+    fn fill(&mut self, value: T) {
+        self.storage.fill(value);
+    }
+    fn copy_from(&mut self, src: &[T]) {
+        let len = src.len().min(N);
+        self.storage[..len].copy_from_slice(&src[..len]);
     }
     fn clear(&mut self) {
         self.reset();
@@ -268,7 +281,7 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> FanInBuffer<T, N
     }
 }
 
-impl<T: Transcendental, const N: usize, const PRODUCERS: usize> SignalBuffer<T>
+impl<T: Transcendental, const N: usize, const PRODUCERS: usize> Buffer<T>
     for FanInBuffer<T, N, PRODUCERS>
 {
     fn capacity(&self) -> usize {
@@ -288,6 +301,23 @@ impl<T: Transcendental, const N: usize, const PRODUCERS: usize> SignalBuffer<T>
     }
     fn is_full(&self) -> bool {
         self.len() == PRODUCERS
+    }
+    fn as_slice(&self) -> &[T] {
+        &self.storage[0]
+    }
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.storage[0]
+    }
+    fn fill(&mut self, value: T) {
+        for p in 0..PRODUCERS {
+            self.storage[p].fill(value);
+        }
+    }
+    fn copy_from(&mut self, src: &[T]) {
+        if PRODUCERS > 0 {
+            let len = src.len().min(N);
+            self.storage[0][..len].copy_from_slice(&src[..len]);
+        }
     }
     fn clear(&mut self) {
         self.reset();

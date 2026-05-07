@@ -1,80 +1,80 @@
-//! # Секвенсоры
+//! # Sequencers
 //!
-//! Автоматы для генерации ритмических паттернов и последовательностей
-//! значений во времени.
+//! Automata for generating rhythmic patterns and sequences
+//! of values over time.
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 use std::collections::VecDeque;
 
-/// Шаг секвенсора
+/// Sequencer step
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Step {
-    /// Значение (0.0 - 1.0)
+    /// Value (0.0 - 1.0)
     pub value: f64,
-    /// Длительность в долях такта
+    /// Duration in beat fractions
     pub duration: f64,
-    /// Кривая перехода к следующему шагу
+    /// Transition curve to the next step
     #[cfg_attr(feature = "serde", serde(default))]
     pub curve: Option<f64>,
 }
 
-/// Режим воспроизведения секвенсора
+/// Sequencer playback mode
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlayMode {
-    /// Один раз
+    /// One shot
     OneShot,
-    /// Зациклено
+    /// Loop
     Loop,
-    /// Вперёд-назад
+    /// Ping-pong
     PingPong,
-    /// Случайный выбор
+    /// Random
     Random,
-    /// Броуновское движение
+    /// Brownian
     Brownian,
 }
 
-/// Состояние секвенсора
+/// Sequencer state
 #[derive(Debug, Clone)]
 pub struct SequencerState {
-    /// Текущий индекс шага
+    /// Current step index
     pub current_step: usize,
-    /// Время начала текущего шага
+    /// Start time of the current step
     pub step_start_time: Time,
-    /// Значение на текущем шаге
+    /// Value at the current step
     pub current_value: f64,
-    /// Целевое значение (для интерполяции)
+    /// Target value (for interpolation)
     pub target_value: f64,
-    /// Направление (для PingPong)
+    /// Direction (for PingPong)
     pub direction: i8,
-    /// История последних шагов (для Brownian)
+    /// History of recent steps (for Brownian)
     pub history: VecDeque<usize>,
 }
 
-/// Секвенсор автомат
+/// Sequencer automaton
 #[derive(Debug, Clone)]
 pub struct SequencerAutomaton {
-    /// Имя автомата
+    /// Automaton name
     name: String,
-    /// Шаги секвенсора
+    /// Sequencer steps
     steps: Vec<Step>,
-    /// Режим воспроизведения
+    /// Playback mode
     mode: PlayMode,
-    /// Темп (BPM)
+    /// Tempo (BPM)
     tempo: f64,
-    /// Масштаб длительности (1.0 = четверть)
+    /// Duration scale (1.0 = quarter note)
     duration_scale: f64,
-    /// Интерполировать ли между шагами
+    /// Whether to interpolate between steps
     interpolate: bool,
-    /// Диапазон выходных значений
+    /// Output value range
     range: Range,
-    /// Случайное зерно
+    /// Random seed
     rng_state: u64,
 }
 
 impl SequencerAutomaton {
-    /// Создать новый секвенсор
+    /// Create a new sequencer
     pub fn new(name: &str, steps: Vec<Step>) -> Self {
         Self {
             name: name.to_string(),
@@ -88,36 +88,36 @@ impl SequencerAutomaton {
         }
     }
 
-    /// Установить режим воспроизведения
+    /// Set playback mode
     pub fn with_mode(mut self, mode: PlayMode) -> Self {
         self.mode = mode;
         self
     }
 
-    /// Установить темп
+    /// Set tempo
     pub fn with_tempo(mut self, bpm: f64) -> Self {
         self.tempo = bpm.max(1.0);
         self
     }
 
-    /// Включить/выключить интерполяцию
+    /// Enable/disable interpolation
     pub fn with_interpolation(mut self, interpolate: bool) -> Self {
         self.interpolate = interpolate;
         self
     }
 
-    /// Установить диапазон
+    /// Set the range
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
 
-    /// Получить длительность шага в секундах
+    /// Get step duration in seconds
     fn step_duration(&self, step: &Step) -> f64 {
         step.duration * 60.0 / self.tempo * 4.0 * self.duration_scale
     }
 
-    /// Выбрать следующий шаг
+    /// Select the next step
     fn next_step(&self, state: &SequencerState) -> usize {
         match self.mode {
             PlayMode::OneShot => {
@@ -147,7 +147,7 @@ impl SequencerAutomaton {
         }
     }
 
-    /// Случайный индекс
+    /// Random index
     fn random_index(&self, rng: &mut u64) -> usize {
         let mut x = *rng;
         x ^= x << 13;
@@ -158,14 +158,14 @@ impl SequencerAutomaton {
         (x as usize) % self.steps.len()
     }
 
-    /// Следующий шаг для броуновского движения
+    /// Next step for Brownian motion
     fn brownian_next(&self, state: &SequencerState, rng: &mut u64) -> usize {
         let mut candidates = Vec::new();
 
-        // Может остаться на месте
+        // Can stay in place
         candidates.push(state.current_step);
 
-        // Или перейти к соседним
+        // Or move to neighbors
         if state.current_step > 0 {
             candidates.push(state.current_step - 1);
         }
@@ -190,13 +190,13 @@ impl Automaton for SequencerAutomaton {
     ) -> (Self::State, Option<f64>) {
         let mut new_state = state.clone();
 
-        // Проверяем, не пора ли перейти к следующему шагу
+        // Check if it's time to advance to the next step
         let current_step = &self.steps[new_state.current_step];
         let step_dur = self.step_duration(current_step);
         let elapsed = time - new_state.step_start_time;
 
         if elapsed >= step_dur {
-            // Переходим к следующему шагу
+            // Advance to the next step
             let next = self.next_step(&new_state);
             new_state.current_step = next;
             new_state.step_start_time = time;
@@ -253,7 +253,7 @@ impl Automaton for SequencerAutomaton {
     }
 }
 
-/// Создать простую последовательность из равных шагов
+/// Create a simple sequence of equal steps
 pub fn simple_sequence(values: Vec<f64>, duration: f64) -> Vec<Step> {
     values
         .into_iter()

@@ -1,8 +1,8 @@
-//! Типы ошибок для rill-io
+//! Error types for rill-io
 
 use thiserror::Error;
 
-/// Ошибки ввода-вывода
+/// I/O errors
 #[derive(Error, Debug)]
 pub enum IoError {
     /// Backend-specific error
@@ -42,5 +42,5 @@ pub enum IoError {
     Channel,
 }
 
-/// Результат операций ввода-вывода
+/// Result of I/O operations
 pub type IoResult<T> = Result<T, IoError>;

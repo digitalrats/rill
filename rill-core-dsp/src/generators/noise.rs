@@ -1,4 +1,4 @@
-//! Генераторы шума (White, Pink, Brown, Blue, Violet)
+//! Noise generators (White, Pink, Brown, Blue, Violet)
 
 use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
@@ -65,7 +65,7 @@ pub struct NoiseGenerator<T: Transcendental> {
 impl<T: Transcendental> NoiseGenerator<T> {
     /// Create a new noise generator with the given colour and amplitude.
     pub fn new(noise_type: NoiseType, amplitude: T) -> Self {
-        // Создаем OnePole фильтры через new с правильными параметрами
+        // Create OnePole filters via new with correct parameters
         let filter_params = FilterParams {
             filter_type: FilterType::LowPass,
             cutoff: 1.0,
@@ -93,7 +93,7 @@ impl<T: Transcendental> NoiseGenerator<T> {
         }
     }
 
-    /// Xorshift RNG (работает с u32, возвращает f32 через Transcendental)
+    /// Xorshift RNG (operates on u32, returns f32 via Transcendental)
     #[inline(always)]
     fn xorshift(&mut self) -> T {
         let mut x = self.state;
@@ -104,41 +104,41 @@ impl<T: Transcendental> NoiseGenerator<T> {
 
         self.state = x;
 
-        // Конвертируем u32 в f32 в диапазоне [-1, 1]
-        // Берем старшие 24 бита для равномерного распределения
+        // Convert u32 to f32 in range [-1, 1]
+        // Use upper 24 bits for uniform distribution
         let float_val = (x as f32 / 2147483648.0) - 1.0; // 2^31
         T::from_f32(float_val)
     }
 
-    /// Генерация белого шума
+    /// Generate white noise
     #[inline(always)]
     fn generate_white(&mut self) -> ScalarVector1<T> {
         ScalarVector1::splat(self.xorshift()) * self.amplitude
     }
 
-    /// Генерация розового шума (1/f)
-    /// Метод Paul Kellett'a
+    /// Generate pink noise (1/f)
+    /// Paul Kellett's method
     fn generate_pink(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
 
-        // 6-полосный фильтр для аппроксимации 1/f
+        // 6-band filter for 1/f approximation
         let mut output = T::ZERO;
         for filter in &mut self.pink_filters {
             output = output.add(filter.process_sample(white));
         }
 
         ScalarVector1::splat(output) * self.amplitude / ScalarVector1::splat(T::from_f32(3.0))
-        // нормализация
+        // normalization
     }
 
-    /// Генерация броуновского шума (1/f²)
+    /// Generate brown noise (1/f²)
     fn generate_brown(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
 
-        // Интегратор с ограничением
+        // Integrator with clipping
         self.brown_state =
             self.brown_state + ScalarVector1::splat(white) * ScalarVector1::splat(T::from_f32(0.1));
-        // Клиппинг
+        // Clipping
         let one_vec = ScalarVector1::splat(T::from_f32(1.0));
         let neg_one_vec = ScalarVector1::splat(T::from_f32(-1.0));
         self.brown_state = self.brown_state.clamp(&neg_one_vec, &one_vec);
@@ -146,24 +146,24 @@ impl<T: Transcendental> NoiseGenerator<T> {
         self.brown_state * self.amplitude
     }
 
-    /// Генерация синего шума (+3dB/октава)
+    /// Generate blue noise (+3dB/octave)
     fn generate_blue(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         let white_vec = ScalarVector1::splat(white);
 
-        // Дифференциатор (high-pass)
+        // Differentiator (high-pass)
         let diff = white_vec - self.last_white;
         self.last_white = white_vec;
 
         diff * self.amplitude
     }
 
-    /// Генерация фиолетового шума (+6dB/октава)
+    /// Generate violet noise (+6dB/octave)
     fn generate_violet(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         let white_vec = ScalarVector1::splat(white);
 
-        // Двойной дифференциатор
+        // Double differentiator
         let diff1 = white_vec - self.last_white1;
         let diff2 = diff1 - self.last_white2;
         self.last_white2 = diff1;
@@ -177,11 +177,11 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenerator<T> {
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
 
-        // Настройка фильтров для розового шума
+        // Configure filters for pink noise
         let freqs = [5.0, 15.0, 45.0, 135.0, 405.0, 1215.0];
         for (i, &freq) in freqs.iter().enumerate() {
-            // Обновляем параметры фильтра через set_cutoff
-            // Для этого нужно импортировать трейт Filter
+            // Update filter parameters via set_cutoff
+            // Import the Filter trait for this
             use crate::filters::Filter;
             self.pink_filters[i].set_cutoff(freq);
         }
@@ -232,7 +232,7 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenerator<T> {
 impl<T: Transcendental> Generator<T> for NoiseGenerator<T> {
     fn phase(&self) -> T {
         T::ZERO
-    } // Шум не имеет фазы
+    } // Noise has no phase
 
     fn set_phase(&mut self, _phase: T) {}
 

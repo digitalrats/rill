@@ -1,15 +1,15 @@
-use crate::backend_factory;
-use crate::registry::{NodeRegistry, RegistryError};
+use crate::backend_factory::BackendFactory;
+use crate::factory::{NodeFactory, RegistryError};
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::{MpscQueue, SetParameter};
-#[cfg(test)]
-use rill_core::time::SystemClock;
-use rill_core::time::{ClockSource, ClockTick};
+use rill_core::time::ClockTick;
 use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
-use rill_core::traits::{NodeId, NodeParams, NodeVariant, SignalNode};
-use std::collections::VecDeque;
+use rill_core::traits::ParamValue;
+use rill_core::traits::{Node, NodeId, NodeVariant, Params};
+use rill_core_actor::{ActorCell, ActorRef};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -28,6 +28,15 @@ pub enum BuildError {
     CycleDetected,
     /// Backend creation failed.
     Backend(String),
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CycleDetected => write!(f, "graph cycle detected"),
+            Self::Backend(msg) => write!(f, "backend error: {msg}"),
+        }
+    }
 }
 
 // ============================================================================
@@ -58,6 +67,11 @@ pub struct GraphResource {
 }
 
 /// Mutable builder for an immutable signal graph.
+///
+/// # Node factory
+///
+/// The builder holds an [`Arc<NodeFactory>`] for constructing nodes by
+/// type name, provided at construction via [`GraphBuilder::new`].
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     signal_edges: Vec<(usize, usize, usize, usize)>,
@@ -65,17 +79,22 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
     resources: Vec<GraphResource>,
+    /// Shared node factory (required, from Runtime).
+    factory: Arc<NodeFactory<T, BUF_SIZE>>,
+    /// Shared backend factory (required, from Runtime).
+    backends: Arc<BackendFactory<T>>,
+    /// Optional backend configuration (set via [`with_backend`](Self::with_backend)).
+    backend_config: Option<BackendConfig>,
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
-    fn default() -> Self {
-        Self::new()
-    }
+struct BackendConfig {
+    name: String,
+    params: HashMap<String, ParamValue>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
-    /// Create a new empty graph builder.
-    pub fn new() -> Self {
+    /// Create a new empty graph builder without a node factory.
+    pub fn new(factory: Arc<NodeFactory<T, BUF_SIZE>>, backends: Arc<BackendFactory<T>>) -> Self {
         Self {
             nodes: Vec::new(),
             signal_edges: Vec::new(),
@@ -83,12 +102,58 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
             resources: Vec::new(),
+            factory,
+            backends,
+            backend_config: None,
         }
     }
 
-    /// Register a named resource.
+    /// Add a node by type name using the internal factory.
+    ///
+    /// The type must have been registered in the factory before calling
+    /// this method.
+    ///
+    /// Returns the index of the newly added node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] if no factory is set or the type name
+    /// is not registered.
+    pub fn add_node(&mut self, type_name: &str, params: &Params) -> Result<usize, RegistryError> {
+        let id = NodeId(self.nodes.len() as u32);
+        self.add_node_with_id(type_name, params, id)
+    }
+
+    /// Add a node with an explicit [`NodeId`].
+    ///
+    /// Like [`add_node`](Self::add_node) but uses the provided `id`.
+    /// Important for serialization where external references depend on
+    /// exact IDs.
+    pub fn add_node_with_id(
+        &mut self,
+        type_name: &str,
+        params: &Params,
+        id: NodeId,
+    ) -> Result<usize, RegistryError> {
+        let node = self.factory.construct(type_name, id, params)?;
+        let idx = self.nodes.len();
+        self.nodes.push(NodeEntry { node });
+        Ok(idx)
+    }
+
+    /// Register a named resource (tape loop, buffer, etc.).
     pub fn add_resource(&mut self, resource: GraphResource) {
         self.resources.push(resource);
+    }
+
+    /// Number of nodes added to the builder so far.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Access the shared backend factory (for building with external configs).
+    pub fn backend_factory(&self) -> &Arc<BackendFactory<T>> {
+        &self.backends
     }
 
     /// Add a source node and return its index.
@@ -130,66 +195,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         idx
     }
 
-    /// Add a node by type name via the registry.
-    ///
-    /// Looks up the type name in `registry`, calls its
-    /// NodeConstructor::construct, and pushes the resulting
-    /// [`NodeVariant`] into the graph. The node's [`NodeId`] is
-    /// automatically assigned from its position in the graph.
-    ///
-    /// Returns the index of the newly added node.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RegistryError` if the type name is not registered or
-    /// construction fails.
-    pub fn add_node(
-        &mut self,
-        registry: &NodeRegistry<T, BUF_SIZE>,
-        type_name: &str,
-        params: &NodeParams,
-    ) -> Result<usize, RegistryError> {
-        let id = NodeId(self.nodes.len() as u32);
-        self.add_node_with_id(registry, type_name, params, id)
-    }
-
-    /// Add a node with an explicit [`NodeId`].
-    ///
-    /// Unlike [`add_node`](Self::add_node) which auto-assigns IDs, this
-    /// method uses the provided `id` directly. Important for serialization
-    /// where external references (e.g. patchbay bindings) depend on exact IDs.
-    ///
-    /// Returns the index (position) of the newly added node.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RegistryError` if the type name is not registered or
-    /// construction fails.
-    ///
-    /// # Panics
-    ///
-    /// If `id` duplicates a previously registered ID the error is reported
-    /// by the caller — this method does not check for duplicates.
-    pub fn add_node_with_id(
-        &mut self,
-        registry: &NodeRegistry<T, BUF_SIZE>,
-        type_name: &str,
-        params: &NodeParams,
-        id: NodeId,
-    ) -> Result<usize, RegistryError> {
-        let node = registry.construct(type_name, id, params)?;
-        let idx = self.nodes.len();
-        self.nodes.push(NodeEntry { node });
-        Ok(idx)
-    }
-
-    /// Return the number of nodes added so far.
-    pub fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Connect signal output port `from_port` of node `from_node`
-    /// to signal input port `to_port` of node `to_node`.
+    /// Connect signal ports (audio data).
     pub fn connect_signal(
         &mut self,
         from_node: usize,
@@ -201,7 +207,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Connect a control output to a control input.
+    /// Connect control ports (modulation values).
     pub fn connect_control(
         &mut self,
         from_node: usize,
@@ -213,7 +219,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Connect a clock output to a clock input.
+    /// Connect clock ports (timing events).
     pub fn connect_clock(
         &mut self,
         from_node: usize,
@@ -225,8 +231,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Connect a feedback output to a feedback input.
-    /// This creates a feedback path (previous output → current input).
+    /// Connect feedback ports (delay lines, state carryover).
     pub fn connect_feedback(
         &mut self,
         from_node: usize,
@@ -238,16 +243,36 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Build the immutable SignalGraph.
+    /// Configure an audio backend for this builder.
     ///
-    /// # Errors
+    /// When set, [`build`](Self::build) looks for a driver node in the graph
+    /// and auto-starts it with a command queue and the given audio backend.
+    /// Without this method, the graph is purely structural (no audio I/O,
+    /// no command queue).
+    /// Configure an audio backend for this builder.
     ///
-    /// Returns `BuildError::CycleDetected` if the signal edges contain a cycle.
-    pub fn build(
-        mut self,
-        clock_source: Box<dyn ClockSource>,
-        backend: Option<&backend_factory::BackendConfig<'_, T>>,
-    ) -> Result<SignalGraph<T, BUF_SIZE>, BuildError> {
+    /// Params are passed blindly to the backend factory — keys like
+    /// `"sample_rate"`, `"buffer_size"`, `"channels"` are interpreted
+    /// by each backend constructor.
+    pub fn with_backend(mut self, backend_name: &str, params: HashMap<String, ParamValue>) -> Self {
+        self.backend_config = Some(BackendConfig {
+            name: backend_name.to_string(),
+            params,
+        });
+        self
+    }
+
+    /// Build the graph.
+    ///
+    /// If [`with_backend`](Self::with_backend) was called before, the builder
+    /// auto-starts a driver node with a command queue and the configured
+    /// audio backend. Otherwise the graph is purely structural (no audio I/O,
+    /// no command queue).
+    pub fn build(mut self) -> Result<Graph<T, BUF_SIZE>, BuildError> {
+        let (backend_name, params) = match self.backend_config.as_ref() {
+            Some(cfg) => (Some(cfg.name.as_str()), &cfg.params),
+            None => (None, &HashMap::new()),
+        };
         let num_nodes = self.nodes.len();
 
         // --- adjacency for Kahn (audio edges only; feedback is not a DAG edge) ---
@@ -364,7 +389,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        let sample_rate = clock_source.sample_rate();
+        let sr = params
+            .get("sample_rate")
+            .and_then(|v| v.as_i32())
+            .unwrap_or(44100) as f32;
 
         // Allocate named buffers (tape loops, etc.) from resource definitions.
         let mut buffers = BufferRegistry::new();
@@ -384,10 +412,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
 
         // Resolve audio backend pointer for I/O nodes.
-        let backend_box = if let Some(cfg) = backend {
-            let b = cfg
-                .factory
-                .create(cfg.name, cfg.sample_rate, cfg.buffer_size, cfg.channels)
+        let backend_box = if let Some(name) = backend_name {
+            let b = self
+                .backends
+                .create(name, params)
                 .map_err(BuildError::Backend)?;
             let ptr: *mut dyn rill_core::io::IoBackend<T> = &*b
                 as *const dyn rill_core::io::IoBackend<T>
@@ -404,8 +432,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             self.nodes.into_iter().map(|e| e.node).collect();
 
         // Auto-start driver node (registers process callback on backend).
-        let mut command_queue: Option<Box<MpscQueue<SetParameter>>> = None;
-        if let Some(ref _backend) = backend_box {
+        let cmd_queue = Arc::new(MpscQueue::<SetParameter>::with_capacity(64));
+        let have_queue = if let Some(ref _backend) = backend_box {
             let driver_idx = nodes
                 .iter()
                 .position(|n| {
@@ -422,30 +450,33 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 let nodes_ptr = nodes.as_mut_ptr();
                 let len = nodes.len();
                 let source_idx = topo[0];
-                let cmd_queue = Box::new(MpscQueue::<SetParameter>::with_capacity(64));
-                let queue_ptr: *const MpscQueue<SetParameter> = &*cmd_queue;
+                let queue_ptr: *const MpscQueue<SetParameter> = Arc::as_ptr(&cmd_queue);
                 let handle = GraphHandle {
                     nodes: nodes_ptr as *mut u8,
                     len,
                     source_idx,
-                    sample_rate,
+                    sample_rate: sr,
                     queue: queue_ptr,
                 };
                 nodes[driver_idx].start(handle);
-                command_queue = Some(cmd_queue);
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
+        let command_queue = if have_queue { Some(cmd_queue) } else { None };
 
         let owned_buffers = buffers.into_inner();
 
         let allocated = self.resources.clone();
 
-        Ok(SignalGraph {
+        Ok(Graph {
             nodes,
             topo_order: topo,
-            clock_source,
             resources: allocated,
-            current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
+            current_tick: ClockTick::new(0, BUF_SIZE as u32, sr),
             buffers: owned_buffers,
             backend: backend_box,
             command_queue,
@@ -454,7 +485,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 }
 
 // ============================================================================
-// SignalGraph (Static DAG)
+// Graph (Static DAG)
 // ============================================================================
 
 /// Immutable signal graph with static DAG topology.
@@ -464,25 +495,23 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 /// port-level methods (`pre_process`, `snapshot_feedback`, `propagate`)
 /// called from external code (e.g. a real-time signal callback or an
 /// offline renderer).
-pub struct SignalGraph<T: Transcendental, const BUF_SIZE: usize> {
+pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeVariant<T, BUF_SIZE>>,
     topo_order: Vec<usize>,
-    #[allow(dead_code)]
-    clock_source: Box<dyn ClockSource>,
     current_tick: ClockTick,
     /// Resource metadata (name, kind, capacity) for serialization.
     pub(crate) resources: Vec<GraphResource>,
     /// Named buffers (tape loops, etc.) shared between nodes.
     #[allow(dead_code)]
-    buffers: Vec<Box<dyn Buffer<T>>>,
+    buffers: Vec<Box<dyn Buffer<T> + Send>>,
     /// Shared audio backend (alive for the graph's lifetime).
     #[allow(dead_code)]
     backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
     /// Command queue for sending parameters from control to audio thread.
-    command_queue: Option<Box<MpscQueue<SetParameter>>>,
+    command_queue: Option<Arc<MpscQueue<SetParameter>>>,
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     // ========================================================================
     // Accessors
     // ========================================================================
@@ -547,18 +576,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
         }
     }
 
-    /// Send a parameter change command to the graph's audio thread.
+    /// Obtain an [`ActorRef`] for sending commands to this graph.
     ///
-    /// The command is pushed into a lock-free queue and drained by the
-    /// audio callback on the next processing cycle. Returns `None` when
-    /// the queue is full (overflow).
-    /// Send a parameter change command to the graph's audio thread.
-    ///
-    /// The command is pushed into a lock-free queue and drained by the
-    /// audio callback on the next processing cycle. Returns `None` when
-    /// the queue is full (overflow) or no queue was created.
-    pub fn send_parameter(&self, cmd: SetParameter) -> Option<()> {
-        self.command_queue.as_ref()?.push(cmd).ok()
+    /// The returned handle holds a weak reference — when the `Graph` is
+    /// dropped, all subsequent `send` calls route to dead letters.
+    /// Returns `None` if no audio backend was configured (no queue created).
+    pub fn handle(&self) -> Option<ActorRef<SetParameter>> {
+        let mailbox = self.command_queue.as_ref()?;
+        Some(ActorRef::new(mailbox))
     }
 
     /// Consume the graph and return its owned parts (test only).
@@ -569,12 +594,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
         Vec<NodeVariant<T, BUF_SIZE>>,
         Vec<usize>,
         ClockTick,
-        Vec<Box<dyn Buffer<T>>>,
+        Vec<Box<dyn Buffer<T> + Send>>,
     ) {
         let Self {
             nodes,
             topo_order,
-            clock_source: _,
             current_tick,
             resources: _,
             buffers,
@@ -582,6 +606,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalGraph<T, BUF_SIZE> {
             command_queue: _,
         } = self;
         (nodes, topo_order, current_tick, buffers)
+    }
+}
+
+// ============================================================================
+// ActorCell implementation
+// ============================================================================
+
+impl<T: Transcendental, const BUF_SIZE: usize> ActorCell for Graph<T, BUF_SIZE> {
+    type Msg = SetParameter;
+
+    /// Process a single parameter command by writing to the target node.
+    fn receive(&mut self, msg: SetParameter) {
+        let idx = msg.port.node_id().inner() as usize;
+        if idx < self.nodes.len() {
+            let _ = self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+        }
     }
 }
 
@@ -594,10 +634,18 @@ mod tests {
     use rill_core::traits::algorithm::ActionContext;
     use rill_core::traits::processable::{ProcessContext, Processable};
     use rill_core::traits::{
-        NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-        PortDirection, PortId, ProcessResult, Processor, SignalNode, Sink, Source,
+        Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+        PortDirection, PortId, ProcessResult, Processor, Sink, Source,
     };
     use std::sync::Arc;
+
+    /// Create a test builder with empty factories.
+    fn test_builder<const B: usize>() -> GraphBuilder<f32, B> {
+        GraphBuilder::new(
+            Arc::new(NodeFactory::new()),
+            Arc::new(BackendFactory::new()),
+        )
+    }
 
     // ------------------------------------------------------------------------
     // Mock: ConstantSource — fills output with a constant value
@@ -635,9 +683,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-        for ConstantSource<T, BUF_SIZE>
-    {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ConstantSource<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -750,9 +796,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-        for NoopProcessor<T, BUF_SIZE>
-    {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NoopProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -839,7 +883,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NoopSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -916,7 +960,7 @@ mod tests {
     #[test]
     fn test_topo_order_correct() {
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
 
         let src = builder.add_source(Box::new(ConstantSource::new(1.0, 44100.0)));
         let proc = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
@@ -925,9 +969,7 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, sink, 0);
 
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .expect("build failed");
+        let graph = builder.build().expect("build failed");
 
         let order = graph.topo_order();
         let src_pos = order.iter().position(|&i| i == src).unwrap();
@@ -940,7 +982,7 @@ mod tests {
     #[test]
     fn test_cycle_detection() {
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
 
         let a = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
         let b = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
@@ -948,18 +990,16 @@ mod tests {
         builder.connect_signal(a, 0, b, 0);
         builder.connect_signal(b, 0, a, 0);
 
-        let result = builder.build(Box::new(SystemClock::with_sample_rate(44100.0)), None);
+        let result = builder.build();
         assert!(matches!(result, Err(BuildError::CycleDetected)));
     }
 
     #[test]
     fn test_source_node_create() {
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let idx = builder.add_source(Box::new(ConstantSource::new(0.5, 44100.0)));
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .expect("build failed");
+        let graph = builder.build().expect("build failed");
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.topo_order(), &[idx]);
     }
@@ -993,7 +1033,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for TestSink<T, BUF_SIZE> {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for TestSink<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -1103,9 +1143,7 @@ mod tests {
         }
     }
 
-    impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-        for GainProcessor<T, BUF_SIZE>
-    {
+    impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for GainProcessor<T, BUF_SIZE> {
         fn metadata(&self) -> NodeMetadata {
             NodeMetadata {
                 type_name: None,
@@ -1217,13 +1255,11 @@ mod tests {
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(42.0, 44100.0)));
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(1), 44100.0)));
         builder.connect_signal(src, 0, snk, 0);
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
@@ -1244,7 +1280,7 @@ mod tests {
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(10.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1254,9 +1290,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
@@ -1278,28 +1312,26 @@ mod tests {
 
     #[test]
     fn test_command_queue_drain() {
-        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
         use rill_core::traits::PortId;
 
         const BUF: usize = 64;
         let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(0),
             44100.0,
             2.0,
         )));
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, _, _, _bufs) = graph.into_parts();
 
         let _ = queue.push(SetParameter::new(
             PortId::control_in(NodeId(0), 0),
             ParameterId::new("multiplier").unwrap(),
             ParamValue::Float(5.0),
-            SignalSource::Manual,
+            SignalOrigin::Manual,
         ));
 
         while let Some(cmd) = queue.pop() {
@@ -1321,7 +1353,7 @@ mod tests {
 
     #[test]
     fn test_command_then_propagate() {
-        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         use rill_core::traits::PortId;
@@ -1329,7 +1361,7 @@ mod tests {
         const BUF: usize = 64;
         let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(7.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1339,9 +1371,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
@@ -1350,7 +1380,7 @@ mod tests {
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
             ParamValue::Float(4.0),
-            SignalSource::Manual,
+            SignalOrigin::Manual,
         ));
         while let Some(cmd) = queue.pop() {
             let idx = cmd.port.node_id().inner() as usize;
@@ -1386,7 +1416,7 @@ mod tests {
         use rill_core::traits::processable::{ProcessContext, Processable};
 
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(1.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1397,9 +1427,7 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         builder.connect_feedback(proc, 0, proc, 0);
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
 
         // ── Block 1: no feedback yet ──
@@ -1435,7 +1463,7 @@ mod tests {
 
     #[test]
     fn test_drain_fn_before_propagate() {
-        use rill_core::queues::{MpscQueue, SetParameter, SignalSource};
+        use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         use rill_core::traits::PortId;
@@ -1443,7 +1471,7 @@ mod tests {
         const BUF: usize = 64;
         let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(5.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1453,9 +1481,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
-            .unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
@@ -1464,7 +1490,7 @@ mod tests {
             PortId::control_in(NodeId(1), 0),
             ParameterId::new("multiplier").unwrap(),
             ParamValue::Float(3.0),
-            SignalSource::Manual,
+            SignalOrigin::Manual,
         ));
 
         // Drain

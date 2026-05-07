@@ -111,7 +111,7 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
+impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }

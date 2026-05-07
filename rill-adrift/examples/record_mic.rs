@@ -1,39 +1,29 @@
-//! Push model: запись с микрофона в WAV-файл.
+//! Microphone recording through standard pipeline.
 //!
-//! AudioInput (Source) — активный узел, управляет графом.
-//! RecordingSink — накапливает сэмплы в памяти.
-//! По завершении (Enter) пишет WAV на диск.
+//! 1. `RecordingSink` registered in Runtime via `register_node_fn`
+//! 2. Graph topology defined via `GraphDef`
+//! 3. Backend created by factory name
 //!
 //! Usage:
 //!   cargo run --example record_mic --features pipewire [file.wav]
-//!   cargo run --example record_mic [file.wav]  (ALSA по умолчанию)
-//!
-//! PipeWire: capture-only (output_channels=0), process_cb из capture callback.
-//! ALSA: blocking snd_pcm_readi, без playback PCM.
+//!   cargo run --example record_mic [file.wav]  (ALSA by default)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rill_adrift::io::input::AudioInput;
-use rill_adrift::io::signal_io::IoBackendPtr;
-use rill_adrift::io::AudioConfig;
-use rill_adrift::rill_core::io::IoBackend;
-use rill_adrift::rill_core::queues::MpscQueue;
-use rill_adrift::rill_core::time::{ClockTick, SystemClock};
-use rill_adrift::rill_core::traits::active::GraphHandle;
-use rill_adrift::rill_core::traits::processable::NodeVariant;
 use rill_adrift::rill_core::traits::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessResult,
-    SignalNode, Sink,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, NodeVariant, ParamValue, ParameterId,
+    Params, Port, ProcessResult, Sink,
 };
 use rill_adrift::rill_core::Transcendental;
-use rill_adrift::rill_graph::GraphBuilder;
+use rill_adrift::rill_graph::serialization::{ConnectionDef, GraphDef, NodeDef, SignalKind};
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
 
 // ============================================================================
-// RecordingSink — накапливает аудио в памяти
+// RecordingSink
 // ============================================================================
 
 struct RecordingSink<T: Transcendental, const B: usize> {
@@ -42,7 +32,6 @@ struct RecordingSink<T: Transcendental, const B: usize> {
     inputs: Vec<Port<T, B>>,
     state: NodeState<T, B>,
     recorded: Arc<Mutex<Vec<f32>>>,
-    calls: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
@@ -56,15 +45,11 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
             ],
             state: NodeState::new(RATE),
             recorded,
-            calls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
-    }
-    fn call_count(&self) -> u64 {
-        self.calls.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
-impl<T: Transcendental, const B: usize> SignalNode<T, B> for RecordingSink<T, B> {
+impl<T: Transcendental, const B: usize> Node<T, B> for RecordingSink<T, B> {
     fn node_type_id(&self) -> rill_adrift::rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -84,7 +69,6 @@ impl<T: Transcendental, const B: usize> SignalNode<T, B> for RecordingSink<T, B>
     fn reset(&mut self) {
         self.state.sample_pos = 0;
     }
-
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
         None
     }
@@ -126,14 +110,12 @@ impl<T: Transcendental, const B: usize> SignalNode<T, B> for RecordingSink<T, B>
 impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
     fn consume(
         &mut self,
-        _clock: &ClockTick,
+        _clock: &rill_adrift::rill_core::time::ClockTick,
         _signal_inputs: &[&[T; B]],
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[rill_adrift::rill_core::time::ClockTick],
         _feedback_inputs: &[&[T; B]],
     ) -> ProcessResult<()> {
-        self.calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
             let l = lp.buffer.as_array();
             let r = rp.buffer.as_array();
@@ -149,7 +131,7 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
 }
 
 // ============================================================================
-// WAV writer (16-bit PCM)
+// WAV writer
 // ============================================================================
 
 fn write_wav(
@@ -166,9 +148,7 @@ fn write_wav(
     };
     let mut writer = hound::WavWriter::create(path, spec)?;
     for &s in samples {
-        let amp = s.clamp(-1.0, 1.0);
-        let sample = (amp * 32767.0) as i16;
-        writer.write_sample(sample)?;
+        writer.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
     }
     writer.finalize()?;
     Ok(())
@@ -183,142 +163,128 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "output.wav".into());
 
-    // ── Бэкенд ─────────────────────────────────────────────────────────────
-    let config = AudioConfig::default()
-        .with_sample_rate(RATE as u32)
-        .with_buffer_size(BUF as u32)
-        .with_input_channels(2)
-        .with_output_channels(0);
-
-    // Priority: pipewire > jack > cpal > alsa.
-    // Guards with not() ensure only one backend is defined when
-    // multiple features are active (e.g. --features alsa adds to
-    // default cpal — cpal takes priority).
+    // Select backend based on active feature flag
     #[cfg(feature = "pipewire")]
-    let backend =
-        Box::new(rill_adrift::io::PipewireBackend::new(config).expect("PipewireBackend::new"));
+    let backend_name = "pipewire";
     #[cfg(all(feature = "jack", not(feature = "pipewire")))]
-    let backend = Box::new(rill_adrift::io::JackBackend::new(config).expect("JackBackend::new"));
+    let backend_name = "jack";
     #[cfg(all(feature = "cpal", not(any(feature = "pipewire", feature = "jack"))))]
-    let backend = Box::new(rill_adrift::io::CpalBackend::new(config).expect("CpalBackend::new"));
+    let backend_name = "cpal";
     #[cfg(all(
         feature = "alsa",
         not(any(feature = "pipewire", feature = "jack", feature = "cpal"))
     ))]
-    let backend = Box::new(rill_adrift::io::AlsaBackend::new(config).expect("AlsaBackend::new"));
-    let backend_ptr = IoBackendPtr::from_ref(&*backend);
+    let backend_name = "alsa";
+    #[cfg(not(any(
+        feature = "pipewire",
+        feature = "jack",
+        feature = "cpal",
+        feature = "alsa"
+    )))]
+    let backend_name = "null";
 
-    // ── Граф: AudioInput → RecordingSink ──────────────────────────────────
     let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
 
-    let mut builder = GraphBuilder::<f32, BUF>::new();
+    // Runtime — owns factories
+    let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
 
-    let mut input = AudioInput::<f32, BUF>::new();
-    input.set_io_ptr(backend_ptr);
-    let src = builder.add_source(Box::new(input));
+    // Configure default backend
+    let mut p = std::collections::HashMap::new();
+    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
+    p.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+    p.insert("channels".into(), ParamValue::Int(2));
+    rt.set_default_backend(backend_name, p);
 
-    let sink = RecordingSink::<f32, BUF>::new(recorded.clone());
-    let snk = builder.add_sink(Box::new(sink));
-
-    builder.connect_signal(src, 0, snk, 0);
-    builder.connect_signal(src, 1, snk, 1);
-
-    let mut graph = builder
-        .build(Box::new(SystemClock::with_sample_rate(RATE)), None)
-        .expect("graph build");
-
-    let topo = graph.topo_order().to_vec();
-    let source_idx = topo[0];
-    let nodes_ptr = graph.nodes_mut() as *mut [NodeVariant<f32, BUF>] as *mut u8;
-    let len = graph.nodes().len();
-
-    // ── Push model: AudioInput управляет графом ───────────────────────────
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let handle = GraphHandle {
-        nodes: nodes_ptr,
-        len,
-        source_idx,
-        sample_rate: RATE,
-        queue: Arc::as_ptr(&queue) as *const _,
-    };
-
-    let audio_input: &mut AudioInput<f32, BUF> = {
-        let n = &mut graph.nodes_mut()[source_idx];
-        if let NodeVariant::Source(ref mut s) = n {
-            unsafe {
-                &mut *(s.as_mut() as *mut dyn rill_adrift::rill_core::traits::Source<f32, BUF>
-                    as *mut AudioInput<f32, BUF>)
-            }
-        } else {
-            panic!("expected AudioInput at index {source_idx}");
-        }
-    };
-
-    use rill_adrift::rill_core::traits::active::ActiveNode;
-
-    ActiveNode::start(&mut *audio_input, handle);
-
-    // ── Запуск аудиотреда ─────────────────────────────────────────────────
-    let running = Arc::new(AtomicBool::new(true));
-    let t_running = running.clone();
-    let audio_thread = std::thread::spawn(move || {
-        let _ = backend.run(t_running.clone());
-        while t_running.load(Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = backend.stop();
+    // Register custom node
+    let rec = recorded.clone();
+    rt.register_node_fn("rill/record_sink", move |id: NodeId, params: &Params| {
+        let mut sink = RecordingSink::new(rec.clone());
+        Node::set_id(&mut sink, id);
+        Node::init(&mut sink, params.sample_rate);
+        NodeVariant::Sink(Box::new(sink))
     });
 
-    let start = std::time::Instant::now();
-    println!("▶ Запись микрофона... Нажмите Enter для остановки.");
+    // Graph topology via GraphDef
+    let def = GraphDef {
+        format_version: "rill/1".to_string(),
+        sample_rate: RATE,
+        block_size: BUF,
+        resources: vec![],
+        nodes: vec![
+            NodeDef {
+                id: 0,
+                type_name: "rill/input".into(),
+                name: "mic".into(),
+                parameters: [(
+                    "channels".into(),
+                    rill_adrift::rill_core::ParamValue::Float(2.0),
+                )]
+                .into(),
+            },
+            NodeDef {
+                id: 1,
+                type_name: "rill/record_sink".into(),
+                name: "recorder".into(),
+                parameters: [].into(),
+            },
+        ],
+        connections: vec![
+            ConnectionDef {
+                kind: SignalKind::Signal,
+                from_node: 0,
+                from_port: 0,
+                to_node: 1,
+                to_port: 0,
+            },
+            ConnectionDef {
+                kind: SignalKind::Signal,
+                from_node: 0,
+                from_port: 0,
+                to_node: 1,
+                to_port: 1,
+            },
+        ],
+        description: None,
+    };
+
+    // Build graph
+    let mut builder = rt.create_builder();
+    def.populate(&mut builder)
+        .map_err(|e| format!("populate: {e}"))?;
+    let graph = builder.build().map_err(|e| format!("graph build: {e}"))?;
+    let _actor_ref = graph.handle();
+
+    // Start
+    let running = Arc::new(AtomicBool::new(true));
+    let t_run = running.clone();
+    let audio_thread = std::thread::spawn(move || {
+        graph.run(t_run).ok();
+    });
+
+    println!("▶ Recording... Press Enter to stop.");
     let mut input_line = String::new();
     std::io::stdin().read_line(&mut input_line)?;
-
-    let elapsed = start.elapsed();
-
     running.store(false, Ordering::Release);
     audio_thread.thread().unpark();
     let _ = audio_thread.join();
 
-    // ── Счётчик вызовов из RecordingSink ──────────────────────────────────
-    let _sink_calls = {
-        let sink_idx = topo[1];
-        let n = &mut graph.nodes_mut()[sink_idx];
-        if let NodeVariant::Sink(ref mut s) = n {
-            let rs: &mut RecordingSink<f32, BUF> = unsafe {
-                &mut *(s.as_mut() as *mut dyn rill_adrift::rill_core::traits::Sink<f32, BUF>
-                    as *mut RecordingSink<f32, BUF>)
-            };
-            rs.call_count()
-        } else {
-            0
-        }
-    };
-
-    // ── Сохранение WAV ────────────────────────────────────────────────────
+    // Save WAV
     let data = recorded.lock().unwrap();
     let total_samples = data.len();
-    let channels = 2;
-    let frames = total_samples / channels;
-    let elapsed_secs = elapsed.as_secs_f64();
-    let capture_rate_f = frames as f64 / elapsed_secs;
-    let wav_rate = if capture_rate_f > 64000.0 {
-        96000
-    } else {
-        48000
-    };
-    let file_dur = frames as f64 / wav_rate as f64;
+    let frames = total_samples / 2;
+    let wav_rate = if frames > 0 { 48000 } else { 48000 };
 
     let max_amp = data.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    if max_amp < 0.001 {
-        eprintln!("⚠ Тишина (max = {max_amp:.6}).");
-    } else {
-        eprintln!("✓ Сигнал (max = {max_amp:.6})");
-    }
+    println!(
+        "{} max={max_amp:.6}",
+        if max_amp < 0.001 {
+            "⚠ Silence"
+        } else {
+            "✓ Signal"
+        }
+    );
 
-    write_wav(&out_path, wav_rate, channels as u16, &data)?;
-
-    println!("⏹ Сохранено: {out_path}");
-    println!("   Запись: {elapsed_secs:.2}s, файл: {file_dur:.2}s, freq: {:.0} Гц → WAV {} Гц, {channels}ch, {total_samples} сэмплов", capture_rate_f, wav_rate);
+    write_wav(&out_path, wav_rate, 2, &data)?;
+    println!("⏹ Saved: {out_path} — {total_samples} samples");
     Ok(())
 }

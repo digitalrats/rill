@@ -229,7 +229,7 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
+impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }

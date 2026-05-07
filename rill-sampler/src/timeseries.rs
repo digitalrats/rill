@@ -1,8 +1,7 @@
 use rill_core::interpolate::Interpolate;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, SignalNode,
-    Source,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -288,7 +287,7 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Default for TimeSeriesNode
     }
 }
 
-impl<T: Transcendental + Copy, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental + Copy, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for TimeSeriesNode<T, BUF_SIZE>
 {
     fn metadata(&self) -> NodeMetadata {

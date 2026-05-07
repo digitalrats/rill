@@ -21,8 +21,7 @@
 //!
 //! ## Integration
 //!
-//! Use [`PatchbayControl::attach_sequencer`](crate::control::PatchbayControl::attach_sequencer)
-//! or [`PatchbayEngine::attach_sequencer`](crate::engine::PatchbayEngine::attach_sequencer)
+//! Use [`Patchbay::attach_sequencer`](crate::engine::Patchbay::attach_sequencer)
 //! to spawn the sequencer task and start listening for clock ticks.
 //! A [`SequencerHandle`] is returned for external control (start/stop/pattern
 //! select).
@@ -36,9 +35,3 @@ pub use engine::{SequencerCommand, SequencerHandle, SnapshotSequencer};
 pub use pattern::{Pattern, StepPlayMode};
 pub use snapshot::{ParameterTarget, Snapshot};
 pub use step::SequenceStep;
-
-/// Serializable sequencer configuration (serde feature gate).
-#[cfg(feature = "serde")]
-mod document;
-#[cfg(feature = "serde")]
-pub use document::SequencerDocument;

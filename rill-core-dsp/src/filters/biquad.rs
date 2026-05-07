@@ -1,4 +1,4 @@
-//! Биквадратный фильтр (Biquad)
+//! Biquad filter
 
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
@@ -7,7 +7,7 @@ use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 use std::f32::consts::PI;
 
-/// Биквадратный фильтр
+/// Biquad filter
 #[allow(clippy::type_complexity)]
 pub struct Biquad<T: Transcendental> {
     params: FilterParams,

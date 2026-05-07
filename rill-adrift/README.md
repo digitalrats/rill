@@ -13,7 +13,7 @@ crates for signal processing application development.
 | `osc` | `rill-osc` (OSC server, requires tokio) | yes |
 | `sampler` | `rill-sampler` (sample playback) | yes |
 | `analog` | `rill-core-wdf` + `rill-analog-filters` + `rill-analog-effects` | no |
-| `serialization` | graph/patchbay serialization (JSON/CBOR) | no |
+| `serialization` | graph/patchbay serialization (JSON/CBOR) | yes |
 | `alsa` | ALSA backend (implies `io`) | no |
 | `cpal` | CPAL backend (implies `io`) | no |
 | `jack` | JACK backend (implies `io`) | no |
@@ -22,12 +22,13 @@ crates for signal processing application development.
 ## Usage
 
 ```rust,no_run
-use rill_adrift::rill_graph::GraphBuilder;
 use rill_adrift::rill_oscillators::audio::SineOsc;
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
 
 const BUF_SIZE: usize = 256;
 
-let mut builder = GraphBuilder::<f32, BUF_SIZE>::new();
+let mut rt = Runtime::<BUF_SIZE>::new(RuntimeConfig::default());
+let mut builder = rt.create_builder();
 let osc = builder.add_source(
     Box::new(SineOsc::<f32, BUF_SIZE>::new().with_frequency(440.0))
 );

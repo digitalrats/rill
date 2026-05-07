@@ -1,8 +1,8 @@
-//! ALSA бэкенд для Linux — без `std::thread`, без `std::sync`.
+//! ALSA backend for Linux — no `std::thread`, no `std::sync`.
 //!
-//! `run()` — блокирующий: открывает PCM, конфигурирует, входит в
-//! `snd_pcm_wait()` loop. Выходит когда `running` становится false.
-//! Очистка происходит внутри `run()` перед возвратом.
+//! `run()` — blocking: opens PCM, configures, enters
+//! `snd_pcm_wait()` loop. Exits when `running` becomes false.
+//! Cleanup happens inside `run()` before returning.
 
 const MAX_BLOCK_SAMPLES: usize = 8192;
 
@@ -152,7 +152,7 @@ fn alsa_io_loop(
     let out_ch = config.output_channels as usize;
     let in_ch = config.input_channels as usize;
     let chunk_samples = buf_frames * out_ch.max(1);
-    let in_sz = (buf_frames * in_ch).max(1).min(MAX_BLOCK_SAMPLES);
+    let in_sz = (buf_frames * in_ch).clamp(1, MAX_BLOCK_SAMPLES);
     let mut f32_buf = [0.0f32; 2048];
     let mut i16_buf = [0i16; 4096];
     let mut cb_i16 = [0i16; 4096];
@@ -313,7 +313,7 @@ impl IoBackend<f32> for AlsaBackend {
                 let cap = win.capacity().min(frames * 2);
                 let dst = win.as_mut_slice();
                 for i in 0..(cap / 2) {
-                    if let Some(ch) = channels.get(0) {
+                    if let Some(ch) = channels.first() {
                         dst[i * 2] = ch[i];
                     }
                     if let Some(ch) = channels.get(1) {

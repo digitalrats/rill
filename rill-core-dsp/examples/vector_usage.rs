@@ -1,15 +1,15 @@
-//! Пример использования векторных операций для DSP
+//! Example of using vector operations for DSP
 //!
-//! Демонстрирует базовые операции с векторами: сложение, умножение,
-//! математические функции и работу с блоками данных.
+//! Demonstrates basic vector operations: addition, multiplication,
+//! math functions, and block processing.
 
 use rill_core_dsp::vector::prelude::*;
 
 fn main() {
-    println!("=== Пример векторных операций ===");
+    println!("=== Vector Operations Example ===");
 
-    // 1. Базовые операции с векторами f32
-    println!("\n1. Базовые операции (f32):");
+    // 1. Basic f32 vector operations
+    println!("\n1. Basic operations (f32):");
 
     let data_a = [1.0f32, 2.0, 3.0, 4.0];
     let data_b = [5.0f32, 6.0, 7.0, 8.0];
@@ -17,25 +17,28 @@ fn main() {
     let vec_a = ScalarVector4::load(&data_a);
     let vec_b = ScalarVector4::load(&data_b);
 
-    // Сложение
+    // Addition
     let vec_sum = vec_a + vec_b;
     let mut result = [0.0f32; 4];
     vec_sum.store(&mut result);
-    println!("   Сложение: {:?} + {:?} = {:?}", data_a, data_b, result);
+    println!("   Addition: {:?} + {:?} = {:?}", data_a, data_b, result);
 
-    // Умножение
+    // Multiplication
     let vec_mul = vec_a * vec_b;
     vec_mul.store(&mut result);
-    println!("   Умножение: {:?} * {:?} = {:?}", data_a, data_b, result);
+    println!(
+        "   Multiplication: {:?} * {:?} = {:?}",
+        data_a, data_b, result
+    );
 
-    // Комбинированное выражение
+    // Combined expression
     let scalar = ScalarVector4::splat(2.0);
     let vec_expr = (vec_a + scalar) * vec_b;
     vec_expr.store(&mut result);
     println!("   (a + 2) * b = {:?}", result);
 
-    // 2. Математические функции
-    println!("\n2. Математические функции (f32):");
+    // 2. Math functions
+    println!("\n2. Math functions (f32):");
 
     let angles = [0.0f32, 0.5, 1.0, 1.5];
     let vec_angles = ScalarVector4::load(&angles);
@@ -48,8 +51,8 @@ fn main() {
     vec_cos.store(&mut result);
     println!("   cos({:?}) = {:?}", angles, result);
 
-    // 3. Операции со скалярами через splat
-    println!("\n3. Операции со скалярами:");
+    // 3. Scalar operations via splat
+    println!("\n3. Scalar operations:");
 
     let gain = 0.5f32;
     let vec_gain = ScalarVector4::splat(gain);
@@ -57,17 +60,17 @@ fn main() {
     vec_scaled.store(&mut result);
     println!("   {:?} * {} = {:?}", data_a, gain, result);
 
-    // 4. Обработка блока данных (имитация DSP алгоритма)
-    println!("\n4. Обработка блока данных:");
+    // 4. Block processing (DSP algorithm simulation)
+    println!("\n4. Block processing:");
 
-    // Исходный сигнал (синусоида)
+    // Original signal (sine wave)
     let mut signal = [0.0f32; 16];
     for i in 0..16 {
         signal[i] = (i as f32 * 0.1).sin();
     }
-    println!("   Исходный сигнал: {:?}", signal);
+    println!("   Original signal: {:?}", signal);
 
-    // Применяем gain к блоку по 4 семпла за раз
+    // Apply gain to block, 4 samples at a time
     let gain = 0.8f32;
     let gain_vec = ScalarVector4::splat(gain);
     let mut processed = [0.0f32; 16];
@@ -75,15 +78,15 @@ fn main() {
     for (idx, chunk) in signal.chunks_exact(4).enumerate() {
         let vec_chunk = ScalarVector4::load(chunk);
         let vec_processed = vec_chunk * gain_vec;
-        // Сохраняем обратно
+        // Store back
         let start = idx * 4;
         vec_processed.store(&mut processed[start..start + 4]);
     }
 
-    println!("   После gain {}: {:?}", gain, processed);
+    println!("   After gain {}: {:?}", gain, processed);
 
-    // 5. Использование разных размеров векторов (f64)
-    println!("\n5. Векторы f64 (размер 2):");
+    // 5. Using different vector sizes (f64)
+    println!("\n5. f64 vectors (size 2):");
 
     let data_a_f64 = [1.0f64, 2.0];
     let data_b_f64 = [3.0f64, 4.0];
@@ -96,24 +99,24 @@ fn main() {
     vec_sum_f64.store(&mut result_f64);
     println!("   {:?} + {:?} = {:?}", data_a_f64, data_b_f64, result_f64);
 
-    // 6. Демонстрация методов трейта Vector
-    println!("\n6. Методы трейта Vector:");
+    // 6. Vector trait method demonstration
+    println!("\n6. Vector trait methods:");
 
     let vec = ScalarVector4::splat(3.14);
     let mut arr = [0.0f32; 4];
     vec.store(&mut arr);
-    println!("   Вектор из одного значения 3.14: {:?}", arr);
+    println!("   Vector from single value 3.14: {:?}", arr);
 
-    // Извлечение элемента
+    // Extract element
     println!("   extract(2) = {}", vec.extract(2));
 
-    // Вставка элемента
+    // Insert element
     let new_vec = vec.insert(1, 99.0);
     new_vec.store(&mut arr);
     println!("   insert(1, 99.0) => {:?}", arr);
 
-    // 7. Минимум, максимум, ограничение
-    println!("\n7. Минимум, максимум, ограничение:");
+    // 7. Min, max, clamp
+    println!("\n7. Min, max, clamp:");
 
     let vec1 = ScalarVector4::load(&[1.0, 5.0, 3.0, 7.0]);
     let vec2 = ScalarVector4::load(&[4.0, 2.0, 6.0, 0.0]);
@@ -137,5 +140,5 @@ fn main() {
     vec_clamp.store(&mut arr);
     println!("   clamp(2.0..5.0) = {:?}", arr);
 
-    println!("\n=== Пример завершен ===");
+    println!("\n=== Example Complete ===");
 }

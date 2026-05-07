@@ -1,12 +1,12 @@
-//! Макрос для создания фильтра с коэффициентами
+//! Macro for creating a filter with coefficients
 //!
-//! # Пример
+//! # Example
 //! ```
 //! use rill_core_dsp::filter_algorithm;
 //! use rill_core::math::Transcendental;
 //!
 //! filter_algorithm! {
-//!     /// Биквадратный фильтр
+//!     /// Biquad filter
 //!     #[derive(Debug, Clone, Copy)]
 //!     pub struct Biquad<T: Transcendental> {
 //!         params: {
@@ -27,25 +27,25 @@
 //!             y2: T = T::ZERO,
 //!         },
 //!         update_coeffs: |this| {
-//!             // Расчет коэффициентов из параметров
+//!             // Calculate coefficients from parameters
 //!         },
 //!         process: |this, input| {
-//!             // Применение фильтра
+//!             // Apply filter
 //!             input
 //!         }
 //!     }
 //! }
 //! ```
 
-/// Макрос для создания фильтра с коэффициентами
+/// Macro for creating a filter with coefficients
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core_dsp::filter_algorithm;
 /// use rill_core::math::Transcendental;
 ///
 /// filter_algorithm! {
-///     /// Биквадратный фильтр
+///     /// Biquad filter
 ///     #[derive(Debug, Clone, Copy)]
 ///     pub struct Biquad<T: Transcendental> {
 ///         params: {
@@ -66,10 +66,10 @@
 ///             y2: T = T::ZERO,
 ///         },
 ///         update_coeffs: |this| {
-///             // Расчет коэффициентов из параметров
+///             // Calculate coefficients from parameters
 ///         },
 ///         process: |this, input| {
-///             // Применение фильтра
+///             // Apply filter
 ///             input
 ///         }
 ///     }
@@ -119,12 +119,12 @@ macro_rules! filter_algorithm {
                 pub $state_name: $state_type,
             )*
 
-            /// Частота дискретизации
+            /// Sample rate
             pub sample_rate: f32,
         }
 
         impl<$($generic: $bound),+> $name<$($generic),+> {
-            /// Создать новый экземпляр фильтра
+            /// Create a new filter instance
             pub fn new($($param_name: $param_type),*) -> Self {
                 Self {
                     $($param_name),*,
@@ -134,7 +134,7 @@ macro_rules! filter_algorithm {
                 }
             }
 
-            /// Обновить коэффициенты фильтра
+            /// Update filter coefficients
             pub fn update_coeffs(&mut self) {
                 let update_fn: fn(&mut Self) = $update;
                 update_fn(self);

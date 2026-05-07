@@ -212,7 +212,7 @@ mod tests {
 
         assert!(queue.send(1).is_ok());
         assert!(queue.send(2).is_ok());
-        // Третья отправка должна вернуть QueueFull
+        // Third send should return QueueFull
         match queue.send(3) {
             Err(QueueError::QueueFull) => {}
             _ => panic!("Expected QueueFull"),

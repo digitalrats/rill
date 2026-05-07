@@ -9,7 +9,7 @@ use rill_core::{
     traits::{
         active::{ActiveNode, GraphHandle},
         algorithm::ActionContext,
-        node::SignalNode,
+        node::Node,
         processable::{NodeVariant, ProcessContext, Processable},
         NodeCategory, NodeMetadata, NodeState, Source,
     },
@@ -150,7 +150,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for Input<T, BUF_SIZE>
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,

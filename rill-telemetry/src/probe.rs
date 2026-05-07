@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rill_core::math::Transcendental;
 use rill_core::prelude::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessResult,
-    SignalNode,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    ProcessResult,
 };
 use rill_core::queues::spsc::SpscQueue;
 use rill_core::queues::TelemetryBlock;
@@ -88,9 +88,9 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
     }
 }
 
-// ── SignalNode ──────────────────────────────────────────────────────────────
+// ── Node ──────────────────────────────────────────────────────────────
 
-impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> Node<T, BUF_SIZE>
     for TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
     fn metadata(&self) -> NodeMetadata {

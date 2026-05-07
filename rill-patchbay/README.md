@@ -30,34 +30,31 @@ Control thread (tokio):
   buttons), MIDI, CV.
 - **Event mapping** — MIDI CC → parameter, OSC address → parameter,
   with transforms.
-- **`PatchbayControl`** — centralised API for adding automata, servos,
-  and mappings.
-- **`PatchbayManager`** — high-level manager with per-port cancellation
+- **`Engine`** — centralised API for adding automata, servos, mappings,
+  green threads, and port combiners (fka `PatchbayControl`).
+- **`Manager`** — high-level coordinator with per-port cancellation
   domains.
-- **`PatchbayEngine`** — reference orchestrator over the green-thread
-  architecture.
 
 ## Usage
 
 ```rust
+use rill_core_actor::ActorRef;
 use rill_patchbay::prelude::*;
-use rill_core::queues::MpscQueue;
-use std::sync::Arc;
 
-let cmd_queue = Arc::new(MpscQueue::new(1024));
-let mut control = PatchbayControl::new(cmd_queue);
+let (actor_ref, _mailbox) = ActorRef::new_pair();
+let mut engine = Engine::new(actor_ref);
 
-control.add_lfo(
+engine.add_lfo(
     "vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine,
     osc_node_id, "frequency", 400.0, 480.0,
 );
 
-control.add_envelope(
+engine.add_envelope(
     "amp", 0.01, 0.1, 0.7, 0.2,
     vca_node_id, "gain", 0.0, 1.0,
 );
 
-control.update(1.0 / 60.0);
+engine.update(1.0 / 60.0);
 ```
 
 ## Feature flags

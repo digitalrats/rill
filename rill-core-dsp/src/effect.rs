@@ -1,23 +1,23 @@
-//! Трейты для эффектов
+//! Traits for effects
 
 use crate::algorithm::ParameterizedAlgorithm;
 use rill_core::time::ClockTick;
 use rill_core::traits::ActionContext;
 use rill_core::Transcendental;
 
-/// Базовый трейт для эффектов
+/// Base trait for effects
 pub trait Effect<T: Transcendental>: ParameterizedAlgorithm<T> {
-    /// Получить количество входных каналов
+    /// Get number of input channels
     fn num_inputs(&self) -> usize {
         1
     }
 
-    /// Получить количество выходных каналов
+    /// Get number of output channels
     fn num_outputs(&self) -> usize {
         1
     }
 
-    /// Обработать стерео пару (если поддерживается)
+    /// Process stereo pair (if supported)
     fn process_stereo(&mut self, left: T, right: T) -> (T, T) {
         let input = [left, right];
         let mut output = [T::ZERO, T::ZERO];
@@ -27,7 +27,7 @@ pub trait Effect<T: Transcendental>: ParameterizedAlgorithm<T> {
         (output[0], output[1])
     }
 
-    /// Обработать блок с использованием векторного eDSL (опционально)
+    /// Process block using vector eDSL (optional)
     fn process_block_vector(&mut self, input: &[T], output: &mut [T]) {
         let tick = ClockTick::default();
         let ctx = ActionContext::new(&tick);
@@ -35,15 +35,15 @@ pub trait Effect<T: Transcendental>: ParameterizedAlgorithm<T> {
     }
 }
 
-/// Эффект с возможностью bypass
+/// Effect with bypass support
 pub trait Bypassable<T: Transcendental>: Effect<T> {
-    /// Включить/выключить bypass
+    /// Enable/disable bypass
     fn set_bypass(&mut self, bypass: bool);
 
-    /// Текущее состояние bypass
+    /// Current bypass state
     fn bypass(&self) -> bool;
 
-    /// Обработка с учётом bypass
+    /// Process with bypass consideration
     fn process_with_bypass(&mut self, input: T) -> T {
         if self.bypass() {
             input
@@ -57,15 +57,15 @@ pub trait Bypassable<T: Transcendental>: Effect<T> {
     }
 }
 
-/// Эффект с поддержкой dry/wet
+/// Effect with dry/wet support
 pub trait DryWet<T: Transcendental>: Effect<T> {
-    /// Установить соотношение dry/wet (0.0 = только dry, 1.0 = только wet)
+    /// Set dry/wet ratio (0.0 = fully dry, 1.0 = fully wet)
     fn set_dry_wet(&mut self, mix: f32);
 
-    /// Текущее значение dry/wet
+    /// Current dry/wet value
     fn dry_wet(&self) -> f32;
 
-    /// Обработка с учётом dry/wet
+    /// Process with dry/wet consideration
     fn process_with_dry_wet(&mut self, input: T, dry: T) -> T {
         let mut wet = [T::ZERO];
         let tick = ClockTick::default();
@@ -78,17 +78,17 @@ pub trait DryWet<T: Transcendental>: Effect<T> {
     }
 }
 
-/// Эффект с модуляцией
+/// Effect with modulation
 pub trait Modulatable<T: Transcendental>: Effect<T> {
-    /// Количество модуляционных входов
+    /// Number of modulation inputs
     fn num_mod_inputs(&self) -> usize;
 
-    /// Применить модуляцию
+    /// Apply modulation
     fn apply_modulation(&mut self, index: usize, value: T);
 
-    /// Глубина модуляции
+    /// Modulation depth
     fn modulation_depth(&self, index: usize) -> f32;
 
-    /// Установить глубину модуляции
+    /// Set modulation depth
     fn set_modulation_depth(&mut self, index: usize, depth: f32);
 }

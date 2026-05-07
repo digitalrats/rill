@@ -9,31 +9,30 @@
 //!
 //! # Feature gate
 //!
-//! Requires the `serde` feature (for [`PatchbayDocument`](crate::document::PatchbayDocument)
-//! and [`SequencerDocument`](crate::sequencer::SequencerDocument) access).
+//! Requires the `serde` feature (for [`PatchbayDef`] and [`SequencerDef`] access).
 
 use std::fmt::Write;
 
 #[cfg(feature = "serde")]
-use crate::document::PatchbayDocument;
+use crate::serialization::PatchbayDef;
 #[cfg(feature = "serde")]
-use crate::sequencer::SequencerDocument;
+use crate::serialization::SequencerDef;
 
 /// Configuration for patchbay DOT generation.
 #[derive(Default)]
-pub struct PatchbayDotConfig {
+pub struct DotConfig {
     /// Show parameter values in node labels.
     pub show_values: bool,
     /// Include auto-generated internal details.
     pub verbose: bool,
 }
 
-/// Generate DOT from a PatchbayDocument and optional SequencerDocument.
+/// Generate DOT from a PatchbayDef and optional SequencerDef.
 #[cfg(feature = "serde")]
 pub fn patchbay_to_dot(
-    patchbay: &PatchbayDocument,
-    sequencer: Option<&SequencerDocument>,
-    _config: &PatchbayDotConfig,
+    patchbay: &PatchbayDef,
+    sequencer: Option<&SequencerDef>,
+    _config: &DotConfig,
 ) -> String {
     let mut dot = String::new();
     writeln!(dot, "// Patchbay control graph").ok();
@@ -53,7 +52,7 @@ pub fn patchbay_to_dot(
     for auto in &patchbay.automata {
         let id = auto.id();
         let (label, fillcolor) = match auto {
-            crate::document::AutomatonDef::Lfo {
+            crate::serialization::AutomatonDef::Lfo {
                 frequency,
                 waveform,
                 ..
@@ -61,7 +60,7 @@ pub fn patchbay_to_dot(
                 let l = format!("LFO\\n{frequency} Hz\\n{waveform:?}");
                 (l, "#ccf")
             }
-            crate::document::AutomatonDef::Envelope {
+            crate::serialization::AutomatonDef::Envelope {
                 attack,
                 decay,
                 sustain,
@@ -71,11 +70,11 @@ pub fn patchbay_to_dot(
                 let l = format!("Envelope\\n{attack}/{decay}/{sustain}/{release}");
                 (l, "#fcf")
             }
-            crate::document::AutomatonDef::Sequencer { steps, tempo, .. } => {
+            crate::serialization::AutomatonDef::Sequencer { steps, tempo, .. } => {
                 let l = format!("SequencerAuto\\n{} steps @ {tempo} BPM", steps.len());
                 (l, "#ffc")
             }
-            crate::document::AutomatonDef::NamedFunction { function_name, .. } => {
+            crate::serialization::AutomatonDef::NamedFunction { function_name, .. } => {
                 let l = format!("Fn\\n{function_name}");
                 (l, "#cfc")
             }
@@ -117,7 +116,7 @@ pub fn patchbay_to_dot(
         .ok();
     }
 
-    // ── SequencerDocument overlay ─────────────────────────────────
+    // ── SequencerDef overlay ─────────────────────────────────
     if let Some(seq) = sequencer {
         writeln!(dot, "    subgraph cluster_sequencer {{").ok();
         writeln!(dot, "        label=\"Snapshot Sequencer\";").ok();
@@ -163,8 +162,8 @@ pub fn patchbay_to_dot(
 
 /// Generate DOT for sequencer alone.
 #[cfg(feature = "serde")]
-pub fn sequencer_to_dot(seq: &SequencerDocument) -> String {
-    let cfg = PatchbayDotConfig::default();
-    let empty = PatchbayDocument::new();
+pub fn sequencer_to_dot(seq: &SequencerDef) -> String {
+    let cfg = DotConfig::default();
+    let empty = PatchbayDef::new();
     patchbay_to_dot(&empty, Some(seq), &cfg)
 }

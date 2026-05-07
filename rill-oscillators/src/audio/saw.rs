@@ -2,8 +2,8 @@
 
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    ActionContext, Algorithm, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, SignalNode, Source,
+    ActionContext, Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
+    ParameterId, Port, Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -106,7 +106,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "SawOsc".to_string(),

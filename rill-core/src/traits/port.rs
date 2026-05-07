@@ -12,7 +12,7 @@ use crate::traits::algorithm::Algorithm;
 use crate::traits::node::NodeId;
 use crate::traits::processable::Processable;
 use crate::traits::PortError;
-use crate::traits::{ProcessResult, SignalNode};
+use crate::traits::{Node, ProcessResult};
 use std::fmt;
 
 // ============================================================================

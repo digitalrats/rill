@@ -1,7 +1,7 @@
 use rill_core::{
     buffer::{BufferRegistry, TapeLoop},
     math::Transcendental,
-    traits::{NodeCategory, NodeMetadata, NodeState, SignalNode, Source},
+    traits::{Node, NodeCategory, NodeMetadata, NodeState, Source},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
@@ -106,7 +106,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ReadHead<
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for ReadHead<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ReadHead<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,

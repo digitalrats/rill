@@ -1,16 +1,16 @@
 //! DOT graph serialization for Graphviz visualization.
 //!
-//! Generates `digraph` DOT format from a [`SignalGraph`].  Uses
-//! Р-схема (Glushkov R-scheme) inspired node shapes:
+//! Generates `digraph` DOT format from a [`Graph`].  Uses
+//! R-scheme (Glushkov R-scheme) inspired node shapes:
 //!
 //! | NodeCategory | DOT shape | Color | Meaning |
 //! |---|---|---|---|
-//! | `Source` | `trapezium` | green `#8f8` | Оператор-генератор |
-//! | `Processor` | `box` | blue `#8bf` | Оператор-преобразователь |
-//! | `Router` | `diamond` | orange `#fa8` | Условие/распределитель |
-//! | `Sink` | `invtrapezium` | red `#f88` | Терминальный оператор |
-//! | `Analyzer` | `note` | grey `#ccc` | Наблюдатель |
-//! | `Sequencer` | `doublecircle` | pink `#fcf` | Управляющий оператор |
+//! | `Source` | `trapezium` | green `#8f8` | Generator operator |
+//! | `Processor` | `box` | blue `#8bf` | Processor operator |
+//! | `Router` | `diamond` | orange `#fa8` | Condition/distributor |
+//! | `Sink` | `invtrapezium` | red `#f88` | Terminal operator |
+//! | `Analyzer` | `note` | grey `#ccc` | Observer |
+//! | `Sequencer` | `doublecircle` | pink `#fcf` | Control operator |
 //!
 //! ## Feature gate
 //!
@@ -19,10 +19,10 @@
 use std::fmt::Write;
 
 use rill_core::traits::processable::NodeVariant;
-use rill_core::traits::{NodeCategory, SignalNode};
+use rill_core::traits::{Node, NodeCategory};
 use rill_core::Transcendental;
 
-use crate::graph::SignalGraph;
+use crate::graph::Graph;
 
 /// Configuration for DOT graph generation.
 pub struct DotConfig {
@@ -52,7 +52,7 @@ impl Default for DotConfig {
 
 /// Generate a DOT string from a signal graph.
 pub fn to_dot<T: Transcendental, const B: usize>(
-    graph: &SignalGraph<T, B>,
+    graph: &Graph<T, B>,
     config: &DotConfig,
 ) -> String {
     let mut dot = String::new();

@@ -3,8 +3,7 @@
 use rand::Rng;
 use rill_core::time::ClockTick;
 use rill_core::traits::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, SignalNode,
-    Source,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
 };
 use rill_core::{ProcessError, ProcessResult};
 
@@ -165,7 +164,7 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
+impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "NoiseOsc".to_string(),

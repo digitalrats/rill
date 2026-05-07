@@ -1,11 +1,11 @@
-//! Макрос для создания генератора
+//! Macro for creating a generator
 //!
-//! # Пример
+//! # Example
 //! use rill_core_dsp::generator_algorithm;
 //! use rill_core::math::Transcendental;
 //!
 //! generator_algorithm! {
-//!     /// Генератор синуса
+//!     /// Sine generator
 //!     #[derive(Debug, Clone, Copy)]
 //!     pub struct SineGen<T: Transcendental> {
 //!         params: {
@@ -24,14 +24,14 @@
 //!     }
 //! }
 
-/// Макрос для создания генератора
+/// Macro for creating a generator
 ///
-/// # Пример
+/// # Example
 /// use rill_core_dsp::generator_algorithm;
 /// use rill_core::math::Transcendental;
 ///
 /// generator_algorithm! {
-///     /// Генератор синуса
+///     /// Sine generator
 ///     #[derive(Debug, Clone, Copy)]
 ///     pub struct SineGen<T: Transcendental> {
 ///         params: {
@@ -81,12 +81,12 @@ macro_rules! generator_algorithm {
                 pub $state_name: $state_type,
             )*
 
-            /// Частота дискретизации
+            /// Sample rate
             pub sample_rate: f32,
         }
 
         impl<$($generic: $bound),+> $name<$($generic),+> {
-            /// Создать новый экземпляр генератора
+            /// Create a new generator instance
             pub fn new($($param_name: $param_type),*) -> Self {
                 Self {
                     $($param_name),*,

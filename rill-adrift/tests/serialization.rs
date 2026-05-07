@@ -1,21 +1,17 @@
 #[cfg(feature = "serialization")]
 use rill_adrift::registration;
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_core::queues::{SetParameter, SignalSource};
+use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_core::time::SystemClock;
-#[cfg(feature = "serialization")]
-use rill_adrift::rill_core::traits::SignalNode;
+use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
 #[cfg(feature = "serialization")]
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "serialization")]
 use std::sync::Arc;
-
-#[cfg(feature = "serialization")]
 const RATE: f32 = 48000.0;
 
 #[cfg(feature = "serialization")]
@@ -61,25 +57,19 @@ fn test_deserialize_input_biquad_output() {
         "description": null
     }"#;
 
-    let builder = registration::load_graph_json::<B>(json).expect("load_graph_json should succeed");
+    let def = registration::load_graph_json(json).expect("load_graph_json");
+    let mut rt = Runtime::<B>::new(RuntimeConfig::default());
+    let mut p = std::collections::HashMap::new();
+    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
+    p.insert("buffer_size".into(), ParamValue::Int(B as i32));
+    p.insert("channels".into(), ParamValue::Int(2));
+    rt.set_default_backend("null", p);
 
-    let mut backend_factory = BackendFactory::<f32>::new();
-    registration::register_backends(&mut backend_factory);
+    let mut builder = rt.create_builder();
+    def.populate(&mut builder).expect("populate");
+    let graph = builder.build().expect("graph build should succeed");
 
-    let backend_cfg = BackendConfig {
-        factory: &backend_factory,
-        name: "null",
-        sample_rate: RATE as u32,
-        buffer_size: B as u32,
-        channels: 2,
-    };
-
-    let clock = Box::new(SystemClock::with_sample_rate(RATE));
-    let graph = builder
-        .build(clock, Some(&backend_cfg))
-        .expect("graph build should succeed");
-
-    // Treat SignalGraph as a black box — read metadata only.
+    // Treat Graph as a black box — read metadata only.
     assert_eq!(graph.node_count(), 3, "should have 3 nodes");
     assert_eq!(
         graph.topo_order().len(),
@@ -101,7 +91,7 @@ fn test_send_parameter_via_queue() {
     const B: usize = 256;
 
     // Build a graph: sine → null output
-    let builder = registration::load_graph_json::<B>(
+    let def = registration::load_graph_json(
         r#"{
         "format_version": "rill/1",
         "sample_rate": 48000.0,
@@ -119,34 +109,27 @@ fn test_send_parameter_via_queue() {
     }"#,
     )
     .expect("load_graph_json");
+    let mut rt = Runtime::<B>::new(RuntimeConfig::default());
+    let mut p = std::collections::HashMap::new();
+    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
+    p.insert("buffer_size".into(), ParamValue::Int(B as i32));
+    p.insert("channels".into(), ParamValue::Int(2));
+    rt.set_default_backend("null", p);
 
-    let mut backend_factory = BackendFactory::<f32>::new();
-    registration::register_backends(&mut backend_factory);
-
-    let backend_cfg = BackendConfig {
-        factory: &backend_factory,
-        name: "null",
-        sample_rate: RATE as u32,
-        buffer_size: B as u32,
-        channels: 2,
-    };
-
-    let clock = Box::new(rill_adrift::rill_core::time::SystemClock::with_sample_rate(
-        RATE,
-    ));
-    let graph = builder
-        .build(clock, Some(&backend_cfg))
-        .expect("graph build");
+    let mut builder = rt.create_builder();
+    def.populate(&mut builder).expect("populate");
+    let graph = builder.build().expect("graph build");
 
     // Send parameter via queue
     graph
-        .send_parameter(SetParameter::new(
+        .handle()
+        .expect("graph has a command queue")
+        .send(SetParameter::new(
             PortId::param(rill_adrift::rill_core::NodeId(0), 0),
             ParameterId::new("frequency").unwrap(),
             ParamValue::Float(880.0),
-            SignalSource::Manual,
-        ))
-        .expect("send_parameter should succeed");
+            SignalOrigin::Manual,
+        ));
 
     // Parameter is in the queue — not yet applied (no callback fired).
     // Run graph once — NullBackend fires the callback and returns.

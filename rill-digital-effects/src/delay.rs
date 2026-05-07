@@ -3,7 +3,7 @@
 use rill_core::{
     buffer::DelayLine,
     math::Transcendental,
-    traits::{NodeCategory, NodeMetadata, NodeState, Processor, SignalNode},
+    traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
 };
 
@@ -132,7 +132,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Delay<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,

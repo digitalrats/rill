@@ -8,16 +8,17 @@
 //! | `/sys/graph/stop` | — | Log stop request |
 //! | `/sys/status` | — | Print runtime state |
 //!
-//! **User paths** — registered from `PatchbayDocument::osc_surface`.
+//! **User paths** — registered from `PatchbayDef::osc_surface`.
 //! Each entry maps an OSC address to an `EventPattern`; the value is
 //! extracted from the first OSC argument (treated as normalized 0..1).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rill_core::queues::{SetParameter, SignalSource};
+use rill_core::queues::{SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
-use rill_patchbay::control::{ControlEvent, EventPattern, OscSurface, PatchbayControl};
+use rill_core_actor::ActorRef;
+use rill_patchbay::engine::{ControlEvent, EventPattern, OscSurface, Patchbay};
 
 use crate::osc::osc::{OscMessage, OscType};
 use crate::osc::server::OscServer;
@@ -32,8 +33,8 @@ impl OscHandle {
     /// Bind an OSC server, register system + surface handlers, spawn recv loop.
     pub async fn start(
         bind: &str,
-        queue: Arc<rill_core::queues::MpscQueue<SetParameter>>,
-        control: Arc<std::sync::Mutex<PatchbayControl>>,
+        queue: ActorRef<SetParameter>,
+        control: Arc<std::sync::Mutex<Patchbay>>,
         surface: OscSurface,
     ) -> Result<Self, String> {
         let mut server = OscServer::bind(bind)
@@ -62,11 +63,11 @@ impl OscHandle {
                 _ => return,
             };
             if let Ok(pid) = ParameterId::new(&param) {
-                let _ = q.push(SetParameter::new(
+                q.send(SetParameter::new(
                     PortId::param(node, 0),
                     pid,
                     ParamValue::Float(value),
-                    SignalSource::External("osc".into()),
+                    SignalOrigin::External("osc".into()),
                 ));
             }
         });
@@ -77,9 +78,8 @@ impl OscHandle {
         });
 
         // /sys/status
-        let q = queue.clone();
         server.handle("/sys/status", move |_: OscMessage, _: SocketAddr| {
-            log::info!("status: queue_empty={}", q.is_empty());
+            log::info!("status: alive (ActorRef holds strong ref)");
         });
 
         // ── User surface handlers ──────────────────────────────────────
@@ -105,11 +105,11 @@ impl OscHandle {
                     log::warn!("OSC surface: control lock failed");
                     if let Some(normalized) = event.normalized_value() {
                         if let Ok(pid) = ParameterId::new(&path) {
-                            let _ = q.push(SetParameter::new(
+                            q.send(SetParameter::new(
                                 PortId::param(NodeId(0), 0),
                                 pid,
                                 ParamValue::Float(normalized),
-                                SignalSource::External("osc".into()),
+                                SignalOrigin::External("osc".into()),
                             ));
                         }
                     }

@@ -1,10 +1,10 @@
-//! # Утилиты
+//! # Utilities
 //!
-//! Вспомогательные функции и типы.
+//! Helper functions and types.
 
 use std::time::{Duration, Instant};
 
-/// Таймер для измерения времени в аудиопотоке
+/// Timer for measuring time in the audio thread
 #[derive(Debug, Clone)]
 pub struct AudioTimer {
     start: Instant,
@@ -13,7 +13,7 @@ pub struct AudioTimer {
 }
 
 impl AudioTimer {
-    /// Создать новый таймер
+    /// Create a new timer
     pub fn new(sample_rate: f32) -> Self {
         Self {
             start: Instant::now(),
@@ -22,39 +22,39 @@ impl AudioTimer {
         }
     }
     
-    /// Сбросить таймер
+    /// Reset the timer
     pub fn reset(&mut self) {
         self.start = Instant::now();
         self.samples = 0;
     }
     
-    /// Обновить счётчик семплов
+    /// Update the sample counter
     pub fn tick(&mut self, samples: u64) {
         self.samples += samples;
     }
     
-    /// Получить текущее время в семплах
+    /// Get the current time in samples
     pub fn samples(&self) -> u64 {
         self.samples
     }
     
-    /// Получить текущее время в секундах (на основе семплов)
+    /// Get the current time in seconds (based on samples)
     pub fn seconds(&self) -> f64 {
         self.samples as f64 / self.sample_rate as f64
     }
     
-    /// Получить реальное время (wall-clock)
+    /// Get the real time (wall-clock)
     pub fn real_seconds(&self) -> f64 {
         self.start.elapsed().as_secs_f64()
     }
     
-    /// Проверить рассинхронизацию (для отладки)
+    /// Check for drift (for debugging)
     pub fn drift(&self) -> f64 {
         (self.real_seconds() - self.seconds()).abs()
     }
 }
 
-/// Простой анализатор RMS
+/// Simple RMS analyzer
 #[derive(Debug, Clone)]
 pub struct RmsAnalyzer {
     sum_squares: f64,
@@ -62,7 +62,7 @@ pub struct RmsAnalyzer {
 }
 
 impl RmsAnalyzer {
-    /// Создать новый анализатор
+    /// Create a new analyzer
     pub fn new() -> Self {
         Self {
             sum_squares: 0.0,
@@ -70,21 +70,21 @@ impl RmsAnalyzer {
         }
     }
     
-    /// Добавить семпл
+    /// Add a sample
     pub fn add_sample<T: crate::math::Transcendental>(&mut self, sample: T) {
         let val = sample.to_f64();
         self.sum_squares += val * val;
         self.count += 1;
     }
     
-    /// Добавить срез
+    /// Add a slice
     pub fn add_slice<T: crate::math::Transcendental>(&mut self, slice: &[T]) {
         for &s in slice {
             self.add_sample(s);
         }
     }
     
-    /// Получить текущий RMS
+    /// Get the current RMS
     pub fn rms(&self) -> f64 {
         if self.count == 0 {
             0.0
@@ -93,14 +93,14 @@ impl RmsAnalyzer {
         }
     }
     
-    /// Сбросить
+    /// Reset
     pub fn reset(&mut self) {
         self.sum_squares = 0.0;
         self.count = 0;
     }
 }
 
-/// Простой детектор пиков
+/// Simple peak detector
 #[derive(Debug, Clone)]
 pub struct PeakDetector {
     peak: f32,
@@ -108,7 +108,7 @@ pub struct PeakDetector {
 }
 
 impl PeakDetector {
-    /// Создать новый детектор
+    /// Create a new detector
     pub fn new(decay: f32) -> Self {
         Self {
             peak: 0.0,
@@ -116,7 +116,7 @@ impl PeakDetector {
         }
     }
     
-    /// Добавить семпл
+    /// Add a sample
     pub fn add_sample<T: crate::math::Transcendental>(&mut self, sample: T) {
         let abs = sample.to_f32().abs();
         if abs > self.peak {
@@ -126,18 +126,18 @@ impl PeakDetector {
         }
     }
     
-    /// Получить текущий пик
+    /// Get the current peak
     pub fn peak(&self) -> f32 {
         self.peak
     }
     
-    /// Сбросить
+    /// Reset
     pub fn reset(&mut self) {
         self.peak = 0.0;
     }
 }
 
-/// Замер производительности
+/// Performance measurement
 #[derive(Debug, Clone)]
 pub struct PerfTimer {
     name: String,
@@ -147,7 +147,7 @@ pub struct PerfTimer {
 }
 
 impl PerfTimer {
-    /// Создать новый таймер
+    /// Create a new timer
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -157,18 +157,18 @@ impl PerfTimer {
         }
     }
     
-    /// Начать замер
+    /// Start measurement
     pub fn start(&mut self) {
         self.start = Instant::now();
     }
     
-    /// Остановить замер
+    /// Stop measurement
     pub fn stop(&mut self) {
         self.total += self.start.elapsed();
         self.count += 1;
     }
     
-    /// Получить среднее время
+    /// Get average time
     pub fn average(&self) -> Duration {
         if self.count == 0 {
             Duration::default()
@@ -177,7 +177,7 @@ impl PerfTimer {
         }
     }
     
-    /// Получить статистику
+    /// Get statistics
     pub fn stats(&self) -> String {
         format!(
             "{}: avg={:?}, total={:?}, count={}",
@@ -189,22 +189,22 @@ impl PerfTimer {
     }
 }
 
-/// Преобразование MIDI ноты в частоту
+/// Convert MIDI note to frequency
 pub fn midi_to_freq(note: u8) -> f32 {
     440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
 }
 
-/// Преобразование частоты в MIDI ноту
+/// Convert frequency to MIDI note
 pub fn freq_to_midi(freq: f32) -> f32 {
     69.0 + 12.0 * (freq / 440.0).log2()
 }
 
-/// Преобразование децибел в линейное значение
+/// Convert decibels to linear value
 pub fn db_to_linear(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
 
-/// Преобразование линейного значения в децибелы
+/// Convert linear value to decibels
 pub fn linear_to_db(linear: f32) -> f32 {
     20.0 * linear.max(1e-6).log10()
 }

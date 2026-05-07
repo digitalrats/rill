@@ -1,8 +1,8 @@
-//! # Вспомогательные макросы для работы с портами
+//! # Helper macros for working with ports
 
-/// Общий макрос для создания любого типа узла
+/// General macro for creating any type of node
 #[macro_export]
-macro_rules! signal_node {
+macro_rules! node {
     (
         $(#[$meta:meta])*
         source $name:ident<$T:ident: $crate::math::Transcendental, const $BUF:ident: usize>
@@ -46,7 +46,7 @@ macro_rules! signal_node {
     };
 }
 
-/// Добавление параметров к существующему узлу
+/// Adding parameters to an existing node
 #[macro_export]
 macro_rules! with_parameters {
     (
@@ -56,12 +56,12 @@ macro_rules! with_parameters {
         {
             let mut node = $node;
             $(
-                // Создаем ParameterId из строки
+                // Create ParameterId from string
                 let param_id = match $crate::ParameterId::new(stringify!($name)) {
                     Ok(id) => id,
                     Err(e) => panic!("Invalid parameter name '{}': {:?}", stringify!($name), e),
                 };
-                // Преобразуем значение в ParamValue
+                // Convert value to ParamValue
                 let param_value: $crate::ParamValue = $value.into();
                 match node.set_parameter(&param_id, param_value) {
                     Ok(()) => {},

@@ -1,4 +1,4 @@
-//! # Тесты для макросов
+//! # Tests for macros
 
 #[cfg(test)]
 mod tests {
@@ -6,11 +6,11 @@ mod tests {
     use crate::prelude::*;
     use std::f32::consts::PI;
 
-    // Импортируем макросы
+    // Import macros
 
-    // Тестовый источник
+    // Test source
     source_node! {
-        /// Тестовый синус
+        /// Test sine
         pub TestSine<T: Transcendental, const BUF_SIZE: usize>
         {
             params {
@@ -47,9 +47,9 @@ mod tests {
         }
     }
 
-    // Тестовый процессор
+    // Test processor
     processor_node! {
-        /// Тестовый усилитель
+        /// Test gain
         pub TestGain<T: Transcendental, const BUF_SIZE: usize>
         {
             params {
@@ -75,9 +75,9 @@ mod tests {
         }
     }
 
-    // Тестовый приёмник
+    // Test sink
     sink_node! {
-        /// Тестовый приёмник
+        /// Test sink
         pub TestSink<T: Transcendental, const BUF_SIZE: usize>
         {
             params {
@@ -89,7 +89,7 @@ mod tests {
             }
 
             consume: |_this: &mut TestSink<T, BUF_SIZE>| -> crate::ProcessResult<()> {
-                // Здесь можно обращаться к полям через _this, если нужно
+                // Fields can be accessed via _this if needed
                 Ok(())
             }
         }
