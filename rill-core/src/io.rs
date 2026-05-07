@@ -1,6 +1,5 @@
 //! # Signal I/O — generic multi‑channel real‑time I/O abstraction
 
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -39,53 +38,4 @@ pub trait IoBackend<T: Scalar>: Send + Sync {
     /// Signal the backend to shut down.  Called from the control thread.
     /// After this returns the backend must be safe to drop.
     fn stop(&self) -> IoResult<()>;
-}
-
-// ============================================================================
-// BackendRegistry — safe, used during graph assembly
-// ============================================================================
-
-/// Registry of named `IoBackend` backends.
-pub struct BackendRegistry<T: Scalar> {
-    backends: HashMap<String, Box<dyn IoBackend<T>>>,
-}
-
-impl<T: Scalar> BackendRegistry<T> {
-    /// Create an empty backend registry.
-    pub fn new() -> Self {
-        Self {
-            backends: HashMap::new(),
-        }
-    }
-
-    /// Register a named backend.
-    pub fn register(&mut self, name: impl Into<String>, backend: Box<dyn IoBackend<T>>) {
-        self.backends.insert(name.into(), backend);
-    }
-
-    /// Remove and return a registered backend by name.
-    pub fn take(&mut self, name: &str) -> Option<Box<dyn IoBackend<T>>> {
-        self.backends.remove(name)
-    }
-
-    /// Get a reference to a registered backend by name.
-    pub fn get_ref(&self, name: &str) -> Option<&dyn IoBackend<T>> {
-        self.backends.get(name).map(|b| &**b)
-    }
-
-    /// Number of registered backends.
-    pub fn len(&self) -> usize {
-        self.backends.len()
-    }
-
-    /// Returns `true` if no backends are registered.
-    pub fn is_empty(&self) -> bool {
-        self.backends.is_empty()
-    }
-}
-
-impl<T: Scalar> Default for BackendRegistry<T> {
-    fn default() -> Self {
-        Self::new()
-    }
 }
