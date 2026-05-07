@@ -1,6 +1,6 @@
 //! Patchbay manager — central coordinator (DEPRECATED).
 //!
-//! `PatchbayManager` is a legacy component. It runs in a dedicated
+//! `Manager` is a legacy component. It runs in a dedicated
 //! `std::thread` at a fixed update rate. Superseded by the async model:
 //! `Engine::add_automaton_task()` + tokio tasks.
 //!
@@ -129,7 +129,7 @@ impl Default for PatchbayConfig {
 ///
 /// Coordinates all control and automation components. Runs in a dedicated
 /// thread at a configurable update rate.
-pub struct PatchbayManager {
+pub struct Manager {
     config: PatchbayConfig,
     automata: HashMap<String, Box<dyn std::any::Any + Send>>,
     automaton_states: HashMap<String, Box<dyn std::any::Any + Send>>,
@@ -143,7 +143,7 @@ pub struct PatchbayManager {
     update_thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl PatchbayManager {
+impl Manager {
     /// Create a new patchbay manager.
     pub fn new(config: PatchbayConfig, command_queue: Arc<MpscQueue<SetParameter>>) -> Self {
         Self {
@@ -607,7 +607,7 @@ impl PatchbayManager {
     }
 }
 
-impl Drop for PatchbayManager {
+impl Drop for Manager {
     fn drop(&mut self) {
         self.stop();
     }
@@ -650,17 +650,17 @@ impl AnyServo for TestServo {
 }
 
 // =============================================================================
-// PatchbayManager builder
+// Manager builder
 // =============================================================================
 
-/// Builder for creating a [`PatchbayManager`] with a fluent API.
-pub struct PatchbayManagerBuilder {
+/// Builder for creating a [`Manager`] with a fluent API.
+pub struct ManagerBuilder {
     config: PatchbayConfig,
     command_queue: Option<Arc<MpscQueue<SetParameter>>>,
     event_channel: Option<crossbeam_channel::Sender<PatchbayEvent>>,
 }
 
-impl PatchbayManagerBuilder {
+impl ManagerBuilder {
     /// Create a new builder with default configuration.
     pub fn new() -> Self {
         Self {
@@ -701,13 +701,13 @@ impl PatchbayManagerBuilder {
         self
     }
 
-    /// Build the [`PatchbayManager`].
-    pub fn build(self) -> PatchbayManager {
+    /// Build the [`Manager`].
+    pub fn build(self) -> Manager {
         let queue = self
             .command_queue
             .unwrap_or_else(|| Arc::new(MpscQueue::with_capacity(self.config.command_queue_size)));
 
-        let mut manager = PatchbayManager::new(self.config, queue);
+        let mut manager = Manager::new(self.config, queue);
 
         if let Some(tx) = self.event_channel {
             manager = manager.with_event_channel(tx);
@@ -717,7 +717,7 @@ impl PatchbayManagerBuilder {
     }
 }
 
-impl Default for PatchbayManagerBuilder {
+impl Default for ManagerBuilder {
     fn default() -> Self {
         Self::new()
     }
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn test_manager_creation() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let manager = PatchbayManager::new(PatchbayConfig::default(), queue);
+        let manager = Manager::new(PatchbayConfig::default(), queue);
 
         assert_eq!(manager.automata.len(), 0);
         assert_eq!(manager.mappings.len(), 0);
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn test_add_automaton() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue);
+        let mut manager = Manager::new(PatchbayConfig::default(), queue);
 
         let result = manager.add_lfo("test_lfo", 1.0, 0.5, 0.0, LfoWaveform::Sine);
         assert!(result.is_ok());
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn test_add_mapping() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue);
+        let mut manager = Manager::new(PatchbayConfig::default(), queue);
 
         manager.add_midi_mapping(7, None, NodeId(1), "volume", 0.0, 1.0, Transform::Linear);
         assert_eq!(manager.mappings.len(), 1);
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn test_handle_event() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue.clone());
+        let mut manager = Manager::new(PatchbayConfig::default(), queue.clone());
 
         manager.add_midi_mapping(7, None, NodeId(1), "volume", 0.0, 1.0, Transform::Linear);
 
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn test_start_stop() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
-        let mut manager = PatchbayManager::new(PatchbayConfig::default(), queue);
+        let mut manager = Manager::new(PatchbayConfig::default(), queue);
 
         let result = manager.start();
         assert!(result.is_ok());
@@ -794,7 +794,7 @@ mod tests {
     fn test_builder() {
         let queue = Arc::new(MpscQueue::with_capacity(1024));
 
-        let manager = PatchbayManagerBuilder::new()
+        let manager = ManagerBuilder::new()
             .with_update_rate(500.0)
             .with_command_queue(queue)
             .with_stats(true)

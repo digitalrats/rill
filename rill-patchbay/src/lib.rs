@@ -18,7 +18,7 @@
 //! │                     ПОТОК УПРАВЛЕНИЯ                         │
 //! │                                                              │
 //! │  ┌─────────────────────────────────────────────────────┐   │
-//! │  │               PatchbayManager                         │   │
+//! │  │               Manager                         │   │
 //! │  │  ┌────────────┐  ┌────────────┐  ┌────────────┐     │   │
 //! │  │  │  Automata  │  │  Servos    │  │  Mappings  │     │   │
 //! │  │  └────────────┘  └────────────┘  └────────────┘     │   │
@@ -111,7 +111,7 @@ pub use engine::{
     Mapping, NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target, Transform,
 };
 
-pub use manager::PatchbayManager;
+pub use manager::Manager;
 pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 

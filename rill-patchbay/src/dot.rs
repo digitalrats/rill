@@ -21,7 +21,7 @@ use crate::sequencer::SequencerDocument;
 
 /// Configuration for patchbay DOT generation.
 #[derive(Default)]
-pub struct PatchbayDotConfig {
+pub struct DotConfig {
     /// Show parameter values in node labels.
     pub show_values: bool,
     /// Include auto-generated internal details.
@@ -33,7 +33,7 @@ pub struct PatchbayDotConfig {
 pub fn patchbay_to_dot(
     patchbay: &PatchbayDocument,
     sequencer: Option<&SequencerDocument>,
-    _config: &PatchbayDotConfig,
+    _config: &DotConfig,
 ) -> String {
     let mut dot = String::new();
     writeln!(dot, "// Patchbay control graph").ok();
@@ -164,7 +164,7 @@ pub fn patchbay_to_dot(
 /// Generate DOT for sequencer alone.
 #[cfg(feature = "serde")]
 pub fn sequencer_to_dot(seq: &SequencerDocument) -> String {
-    let cfg = PatchbayDotConfig::default();
+    let cfg = DotConfig::default();
     let empty = PatchbayDocument::new();
     patchbay_to_dot(&empty, Some(seq), &cfg)
 }

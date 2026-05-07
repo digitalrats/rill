@@ -26,7 +26,7 @@ use serde::de;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
-// Document structure
+// PatchbayDocument structure
 // ============================================================================
 
 /// A named resource (e.g. a tape loop) shared between graph nodes.
