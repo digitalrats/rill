@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::io::output::Output;
+use rill_adrift::registration;
 use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_digital_filters::BiquadProcessor;
-use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
-use rill_adrift::rill_graph::GraphBuilder;
+use rill_adrift::rill_graph;
 use rill_adrift::sampler::player::SamplePlayerNode;
 use rill_adrift::sampler::wav::load_wav;
 
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sample.len()
         );
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = registration::create_builder::<BUF>();
 
         let mut player = SamplePlayerNode::<f32, BUF>::new();
         player.load(sample);
@@ -64,21 +64,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.connect_signal(fx, 0, snk, 0);
         builder.connect_signal(src, 1, snk, 1);
 
-        let mut backend_factory = BackendFactory::<f32>::new();
-        rill_adrift::registration::register_backends(&mut backend_factory);
-
         let clock = Box::new(SystemClock::with_sample_rate(RATE));
         let graph = builder
-            .build(
-                clock,
-                Some(&BackendConfig {
-                    factory: &backend_factory,
-                    name: &backend_name,
-                    sample_rate: RATE as u32,
-                    buffer_size: BUF as u32,
-                    channels: 2,
-                }),
-            )
+            .build(clock, Some(&backend_name), RATE as u32, BUF as u32, 2)
             .expect("graph build");
 
         graph.run(t_run).ok();

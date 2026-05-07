@@ -9,8 +9,6 @@ use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_graph::backend_factory::{BackendConfig, BackendFactory};
-#[cfg(feature = "serialization")]
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "serialization")]
 use std::sync::Arc;
@@ -63,20 +61,9 @@ fn test_deserialize_input_biquad_output() {
 
     let builder = registration::load_graph_json::<B>(json).expect("load_graph_json should succeed");
 
-    let mut backend_factory = BackendFactory::<f32>::new();
-    registration::register_backends(&mut backend_factory);
-
-    let backend_cfg = BackendConfig {
-        factory: &backend_factory,
-        name: "null",
-        sample_rate: RATE as u32,
-        buffer_size: B as u32,
-        channels: 2,
-    };
-
     let clock = Box::new(SystemClock::with_sample_rate(RATE));
     let graph = builder
-        .build(clock, Some(&backend_cfg))
+        .build(clock, Some("null"), RATE as u32, B as u32, 2)
         .expect("graph build should succeed");
 
     // Treat Graph as a black box — read metadata only.
@@ -120,22 +107,11 @@ fn test_send_parameter_via_queue() {
     )
     .expect("load_graph_json");
 
-    let mut backend_factory = BackendFactory::<f32>::new();
-    registration::register_backends(&mut backend_factory);
-
-    let backend_cfg = BackendConfig {
-        factory: &backend_factory,
-        name: "null",
-        sample_rate: RATE as u32,
-        buffer_size: B as u32,
-        channels: 2,
-    };
-
     let clock = Box::new(rill_adrift::rill_core::time::SystemClock::with_sample_rate(
         RATE,
     ));
     let graph = builder
-        .build(clock, Some(&backend_cfg))
+        .build(clock, Some("null"), RATE as u32, B as u32, 2)
         .expect("graph build");
 
     // Send parameter via queue

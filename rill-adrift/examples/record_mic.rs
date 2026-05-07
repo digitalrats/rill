@@ -18,13 +18,13 @@ use rill_adrift::io::input::AudioInput;
 use rill_adrift::io::signal_io::IoBackendPtr;
 use rill_adrift::io::AudioConfig;
 
+use rill_adrift::registration;
 use rill_adrift::rill_core::time::{ClockTick, SystemClock};
 use rill_adrift::rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     ProcessResult, Sink,
 };
 use rill_adrift::rill_core::Transcendental;
-use rill_adrift::rill_graph::GraphBuilder;
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
@@ -208,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Граф: AudioInput → RecordingSink ──────────────────────────────────
     let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
 
-    let mut builder = GraphBuilder::<f32, BUF>::new();
+    let mut builder = registration::create_builder::<BUF>();
 
     let mut input = AudioInput::<f32, BUF>::new();
     input.set_io_ptr(backend_ptr);
@@ -221,7 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.connect_signal(src, 1, snk, 1);
 
     let graph = builder
-        .build(Box::new(SystemClock::with_sample_rate(RATE)), None)
+        .build(Box::new(SystemClock::with_sample_rate(RATE)), None, 0, 0, 0)
         .expect("graph build");
     let _actor_ref = graph.handle();
 

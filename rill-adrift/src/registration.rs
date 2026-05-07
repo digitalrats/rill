@@ -1,19 +1,11 @@
-//! Centralized node type registration for the Rill ecosystem.
+//! Centralized registration of all built-in node types and backends.
 //!
-//! Provides a single entry point to register all built-in node types
-//! from every rill crate into a NodeFactory.
-//!
-//! # Usage
-//!
-//! ```rust
-//! use rill_adrift::registration::register_all;
-//!
-//! let mut registry = rill_adrift::rill_graph::NodeFactory::<f32, 64>::new();
-//! register_all(&mut registry);
-//! ```
+//! Provides `register_all_nodes` and `register_all_backends` for
+//! populating factories before creating a [`GraphBuilder`].
 
 use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
-use rill_graph::{node_ctor, GraphBuilder, NodeFactory};
+use rill_graph::backend_factory::BackendFactory;
+use rill_graph::{node_ctor, NodeFactory};
 use std::sync::Arc;
 
 #[cfg(feature = "io")]
@@ -24,18 +16,19 @@ use std::sync::Arc;
 /// # Type parameters
 ///
 /// - `BUF_SIZE` — block size, must match the target graph.
-pub fn register_all<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>) {
-    register_oscillators(builder);
-    register_digital_filters(builder);
-    register_digital_effects(builder);
-    register_io(builder);
+/// Register every built-in node type into a [`NodeFactory`].
+pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    register_oscillators(factory);
+    register_digital_filters(factory);
+    register_digital_effects(factory);
+    register_io(factory);
     #[cfg(feature = "sampler")]
-    register_sampler::<BUF_SIZE>(builder);
+    register_sampler::<BUF_SIZE>(factory);
 }
 
 #[cfg(feature = "io")]
-fn register_io<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>) {
-    node_ctor!(builder, "rill/output", |id: NodeId, params: &NodeParams| {
+fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    node_ctor!(factory, "rill/output", |id: NodeId, params: &NodeParams| {
         let ch = params.get_f32("channels", 2.0) as usize;
         let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(ch);
         Node::set_id(&mut n, id);
@@ -43,7 +36,7 @@ fn register_io<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>)
         NodeVariant::Sink(Box::new(n))
     });
 
-    node_ctor!(builder, "rill/input", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/input", |id: NodeId, params: &NodeParams| {
         let ch = params.get_f32("channels", 2.0) as usize;
         let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(ch);
         Node::set_id(&mut n, id);
@@ -53,7 +46,7 @@ fn register_io<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>)
 }
 
 #[cfg(not(feature = "io"))]
-fn register_io<const BUF_SIZE: usize>(_builder: &mut GraphBuilder<f32, BUF_SIZE>) {
+fn register_io<const BUF_SIZE: usize>(_factory: &mut NodeFactory<f32, BUF_SIZE>) {
     // No I/O nodes available without "io" feature.
 }
 
@@ -62,12 +55,12 @@ fn register_io<const BUF_SIZE: usize>(_builder: &mut GraphBuilder<f32, BUF_SIZE>
 // ============================================================================
 
 #[cfg(feature = "sampler")]
-fn register_sampler<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>) {
+fn register_sampler<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_sampler::player::SamplePlayerNode;
     use rill_sampler::wav::load_wav;
 
     node_ctor!(
-        builder,
+        factory,
         "rill/sampler",
         |id: NodeId, params: &NodeParams| {
             let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
@@ -90,10 +83,10 @@ fn register_sampler<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_S
 // Rill Oscillators
 // ============================================================================
 
-fn register_oscillators<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>) {
+fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_oscillators::audio::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
-    node_ctor!(builder, "rill/sine", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/sine", |id: NodeId, params: &NodeParams| {
         let mut n = SineOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
             .with_amplitude(params.get_f32("amp", 0.5));
@@ -102,7 +95,7 @@ fn register_oscillators<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, B
         NodeVariant::Source(Box::new(n))
     });
 
-    node_ctor!(builder, "rill/saw", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/saw", |id: NodeId, params: &NodeParams| {
         let mut n = SawOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
             .with_amplitude(params.get_f32("amp", 0.5));
@@ -111,7 +104,7 @@ fn register_oscillators<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, B
         NodeVariant::Source(Box::new(n))
     });
 
-    node_ctor!(builder, "rill/noise", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/noise", |id: NodeId, params: &NodeParams| {
         let t = match params.get("type").and_then(|v| v.as_f32()) {
             Some(2.0) => NoiseType::Brown,
             Some(1.0) => NoiseType::Pink,
@@ -128,11 +121,11 @@ fn register_oscillators<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, B
 // Rill Digital Filters
 // ============================================================================
 
-fn register_digital_filters<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>) {
+fn register_digital_filters<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_core_dsp::filters::FilterType;
     use rill_digital_filters::biquad::BiquadProcessor;
 
-    node_ctor!(builder, "rill/biquad", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/biquad", |id: NodeId, params: &NodeParams| {
         let ft = match params.get("filter").and_then(|v| v.as_f32()) {
             Some(1.0) => FilterType::LowPass,
             Some(2.0) => FilterType::HighPass,
@@ -155,11 +148,11 @@ fn register_digital_filters<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
 // Rill Digital Effects
 // ============================================================================
 
-fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f32, BUF_SIZE>) {
+fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter, ReadHead, WriteHead};
     use rill_router::{DryWetMix, MixerNode};
 
-    node_ctor!(builder, "rill/delay", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/delay", |id: NodeId, params: &NodeParams| {
         let mut n = Delay::<f32, BUF_SIZE>::with_params(
             params.sample_rate,
             params.get_f32("time", 0.3),
@@ -172,7 +165,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
     });
 
     node_ctor!(
-        builder,
+        factory,
         "rill/distortion",
         |id: NodeId, params: &NodeParams| {
             let mut n = Distortion::<f32, BUF_SIZE>::with_params(
@@ -188,7 +181,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
     );
 
     node_ctor!(
-        builder,
+        factory,
         "rill/limiter",
         |id: NodeId, params: &NodeParams| {
             let mut n = Limiter::<f32, BUF_SIZE>::new(
@@ -205,7 +198,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
     );
 
     node_ctor!(
-        builder,
+        factory,
         "rill/dry_wet_mix",
         |id: NodeId, params: &NodeParams| {
             let mut n = DryWetMix::<f32, BUF_SIZE>::new();
@@ -216,7 +209,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
     );
 
     node_ctor!(
-        builder,
+        factory,
         "rill/write_head",
         |id: NodeId, params: &NodeParams| {
             let resource = params
@@ -231,7 +224,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
     );
 
     node_ctor!(
-        builder,
+        factory,
         "rill/read_head",
         |id: NodeId, params: &NodeParams| {
             let resource = params
@@ -245,7 +238,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
         }
     );
 
-    node_ctor!(builder, "rill/mixer", |id: NodeId, params: &NodeParams| {
+    node_ctor!(factory, "rill/mixer", |id: NodeId, params: &NodeParams| {
         let mut n = MixerNode::<BUF_SIZE>::new(4, 0);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
@@ -259,9 +252,11 @@ fn register_digital_effects<const BUF_SIZE: usize>(builder: &mut GraphBuilder<f3
 /// rill crates. Multiple calls return independent builders sharing the
 /// same factory via `Arc`.
 pub fn create_builder<const B: usize>() -> rill_graph::GraphBuilder<f32, B> {
-    let mut builder = rill_graph::GraphBuilder::new();
-    register_all(&mut builder);
-    builder
+    let mut node_factory = NodeFactory::new();
+    let mut backend_factory = BackendFactory::new();
+    register_all_nodes(&mut node_factory);
+    register_backends(&mut backend_factory);
+    rill_graph::GraphBuilder::new(Arc::new(node_factory), Arc::new(backend_factory))
 }
 
 /// Load a [`GraphDef`](rill_graph::serialization::GraphDef) into a

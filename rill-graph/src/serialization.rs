@@ -17,7 +17,6 @@ use std::collections::{HashMap, HashSet};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParameterId;
-use std::sync::Arc;
 
 use crate::factory::{NodeFactory, RegistryError};
 use crate::graph::GraphBuilder;
@@ -724,15 +723,20 @@ mod tests {
 
     // ── Helpers ────────────────────────────────────────────────────
 
-    fn empty_factory() -> NodeFactory<f32, 64> {
+    fn empty_factory() -> Arc<NodeFactory<f32, 64>> {
         let mut r = NodeFactory::<f32, 64>::new();
         r.register(TestCtor);
         r.register(ParamCtor);
-        r
+        Arc::new(r)
+    }
+
+    fn empty_backends() -> Arc<BackendFactory<f32>> {
+        Arc::new(BackendFactory::new())
     }
 
     fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
-        let mut b = GraphBuilder::new().with_factory(factory.clone());
+        let b = GraphBuilder::new(factory.clone(), empty_backends());
+        let mut b = b;
         let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
@@ -806,7 +810,7 @@ mod tests {
     #[test]
     fn test_export_parameters() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
         b.add_node(
             &reg,
             "rill/param",
@@ -834,7 +838,7 @@ mod tests {
     #[test]
     fn test_roundtrip_parameters() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
         b.add_node(
             &reg,
             "rill/param",
@@ -869,7 +873,7 @@ mod tests {
     #[test]
     fn test_export_feedback_connection() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
         let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
@@ -896,7 +900,7 @@ mod tests {
     fn test_export_type_name_explicit() {
         // ParamCtor declares type_name = Some("rill/param")
         let reg = empty_factory();
-        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
         b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         let graph = b
             .build(
@@ -913,7 +917,7 @@ mod tests {
     fn test_export_type_name_fallback_to_name() {
         // Node with type_name: None → doc uses metadata().name
         let mut reg = empty_registry();
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
         // Register a name-only constructor for testing fallback
         struct FallbackCtor;
         impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for FallbackCtor {
@@ -950,7 +954,7 @@ mod tests {
     #[test]
     fn test_roundtrip_preserves_node_ids() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
         // Explicit IDs via add_node_with_id
         b.add_node_with_id("rill/test", &NodeParams::new(44100.0), NodeId(100))
             .unwrap();
@@ -985,7 +989,7 @@ mod tests {
     #[test]
     fn test_roundtrip_complex_topology() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
         let s0 = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let p1 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         let p2 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();

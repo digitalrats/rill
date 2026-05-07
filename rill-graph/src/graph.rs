@@ -1,5 +1,5 @@
-use crate::backend_factory;
-use crate::factory::{NodeConstructor, NodeFactory, RegistryError};
+use crate::backend_factory::BackendFactory;
+use crate::factory::{NodeFactory, RegistryError};
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::{MpscQueue, SetParameter};
@@ -74,20 +74,15 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
     resources: Vec<GraphResource>,
-    /// Optional node factory (populated via [`register_node`](Self::register_node)
-    /// or set via [`with_factory`](Self::with_factory)).
-    factory: Option<NodeFactory<T, BUF_SIZE>>,
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Shared node factory (required, from Runtime).
+    factory: Arc<NodeFactory<T, BUF_SIZE>>,
+    /// Shared backend factory (required, from Runtime).
+    backends: Arc<BackendFactory<T>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Create a new empty graph builder without a node factory.
-    pub fn new() -> Self {
+    pub fn new(factory: Arc<NodeFactory<T, BUF_SIZE>>, backends: Arc<BackendFactory<T>>) -> Self {
         Self {
             nodes: Vec::new(),
             signal_edges: Vec::new(),
@@ -95,36 +90,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
             resources: Vec::new(),
-            factory: None,
+            factory,
+            backends,
         }
-    }
-
-    /// Create a new graph builder with a pre-populated node factory.
-    pub fn with_factory(mut self, factory: NodeFactory<T, BUF_SIZE>) -> Self {
-        self.factory = Some(factory);
-        self
-    }
-
-    /// Register a node type constructor in the internal factory.
-    ///
-    /// Creates a new [`NodeFactory`] if none was set yet.
-    pub fn register_node(&mut self, ctor: impl NodeConstructor<T, BUF_SIZE> + 'static) {
-        self.factory
-            .get_or_insert_with(NodeFactory::new)
-            .register(ctor);
-    }
-
-    /// Register a node type via a closure.
-    ///
-    /// Convenience wrapper; named for compatibility with the [`node_ctor!`] macro.
-    pub fn register_fn(
-        &mut self,
-        type_name: &'static str,
-        f: impl Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + Send + Sync + 'static,
-    ) {
-        self.factory
-            .get_or_insert_with(NodeFactory::new)
-            .register_fn(type_name, f);
     }
 
     /// Add a node by type name using the internal factory.
@@ -159,10 +127,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         params: &NodeParams,
         id: NodeId,
     ) -> Result<usize, RegistryError> {
-        let factory = self.factory.as_ref().ok_or_else(|| {
-            RegistryError::UnknownType("no node factory set on GraphBuilder".into())
-        })?;
-        let node = factory.construct(type_name, id, params)?;
+        let node = self.factory.construct(type_name, id, params)?;
         let idx = self.nodes.len();
         self.nodes.push(NodeEntry { node });
         Ok(idx)
@@ -268,7 +233,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     pub fn build(
         mut self,
         clock_source: Box<dyn ClockSource>,
-        backend: Option<&backend_factory::BackendConfig<'_, T>>,
+        backend_name: Option<&str>,
+        sample_rate: u32,
+        buffer_size: u32,
+        channels: u32,
     ) -> Result<Graph<T, BUF_SIZE>, BuildError> {
         let num_nodes = self.nodes.len();
 
@@ -386,7 +354,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        let sample_rate = clock_source.sample_rate();
+        let sr = clock_source.sample_rate();
 
         // Allocate named buffers (tape loops, etc.) from resource definitions.
         let mut buffers = BufferRegistry::new();
@@ -406,10 +374,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
 
         // Resolve audio backend pointer for I/O nodes.
-        let backend_box = if let Some(cfg) = backend {
-            let b = cfg
-                .factory
-                .create(cfg.name, cfg.sample_rate, cfg.buffer_size, cfg.channels)
+        let backend_box = if let Some(name) = backend_name {
+            let b = self
+                .backends
+                .create(name, sample_rate, buffer_size, channels)
                 .map_err(BuildError::Backend)?;
             let ptr: *mut dyn rill_core::io::IoBackend<T> = &*b
                 as *const dyn rill_core::io::IoBackend<T>
@@ -449,7 +417,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     nodes: nodes_ptr as *mut u8,
                     len,
                     source_idx,
-                    sample_rate,
+                    sample_rate: sr,
                     queue: queue_ptr,
                 };
                 nodes[driver_idx].start(handle);
@@ -471,7 +439,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             topo_order: topo,
             clock_source,
             resources: allocated,
-            current_tick: ClockTick::new(0, BUF_SIZE as u32, sample_rate),
+            current_tick: ClockTick::new(0, BUF_SIZE as u32, sr),
             buffers: owned_buffers,
             backend: backend_box,
             command_queue,
@@ -636,6 +604,14 @@ mod tests {
         PortDirection, PortId, ProcessResult, Processor, Sink, Source,
     };
     use std::sync::Arc;
+
+    /// Create a test builder with empty factories.
+    fn test_builder<const B: usize>() -> GraphBuilder<f32, B> {
+        GraphBuilder::new(
+            Arc::new(NodeFactory::new()),
+            Arc::new(BackendFactory::new()),
+        )
+    }
 
     // ------------------------------------------------------------------------
     // Mock: ConstantSource — fills output with a constant value
@@ -950,7 +926,7 @@ mod tests {
     #[test]
     fn test_topo_order_correct() {
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
 
         let src = builder.add_source(Box::new(ConstantSource::new(1.0, 44100.0)));
         let proc = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
@@ -960,7 +936,13 @@ mod tests {
         builder.connect_signal(proc, 0, sink, 0);
 
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .expect("build failed");
 
         let order = graph.topo_order();
@@ -974,7 +956,7 @@ mod tests {
     #[test]
     fn test_cycle_detection() {
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
 
         let a = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
         let b = builder.add_processor(Box::new(NoopProcessor::new(44100.0)));
@@ -982,17 +964,29 @@ mod tests {
         builder.connect_signal(a, 0, b, 0);
         builder.connect_signal(b, 0, a, 0);
 
-        let result = builder.build(Box::new(SystemClock::with_sample_rate(44100.0)), None);
+        let result = builder.build(
+            Box::new(SystemClock::with_sample_rate(44100.0)),
+            None,
+            0,
+            0,
+            0,
+        );
         assert!(matches!(result, Err(BuildError::CycleDetected)));
     }
 
     #[test]
     fn test_source_node_create() {
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let idx = builder.add_source(Box::new(ConstantSource::new(0.5, 44100.0)));
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .expect("build failed");
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.topo_order(), &[idx]);
@@ -1249,12 +1243,18 @@ mod tests {
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(42.0, 44100.0)));
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(1), 44100.0)));
         builder.connect_signal(src, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
@@ -1276,7 +1276,7 @@ mod tests {
         use rill_core::traits::algorithm::ActionContext;
         use rill_core::traits::processable::{ProcessContext, Processable};
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(10.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1287,7 +1287,13 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
@@ -1316,14 +1322,20 @@ mod tests {
         const BUF: usize = 64;
         let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(0),
             44100.0,
             2.0,
         )));
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         let (mut nodes, _, _, _bufs) = graph.into_parts();
 
@@ -1361,7 +1373,7 @@ mod tests {
         const BUF: usize = 64;
         let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(7.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1372,7 +1384,13 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
@@ -1418,7 +1436,7 @@ mod tests {
         use rill_core::traits::processable::{ProcessContext, Processable};
 
         const BUF: usize = 64;
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(1.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1430,7 +1448,13 @@ mod tests {
         builder.connect_signal(proc, 0, snk, 0);
         builder.connect_feedback(proc, 0, proc, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
 
@@ -1475,7 +1499,7 @@ mod tests {
         const BUF: usize = 64;
         let queue: Arc<MpscQueue<SetParameter>> = Arc::new(MpscQueue::new());
 
-        let mut builder = GraphBuilder::<f32, BUF>::new();
+        let mut builder = test_builder::<BUF>();
         let src = builder.add_source(Box::new(ConstantSource::new(5.0, 44100.0)));
         let proc = builder.add_processor(Box::new(GainProcessor::<f32, BUF>::new(
             NodeId(1),
@@ -1486,7 +1510,13 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         let graph = builder
-            .build(Box::new(SystemClock::with_sample_rate(44100.0)), None)
+            .build(
+                Box::new(SystemClock::with_sample_rate(44100.0)),
+                None,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
