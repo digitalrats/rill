@@ -34,7 +34,7 @@ Processing is driven by `Port::propagate` (not an external engine).
 
 ## Processing model: Port::propagate
 
-No `SignalEngine`. The source node (e.g. `AudioInput` from `rill-io`)
+No `Port::propagate`. The source node (e.g. `AudioInput` from `rill-io`)
 creates its own processing callback. The callback:
 
 1. Drain `MpscQueue<ParameterCommand>` into graph nodes

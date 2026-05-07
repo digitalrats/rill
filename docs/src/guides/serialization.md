@@ -16,12 +16,12 @@ Enables `rill_graph::serialization` module, which depends on:
 
 ## Data model
 
-### `GraphDocument`
+### `GraphDef`
 
 The top-level container:
 
 ```rust
-pub struct GraphDocument {
+pub struct GraphDef {
     pub format_version: String,       // "rill/1"
     pub sample_rate: f32,
     pub block_size: usize,
@@ -83,7 +83,7 @@ let json = to_json(&graph)?;             // pretty-printed JSON
 let cbor = to_cbor(&graph)?;             // compact binary (Vec<u8>)
 ```
 
-Under the hood [`GraphDocument::from_graph`] iterates every node, reads
+Under the hood [`GraphDef::from_graph`] iterates every node, reads
 `NodeMetadata` + `get_parameter`, and walks output port routing tables.
 
 ## Import (JSON/CBOR → GraphBuilder)
@@ -103,7 +103,7 @@ let graph = builder.build(clock_source)?;
 
 ### Validation
 
-On import [`GraphDocument::into_builder`] performs:
+On import [`GraphDef::into_builder`] performs:
 
 1. **Duplicate NodeId check** — every `NodeDef.id` must be unique.
 2. **Block size match** — the document's `block_size` must equal `B`.
@@ -179,7 +179,7 @@ When importing, the document's `id` field is passed directly to
 | **JSON** | Debugging, manual editing, version-controlled presets |
 | **CBOR** | Network transfer, embedded preset storage, low-bandwidth links |
 
-Both encode the identical [`GraphDocument`] structure — switching formats
+Both encode the identical [`GraphDef`] structure — switching formats
 is a single function call.
 
 ## Example round-trip
@@ -277,14 +277,14 @@ When using the global registry you can skip the registry parameter entirely:
 
 ```rust
 #[cfg(feature = "serialization")]
-use rill_adrift::registration::{load_graph_json, load_graph_document};
+use rill_adrift::registration::{load_graph_json, load_graph_def};
 
 // Load from JSON string → GraphBuilder
 let builder = load_graph_json::<256>(r#"{"nodes":[…], "connections":[…]}"#)?;
 
-// Load from deserialized GraphDocument
-let doc: GraphDocument = serde_json::from_str(&json)?;
-let builder = load_graph_document::<256>(doc)?;
+// Load from deserialized GraphDef
+let doc: GraphDef = serde_json::from_str(&json)?;
+let builder = load_graph_def::<256>(doc)?;
 ```
 
 Both functions use `registry::<B>()` internally.
@@ -480,7 +480,7 @@ let json = r#"{"nodes":[{"id":0,"type_name":"app/tremolo","name":"MyTrem","param
 let mut builder = rill_graph::serialization::from_json(&json, &registry)?;
 ```
 
-### Referencing custom nodes from GraphDocument
+### Referencing custom nodes from GraphDef
 
 Once registered, custom type names work identically to built-in types in
 all serialisation formats:

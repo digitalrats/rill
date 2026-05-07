@@ -252,9 +252,9 @@ use rill_patchbay::prelude::*;
 use rill_core::queues::MpscQueue;
 use std::sync::Arc;
 
-// Создаем очередь команд и PatchbayControl
+// Создаем очередь команд и Engine
 let cmd_queue = Arc::new(MpscQueue::new(1024));
-let mut control = PatchbayControl::new(cmd_queue);
+let mut control = Engine::new(cmd_queue);
 
 // Добавляем LFO-серво
 control.add_lfo(
@@ -279,11 +279,11 @@ control.add_mapping_str(
 control.update(1.0 / 60.0);
 ```
 
-Либо через `PatchbayManager` с отдельным потоком обновления:
+Либо через `Manager` с отдельным потоком обновления:
 
 ```rust
-let mut manager = PatchbayManager::new(
-    PatchbayConfig::default(),
+let mut manager = Manager::new(
+    Config::default(),
     Arc::new(MpscQueue::new(1024)),
 );
 
@@ -614,7 +614,7 @@ let mode = PhysicalSensor::switch("filter_mode")
 
 #### MIDI/CV сенсоры (видят внешний мир)
 
-> **API в разработке.** MIDI и CV сенсоры пока не реализованы — в текущей версии внешние события обрабатываются через `PatchbayControl::handle_event()` и `Mapping`.
+> **API в разработке.** MIDI и CV сенсоры пока не реализованы — в текущей версии внешние события обрабатываются через `Engine::handle_event()` и `Mapping`.
 
 ```rust
 // Планируемый API:
@@ -659,9 +659,9 @@ use rill_patchbay::prelude::*;
 use rill_core::queues::MpscQueue;
 use std::sync::Arc;
 
-// Создаем очередь команд и PatchbayControl
+// Создаем очередь команд и Engine
 let cmd_queue = Arc::new(MpscQueue::new(1024));
-let mut control = PatchbayControl::new(cmd_queue);
+let mut control = Engine::new(cmd_queue);
 
 // Добавляем LFO-серво (разум + руки)
 control.add_lfo(
@@ -685,11 +685,11 @@ loop {
 }
 ```
 
-Либо через `PatchbayManager` с отдельным потоком обновления:
+Либо через `Manager` с отдельным потоком обновления:
 
 ```rust
-let mut manager = PatchbayManager::new(
-    PatchbayConfig::default(),
+let mut manager = Manager::new(
+    Config::default(),
     Arc::new(MpscQueue::new(1024)),
 );
 

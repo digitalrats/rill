@@ -30,7 +30,7 @@ Processing is driven by `Port::propagate` (not an external engine).
 
 ## Top-level processing entry point
 
-No `SignalEngine`. The source node (e.g. `AudioInput` from `rill-io`) creates its
+No `Port::propagate`. The source node (e.g. `AudioInput` from `rill-io`) creates its
 own processing callback. The callback drains the command queue, calls
 `Source::generate`, then `Port::propagate` to cascade through the DAG.
 

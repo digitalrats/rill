@@ -28,7 +28,7 @@ Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
 - **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `Graph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
-- **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::SignalEngine` drives the graph in the I/O callback.
+- **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
@@ -287,7 +287,7 @@ telemetry channel closes on audio thread shutdown).
 If data crosses threads, use `rill_core::queues::MpscQueue<ParameterCommand>`.
 Everything else is single-threaded within the signal graph running inside the
 I/O callback (see "Audio I/O thread" above). No external engine loop —
-`Port::propagate` replaces `SignalEngine::process_block()`.
+`Port::propagate` replaces `Port::propagate::process_block()`.
 
 ## Known pitfalls
 
@@ -298,7 +298,7 @@ I/O callback (see "Audio I/O thread" above). No external engine loop —
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
 - **Two-thread architecture**: the audio I/O thread (see "Audio I/O thread"
   above) runs `AudioInput`'s callback which drives the entire signal graph.
-  The control thread (soft RT) runs `rill-patchbay::PatchbayManager`.
+  The control thread (soft RT) runs `rill-patchbay::Manager`.
   Communication via `MpscQueue<ParameterCommand>`. Source/Sink nodes own
   I/O buffers — no external engine loop, `Port::propagate` replaces
-  `SignalEngine::process_block`.
+  `Port::propagate::process_block`.

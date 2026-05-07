@@ -200,7 +200,7 @@ are managed at the application level (Runtime) rather than at the ref level.
 ## Crate structure
 
 ```
-rill-core-actor           (new crate, depends on rill-core)
+rill-core-actor           (depends on rill-core)
 ├── ActorCell trait       (what processes messages)
 ├── ActorRef<M>           (handle to send messages)
 ├── MessageDispatcher<M>  (dispatcher with dead letters)
