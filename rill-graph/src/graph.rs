@@ -1,5 +1,5 @@
 use crate::backend_factory;
-use crate::registry::{NodeRegistry, RegistryError};
+use crate::factory::{NodeConstructor, NodeFactory, RegistryError};
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::{MpscQueue, SetParameter};
@@ -59,6 +59,14 @@ pub struct GraphResource {
 }
 
 /// Mutable builder for an immutable signal graph.
+///
+/// # Node factory
+///
+/// The builder can hold an [`Arc<NodeFactory>`] for constructing nodes by
+/// type name. Set via [`with_factory`](Self::with_factory) or provide
+/// one in [`new_with_factory`](Self::new_with_factory). Without a factory
+/// the typed `add_source` / `add_processor` / `add_sink` / `add_router`
+/// methods can still be used.
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     signal_edges: Vec<(usize, usize, usize, usize)>,
@@ -66,6 +74,9 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
     resources: Vec<GraphResource>,
+    /// Optional node factory (populated via [`register_node`](Self::register_node)
+    /// or set via [`with_factory`](Self::with_factory)).
+    factory: Option<NodeFactory<T, BUF_SIZE>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
@@ -75,7 +86,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_S
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
-    /// Create a new empty graph builder.
+    /// Create a new empty graph builder without a node factory.
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -84,10 +95,80 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
             resources: Vec::new(),
+            factory: None,
         }
     }
 
-    /// Register a named resource.
+    /// Create a new graph builder with a pre-populated node factory.
+    pub fn with_factory(mut self, factory: NodeFactory<T, BUF_SIZE>) -> Self {
+        self.factory = Some(factory);
+        self
+    }
+
+    /// Register a node type constructor in the internal factory.
+    ///
+    /// Creates a new [`NodeFactory`] if none was set yet.
+    pub fn register_node(&mut self, ctor: impl NodeConstructor<T, BUF_SIZE> + 'static) {
+        self.factory
+            .get_or_insert_with(NodeFactory::new)
+            .register(ctor);
+    }
+
+    /// Register a node type via a closure.
+    ///
+    /// Convenience wrapper; named for compatibility with the [`node_ctor!`] macro.
+    pub fn register_fn(
+        &mut self,
+        type_name: &'static str,
+        f: impl Fn(NodeId, &NodeParams) -> NodeVariant<T, BUF_SIZE> + Send + Sync + 'static,
+    ) {
+        self.factory
+            .get_or_insert_with(NodeFactory::new)
+            .register_fn(type_name, f);
+    }
+
+    /// Add a node by type name using the internal factory.
+    ///
+    /// The factory must have been set via [`with_factory`](Self::with_factory)
+    /// or [`new_with_factory`](Self::new_with_factory), and the type must
+    /// have been registered before calling this method.
+    ///
+    /// Returns the index of the newly added node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] if no factory is set or the type name
+    /// is not registered.
+    pub fn add_node(
+        &mut self,
+        type_name: &str,
+        params: &NodeParams,
+    ) -> Result<usize, RegistryError> {
+        let id = NodeId(self.nodes.len() as u32);
+        self.add_node_with_id(type_name, params, id)
+    }
+
+    /// Add a node with an explicit [`NodeId`].
+    ///
+    /// Like [`add_node`](Self::add_node) but uses the provided `id`.
+    /// Important for serialization where external references depend on
+    /// exact IDs.
+    pub fn add_node_with_id(
+        &mut self,
+        type_name: &str,
+        params: &NodeParams,
+        id: NodeId,
+    ) -> Result<usize, RegistryError> {
+        let factory = self.factory.as_ref().ok_or_else(|| {
+            RegistryError::UnknownType("no node factory set on GraphBuilder".into())
+        })?;
+        let node = factory.construct(type_name, id, params)?;
+        let idx = self.nodes.len();
+        self.nodes.push(NodeEntry { node });
+        Ok(idx)
+    }
+
+    /// Register a named resource (tape loop, buffer, etc.).
     pub fn add_resource(&mut self, resource: GraphResource) {
         self.resources.push(resource);
     }
@@ -131,66 +212,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         idx
     }
 
-    /// Add a node by type name via the registry.
-    ///
-    /// Looks up the type name in `registry`, calls its
-    /// NodeConstructor::construct, and pushes the resulting
-    /// [`NodeVariant`] into the graph. The node's [`NodeId`] is
-    /// automatically assigned from its position in the graph.
-    ///
-    /// Returns the index of the newly added node.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RegistryError` if the type name is not registered or
-    /// construction fails.
-    pub fn add_node(
-        &mut self,
-        registry: &NodeRegistry<T, BUF_SIZE>,
-        type_name: &str,
-        params: &NodeParams,
-    ) -> Result<usize, RegistryError> {
-        let id = NodeId(self.nodes.len() as u32);
-        self.add_node_with_id(registry, type_name, params, id)
-    }
-
-    /// Add a node with an explicit [`NodeId`].
-    ///
-    /// Unlike [`add_node`](Self::add_node) which auto-assigns IDs, this
-    /// method uses the provided `id` directly. Important for serialization
-    /// where external references (e.g. patchbay bindings) depend on exact IDs.
-    ///
-    /// Returns the index (position) of the newly added node.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RegistryError` if the type name is not registered or
-    /// construction fails.
-    ///
-    /// # Panics
-    ///
-    /// If `id` duplicates a previously registered ID the error is reported
-    /// by the caller — this method does not check for duplicates.
-    pub fn add_node_with_id(
-        &mut self,
-        registry: &NodeRegistry<T, BUF_SIZE>,
-        type_name: &str,
-        params: &NodeParams,
-        id: NodeId,
-    ) -> Result<usize, RegistryError> {
-        let node = registry.construct(type_name, id, params)?;
-        let idx = self.nodes.len();
-        self.nodes.push(NodeEntry { node });
-        Ok(idx)
-    }
-
-    /// Return the number of nodes added so far.
-    pub fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Connect signal output port `from_port` of node `from_node`
-    /// to signal input port `to_port` of node `to_node`.
+    /// Connect signal ports (audio data).
     pub fn connect_signal(
         &mut self,
         from_node: usize,
@@ -202,7 +224,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Connect a control output to a control input.
+    /// Connect control ports (modulation values).
     pub fn connect_control(
         &mut self,
         from_node: usize,
@@ -214,7 +236,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Connect a clock output to a clock input.
+    /// Connect clock ports (timing events).
     pub fn connect_clock(
         &mut self,
         from_node: usize,
@@ -226,8 +248,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Connect a feedback output to a feedback input.
-    /// This creates a feedback path (previous output → current input).
+    /// Connect feedback ports (delay lines, state carryover).
     pub fn connect_feedback(
         &mut self,
         from_node: usize,
@@ -239,11 +260,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Build the immutable Graph.
+    /// Build the graph.
     ///
-    /// # Errors
-    ///
-    /// Returns `BuildError::CycleDetected` if the signal edges contain a cycle.
+    /// If `backend` is `Some`, the builder looks for a driver node in the
+    /// graph and auto-starts it with a command queue. Without a backend
+    /// the graph is purely structural (no audio I/O, no command queue).
     pub fn build(
         mut self,
         clock_source: Box<dyn ClockSource>,

@@ -17,9 +17,10 @@ use std::collections::{HashMap, HashSet};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParameterId;
+use std::sync::Arc;
 
+use crate::factory::{NodeFactory, RegistryError};
 use crate::graph::GraphBuilder;
-use crate::registry::{NodeRegistry, RegistryError};
 
 // Re-export serde unconditionally — the whole module is feature-gated.
 use serde::de;
@@ -324,10 +325,16 @@ impl GraphDef {
     ///
     /// Validates that all node types are registered and no [`NodeId`] is
     /// duplicated, then constructs every node and wires every connection.
-    pub fn into_builder<T: Transcendental, const B: usize>(
-        self,
-        registry: &NodeRegistry<T, B>,
-    ) -> Result<GraphBuilder<T, B>, SerializationError> {
+    /// Populate an existing [`GraphBuilder`] from this definition.
+    ///
+    /// The builder must already have node types registered via
+    /// [`GraphBuilder::register_node`] before calling this method.
+    /// Validates IDs, resources, and connections, then adds nodes
+    /// and edges to the builder using its internal registry.
+    pub fn populate<T: Transcendental, const B: usize>(
+        &self,
+        builder: &mut GraphBuilder<T, B>,
+    ) -> Result<(), SerializationError> {
         // ── validate IDs ──
         let mut seen = HashSet::new();
         for nd in &self.nodes {
@@ -344,8 +351,6 @@ impl GraphDef {
             )));
         }
 
-        let mut builder = GraphBuilder::new();
-
         // ── register resources ──
         for rd in &self.resources {
             builder.add_resource(crate::graph::GraphResource {
@@ -355,13 +360,13 @@ impl GraphDef {
             });
         }
 
-        // ── construct nodes ──
+        // ── construct nodes (uses builder's internal registry) ──
         for nd in &self.nodes {
             let mut p = NodeParams::new(self.sample_rate);
             for (k, v) in &nd.parameters {
                 p = p.with(k.clone(), v.clone());
             }
-            builder.add_node_with_id(registry, &nd.type_name, &p, NodeId(nd.id))?;
+            builder.add_node_with_id(&nd.type_name, &p, NodeId(nd.id))?;
         }
 
         // ── build NodeId → index map ──
@@ -403,7 +408,7 @@ impl GraphDef {
             }
         }
 
-        Ok(builder)
+        Ok(())
     }
 }
 
@@ -496,13 +501,8 @@ pub fn to_json<T: Transcendental, const B: usize>(
 }
 
 /// Deserialise a graph from JSON.
-pub fn from_json<T: Transcendental, const B: usize>(
-    json: &str,
-    registry: &NodeRegistry<T, B>,
-) -> Result<GraphBuilder<T, B>, SerializationError> {
-    let doc: GraphDef =
-        serde_json::from_str(json).map_err(|e| SerializationError::InvalidFormat(e.to_string()))?;
-    doc.into_builder(registry)
+pub fn from_json(json: &str) -> Result<GraphDef, SerializationError> {
+    serde_json::from_str(json).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
 }
 
 /// Serialise a graph to CBOR binary.
@@ -514,13 +514,8 @@ pub fn to_cbor<T: Transcendental, const B: usize>(
 }
 
 /// Deserialise a graph from CBOR binary.
-pub fn from_cbor<T: Transcendental, const B: usize>(
-    bytes: &[u8],
-    registry: &NodeRegistry<T, B>,
-) -> Result<GraphBuilder<T, B>, SerializationError> {
-    let doc: GraphDef = serde_cbor::from_slice(bytes)
-        .map_err(|e| SerializationError::InvalidFormat(e.to_string()))?;
-    doc.into_builder(registry)
+pub fn from_cbor(bytes: &[u8]) -> Result<GraphDef, SerializationError> {
+    serde_cbor::from_slice(bytes).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
 }
 
 // ============================================================================
@@ -530,8 +525,8 @@ pub fn from_cbor<T: Transcendental, const B: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::factory::NodeConstructor;
     use crate::graph::Graph;
-    use crate::registry::NodeConstructor;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
     use rill_core::traits::node::NodeState;
@@ -541,6 +536,7 @@ mod tests {
         Processor, Source,
     };
     use rill_core::ParamMetadata as PM;
+    use std::sync::Arc;
 
     // ==================================================================
     // Test node — configurable metadata, parameters, feedback ports
@@ -728,21 +724,17 @@ mod tests {
 
     // ── Helpers ────────────────────────────────────────────────────
 
-    fn empty_registry() -> NodeRegistry<f32, 64> {
-        let mut r = NodeRegistry::<f32, 64>::new();
+    fn empty_factory() -> NodeFactory<f32, 64> {
+        let mut r = NodeFactory::<f32, 64>::new();
         r.register(TestCtor);
         r.register(ParamCtor);
         r
     }
 
-    fn build_small_graph(registry: &NodeRegistry<f32, 64>) -> Graph<f32, 64> {
-        let mut b = GraphBuilder::new();
-        let src = b
-            .add_node(registry, "rill/test", &NodeParams::new(44100.0))
-            .unwrap();
-        let proc = b
-            .add_node(registry, "rill/test", &NodeParams::new(44100.0))
-            .unwrap();
+    fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
+        let mut b = GraphBuilder::new().with_factory(factory.clone());
+        let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
+        let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
         b.build(
             Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
@@ -757,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_json_roundtrip() {
-        let reg = empty_registry();
+        let reg = empty_factory();
         let graph = build_small_graph(&reg);
 
         let json = to_json(&graph).expect("to_json");
@@ -779,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_cbor_roundtrip() {
-        let reg = empty_registry();
+        let reg = empty_factory();
         let graph = build_small_graph(&reg);
 
         let cbor = to_cbor(&graph).expect("to_cbor");
@@ -791,7 +783,7 @@ mod tests {
 
     #[test]
     fn test_empty_graph_roundtrip() {
-        let reg = empty_registry();
+        let reg = empty_factory();
         let graph = GraphBuilder::<f32, 64>::new()
             .build(
                 Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
@@ -813,8 +805,8 @@ mod tests {
 
     #[test]
     fn test_export_parameters() {
-        let reg = empty_registry();
-        let mut b = GraphBuilder::new();
+        let reg = empty_factory();
+        let mut b = GraphBuilder::new().with_factory(reg.clone());
         b.add_node(
             &reg,
             "rill/param",
@@ -841,8 +833,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_parameters() {
-        let reg = empty_registry();
-        let mut b = GraphBuilder::new();
+        let reg = empty_factory();
+        let mut b = GraphBuilder::new().with_factory(reg.clone());
         b.add_node(
             &reg,
             "rill/param",
@@ -876,14 +868,10 @@ mod tests {
 
     #[test]
     fn test_export_feedback_connection() {
-        let reg = empty_registry();
-        let mut b = GraphBuilder::new();
-        let src = b
-            .add_node(&reg, "rill/test", &NodeParams::new(44100.0))
-            .unwrap();
-        let proc = b
-            .add_node(&reg, "rill/test", &NodeParams::new(44100.0))
-            .unwrap();
+        let reg = empty_factory();
+        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
+        let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
         let graph = b
@@ -907,10 +895,9 @@ mod tests {
     #[test]
     fn test_export_type_name_explicit() {
         // ParamCtor declares type_name = Some("rill/param")
-        let reg = empty_registry();
-        let mut b = GraphBuilder::new();
-        b.add_node(&reg, "rill/param", &NodeParams::new(44100.0))
-            .unwrap();
+        let reg = empty_factory();
+        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         let graph = b
             .build(
                 Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
@@ -943,7 +930,7 @@ mod tests {
         }
         reg.register(FallbackCtor);
 
-        b.add_node(&reg, "rill/fallback", &NodeParams::new(44100.0))
+        b.add_node("rill/fallback", &NodeParams::new(44100.0))
             .unwrap();
         let graph = b
             .build(
@@ -962,12 +949,12 @@ mod tests {
 
     #[test]
     fn test_roundtrip_preserves_node_ids() {
-        let reg = empty_registry();
+        let reg = empty_factory();
         let mut b = GraphBuilder::new();
         // Explicit IDs via add_node_with_id
-        b.add_node_with_id(&reg, "rill/test", &NodeParams::new(44100.0), NodeId(100))
+        b.add_node_with_id("rill/test", &NodeParams::new(44100.0), NodeId(100))
             .unwrap();
-        b.add_node_with_id(&reg, "rill/param", &NodeParams::new(44100.0), NodeId(200))
+        b.add_node_with_id("rill/param", &NodeParams::new(44100.0), NodeId(200))
             .unwrap();
         b.connect_signal(0, 0, 1, 0);
         let graph = b
@@ -997,17 +984,11 @@ mod tests {
 
     #[test]
     fn test_roundtrip_complex_topology() {
-        let reg = empty_registry();
-        let mut b = GraphBuilder::new();
-        let s0 = b
-            .add_node(&reg, "rill/test", &NodeParams::new(44100.0))
-            .unwrap();
-        let p1 = b
-            .add_node(&reg, "rill/param", &NodeParams::new(44100.0))
-            .unwrap();
-        let p2 = b
-            .add_node(&reg, "rill/param", &NodeParams::new(44100.0))
-            .unwrap();
+        let reg = empty_factory();
+        let mut b = GraphBuilder::new().with_factory(reg.clone());
+        let s0 = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
+        let p1 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
+        let p2 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(s0, 0, p1, 0);
         b.connect_signal(p1, 0, p2, 0);
 
@@ -1040,7 +1021,7 @@ mod tests {
 
     #[test]
     fn test_unknown_type_error() {
-        let reg = empty_registry();
+        let reg = empty_factory();
         let doc = GraphDef {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
@@ -1061,7 +1042,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_id_error() {
-        let reg = empty_registry();
+        let reg = empty_factory();
         let doc = GraphDef {
             format_version: "rill/1".to_string(),
             sample_rate: 44100.0,
@@ -1101,7 +1082,7 @@ mod tests {
             connections: vec![],
             description: None,
         };
-        let r = NodeRegistry::<f32, 256>::new();
+        let r = NodeFactory::<f32, 256>::new();
         match doc.into_builder(&r) {
             Err(SerializationError::InvalidFormat(_)) => {}
             _ => panic!("expected InvalidFormat"),
@@ -1110,7 +1091,7 @@ mod tests {
 
     #[test]
     fn test_invalid_json() {
-        let reg = empty_registry();
+        let reg = empty_factory();
         assert!(from_json::<f32, 64>("not json", &reg).is_err());
     }
 }

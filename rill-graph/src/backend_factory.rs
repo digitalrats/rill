@@ -8,7 +8,7 @@ use rill_core::io::IoBackend;
 pub type BackendCtor<T> =
     fn(sample_rate: u32, buffer_size: u32, channels: u32) -> Result<Box<dyn IoBackend<T>>, String>;
 
-/// Registry of named backend constructors (analogue of `NodeRegistry`).
+/// Registry of named backend constructors (analogue of `NodeFactory`).
 pub struct BackendFactory<T> {
     ctors: HashMap<&'static str, BackendCtor<T>>,
 }
