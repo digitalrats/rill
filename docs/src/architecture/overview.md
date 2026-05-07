@@ -42,7 +42,7 @@ a source node and cascades through the DAG.
 - **Audio thread** (hard or soft RT) — runs the process callback:
   `generate()` → `propagate()` → `consume()`. No heap allocs, no locks,
   no syscalls.
-- **Control thread** (tokio green threads) — runs `PatchbayManager` with
+- **Control thread** (tokio green threads) — runs `Manager` with
   automata (LFO, envelopes, sequencers). Communicates with the audio
   thread via lock-free `MpscQueue<ParameterCommand>`.
 

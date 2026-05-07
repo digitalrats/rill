@@ -1,8 +1,8 @@
-//! Однополюсный фильтр (One-pole)
+//! One-pole filter
 //!
-//! Самый быстрый фильтр, идеально подходит для:
-//! - Сглаживания параметров
-//! - Простых low-pass/high-pass фильтров
+//! The fastest filter, ideal for:
+//! - Parameter smoothing
+//! - Simple low-pass/high-pass filters
 //! - Envelope followers
 
 use super::{FilterParams, FilterType};
@@ -12,25 +12,25 @@ use core::f32::consts::PI;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
-/// Однополюсный фильтр
+/// One-pole filter
 ///
-/// # Формула
+/// # Formula
 /// ```text
 /// y[n] = a * x[n] + (1 - a) * y[n-1]
 /// ```
 pub struct OnePole<T: Transcendental> {
-    /// Параметры фильтра
+    /// Filter parameters
     params: FilterParams,
-    /// Коэффициент фильтра
+    /// Filter coefficient
     alpha: ScalarVector1<T>,
-    /// Предыдущий выход
+    /// Previous output
     y1: ScalarVector1<T>,
-    /// Частота дискретизации
+    /// Sample rate
     sample_rate: f32,
 }
 
 impl<T: Transcendental> OnePole<T> {
-    /// Создать новый однополюсный фильтр
+    /// Create a new one-pole filter
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
             params,
@@ -42,26 +42,26 @@ impl<T: Transcendental> OnePole<T> {
         filter
     }
 
-    /// Обновить коэффициент alpha
+    /// Update alpha coefficient
     fn update_alpha(&mut self) {
         // α = 1 - exp(-2π * cutoff / sample_rate)
         let exp_arg = -2.0 * PI * self.params.cutoff / self.sample_rate;
         self.alpha = ScalarVector1::splat(T::from_f32(1.0 - exp_arg.exp()));
     }
 
-    /// Обработать один семпл
+    /// Process a single sample
     pub fn process_sample(&mut self, input: T) -> T {
         let one = ScalarVector1::splat(T::from_f32(1.0));
         let inp = ScalarVector1::splat(input);
         let out = match self.params.filter_type {
             FilterType::LowPass => self.alpha * inp + (one - self.alpha) * self.y1,
             FilterType::HighPass => {
-                // Для high-pass: y[n] = α * (y[n-1] + x[n] - x[n-1])
-                // Упрощённая версия через low-pass: x - lowpass(x)
+                // For high-pass: y[n] = α * (y[n-1] + x[n] - x[n-1])
+                // Simplified via low-pass: x - lowpass(x)
                 let lp = self.alpha * inp + (one - self.alpha) * self.y1;
                 inp - lp
             }
-            _ => inp, // Другие типы не поддерживаются
+            _ => inp, // Other types not supported
         };
         self.y1 = out;
         out.extract(0)
@@ -94,12 +94,12 @@ impl<T: Transcendental> Algorithm<T> for OnePole<T> {
             let out = match self.params.filter_type {
                 FilterType::LowPass => self.alpha * inp + (one - self.alpha) * self.y1,
                 FilterType::HighPass => {
-                    // Для high-pass: y[n] = α * (y[n-1] + x[n] - x[n-1])
-                    // Упрощённая версия через low-pass: x - lowpass(x)
+                    // For high-pass: y[n] = α * (y[n-1] + x[n] - x[n-1])
+                    // Simplified via low-pass: x - lowpass(x)
                     let lp = self.alpha * inp + (one - self.alpha) * self.y1;
                     ScalarVector1::splat(inp) - lp
                 }
-                _ => ScalarVector1::splat(inp), // Другие типы не поддерживаются
+                _ => ScalarVector1::splat(inp), // Other types not supported
             };
 
             self.y1 = out;

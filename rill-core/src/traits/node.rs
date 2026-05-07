@@ -1,7 +1,7 @@
 //! Core node traits for the Rill ecosystem
 //!
 //! Defines the fundamental building blocks of the signal graph:
-//! - `SignalNode`: Base trait for all nodes
+//! - `Node`: Base trait for all nodes
 //! - `Source`: Active generator (has no inputs)
 //! - `Processor`: Passive processor (has inputs and outputs)
 //! - `Sink`: Active consumer (has no outputs)
@@ -241,7 +241,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 }
 
 // ============================================================================
-// SignalNode Trait (Base for all nodes)
+// Node Trait (Base for all nodes)
 // ============================================================================
 
 /// Base trait for all audio nodes
@@ -256,7 +256,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 /// - `Source` for generators
 /// - `Processor` for processors with inputs/outputs
 /// - `Sink` for consumers
-pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sync {
+pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sync {
     /// Get node metadata
     fn metadata(&self) -> NodeMetadata;
 
@@ -286,7 +286,6 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
     /// Falls back to `set_parameter()` when the port is not found.
     fn apply_set_parameter(&mut self, cmd: &SetParameter) -> ProcessResult<()> {
         use crate::traits::port::{PortDirection, PortType};
-        let value = T::from_f32(cmd.value);
         let port = match cmd.port.port_type() {
             PortType::Control => self.control_port_mut(cmd.port.index() as usize),
             PortType::Signal => match cmd.port.direction() {
@@ -296,17 +295,32 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
             PortType::Param => self.input_port_mut(cmd.port.index() as usize),
             PortType::Clock | PortType::Feedback => None,
         };
-        match port {
-            Some(p) => {
-                p.set_value(value);
+        match (port, &cmd.value) {
+            (Some(p), ParamValue::Float(v)) => {
+                p.set_value(T::from_f32(*v));
                 Ok(())
             }
-            None => self.set_parameter(&cmd.parameter, ParamValue::Float(cmd.value)),
+            _ => self.set_parameter(&cmd.parameter, cmd.value.clone()),
         }
     }
 
     /// Get node ID
     fn id(&self) -> NodeId;
+
+    /// Resolve named resource buffers (tape loops, etc.) from the registry.
+    fn resolve_resources(&mut self, _buffers: &crate::buffer::BufferRegistry<T>) {}
+
+    /// Provide the shared audio backend pointer.
+    ///
+    /// Called during graph assembly so that audio I/O nodes can store
+    /// the pointer.  Default no‑op.
+    fn resolve_backend(&mut self, _backend: *mut dyn crate::io::IoBackend<T>) {}
+
+    /// Start graph processing. Default no‑op — overridden by I/O nodes.
+    fn start(&mut self, _handle: crate::traits::active::GraphHandle) {}
+
+    /// Stop graph processing. Default no‑op — overridden by I/O nodes.
+    fn stop(&mut self) {}
 
     /// Set node ID
     fn set_id(&mut self, id: NodeId);
@@ -413,9 +427,7 @@ pub trait SignalNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Sen
 ///
 /// Sources generate audio from internal state. They have no audio inputs,
 /// but may have control and clock inputs for modulation.
-pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>:
-    SignalNode<T, BUF_SIZE>
-{
+pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
     /// Generate the next block of audio
     ///
     /// # Arguments
@@ -457,7 +469,7 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>:
 /// Processors transform input signals into output signals.
 /// They have audio inputs and outputs, and may have control and clock ports.
 pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
-    SignalNode<T, BUF_SIZE>
+    Node<T, BUF_SIZE>
 {
     /// Process a block of audio
     ///
@@ -493,9 +505,7 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
 ///
 /// Sinks consume audio and send it to external destinations.
 /// They have no audio outputs, but may have control and clock ports.
-pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>:
-    SignalNode<T, BUF_SIZE>
-{
+pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
     /// Consume a block of audio
     ///
     /// # Arguments

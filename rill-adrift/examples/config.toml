@@ -1,0 +1,8 @@
+sample_rate = 44100.0
+block_size = 256
+
+[backend]
+name = "null"
+params = { sample_rate = "44100", buffer_size = "256", channels = "2" }
+
+graph_path = "examples/graph.json"

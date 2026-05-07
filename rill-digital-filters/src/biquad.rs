@@ -5,8 +5,8 @@
 
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessError,
-    ProcessResult, Processor, SignalNode, Transcendental,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    ProcessError, ProcessResult, Processor, Transcendental,
 };
 use rill_core_dsp::algorithm::ParameterizedAlgorithm;
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
@@ -40,7 +40,9 @@ pub struct BiquadProcessor<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
     /// Creates a new Biquad processor with default parameters.
     pub fn new(sample_rate: f32) -> Self {
-        let metadata = NodeMetadata::new("BiquadProcessor", NodeCategory::Processor);
+        let mut metadata = NodeMetadata::new("BiquadProcessor", NodeCategory::Processor);
+        metadata.signal_inputs = 1;
+        metadata.signal_outputs = 1;
 
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
@@ -166,9 +168,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-    for BiquadProcessor<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
@@ -251,6 +251,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
 
     fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
         self.outputs.get_mut(index)
+    }
+    fn num_signal_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+    fn num_signal_inputs(&self) -> usize {
+        self.inputs.len()
     }
 
     fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {

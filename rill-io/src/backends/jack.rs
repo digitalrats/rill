@@ -1,17 +1,24 @@
-//! JACK бэкенд — OutputWindow, без ring buffer для output.
+//! JACK backend — OutputWindow, no ring buffer for output.
+//!
+//! `run()` — non-blocking: creates JACK client, activates, saves
+//! the handle and returns. Process callback runs on JACK RT thread.
+//! `stop()` drops the handle → JACK deactivates.
+//! No `std::thread`, `std::sync`.
 
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
-use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
+use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
 
-use crate::audio_io::{AudioIo, IoResult as AudioIoResult};
+use crate::buffer::IoRingBuffer;
+
 use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
+use crate::output_window::{OutputSlot, OutputWindow};
+use rill_core::io::IoBackend;
 
 /// Callback slot.
 #[derive(Copy, Clone)]
@@ -36,53 +43,17 @@ impl CbSlot {
     }
 }
 
-/// Mutable view into a JACK port buffer chunk.
-struct OutputWindow {
-    ptr: *mut f32,
-    capacity: usize,
-}
-
-impl OutputWindow {
-    fn new(ptr: *mut f32, len: usize) -> Self {
-        Self { ptr, capacity: len }
-    }
-    fn as_mut_slice(&mut self) -> &mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
-    }
-}
-
-/// Lock-free slot for the current output window.
-#[derive(Copy, Clone)]
-struct OutputSlot(*mut Option<OutputWindow>);
-unsafe impl Send for OutputSlot {}
-unsafe impl Sync for OutputSlot {}
-
-impl OutputSlot {
-    fn new() -> Self {
-        Self(Box::into_raw(Box::new(None)))
-    }
-    unsafe fn set(&self, w: OutputWindow) {
-        *self.0 = Some(w);
-    }
-    unsafe fn clear(&self) {
-        *self.0 = None;
-    }
-    unsafe fn as_mut(&self) -> Option<&mut OutputWindow> {
-        (*self.0).as_mut()
-    }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0));
-    }
-}
-
 /// JACK audio backend.
 pub struct JackBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     output_slot: OutputSlot,
-    thread_handle: Option<thread::JoinHandle<()>>,
+    input_ring: Arc<IoRingBuffer>,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
+    /// Stores the active JACK client handle.
+    /// Set once in `run()` (audio thread), taken once in `stop()` (control thread).
+    active_client: UnsafeCell<Option<jack::AsyncClient<(), JackProcessHandler>>>,
 }
 
 unsafe impl Send for JackBackend {}
@@ -106,31 +77,96 @@ impl JackBackend {
             ));
         }
 
-        let xruns = Arc::new(AtomicU32::new(0));
-        let running = Arc::new(AtomicBool::new(false));
-        let process_cb = CbSlot::new();
-        let output_slot = OutputSlot::new();
-
-        let t_config = config.clone();
-        let t_running = running.clone();
-        let t_process_cb = process_cb;
-        let t_slot = output_slot;
-
-        let handle = thread::Builder::new()
-            .name("rill-jack".into())
-            .spawn(move || {
-                run_jack_thread(t_process_cb, t_config, t_running, t_slot);
-            })
-            .map_err(|e| IoError::Backend(e.to_string()))?;
-
+        // JACK periods (nframes) can be 1024-4096, so ring buffer needs
+        // to hold multiple periods. Use 32x multiplier like PipeWire.
+        let buf_cap = (config.buffer_size * config.input_channels.max(1) * 32) as usize;
         Ok(Self {
             config,
-            process_cb,
-            output_slot,
-            thread_handle: Some(handle),
-            xruns,
-            running,
+            process_cb: CbSlot::new(),
+            output_slot: OutputSlot::new(),
+            input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
+            xruns: Arc::new(AtomicU32::new(0)),
+            running: Arc::new(AtomicBool::new(false)),
+            active_client: UnsafeCell::new(None),
         })
+    }
+
+    /// Common setup: create JACK client, register ports, activate.
+    /// Called from `run()` (non‑blocking) and `AudioBackend::start()`.
+    fn setup(&self) -> Result<(), String> {
+        let client_name = self.config.output_device.as_deref().unwrap_or("rill");
+
+        let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
+            .map_err(|e| format!("JACK client new: {e:?}"))?;
+
+        let out_port: Option<Port<AudioOut>> = if self.config.output_channels > 0 {
+            Some(
+                client
+                    .register_port("output", AudioOut)
+                    .map_err(|e| format!("JACK output port: {e:?}"))?,
+            )
+        } else {
+            None
+        };
+
+        let in_ports: Vec<Port<AudioIn>> = if self.config.input_channels > 0 {
+            let n = self.config.input_channels.min(2) as usize;
+            let mut ports = Vec::with_capacity(n);
+            for i in 0..n {
+                let name = if n == 1 {
+                    "input".into()
+                } else {
+                    format!("input_{}", i + 1)
+                };
+                ports.push(
+                    client
+                        .register_port(&name, AudioIn)
+                        .map_err(|e| format!("JACK input port {name}: {e:?}"))?,
+                );
+            }
+            ports
+        } else {
+            Vec::new()
+        };
+
+        // Auto-connect ports (before activation, ports are already registered)
+        let out_port_name = out_port.as_ref().and_then(|p| p.name().ok());
+        let in_port_names: Vec<_> = in_ports.iter().filter_map(|p| p.name().ok()).collect();
+
+        let in_ch = self.config.input_channels.max(1) as usize;
+        let handler = JackProcessHandler {
+            process_cb: self.process_cb,
+            out_port,
+            in_ports,
+            in_ch,
+            output_slot: self.output_slot.clone(),
+            input_ring: self.input_ring.clone(),
+        };
+
+        let active_client = client
+            .activate_async((), handler)
+            .map_err(|e| format!("JACK activate: {e:?}"))?;
+
+        let jack_client = active_client.as_client();
+        if let Some(name) = out_port_name {
+            for target in &["system:playback_1", "system:playback_2"] {
+                if let Err(e) = jack_client.connect_ports_by_name(&name, target) {
+                    log::info!("JACK connect {name} → {target}: {e}");
+                }
+            }
+        }
+        for (i, name) in in_port_names.iter().enumerate() {
+            let src = format!("system:capture_{}", i + 1);
+            if let Err(e) = jack_client.connect_ports_by_name(&src, name) {
+                log::info!("JACK connect {src} → {name}: {e}");
+            }
+        }
+
+        self.running.store(true, Ordering::Release);
+        unsafe {
+            *self.active_client.get() = Some(active_client);
+        }
+        Ok(())
     }
 }
 
@@ -138,120 +174,115 @@ impl JackBackend {
 
 struct JackProcessHandler {
     process_cb: CbSlot,
-    out_port: Port<AudioOut>,
+    out_port: Option<Port<AudioOut>>,
+    in_ports: Vec<Port<AudioIn>>,
+    in_ch: usize,
     output_slot: OutputSlot,
+    input_ring: Arc<IoRingBuffer>,
 }
 
 impl ProcessHandler for JackProcessHandler {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
         let nframes = ps.n_frames() as usize;
-        let out = self.out_port.as_mut_slice(ps);
 
-        // Split JACK output buffer into BUF_SIZE chunks and process each.
-        // write_output() sums stereo to mono and writes directly into out.
-        let chunk = 256usize;
-        let mut off = 0usize;
-        while off + chunk <= nframes {
-            unsafe {
-                self.output_slot
-                    .set(OutputWindow::new(out.as_mut_ptr().add(off), chunk));
-                self.process_cb.call();
-                self.output_slot.clear();
+        // Capture: read input ports → ring buffer (interleaved)
+        if !self.in_ports.is_empty() {
+            let n_samp = nframes * self.in_ch;
+            let max_samp = n_samp.min(4096);
+            let mut temp = [0.0f32; 4096];
+            let len = max_samp;
+            for i in 0..nframes.min(len / self.in_ch) {
+                for ch in 0..self.in_ch.min(2) {
+                    if ch < self.in_ports.len() {
+                        let src = self.in_ports[ch].as_slice(ps);
+                        if i < src.len() {
+                            temp[i * self.in_ch + ch] = src[i];
+                        }
+                    }
+                }
             }
-            off += chunk;
+            self.input_ring.write(&temp[..len]);
         }
-        // Zero remaining frames
-        if off < nframes {
-            out[off..nframes].fill(0.0);
+
+        // Playback: process graph → output port
+        if let Some(ref mut out) = self.out_port {
+            let buf = out.as_mut_slice(ps);
+            let chunk = 256usize;
+            let mut off = 0usize;
+            while off + chunk <= nframes {
+                unsafe {
+                    self.output_slot
+                        .set(OutputWindow::new(buf.as_mut_ptr().add(off), chunk));
+                    self.process_cb.call();
+                    self.output_slot.clear();
+                }
+                off += chunk;
+            }
+            if off < nframes {
+                buf[off..nframes].fill(0.0);
+            }
+        } else if !self.in_ports.is_empty() {
+            // Capture-only: process all available blocks
+            let chunk_samps = 256 * self.in_ch;
+            while self.input_ring.len() >= chunk_samps {
+                unsafe {
+                    self.process_cb.call();
+                }
+            }
         }
 
         Control::Continue
     }
 }
 
-fn run_jack_thread(
-    process_cb: CbSlot,
-    config: AudioConfig,
-    running: Arc<AtomicBool>,
-    output_slot: OutputSlot,
-) {
-    loop {
-        thread::park();
-        if running.load(Ordering::Acquire) {
-            break;
-        }
-        return;
-    }
-
-    let client_name = config.output_device.as_deref().unwrap_or("rill");
-
-    let (client, _status) = match Client::new(client_name, ClientOptions::NO_START_SERVER) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("JACK client new: {e:?}");
-            return;
-        }
-    };
-
-    let out_port: Port<AudioOut> = match client.register_port("output", AudioOut) {
-        Ok(p) => p,
-        Err(e) => {
-            log::error!("JACK output port: {e:?}");
-            return;
-        }
-    };
-
-    let handler = JackProcessHandler {
-        process_cb,
-        out_port,
-        output_slot,
-    };
-
-    let active_client = match client.activate_async((), handler) {
-        Ok(a) => a,
-        Err(e) => {
-            log::error!("JACK activate: {e:?}");
-            return;
-        }
-    };
-
-    // Auto-connect output port to JACK system playback ports.
-    let jack_client = active_client.as_client();
-    let out_port_name = format!("{}:output", client_name);
-    for target in &["system:playback_1", "system:playback_2"] {
-        if let Err(e) = jack_client.connect_ports_by_name(&out_port_name, target) {
-            log::info!("JACK connect {} → {}: {}", out_port_name, target, e);
-        }
-    }
-
-    while running.load(Ordering::Acquire) {
-        thread::park();
-    }
-
-    drop(active_client);
-}
-
 // ============================================================================
-// AudioIo impl
+// IoBackend impl
 // ============================================================================
 
-impl AudioIo for JackBackend {
+impl IoBackend<f32> for JackBackend {
     fn set_process_callback(&self, cb: Box<dyn Fn()>) {
         unsafe {
             self.process_cb.set(cb);
         }
     }
 
-    fn read_input(&self, _left: &mut [f32], _right: &mut [f32]) -> usize {
-        0
+    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
+        if frames == 0 {
+            return 0;
+        }
+        let out_ch = self.config.input_channels.max(1) as usize;
+        let cap = frames.saturating_mul(out_ch).min(4096);
+        let mut temp = [0.0f32; 4096];
+        let n = self.input_ring.read(&mut temp[..cap]);
+        let frames_out = n / out_ch;
+        let out = frames_out.min(frames);
+        if out_ch >= 2 {
+            for i in 0..out {
+                if let Some(c) = channels.get_mut(0) {
+                    c[i] = temp[i * out_ch];
+                }
+                if let Some(c) = channels.get_mut(1) {
+                    c[i] = temp[i * out_ch + 1];
+                }
+            }
+        } else {
+            for i in 0..out {
+                if let Some(c) = channels.get_mut(0) {
+                    c[i] = temp[i];
+                }
+            }
+        }
+        out
     }
 
-    fn write_output(&self, left: &[f32], right: &[f32]) -> usize {
-        let n = left.len().min(right.len());
+    fn write(&self, channels: &[&[f32]]) -> usize {
+        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity.min(n);
+            let cap = win.capacity().min(frames);
             let dst = win.as_mut_slice();
-            // Sum stereo to mono
+            let left = channels.first().copied().unwrap_or(&[]);
+            let right = channels.get(1).copied().unwrap_or(left);
             for i in 0..cap {
                 dst[i] = (left[i] + right[i]) * 0.5;
             }
@@ -261,18 +292,16 @@ impl AudioIo for JackBackend {
         }
     }
 
-    fn start(&self) -> AudioIoResult<()> {
-        self.running.store(true, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
-        }
-        Ok(())
+    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
+        self.setup()
     }
 
-    fn stop(&self) -> AudioIoResult<()> {
+    fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
+        unsafe {
+            if let Some(client) = (*self.active_client.get()).take() {
+                drop(client);
+            }
         }
         Ok(())
     }
@@ -297,19 +326,16 @@ impl AudioBackend for JackBackend {
     }
 
     fn start(&mut self) -> IoResult<()> {
-        self.running.store(true, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
-        }
-        Ok(())
+        self.setup().map_err(IoError::Backend)
     }
 
     fn stop(&mut self) -> IoResult<()> {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
+        unsafe {
+            if let Some(client) = (*self.active_client.get()).take() {
+                drop(client);
+            }
         }
-        thread::sleep(Duration::from_millis(50));
         Ok(())
     }
 
@@ -323,8 +349,8 @@ impl AudioBackend for JackBackend {
         self.xruns.load(Ordering::Acquire)
     }
 
-    fn latency(&self) -> Duration {
-        Duration::from_micros(
+    fn latency(&self) -> std::time::Duration {
+        std::time::Duration::from_micros(
             (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
         )
     }
@@ -340,15 +366,11 @@ impl AudioBackend for JackBackend {
 impl Drop for JackBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
-        if let Some(handle) = &self.thread_handle {
-            handle.thread().unpark();
-        }
-        if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
-        }
         unsafe {
+            if let Some(client) = (*self.active_client.get()).take() {
+                drop(client);
+            }
             self.process_cb.drop_box();
-            self.output_slot.drop_box();
         }
     }
 }

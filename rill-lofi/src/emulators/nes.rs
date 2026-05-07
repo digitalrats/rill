@@ -58,6 +58,8 @@ enum NoiseMode {
     Long,
 }
 
+/// Emulates the NES 2A03 APU sound chip, providing two pulse-wave channels,
+/// a triangle channel, a noise channel, and a DPCM channel with lo-fi processing.
 pub struct NesEmulator<const BUF_SIZE: usize> {
     state: NodeState<f32, BUF_SIZE>,
     id: NodeId,
@@ -75,6 +77,8 @@ pub struct NesEmulator<const BUF_SIZE: usize> {
 }
 
 impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
+    /// Creates a new NES 2A03 emulator with default channel frequencies and
+    /// volumes matching typical power-on state.
     pub fn new(_sample_rate: f32) -> Self {
         let lofi_config = LofiConfig::for_system(crate::config::ClassicSystem::Nes);
         let id = NodeId(0);
@@ -225,7 +229,7 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
+impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }

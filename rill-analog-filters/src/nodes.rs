@@ -1,18 +1,25 @@
 use rill_core::prelude::*;
 use rill_core_wdf::filters::MoogLadder;
 
+/// WDF-based Moog Ladder filter graph node.
+///
+/// A 4-pole low-pass filter using Wave Digital Filter modeling.
 pub struct WdfMoogLadderProcessor<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
+    /// The underlying WDF Moog Ladder algorithm.
     pub algorithm: MoogLadder<f64>,
+    /// Cutoff frequency in Hz.
     pub cutoff: f32,
+    /// Resonance amount (0.0–1.0).
     pub resonance: f32,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZE> {
+    /// Create a new WDF Moog Ladder processor at the given sample rate.
     pub fn new(sample_rate: f32) -> Self {
         let mut metadata = NodeMetadata::new("WdfMoogLadder", NodeCategory::Processor);
         metadata.parameters = vec![
@@ -52,7 +59,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> WdfMoogLadderProcessor<T, BUF_SIZ
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for WdfMoogLadderProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> NodeTypeId

@@ -1,7 +1,7 @@
-//! # Пул буферов для эффективного переиспользования
+//! # Buffer pool for efficient reuse
 //!
-//! [`BufferPool`] позволяет переиспользовать буферы, избегая повторных
-//! аллокаций. Идеально подходит для временных буферов в графе обработки.
+//! [`BufferPool`] allows reusing buffers, avoiding repeated
+//! allocations. Ideal for temporary buffers in the processing graph.
 
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -9,54 +9,54 @@ use parking_lot::Mutex;
 use crate::math::Transcendental;
 use super::aligned::AlignedBuffer;
 
-/// Пул выровненных буферов
+/// Pool of aligned buffers
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core::buffer::BufferPool;
 /// use std::sync::Arc;
 ///
 /// let pool = Arc::new(BufferPool::<f32, 512>::new(16));
 ///
-/// // Получить буфер из пула
+/// // Acquire a buffer from the pool
 /// let buffer = pool.acquire().unwrap();
-/// // Использовать...
-/// // Буфер автоматически возвращается в пул при drop
+/// // Use it...
+/// // Buffer is automatically returned to the pool on drop
 /// ```
 pub struct BufferPool<T: Transcendental, const N: usize> {
-    /// Доступные буферы
+    /// Available buffers
     available: Mutex<Vec<AlignedBuffer<T, N>>>,
-    /// Максимальный размер пула
+    /// Maximum pool size
     max_size: usize,
-    /// Статистика
+    /// Statistics
     stats: Mutex<PoolStats>,
 }
 
-/// Статистика пула
+/// Pool statistics
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PoolStats {
-    /// Количество успешных получений
+    /// Number of successful acquires
     pub acquires: usize,
-    /// Количество возвратов
+    /// Number of releases
     pub releases: usize,
-    /// Количество созданий новых буферов
+    /// Number of new buffer creations
     pub creations: usize,
-    /// Текущий размер пула
+    /// Current pool size
     pub current_size: usize,
-    /// Максимальный достигнутый размер
+    /// Maximum size reached
     pub max_size: usize,
 }
 
-/// Умный указатель на буфер из пула
+/// Smart pointer to a buffer from the pool
 pub struct PooledBuffer<T: Transcendental, const N: usize> {
-    /// Буфер
+    /// Buffer
     buffer: Option<AlignedBuffer<T, N>>,
-    /// Ссылка на пул
+    /// Reference to the pool
     pool: Arc<BufferPool<T, N>>,
 }
 
 impl<T: Transcendental, const N: usize> BufferPool<T, N> {
-    /// Создать новый пул с указанным максимальным размером
+    /// Create a new pool with the specified maximum size
     pub fn new(max_size: usize) -> Self {
         Self {
             available: Mutex::new(Vec::with_capacity(max_size)),
@@ -65,7 +65,7 @@ impl<T: Transcendental, const N: usize> BufferPool<T, N> {
         }
     }
     
-    /// Создать предварительно заполненный пул
+    /// Create a pre-filled pool
     pub fn with_preallocation(max_size: usize) -> Self {
         let pool = Self::new(max_size);
         {
@@ -73,13 +73,13 @@ impl<T: Transcendental, const N: usize> BufferPool<T, N> {
             for _ in 0..max_size {
                 available.push(AlignedBuffer::new());
                 let mut stats = pool.stats.lock();
-                stats.creations += 1; // Добавляем учёт созданных буферов
+                stats.creations += 1; // Add tracking of created buffers
             }
         }
         pool
     }
     
-    /// Получить буфер из пула
+    /// Acquire a buffer from the pool
     pub fn acquire(self: &Arc<Self>) -> Option<PooledBuffer<T, N>> {
         let mut available = self.available.lock();
         
@@ -87,7 +87,7 @@ impl<T: Transcendental, const N: usize> BufferPool<T, N> {
             buffer
         } else {
             if available.capacity() > 0 {
-                // Создаём новый буфер
+                // Create a new buffer
                 let mut stats = self.stats.lock();
                 stats.creations += 1;
                 AlignedBuffer::new()
@@ -109,7 +109,7 @@ impl<T: Transcendental, const N: usize> BufferPool<T, N> {
         })
     }
     
-    /// Вернуть буфер в пул (внутренний метод)
+    /// Release a buffer back to the pool (internal method)
     fn release(&self, mut buffer: AlignedBuffer<T, N>) {
         buffer.fill(T::ZERO);
         
@@ -123,12 +123,12 @@ impl<T: Transcendental, const N: usize> BufferPool<T, N> {
         stats.current_size = available.len();
     }
     
-    /// Получить статистику
+    /// Get statistics
     pub fn stats(&self) -> PoolStats {
         *self.stats.lock()
     }
     
-    /// Очистить пул
+    /// Clear the pool
     pub fn clear(&self) {
         let mut available = self.available.lock();
         available.clear();
@@ -136,12 +136,12 @@ impl<T: Transcendental, const N: usize> BufferPool<T, N> {
 }
 
 impl<T: Transcendental, const N: usize> PooledBuffer<T, N> {
-    /// Получить ссылку на буфер
+    /// Get a reference to the buffer
     pub fn as_buffer(&self) -> &AlignedBuffer<T, N> {
         self.buffer.as_ref().unwrap()
     }
     
-    /// Получить мутабельную ссылку на буфер
+    /// Get a mutable reference to the buffer
     pub fn as_buffer_mut(&mut self) -> &mut AlignedBuffer<T, N> {
         self.buffer.as_mut().unwrap()
     }
@@ -183,7 +183,7 @@ mod tests {
             let buffer2 = pool.acquire().unwrap();
             
             assert_eq!(pool.stats().acquires, 2);
-        } // buffer1 и buffer2 возвращаются в пул
+        } // buffer1 and buffer2 are returned to the pool
         
         let buffer3 = pool.acquire().unwrap();
         assert!(std::ptr::eq(&*buffer3, &*buffer3));

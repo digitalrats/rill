@@ -1,4 +1,4 @@
-//! Наблюдатель за микро-контролем — всевидящее око
+//! Micro-control observer — all-seeing eye
 
 use super::telemetry::Telemetry;
 use crate::traits::{ParameterId, PortId};
@@ -7,66 +7,66 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Статистика компонента
+/// Component statistics
 #[derive(Debug, Clone, Default)]
 pub struct ComponentStats {
-    /// Количество операций
+    /// Number of operations
     pub operations: u64,
-    /// Суммарное время (для среднего)
+    /// Total time (for average)
     pub total_time_ns: u64,
-    /// Максимальное время
+    /// Maximum time
     pub max_time_ns: u64,
-    /// Количество нарушений
+    /// Number of violations
     pub violations: u64,
-    /// Среднее время
+    /// Average time
     pub avg_time_ns: f64,
 }
 
-/// Запись о нарушении
+/// Violation record
 #[derive(Debug, Clone)]
 pub struct Violation {
-    /// Компонент, нарушивший закон
+    /// Component that violated the law
     pub component: String,
-    /// Ожидаемое время (нс)
+    /// Expected time (ns)
     pub expected_ns: u64,
-    /// Фактическое время (нс)
+    /// Actual time (ns)
     pub actual_ns: u64,
-    /// Время нарушения
+    /// Violation timestamp
     pub timestamp: u64,
-    /// Примененное значение (если было)
+    /// Applied value (if any)
     pub value: Option<f32>,
 }
 
-/// Сводка по песочнице
+/// Sandbox summary
 #[derive(Debug, Default, Clone)]
 pub struct SandboxSummary {
-    /// Всего операций микро-контроля
+    /// Total micro-control operations
     pub total_operations: u64,
-    /// Всего нарушений
+    /// Total violations
     pub total_violations: u64,
-    /// Количество активных компонентов
+    /// Number of active components
     pub components: Vec<String>,
-    /// Максимальное время операции
+    /// Maximum operation time
     pub max_time_ns: u64,
-    /// Компонент с максимальным временем
+    /// Component with maximum time
     pub max_time_component: Option<String>,
-    /// Количество записанных нарушений
+    /// Number of recorded violations
     pub violations_count: usize,
 }
 
-/// Разрешение на микро-контроль
+/// Micro-control permit
 #[derive(Debug, Clone)]
 pub struct MicroControlPermit {
-    /// Флаг, что разрешено прямое управление
+    /// Flag indicating direct control is allowed
     enabled: Arc<std::sync::atomic::AtomicBool>,
-    /// Максимальное время обработки (в наносекундах)
+    /// Maximum processing time (in nanoseconds)
     max_time_ns: u64,
-    /// Имя компонента (для отладки)
+    /// Component name (for debugging)
     component: String,
 }
 
 impl MicroControlPermit {
-    /// Создать новое разрешение
+    /// Create a new permit
     pub fn new(component: impl Into<String>, max_time_ns: u64) -> Self {
         Self {
             enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -75,43 +75,43 @@ impl MicroControlPermit {
         }
     }
 
-    /// Проверить, можно ли использовать микро-контроль
+    /// Check if micro-control is allowed
     pub fn is_allowed(&self) -> bool {
         self.enabled.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Запретить микро-контроль
+    /// Revoke micro-control
     pub fn revoke(&self) {
         self.enabled
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Получить максимальное время обработки
+    /// Get the maximum processing time
     pub fn max_time_ns(&self) -> u64 {
         self.max_time_ns
     }
 
-    /// Получить имя компонента
+    /// Get the component name
     pub fn component(&self) -> &str {
         &self.component
     }
 }
 
-/// Наблюдатель за микро-контролем
+/// Micro-control observer
 #[derive(Clone)]
 pub struct MicroControlObserver {
-    /// Статистика по компонентам
+    /// Statistics by component
     stats: Arc<RwLock<HashMap<String, ComponentStats>>>,
 
-    /// История нарушений
+    /// Violation history
     violations: Arc<RwLock<Vec<Violation>>>,
 
-    /// Отправитель телеметрии
+    /// Telemetry sender
     telemetry_tx: crossbeam_channel::Sender<Telemetry>,
 }
 
 impl MicroControlObserver {
-    /// Создать нового наблюдателя с очередью телеметрии
+    /// Create a new observer with a telemetry queue
     pub fn new(telemetry: super::telemetry::TelemetryQueue) -> Self {
         Self {
             stats: Arc::new(RwLock::new(HashMap::new())),
@@ -120,7 +120,7 @@ impl MicroControlObserver {
         }
     }
 
-    /// Создать нового наблюдателя с отправителем телеметрии
+    /// Create a new observer with a telemetry sender
     pub fn with_sender(telemetry_tx: crossbeam_channel::Sender<Telemetry>) -> Self {
         Self {
             stats: Arc::new(RwLock::new(HashMap::new())),
@@ -129,7 +129,7 @@ impl MicroControlObserver {
         }
     }
 
-    /// Наблюдать за началом операции
+    /// Observe the start of an operation
     pub fn observe_start(&self, component: &str) -> OperationGuard {
         OperationGuard {
             component: component.to_string(),
@@ -138,7 +138,7 @@ impl MicroControlObserver {
         }
     }
 
-    /// Наблюдать за началом операции с параметрами
+    /// Observe the start of an operation with parameters
     pub fn observe_start_with_params(
         &self,
         component: &str,
@@ -147,7 +147,7 @@ impl MicroControlObserver {
     ) -> OperationGuard {
         let guard = self.observe_start(component);
 
-        // Отправляем телеметрию о начале операции
+        // Send telemetry about operation start
         let _ = self.telemetry_tx.send(Telemetry::event(
             "observer",
             "micro_start",
@@ -157,7 +157,7 @@ impl MicroControlObserver {
         guard
     }
 
-    /// Зафиксировать нарушение
+    /// Record a violation
     pub fn record_violation(
         &self,
         component: &str,
@@ -173,15 +173,15 @@ impl MicroControlObserver {
             value,
         };
 
-        // Сохраняем в историю
+        // Save to history
         self.violations.write().push(violation.clone());
 
-        // Обновляем статистику
+        // Update statistics
         let mut stats = self.stats.write();
         let comp_stats = stats.entry(component.to_string()).or_default();
         comp_stats.violations += 1;
 
-        // Отправляем телеметрию напрямую через Sender
+        // Send telemetry directly via Sender
         let _ = self.telemetry_tx.send(Telemetry::violation(
             component,
             expected_ns,
@@ -189,24 +189,24 @@ impl MicroControlObserver {
             value,
         ));
 
-        // Временно используем println вместо log
+        // Temporarily using println instead of log
         println!(
-            "⚠️ Нарушение в {}: {}нс (ожидалось {}нс)",
+            "⚠️ Violation in {}: {}ns (expected {}ns)",
             component, actual_ns, expected_ns
         );
     }
 
-    /// Получить статистику по компоненту
+    /// Get statistics for a component
     pub fn component_stats(&self, component: &str) -> Option<ComponentStats> {
         self.stats.read().get(component).cloned()
     }
 
-    /// Получить все нарушения
+    /// Get all violations
     pub fn violations(&self) -> Vec<Violation> {
         self.violations.read().clone()
     }
 
-    /// Получить сводку по песочнице
+    /// Get a sandbox summary
     pub fn sandbox_summary(&self) -> SandboxSummary {
         let stats = self.stats.read();
         let mut summary = SandboxSummary::default();
@@ -226,7 +226,7 @@ impl MicroControlObserver {
         summary
     }
 
-    /// Получить текущее время в микросекундах
+    /// Get the current time in microseconds
     fn now() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -235,7 +235,7 @@ impl MicroControlObserver {
     }
 }
 
-/// Guard, который автоматически фиксирует завершение операции
+/// Guard that automatically records operation completion
 pub struct OperationGuard {
     component: String,
     start_time: u64,
@@ -244,9 +244,9 @@ pub struct OperationGuard {
 
 impl Drop for OperationGuard {
     fn drop(&mut self) {
-        let duration = (Self::now() - self.start_time) * 1000; // микросекунды -> наносекунды
+        let duration = (Self::now() - self.start_time) * 1000; // microseconds -> nanoseconds
 
-        // Обновляем статистику
+        // Update statistics
         let mut stats = self.observer.stats.write();
         let comp_stats = stats.entry(self.component.clone()).or_default();
         comp_stats.operations += 1;
@@ -256,7 +256,7 @@ impl Drop for OperationGuard {
         }
         comp_stats.avg_time_ns = comp_stats.total_time_ns as f64 / comp_stats.operations as f64;
 
-        // Отправляем телеметрию через Sender
+        // Send telemetry via Sender
         let _ = self.observer.telemetry_tx.send(Telemetry::event(
             "observer",
             "micro_complete",
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(violations[0].actual_ns, 250);
         assert_eq!(violations[0].value, Some(0.5));
 
-        // Проверяем, что телеметрия была отправлена
+        // Verify that telemetry was sent
         let telemetry = rx.try_recv().unwrap();
         match telemetry {
             Telemetry::Violation {
@@ -331,13 +331,13 @@ mod tests {
         {
             let _guard = observer.observe_start("test_op");
             std::thread::sleep(std::time::Duration::from_micros(10));
-        } // guard автоматически фиксирует завершение при drop
+        } // guard automatically records completion on drop
 
         let stats = observer.sandbox_summary();
         assert_eq!(stats.total_operations, 1);
         assert!(stats.max_time_ns > 0);
 
-        // Проверяем телеметрию завершения
+        // Verify completion telemetry
         let telemetry = rx.try_recv().unwrap();
         match telemetry {
             Telemetry::Event { kind, .. } => {

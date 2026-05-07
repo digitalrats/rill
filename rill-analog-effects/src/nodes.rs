@@ -1,20 +1,30 @@
 use crate::CassetteDeckModel;
 use rill_core::prelude::*;
 
+/// Cassette deck emulation graph node.
+///
+/// Models tape recording and playback with non-linearities,
+/// wow & flutter, and tape noise.
 pub struct CassetteDeckProcessor<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
+    /// The underlying cassette deck algorithm.
     pub algorithm: CassetteDeckModel,
+    /// Tape speed in cm/s.
     pub tape_speed: f32,
+    /// Bias level (0.0–1.0).
     pub bias_level: f32,
+    /// Tape noise floor amplitude.
     pub noise_floor: f32,
+    /// Wow & flutter intensity.
     pub wow_flutter: f32,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE> {
+    /// Create a new cassette deck processor at the given sample rate.
     pub fn new(sample_rate: f32) -> Self {
         let mut metadata = NodeMetadata::new("CassetteDeck", NodeCategory::Processor);
         metadata.parameters = vec![
@@ -59,7 +69,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for CassetteDeckProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> NodeTypeId

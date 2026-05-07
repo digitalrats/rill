@@ -4,8 +4,8 @@ use crate::math::Transcendental;
 use crate::queues::telemetry::TelemetryTx;
 use crate::time::ClockTick;
 use crate::traits::port::Port;
+use crate::traits::Node;
 use crate::traits::ProcessResult;
-use crate::traits::SignalNode;
 
 // ============================================================================
 // ProcessContext
@@ -84,7 +84,7 @@ where
 
 /// A type-erased node that wraps any of the four node roles.
 ///
-/// Dispatches `process_block` and `SignalNode` methods to the inner node.
+/// Dispatches `process_block` and `Node` methods to the inner node.
 pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
     /// Signal source node (generates audio).
     Source(Box<dyn crate::traits::Source<T, BUF_SIZE>>),
@@ -113,21 +113,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
     /// Set the telemetry sender for the wrapped node.
     pub fn set_telemetry_tx(&mut self, tx: TelemetryTx) {
         match self {
-            NodeVariant::Source(src) => SignalNode::set_telemetry_tx(src.as_mut(), tx),
-            NodeVariant::Processor(proc) => SignalNode::set_telemetry_tx(proc.as_mut(), tx),
-            NodeVariant::Router(rt) => SignalNode::set_telemetry_tx(rt.as_mut(), tx),
-            NodeVariant::Sink(sink) => SignalNode::set_telemetry_tx(sink.as_mut(), tx),
+            NodeVariant::Source(src) => Node::set_telemetry_tx(src.as_mut(), tx),
+            NodeVariant::Processor(proc) => Node::set_telemetry_tx(proc.as_mut(), tx),
+            NodeVariant::Router(rt) => Node::set_telemetry_tx(rt.as_mut(), tx),
+            NodeVariant::Sink(sink) => Node::set_telemetry_tx(sink.as_mut(), tx),
         }
     }
 }
 
 // ============================================================================
-// SignalNode for NodeVariant
+// Node for NodeVariant
 // ============================================================================
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
-    for NodeVariant<T, BUF_SIZE>
-{
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NodeVariant<T, BUF_SIZE> {
     fn node_type_id(&self) -> crate::traits::NodeTypeId
     where
         Self: 'static + Sized,
@@ -164,6 +162,38 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
             NodeVariant::Processor(proc) => proc.init(sample_rate),
             NodeVariant::Router(rt) => rt.init(sample_rate),
             NodeVariant::Sink(sink) => sink.init(sample_rate),
+        }
+    }
+    fn resolve_resources(&mut self, buffers: &crate::buffer::BufferRegistry<T>) {
+        match self {
+            NodeVariant::Source(src) => src.resolve_resources(buffers),
+            NodeVariant::Processor(proc) => proc.resolve_resources(buffers),
+            NodeVariant::Router(rt) => rt.resolve_resources(buffers),
+            NodeVariant::Sink(sink) => sink.resolve_resources(buffers),
+        }
+    }
+    fn resolve_backend(&mut self, backend: *mut dyn crate::io::IoBackend<T>) {
+        match self {
+            NodeVariant::Source(src) => src.resolve_backend(backend),
+            NodeVariant::Processor(proc) => proc.resolve_backend(backend),
+            NodeVariant::Router(rt) => rt.resolve_backend(backend),
+            NodeVariant::Sink(sink) => sink.resolve_backend(backend),
+        }
+    }
+    fn start(&mut self, handle: crate::traits::active::GraphHandle) {
+        match self {
+            NodeVariant::Source(src) => src.start(handle),
+            NodeVariant::Processor(proc) => proc.start(handle),
+            NodeVariant::Router(rt) => rt.start(handle),
+            NodeVariant::Sink(sink) => sink.start(handle),
+        }
+    }
+    fn stop(&mut self) {
+        match self {
+            NodeVariant::Source(src) => src.stop(),
+            NodeVariant::Processor(proc) => proc.stop(),
+            NodeVariant::Router(rt) => rt.stop(),
+            NodeVariant::Sink(sink) => sink.stop(),
         }
     }
     fn reset(&mut self) {
@@ -245,19 +275,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn num_signal_inputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                let n: &dyn Node<T, BUF_SIZE> = &**src;
                 n.num_signal_inputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn Node<T, BUF_SIZE> = &**proc;
                 n.num_signal_inputs()
             }
             NodeVariant::Router(rt) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                let n: &dyn Node<T, BUF_SIZE> = &**rt;
                 n.num_signal_inputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn Node<T, BUF_SIZE> = &**sink;
                 n.num_signal_inputs()
             }
         }
@@ -265,19 +295,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn num_signal_outputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                let n: &dyn Node<T, BUF_SIZE> = &**src;
                 n.num_signal_outputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn Node<T, BUF_SIZE> = &**proc;
                 n.num_signal_outputs()
             }
             NodeVariant::Router(rt) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                let n: &dyn Node<T, BUF_SIZE> = &**rt;
                 n.num_signal_outputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn Node<T, BUF_SIZE> = &**sink;
                 n.num_signal_outputs()
             }
         }
@@ -285,19 +315,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn num_control_inputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                let n: &dyn Node<T, BUF_SIZE> = &**src;
                 n.num_control_inputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn Node<T, BUF_SIZE> = &**proc;
                 n.num_control_inputs()
             }
             NodeVariant::Router(rt) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                let n: &dyn Node<T, BUF_SIZE> = &**rt;
                 n.num_control_inputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn Node<T, BUF_SIZE> = &**sink;
                 n.num_control_inputs()
             }
         }
@@ -305,19 +335,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn num_control_outputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                let n: &dyn Node<T, BUF_SIZE> = &**src;
                 n.num_control_outputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn Node<T, BUF_SIZE> = &**proc;
                 n.num_control_outputs()
             }
             NodeVariant::Router(rt) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                let n: &dyn Node<T, BUF_SIZE> = &**rt;
                 n.num_control_outputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn Node<T, BUF_SIZE> = &**sink;
                 n.num_control_outputs()
             }
         }
@@ -325,19 +355,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn num_clock_inputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                let n: &dyn Node<T, BUF_SIZE> = &**src;
                 n.num_clock_inputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn Node<T, BUF_SIZE> = &**proc;
                 n.num_clock_inputs()
             }
             NodeVariant::Router(rt) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                let n: &dyn Node<T, BUF_SIZE> = &**rt;
                 n.num_clock_inputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn Node<T, BUF_SIZE> = &**sink;
                 n.num_clock_inputs()
             }
         }
@@ -345,19 +375,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn num_clock_outputs(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                let n: &dyn Node<T, BUF_SIZE> = &**src;
                 n.num_clock_outputs()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn Node<T, BUF_SIZE> = &**proc;
                 n.num_clock_outputs()
             }
             NodeVariant::Router(rt) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                let n: &dyn Node<T, BUF_SIZE> = &**rt;
                 n.num_clock_outputs()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn Node<T, BUF_SIZE> = &**sink;
                 n.num_clock_outputs()
             }
         }
@@ -365,19 +395,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     fn num_feedback_ports(&self) -> usize {
         match self {
             NodeVariant::Source(src) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**src;
+                let n: &dyn Node<T, BUF_SIZE> = &**src;
                 n.num_feedback_ports()
             }
             NodeVariant::Processor(proc) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**proc;
+                let n: &dyn Node<T, BUF_SIZE> = &**proc;
                 n.num_feedback_ports()
             }
             NodeVariant::Router(rt) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**rt;
+                let n: &dyn Node<T, BUF_SIZE> = &**rt;
                 n.num_feedback_ports()
             }
             NodeVariant::Sink(sink) => {
-                let n: &dyn SignalNode<T, BUF_SIZE> = &**sink;
+                let n: &dyn Node<T, BUF_SIZE> = &**sink;
                 n.num_feedback_ports()
             }
         }

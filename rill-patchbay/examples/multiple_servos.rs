@@ -1,13 +1,12 @@
-use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
-use rill_patchbay::{FunctionAutomaton, LfoWaveform, ParameterMapping, PatchbayControl, Servo};
-use std::sync::Arc;
+use rill_core_actor::ActorRef;
+use rill_patchbay::{FunctionAutomaton, LfoWaveform, ParameterMapping, Patchbay, Servo};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Multiple Servos Example ===\n");
 
-    let queue = Arc::new(MpscQueue::with_capacity(1024));
-    let mut control = PatchbayControl::new(queue.clone());
+    let (actor_ref, mailbox) = ActorRef::new_pair();
+    let mut control = Patchbay::new(actor_ref);
     let node = NodeId(1);
 
     // Three different automata
@@ -49,12 +48,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     control.update(0.0);
 
-    println!("Active servos (implicitly via PatchbayControl internals)\n");
+    println!("Active servos (implicitly via Patchbay internals)\n");
     println!("Running 10 updates at 10ms each...\n");
 
     for i in 0..10 {
         control.update(0.01);
-        let cmds: Vec<_> = std::iter::from_fn(|| queue.pop()).collect();
+        let cmds: Vec<_> = std::iter::from_fn(|| mailbox.pop()).collect();
         println!("Update {}: {} command(s) sent", i + 1, cmds.len());
     }
 

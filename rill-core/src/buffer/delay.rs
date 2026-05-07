@@ -1,4 +1,4 @@
-use crate::buffer::{AtomicStats, BufferStats, SignalBuffer};
+use crate::buffer::{AtomicStats, Buffer, BufferStats};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
@@ -154,10 +154,10 @@ impl<T: Transcendental, const MAX_DELAY: usize> IndexMut<usize> for DelayLine<T,
 }
 
 // ============================================================================
-// SignalBuffer Implementation
+// Buffer trait implementation
 // ============================================================================
 
-impl<T: Transcendental, const MAX_DELAY: usize> SignalBuffer<T> for DelayLine<T, MAX_DELAY> {
+impl<T: Transcendental, const MAX_DELAY: usize> Buffer<T> for DelayLine<T, MAX_DELAY> {
     fn capacity(&self) -> usize {
         MAX_DELAY
     }
@@ -170,8 +170,23 @@ impl<T: Transcendental, const MAX_DELAY: usize> SignalBuffer<T> for DelayLine<T,
     fn is_full(&self) -> bool {
         true
     }
+    fn as_slice(&self) -> &[T] {
+        &self.buffer
+    }
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.buffer
+    }
+    fn fill(&mut self, value: T) {
+        self.buffer.fill(value);
+    }
+    fn copy_from(&mut self, src: &[T]) {
+        let len = src.len().min(MAX_DELAY);
+        self.buffer[..len].copy_from_slice(&src[..len]);
+    }
     fn clear(&mut self) {
-        self.clear();
+        self.buffer.fill(T::ZERO);
+        self.write_pos = 0;
+        self.stats.reset();
     }
     fn stats(&self) -> BufferStats {
         let mut stats = self.stats.snapshot();

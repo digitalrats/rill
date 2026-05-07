@@ -1,8 +1,8 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests](https://img.shields.io/badge/tests-491-green)](https://github.com/DigitalRats/rill)
-[![version](https://img.shields.io/badge/version-0.5.0--beta.1-blue)](https://github.com/DigitalRats/rill)
+[![tests](https://img.shields.io/badge/tests-487-green)](https://github.com/DigitalRats/rill)
+[![version](https://img.shields.io/badge/version-0.5.0--beta.2-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 Modular signal-processing ecosystem for Rust. 17 crates, from lock-free
@@ -34,7 +34,7 @@ processing context.
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0--beta.1"
+rill-adrift = "0.5.0-beta.2"
 ```
 
 Enable optional features as needed (see table below).
@@ -50,7 +50,7 @@ let osc = builder.add_source(
     Box::new(SineOsc::<f32, BUF_SIZE>::new().with_frequency(440.0))
 );
 // Add processors, sinks, connections via builder...
-// Then call builder.build() to obtain the immutable SignalGraph.
+// Then call builder.build() to obtain the immutable Graph.
 ```
 
 ## Crates
@@ -122,7 +122,7 @@ graph TD
 ## Testing
 
 ```bash
-cargo test --workspace    # 491 tests, all passing
+cargo test --workspace    # 487 tests, all passing
 cargo clippy --workspace  # lint
 cargo fmt                 # format (max_width=100)
 ```

@@ -1,3 +1,4 @@
+use crate::buffer::Buffer;
 use crate::math::Transcendental;
 use std::fmt;
 
@@ -164,6 +165,37 @@ impl<T: Transcendental, const N: usize> Default for RingBuffer<T, N> {
     }
 }
 
+impl<T: Transcendental, const N: usize> Buffer<T> for RingBuffer<T, N> {
+    fn capacity(&self) -> usize {
+        N
+    }
+    fn len(&self) -> usize {
+        RingBuffer::len(self)
+    }
+    fn is_empty(&self) -> bool {
+        RingBuffer::is_empty(self)
+    }
+    fn is_full(&self) -> bool {
+        RingBuffer::is_full(self)
+    }
+    fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+    fn fill(&mut self, value: T) {
+        self.data.fill(value);
+    }
+    fn copy_from(&mut self, src: &[T]) {
+        let len = src.len().min(N);
+        self.data[..len].copy_from_slice(&src[..len]);
+    }
+    fn clear(&mut self) {
+        RingBuffer::clear(self);
+    }
+}
+
 impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut preview = Vec::with_capacity(4);
@@ -182,7 +214,7 @@ impl<T: Transcendental + fmt::Debug, const N: usize> fmt::Debug for RingBuffer<T
 }
 
 // =============================================================================
-// Итератор
+// Iterator
 // =============================================================================
 
 /// Iterator over the contents of a [`RingBuffer`], from oldest to newest.
@@ -239,7 +271,7 @@ impl<T: Transcendental, const N: usize> RingBuffer<T, N> {
 }
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]

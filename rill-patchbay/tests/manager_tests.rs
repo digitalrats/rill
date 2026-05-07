@@ -1,8 +1,9 @@
 use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
+use rill_core_actor::ActorRef;
 use rill_patchbay::{
     ControlEvent, EventPattern, FunctionAutomaton, LfoWaveform, Mapping, ParameterMapping,
-    PatchbayControl, Servo, Target, Transform,
+    Patchbay, Servo, Target, Transform,
 };
 use std::sync::Arc;
 
@@ -12,8 +13,9 @@ fn param(name: &str) -> String {
 
 #[test]
 fn test_control_creation() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let control = PatchbayControl::new(queue);
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let control = Patchbay::new(actor_ref);
 
     assert_eq!(control.mappings().len(), 0);
     assert!((control.current_time() - 0.0) < 1e-9);
@@ -21,8 +23,9 @@ fn test_control_creation() {
 
 #[test]
 fn test_add_lfo_servo() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue.clone());
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_lfo(
         "lfo1",
@@ -41,8 +44,9 @@ fn test_add_lfo_servo() {
 
 #[test]
 fn test_add_envelope_servo() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue.clone());
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_envelope("env1", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);
 
@@ -51,8 +55,9 @@ fn test_add_envelope_servo() {
 
 #[test]
 fn test_add_custom_servo() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue.clone());
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref.clone());
 
     let sine = FunctionAutomaton::new("Sine", |t| (t * 2.0).sin() * 0.5 + 0.5);
     let servo = Servo::new(
@@ -71,8 +76,9 @@ fn test_add_custom_servo() {
 
 #[test]
 fn test_remove_servo() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue);
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo1",
@@ -105,8 +111,9 @@ fn test_remove_servo() {
 
 #[test]
 fn test_clear_servos() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue);
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo1",
@@ -150,8 +157,9 @@ fn test_clear_servos() {
 
 #[test]
 fn test_servo_updates() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue.clone());
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_lfo(
         "lfo1",
@@ -170,7 +178,7 @@ fn test_servo_updates() {
     }
 
     let mut count = 0;
-    while queue.pop().is_some() {
+    while mailbox.pop().is_some() {
         count += 1;
     }
     assert!(count > 0, "No signals were sent");
@@ -178,8 +186,9 @@ fn test_servo_updates() {
 
 #[test]
 fn test_multiple_servos() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue);
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo1",
@@ -222,8 +231,9 @@ fn test_multiple_servos() {
 
 #[test]
 fn test_disable_servo() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue.clone());
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control.add_lfo(
         "lfo1",
@@ -238,7 +248,7 @@ fn test_disable_servo() {
     );
 
     control.update(0.1);
-    let initial_count = drain_count(&queue);
+    let initial_count = drain_count(&mailbox);
 
     if let Some(servo) = control.get_servo_mut("lfo1") {
         servo.set_enabled(false);
@@ -248,7 +258,7 @@ fn test_disable_servo() {
         control.update(0.1);
     }
 
-    let disabled_count = drain_count(&queue);
+    let disabled_count = drain_count(&mailbox);
     assert_eq!(disabled_count, 0, "Signals were sent while disabled");
 
     if let Some(servo) = control.get_servo_mut("lfo1") {
@@ -256,16 +266,16 @@ fn test_disable_servo() {
     }
 
     control.update(0.1);
-    let after_enable = drain_count(&queue);
+    let after_enable = drain_count(&mailbox);
     assert!(
         after_enable > 0 || initial_count > 0,
         "Should produce some signals"
     );
 }
 
-fn drain_count(queue: &Arc<MpscQueue<rill_core::queues::SetParameter>>) -> usize {
+fn drain_count(mailbox: &MpscQueue<rill_core::queues::SetParameter>) -> usize {
     let mut count = 0;
-    while queue.pop().is_some() {
+    while mailbox.pop().is_some() {
         count += 1;
     }
     count
@@ -273,8 +283,9 @@ fn drain_count(queue: &Arc<MpscQueue<rill_core::queues::SetParameter>>) -> usize
 
 #[test]
 fn test_different_servo_types() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue);
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref);
 
     control.add_lfo(
         "lfo",
@@ -334,15 +345,16 @@ fn test_midi_mapping() {
     assert!(mapping.matches(&event));
 
     let cmd = mapping.apply(&event).unwrap();
-    assert_eq!(cmd.node_id, node);
-    assert_eq!(cmd.param, "volume");
-    assert!((cmd.value - 0.5).abs() < 1e-6);
+    assert_eq!(cmd.port.node_id(), node);
+    assert_eq!(cmd.parameter.as_ref(), "volume");
+    assert!((cmd.value.as_f32().unwrap() - 0.5).abs() < 1e-6);
 }
 
 #[test]
 fn test_mapping_in_control() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue.clone());
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref.clone());
 
     control
         .add_mapping_str("midi:1:7", NodeId(1), "volume", 0.0, 1.0, Transform::Linear)
@@ -358,15 +370,16 @@ fn test_mapping_in_control() {
     };
     control.handle_event(event);
 
-    let cmd = queue.pop();
+    let cmd = mailbox.pop();
     assert!(cmd.is_some());
-    assert!((cmd.unwrap().value - 0.5).abs() < 1e-6);
+    assert!((cmd.unwrap().value.as_f32().unwrap() - 0.5).abs() < 1e-6);
 }
 
 #[test]
 fn test_reset_time() {
-    let queue = Arc::new(MpscQueue::with_capacity(64));
-    let mut control = PatchbayControl::new(queue);
+    let mailbox = Arc::new(MpscQueue::with_capacity(64));
+    let actor_ref = ActorRef::new(&mailbox);
+    let mut control = Patchbay::new(actor_ref);
 
     control.update(1.0);
     control.update(2.0);

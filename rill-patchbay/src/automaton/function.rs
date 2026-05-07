@@ -1,31 +1,31 @@
-//! # Функциональные автоматы
+//! # Functional automata
 //!
-//! Автоматы, построенные на произвольных функциях времени.
-//! Позволяют реализовать любую математическую зависимость.
+//! Automata built on arbitrary time functions.
+//! Allow implementing any mathematical relationship.
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 use std::fmt;
 use std::sync::Arc;
 
-/// Состояние функционального автомата
+/// Functional automaton state
 #[derive(Debug, Clone)]
 pub struct FunctionState {
-    /// Последнее вычисленное значение
+    /// Last computed value
     pub value: f64,
-    /// Время последнего обновления
+    /// Time of last update
     pub last_time: Time,
-    /// Пользовательское состояние (для stateful функций)
+    /// User-defined state (for stateful functions)
     pub user_state: Arc<dyn std::any::Any + Send + Sync>,
 }
 
-/// Функциональный автомат (stateless)
+/// Functional automaton (stateless)
 #[derive(Clone)]
 pub struct FunctionAutomaton {
-    /// Имя автомата
+    /// Automaton name
     name: String,
-    /// Функция-генератор
+    /// Generator function
     generator: Arc<dyn Fn(Time) -> f64 + Send + Sync>,
-    /// Диапазон выходных значений
+    /// Output value range
     range: Range,
 }
 
@@ -39,7 +39,7 @@ impl fmt::Debug for FunctionAutomaton {
 }
 
 impl FunctionAutomaton {
-    /// Создать новый функциональный автомат
+    /// Create a new functional automaton
     pub fn new<F>(name: &str, generator: F) -> Self
     where
         F: Fn(Time) -> f64 + Send + Sync + 'static,
@@ -51,7 +51,7 @@ impl FunctionAutomaton {
         }
     }
 
-    /// Установить диапазон
+    /// Set the range
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
@@ -87,17 +87,17 @@ impl Automaton for FunctionAutomaton {
     }
 }
 
-/// Функциональный автомат с состоянием
+/// Functional automaton with state
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub struct StatefulFunctionAutomaton<S> {
-    /// Имя автомата
+    /// Automaton name
     name: String,
-    /// Функция-генератор с состоянием
+    /// Generator function with state
     generator: Arc<dyn Fn(Time, &mut S) -> f64 + Send + Sync>,
-    /// Начальное состояние
+    /// Initial state
     initial_state: S,
-    /// Диапазон выходных значений
+    /// Output value range
     range: Range,
 }
 
@@ -112,7 +112,7 @@ impl<S: fmt::Debug + Send + Sync + Clone + 'static> fmt::Debug for StatefulFunct
 }
 
 impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
-    /// Создать новый автомат с состоянием
+    /// Create a new stateful automaton
     pub fn new<F>(name: &str, generator: F, initial_state: S) -> Self
     where
         F: Fn(Time, &mut S) -> f64 + Send + Sync + 'static,
@@ -125,7 +125,7 @@ impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
         }
     }
 
-    /// Установить диапазон
+    /// Set the range
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
@@ -164,7 +164,7 @@ impl<S: fmt::Debug + Send + Sync + Clone + 'static> Automaton for StatefulFuncti
     }
 }
 
-/// Функция-генератор для LFO (удобная обёртка)
+/// Generator function for LFO (convenience wrapper)
 pub fn lfo_function(freq: f64, phase: f64, waveform: &'static str) -> impl Fn(Time) -> f64 {
     move |t| {
         let p = (t * freq + phase).fract();

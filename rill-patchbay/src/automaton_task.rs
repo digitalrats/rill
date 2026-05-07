@@ -1,27 +1,27 @@
-//! # Automaton Task — обёртка Automaton trait в green thread
+//! # Automaton Task — wrapping the Automaton trait in a green thread
 //!
-//! Позволяет запустить любой `Automaton` как независимый tokio task
-//! с собственным интервалом тиков. Значения отправляются в `PortCombiner`
-//! через mpsc-канал.
+//! Allows running any `Automaton` as an independent tokio task
+//! with its own tick interval. Values are sent to `PortCombiner`
+//! via an mpsc channel.
 
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-use crate::control::{Automaton, Time};
+use crate::engine::{Automaton, Time};
 
-/// Запустить автомат как green thread (tokio task)
+/// Run an automaton as a green thread (tokio task)
 ///
 /// # Arguments
 ///
-/// * `automaton` — реализация `Automaton` trait
-/// * `interval` — частота обновления (например, 10 мс для 100 Hz)
-/// * `value_tx` — канал для отправки значений в PortCombiner
-/// * `cancel_rx` — сигнал отмены (из PortCombinerHandle::cancel_rx)
+/// * `automaton` — implementation of the `Automaton` trait
+/// * `interval` — update frequency (e.g. 10 ms for 100 Hz)
+/// * `value_tx` — channel for sending values to PortCombiner
+/// * `cancel_rx` — cancellation signal (from PortCombinerHandle::cancel_rx)
 ///
-/// Возвращает `JoinHandle` задачи. При дропе хэндла задача продолжает
-/// работать. Для остановки используется сигнал отмены.
+/// Returns a `JoinHandle`. Dropping the handle does not stop the
+/// task. Use the cancellation signal to stop it.
 pub fn spawn_automaton_task<A>(
     automaton: A,
     interval: Duration,
@@ -45,7 +45,7 @@ async fn automaton_loop<A>(
     let mut state = automaton.initial_state();
     let mut time: Time = 0.0;
     let mut ticker = tokio::time::interval(interval);
-    // Пропускаем первый тик (немедленный)
+    // Skip the first tick (immediate)
     ticker.tick().await;
 
     loop {
@@ -55,7 +55,7 @@ async fn automaton_loop<A>(
                 let (new_state, value_opt) = automaton.step(time, &A::Action::default(), &state);
                 if let Some(value) = value_opt {
                     if value_tx.send(value).await.is_err() {
-                        // Канал закрыт — PortCombiner остановлен
+                        // Channel closed — PortCombiner stopped
                         break;
                     }
                 }
@@ -72,7 +72,7 @@ async fn automaton_loop<A>(
 }
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -90,7 +90,7 @@ mod tests {
 
         let _handle = spawn_automaton_task(lfo, Duration::from_millis(10), value_tx, cancel_rx);
 
-        // Должны получить несколько значений
+        // Should receive several values
         for _ in 0..3 {
             let val = tokio::time::timeout(Duration::from_millis(50), value_rx.recv()).await;
             assert!(val.is_ok(), "task should produce values");

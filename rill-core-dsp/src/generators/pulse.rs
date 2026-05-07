@@ -1,4 +1,4 @@
-//! Pulse wave генератор с PWM (Pulse Width Modulation)
+//! Pulse wave generator with PWM (Pulse Width Modulation)
 
 use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
@@ -6,26 +6,26 @@ use crate::vector::{ScalarVector1, Vector};
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
-/// Pulse wave генератор с PWM
+/// Pulse wave generator with PWM
 pub struct PulseOscillator<T: Transcendental> {
-    /// Базовая частота
+    /// Base frequency
     frequency: f32,
-    /// Амплитуда
+    /// Amplitude
     amplitude: ScalarVector1<T>,
-    /// Ширина импульса (0..1)
+    /// Pulse width (0..1)
     pulse_width: ScalarVector1<T>,
-    /// Модуляция ширины (PWM)
+    /// Pulse width modulation (PWM)
     pwm_amount: ScalarVector1<T>,
-    /// Текущая фаза
+    /// Current phase
     phase: ScalarVector1<T>,
-    /// Инкремент фазы
+    /// Phase increment
     phase_inc: ScalarVector1<T>,
-    /// Частота дискретизации
+    /// Sample rate
     sample_rate: f32,
 }
 
 impl<T: Transcendental> PulseOscillator<T> {
-    /// Создать новый pulse генератор
+    /// Create a new pulse generator
     pub fn new(frequency: f32, pulse_width: T) -> Self {
         let mut osc = Self {
             frequency,
@@ -44,17 +44,17 @@ impl<T: Transcendental> PulseOscillator<T> {
         self.phase_inc = ScalarVector1::splat(T::from_f32(self.frequency / self.sample_rate));
     }
 
-    /// Установить ширину импульса
+    /// Set pulse width
     pub fn set_pulse_width(&mut self, width: T) {
         self.pulse_width = ScalarVector1::splat(width.clamp(T::from_f32(0.01), T::from_f32(0.99)));
     }
 
-    /// Установить глубину PWM
+    /// Set PWM depth
     pub fn set_pwm_amount(&mut self, amount: T) {
         self.pwm_amount = amount.clamp(T::ZERO, T::from_f32(1.0));
     }
 
-    /// Применить внешнюю модуляцию к ширине импульса
+    /// Apply external modulation to pulse width
     pub fn modulate_pulse_width(&mut self, modulation: T) -> T {
         let modulated = self.pulse_width.extract(0) + modulation * self.pwm_amount.extract(0);
         modulated.clamp(T::from_f32(0.01), T::from_f32(0.99))
@@ -72,18 +72,18 @@ impl<T: Transcendental> PulseOscillator<T> {
             amplitude.neg()
         };
 
-        // Blep коррекция для обоих фронтов
+        // BLEP correction for both edges
         let next_phase = phase + inc;
 
         let mut blep = T::ZERO;
 
-        // Восходящий фронт
+        // Rising edge
         if phase < width && next_phase >= width {
             let t = (width - phase) / inc;
             blep = blep + T::from_f32(2.0) * t - T::from_f32(1.0);
         }
 
-        // Нисходящий фронт (при переполнении фазы)
+        // Falling edge (on phase overflow)
         if next_phase.to_f32() >= 1.0 {
             let t = (T::from_f32(1.0) - phase) / inc;
             blep = blep - (T::from_f32(2.0) * t - T::from_f32(1.0));
@@ -115,7 +115,7 @@ impl<T: Transcendental> Algorithm<T> for PulseOscillator<T> {
 
             output[i] = sample;
 
-            // Обновляем фазу
+            // Update phase
             self.phase = self.phase + self.phase_inc;
             if self.phase.extract(0).to_f32() >= 1.0 {
                 self.phase = self.phase - ScalarVector1::splat(T::from_f32(1.0));

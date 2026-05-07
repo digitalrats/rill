@@ -1,8 +1,8 @@
 //! # Sequencer serialisation
 //!
-//! [`SequencerDocument`] is a standalone serialisable description of a
+//! [`SequencerDef`] is a standalone serialisable description of a
 //! parameter-lock sequencer configuration.  It is independent from
-//! [`PatchbayDocument`](crate::document::PatchbayDocument) — you can
+//! [`PatchbayDef`](crate::serialization::PatchbayDef) — you can
 //! load, save, and swap sequencer presets separately from LFO/envelope
 //! automation and event mappings.
 //!
@@ -10,7 +10,7 @@
 //!
 //! This module is available only when the `serde` feature is enabled.
 
-use super::{Pattern, Snapshot, SnapshotSequencer};
+use crate::sequencer::{Pattern, Snapshot, SnapshotSequencer};
 
 /// Serializable snapshot-sequencer configuration.
 ///
@@ -24,7 +24,7 @@ use super::{Pattern, Snapshot, SnapshotSequencer};
 /// roundtrips but never interpreted by the engine.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
-pub struct SequencerDocument {
+pub struct SequencerDef {
     /// Named parameter snapshots (collections of p-locks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snapshots: Vec<Snapshot>,
@@ -45,7 +45,7 @@ pub struct SequencerDocument {
     pub description: Option<String>,
 }
 
-impl SequencerDocument {
+impl SequencerDef {
     /// Create a document with the given patterns and no snapshots.
     pub fn new(patterns: Vec<Pattern>) -> Self {
         Self {
@@ -103,11 +103,11 @@ impl SequencerDocument {
 #[cfg(feature = "serde")]
 mod tests {
     use super::*;
-    use crate::sequencer::{ParameterTarget, SequenceStep, StepPlayMode};
+    use crate::sequencer::{ParameterTarget, SequenceStep};
     use rill_core::NodeId;
 
-    fn sample_doc() -> SequencerDocument {
-        SequencerDocument {
+    fn sample_doc() -> SequencerDef {
+        SequencerDef {
             snapshots: vec![Snapshot::new(
                 "verse",
                 vec![ParameterTarget::new(NodeId(1), "gain", 0.8)],
@@ -129,7 +129,7 @@ mod tests {
     fn test_json_roundtrip() {
         let doc = sample_doc();
         let json = doc.to_json().unwrap();
-        let restored = SequencerDocument::from_json(&json).unwrap();
+        let restored = SequencerDef::from_json(&json).unwrap();
 
         assert_eq!(restored.snapshots.len(), 1);
         assert_eq!(restored.patterns.len(), 1);
@@ -149,9 +149,9 @@ mod tests {
 
     #[test]
     fn test_empty_document() {
-        let doc = SequencerDocument::new(vec![]);
+        let doc = SequencerDef::new(vec![]);
         let json = doc.to_json().unwrap();
-        let restored = SequencerDocument::from_json(&json).unwrap();
+        let restored = SequencerDef::from_json(&json).unwrap();
         assert!(restored.patterns.is_empty());
         assert!(restored.snapshots.is_empty());
 
@@ -164,7 +164,7 @@ mod tests {
     fn test_cbor_roundtrip() {
         let doc = sample_doc();
         let cbor = doc.to_cbor().unwrap();
-        let restored = SequencerDocument::from_cbor(&cbor).unwrap();
+        let restored = SequencerDef::from_cbor(&cbor).unwrap();
         assert_eq!(restored.active_pattern, "main");
     }
 }

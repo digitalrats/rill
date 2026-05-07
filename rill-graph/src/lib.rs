@@ -19,8 +19,11 @@
 
 mod graph;
 
+/// Backend factory for constructing audio I/O backends by name.
+pub mod backend_factory;
+
 /// Node factory and registry for constructing nodes by type name.
-pub mod registry;
+pub mod factory;
 
 /// Graph serialization (JSON / CBOR). Feature-gated behind `serialization`.
 #[cfg(feature = "serialization")]
@@ -30,11 +33,11 @@ pub mod serialization;
 #[cfg(feature = "dot")]
 pub mod dot;
 
-pub use graph::{BuildError, GraphBuilder, GraphResource, SignalGraph};
-pub use registry::{NodeConstructor, NodeRegistry, RegistryError};
+pub use factory::{NodeConstructor, NodeFactory, RegistryError};
+pub use graph::{BuildError, Graph, GraphBuilder, GraphResource};
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use crate::{GraphBuilder, NodeConstructor, NodeRegistry, RegistryError, SignalGraph};
+    pub use crate::{Graph, GraphBuilder, NodeConstructor, NodeFactory, RegistryError};
     pub use rill_core::prelude::*;
 }

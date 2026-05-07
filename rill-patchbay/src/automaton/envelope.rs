@@ -2,7 +2,7 @@
 //!
 //! Supports ADSR, AR, ASR, and AHDSR envelope types.
 
-use crate::control::{Automaton, Range, Time};
+use crate::engine::{Automaton, Range, Time};
 
 /// Envelope shape type.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

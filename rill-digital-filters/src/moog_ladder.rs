@@ -1,7 +1,7 @@
 use rill_core::traits::{ActionContext, Algorithm};
 use rill_core::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessError,
-    ProcessResult, Processor, SignalNode, Transcendental,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    ProcessError, ProcessResult, Processor, Transcendental,
 };
 use rill_core_dsp::filters::MoogLadder;
 
@@ -54,7 +54,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> 
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for MoogLadderProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -149,6 +149,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     }
 
     fn num_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
+    fn num_signal_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
 

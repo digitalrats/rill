@@ -1,24 +1,24 @@
-//! # SIMD реализации для векторных операций
+//! # SIMD implementations for vector operations
 //!
-//! Этот модуль содержит платформо-зависимые SIMD реализации векторных операций.
+//! This module contains platform-dependent SIMD implementations of vector operations.
 //!
-//! ## Детекция возможностей процессора
-//! Система автоматически определяет доступные SIMD инструкции во время выполнения
-//! и выбирает оптимальную реализацию.
+//! ## CPU feature detection
+//! The system automatically determines available SIMD instructions at runtime
+//! and selects the optimal implementation.
 //!
-//! ## Поддерживаемые архитектуры
+//! ## Supported architectures
 //! - x86/x86_64: SSE2, SSE4.1, AVX, AVX2, AVX512
 //! - ARM: NEON (AArch64)
 //! - WebAssembly: SIMD128
 //!
-//! ## Использование
-//! Пользователи обычно не взаимодействуют с этим модулем напрямую,
-//! а используют высокоуровневые абстракции из `vector::traits`.
+//! ## Usage
+//! Users typically don't interact with this module directly,
+//! but use the high-level abstractions from `vector::traits`.
 
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-// Кроссплатформенная SIMD реализация через крейт wide (требует фичи simd)
+// Cross-platform SIMD implementation via the wide crate (requires simd feature)
 #[cfg(feature = "simd")]
 pub mod wide;
 
@@ -31,7 +31,7 @@ pub mod arm;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-/// Детектор SIMD возможностей процессора
+/// SIMD capability detector for the CPU
 pub struct SimdDetector {
     has_sse2: bool,
     has_sse4_1: bool,
@@ -49,10 +49,10 @@ impl Default for SimdDetector {
 }
 
 impl SimdDetector {
-    /// Создает детектор и определяет возможности текущего процессора
+    /// Creates a detector and determines the current CPU's capabilities
     pub fn new() -> Self {
-        // Временная заглушка: всегда возвращаем false для SIMD расширений
-        // В реальной реализации здесь будет детекция через raw_cpuid или аналогичные библиотеки
+        // Temporary stub: always returns false for SIMD extensions
+        // In a real implementation, detection would be done via raw_cpuid or similar libraries
         Self {
             has_sse2: false,
             has_sse4_1: false,
@@ -64,10 +64,10 @@ impl SimdDetector {
         }
     }
 
-    /// Возвращает максимальную рекомендуемую ширину SIMD для текущей платформы
+    /// Returns the maximum recommended SIMD width for the current platform
     pub fn recommended_simd_width<T: crate::Transcendental>() -> usize {
-        // Временная заглушка: всегда возвращаем скалярную ширину
-        // В реальной реализации здесь будет логика выбора на основе детекции
+        // Temporary stub: always returns scalar width
+        // In a real implementation, selection logic based on detection would go here
         1
     }
 }
@@ -76,7 +76,7 @@ impl SimdDetector {
 #[cfg(feature = "simd")]
 pub use wide::*;
 
-// Платформенно-специфичные реэкспорты (пока не реализованы)
+// Platform-specific re-exports (not yet implemented)
 // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 // pub use x86::*;
 

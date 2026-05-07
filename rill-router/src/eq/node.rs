@@ -1,8 +1,8 @@
 //! Processor nodes for integration with rill-core signal graphs.
 
 use rill_core::{
-    NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessError,
-    ProcessResult, Processor, SignalNode, Transcendental,
+    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    ProcessError, ProcessResult, Processor, Transcendental,
 };
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
@@ -135,7 +135,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -333,6 +333,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
         self.outputs.len()
     }
 
+    fn num_signal_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_signal_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
     fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
@@ -495,7 +503,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -647,6 +655,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> SignalNode<T, BUF_SIZE>
     }
 
     fn num_outputs(&self) -> usize {
+        self.outputs.len()
+    }
+
+    fn num_signal_inputs(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
 

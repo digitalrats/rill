@@ -27,8 +27,8 @@ Cargo workspace — 17 active crates:
 Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
-- **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `SignalGraph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
-- **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::SignalEngine` drives the graph in the I/O callback.
+- **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `Graph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
+- **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
@@ -75,6 +75,12 @@ mdbook serve docs/                # dev server at localhost:3000
     - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.
+
+- **Documentation language:**
+    - All crate-level docs (`README.md`, module doc comments, API docs) must be in **English**.
+    - Code comments (inline `//`) should also be in English.
+    - The only exception is `docs/src/guides/world-of-automatons.md` — a full-fledged published article intentionally written in Russian as a deliberate stylistic choice.
+    - Rationale: English is the lingua franca of open-source. One Russian-language article is an exception, not a precedent — do not add more without explicit discussion.
 
 - **Zero-copy data flow:**
     Data copying across node ports is **forbidden** except in these cases:
@@ -164,6 +170,11 @@ under `pw‑loopback` or similar virtual device to detect xruns.
 
 Conventional commits: `<type>(<scope>): <description>`.
 Start a feature branch: `git flow feature start <name>`.
+
+> **Commit messages with backticks:** always use **single quotes** (`'...'`) for
+> `git commit -m`, never double quotes. In double quotes the shell interprets
+> backticks as command substitution (`\`cmd\`` → runs `cmd`), which silently
+> corrupts the message and may execute arbitrary text.
 
 > **Before any work:** if the current branch is `develop`, you **must** create a
 > `feature/*` branch first (`git flow feature start <name>`). Directly editing
@@ -282,7 +293,7 @@ telemetry channel closes on audio thread shutdown).
 If data crosses threads, use `rill_core::queues::MpscQueue<ParameterCommand>`.
 Everything else is single-threaded within the signal graph running inside the
 I/O callback (see "Audio I/O thread" above). No external engine loop —
-`Port::propagate` replaces `SignalEngine::process_block()`.
+`Port::propagate` replaces `Port::propagate::process_block()`.
 
 ## Known pitfalls
 
@@ -293,7 +304,7 @@ I/O callback (see "Audio I/O thread" above). No external engine loop —
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
 - **Two-thread architecture**: the audio I/O thread (see "Audio I/O thread"
   above) runs `AudioInput`'s callback which drives the entire signal graph.
-  The control thread (soft RT) runs `rill-patchbay::PatchbayManager`.
+  The control thread (soft RT) runs `rill-patchbay::Manager`.
   Communication via `MpscQueue<ParameterCommand>`. Source/Sink nodes own
   I/O buffers — no external engine loop, `Port::propagate` replaces
-  `SignalEngine::process_block`.
+  `Port::propagate::process_block`.

@@ -1,4 +1,4 @@
-//! Бэкенды для аудио ввода-вывода
+//! Audio I/O backends
 
 mod null;
 

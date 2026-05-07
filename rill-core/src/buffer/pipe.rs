@@ -1,5 +1,5 @@
 use super::array_from_fn;
-use crate::buffer::{AtomicStats, BufferStats, SignalBuffer, CACHE_LINE_SIZE};
+use crate::buffer::{AtomicStats, Buffer, BufferStats, CACHE_LINE_SIZE};
 use crate::math::Transcendental;
 use core::marker::PhantomData;
 use std::fmt;
@@ -110,7 +110,7 @@ impl<T: Transcendental, const N: usize> PipeBuffer<T, N> {
     }
 }
 
-impl<T: Transcendental, const N: usize> SignalBuffer<T> for PipeBuffer<T, N> {
+impl<T: Transcendental, const N: usize> Buffer<T> for PipeBuffer<T, N> {
     fn capacity(&self) -> usize {
         N
     }
@@ -126,6 +126,19 @@ impl<T: Transcendental, const N: usize> SignalBuffer<T> for PipeBuffer<T, N> {
     }
     fn is_full(&self) -> bool {
         self.valid
+    }
+    fn as_slice(&self) -> &[T] {
+        &self.storage
+    }
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.storage
+    }
+    fn fill(&mut self, value: T) {
+        self.storage.fill(value);
+    }
+    fn copy_from(&mut self, src: &[T]) {
+        let len = src.len().min(N);
+        self.storage[..len].copy_from_slice(&src[..len]);
     }
     fn clear(&mut self) {
         self.valid = false;

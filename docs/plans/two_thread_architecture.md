@@ -2,14 +2,14 @@
 
 ## Overview
 
-Реализация двухпоточной модели. **Аудиопоток (hard/soft RT)** — `AudioInput`/`AudioOutput`
-с `Port::propagate`. **Поток управления (soft RT, tokio)** — `rill-patchbay::engine::PatchbayEngine`.
-Общаются через `MpscQueue<ParameterCommand>`.
+Implementation of the two-thread model. **Audio thread (hard/soft RT)** — `AudioInput`/`AudioOutput`
+with `Port::propagate`. **Control thread (soft RT, tokio)** — `rill-patchbay::engine::Engine`.
+They communicate via `MpscQueue<ParameterCommand>`.
 
 ```
 [Control Thread (soft RT)]             [Audio Thread (hard RT)]
 ─────────────────────────────           ─────────────────────────
-  PatchbayEngine                              AudioInput / AudioOutput
+  Engine                              AudioInput / AudioOutput
   ├── Automata (LFO, Env)                           │
   ├── PortCombiner                                  │
   ├── Sequencer                              Port::propagate()
@@ -31,52 +31,52 @@
 | `CommandQueue` | `rill-core::queues::command` | ✅ Implemented |
 | `Telemetry` / `TelemetryQueue` | `rill-core::queues::telemetry` | ✅ Implemented |
 | `MicroControlObserver` | `rill-core::queues::observer` | ✅ Implemented, tested |
-| `Automaton` trait | `rill-patchbay::control` | ✅ Implemented |
-| `Servo<A: Automaton>` | `rill-patchbay::control` | ✅ Implemented |
+| `Automaton` trait | `rill-patchbay::engine` | ✅ Implemented |
+| `Servo<A: Automaton>` | `rill-patchbay::engine` | ✅ Implemented |
 | Sensors (acoustic, physical) | `rill-patchbay::sensor` | ✅ Implemented |
-| `PatchbayControl` | `rill-patchbay::control` | ✅ Centralised automata/servo/mapping API |
-| `PatchbayManager` | `rill-patchbay::manager` | ✅ Multi-thread manager, tested |
+| `Engine` | `rill-patchbay::engine` | ✅ Centralised automata/servo/mapping API |
+| `Manager` | `rill-patchbay::manager` | ✅ Multi-thread manager, tested |
 | `PortCombiner` | `rill-patchbay::port_combiner` | ✅ Conflict resolution (Absolute/Modulation) |
-| `PatchbayEngine` | `rill-patchbay::engine` | ✅ **Orchestrator** — green threads + patchbay + sequencer |
-| **`SignalEngine`** | *removed* | ❌ Удалён. Заменён на `Port::propagate` |
-| `GraphStats` | `rill-graph::graph` | ⚠️ Определён, не используется |
-| `crossbeam-channel` | `rill-graph/Cargo.toml` | ⚠️ В зависимостях, не используется в коде |
+| `Engine` | `rill-patchbay::engine` | ✅ **Orchestrator** — green threads + patchbay + sequencer |
+| **`SignalEngine`** | *removed* | ❌ Removed. Replaced by `Port::propagate` |
+| `GraphStats` | `rill-graph::graph` | ⚠️ Defined, not used |
+| `crossbeam-channel` | `rill-graph/Cargo.toml` | ⚠️ In dependencies, not used in code |
 
 ### Queue systems
 
-Две параллельные реализации:
+Two parallel implementations:
 
-| Система | RT-safe | Используется |
+| System | RT-safe | Used by |
 |---------|---------|-------------|
 | `crossbeam_channel` (bounded) | ✅ | `CommandQueue`, `MicroControlObserver` |
 | `MpscQueue`/`SpscQueue` (lock-free, `AtomicCell`) | ✅ (zero deps) | Communication audio ↔ control |
 
 ## Current processing model
 
-Аудиограф **не имеет внешнего движка**. Обработка живёт на коллбэке `AudioIo`:
+The audio graph **has no external engine**. Processing lives in the `AudioIo` callback:
 
-1. Drain `MpscQueue<ParameterCommand>` (параметры от control thread)
+1. Drain `MpscQueue<ParameterCommand>` (parameters from control thread)
 2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
-3. `Port::propagate()` — рекурсивный обход DAG через `downstream_input_ptrs`
+3. `Port::propagate()` — recursive DAG traversal via `downstream_input_ptrs`
 
-`PatchbayEngine` живёт на control thread и спавнит green threads (tokio) для:
-- Автоматов (LFO, envelope — `tokio::spawn` + `tokio::time::interval`)
-- `PortCombiner` (приём значений от автомата и UI, разрешение конфликтов)
-- `SnapshotSequencer` (приём `CLOCK_TICK` из аудиопотока)
+`Engine` lives on the control thread and spawns green threads (tokio) for:
+- Automata (LFO, envelope — `tokio::spawn` + `tokio::time::interval`)
+- `PortCombiner` (receiving values from automaton and UI, resolving conflicts)
+- `SnapshotSequencer` (receiving `CLOCK_TICK` from audio stream)
 
 ## Action Items
 
-1. **Удалить `crossbeam-channel`** из `rill-graph/Cargo.toml` — не используется
-2. **Убрать или использовать `GraphStats`** — определён, но мёртвый код
-3. **Telemetry loop** — `MicroControlObserver` готов, но не подключён ни к одному processing loop
+1. **Remove `crossbeam-channel`** from `rill-graph/Cargo.toml` — not used
+2. **Remove or use `GraphStats`** — defined but dead code
+3. **Telemetry loop** — `MicroControlObserver` is ready but not connected to any processing loop
 
 ## Thread Safety Summary
 
-| Компонент | Поток | Требования |
+| Component | Thread | Requirements |
 |-----------|-------|------------|
 | `Port::propagate` | Audio (hard RT) | zero-alloc, lock-free |
 | `AudioInput::start()` / `AudioOutput::start()` | Audio (hard/soft RT) | Stack buffers, no syscalls |
 | `MpscQueue::push` | Control (soft RT) | Lock-free |
 | `MpscQueue::pop` | Audio (hard RT) | Lock-free |
-| `PatchbayEngine::handle_event` | Control (soft RT) | May allocate |
+| `Engine::handle_event` | Control (soft RT) | May allocate |
 | `Sequencer` | Control (blocking) | spawn_blocking |

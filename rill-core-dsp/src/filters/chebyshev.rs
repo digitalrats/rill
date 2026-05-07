@@ -1,4 +1,4 @@
-//! # Фильтры Чебышева (Chebyshev Filters)
+//! # Chebyshev Filters
 
 use super::FilterParams;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
@@ -9,7 +9,7 @@ use rill_core::Transcendental;
 use std::f64::consts::PI as PI64;
 
 // -----------------------------------------------------------------------------
-// Вспомогательные функции
+// Helper functions
 // -----------------------------------------------------------------------------
 
 /// Chebyshev polynomial of the first kind T_n(x).
@@ -63,12 +63,12 @@ fn chebyshev_type_ii_poles_zeros(n: usize, ripple_db: f64) -> (Vec<Complex64>, V
     for k in 0..n {
         let theta = PI64 * (2.0 * k as f64 + 1.0) / (2.0 * n as f64);
 
-        // Полюса
+        // Poles
         let sigma = -a.sinh() * theta.sin();
         let omega = a.cosh() * theta.cos();
         poles.push(Complex64::new(sigma, omega));
 
-        // Нули (на мнимой оси)
+        // Zeros (on the imaginary axis)
         if k % 2 == 1 {
             let omega_zero = 1.0 / theta.cos();
             zeros.push(Complex64::new(0.0, omega_zero));
@@ -79,7 +79,7 @@ fn chebyshev_type_ii_poles_zeros(n: usize, ripple_db: f64) -> (Vec<Complex64>, V
 }
 
 // -----------------------------------------------------------------------------
-// Биквадратная секция
+// Biquad section
 // -----------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -215,7 +215,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
         let warp_cutoff = 2.0 * (PI64 * cutoff / sample_rate_f64).tan();
 
         self.num_sections = n.div_ceil(2);
-        self.gain = ScalarVector1::splat(T::from_f32(1.0)); // Упрощённо, в реальности нужно вычислять gain
+        self.gain = ScalarVector1::splat(T::from_f32(1.0)); // Simplified; gain should be computed in practice
 
         for i in 0..self.num_sections {
             let idx1 = i * 2;
@@ -467,7 +467,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ParameterizedAlgorithm<T>
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]

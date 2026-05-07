@@ -4,7 +4,7 @@
 //! test helpers, and test-signal generation.
 
 use crate::automaton::Range;
-use crate::control::Transform;
+use crate::engine::Transform;
 
 // =============================================================================
 // Value converters

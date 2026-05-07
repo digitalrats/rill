@@ -6,7 +6,7 @@ One dependency brings in the entire ecosystem:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.1"
+rill-adrift = "0.5.0-beta.2"
 ```
 
 ```rust
@@ -22,7 +22,7 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 |---|---|
 | **Core** | `rill-core` — traits, math, buffers, queues, time, macros |
 | **DSP** | `rill-core-dsp` — algorithms, filters, generators, delay, vector ops |
-| **Graph** | `rill-graph` — static DAG audio graph, `SignalEngine` (process_tick, process_block, spawn) |
+| **Graph** | `rill-graph` — static DAG audio graph, `Port::propagate` (process_tick, process_block, spawn) |
 | **Effects** | `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router` |
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
 | **Analog** | `rill-core-wdf`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |
@@ -39,7 +39,7 @@ The foundation (`rill-core`) provides lock-free queues, `no_std`-compatible math
 
 ## Project Status
 
-Active development — 17 crates, 0.5.0-beta.1, 491 tests.
+Active development — 17 crates, 0.5.0-beta.2, 487 tests.
 
 - [GitHub](https://github.com/DigitalRats/rill)
 - [crates.io](https://crates.io/crates/rill-adrift)

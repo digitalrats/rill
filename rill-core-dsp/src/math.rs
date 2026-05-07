@@ -1,25 +1,25 @@
-//! # Математические абстракции и утилиты для DSP
+//! # Mathematical abstractions and utilities for DSP
 //!
-//! Этот модуль объединяет:
-//! - Числовые типы (`Transcendental`) для абстракции f32/f64
-//! - Конвертацию между линейными шкалами и dB
-//! - Быстрые математические функции (tanh, sin, exp)
-//! - Генерацию сигналов (синус, пила, квадрат)
-//! - Оконные функции для гранулярного синтеза
-//! - Интерполяцию и сглаживание
+//! This module combines:
+//! - Numeric types (`Transcendental`) for f32/f64 abstraction
+//! - Conversion between linear scales and dB
+//! - Fast math functions (tanh, sin, exp)
+//! - Signal generation (sine, saw, square)
+//! - Window functions for granular synthesis
+//! - Interpolation and smoothing
 
 use rill_core::Transcendental;
 
 // -----------------------------------------------------------------------------
-// Конвертация между шкалами
+// Conversion between scales
 // -----------------------------------------------------------------------------
 
-/// Преобразовать децибелы в линейный коэффициент
+/// Convert decibels to linear coefficient
 ///
-/// # Формула
+/// # Formula
 /// `linear = 10^(dB/20)`
 ///
-/// # Примеры
+/// # Examples
 /// - 0 dB → 1.0
 /// - -6 dB → 0.5
 /// - +6 dB → 2.0
@@ -28,18 +28,18 @@ pub fn db_to_linear<T: Transcendental>(db: T) -> T {
     T::from_f32(10.0_f32.powf(db.to_f32() / 20.0))
 }
 
-/// Преобразовать линейный коэффициент в децибелы
+/// Convert linear coefficient to decibels
 ///
-/// # Формула
+/// # Formula
 /// `dB = 20 * log10(linear)`
 #[inline(always)]
 pub fn linear_to_db<T: Transcendental>(linear: T) -> T {
     T::from_f32(20.0 * linear.to_f32().log10())
 }
 
-/// Преобразовать MIDI ноту в частоту
+/// Convert MIDI note to frequency
 ///
-/// # Формула
+/// # Formula
 /// `freq = 440 * 2^((note - 69)/12)`
 #[inline(always)]
 pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
@@ -47,37 +47,37 @@ pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
     T::from_f32(440.0 * 2.0_f32.powf(exp))
 }
 
-/// Преобразовать частоту в MIDI ноту
+/// Convert frequency to MIDI note
 #[inline(always)]
 pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
     69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
 }
 
-/// Преобразовать семплы в секунды
+/// Convert samples to seconds
 #[inline(always)]
 pub fn samples_to_seconds(samples: usize, sample_rate: f32) -> f32 {
     samples as f32 / sample_rate
 }
 
-/// Преобразовать секунды в семплы
+/// Convert seconds to samples
 #[inline(always)]
 pub fn seconds_to_samples(seconds: f32, sample_rate: f32) -> usize {
     (seconds * sample_rate) as usize
 }
 
 // -----------------------------------------------------------------------------
-// Быстрые математические аппроксимации
+// Fast math approximations
 // -----------------------------------------------------------------------------
 
-/// Быстрая аппроксимация экспоненты (Pade аппроксимант)
+/// Fast exponential approximation (Padé approximant)
 ///
-/// Точность ~ 1e-5, в 2-3 раза быстрее стандартной exp()
+/// Accuracy ~ 1e-5, 2-3x faster than standard exp()
 #[inline(always)]
 pub fn fast_exp<T: Transcendental>(x: T) -> T {
     let xf = x.to_f32();
 
-    // exp(x) ≈ (1 + x/n)^n для большого n
-    // Используем n = 2^4 = 16 для хорошего баланса
+    // exp(x) ≈ (1 + x/n)^n for large n
+    // Use n = 2^4 = 16 for good balance
     let mut result = 1.0 + xf / 16.0;
     result *= result; // ^2
     result *= result; // ^4
@@ -87,15 +87,15 @@ pub fn fast_exp<T: Transcendental>(x: T) -> T {
     T::from_f32(result)
 }
 
-/// Быстрая аппроксимация tanh (Pade аппроксимант)
+/// Fast tanh approximation (Padé approximant)
 ///
-/// Точность ~ 1e-3, очень быстрая (без ветвлений)
+/// Accuracy ~ 1e-3, very fast (branchless)
 #[inline(always)]
 pub fn fast_tanh<T: Transcendental>(x: T) -> T {
     let xf = x.to_f32();
 
     // tanh(x) ≈ x * (27 + x^2) / (27 + 9*x^2)
-    // Точность хороша для |x| < 3
+    // Good accuracy for |x| < 3
     let x2 = xf * xf;
     let numerator = xf * (27.0 + x2);
     let denominator = 27.0 + 9.0 * x2;
@@ -103,9 +103,9 @@ pub fn fast_tanh<T: Transcendental>(x: T) -> T {
     T::from_f32(numerator / denominator)
 }
 
-/// Быстрая аппроксимация синуса (Taylor ряд)
+/// Fast sine approximation (Taylor series)
 ///
-/// Точность ~ 1e-3 для |x| < π, очень быстрая
+/// Accuracy ~ 1e-3 for |x| < π, very fast
 #[inline(always)]
 pub fn fast_sin<T: Transcendental>(x: T) -> T {
     let xf = x.to_f32();
@@ -118,7 +118,7 @@ pub fn fast_sin<T: Transcendental>(x: T) -> T {
     T::from_f32(xf - x3 / 6.0 + x5 / 120.0)
 }
 
-/// Мягкое клиппирование (wave shaping)
+/// Soft clipping (wave shaping)
 #[inline(always)]
 pub fn soft_clip<T: Transcendental>(x: T, threshold: T) -> T {
     let xf = x.to_f32();
@@ -134,23 +134,23 @@ pub fn soft_clip<T: Transcendental>(x: T, threshold: T) -> T {
 }
 
 // -----------------------------------------------------------------------------
-// Генерация сигналов
+// Signal generation
 // -----------------------------------------------------------------------------
 
-/// Генерация синусоиды (фаза 0..1)
+/// Generate sine wave (phase 0..1)
 #[inline(always)]
 pub fn sine_phase<T: Transcendental>(phase: T) -> T {
     (phase * T::from_f32(2.0) * T::PI).sin()
 }
 
-/// Генерация пилообразной волны (фаза 0..1)
+/// Generate sawtooth wave (phase 0..1)
 #[inline(always)]
 pub fn saw_phase<T: Transcendental>(phase: T) -> T {
     // 2 * phase - 1
     phase.mul(T::from_f32(2.0)).sub(T::from_f32(1.0))
 }
 
-/// Генерация треугольной волны (фаза 0..1)
+/// Generate triangle wave (phase 0..1)
 #[inline(always)]
 pub fn triangle_phase<T: Transcendental>(phase: T) -> T {
     // 4 * |phase - 0.5| - 1
@@ -159,7 +159,7 @@ pub fn triangle_phase<T: Transcendental>(phase: T) -> T {
     abs_p.mul(T::from_f32(4.0)).sub(T::from_f32(1.0))
 }
 
-/// Генерация квадратной волны (фаза 0..1, pulse_width 0..1)
+/// Generate square wave (phase 0..1, pulse_width 0..1)
 #[inline(always)]
 pub fn square_phase<T: Transcendental>(phase: T, pulse_width: T) -> T {
     if phase.to_f32() < pulse_width.to_f32() {
@@ -170,10 +170,10 @@ pub fn square_phase<T: Transcendental>(phase: T, pulse_width: T) -> T {
 }
 
 // -----------------------------------------------------------------------------
-// Оконные функции для гранулярного синтеза
+// Window functions for granular synthesis
 // -----------------------------------------------------------------------------
 
-/// Окно Ханна (Hann)
+/// Hann window
 #[inline(always)]
 pub fn hann_window<T: Transcendental>(x: T) -> T {
     // 0.5 * (1 - cos(2πx))
@@ -181,7 +181,7 @@ pub fn hann_window<T: Transcendental>(x: T) -> T {
     T::from_f32(0.5) * (T::from_f32(1.0) - cos_term)
 }
 
-/// Окно Хэмминга (Hamming)
+/// Hamming window
 #[inline(always)]
 pub fn hamming_window<T: Transcendental>(x: T) -> T {
     // 0.54 - 0.46 * cos(2πx)
@@ -189,7 +189,7 @@ pub fn hamming_window<T: Transcendental>(x: T) -> T {
     T::from_f32(0.54) - T::from_f32(0.46) * cos_term
 }
 
-/// Окно Блэкмана (Blackman)
+/// Blackman window
 #[inline(always)]
 pub fn blackman_window<T: Transcendental>(x: T) -> T {
     // 0.42 - 0.5 * cos(2πx) + 0.08 * cos(4πx)
@@ -199,28 +199,28 @@ pub fn blackman_window<T: Transcendental>(x: T) -> T {
     T::from_f32(0.42) - T::from_f32(0.5) * cos1 + T::from_f32(0.08) * cos2
 }
 
-/// Окно с переменной формой (0 = прямоугольное, 1 = Ханна)
+/// Variable-shape window (0 = rectangular, 1 = Hann)
 #[inline(always)]
 pub fn variable_window<T: Transcendental>(x: T, shape: T) -> T {
     let one = T::from_f32(1.0);
     let rect = one;
     let hann = hann_window(x);
 
-    // Линейная интерполяция между прямоугольным и ханна
+    // Linear interpolation between rectangular and Hann
     rect.mul(one.sub(shape)).add(hann.mul(shape))
 }
 
 // -----------------------------------------------------------------------------
-// Интерполяция
+// Interpolation
 // -----------------------------------------------------------------------------
 
-/// Линейная интерполяция
+/// Linear interpolation
 #[inline(always)]
 pub fn lerp<T: Transcendental>(a: T, b: T, t: T) -> T {
     a.add(b.sub(a).mul(t))
 }
 
-/// Кубическая интерполяция (Hermite)
+/// Cubic interpolation (Hermite)
 #[inline(always)]
 pub fn cubic_interpolate<T: Transcendental>(y0: T, y1: T, y2: T, y3: T, t: T) -> T {
     let t2 = t.mul(t);
@@ -234,7 +234,7 @@ pub fn cubic_interpolate<T: Transcendental>(y0: T, y1: T, y2: T, y3: T, t: T) ->
     a0.mul(t3).add(a1.mul(t2)).add(a2.mul(t)).add(a3)
 }
 
-/// Интерполяция методом наименьших квадратов (для дробных задержек)
+/// Least-squares interpolation (for fractional delays)
 #[inline(always)]
 pub fn lagrange_interpolate<T: Transcendental>(y: &[T; 4], x: T) -> T {
     let x0 = T::from_f32(0.0);
@@ -274,10 +274,10 @@ pub fn lagrange_interpolate<T: Transcendental>(y: &[T; 4], x: T) -> T {
 }
 
 // -----------------------------------------------------------------------------
-// Сглаживание параметров (для избежания щелчков)
+// Parameter smoothing (to avoid clicks)
 // -----------------------------------------------------------------------------
 
-/// Экспоненциальное сглаживание (однополюсный фильтр)
+/// Exponential smoothing (one-pole filter)
 #[derive(Debug, Clone)]
 pub struct Smoother<T: Transcendental> {
     current: T,
@@ -286,7 +286,7 @@ pub struct Smoother<T: Transcendental> {
 }
 
 impl<T: Transcendental> Smoother<T> {
-    /// Создать новый сглаживатель
+    /// Create a new smoother
     pub fn new(coeff: T) -> Self {
         Self {
             current: T::ZERO,
@@ -295,13 +295,13 @@ impl<T: Transcendental> Smoother<T> {
         }
     }
 
-    /// Установить целевое значение
+    /// Set target value
     #[inline(always)]
     pub fn set_target(&mut self, target: T) {
         self.target = target;
     }
 
-    /// Получить текущее сглаженное значение (и обновить)
+    /// Get current smoothed value (and update)
     #[allow(clippy::should_implement_trait)]
     #[inline(always)]
     pub fn next(&mut self) -> T {
@@ -311,21 +311,21 @@ impl<T: Transcendental> Smoother<T> {
         self.current
     }
 
-    /// Обработать один семпл (однополюсный фильтр низких частот)
+    /// Process one sample (one-pole low-pass filter)
     #[inline(always)]
     pub fn process_sample(&mut self, input: T) -> T {
         self.current = self.current.add(input.sub(self.current).mul(self.coeff));
         self.current
     }
 
-    /// Мгновенно установить значение (без сглаживания)
+    /// Set value instantly (no smoothing)
     #[inline(always)]
     pub fn set_current(&mut self, value: T) {
         self.current = value;
         self.target = value;
     }
 
-    /// Получить текущее значение без обновления
+    /// Get current value without update
     #[inline(always)]
     pub fn current(&self) -> T {
         self.current
@@ -333,20 +333,16 @@ impl<T: Transcendental> Smoother<T> {
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
-
-// В файле rill-core-dsp/src/math.rs
-
-// В файле rill-core-dsp/src/math.rs
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Константы для допусков
-    const EPSILON: f32 = 1e-4; // Базовый допуск
-    const EPSILON_WINDOW: f32 = 1e-3; // Допуск для оконных функций
+    // Tolerance constants
+    const EPSILON: f32 = 1e-4; // Base tolerance
+    const EPSILON_WINDOW: f32 = 1e-3; // Tolerance for window functions
 
     #[test]
     fn test_midi_conversion() {
@@ -389,7 +385,7 @@ mod tests {
     fn test_fast_tanh() {
         println!("\n=== Testing fast tanh approximation ===");
 
-        // Явно указываем тип для массива
+        // Explicitly specify array type
         let test_values: [f32; 7] = [-3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0];
 
         for &x in &test_values {
@@ -416,7 +412,7 @@ mod tests {
     fn test_windows() {
         println!("\n=== Testing window functions ===");
 
-        // Явно указываем тип для массива
+        // Explicitly specify array type
         let test_positions: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
 
         println!("Hann window:");
@@ -454,7 +450,7 @@ mod tests {
 
             if (x - 0.0).abs() < EPSILON_WINDOW {
                 assert!(
-                    (val - 0.08).abs() < EPSILON_WINDOW * 10.0, // Увеличиваем допуск для краев
+                    (val - 0.08).abs() < EPSILON_WINDOW * 10.0, // Increase tolerance near edges
                     "Hamming at 0 should be ≈0.08, got {}",
                     val
                 );
@@ -516,7 +512,7 @@ mod tests {
     fn test_lerp() {
         println!("\n=== Testing linear interpolation ===");
 
-        // Явно указываем типы в кортежах
+        // Explicitly specify types in tuples
         let test_cases: [(f32, f32, f32, f32); 4] = [
             (0.0, 10.0, 0.0, 0.0),
             (0.0, 10.0, 0.5, 5.0),
@@ -548,7 +544,7 @@ mod tests {
 
         let sample_rate: f32 = 44100.0;
 
-        // Явно указываем типы в кортежах
+        // Explicitly specify types in tuples
         let test_cases: [(f32, usize); 4] = [(0.0, 0), (0.5, 22050), (1.0, 44100), (2.0, 88200)];
 
         for (seconds, expected) in test_cases {
@@ -576,14 +572,14 @@ mod tests {
     fn test_sine_phase() {
         println!("\n=== Testing sine phase generation ===");
 
-        // Явно указываем тип
+        // Explicitly specify type
         let test_phases: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
 
         for &phase in &test_phases {
             let val: f32 = sine_phase(phase);
             println!("sine_phase({}) = {:.6}", phase, val);
 
-            // Проверяем основные свойства синуса
+            // Verify basic sine properties
             if (phase - 0.0).abs() < EPSILON {
                 assert!(
                     (val - 0.0).abs() < EPSILON,
@@ -618,7 +614,7 @@ mod tests {
             let val: f32 = saw_phase(phase);
             println!("saw_phase({}) = {:.6}", phase, val);
 
-            // Пила должна быть линейной от -1 до 1
+            // Saw should be linear from -1 to 1
             let expected: f32 = 2.0 * phase - 1.0;
             assert!(
                 (val - expected).abs() < EPSILON,
@@ -630,12 +626,12 @@ mod tests {
         }
     }
 
-    /// Генерация треугольной волны (фаза 0..1)
+    /// Generate triangle wave (phase 0..1)
     #[inline(always)]
     pub fn triangle_phase<T: Transcendental>(phase: T) -> T {
-        // Исправленная формула:
-        // Для фазы 0..0.5: 4 * phase - 1
-        // Для фазы 0.5..1: 3 - 4 * phase
+        // Corrected formula:
+        // For phase 0..0.5: 4 * phase - 1
+        // For phase 0.5..1: 3 - 4 * phase
         let p = phase.to_f32();
         if p < 0.5 {
             T::from_f32(4.0 * p - 1.0)
@@ -644,7 +640,7 @@ mod tests {
         }
     }
 
-    // ... в модуле тестов ...
+    // ... in test module ...
 
     #[test]
     fn test_db_conversion() {
@@ -682,7 +678,7 @@ mod tests {
             linear
         );
 
-        // Обратное преобразование
+        // Reverse conversion
         let db: f32 = linear_to_db(0.5f32);
         println!("0.5 linear -> dB: {:.6}", db);
         let expected_db: f32 = 20.0 * 0.5f32.log10();

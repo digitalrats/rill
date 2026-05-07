@@ -3,7 +3,7 @@
 //! [`BufferRegistry`] — a temporary registry used during graph assembly.
 //! Each node that requires a resource buffer receives a pointer through
 //! the registry during `GraphBuilder::build()`.
-//! After assembly the registry is retained in `SignalGraph` to manage
+//! After assembly the registry is retained in `Graph` to manage
 //! buffer lifetimes.
 
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use super::Buffer;
 /// Used in `GraphBuilder::build()` to allocate resources and distribute
 /// pointers to graph nodes.
 pub struct BufferRegistry<T> {
-    buffers: HashMap<String, Box<dyn Buffer<T>>>,
+    buffers: HashMap<String, Box<dyn Buffer<T> + Send>>,
 }
 
 impl<T> BufferRegistry<T> {
@@ -27,15 +27,34 @@ impl<T> BufferRegistry<T> {
     }
 
     /// Register a named buffer.
-    pub fn register(&mut self, name: impl Into<String>, buffer: Box<dyn Buffer<T>>) {
+    pub fn register(&mut self, name: impl Into<String>, buffer: Box<dyn Buffer<T> + Send>) {
         self.buffers.insert(name.into(), buffer);
     }
 
     /// Get a raw pointer to a buffer by name.
     ///
     /// Used to distribute pointers to graph nodes during build.
-    pub fn get_ptr(&self, name: &str) -> Option<*const dyn Buffer<T>> {
-        self.buffers.get(name).map(|b| &**b as *const dyn Buffer<T>)
+    pub fn get_ptr(&self, name: &str) -> Option<*const (dyn Buffer<T> + Send)> {
+        self.buffers
+            .get(name)
+            .map(|b| &**b as *const (dyn Buffer<T> + Send))
+    }
+
+    /// Take ownership of a buffer by name, removing it from the registry.
+    pub fn take(&mut self, name: &str) -> Option<Box<dyn Buffer<T> + Send>> {
+        self.buffers.remove(name)
+    }
+
+    /// Leak a buffer by name, returning a raw mutable pointer.
+    /// The leaked buffer will live for the remainder of the program
+    /// (or until manually re‑boxed and dropped).
+    pub fn leak(&mut self, name: &str) -> Option<*mut (dyn Buffer<T> + Send)> {
+        self.buffers.remove(name).map(Box::into_raw)
+    }
+
+    /// Consume the registry and return all owned buffers.
+    pub fn into_inner(self) -> Vec<Box<dyn Buffer<T> + Send>> {
+        self.buffers.into_values().collect()
     }
 
     /// Number of registered buffers.

@@ -1,36 +1,36 @@
-//! Тесты для векторных операций
+//! Tests for vector operations
 //!
-//! Проверяем базовые арифметические операции и математические функции
-//! как для скалярного представления, так и для SIMD (если доступно).
+//! Tests basic arithmetic operations and math functions
+//! for both scalar and SIMD (if available) representations.
 
 use rill_core_dsp::vector::prelude::*;
 
 #[test]
 fn test_scalar_vector_basic() {
-    // Создаём скалярные векторы из срезов
+    // Create scalar vectors from slices
     let data_a = [1.0f32, 2.0, 3.0, 4.0];
     let data_b = [5.0f32, 6.0, 7.0, 8.0];
 
     let vec_a = ScalarVector4::load(&data_a);
     let vec_b = ScalarVector4::load(&data_b);
 
-    // Сложение
+    // Addition
     let vec_c = vec_a + vec_b;
     let mut result = [0.0f32; 4];
     vec_c.store(&mut result);
     assert_eq!(result, [6.0, 8.0, 10.0, 12.0]);
 
-    // Вычитание
+    // Subtraction
     let vec_c = vec_a - vec_b;
     vec_c.store(&mut result);
     assert_eq!(result, [-4.0, -4.0, -4.0, -4.0]);
 
-    // Умножение
+    // Multiplication
     let vec_c = vec_a * vec_b;
     vec_c.store(&mut result);
     assert_eq!(result, [5.0, 12.0, 21.0, 32.0]);
 
-    // Деление
+    // Division
     let vec_c = vec_a / vec_b;
     vec_c.store(&mut result);
     let expected = [1.0 / 5.0, 2.0 / 6.0, 3.0 / 7.0, 4.0 / 8.0];
@@ -38,7 +38,7 @@ fn test_scalar_vector_basic() {
         assert!((result[i] - expected[i]).abs() < 1e-6);
     }
 
-    // Остаток от деления (проверяем для целых чисел)
+    // Remainder (tested with whole numbers)
     let int_a = [10.0f32, 20.0, 30.0, 40.0];
     let int_b = [3.0f32, 7.0, 11.0, 13.0];
     let vec_a = ScalarVector4::load(&int_a);
@@ -50,26 +50,26 @@ fn test_scalar_vector_basic() {
 
 #[test]
 fn test_scalar_vector_scalar_ops() {
-    // Используем трейт VectorScalarOps для операций со скалярами
-    // Пока реализованы только методы, но можно использовать умножение на скаляр через операции?
-    // Для простоты используем load и store и ручное вычисление.
+    // Use VectorScalarOps trait for scalar operations
+    // Only methods are implemented, multiplication via operations works
+    // For simplicity, use load/store with manual computation.
     let data = [2.0f32, 4.0, 6.0, 8.0];
     let vec = ScalarVector4::load(&data);
 
-    // Сложение со скаляром через преобразование скаляра в вектор
+    // Addition with scalar via splat conversion
     let scalar_vec = ScalarVector4::splat(3.0);
     let vec_add = vec + scalar_vec;
     let mut result = [0.0f32; 4];
     vec_add.store(&mut result);
     assert_eq!(result, [5.0, 7.0, 9.0, 11.0]);
 
-    // Умножение на скаляр через splat
+    // Multiplication by scalar via splat
     let scalar_vec = ScalarVector4::splat(2.0);
     let vec_mul = vec * scalar_vec;
     vec_mul.store(&mut result);
     assert_eq!(result, [4.0, 8.0, 12.0, 16.0]);
 
-    // Комбинированные операции
+    // Combined operations
     let scalar_one = ScalarVector4::splat(1.0);
     let scalar_half = ScalarVector4::splat(0.5);
     let vec_expr = (vec + scalar_one) * scalar_half;
@@ -82,7 +82,7 @@ fn test_scalar_vector_math_functions() {
     let data = [0.0f32, 0.5, 1.0, 2.0];
     let vec = ScalarVector4::load(&data);
 
-    // Синус
+    // Sine
     let vec_sin = vec.sin();
     let mut result = [0.0f32; 4];
     vec_sin.store(&mut result);
@@ -91,7 +91,7 @@ fn test_scalar_vector_math_functions() {
         assert!((result[i] - expected_sin[i]).abs() < 1e-6);
     }
 
-    // Косинус
+    // Cosine
     let vec_cos = vec.cos();
     vec_cos.store(&mut result);
     let expected_cos = [0.0f32.cos(), 0.5f32.cos(), 1.0f32.cos(), 2.0f32.cos()];
@@ -99,22 +99,22 @@ fn test_scalar_vector_math_functions() {
         assert!((result[i] - expected_cos[i]).abs() < 1e-6);
     }
 
-    // Модуль (abs)
+    // Absolute value (abs)
     let data_neg = [-1.0f32, 2.0, -3.0, 4.0];
     let vec_neg = ScalarVector4::load(&data_neg);
     let vec_abs = vec_neg.abs();
     vec_abs.store(&mut result);
     assert_eq!(result, [1.0, 2.0, 3.0, 4.0]);
 
-    // Квадратный корень
+    // Square root
     let data_sqrt = [4.0f32, 9.0, 16.0, 25.0];
     let vec_sqrt = ScalarVector4::load(&data_sqrt);
     let vec_sqrt_res = vec_sqrt.sqrt();
     vec_sqrt_res.store(&mut result);
     assert_eq!(result, [2.0, 3.0, 4.0, 5.0]);
 
-    // Экспонента
-    let data_exp = [0.0f32, 1.0, 2.0, 0.0]; // последний элемент не важен
+    // Exponential
+    let data_exp = [0.0f32, 1.0, 2.0, 0.0]; // last element is don't-care
     let vec_exp = ScalarVector4::load(&data_exp);
     let vec_exp_res = vec_exp.exp();
     vec_exp_res.store(&mut result);
@@ -122,7 +122,7 @@ fn test_scalar_vector_math_functions() {
     assert!((result[1] - 2.718281828459045).abs() < 1e-6);
     assert!((result[2] - 7.38905609893065).abs() < 1e-6);
 
-    // Натуральный логарифм
+    // Natural logarithm
     let data_ln = [1.0f32, 2.718281828459045, 7.38905609893065, 1.0];
     let vec_ln = ScalarVector4::load(&data_ln);
     let vec_ln_res = vec_ln.ln();
@@ -134,7 +134,7 @@ fn test_scalar_vector_math_functions() {
 
 #[test]
 fn test_scalar_vector_f64() {
-    // Проверяем для f64 с размером 2
+    // Test with f64, size 2
     let data_a = [1.0f64, 2.0];
     let data_b = [5.0f64, 6.0];
 
@@ -151,7 +151,7 @@ fn test_scalar_vector_f64() {
     vec_c.store(&mut result);
     assert_eq!(result, [2.0, 4.0]);
 
-    // Математические функции для f64
+    // Math functions for f64
     let vec = ScalarVector2::load(&[0.0f64, 1.0]);
     let vec_sin = vec.sin();
     vec_sin.store(&mut result);
@@ -161,7 +161,7 @@ fn test_scalar_vector_f64() {
 
 #[test]
 fn test_vector_splat() {
-    // Проверяем создание вектора с одинаковыми значениями
+    // Test creating a vector with identical values
     let scalar = 42.0f32;
     let vec = ScalarVector4::splat(scalar);
     let mut result = [0.0f32; 4];
@@ -177,16 +177,16 @@ fn test_vector_splat() {
 
 #[test]
 fn test_vector_load_store() {
-    // Проверяем корректность загрузки и сохранения
+    // Test correct load and store behavior
     let data = [1.0f32, 2.0, 3.0, 4.0];
     let vec = ScalarVector4::load(&data);
     let mut result = [0.0f32; 4];
     vec.store(&mut result);
     assert_eq!(result, data);
 
-    // Частичное копирование (первые N элементов)
+    // Partial copy (first N elements)
     let data = [5.0f32, 6.0, 7.0, 8.0, 9.0];
-    let vec = ScalarVector4::load(&data); // берет первые 4
+    let vec = ScalarVector4::load(&data); // takes first 4
     vec.store(&mut result);
     assert_eq!(result, [5.0, 6.0, 7.0, 8.0]);
 }
@@ -214,13 +214,13 @@ fn test_vector_min_max_clamp() {
     let vec_a = ScalarVector4::load(&data_a);
     let vec_b = ScalarVector4::load(&data_b);
 
-    // Минимум
+    // Minimum
     let vec_min = vec_a.min(&vec_b);
     let mut result = [0.0f32; 4];
     vec_min.store(&mut result);
     assert_eq!(result, [1.0, 2.0, 3.0, 0.0]);
 
-    // Максимум
+    // Maximum
     let vec_max = vec_a.max(&vec_b);
     vec_max.store(&mut result);
     assert_eq!(result, [4.0, 5.0, 6.0, 7.0]);
@@ -235,7 +235,7 @@ fn test_vector_min_max_clamp() {
 
 #[test]
 fn test_vector_copy_clone() {
-    // Проверяем, что вектор можно копировать и клонировать
+    // Verify vector can be copied and cloned
     let data = [1.0f32, 2.0, 3.0, 4.0];
     let vec = ScalarVector4::load(&data);
     let vec_copy = vec; // Copy
@@ -253,7 +253,7 @@ fn test_vector_copy_clone() {
     assert_eq!(result1, result3);
 }
 
-// Тесты для трейта Vector
+// Tests for Vector trait
 #[test]
 fn test_vector_trait() {
     use rill_core_dsp::vector::traits::Vector as _;
@@ -261,13 +261,13 @@ fn test_vector_trait() {
     let data = [1.0f32, 2.0, 3.0, 4.0];
     let vec = ScalarVector4::load(&data);
 
-    // Методы трейта
+    // Trait methods
     let splat_vec = ScalarVector4::splat(5.0);
     let mut result = [0.0f32; 4];
     splat_vec.store(&mut result);
     assert_eq!(result, [5.0; 4]);
 
-    // Проверяем, что реализованы соответствующие типажи
+    // Verify corresponding traits are implemented
     let _ = vec + vec; // Add
     let _ = vec - vec; // Sub
     let _ = vec * vec; // Mul
@@ -282,7 +282,7 @@ fn test_vector_trait() {
     let _ = vec.ln();
 }
 
-// Тесты для SIMD векторов (если включена соответствующая фича)
+// Tests for SIMD vectors (if feature is enabled)
 #[cfg(feature = "simd")]
 mod simd_tests {
     use super::*;
@@ -290,7 +290,7 @@ mod simd_tests {
 
     #[test]
     fn test_simd_vector_f32x4() {
-        // Просто проверяем, что можем создать SIMD вектор
+        // Simple check that we can create a SIMD vector
         let data = [1.0f32, 2.0, 3.0, 4.0];
         let vec = simd::F32x4::load(&data);
         let mut result = [0.0f32; 4];
@@ -308,5 +308,5 @@ mod simd_tests {
     }
 }
 
-// Тесты для операций редукции (если реализованы)
-// (пока пропущены, так как трейт VectorReduce не реализован для скаляра)
+// Tests for reduction operations (if implemented)
+// (skipped for now, VectorReduce trait not implemented for scalars)

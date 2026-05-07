@@ -1,0 +1,126 @@
+//! Load graph from JSON and config from TOML, build and play.
+//!
+//! Usage:
+//!   cargo run --example player --features "cpal,sampler,serialization"
+//!   cargo run --example player --features "dot,sampler,serialization" -- --dot
+//!
+//! --dot: export graph to DOT format and exit
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use rill_adrift::registration;
+use rill_adrift::runtime::{Runtime, RuntimeConfig};
+use serde::Deserialize;
+
+const BUF: usize = 256;
+
+#[derive(Deserialize, Clone)]
+struct BackendCfg {
+    name: String,
+    #[serde(default)]
+    params: HashMap<String, String>,
+}
+
+#[derive(Deserialize, Clone)]
+struct AppConfig {
+    sample_rate: f32,
+    block_size: usize,
+    backend: Option<BackendCfg>,
+    #[serde(default)]
+    graph_path: Option<String>,
+}
+
+fn load_config() -> Result<AppConfig, Box<dyn std::error::Error>> {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let config_path = crate_dir.join("examples/config.toml");
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Cannot read {}: {e}", config_path.display()))?;
+    let cfg: AppConfig = toml::from_str(&content)?;
+    Ok(cfg)
+}
+
+fn build_graph(
+    cfg: &AppConfig,
+    crate_dir: &std::path::Path,
+    backend_name: &str,
+) -> Result<rill_adrift::rill_graph::Graph<f32, BUF>, Box<dyn std::error::Error>> {
+    let graph_path = crate_dir.join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
+    let json = std::fs::read_to_string(&graph_path)?;
+    let def = registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
+
+    let rt = Runtime::<BUF>::new(RuntimeConfig {
+        sample_rate: cfg.sample_rate,
+        block_size: cfg.block_size,
+        backend_name: Some(backend_name.to_string()),
+        backend_params: cfg
+            .backend
+            .as_ref()
+            .map(|b| b.params.clone())
+            .unwrap_or_default(),
+        ..Default::default()
+    });
+
+    let mut builder = rt.create_builder();
+    def.populate(&mut builder)
+        .map_err(|e| format!("populate: {e}"))?;
+    let graph = builder.build().map_err(|e| format!("build: {e}"))?;
+    Ok(graph)
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = load_config()?;
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--dot") {
+        #[cfg(feature = "dot")]
+        {
+            let graph = build_graph(&cfg, &crate_dir, "null")?;
+            let dot = rill_adrift::rill_graph::dot::to_dot(
+                &graph,
+                &rill_adrift::rill_graph::dot::DotConfig::default(),
+            );
+            println!("{dot}");
+        }
+        #[cfg(not(feature = "dot"))]
+        eprintln!("Enable --features dot for DOT export.");
+        return Ok(());
+    }
+
+    let backend_name = cfg
+        .backend
+        .as_ref()
+        .map(|b| b.name.clone())
+        .unwrap_or_else(|| "null".into());
+    let running = Arc::new(AtomicBool::new(true));
+
+    let audio_thread = {
+        let cfg = cfg.clone();
+        let running = running.clone();
+        let crate_dir = crate_dir.to_path_buf();
+        let backend_name = backend_name.clone();
+        std::thread::spawn(move || {
+            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+            graph.run(running).ok();
+        })
+    };
+
+    let signal_thread = {
+        let running = running.clone();
+        let audio_handle = audio_thread.thread().clone();
+        std::thread::spawn(move || {
+            let mut input = String::new();
+            let _ = std::io::stdin().read_line(&mut input);
+            running.store(false, Ordering::Release);
+            audio_handle.unpark();
+        })
+    };
+
+    println!("▶ Playing graph through {backend_name} backend. Press Enter to stop.");
+    signal_thread.join().ok();
+    audio_thread.join().ok();
+    println!("⏹ Stopped.");
+    Ok(())
+}

@@ -10,12 +10,12 @@ Processing is driven by `Port::propagate` (not an external engine).
 │                    GraphBuilder                      │
 │  add_source() → idx  add_processor() → idx          │
 │  add_sink() → idx    connect_signal(from, to)       │
-│  connect_feedback(from, to)    build() → SignalGraph │
+│  connect_feedback(from, to)    build() → Graph │
 └──────────────────────┬──────────────────────────────┘
                        │ consume
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│                    SignalGraph                        │
+│                    Graph                        │
 │  ┌────────┐   ┌────────────┐   ┌────────┐          │
 │  │ Source │──►│ Processor  │──►│  Sink  │  ...      │
 │  └────────┘   └────────────┘   └────────┘          │
@@ -32,10 +32,7 @@ Processing is driven by `Port::propagate` (not an external engine).
 └─────────────────────────────────────────────────────┘
 ```
 
-## Processing model: Port::propagate
-
-No `SignalEngine`. The source node (e.g. `AudioInput` from `rill-io`)
-creates its own processing callback. The callback:
+## Processing model: Port::propagate The processing callback:
 
 1. Drain `MpscQueue<ParameterCommand>` into graph nodes
 2. Call `Source::generate()` — fills output buffers
@@ -72,8 +69,8 @@ for &idx in graph.topo_order() {
 
 | Component | Purpose |
 |-----------|---------|
-| `GraphBuilder` | Mutable builder: adds nodes and connections, produces `SignalGraph` |
-| `SignalGraph` | Immutable DAG container, no processing methods |
+| `GraphBuilder` | Mutable builder: adds nodes and connections, produces `Graph` |
+| `Graph` | Immutable DAG container, no processing methods |
 | `Port` | Owns buffer, downstream routes, and feedback state |
 | `BuildError` | Errors during graph construction (e.g. cycle detection) |
 
@@ -132,6 +129,6 @@ let graph = builder.build()?;
 
 ## Integration
 
-- `rill-core` — `SignalNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`
+- `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`
 - `rill-io` — `AudioInput`/`AudioOutput` nodes that drive the graph
 - `rill-patchbay` — automation via `MpscQueue<ParameterCommand>`

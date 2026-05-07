@@ -1,7 +1,7 @@
-//! # Макросы для создания узлов и работы с ядром
+//! # Macros for creating nodes and working with the core
 //!
-//! Этот модуль предоставляет макросы для упрощения создания
-//! различных типов узлов в Rill.
+//! This module provides macros to simplify creating
+//! various types of nodes in Rill.
 
 #[macro_use]
 mod params;
@@ -17,10 +17,10 @@ mod sink;
 
 mod tests;
 
-// Реэкспорт макросов с верхнего уровня
-pub use crate::{processor_node, signal_node, sink_node, source_node, with_parameters};
+// Re-export macros from the top level
+pub use crate::{node, processor_node, sink_node, source_node, with_parameters};
 
-/// Прелюдия для удобного импорта всех макросов
+/// Prelude for convenient import of all macros
 pub mod prelude {
-    pub use crate::{processor_node, signal_node, sink_node, source_node, with_parameters};
+    pub use crate::{node, processor_node, sink_node, source_node, with_parameters};
 }

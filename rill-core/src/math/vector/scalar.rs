@@ -1,32 +1,31 @@
-//! # Скалярные реализации векторных операций
+//! # Scalar implementations of vector operations
 //!
-//! Fallback реализации для платформ без SIMD поддержки или для отладки.
+//! Fallback implementations for platforms without SIMD support or for debugging.
 
 use super::traits::*;
 use crate::{Scalar, Transcendental};
 
 // -----------------------------------------------------------------------------
-// Скалярные векторные типы
-// -----------------------------------------------------------------------------
+// Scalar vector types
 
-/// Скалярный вектор из 1 элемента
+/// Scalar vector of 1 element
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector1<T: Scalar>([T; 1]);
 
-/// Скалярный вектор из 2 элементов
+/// Scalar vector of 2 elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector2<T: Scalar>([T; 2]);
 
-/// Скалярный вектор из 4 элементов
+/// Scalar vector of 4 elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector4<T: Scalar>([T; 4]);
 
-/// Скалярный вектор из 8 элементов
+/// Scalar vector of 8 elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector8<T: Scalar>([T; 8]);
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для ScalarVector4
+// Vector implementation for ScalarVector4
 // -----------------------------------------------------------------------------
 
 impl<T: Scalar> Vector<T, 4> for ScalarVector4<T> {
@@ -249,7 +248,7 @@ impl<T: Scalar> Default for ScalarVector1<T> {
     }
 }
 
-// Реализации для ScalarVector2 и ScalarVector8 аналогичны (опущены для краткости)
+// Implementations for ScalarVector2 and ScalarVector8 are similar (omitted for brevity)
 
 impl<T: Scalar> Vector<T, 2> for ScalarVector2<T> {
     fn splat(value: T) -> Self {
@@ -347,7 +346,7 @@ impl<T: Scalar> Default for ScalarVector2<T> {
 }
 
 // -----------------------------------------------------------------------------
-// Реализация операторов
+// Operator implementations
 // -----------------------------------------------------------------------------
 
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
@@ -509,7 +508,7 @@ impl<T: Scalar> Neg for ScalarVector1<T> {
 }
 
 // -----------------------------------------------------------------------------
-// Операции со скалярами
+// Scalar operations
 // -----------------------------------------------------------------------------
 
 impl<T: Scalar> Mul<T> for ScalarVector4<T> {
@@ -633,7 +632,7 @@ impl<T: Scalar> Rem<T> for ScalarVector1<T> {
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]

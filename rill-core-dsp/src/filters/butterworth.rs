@@ -1,4 +1,4 @@
-//! # Фильтры Баттерворта (Butterworth Filters)
+//! # Butterworth Filters
 
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
@@ -9,7 +9,7 @@ use rill_core::Transcendental;
 use std::f64::consts::PI as PI64;
 
 // -----------------------------------------------------------------------------
-// Вспомогательные функции
+// Helper functions
 // -----------------------------------------------------------------------------
 
 fn butterworth_analog_poles(n: usize) -> Vec<Complex64> {
@@ -30,7 +30,7 @@ fn butterworth_analog_poles(n: usize) -> Vec<Complex64> {
 }
 
 // -----------------------------------------------------------------------------
-// Биквадратная секция
+// Biquad section
 // -----------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -98,27 +98,27 @@ impl<T: Transcendental> BiquadSection<T> {
 }
 
 // -----------------------------------------------------------------------------
-// Фильтр Баттерворта
+// Butterworth filter
 // -----------------------------------------------------------------------------
 
-/// Фильтр Баттерворта (каскадная реализация)
+/// Butterworth filter (cascade implementation)
 pub struct Butterworth<T: Transcendental, const MAX_SECTIONS: usize> {
-    /// Параметры фильтра (используем общий FilterParams)
+    /// Filter parameters (uses shared FilterParams)
     params: FilterParams,
-    /// Порядок фильтра
+    /// Filter order
     order: usize,
-    /// Биквадратные секции
+    /// Biquad sections
     sections: [BiquadSection<T>; MAX_SECTIONS],
-    /// Количество активных секций
+    /// Number of active sections
     num_sections: usize,
-    /// Gain для нормализации
+    /// Normalization gain
     gain: ScalarVector1<T>,
-    /// Частота дискретизации
+    /// Sample rate
     sample_rate: f32,
 }
 
 impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> {
-    /// Создать новый фильтр Баттерворта
+    /// Create a new Butterworth filter
     pub fn new(params: FilterParams, order: usize) -> Self {
         let mut filter = Self {
             params,
@@ -132,7 +132,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
         filter
     }
 
-    /// Создать фильтр нижних частот
+    /// Create a low-pass filter
     pub fn lowpass(cutoff: f32, order: usize) -> Self {
         Self::new(
             FilterParams {
@@ -145,7 +145,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
         )
     }
 
-    /// Создать фильтр верхних частот
+    /// Create a high-pass filter
     pub fn highpass(cutoff: f32, order: usize) -> Self {
         Self::new(
             FilterParams {
@@ -158,25 +158,25 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
         )
     }
 
-    /// Спроектировать фильтр (рассчитать коэффициенты)
+    /// Design the filter (calculate coefficients)
     pub fn design(&mut self) {
         let n = self.order;
         let cutoff = self.params.cutoff as f64;
         let sample_rate_f64 = self.sample_rate as f64;
 
-        // Pre-warping частоты
+        // Frequency pre-warping
         let warp_cutoff = 2.0 * (PI64 * cutoff / sample_rate_f64).tan();
 
-        // Получаем полюса аналогового фильтра
+        // Get analog filter poles
         let analog_poles = butterworth_analog_poles(n);
 
-        // Количество биквадратных секций
+        // Number of biquad sections
         self.num_sections = n.div_ceil(2);
 
-        // Вычисляем gain
+        // Compute gain
         self.gain = self.compute_gain(&analog_poles, warp_cutoff);
 
-        // Группируем полюса в комплексно-сопряжённые пары
+        // Group poles into complex-conjugate pairs
         for i in 0..self.num_sections {
             let idx1 = i * 2;
             let idx2 = i * 2 + 1;

@@ -4,14 +4,14 @@ Add `rill-adrift` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rill-adrift = "0.4"
+rill-adrift = "0.5.0-beta.2"
 ```
 
 For individual crates (if you don't need the full ecosystem):
 
 ```toml
 [dependencies]
-rill-core-dsp = "0.4"
+rill-core-dsp = "0.5.0-beta.2"
 ```
 
 ## Example: Audio graph with sine oscillator
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // Minimal sink that prints RMS every block
 struct MySink<const BUF_SIZE: usize> { .. }
-impl SignalNode<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
+impl Node<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 impl Sink<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 ```
 
@@ -81,7 +81,7 @@ delay.process_block(&input, &mut output)?;
 Enable the `io` feature on `rill-adrift` (default):
 
 ```toml
-rill-adrift = { version = "0.4", features = ["io", "alsa"] }
+rill-adrift = { version = "0.5.0-beta.2", features = ["io", "alsa"] }
 ```
 
 Available backends: `cpal` (default), `alsa`, `pipewire`, `jack`.
@@ -104,7 +104,7 @@ output.start(nodes_ptr, drain_fn, 44100.0);
 - **Audio thread** (hard or soft RT) — runs the process callback:
   drain `MpscQueue`, `generate()`, `propagate()`, `consume()`.
   No heap allocs, no locks, no syscalls.
-- **Control thread** (tokio green threads) — runs `PatchbayManager`
+- **Control thread** (tokio green threads) — runs `Manager`
   with automatons (LFO, envelopes, sequencers). Communicates via
   lock-free `MpscQueue<ParameterCommand>`.
 

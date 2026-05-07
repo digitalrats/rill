@@ -2,6 +2,8 @@ use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
 use rill_core::prelude::*;
 
+/// Emulates the Akai S900 hardware sampler, including its 12-bit DAC, analog
+/// filters, and sample interpolation with pitch shifting and loop support.
 pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
     state: NodeState<f32, BUF_SIZE>,
     id: NodeId,
@@ -20,6 +22,8 @@ pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
 }
 
 impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
+    /// Creates a new `AkaiS900Emulator` configured with the S900's 12-bit
+    /// nonlinear DAC and default pitch / looping parameters.
     pub fn new(_sample_rate: f32) -> Self {
         let lofi_config = LofiConfig::for_system(crate::config::ClassicSystem::AkaiS900);
         let id = NodeId(0);
@@ -66,11 +70,14 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
         }
     }
 
+    /// Loads a sample buffer into the emulator and sets the loop end point to
+    /// the buffer length.
     pub fn load_sample(&mut self, samples: &[f32]) {
         self.buffer = samples.to_vec();
         self.loop_end = samples.len();
     }
 
+    /// Sets the playback pitch multiplier, clamped to the valid range `[0.1, 4.0]`.
     pub fn set_pitch(&mut self, pitch: f32) {
         self.pitch = pitch.clamp(0.1, 4.0);
     }
@@ -104,7 +111,7 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
+impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }

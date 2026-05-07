@@ -12,40 +12,40 @@
 //! - `SensorCommand` — sensor control
 //! - `ServoCommand` — servo control
 //!
-//! ## Пример
+//! ## Example
 //!
 //! ```rust
 //! use rill_core::queues::*;
 //! use rill_core::traits::*;
 //! #
-//! // Создаем очередь команд
+//! // Create a command queue
 //! let queue: CommandQueue<CommandEnum> = CommandQueue::new("signal-control", 1024);
 //!
-//! // Создаем идентификаторы
+//! // Create identifiers
 //! let node = NodeId(1);
 //! let port = PortId::control_in(node, 0);
 //! let param = ParameterId::new("gain").unwrap();
 //!
-//! // Где-то в мире автоматов
-//! let cmd = SetParameter::new(port, param, 0.5, SignalSource::Automaton("lfo".into()));
+//! // Somewhere in the world of automatons
+//! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalOrigin::Automaton("lfo".into()));
 //! queue.send(CommandEnum::SetParameter(cmd)).unwrap();
 //!
-//! // Где-то в звуковом мире
+//! // Somewhere in the sound world
 //! while let Ok(cmd_enum) = queue.try_recv() {
 //!     if let CommandEnum::SetParameter(cmd) = cmd_enum {
-//!         // apply_parameter(cmd); // функция должна быть определена
+//!         // apply_parameter(cmd); // function must be defined
 //!     }
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 use super::command::Command;
-use crate::traits::{ParameterId, PortId};
+use crate::traits::{ParamValue, ParameterId, PortId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 //==============================================================================
-// SignalSource — источник сигнала
+// SignalOrigin — signal source
 //==============================================================================
 
 /// Origin of a signal or command.
@@ -53,7 +53,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Used for tracking command provenance, feedback-loop prevention,
 /// and telemetry attribution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum SignalSource {
+pub enum SignalOrigin {
     /// Command from an automaton (LFO, envelope, sequencer).
     Automaton(String),
     /// Command from a sensor (physical input device).
@@ -68,41 +68,41 @@ pub enum SignalSource {
     Script,
 }
 
-impl SignalSource {
+impl SignalOrigin {
     /// Return the human-readable name of this source.
     pub fn name(&self) -> &str {
         match self {
-            SignalSource::Automaton(name) => name,
-            SignalSource::Sensor(name) => name,
-            SignalSource::Servo(name) => name,
-            SignalSource::External(name) => name,
-            SignalSource::Manual => "manual",
-            SignalSource::Script => "script",
+            SignalOrigin::Automaton(name) => name,
+            SignalOrigin::Sensor(name) => name,
+            SignalOrigin::Servo(name) => name,
+            SignalOrigin::External(name) => name,
+            SignalOrigin::Manual => "manual",
+            SignalOrigin::Script => "script",
         }
     }
 
     /// Return the type category of this source (e.g. "automaton", "sensor").
     pub fn kind(&self) -> &'static str {
         match self {
-            SignalSource::Automaton(_) => "automaton",
-            SignalSource::Sensor(_) => "sensor",
-            SignalSource::Servo(_) => "servo",
-            SignalSource::External(_) => "external",
-            SignalSource::Manual => "manual",
-            SignalSource::Script => "script",
+            SignalOrigin::Automaton(_) => "automaton",
+            SignalOrigin::Sensor(_) => "sensor",
+            SignalOrigin::Servo(_) => "servo",
+            SignalOrigin::External(_) => "external",
+            SignalOrigin::Manual => "manual",
+            SignalOrigin::Script => "script",
         }
     }
 }
 
-impl fmt::Display for SignalSource {
+impl fmt::Display for SignalOrigin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SignalSource::Automaton(name) => write!(f, "⚙️ {}", name),
-            SignalSource::Sensor(name) => write!(f, "👁️ {}", name),
-            SignalSource::Servo(name) => write!(f, "🦾 {}", name),
-            SignalSource::External(name) => write!(f, "🌍 {}", name),
-            SignalSource::Manual => write!(f, "👤 manual"),
-            SignalSource::Script => write!(f, "📜 script"),
+            SignalOrigin::Automaton(name) => write!(f, "⚙️ {}", name),
+            SignalOrigin::Sensor(name) => write!(f, "👁️ {}", name),
+            SignalOrigin::Servo(name) => write!(f, "🦾 {}", name),
+            SignalOrigin::External(name) => write!(f, "🌍 {}", name),
+            SignalOrigin::Manual => write!(f, "👤 manual"),
+            SignalOrigin::Script => write!(f, "📜 script"),
         }
     }
 }
@@ -117,16 +117,21 @@ pub struct SetParameter {
     /// Target parameter identifier.
     pub parameter: ParameterId,
     /// New parameter value.
-    pub value: f32,
+    pub value: ParamValue,
     /// Origin of this command.
-    pub source: SignalSource,
+    pub source: SignalOrigin,
     /// Unix timestamp (microseconds).
     pub timestamp: u64,
 }
 
 impl SetParameter {
     /// Create a new parameter-change command with the current timestamp.
-    pub fn new(port: PortId, parameter: ParameterId, value: f32, source: SignalSource) -> Self {
+    pub fn new(
+        port: PortId,
+        parameter: ParameterId,
+        value: ParamValue,
+        source: SignalOrigin,
+    ) -> Self {
         Self {
             port,
             parameter,
@@ -140,8 +145,8 @@ impl SetParameter {
     pub fn with_timestamp(
         port: PortId,
         parameter: ParameterId,
-        value: f32,
-        source: SignalSource,
+        value: ParamValue,
+        source: SignalOrigin,
         timestamp: u64,
     ) -> Self {
         Self {
@@ -166,7 +171,7 @@ impl PartialEq for SetParameter {
     fn eq(&self, other: &Self) -> bool {
         self.port == other.port
             && self.parameter == other.parameter
-            && (self.value - other.value).abs() < f32::EPSILON
+            && self.value == other.value
             && self.source == other.source
     }
 }
@@ -175,13 +180,13 @@ impl fmt::Display for SetParameter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "[{}] {} → {}::{} = {:.3}",
+            "[{}] {} → {}::{} = {:?}",
             self.timestamp, self.source, self.port, self.parameter, self.value
         )
     }
 }
 
-// Реализуем трейт Command для SetParameter
+// Implement the Command trait for SetParameter
 impl Command for SetParameter {}
 
 // ===== AutomatonCommand =====
@@ -520,7 +525,7 @@ impl fmt::Display for ServoCommand {
 
 impl Command for ServoCommand {}
 
-// ===== CommandType (бывшее Command) — общий тип команды =====
+// ===== CommandType (formerly Command) — common command type =====
 
 /// Runtime command type identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -647,10 +652,10 @@ impl fmt::Display for CommandEnum {
     }
 }
 
-// Реализуем трейт Command для CommandEnum, чтобы его можно было использовать в CommandQueue
+// Implement the Command trait for CommandEnum so it can be used in CommandQueue
 impl Command for CommandEnum {}
 
-// ===== Преобразования =====
+// ===== Conversions =====
 
 /// Marker trait for types that can be converted into a command.
 pub trait ToCommand: Send + 'static {

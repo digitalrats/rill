@@ -1,25 +1,25 @@
-//! # Базовые фильтры для обработки аудио
+//! # Basic filters for audio processing
 //!
-//! Этот модуль предоставляет различные реализации фильтров, от простых
-//! до сложных, для использования в аудио обработке. Все фильтры
-//! параметризованы типом `T: Transcendental` и могут работать с `f32` или `f64`.
+//! This module provides various filter implementations, from simple
+//! to complex, for use in audio processing. All filters are
+//! parameterized by `T: Transcendental` and can work with `f32` or `f64`.
 //!
-//! ## Доступные фильтры
+//! ## Available filters
 //!
-//! | Фильтр | Характеристики | Применение |
+//! | Filter | Characteristics | Application |
 //! |--------|---------------|------------|
-//! | **[`Biquad`]** | Универсальный, 8 типов, 12dB/окт | Эквалайзеры, тональный контроль, кроссоверы |
-//! | **[`OnePole`]** | Простой, быстрый, 6dB/окт | Сглаживание параметров, envelope followers |
-//! | **[`StateVariableFilter`]** | 3 выхода одновременно, стабильный при резонансе | Аналоговая эмуляция, синтезаторы |
-//! | **[`Butterworth`]** | Максимально плоский, нет пульсаций | Hi-Fi аудио, мастеринг, анализ |
-//! | **[`ChebyshevI`]** | Пульсации в полосе пропускания, крутой спад | Эквалайзеры, крутые кроссоверы |
-//! | **[`ChebyshevII`]** | Пульсации в полосе задерживания, плоская полоса | Anti-aliasing, децимация |
-//! | **[`CombFilter`]** | Гребенчатый, металлический призвук | Реверберация, физическое моделирование |
+//! | **[`Biquad`]** | Universal, 8 types, 12dB/oct | EQs, tone control, crossovers |
+//! | **[`OnePole`]** | Simple, fast, 6dB/oct | Parameter smoothing, envelope followers |
+//! | **[`StateVariableFilter`]** | 3 simultaneous outputs, stable at resonance | Analog emulation, synthesizers |
+//! | **[`Butterworth`]** | Maximally flat, no ripple | Hi-Fi audio, mastering, analysis |
+//! | **[`ChebyshevI`]** | Passband ripple, steep rolloff | EQs, steep crossovers |
+//! | **[`ChebyshevII`]** | Stopband ripple, flat passband | Anti-aliasing, decimation |
+//! | **[`CombFilter`]** | Comb, metallic timbre | Reverb, physical modeling |
 //!
-//! ## Общий интерфейс
+//! ## Common interface
 //!
-//! Все фильтры реализуют общий трейт [`Filter`], который предоставляет
-//! единый способ управления параметрами:
+//! All filters implement the common [`Filter`] trait, which provides
+//! a unified way to control parameters:
 //!
 //! ```rust
 //! use rill_core_dsp::filters::*;
@@ -38,9 +38,9 @@
 //! }
 //! ```
 //!
-//! ## Примеры использования
+//! ## Usage examples
 //!
-//! ### Создание фильтра нижних частот
+//! ### Creating a low-pass filter
 //! ```
 //! use rill_core::time::ClockTick;
 //! use rill_core::traits::ActionContext;
@@ -62,7 +62,7 @@
 //! let output = output[0];
 //! ```
 //!
-//! ### Создание параметрического эквалайзера
+//! ### Creating a parametric equalizer
 //! ```
 //! use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 //! use rill_core_dsp::Algorithm;
@@ -71,12 +71,12 @@
 //!     filter_type: FilterType::Peak,
 //!     cutoff: 1000.0,
 //!     q: 2.0,
-//!     gain_db: 6.0,  // +6dB подъём
+//!     gain_db: 6.0,  // +6dB boost
 //! });
 //! peak.init(44100.0);
 //! ```
 //!
-//! ### Фильтр Баттерворта высокого порядка
+//! ### High-order Butterworth filter
 //! ```
 //! use rill_core_dsp::filters::{Butterworth, FilterParams, FilterType};
 //! use rill_core_dsp::Algorithm;
@@ -104,101 +104,101 @@ pub use svf::StateVariableFilter;
 use crate::algorithm::ParameterizedAlgorithm;
 use rill_core::Transcendental;
 
-/// Общий тип параметров для всех фильтров
+/// Common parameter type for all filters
 ///
-/// Содержит основные параметры, общие для большинства фильтров:
-/// - `filter_type`: тип фильтра (нижних частот, верхних и т.д.)
-/// - `cutoff`: частота среза или центральная частота в Hz
-/// - `q`: добротность (резонанс), обычно от 0.1 до 20.0
-/// - `gain_db`: усиление в dB (для peak и shelving фильтров)
+/// Contains basic parameters common to most filters:
+/// - `filter_type`: filter type (low-pass, high-pass, etc.)
+/// - `cutoff`: cutoff or center frequency in Hz
+/// - `q`: quality factor (resonance), typically 0.1 to 20.0
+/// - `gain_db`: gain in dB (for peak and shelving filters)
 #[derive(Debug, Clone)]
 pub struct FilterParams {
-    /// Тип фильтра
+    /// Filter type
     pub filter_type: FilterType,
 
-    /// Частота среза/центральная частота (Hz)
+    /// Cutoff/center frequency (Hz)
     ///
-    /// Для LowPass/HighPass: частота среза -3dB
-    /// Для BandPass/Notch: центральная частота
-    /// Для Peak/Shelf: центральная частота
+    /// For LowPass/HighPass: -3dB cutoff frequency
+    /// For BandPass/Notch: center frequency
+    /// For Peak/Shelf: center frequency
     pub cutoff: f32,
 
-    /// Добротность (0.1 - 20.0)
+    /// Quality factor (0.1 - 20.0)
     ///
-    /// Определяет ширину полосы фильтра. Большие значения = более узкая полоса.
-    /// Для LowPass/HighPass влияет на резонанс на частоте среза.
+    /// Defines the filter bandwidth. Higher values = narrower bandwidth.
+    /// For LowPass/HighPass affects resonance at cutoff frequency.
     pub q: f32,
 
-    /// Усиление в dB (для peak/shelving фильтров)
+    /// Gain in dB (for peak/shelving filters)
     ///
-    /// Положительные значения = усиление, отрицательные = ослабление.
-    /// Обычно от -24dB до +24dB.
+    /// Positive values = boost, negative values = cut.
+    /// Typically -24dB to +24dB.
     pub gain_db: f32,
 }
 
-/// Тип фильтра
+/// Filter type
 ///
-/// Определяет частотную характеристику фильтра.
+/// Defines the filter frequency response.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterType {
-    /// Фильтр нижних частот (Low-Pass)
+    /// Low-pass filter
     ///
-    /// Пропускает частоты ниже частоты среза, ослабляет выше.
-    /// Используется для сглаживания, удаления высокочастотного шума,
-    /// в субтрактивном синтезе (VCF).
+    /// Passes frequencies below cutoff, attenuates above.
+    /// Used for smoothing, high-frequency noise removal,
+    /// in subtractive synthesis (VCF).
     LowPass,
 
-    /// Фильтр верхних частот (High-Pass)
+    /// High-pass filter
     ///
-    /// Пропускает частоты выше частоты среза, ослабляет ниже.
-    /// Используется для удаления постоянной составляющей, рокот-фильтр,
-    /// выделения верхних гармоник.
+    /// Passes frequencies above cutoff, attenuates below.
+    /// Used for DC removal, rumble filter,
+    /// emphasizing upper harmonics.
     HighPass,
 
-    /// Полосовой фильтр (Band-Pass)
+    /// Band-pass filter
     ///
-    /// Пропускает только полосу вокруг центральной частоты.
-    /// Используется для выделения полосы частот, формантных фильтров,
-    /// анализа сигналов.
+    /// Passes only the band around the center frequency.
+    /// Used for frequency band isolation, formant filters,
+    /// signal analysis.
     BandPass,
 
-    /// Режекторный фильтр (Notch)
+    /// Notch filter
     ///
-    /// Подавляет узкую полосу вокруг центральной частоты.
-    /// Используется для удаления сетевой помехи 50/60Hz,
-    /// подавления обратной связи, создания эффекта флэнджер.
+    /// Suppresses a narrow band around the center frequency.
+    /// Used for removing 50/60Hz mains hum,
+    /// feedback suppression, flanger effects.
     Notch,
 
-    /// Пиковый фильтр (Peak)
+    /// Peak filter
     ///
-    /// Усиливает или ослабляет полосу вокруг центральной частоты.
-    /// Основной элемент параметрического эквалайзера.
+    /// Boosts or cuts a band around the center frequency.
+    /// Core component of parametric EQs.
     Peak,
 
-    /// Полочный фильтр низких частот (Low-Shelf)
+    /// Low-shelf filter
     ///
-    /// Усиливает или ослабляет все частоты ниже частоты среза.
-    /// Используется для тонального контроля (басы), коррекции АЧХ.
+    /// Boosts or cuts all frequencies below cutoff.
+    /// Used for bass tone control, frequency response correction.
     LowShelf,
 
-    /// Полочный фильтр высоких частот (High-Shelf)
+    /// High-shelf filter
     ///
-    /// Усиливает или ослабляет все частоты выше частоты среза.
-    /// Используется для тонального контроля (высокие), уменьшения шипения.
+    /// Boosts or cuts all frequencies above cutoff.
+    /// Used for treble tone control, sibilance reduction.
     HighShelf,
 
-    /// Всепропускающий фильтр (All-Pass)
+    /// All-pass filter
     ///
-    /// Меняет фазу сигнала, не меняя амплитуду.
-    /// Используется в фазовращателях, для выравнивания групповой задержки,
-    /// в эффектах флэнджер.
+    /// Changes signal phase without affecting magnitude.
+    /// Used in phasers, group delay equalization,
+    /// flanger effects.
     AllPass,
 }
 
 impl FilterType {
-    /// Получить строковое представление типа фильтра
+    /// Get string representation of filter type
     ///
-    /// # Пример
+    /// # Example
     /// ```
     /// use rill_core_dsp::filters::FilterType;
     ///
@@ -217,89 +217,89 @@ impl FilterType {
         }
     }
 
-    /// Получить человеко-читаемое описание типа фильтра
+    /// Get human-readable filter type description
     pub const fn description(&self) -> &'static str {
         match self {
-            FilterType::LowPass => "Фильтр нижних частот (ФНЧ)",
-            FilterType::HighPass => "Фильтр верхних частот (ФВЧ)",
-            FilterType::BandPass => "Полосовой фильтр",
-            FilterType::Notch => "Режекторный фильтр",
-            FilterType::Peak => "Пиковый фильтр",
-            FilterType::LowShelf => "Низкополочный фильтр",
-            FilterType::HighShelf => "Высокополочный фильтр",
-            FilterType::AllPass => "Всепропускающий фильтр",
+            FilterType::LowPass => "Low-pass filter",
+            FilterType::HighPass => "High-pass filter",
+            FilterType::BandPass => "Band-pass filter",
+            FilterType::Notch => "Notch filter",
+            FilterType::Peak => "Peak filter",
+            FilterType::LowShelf => "Low-shelf filter",
+            FilterType::HighShelf => "High-shelf filter",
+            FilterType::AllPass => "All-pass filter",
         }
     }
 
-    /// Получить рекомендации по применению
+    /// Get usage recommendations
     pub const fn usage(&self) -> &'static str {
         match self {
             FilterType::LowPass => {
-                "• Субтрактивный синтез (VCF)\n\
-                 • Сглаживание сигналов\n\
-                 • Anti-aliasing перед децимацией\n\
-                 • Удаление высокочастотного шума"
+                "• Subtractive synthesis (VCF)\n\
+                 • Signal smoothing\n\
+                 • Anti-aliasing before decimation\n\
+                 • High-frequency noise removal"
             }
 
             FilterType::HighPass => {
-                "• Удаление постоянной составляющей (DC)\n\
-                 • Фильтрация рокот (rumble filter)\n\
-                 • Выделение верхних гармоник\n\
-                 • Side-chain компрессия"
+                "• DC offset removal\n\
+                 • Rumble filter\n\
+                 • Extract upper harmonics\n\
+                 • Side-chain compression"
             }
 
             FilterType::BandPass => {
-                "• Выделение полосы частот\n\
-                 • Формантные фильтры (вокал)\n\
-                 • Анализ сигналов (спектр)\n\
-                 • Эффект \"телефонного\" звука"
+                "• Band selection\n\
+                 • Formant filters (vocal)\n\
+                 • Signal analysis (spectrum)\n\
+                 • \"Telephone\" effect"
             }
 
             FilterType::Notch => {
-                "• Удаление сетевой помехи 50/60Hz\n\
-                 • Подавление обратной связи (feedback)\n\
-                 • Удаление резонансных частот\n\
-                 • Создание эффекта \"флэнджер\""
+                "• Mains hum removal 50/60Hz\n\
+                 • Feedback suppression\n\
+                 • Resonance removal\n\
+                 • Flanger effect"
             }
 
             FilterType::Peak => {
-                "• Параметрический эквалайзер\n\
-                 • Коррекция частотных характеристик\n\
-                 • Выделение/подавление инструментов\n\
-                 • Мастеринг"
+                "• Parametric EQ\n\
+                 • Frequency response correction\n\
+                 • Instrument isolation/notching\n\
+                 • Mastering"
             }
 
             FilterType::LowShelf => {
-                "• Тональный контроль (bass)\n\
-                 • Коррекция АЧХ наушников\n\
-                 • Усиление низких частот\n\
-                 • RIAA коррекция"
+                "• Tone control (bass)\n\
+                 • Headphone EQ correction\n\
+                 • Bass boost\n\
+                 • RIAA correction"
             }
 
             FilterType::HighShelf => {
-                "• Тональный контроль (treble)\n\
-                 • Коррекция высоких частот\n\
-                 • Уменьшение шипения\n\
-                 • Компенсация потерь в кабелях"
+                "• Tone control (treble)\n\
+                 • High-frequency correction\n\
+                 • Hiss reduction\n\
+                 • Cable loss compensation"
             }
 
             FilterType::AllPass => {
-                "• Фазовращатели (phaser)\n\
-                 • Выравнивание групповой задержки\n\
-                 • Создание эффектов (flanger)\n\
-                 • Коррекция фазы в кроссоверах"
+                "• Phasers\n\
+                 • Group delay equalisation\n\
+                 • Flanger effects\n\
+                 • Phase correction in crossovers"
             }
         }
     }
 }
 
-/// Общий трейт для всех фильтров
+/// Common trait for all filters
 ///
-/// Предоставляет единый интерфейс для управления параметрами фильтра.
-/// Все конкретные фильтры реализуют этот трейт через [`ParameterizedAlgorithm`]
-/// с `Params = FilterParams`.
+/// Provides a unified interface for controlling filter parameters.
+/// All concrete filters implement this trait via [`ParameterizedAlgorithm`]
+/// with `Params = FilterParams`.
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core_dsp::filters::*;
 /// use rill_core::Transcendental;
@@ -317,114 +317,114 @@ impl FilterType {
 /// }
 /// ```
 pub trait Filter<T: Transcendental>: ParameterizedAlgorithm<T, Params = FilterParams> {
-    /// Установить частоту среза
+    /// Set cutoff frequency
     ///
     /// # Arguments
-    /// * `cutoff` - частота в Hz (обычно 20..20000)
+    /// * `cutoff` - frequency in Hz (typically 20..20000)
     fn set_cutoff(&mut self, cutoff: f32) {
         let mut params = self.params().clone();
         params.cutoff = cutoff;
         self.set_params(params);
     }
 
-    /// Получить текущую частоту среза
+    /// Get current cutoff frequency
     fn cutoff(&self) -> f32 {
         self.params().cutoff
     }
 
-    /// Установить добротность (Q-фактор)
+    /// Set quality factor (Q)
     ///
     /// # Arguments
-    /// * `q` - добротность (обычно 0.1..20.0)
+    /// * `q` - quality factor (typically 0.1..20.0)
     fn set_q(&mut self, q: f32) {
         let mut params = self.params().clone();
         params.q = q;
         self.set_params(params);
     }
 
-    /// Получить текущую добротность
+    /// Get current quality factor
     fn q(&self) -> f32 {
         self.params().q
     }
 
-    /// Установить усиление (для peak/shelving фильтров)
+    /// Set gain (for peak/shelving filters)
     ///
     /// # Arguments
-    /// * `gain` - усиление в dB (обычно -24..24)
+    /// * `gain` - gain in dB (typically -24..24)
     fn set_gain_db(&mut self, gain: f32) {
         let mut params = self.params().clone();
         params.gain_db = gain;
         self.set_params(params);
     }
 
-    /// Получить текущее усиление в dB
+    /// Get current gain in dB
     fn gain_db(&self) -> f32 {
         self.params().gain_db
     }
 
-    /// Получить тип фильтра
+    /// Get filter type
     fn filter_type(&self) -> FilterType {
         self.params().filter_type
     }
 }
 
-// Blanket implementation для всех типов с Params = FilterParams
+// Blanket implementation for all types with Params = FilterParams
 impl<T: Transcendental, F> Filter<T> for F where F: ParameterizedAlgorithm<T, Params = FilterParams> {}
 
 // =============================================================================
-// Сравнение фильтров
+// Filter comparison
 // =============================================================================
 
-/// Сводка характеристик всех типов фильтров
+/// Summary of all filter type characteristics
 #[derive(Debug)]
 pub struct FilterComparison;
 
 impl FilterComparison {
-    /// Сравнение крутизны спада для разных реализаций
+    /// Rolloff comparison across different implementations
     ///
-    /// # Пример
+    /// # Example
     /// ```
     /// use rill_core_dsp::filters::FilterComparison;
     ///
     /// println!("{}", FilterComparison::rolloff_comparison());
     /// ```
     pub fn rolloff_comparison() -> &'static str {
-        "Крутизна спада (dB/октава):\n\
+        "Roll-off slope (dB/octave):\n\
          ┌────────────────┬────────────┬──────────────┐\n\
-         │ Фильтр         │ Порядок 2  │ Порядок 4    │\n\
+         │ Filter         │ Order 2    │ Order 4      │\n\
          ├────────────────┼────────────┼──────────────┤\n\
-         │ OnePole        │ 6 dB/окт   │ -            │\n\
-         │ Biquad         │ 12 dB/окт  │ 24 dB/окт*   │\n\
-         │ Butterworth    │ 12 dB/окт  │ 24 dB/окт    │\n\
-         │ Chebyshev I    │ 12-18 dB/окт │ 24-36 dB/окт │\n\
-         │ Chebyshev II   │ 12-18 dB/окт │ 24-36 dB/окт │\n\
+         │ OnePole        │ 6 dB/oct   │ -            │\n\
+         │ Biquad         │ 12 dB/oct  │ 24 dB/oct*  │\n\
+         │ Butterworth    │ 12 dB/oct  │ 24 dB/oct    │\n\
+         │ Chebyshev I    │ 12-18 dB/oct │ 24-36 dB/oct │\n\
+         │ Chebyshev II   │ 12-18 dB/oct │ 24-36 dB/oct │\n\
          └────────────────┴────────────┴──────────────┘\n\
-         * Biquad может быть каскадирован для более высоких порядков"
+         * Biquad can be cascaded for higher orders"
     }
 
-    /// Рекомендации по выбору фильтра
+    /// Filter selection guide
     pub fn selection_guide() -> &'static str {
-        "Как выбрать фильтр:\n\n\
-         🎯 **Для Hi-Fi и прозрачной обработки**:\n\
-         → Butterworth - максимально плоская характеристика\n\n\
-         🎯 **Для синтезаторов и эффектов**:\n\
-         → StateVariableFilter - аналоговое звучание, три выхода\n\
-         → OnePole - простота и скорость\n\n\
-         🎯 **Для эквалайзеров**:\n\
-         → Biquad - универсальность, все типы\n\
-         → ChebyshevI - более крутой спад\n\n\
-         🎯 **Для anti-aliasing**:\n\
-         → ChebyshevII - плоская полоса пропускания\n\
-         → Butterworth - предсказуемое поведение\n\n\
-         🎯 **Для реверберации**:\n\
-         → CombFilter - гребенчатые структуры\n\
-         → AllPass - диффузия"
+        "How to choose a filter:\n\n\
+         🎯 **For Hi-Fi and transparent processing**:\n\
+         → Butterworth - maximally flat response\n\n\
+         🎯 **For synths and effects**:\n\
+         → StateVariableFilter - analog sound, three outputs\n\
+         → OnePole - simplicity and speed\n\n\
+         🎯 **For EQs**:\n\
+         → Biquad - versatility, all types\n\
+         → ChebyshevI - steeper roll-off\n\n\
+         🎯 **For anti-aliasing**:\n\
+         → ChebyshevII - flat passband\n\
+         → Butterworth - predictable behaviour\n\n\
+         🎯 **For reverb**:\n\
+         → CombFilter - comb structures\n\
+         → AllPass - diffusion"
     }
 
-    /// Характеристики вычислительной сложности
+    /// Computational complexity characteristics
     pub fn performance_guide() -> &'static str {
-        "Производительность (относительная):\n\
-         ⚡ **OnePole** - 1x (самый быстрый)\n\
+        "Performance (relative):\n\
+         ⚡ **OnePole** - 1x (fastest)\n\
          ⚡⚡ **Biquad** - 2x\n\
          ⚡⚡⚡ **StateVariableFilter** - 3x\n\
          ⚡⚡⚡ **CombFilter** - 3x\n\
@@ -434,7 +434,7 @@ impl FilterComparison {
 }
 
 // =============================================================================
-// Примеры использования (doctests) с правильными импортами
+// Usage examples (doctests) with correct imports
 // =============================================================================
 
 #[cfg(doctest)]
@@ -450,7 +450,7 @@ mod examples {
     /// let tick = ClockTick::default();
     /// let ctx = ActionContext::new(&tick);
     ///
-    /// // 1. Простой low-pass фильтр для сглаживания
+    /// // 1. Simple low-pass filter for smoothing
     /// let mut smooth = OnePole::<f32>::new(FilterParams {
     ///     filter_type: FilterType::LowPass,
     ///     cutoff: 100.0,
@@ -459,17 +459,17 @@ mod examples {
     /// });
     /// smooth.init(44100.0);
     ///
-    /// // Сглаживаем резкие изменения
+    /// // Smooth sharp transitions
     /// let mut smoothed = 0.0;
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
     ///     smooth.process(Some(&[1.0]), &mut out, &ctx).unwrap();
     ///     smoothed = out[0];
     /// }
-    /// // После 1000 итераций значение должно быть близко к 1.0
+    /// // After 1000 iterations, value should be close to 1.0
     /// # assert!((smoothed - 1.0).abs() < 0.1);
     ///
-    /// // 2. Параметрический эквалайзер с Biquad
+    /// // 2. Parametric EQ with Biquad
     /// let mut peq = Biquad::<f32>::new(FilterParams {
     ///     filter_type: FilterType::Peak,
     ///     cutoff: 1000.0,
@@ -478,13 +478,13 @@ mod examples {
     /// });
     /// peq.init(44100.0);
     ///
-    /// // Прогреваем фильтр
+    /// // Warm up the filter
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
     ///     peq.process(Some(&[0.0]), &mut out, &ctx).unwrap();
     /// }
     ///
-    /// // Генерируем синусоиду на частоте фильтра
+    /// // Generate sine wave at filter frequency
     /// let sample_rate = 44100.0;
     /// let frequency = 1000.0;
     /// let amplitude = 0.5;
@@ -504,15 +504,15 @@ mod examples {
     ///     }
     /// }
     ///
-    /// // Пиковый фильтр с +6dB должен усиливать сигнал на частоте фильтра
-    /// // Используем допуск из-за численных ошибок
+    /// // Peak filter with +6dB should boost signal at filter frequency
+    /// // Use tolerance due to numerical errors
     /// let epsilon = 1e-4;
     /// # assert!(max_output + epsilon > amplitude,
     /// #     "Max output ({:.6}) should be greater than or close to input amplitude ({:.6})",
     /// #     max_output, amplitude);
     /// # assert!(max_output < 1.0, "Max output ({}) should be less than 1.0", max_output);
     ///
-    /// // 3. Аналоговая эмуляция с SVF
+    /// // 3. Analog emulation with SVF
     /// let mut svf = StateVariableFilter::<f32>::new(FilterParams {
     ///     filter_type: FilterType::LowPass,
     ///     cutoff: 1000.0,
@@ -530,7 +530,7 @@ mod examples {
     /// ```
     ///
     /// ```rust
-    /// // 4. Крутой фильтр для кроссовера (Chebyshev)
+    /// // 4. Steep crossover filter (Chebyshev)
     /// use rill_core_dsp::filters::*;
     /// use rill_core_dsp::Algorithm;
     ///
@@ -546,7 +546,7 @@ mod examples {
     /// );
     /// xover.init(44100.0);
     ///
-    /// // 5. Hi-Fi фильтр (Butterworth)
+    /// // 5. Hi-Fi filter (Butterworth)
     /// let mut hifi = Butterworth::<f32, 4>::lowpass(1000.0, 4);
     /// hifi.init(44100.0);
     /// ```
@@ -554,7 +554,7 @@ mod examples {
 }
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]

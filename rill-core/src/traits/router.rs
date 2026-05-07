@@ -1,52 +1,52 @@
-//! # Router Trait — сигнальная маршрутизация
+//! # Router Trait — signal routing
 //!
-//! `Router` — семантически отдельный тип графовых узлов, предназначенных
-//! исключительно для маршрутизации сигналов (микшеры, матричные коммутаторы,
-//! селекторы). В отличие от `Processor`, который выполняет DSP-преобразование
-//! сигнала, `Router` только перераспределяет входные сигналы по выходам
-//! с возможностью динамического изменения топологии соединений.
+//! `Router` — a semantically separate type of graph node intended
+//! exclusively for signal routing (mixers, matrix switches,
+//! selectors). Unlike `Processor`, which performs DSP signal
+//! processing, `Router` only redistributes input signals to outputs
+//! with the ability to dynamically change connection topology.
 //!
-//! ## Различия с Processor
+//! ## Differences from Processor
 //!
-//! | Характеристика | Processor | Router |
+//! | Characteristic | Processor | Router |
 //! |---|---|---|
-//! | Количество I/O | Фиксированное | Динамическое N→M |
-//! | DSP | Есть (фильтр, эффект) | Нет (только сумма/коммутация) |
-//! | Топология | Известна на этапе сборки | Может меняться runtime |
-//! | Визуализация | Прямоугольник (Р-схема) | Ромб (Р-схема, условие) |
+//! | I/O count | Fixed | Dynamic N→M |
+//! | DSP | Yes (filter, effect) | No (only sum/commutation) |
+//! | Topology | Known at build time | Can change at runtime |
+//! | Visualization | Rectangle (P-scheme) | Diamond (P-scheme, condition) |
 
 use crate::math::Transcendental;
 use crate::time::ClockTick;
-use crate::traits::node::SignalNode;
+use crate::traits::node::Node;
 use crate::traits::ProcessResult;
 
-/// Маршрутизатор сигналов — N входов, M выходов, конфигурируемая матрица.
+/// Signal router — N inputs, M outputs, configurable matrix.
 ///
-/// В отличие от `Processor::process()`, который выполняет DSP, `Router`
-/// только перераспределяет входные сигналы по выходам. Маршрутизатор
-/// сам управляет своими выходными портами через `SignalNode::output_port_mut()`.
+/// Unlike `Processor::process()`, which performs DSP, `Router`
+/// only redistributes input signals to outputs. The router
+/// manages its own output ports via `Node::output_port_mut()`.
 ///
-/// `TapeLoop` получается не через этот трейт, а через реестр ресурсов графа
-/// — см. `GraphBuilder::add_resource()` и `SignalNode::init()`.
-pub trait Router<T: Transcendental, const BUF_SIZE: usize>: SignalNode<T, BUF_SIZE> {
-    /// Выполнить маршрутизацию одного блока.
+/// `TapeLoop` is obtained not through this trait, but through the graph resource registry
+/// — see `GraphBuilder::add_resource()` and `Node::init()`.
+pub trait Router<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
+    /// Route one block.
     ///
-    /// Реализация должна прочитать сигналы из `inputs` и записать
-    /// результаты в свои выходные порты (через `self.output_port_mut(i)`).
+    /// The implementation must read signals from `inputs` and write
+    /// the results to its output ports (via `self.output_port_mut(i)`).
     fn route(&mut self, clock: &ClockTick, inputs: &[&[T; BUF_SIZE]]) -> ProcessResult<()>;
 
-    /// Количество входных портов для маршрутизации.
+    /// Number of input ports for routing.
     fn num_route_inputs(&self) -> usize;
 
-    /// Количество выходных портов для маршрутизации.
+    /// Number of output ports for routing.
     fn num_route_outputs(&self) -> usize;
 
-    /// Установить соединение: направить вход `from` в выход `to` с коэффициентом `gain`.
+    /// Set up a connection: route input `from` to output `to` with gain coefficient `gain`.
     fn set_connection(&mut self, from: usize, to: usize, gain: T) -> ProcessResult<()>;
 
-    /// Удалить соединение (обнулить коэффициент).
+    /// Remove a connection (zero the coefficient).
     fn remove_connection(&mut self, from: usize, to: usize) -> ProcessResult<()>;
 
-    /// Получить текущую матрицу маршрутизации: для каждого выхода — список входов с гейнами.
+    /// Get the current routing matrix: for each output — a list of inputs with gains.
     fn routing_matrix(&self) -> Vec<Vec<(usize, T)>>;
 }

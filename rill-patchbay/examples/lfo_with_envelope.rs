@@ -1,13 +1,12 @@
-use rill_core::queues::MpscQueue;
 use rill_core::NodeId;
-use rill_patchbay::{LfoWaveform, PatchbayControl};
-use std::sync::Arc;
+use rill_core_actor::ActorRef;
+use rill_patchbay::{LfoWaveform, Patchbay};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== LFO + Envelope Example ===\n");
 
-    let queue = Arc::new(MpscQueue::with_capacity(1024));
-    let mut control = PatchbayControl::new(queue.clone());
+    let (actor_ref, mailbox) = ActorRef::new_pair();
+    let mut control = Patchbay::new(actor_ref);
     let node = NodeId(1);
 
     // LFO
@@ -33,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..20 {
         let time = i as f64 * 0.1;
         control.update(0.1);
-        let count = std::iter::from_fn(|| queue.pop()).count();
+        let count = std::iter::from_fn(|| mailbox.pop()).count();
         println!("{:.1}\t{}", time, count);
     }
 

@@ -1,4 +1,4 @@
-//! Базовые осцилляторы (Sine, Saw, Square, Triangle)
+//! Basic oscillators (Sine, Saw, Square, Triangle)
 
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator, SyncableGenerator};
@@ -7,23 +7,23 @@ use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 use std::f32::consts::PI;
 
-/// Тип волны
+/// Waveform type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Waveform {
-    /// Чистая синусоида
+    /// Pure sine wave
     Sine,
-    /// Пилообразная волна
+    /// Sawtooth wave
     Saw,
-    /// Квадратная волна
+    /// Square wave
     Square,
-    /// Треугольная волна
+    /// Triangle wave
     Triangle,
-    /// Прямоугольная волна с регулируемой скважностью
-    Pulse(f32), // с шириной импульса (0.0 - 1.0)
+    /// Pulse wave with adjustable duty cycle
+    Pulse(f32), // pulse width (0.0 - 1.0)
 }
 
 impl Waveform {
-    /// Получить название формы волны
+    /// Get waveform name
     pub fn name(&self) -> &'static str {
         match self {
             Waveform::Sine => "Sine",
@@ -34,7 +34,7 @@ impl Waveform {
         }
     }
 
-    /// Получить описание формы волны
+    /// Get waveform description
     pub fn description(&self) -> &'static str {
         match self {
             Waveform::Sine => "Pure sine wave - single harmonic",
@@ -46,40 +46,40 @@ impl Waveform {
     }
 }
 
-/// Базовый осциллятор
+/// Basic oscillator
 ///
-/// Генерирует различные формы волн с возможностью:
-/// - Изменения частоты в реальном времени
-/// - Модуляции частоты (FM)
-/// - Анти-алиасинга для пилообразной волны
-/// - Синхронизации фазы
+/// Generates various waveforms with support for:
+/// - Real-time frequency changes
+/// - Frequency modulation (FM)
+/// - Anti-aliasing for sawtooth wave
+/// - Phase synchronization
 #[derive(Clone, Copy)]
 pub struct BasicOscillator<T: Transcendental> {
-    /// Тип волны
+    /// Waveform type
     waveform: Waveform,
-    /// Частота (Hz)
+    /// Frequency (Hz)
     frequency: f32,
-    /// Амплитуда (0.0 - 1.0)
+    /// Amplitude (0.0 - 1.0)
     amplitude: ScalarVector1<T>,
-    /// Текущая фаза (0..1)
+    /// Current phase (0..1)
     phase: ScalarVector1<T>,
-    /// Инкремент фазы за семпл
+    /// Phase increment per sample
     phase_inc: ScalarVector1<T>,
-    /// Частота дискретизации
+    /// Sample rate
     sample_rate: f32,
-    /// Количество завершённых периодов
+    /// Number of completed periods
     periods: u32,
-    /// Модуляция частоты (FM)
+    /// Frequency modulation (FM)
     fm_amount: ScalarVector1<T>,
 }
 
 impl<T: Transcendental> BasicOscillator<T> {
-    /// Создать новый осциллятор
+    /// Create a new oscillator
     ///
     /// # Arguments
-    /// * `waveform` - форма волны
-    /// * `frequency` - частота в Hz
-    /// * `amplitude` - амплитуда (0.0 - 1.0)
+    /// * `waveform` - waveform shape
+    /// * `frequency` - frequency in Hz
+    /// * `amplitude` - amplitude (0.0 - 1.0)
     pub fn new(waveform: Waveform, frequency: f32, amplitude: T) -> Self {
         let mut osc = Self {
             waveform,
@@ -95,20 +95,20 @@ impl<T: Transcendental> BasicOscillator<T> {
         osc
     }
 
-    /// Обновить инкремент фазы на основе текущей частоты
+    /// Update phase increment based on current frequency
     #[inline(always)]
     fn update_phase_inc(&mut self) {
         self.phase_inc = ScalarVector1::splat(T::from_f32(self.frequency / self.sample_rate));
     }
 
-    /// Генерировать синусоиду
+    /// Generate sine wave
     #[inline(always)]
     fn generate_sine(&self) -> ScalarVector1<T> {
         let phase_rad = self.phase.mul(&ScalarVector1::splat(T::from_f32(2.0 * PI)));
         phase_rad.sin().mul(&self.amplitude)
     }
 
-    /// Генерировать пилообразную волну (без анти-алиасинга)
+    /// Generate sawtooth wave (without anti-aliasing)
     #[inline(always)]
     fn generate_saw_raw(&self) -> ScalarVector1<T> {
         // 2 * phase - 1
@@ -118,19 +118,19 @@ impl<T: Transcendental> BasicOscillator<T> {
             .mul(&self.amplitude)
     }
 
-    /// Генерировать пилообразную волну с анти-алиасингом
+    /// Generate sawtooth wave with anti-aliasing
     #[inline(always)]
     fn generate_saw_bandlimited(&mut self) -> ScalarVector1<T> {
         let raw = self.generate_saw_raw();
-        // Проверка на переход через 0 (discontinuity)
+        // Check for zero-crossing (discontinuity)
         let next_phase = self.phase.add(&self.phase_inc).extract(0);
         let one = T::from_f32(1.0);
 
         if next_phase >= one {
-            // Вычисляем позицию discontinuity
+            // Compute discontinuity position
             let one_vec = ScalarVector1::splat(one);
             let t = (one_vec - self.phase) / self.phase_inc;
-            // Простая Blep коррекция
+            // Simple BLEP correction
             let blep =
                 t * ScalarVector1::splat(T::from_f32(2.0)) - ScalarVector1::splat(T::from_f32(1.0));
             raw - blep * self.amplitude
@@ -139,7 +139,7 @@ impl<T: Transcendental> BasicOscillator<T> {
         }
     }
 
-    /// Генерировать квадратную волну
+    /// Generate square wave
     #[inline(always)]
     fn generate_square(&self) -> ScalarVector1<T> {
         let half = T::from_f32(0.5);
@@ -150,7 +150,7 @@ impl<T: Transcendental> BasicOscillator<T> {
         }
     }
 
-    /// Генерировать треугольную волну
+    /// Generate triangle wave
     #[inline(always)]
     fn generate_triangle(&self) -> ScalarVector1<T> {
         // 4 * |phase - 0.5| - 1
@@ -160,7 +160,7 @@ impl<T: Transcendental> BasicOscillator<T> {
             * self.amplitude
     }
 
-    /// Генерировать прямоугольную волну с переменной скважностью
+    /// Generate pulse wave with variable duty cycle
     #[inline(always)]
     fn generate_pulse(&self, width: f32) -> ScalarVector1<T> {
         let width_t = T::from_f32(width.clamp(0.01, 0.99));
@@ -171,12 +171,12 @@ impl<T: Transcendental> BasicOscillator<T> {
         }
     }
 
-    /// Основной метод генерации семпла
+    /// Main sample generation method
     pub(crate) fn generate(&mut self) -> ScalarVector1<T> {
-        // Применяем FM модуляцию если есть
+        // Apply FM modulation if present
         let effective_inc = self.phase_inc + self.fm_amount;
 
-        // Генерируем семпл в зависимости от формы волны
+        // Generate sample based on waveform
         let output_vec = match self.waveform {
             Waveform::Sine => self.generate_sine(),
             Waveform::Saw => self.generate_saw_bandlimited(),
@@ -185,7 +185,7 @@ impl<T: Transcendental> BasicOscillator<T> {
             Waveform::Pulse(width) => self.generate_pulse(width),
         };
 
-        // Обновляем фазу
+        // Update phase
         self.phase = self.phase + effective_inc;
         let one = ScalarVector1::splat(T::from_f32(1.0));
         if self.phase.extract(0) >= one.extract(0) {
@@ -196,23 +196,23 @@ impl<T: Transcendental> BasicOscillator<T> {
         output_vec
     }
 
-    /// Сбросить фазу в 0
+    /// Reset phase to 0
     pub fn reset_phase(&mut self) {
         self.phase = ScalarVector1::splat(T::ZERO);
         self.periods = 0;
     }
 
-    /// Получить текущую фазу (0..1)
+    /// Get current phase (0..1)
     pub fn current_phase(&self) -> T {
         self.phase.extract(0)
     }
 
-    /// Получить количество завершённых периодов
+    /// Get number of completed periods
     pub fn period_count(&self) -> u32 {
         self.periods
     }
 
-    /// Установить ширину импульса (для Pulse волны)
+    /// Set pulse width (for Pulse waveform)
     pub fn set_pulse_width(&mut self, width: f32) {
         if let Waveform::Pulse(_) = self.waveform {
             self.waveform = Waveform::Pulse(width.clamp(0.01, 0.99));
@@ -220,7 +220,7 @@ impl<T: Transcendental> BasicOscillator<T> {
     }
 }
 
-// ==================== Реализация трейта Algorithm ====================
+// ==================== Algorithm trait implementation ====================
 
 impl<T: Transcendental> Algorithm<T> for BasicOscillator<T> {
     fn init(&mut self, sample_rate: f32) {
@@ -259,7 +259,7 @@ impl<T: Transcendental> Algorithm<T> for BasicOscillator<T> {
     }
 }
 
-// ==================== Реализация трейта Generator ====================
+// ==================== Generator trait implementation ====================
 
 impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
     fn phase(&self) -> T {
@@ -304,7 +304,7 @@ impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
     }
 }
 
-// ==================== Реализация трейта SyncableGenerator ====================
+// ==================== SyncableGenerator trait implementation ====================
 
 impl<T: Transcendental> SyncableGenerator<T> for BasicOscillator<T> {
     fn sync(&mut self, reset: bool) {
@@ -318,7 +318,7 @@ impl<T: Transcendental> SyncableGenerator<T> for BasicOscillator<T> {
     }
 }
 
-// ==================== Реализация трейта ModulatableGenerator ====================
+// ==================== ModulatableGenerator trait implementation ====================
 
 impl<T: Transcendental> ModulatableGenerator<T> for BasicOscillator<T> {
     fn modulate_frequency(&mut self, amount: T) {
@@ -334,7 +334,7 @@ impl<T: Transcendental> ModulatableGenerator<T> for BasicOscillator<T> {
     }
 }
 
-// ==================== Тесты ====================
+// ==================== Tests ====================
 
 #[cfg(test)]
 mod tests {
@@ -346,7 +346,7 @@ mod tests {
         let mut osc = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
         osc.init(44100.0);
 
-        // Первый семпл должен быть 0
+        // First sample should be 0
         let mut output = [0.0f32; 1];
         let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
         let ctx = rill_core::traits::ActionContext::new(&tick);
@@ -354,7 +354,7 @@ mod tests {
         let sample1 = output[0];
         assert!(approx_eq!(f32, sample1, 0.0, epsilon = 1e-6));
 
-        // Второй семпл должен быть не 0
+        // Second sample should not be 0
         osc.process(None, &mut output, &ctx).unwrap();
         let sample2 = output[0];
         assert!(sample2 != 0.0);
@@ -410,7 +410,7 @@ mod tests {
         let ctx = rill_core::traits::ActionContext::new(&tick);
         osc.process(None, &mut output, &ctx).unwrap();
         let sample = output[0];
-        assert!(sample == 0.5); // При фазе 0 должен быть положительный импульс
+        assert!(sample == 0.5); // At phase 0 should be positive pulse
     }
 
     #[test]
@@ -457,7 +457,7 @@ mod tests {
         osc.modulate_frequency(0.5);
         assert_eq!(osc.modulation_index(), 0.5);
 
-        // Проверяем, что модуляция применяется
+        // Verify modulation is applied
         let mut output = [0.0f32; 1];
         let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
         let ctx = rill_core::traits::ActionContext::new(&tick);
@@ -469,8 +469,8 @@ mod tests {
     #[test]
     fn test_clone_copy() {
         let osc1 = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
-        let osc2 = osc1; // Копирование благодаря Copy
-        let osc3 = osc1.clone(); // Явное клонирование
+        let osc2 = osc1; // Copy via Copy trait
+        let osc3 = osc1.clone(); // Explicit clone
 
         assert_eq!(osc1.frequency(), osc2.frequency());
         assert_eq!(osc1.frequency(), osc3.frequency());

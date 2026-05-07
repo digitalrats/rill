@@ -1,65 +1,65 @@
-//! Трейты для анализаторов сигнала
+//! Traits for signal analyzers
 
 use crate::algorithm::Algorithm;
 use rill_core::Transcendental;
 
-/// Базовый трейт для анализаторов
+/// Base trait for analyzers
 pub trait Analyzer<T: Transcendental>: Algorithm<T> {
-    /// Тип результата анализа
+    /// Analysis result type
     type Output;
 
-    /// Получить результат анализа
+    /// Get analysis result
     fn result(&self) -> &Self::Output;
 
-    /// Сбросить накопленные данные
+    /// Reset accumulated data
     fn reset_analysis(&mut self);
 }
 
-/// Пиковый детектор (VU метр)
+/// Peak detector (VU meter)
 pub trait PeakMeter<T: Transcendental>: Analyzer<T, Output = T> {
-    /// Скорость спада (0.0-1.0)
+    /// Decay rate (0.0-1.0)
     fn decay(&self) -> f32;
 
-    /// Установить скорость спада
+    /// Set decay rate
     fn set_decay(&mut self, decay: f32);
 
-    /// Текущий пик (для отображения)
+    /// Current peak (for display)
     fn peak(&self) -> T {
         *self.result()
     }
 }
 
-/// Детектор огибающей
+/// Envelope follower
 pub trait EnvelopeFollower<T: Transcendental>: Analyzer<T, Output = T> {
-    /// Время атаки в секундах
+    /// Attack time in seconds
     fn attack(&self) -> f32;
 
-    /// Время спада в секундах
+    /// Release time in seconds
     fn release(&self) -> f32;
 
-    /// Установить времена
+    /// Set times
     fn set_attack_release(&mut self, attack: f32, release: f32);
 
-    /// Текущая огибающая
+    /// Current envelope
     fn envelope(&self) -> T {
         *self.result()
     }
 }
 
-/// Детектор частоты (для тюнеров)
+/// Frequency detector (for tuners)
 pub trait FrequencyDetector<T: Transcendental>: Analyzer<T, Output = f32> {
-    /// Минимальная частота детектирования
+    /// Minimum detection frequency
     fn min_freq(&self) -> f32;
 
-    /// Максимальная частота детектирования
+    /// Maximum detection frequency
     fn max_freq(&self) -> f32;
 
-    /// Текущая частота
+    /// Current frequency
     fn frequency(&self) -> f32 {
         *self.result()
     }
 
-    /// Ближайшая MIDI нота
+    /// Closest MIDI note
     fn closest_midi_note(&self) -> u8 {
         let freq = self.frequency();
         if freq <= 0.0 {
@@ -70,17 +70,17 @@ pub trait FrequencyDetector<T: Transcendental>: Analyzer<T, Output = f32> {
     }
 }
 
-/// Спектроанализатор (FFT)
+/// Spectrum analyzer (FFT)
 pub trait SpectrumAnalyzer<T: Transcendental>: Analyzer<T, Output = Vec<f32>> {
-    /// Размер FFT
+    /// FFT size
     fn fft_size(&self) -> usize;
 
-    /// Получить спектр
+    /// Get spectrum
     fn spectrum(&self) -> &[f32] {
         self.result()
     }
 
-    /// Получить амплитуду на конкретной частоте
+    /// Get amplitude at specific frequency
     fn amplitude_at(&self, freq: f32, sample_rate: f32) -> f32 {
         let bin = (freq * self.fft_size() as f32 / sample_rate) as usize;
         self.result().get(bin).copied().unwrap_or(0.0)

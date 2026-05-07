@@ -22,7 +22,7 @@
 //! - **Single-threaded** - No atomics, no locks, minimal overhead
 //! - **Cache-line aligned** - Prevents false sharing
 //! - **Statistically monitored** - Track performance metrics
-//! - **Type-safe** - Generic over `Transcendental` (f32/f64)
+//! - **Type-safe** - Generic over [`Scalar`](crate::math::Scalar) (f32, f64, integers)
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::fmt;
@@ -220,7 +220,7 @@ impl fmt::Debug for AtomicStats {
 /// Buffer statistics snapshot for monitoring and debugging
 ///
 /// This struct provides a read-only snapshot of buffer performance metrics.
-/// It's typically obtained via `SignalBuffer::stats()`.
+/// It's typically obtained via `Buffer::stats()`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BufferStats {
     /// Total number of successful write operations
@@ -270,55 +270,8 @@ impl BufferStats {
     }
 }
 
-// ============================================================================
-// SignalBuffer Trait
-// ============================================================================
-
-/// Common trait for all signal buffers
-///
-/// This trait defines the standard interface that all buffer types implement.
-/// It provides methods for querying capacity, current length, and statistics.
-///
-/// # Type Parameters
-/// - `T`: The sample type (must implement `Transcendental`)
-pub trait SignalBuffer<T: Transcendental> {
-    /// Get the total capacity of the buffer in samples
-    ///
-    /// For block-based buffers, this is the number of samples per block.
-    /// For ring buffers, this is the total number of samples that can be stored.
-    fn capacity(&self) -> usize;
-
-    /// Get the current number of items in the buffer
-    ///
-    /// For `PipeBuffer` and `FanOutBuffer`, this is either 0 or 1.
-    /// For `RingBuffer`, this is the number of samples available.
-    /// For `DelayLine`, this is always the maximum delay.
-    fn len(&self) -> usize;
-
-    /// Check if the buffer is empty
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Check if the buffer is full
-    fn is_full(&self) -> bool {
-        self.len() == self.capacity()
-    }
-
-    /// Clear all items from the buffer
-    ///
-    /// After calling this, the buffer should be empty.
-    /// Note that this may not actually zero the memory for performance reasons.
-    fn clear(&mut self);
-
-    /// Get a snapshot of current buffer statistics
-    fn stats(&self) -> BufferStats;
-
-    /// Reset all statistics to zero
-    ///
-    /// This does not clear the buffer contents, only the performance counters.
-    fn reset_stats(&mut self);
-}
+// The unified Buffer trait (defined in buffer_trait) replaces both the
+// original Buffer and the former SignalBuffer trait.
 
 // ============================================================================
 // Aligned Storage
@@ -454,6 +407,9 @@ pub mod prelude {
         AtomicCell,
         AtomicCellError,
 
+        // Core trait (unified Buffer replaces SignalBuffer + Buffer)
+        Buffer,
+
         // Error types
         BufferError,
         BufferResult,
@@ -467,9 +423,6 @@ pub mod prelude {
         // Buffer types
         PipeBuffer,
         RingBuffer,
-
-        // Core trait
-        SignalBuffer,
 
         // Constants
         CACHE_LINE_SIZE,

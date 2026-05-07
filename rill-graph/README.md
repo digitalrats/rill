@@ -5,7 +5,7 @@ Processing is driven by `Port::propagate` (not an external engine).
 
 ## Key components
 
-- **`SignalGraph`** — immutable DAG container, topology is fixed at build time
+- **`Graph`** — immutable DAG container, topology is fixed at build time
 - **`GraphBuilder`** — the only way to build a graph (`Source` → `Processor` → `Sink`),
   fills `downstream_input_ptrs`, `parent`, `upstream_buffer` for zero-copy routing
 - **Kahn's algorithm** — topological sort with cycle detection
@@ -28,15 +28,12 @@ Processing is driven by `Port::propagate` (not an external engine).
 - **Feedback support** — `port.pre_process` / `port.snapshot_feedback`
 - **Port types** — `Signal`, `Control`, `Clock`, `Feedback`, `Param`
 
-## Top-level processing entry point
-
-No `SignalEngine`. The source node (e.g. `AudioInput` from `rill-io`) creates its
-own processing callback. The callback drains the command queue, calls
+## Top-level processing entry point The processing callback drains the command queue, calls
 `Source::generate`, then `Port::propagate` to cascade through the DAG.
 
 ## Dependencies
 
-- `rill-core` — `SignalNode`, `Source`/`Processor`/`Sink` traits, `ClockTick`
+- `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`
 
 ## Links
 

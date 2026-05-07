@@ -1,9 +1,9 @@
-//! Фильтр переменных состояния (State Variable Filter)
+//! State Variable Filter (SVF)
 //!
-//! Преимущества:
-//! - Одновременный low-pass, high-pass и band-pass выходы
-//! - Стабилен при высоких резонансах
-//! - Идеален для аналоговой эмуляции
+//! Advantages:
+//! - Simultaneous low-pass, high-pass, and band-pass outputs
+//! - Stable at high resonance
+//! - Ideal for analog emulation
 
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
@@ -12,30 +12,30 @@ use core::f32::consts::PI;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
-/// Фильтр переменных состояния
+/// State Variable Filter
 ///
-/// Даёт три выхода одновременно:
-/// - lowpass: низкие частоты
-/// - highpass: высокие частоты
-/// - bandpass: полосовой
+/// Provides three simultaneous outputs:
+/// - lowpass: low frequencies
+/// - highpass: high frequencies
+/// - bandpass: band-pass
 pub struct StateVariableFilter<T: Transcendental> {
-    /// Параметры фильтра
+    /// Filter parameters
     params: FilterParams,
-    /// Коэффициенты
-    f: ScalarVector1<T>, // частота
-    q: ScalarVector1<T>, // резонанс
-    /// Состояние
-    lp: ScalarVector1<T>, // low-pass выход
-    hp: ScalarVector1<T>, // high-pass выход
-    bp: ScalarVector1<T>, // band-pass выход
-    /// Предыдущий вход (для задержки)
+    /// Coefficients
+    f: ScalarVector1<T>, // frequency
+    q: ScalarVector1<T>, // resonance
+    /// State
+    lp: ScalarVector1<T>, // low-pass output
+    hp: ScalarVector1<T>, // high-pass output
+    bp: ScalarVector1<T>, // band-pass output
+    /// Previous input (for delay)
     x1: ScalarVector1<T>,
-    /// Частота дискретизации
+    /// Sample rate
     sample_rate: f32,
 }
 
 impl<T: Transcendental> StateVariableFilter<T> {
-    /// Создать новый SVF
+    /// Create a new SVF
     pub fn new(params: FilterParams) -> Self {
         let mut filter = Self {
             params,
@@ -51,7 +51,7 @@ impl<T: Transcendental> StateVariableFilter<T> {
         filter
     }
 
-    /// Обновить коэффициенты
+    /// Update coefficients
     fn update_coeffs(&mut self) {
         // f = 2 * sin(π * cutoff / sample_rate)
         self.f = ScalarVector1::splat(T::from_f32(
@@ -60,17 +60,17 @@ impl<T: Transcendental> StateVariableFilter<T> {
         self.q = ScalarVector1::splat(T::from_f32(self.params.q));
     }
 
-    /// Получить low-pass выход
+    /// Get low-pass output
     pub fn lowpass(&self) -> T {
         self.lp.extract(0)
     }
 
-    /// Получить high-pass выход
+    /// Get high-pass output
     pub fn highpass(&self) -> T {
         self.hp.extract(0)
     }
 
-    /// Получить band-pass выход
+    /// Get band-pass output
     pub fn bandpass(&self) -> T {
         self.bp.extract(0)
     }
@@ -109,7 +109,7 @@ impl<T: Transcendental> Algorithm<T> for StateVariableFilter<T> {
                 FilterType::LowPass => self.lp.extract(0),
                 FilterType::HighPass => self.hp.extract(0),
                 FilterType::BandPass => self.bp.extract(0),
-                _ => self.lp.extract(0), // по умолчанию low-pass
+                _ => self.lp.extract(0), // default to low-pass
             };
         }
         Ok(())

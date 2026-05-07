@@ -5,7 +5,7 @@ use super::{OverflowPolicy, QueueError, QueueResult, QueueStatsSnapshot, RtQueue
 use crate::buffer::AtomicCell;
 
 // =============================================================================
-// Основная структура
+// Main structure
 // =============================================================================
 
 /// A lock-free single-producer single-consumer queue.
@@ -240,7 +240,7 @@ unsafe impl<T: Copy + Send, const CAP: usize> Send for SpscQueue<T, CAP> {}
 unsafe impl<T: Copy + Sync, const CAP: usize> Sync for SpscQueue<T, CAP> {}
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -258,13 +258,13 @@ mod tests {
         queue.push(1).unwrap();
         assert_eq!(queue.len(), 1);
         assert!(!queue.is_empty());
-        assert!(!queue.is_full()); // Не полон после 1 элемента
+        assert!(!queue.is_full()); // Not full after 1 element
 
         queue.push(2).unwrap();
         queue.push(3).unwrap();
         queue.push(4).unwrap();
 
-        assert!(queue.is_full()); // Полон после 4 элементов
+        assert!(queue.is_full()); // Full after 4 elements
         assert_eq!(queue.len(), 4);
 
         assert_eq!(queue.pop(), Some(1));
@@ -277,17 +277,17 @@ mod tests {
 
     #[test]
     fn test_spsc_overwrite_policy() {
-        let queue = SpscQueue::<i32, 2>::new(); // политика по умолчанию OverwriteOldest
+        let queue = SpscQueue::<i32, 2>::new(); // default policy is OverwriteOldest
 
         queue.push(1).unwrap();
         queue.push(2).unwrap();
         assert!(queue.is_full());
 
-        // Перезаписываем самый старый (1)
+        // Overwrite the oldest (1)
         queue.push(3).unwrap();
         assert_eq!(queue.len(), 2);
 
-        // Теперь в очереди [2, 3] (2 стал самым старым)
+        // Now the queue is [2, 3] (2 became the oldest)
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), Some(3));
         assert_eq!(queue.pop(), None);
@@ -301,10 +301,10 @@ mod tests {
         queue.push(2).unwrap();
         assert!(queue.is_full());
 
-        // Должно вернуть ошибку, элемент не добавляется
+        // Should return an error, element is not added
         assert!(queue.push(3).is_err());
 
-        // Очередь должна содержать [1, 2] в том же порядке
+        // Queue should contain [1, 2] in the same order
         assert_eq!(queue.pop(), Some(1));
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), None);
@@ -314,23 +314,23 @@ mod tests {
     fn test_spsc_wraparound() {
         let queue = SpscQueue::<i32, 4>::new();
 
-        // Заполняем
+        // Fill
         queue.push(0).unwrap();
         queue.push(1).unwrap();
         queue.push(2).unwrap();
         queue.push(3).unwrap();
         assert!(queue.is_full());
 
-        // Извлекаем два
+        // Pop two
         assert_eq!(queue.pop(), Some(0));
         assert_eq!(queue.pop(), Some(1));
 
-        // Добавляем два новых
+        // Push two new ones
         queue.push(4).unwrap();
         queue.push(5).unwrap();
         assert!(queue.is_full());
 
-        // Проверяем порядок
+        // Verify order
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), Some(3));
         assert_eq!(queue.pop(), Some(4));

@@ -1,6 +1,6 @@
-//! # ARM SIMD реализации (NEON)
+//! # ARM SIMD implementations (NEON)
 //!
-//! Использует NEON инструкции для векторных операций на ARM архитектуре.
+//! Uses NEON instructions for vector operations on ARM architecture.
 
 #![cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 #![allow(unused_imports)]
@@ -11,21 +11,20 @@ use crate::math::vector::traits::VectorTranscendental;
 use crate::Transcendental;
 
 // -----------------------------------------------------------------------------
-// SIMD типы
-// -----------------------------------------------------------------------------
+// SIMD types
 
-/// Вектор из 4 элементов f32 (NEON)
+/// Vector of 4 f32 elements (NEON)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F32x4([f32; 4]);
 
-/// Вектор из 2 элементов f64 (NEON)
+/// Vector of 2 f64 elements (NEON)
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct F64x2([f64; 2]);
 
 // -----------------------------------------------------------------------------
-// Реализация Vector для F32x4
+// Vector implementation for F32x4
 // -----------------------------------------------------------------------------
 
 impl Vector<f32, 4> for F32x4 {
@@ -186,7 +185,7 @@ impl Default for F32x4 {
 }
 
 // -----------------------------------------------------------------------------
-// Тесты
+// Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]

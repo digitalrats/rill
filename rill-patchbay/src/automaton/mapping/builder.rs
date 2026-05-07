@@ -1,9 +1,9 @@
-//! Строитель для удобного создания правил маппинга
+//! Builder for convenient creation of mapping rules
 
 use super::core::{MappingRule, Transform};
 use rill_core::traits::{ParameterId, PortId};
 
-/// Строитель для создания правил маппинга
+/// Builder for creating mapping rules
 pub struct MappingRuleBuilder {
     input_name: String,
     input_channel: usize,
@@ -15,7 +15,7 @@ pub struct MappingRuleBuilder {
 }
 
 impl MappingRuleBuilder {
-    /// Создать новый строитель
+    /// Create a new builder
     pub fn new(input_name: impl Into<String>, output_name: impl Into<String>) -> Self {
         Self {
             input_name: input_name.into(),
@@ -28,55 +28,55 @@ impl MappingRuleBuilder {
         }
     }
     
-    /// Линейное преобразование
+    /// Linear transform
     pub fn linear(mut self) -> Self {
         self.transform = Transform::Linear;
         self
     }
     
-    /// Экспоненциальное (быстрый старт)
+    /// Exponential (fast onset)
     pub fn exponential(mut self) -> Self {
         self.transform = Transform::Exponential;
         self
     }
     
-    /// Логарифмическое (медленный старт)
+    /// Logarithmic (slow onset)
     pub fn logarithmic(mut self) -> Self {
         self.transform = Transform::Logarithmic;
         self
     }
     
-    /// Инвертированное
+    /// Inverted
     pub fn inverted(mut self) -> Self {
         self.transform = Transform::Inverted;
         self
     }
     
-    /// Масштабирование
+    /// Scaling
     pub fn scaled(mut self, scale: f32, offset: f32) -> Self {
         self.transform = Transform::Scale { scale, offset };
         self
     }
     
-    /// Пороговое (gate)
+    /// Threshold (gate)
     pub fn threshold(mut self, level: f32, hysteresis: f32) -> Self {
         self.transform = Transform::Threshold { level, hysteresis };
         self
     }
     
-    /// Сглаживание
+    /// Smoothing
     pub fn smooth(mut self, coefficient: f32) -> Self {
         self.transform = Transform::Smooth { coefficient };
         self
     }
     
-    /// RMS (для аудио)
+    /// RMS (for audio)
     pub fn rms(mut self, window_size: usize) -> Self {
         self.transform = Transform::Rms { window_size };
         self
     }
     
-    /// Пиковый детектор
+    /// Peak detector
     pub fn peak(mut self, decay: f32) -> Self {
         self.transform = Transform::Peak { decay };
         self
@@ -88,32 +88,32 @@ impl MappingRuleBuilder {
         self
     }
     
-    /// Частотный детектор
+    /// Frequency detector
     pub fn frequency(mut self, min_freq: f32, max_freq: f32) -> Self {
         self.transform = Transform::Frequency { min_freq, max_freq };
         self
     }
     
-    /// Установить входной канал (для аудио)
+    /// Set input channel (for audio)
     pub fn channel(mut self, channel: usize) -> Self {
         self.input_channel = channel;
         self
     }
     
-    /// Установить диапазон выхода
+    /// Set output range
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.output_range = (min, max);
         self
     }
     
-    /// Установить целевой параметр (для микро-контроля)
+    /// Set target parameter (for micro-control)
     pub fn target(mut self, port: PortId, parameter: ParameterId) -> Self {
         self.target_port = Some(port);
         self.target_parameter = Some(parameter);
         self
     }
     
-    /// Построить правило
+    /// Build the rule
     pub fn build(self) -> MappingRule {
         MappingRule {
             input_name: self.input_name,

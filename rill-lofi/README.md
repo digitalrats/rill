@@ -10,7 +10,7 @@ Lo-fi audio emulation — bitcrushing, downsampling, noise, wow & flutter.
 
 ## Dependencies
 
-- `rill-core` — `SignalNode`, `Processor` trait
+- `rill-core` — `Node`, `Processor` trait
 
 ## Links
 

@@ -7,9 +7,11 @@
 mod graph_jack_it {
     use std::time::Duration;
 
-    use rill_core::traits::{SignalNode, Sink, Source};
+    use rill_core::io::IoBackend;
+    use rill_core::traits::{Node, Sink, Source};
     use rill_core::ClockTick;
-    use rill_io::audio_io::{AudioIo, AudioIoPtr};
+    use rill_io::audio_io::AudioIoPtr;
+    use rill_io::AudioBackend;
     use rill_io::{AudioConfig, AudioInput, AudioOutput, JackBackend};
 
     fn has_jack() -> bool {
@@ -40,12 +42,12 @@ mod graph_jack_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let backend = JackBackend::new(config).unwrap();
-        let _ = backend.start();
-        let ptr = AudioIoPtr::from_ref(&backend as &dyn AudioIo);
+        let mut backend = Box::new(JackBackend::new(config).unwrap());
+        let _ = AudioBackend::start(&mut *backend);
+        let ptr = AudioIoPtr::from_ref(&*backend as &dyn IoBackend<f32>);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
-        input.set_backend(Box::new(backend));
+        input.set_io_ptr(ptr);
         settle(300);
 
         let mut output = AudioOutput::<f32, BUF_SZ>::new();
@@ -78,12 +80,12 @@ mod graph_jack_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let backend = JackBackend::new(config).unwrap();
-        let _ = backend.start();
-        let ptr = AudioIoPtr::from_ref(&backend as &dyn AudioIo);
+        let mut backend = Box::new(JackBackend::new(config).unwrap());
+        let _ = AudioBackend::start(&mut *backend);
+        let ptr = AudioIoPtr::from_ref(&*backend as &dyn IoBackend<f32>);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
-        input.set_backend(Box::new(backend));
+        input.set_io_ptr(ptr);
         settle(300);
 
         {

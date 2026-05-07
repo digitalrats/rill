@@ -1,25 +1,25 @@
-//! # Кольцевая очередь с произвольным доступом
+//! # Ring queue with random access
 //!
-//! [`RingQueue`](crate::queues::ring::RingQueue) — гибрид между кольцевым буфером и очередью,
-//! позволяющий читать данные с произвольной задержкой.
+//! [`RingQueue`](crate::queues::ring::RingQueue) — a hybrid between a ring buffer and a queue,
+//! allowing data to be read with arbitrary delay.
 
 use super::QueueStats;
 use crate::buffer::AtomicCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Кольцевая очередь с произвольным доступом
+/// Ring queue with random access
 ///
-/// Позволяет читать данные не только из головы, но и с произвольной
-/// задержкой. Полезно для эффектов задержки и реверберации.
+/// Allows reading data not only from the head, but also with arbitrary
+/// delay. Useful for delay effects and reverb.
 #[repr(C, align(64))]
 pub struct RingQueue<T: Copy, const CAP: usize> {
-    /// Данные
+    /// Data
     data: [AtomicCell<T>; CAP],
-    /// Индекс записи
+    /// Write index
     write_pos: AtomicUsize,
-    /// Маска для быстрого вычисления
+    /// Mask for fast computation
     mask: usize,
-    /// Статистика
+    /// Statistics
     stats: QueueStats,
 }
 
@@ -30,7 +30,7 @@ impl<T: Copy + Default, const CAP: usize> Default for RingQueue<T, CAP> {
 }
 
 impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
-    /// Создать новую кольцевую очередь
+    /// Create a new ring queue
     pub fn new() -> Self {
         assert!(CAP.is_power_of_two(), "CAP must be a power of two");
 
@@ -44,7 +44,7 @@ impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
         }
     }
 
-    /// Записать элемент (всегда успешно)
+    /// Push an element (always succeeds)
     pub fn push(&self, value: T) {
         let pos = self.write_pos.load(Ordering::Relaxed);
         self.data[pos].store(value);
@@ -53,10 +53,10 @@ impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
         self.stats.record_push(self.len());
     }
 
-    /// Прочитать элемент с задержкой
+    /// Read an element with delay
     ///
     /// # Arguments
-    /// * `delay` - задержка в семплах (0 = последний записанный)
+    /// * `delay` - delay in samples (0 = most recently written)
     pub fn read_delayed(&self, delay: usize) -> T {
         assert!(delay < CAP, "Delay must be less than CAP");
 
@@ -66,7 +66,7 @@ impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
         self.data[read_pos].load()
     }
 
-    /// Прочитать элемент с плавающей задержкой (линейная интерполяция)
+    /// Read an element with fractional delay (linear interpolation)
     pub fn read_interpolated(&self, delay_frac: f64) -> T
     where
         T: From<f64> + Into<f64>,
@@ -80,38 +80,38 @@ impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
         T::from(s1 * (1.0 - frac) + s2 * frac)
     }
 
-    /// Прочитать элемент по абсолютному индексу
+    /// Read an element by absolute index
     pub fn read_at(&self, index: usize) -> T {
         let write_pos = self.write_pos.load(Ordering::Acquire);
         let read_pos = (write_pos + CAP - index - 1) & self.mask;
         self.data[read_pos].load()
     }
 
-    /// Записать массив данных
+    /// Push a slice of data
     pub fn push_slice(&self, slice: &[T]) {
         for &value in slice {
             self.push(value);
         }
     }
 
-    /// Прочитать срез данных с задержкой
+    /// Read a slice of data with delay
     pub fn read_slice_delayed(&self, delay: usize, output: &mut [T]) {
         for (i, out) in output.iter_mut().enumerate() {
             *out = self.read_delayed(delay + i);
         }
     }
 
-    /// Текущая позиция записи
+    /// Current write position
     pub fn write_pos(&self) -> usize {
         self.write_pos.load(Ordering::Acquire)
     }
 
-    /// Ёмкость
+    /// Capacity
     pub const fn capacity(&self) -> usize {
         CAP
     }
 
-    /// Количество записанных элементов (не больше CAP)
+    /// Number of written elements (no more than CAP)
     pub fn len(&self) -> usize {
         CAP
     }
@@ -121,12 +121,12 @@ impl<T: Copy + Default, const CAP: usize> RingQueue<T, CAP> {
         self.len() == 0
     }
 
-    /// Сбросить позицию записи
+    /// Reset the write position
     pub fn reset(&self) {
         self.write_pos.store(0, Ordering::Release);
     }
 
-    /// Получить статистику
+    /// Get statistics
     pub fn stats(&self) -> &QueueStats {
         &self.stats
     }
@@ -164,7 +164,7 @@ mod tests {
             queue.push(i);
         }
 
-        // После переполнения должны быть последние 4 значения
+        // After overflow, should contain the last 4 values
         assert_eq!(queue.read_delayed(0), 9);
         assert_eq!(queue.read_delayed(1), 8);
         assert_eq!(queue.read_delayed(2), 7);

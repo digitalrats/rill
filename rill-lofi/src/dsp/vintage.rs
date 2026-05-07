@@ -1,15 +1,15 @@
-//! Винтажные эффекты
+//! Vintage effects
 
 use std::f32::consts::PI;
 
-/// Эмуляция ленточной сатурации
+/// Tape saturation emulation
 pub fn tape_saturation(sample: f32, drive: f32) -> f32 {
     let driven = sample * drive;
-    // Мягкое ограничение как у ленты
+    // Soft clipping like tape
     (driven / (1.0 + driven.abs())).clamp(-1.0, 1.0)
 }
 
-/// Эмуляция винилового шума и треска
+/// Vinyl noise and crackle emulation
 pub fn vinyl_noise(sample: f32, _time: f32, _sample_rate: f32) -> f32 {
     let noise_level = 0.02;
     let crackle_prob = 0.001;
@@ -20,7 +20,7 @@ pub fn vinyl_noise(sample: f32, _time: f32, _sample_rate: f32) -> f32 {
     sample + noise + crackle
 }
 
-/// Эмуляция Wow и Flutter (нестабильность скорости)
+/// Wow and flutter emulation (speed instability)
 pub fn wow_flutter(sample: f32, time: f32, depth: f32, rate: f32) -> f32 {
     let modulation = (2.0 * PI * rate * time).sin() * depth;
     sample * (1.0 + modulation)

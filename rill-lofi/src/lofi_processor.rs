@@ -2,6 +2,8 @@ use crate::config::{ClassicSystem, LofiConfig};
 use crate::dsp;
 use rill_core::prelude::*;
 
+/// Applies lo-fi audio effects (bitcrushing, sample-rate reduction, vintage noise,
+/// DAC emulation, and delay) to emulate classic digital audio systems.
 pub struct LofiProcessor<const BUF_SIZE: usize> {
     state: NodeState<f32, BUF_SIZE>,
     id: NodeId,
@@ -20,6 +22,7 @@ pub struct LofiProcessor<const BUF_SIZE: usize> {
 }
 
 impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
+    /// Creates a new `LofiProcessor` with the given configuration.
     pub fn new(config: LofiConfig) -> Self {
         let buffer_size = match config.system {
             ClassicSystem::Nes => 256,
@@ -52,10 +55,12 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
         }
     }
 
+    /// Creates a new `LofiProcessor` configured for a specific classic system.
     pub fn for_system(system: ClassicSystem) -> Self {
         Self::new(LofiConfig::for_system(system))
     }
 
+    /// Processes a single audio sample through the lo-fi effect chain.
     pub fn process_sample(&mut self, input: f32) -> f32 {
         let mut sample = input;
 
@@ -103,11 +108,13 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
         (wet + dry) * self.config.output_gain
     }
 
+    /// Resets the internal delay buffer to silence.
     pub fn clear_delay_buffer(&mut self) {
         self.delay_buffer.fill(0.0);
         self.delay_write_pos = 0;
     }
 
+    /// Returns the total sample count and current time in seconds.
     pub fn stats(&self) -> (u64, f32) {
         (
             self.state.sample_pos,
@@ -192,7 +199,7 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> SignalNode<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
+impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }

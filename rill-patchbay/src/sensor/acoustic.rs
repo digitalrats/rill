@@ -1,20 +1,20 @@
-//! Акустические сенсоры — слышат звук
+//! Acoustic sensors — hear sound
 
 use crate::core::{SignalOrigin, WorldSignal, WorldTime};
 use crate::sensor::Sensor;
 use rill_core::queues::Telemetry;
 use std::collections::VecDeque;
 
-/// Трейт для алгоритмов анализа звука
+/// Trait for audio analysis algorithms
 pub trait Hearing: Send + 'static {
-    /// Обработать блок аудиоданных
+    /// Process a block of audio data
     fn process(&mut self, audio: &[f32]) -> f32;
     
-    /// Имя алгоритма
+    /// Name of the algorithm
     fn name(&self) -> &str;
 }
 
-/// Pitch детектор (определяет высоту тона)
+/// Pitch detector
 pub struct PitchDetector {
     sample_rate: f32,
     min_freq: f32,
@@ -34,7 +34,7 @@ impl PitchDetector {
         }
     }
     
-    /// Автокорреляция для определения частоты
+    /// Autocorrelation for pitch detection
     fn autocorrelate(&self, signal: &[f32]) -> Option<f32> {
         if signal.len() < 100 {
             return None;
@@ -76,24 +76,24 @@ impl PitchDetector {
 
 impl Hearing for PitchDetector {
     fn process(&mut self, audio: &[f32]) -> f32 {
-        // Добавляем в буфер
+        // Add to buffer
         for &sample in audio {
             self.buffer.push_back(sample);
         }
         
-        // Оставляем только последние 2048 семплов
+        // Keep only the last 2048 samples
         while self.buffer.len() > 2048 {
             self.buffer.pop_front();
         }
         
-        // Преобразуем в вектор для анализа
+        // Convert to vector for analysis
         let signal: Vec<f32> = self.buffer.iter().copied().collect();
         
         if let Some(pitch) = self.autocorrelate(&signal) {
             self.last_pitch = pitch;
         }
         
-        // Нормализуем в 0-1
+        // Normalize to 0-1
         (self.last_pitch - self.min_freq) / (self.max_freq - self.min_freq)
     }
     
@@ -102,7 +102,7 @@ impl Hearing for PitchDetector {
     }
 }
 
-/// Envelope follower (следит за громкостью)
+/// Envelope follower (tracks amplitude)
 pub struct EnvelopeFollower {
     attack: f32,
     release: f32,
@@ -153,7 +153,7 @@ impl Hearing for EnvelopeFollower {
     }
 }
 
-/// Zero-crossing detector (считает пересечения нуля)
+/// Zero-crossing detector
 pub struct ZeroCrossing {
     last_sample: f32,
     crossings: u32,
@@ -184,13 +184,13 @@ impl Hearing for ZeroCrossing {
             self.samples += 1;
         }
         
-        if self.samples > self.sample_rate as u32 / 10 { // Каждые 100мс
+        if self.samples > self.sample_rate as u32 / 10 { // Every 100ms
             self.frequency = self.crossings as f32 / (self.samples as f32 / self.sample_rate);
             self.crossings = 0;
             self.samples = 0;
         }
         
-        self.frequency / 1000.0 // Нормализация
+        self.frequency / 1000.0 // Normalization
     }
     
     fn name(&self) -> &str {
@@ -198,11 +198,11 @@ impl Hearing for ZeroCrossing {
     }
 }
 
-/// Акустический сенсор
+/// Acoustic sensor
 pub struct AcousticSensor {
     name: String,
     hearing: Box<dyn Hearing>,
-    listen_to: Option<String>,  // ID узла в SignalGraph
+    listen_to: Option<String>,  // Node ID in Graph
     last_value: f32,
     last_send: f32,
     threshold: f32,
@@ -216,7 +216,7 @@ impl AcousticSensor {
             listen_to: None,
             last_value: 0.0,
             last_send: 0.0,
-            threshold: 0.01,  // 1% гистерезис
+            threshold: 0.01,  // 1% hysteresis
         }
     }
     
@@ -230,7 +230,7 @@ impl AcousticSensor {
         self
     }
     
-    /// Обработать телеметрию из SignalGraph
+    /// Process telemetry from the Graph
     pub fn process_telemetry(&mut self, telemetry: &Telemetry) -> Option<WorldSignal> {
         match telemetry {
             Telemetry::SignalData { node_id, data, .. } => {
@@ -238,7 +238,7 @@ impl AcousticSensor {
                     let value = self.hearing.process(data);
                     self.last_value = value;
                     
-                    // Отправляем только при значительном изменении
+                    // Only send on significant change
                     if (value - self.last_send).abs() > self.threshold {
                         self.last_send = value;
                         

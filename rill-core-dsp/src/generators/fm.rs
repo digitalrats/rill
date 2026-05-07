@@ -1,10 +1,10 @@
-//! FM (Frequency Modulation) синтез
+//! FM (Frequency Modulation) synthesis
 //!
-//! Этот модуль предоставляет инструменты для частотной модуляции:
-//! - Простой 2-операторный FM синтезатор
-//! - Многооператорный FM синтезатор (как в Yamaha DX7)
-//! - Поддержка различных форм волны для каждого оператора
-//! - Гибкая маршрутизация модуляции
+//! This module provides tools for frequency modulation:
+//! - Simple 2-operator FM synthesizer
+//! - Multi-operator FM synthesizer (like Yamaha DX7)
+//! - Support for different waveforms per operator
+//! - Flexible modulation routing
 
 use super::basic::{BasicOscillator, Waveform};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
@@ -14,18 +14,18 @@ use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
 // =============================================================================
-// Простой 2-операторный FM синтезатор
+// Simple 2-operator FM synthesizer
 // =============================================================================
 
-/// Простой FM синтезатор на основе двух операторов
+/// Simple 2-operator FM synthesizer
 ///
-/// Базовая FM архитектура: один модулятор модулирует один carrier.
-/// Идеально подходит для:
-/// - Создания металлических тембров
-/// - Эмуляции колокольчиков
-/// - Сложных гармонических структур
+/// Basic FM architecture: one modulator modulates one carrier.
+/// Ideal for:
+/// - Creating metallic timbres
+/// - Bell-like sounds
+/// - Complex harmonic structures
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core::time::ClockTick;
 /// use rill_core::traits::ActionContext;
@@ -35,38 +35,38 @@ use rill_core::Transcendental;
 /// let tick = ClockTick::default();
 /// let ctx = ActionContext::new(&tick);
 ///
-/// // Создаём FM синтезатор с соотношением частот 2:1
+/// // Create FM synthesizer with 2:1 frequency ratio
 /// let mut fm = SimpleFmSynth::<f32>::new(
-///     440.0,  // частота несущей (A4)
-///     2.0,    // модулятор на октаву выше
-///     1.5     // индекс модуляции
+///     440.0,  // carrier frequency (A4)
+///     2.0,    // modulator one octave higher
+///     1.5     // modulation index
 /// );
 /// fm.init(44100.0);
 ///
-/// // Генерируем семпл
+/// // Generate sample
 /// let mut output = [0.0_f32];
 /// fm.process(None, &mut output, &ctx).unwrap();
 /// let sample = output[0];
 /// ```
 #[derive(Clone, Copy)]
 pub struct SimpleFmSynth<T: Transcendental> {
-    /// Несущий осциллятор (carrier) - производит выходной сигнал
+    /// Carrier oscillator - produces the output signal
     carrier: BasicOscillator<T>,
-    /// Модулирующий осциллятор (modulator) - модулирует частоту carrier
+    /// Modulator oscillator - modulates carrier frequency
     modulator: BasicOscillator<T>,
-    /// Индекс модуляции (глубина модуляции)
+    /// Modulation index (modulation depth)
     modulation_index: ScalarVector1<T>,
-    /// Соотношение частот модулятора к несущей
+    /// Modulator-to-carrier frequency ratio
     ratio: f32,
 }
 
 impl<T: Transcendental> SimpleFmSynth<T> {
-    /// Создать новый FM синтезатор
+    /// Create a new FM synthesizer
     ///
     /// # Arguments
-    /// * `carrier_freq` - частота несущей в Hz
-    /// * `modulator_ratio` - соотношение частот (модулятор/carrier)
-    /// * `modulation_index` - индекс модуляции (0.0 - 10.0)
+    /// * `carrier_freq` - carrier frequency in Hz
+    /// * `modulator_ratio` - frequency ratio (modulator/carrier)
+    /// * `modulation_index` - modulation index (0.0 - 10.0)
     pub fn new(carrier_freq: f32, modulator_ratio: f32, modulation_index: T) -> Self {
         let one = T::from_f32(1.0);
         Self {
@@ -77,55 +77,55 @@ impl<T: Transcendental> SimpleFmSynth<T> {
         }
     }
 
-    /// Установить форму волны для несущей
+    /// Set carrier waveform
     ///
-    /// По умолчанию используется синусоида
+    /// Default is sine wave
     pub fn with_carrier_waveform(mut self, waveform: Waveform) -> Self {
         let freq = self.carrier.frequency();
         self.carrier = BasicOscillator::new(waveform, freq, T::from_f32(1.0));
         self
     }
 
-    /// Установить форму волны для модулятора
+    /// Set modulator waveform
     ///
-    /// По умолчанию используется синусоида
+    /// Default is sine wave
     pub fn with_modulator_waveform(mut self, waveform: Waveform) -> Self {
         let freq = self.modulator.frequency();
         self.modulator = BasicOscillator::new(waveform, freq, T::from_f32(1.0));
         self
     }
 
-    /// Установить частоту несущей
+    /// Set carrier frequency
     pub fn set_carrier_frequency(&mut self, freq: f32) {
         self.carrier.set_frequency(freq);
         self.modulator.set_frequency(freq * self.ratio);
     }
 
-    /// Установить индекс модуляции
+    /// Set modulation index
     ///
     /// # Arguments
-    /// * `index` - индекс модуляции (0.0 - 10.0)
+    /// * `index` - modulation index (0.0 - 10.0)
     pub fn set_modulation_index(&mut self, index: T) {
         self.modulation_index = ScalarVector1::splat(index);
         self.carrier.set_modulation_index(index);
     }
 
-    /// Установить соотношение частот
+    /// Set frequency ratio
     ///
     /// # Arguments
-    /// * `ratio` - соотношение (модулятор/carrier), обычно 0.1 - 10.0
+    /// * `ratio` - ratio (modulator/carrier), typically 0.1 - 10.0
     pub fn set_ratio(&mut self, ratio: f32) {
         self.ratio = ratio;
         self.modulator
             .set_frequency(self.carrier.frequency() * ratio);
     }
 
-    /// Получить текущий индекс модуляции
+    /// Get current modulation index
     pub fn modulation_index(&self) -> T {
         self.modulation_index.extract(0)
     }
 
-    /// Получить текущее соотношение частот
+    /// Get current frequency ratio
     pub fn ratio(&self) -> f32 {
         self.ratio
     }
@@ -149,14 +149,14 @@ impl<T: Transcendental> Algorithm<T> for SimpleFmSynth<T> {
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
         for out in output.iter_mut() {
-            // Получаем модулирующий сигнал
+            // Get modulator signal
             let mod_signal = self.modulator.generate().extract(0);
 
-            // Модулируем частоту несущей
+            // Modulate carrier frequency
             self.carrier
                 .modulate_frequency(mod_signal * self.modulation_index.extract(0));
 
-            // Возвращаем сигнал несущей
+            // Return carrier signal
             *out = self.carrier.generate().extract(0);
         }
         Ok(())
@@ -173,7 +173,7 @@ impl<T: Transcendental> Algorithm<T> for SimpleFmSynth<T> {
     }
 }
 
-// ==================== Реализация трейта Generator для SimpleFmSynth ====================
+// ==================== Generator trait implementation for SimpleFmSynth ====================
 
 impl<T: Transcendental> Generator<T> for SimpleFmSynth<T> {
     fn phase(&self) -> T {
@@ -203,12 +203,12 @@ impl<T: Transcendental> Generator<T> for SimpleFmSynth<T> {
     }
 }
 
-// ==================== Реализация трейта ModulatableGenerator для SimpleFmSynth ====================
+// ==================== ModulatableGenerator trait implementation for SimpleFmSynth ====================
 
 impl<T: Transcendental> ModulatableGenerator<T> for SimpleFmSynth<T> {
     fn modulate_frequency(&mut self, amount: T) {
         self.carrier.modulate_frequency(amount);
-        // Также обновляем modulation_index, чтобы он соответствовал
+        // Also update modulation_index accordingly
         self.modulation_index = ScalarVector1::splat(amount);
     }
 
@@ -222,23 +222,23 @@ impl<T: Transcendental> ModulatableGenerator<T> for SimpleFmSynth<T> {
 }
 
 // =============================================================================
-// Многооператорный FM синтезатор (как в Yamaha DX7)
+// Multi-operator FM synthesizer (like Yamaha DX7)
 // =============================================================================
 
-/// Многооператорный FM синтезатор
+/// Multi-operator FM synthesizer
 ///
-/// Реализует архитектуру, аналогичную Yamaha DX7:
-/// - N операторов (обычно 4 или 6)
-/// - Каждый оператор может быть carrier или modulator
-/// - Гибкая матрица маршрутов модуляции
-/// - Индивидуальные индексы модуляции
+/// Implements architecture similar to the Yamaha DX7:
+/// - N operators (typically 4 or 6)
+/// - Each operator can be a carrier or modulator
+/// - Flexible modulation routing matrix
+/// - Individual modulation indices
 ///
-/// # Пример
+/// # Example
 /// ```
 /// use rill_core_dsp::generators::*;
 /// use rill_core_dsp::Algorithm;
 ///
-/// // 6-операторный FM (как в DX7)
+/// // 6-operator FM (like DX7)
 /// let frequencies = [440.0, 880.0, 1320.0, 1760.0, 2200.0, 2640.0];
 /// let algorithm = [
 ///     [false, true,  false, false, false, false],
@@ -253,21 +253,21 @@ impl<T: Transcendental> ModulatableGenerator<T> for SimpleFmSynth<T> {
 /// fm.init(44100.0);
 /// ```
 pub struct FmSynth<T: Transcendental, const N: usize> {
-    /// Операторы (все используют BasicOscillator)
+    /// Operators (all use BasicOscillator)
     operators: [BasicOscillator<T>; N],
-    /// Алгоритм соединения (матрица маршрутов)
-    /// matrix[i][j] = true означает, что оператор j модулирует оператор i
+    /// Connection algorithm (routing matrix)
+    /// matrix[i][j] = true means operator j modulates operator i
     algorithm: [[bool; N]; N],
-    /// Индексы модуляции для каждого оператора
+    /// Modulation indices for each operator
     modulation_indices: [ScalarVector1<T>; N],
 }
 
 impl<T: Transcendental, const N: usize> FmSynth<T, N> {
-    /// Создать новый FM синтезатор
+    /// Create a new FM synthesizer
     ///
     /// # Arguments
-    /// * `frequencies` - массив частот для каждого оператора
-    /// * `algorithm` - матрица маршрутов модуляции N x N
+    /// * `frequencies` - array of frequencies for each operator
+    /// * `algorithm` - N x N modulation routing matrix
     pub fn new(frequencies: [f32; N], algorithm: [[bool; N]; N]) -> Self {
         let one = T::from_f32(1.0);
         let mut operators = [BasicOscillator::new(Waveform::Sine, 440.0, one); N];
@@ -282,7 +282,7 @@ impl<T: Transcendental, const N: usize> FmSynth<T, N> {
         }
     }
 
-    /// Создать новый FM синтезатор со всеми операторами на одной частоте
+    /// Create a new FM synthesizer with all operators at the same frequency
     pub fn new_with_freq(frequency: f32, algorithm: [[bool; N]; N]) -> Self {
         let one = T::from_f32(1.0);
         let operators = [BasicOscillator::new(Waveform::Sine, frequency, one); N];
@@ -294,7 +294,7 @@ impl<T: Transcendental, const N: usize> FmSynth<T, N> {
         }
     }
 
-    /// Установить форму волны для оператора
+    /// Set operator waveform
     pub fn set_waveform(&mut self, index: usize, waveform: Waveform) {
         if index < N {
             let freq = self.operators[index].frequency();
@@ -302,21 +302,21 @@ impl<T: Transcendental, const N: usize> FmSynth<T, N> {
         }
     }
 
-    /// Установить частоту для оператора
+    /// Set operator frequency
     pub fn set_frequency(&mut self, index: usize, freq: f32) {
         if index < N {
             self.operators[index].set_frequency(freq);
         }
     }
 
-    /// Установить индекс модуляции для оператора
+    /// Set modulation index for operator
     pub fn set_modulation_index(&mut self, index: usize, idx: T) {
         if index < N {
             self.modulation_indices[index] = ScalarVector1::splat(idx);
         }
     }
 
-    /// Получить текущее значение оператора (без обработки)
+    /// Get current operator value (without processing)
     pub fn peek_operator(&self, index: usize) -> T {
         if index < N {
             self.operators[index].phase()
@@ -325,7 +325,7 @@ impl<T: Transcendental, const N: usize> FmSynth<T, N> {
         }
     }
 
-    /// Сбросить все операторы
+    /// Reset all operators
     pub fn reset_all(&mut self) {
         for op in &mut self.operators {
             op.reset();
@@ -351,35 +351,35 @@ impl<T: Transcendental, const N: usize> Algorithm<T> for FmSynth<T, N> {
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
         for out in output.iter_mut() {
-            // Сохраняем текущие значения всех операторов
+            // Store current values of all operators
             let values: [_; N] = core::array::from_fn(|i| self.operators[i].generate().extract(0));
 
-            // Применяем модуляцию согласно алгоритму
+            // Apply modulation according to algorithm
             for (i, op) in self.operators.iter_mut().enumerate() {
                 let mut mod_sum = T::ZERO;
 
-                // Суммируем все модуляции для этого оператора
+                // Sum all modulations for this operator
                 for (j, &is_mod) in self.algorithm[i].iter().enumerate() {
                     if is_mod {
                         mod_sum += values[j] * self.modulation_indices[j].extract(0);
                     }
                 }
 
-                // Применяем модуляцию, если есть
+                // Apply modulation if present
                 if mod_sum != T::ZERO {
                     op.modulate_frequency(mod_sum);
                 }
             }
 
-            // Последний оператор даёт выходной сигнал
-            // (в классической FM архитектуре)
+            // Last operator produces the output signal
+            // (in classic FM architecture)
             *out = values[N - 1];
         }
         Ok(())
     }
 
     fn metadata(&self) -> AlgorithmMetadata {
-        // Создаём статические строки для разных размеров
+        // Create static strings for different sizes
         match N {
             2 => AlgorithmMetadata {
                 name: "2-operator FM Synth",
@@ -428,12 +428,12 @@ impl<T: Transcendental, const N: usize> Algorithm<T> for FmSynth<T, N> {
 }
 
 // =============================================================================
-// Вспомогательные функции и константы
+// Helper functions and constants
 // =============================================================================
 
-/// Предустановленные алгоритмы для 4-операторного FM
+/// Preset algorithms for 4-operator FM
 pub mod algorithms_4op {
-    /// Алгоритм 1: все операторы последовательно
+    /// Algorithm 1: all operators in series
     pub const ALGORITHM_1: [[bool; 4]; 4] = [
         [false, true, false, false],
         [false, false, true, false],
@@ -441,7 +441,7 @@ pub mod algorithms_4op {
         [false, false, false, false],
     ];
 
-    /// Алгоритм 2: два параллельных каскада
+    /// Algorithm 2: two parallel cascades
     pub const ALGORITHM_2: [[bool; 4]; 4] = [
         [false, true, false, false],
         [false, false, false, false],
@@ -449,7 +449,7 @@ pub mod algorithms_4op {
         [false, false, false, false],
     ];
 
-    /// Алгоритм 3: операторы 1 и 2 модулируют 3 и 4
+    /// Algorithm 3: operators 1 and 2 modulate 3 and 4
     pub const ALGORITHM_3: [[bool; 4]; 4] = [
         [false, false, false, false],
         [false, false, false, false],
@@ -458,9 +458,9 @@ pub mod algorithms_4op {
     ];
 }
 
-/// Предустановленные алгоритмы для 6-операторного FM (DX7 стиль)
+/// Preset algorithms for 6-operator FM (DX7 style)
 pub mod algorithms_6op {
-    /// Алгоритм 1: последовательная цепочка
+    /// Algorithm 1: serial chain
     pub const ALGORITHM_1: [[bool; 6]; 6] = [
         [false, true, false, false, false, false],
         [false, false, true, false, false, false],
@@ -470,7 +470,7 @@ pub mod algorithms_6op {
         [false, false, false, false, false, false],
     ];
 
-    /// Алгоритм 2: два параллельных каскада по 3
+    /// Algorithm 2: two parallel cascades of 3
     pub const ALGORITHM_2: [[bool; 6]; 6] = [
         [false, true, false, false, false, false],
         [false, false, true, false, false, false],
@@ -480,7 +480,7 @@ pub mod algorithms_6op {
         [false, false, false, false, false, false],
     ];
 
-    /// Алгоритм 3: сложная структура с обратными связями
+    /// Algorithm 3: complex structure with feedback
     pub const ALGORITHM_3: [[bool; 6]; 6] = [
         [false, true, false, false, false, false],
         [true, false, true, false, false, false],
@@ -492,7 +492,7 @@ pub mod algorithms_6op {
 }
 
 // =============================================================================
-// Тесты
+// Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -620,10 +620,10 @@ mod tests {
         let mut fm = SimpleFmSynth::<f32>::new(440.0, 2.0, 1.5);
         fm.init(44100.0);
 
-        // Проверяем начальное значение
+        // Check initial value
         assert_eq!(fm.modulation_index(), 1.5);
 
-        // Модулируем частоту
+        // Modulate frequency
         fm.modulate_frequency(0.3);
         assert_eq!(
             fm.modulation_index(),
@@ -631,7 +631,7 @@ mod tests {
             "modulation_index should be updated to 0.3"
         );
 
-        // Устанавливаем новый индекс модуляции
+        // Set new modulation index
         fm.set_modulation_index(0.8);
         assert_eq!(
             fm.modulation_index(),
@@ -643,8 +643,8 @@ mod tests {
     #[test]
     fn test_clone_copy() {
         let fm1 = SimpleFmSynth::<f32>::new(440.0, 2.0, 1.5);
-        let fm2 = fm1; // Копирование
-        let fm3 = fm1.clone(); // Явное клонирование
+        let fm2 = fm1; // Copy
+        let fm3 = fm1.clone(); // Explicit clone
 
         assert_eq!(fm1.frequency(), fm2.frequency());
         assert_eq!(fm1.frequency(), fm3.frequency());

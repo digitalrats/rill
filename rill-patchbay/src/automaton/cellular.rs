@@ -1,72 +1,72 @@
-//! # Клеточные автоматы
+//! # Cellular automata
 //!
-//! Генерация сигналов на основе клеточных автоматов.
-//! Поддерживаются 1D и 2D клеточные автоматы с различными правилами.
+//! Signal generation based on cellular automata.
+//! Supports 1D and 2D cellular automata with various rules.
 
-use crate::control::{Automaton, NoAction, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
 
-/// Тип клеточного автомата
+/// Type of cellular automaton
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CellularType {
-    /// 1D клеточный автомат (правило Вольфрама)
+    /// 1D cellular automaton (Wolfram rule)
     OneDimensional,
-    /// 2D клеточный автомат (Game of Life)
+    /// 2D cellular automaton (Game of Life)
     TwoDimensional,
-    /// Циклический клеточный автомат
+    /// Cyclic cellular automaton
     Cyclic,
 }
 
-/// Состояние клеточного автомата
+/// Cellular automaton state
 #[derive(Debug, Clone)]
 pub struct CellularState {
-    /// Текущее поколение
+    /// Current generation
     pub generation: Vec<u8>,
-    /// Следующее поколение
+    /// Next generation
     pub next_generation: Vec<u8>,
-    /// Ширина (для 2D)
+    /// Width (for 2D)
     pub width: usize,
-    /// Высота (для 2D)
+    /// Height (for 2D)
     pub height: usize,
-    /// Текущее значение (для вывода)
+    /// Current value (for output)
     pub current_value: f64,
-    /// Счётчик шагов
+    /// Step counter
     pub step: usize,
 }
 
-/// Клеточный автомат
+/// Cellular automaton
 #[derive(Debug, Clone)]
 pub struct CellularAutomaton {
-    /// Имя автомата
+    /// Automaton name
     name: String,
-    /// Тип автомата
+    /// Type of automaton
     cell_type: CellularType,
-    /// Правило (для 1D: 0-255)
+    /// Rule (for 1D: 0-255)
     rule: u8,
-    /// Размер (количество клеток для 1D, ширина/высота для 2D)
+    /// Size (number of cells for 1D, width/height for 2D)
     size: usize,
-    /// Способ преобразования поколения в выходной сигнал
+    /// Method for converting generation to output signal
     output_mode: OutputMode,
-    /// Диапазон выходных значений
+    /// Output value range
     range: Range,
-    /// Случайное зерно для инициализации
+    /// Random seed for initialization
     rng_state: u64,
 }
 
-/// Режим преобразования поколения в сигнал
+/// Generation-to-signal conversion mode
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OutputMode {
-    /// Использовать центральную клетку
+    /// Use the center cell
     Center,
-    /// Использовать сумму всех клеток (нормализованную)
+    /// Use the sum of all cells (normalized)
     Sum,
-    /// Использовать плотность активных клеток
+    /// Use density of active cells
     Density,
-    /// Использовать конкретный индекс
+    /// Use a specific index
     Index(usize),
 }
 
 impl CellularAutomaton {
-    /// Создать новый 1D клеточный автомат
+    /// Create a new 1D cellular automaton
     pub fn one_dimensional(name: &str, rule: u8, size: usize) -> Self {
         Self {
             name: name.to_string(),
@@ -79,7 +79,7 @@ impl CellularAutomaton {
         }
     }
 
-    /// Создать новый Game of Life
+    /// Create a new Game of Life
     pub fn game_of_life(name: &str, width: usize, height: usize) -> Self {
         Self {
             name: name.to_string(),
@@ -92,19 +92,19 @@ impl CellularAutomaton {
         }
     }
 
-    /// Установить режим вывода
+    /// Set the output mode
     pub fn with_output_mode(mut self, mode: OutputMode) -> Self {
         self.output_mode = mode;
         self
     }
 
-    /// Установить диапазон
+    /// Set the range
     pub fn with_range(mut self, range: Range) -> Self {
         self.range = range;
         self
     }
 
-    /// Инициализировать случайное состояние
+    /// Initialize random state
     fn random_initial(&self, _width: usize, _height: usize, rng: &mut u64) -> Vec<u8> {
         let mut gen = Vec::with_capacity(self.size);
         for _ in 0..self.size {
@@ -113,7 +113,7 @@ impl CellularAutomaton {
         gen
     }
 
-    /// Случайный бит
+    /// Random bit
     fn random_bit(&self, rng: &mut u64) -> bool {
         let mut x = *rng;
         x ^= x << 13;
@@ -123,7 +123,7 @@ impl CellularAutomaton {
         (x & 1) == 1
     }
 
-    /// Применить правило Вольфрама (1D)
+    /// Apply Wolfram rule (1D)
     fn apply_rule_1d(&self, generation: &[u8]) -> Vec<u8> {
         let mut next = vec![0; generation.len()];
 
@@ -148,7 +148,7 @@ impl CellularAutomaton {
         next
     }
 
-    /// Применить правило Game of Life (2D)
+    /// Apply Game of Life rule (2D)
     fn apply_rule_gol(&self, generation: &[u8], width: usize, height: usize) -> Vec<u8> {
         let mut next = vec![0; generation.len()];
 
@@ -157,7 +157,7 @@ impl CellularAutomaton {
                 let idx = y * width + x;
                 let cell = generation[idx];
 
-                // Считаем живых соседей (8 направлений)
+                // Count live neighbors (8 directions)
                 let mut neighbors = 0;
                 for dy in -1..=1 {
                     for dx in -1..=1 {
@@ -175,11 +175,11 @@ impl CellularAutomaton {
                     }
                 }
 
-                // Правила Game of Life
+                // Game of Life rules
                 next[idx] = match (cell, neighbors) {
-                    (1, 2) | (1, 3) => 1, // Выживание
-                    (0, 3) => 1,          // Рождение
-                    _ => 0,               // Смерть
+                    (1, 2) | (1, 3) => 1, // Survival
+                    (0, 3) => 1,          // Birth
+                    _ => 0,               // Death
                 };
             }
         }
@@ -187,7 +187,7 @@ impl CellularAutomaton {
         next
     }
 
-    /// Вычислить выходное значение
+    /// Compute the output value
     fn compute_output(&self, generation: &[u8], _state: &CellularState) -> f64 {
         match self.output_mode {
             OutputMode::Center => {
@@ -268,15 +268,15 @@ impl Automaton for CellularAutomaton {
     }
 }
 
-/// Предустановленные правила для 1D клеточных автоматов
+/// Preset rules for 1D cellular automata
 pub mod rules {
-    /// Правило 30: хаотическое поведение
+    /// Rule 30: chaotic behavior
     pub const RULE_30: u8 = 30;
-    /// Правило 90: фрактальное (треугольник Серпинского)
+    /// Rule 90: fractal (Sierpinski triangle)
     pub const RULE_90: u8 = 90;
-    /// Правило 110: универсальное (Тьюринг-полное)
+    /// Rule 110: universal (Turing-complete)
     pub const RULE_110: u8 = 110;
-    /// Правило 184: дорожное движение
+    /// Rule 184: traffic flow
     pub const RULE_184: u8 = 184;
 }
 

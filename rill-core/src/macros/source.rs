@@ -1,6 +1,6 @@
-//! # Макрос для создания активных источников (Source)
+//! # Macro for creating active sources (Source)
 
-/// Создаёт активный источник сигнала
+/// Creates an active signal source
 #[macro_export]
 macro_rules! source_node {
     (
@@ -17,16 +17,16 @@ macro_rules! source_node {
         $vis struct $struct_name<$T: $signal_num, const $BUF: usize>
         $(where $($bounds)*)?
         {
-            /// Внутреннее состояние
+            /// Internal state
             state: $crate::traits::node::NodeState<T,$BUF>,
 
-            /// Идентификатор узла
+            /// Node identifier
             id: $crate::NodeId,
 
-            /// Метаданные
+            /// Metadata
             metadata: $crate::NodeMetadata,
 
-            /// Выходные порты
+            /// Output ports
             outputs: Vec<$crate::Port<$T, $BUF>>,
 
             $(
@@ -38,7 +38,7 @@ macro_rules! source_node {
             $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
-            /// Создать новый источник
+            /// Create a new source
             pub fn new(sample_rate: f32) -> Self {
                 let metadata = $crate::NodeMetadata::new(
                     stringify!($struct_name),
@@ -62,24 +62,24 @@ macro_rules! source_node {
                 node
             }
 
-            /// Получить частоту дискретизации
+            /// Get the sample rate
             pub fn sample_rate(&self) -> f32 {
                 self.state.sample_rate
             }
 
-            /// Получить состояние узла
+            /// Get the node state
             pub fn state(&self) -> &$crate::traits::node::NodeState<T,$BUF> {
                 &self.state
             }
 
-            /// Получить мутабельное состояние
+            /// Get the mutable state
             pub fn state_mut(&mut self) -> &mut $crate::traits::node::NodeState<T,$BUF> {
                 &mut self.state
             }
         }
 
         impl<$T: $signal_num, const $BUF: usize>
-            $crate::SignalNode<$T, $BUF> for $struct_name<$T, $BUF>
+            $crate::Node<$T, $BUF> for $struct_name<$T, $BUF>
         $(where $($bounds)*)?
         {
             fn node_type_id(&self) -> $crate::NodeTypeId

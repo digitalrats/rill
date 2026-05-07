@@ -8,6 +8,8 @@ use crate::osc::{self, OscMessage, OscPacket};
 
 type Handler = Arc<dyn Fn(OscMessage, SocketAddr) + Send + Sync + 'static>;
 
+/// A UDP OSC server that listens for packets and dispatches them to
+/// registered pattern handlers.
 pub struct OscServer {
     socket: Arc<UdpSocket>,
     handlers: Vec<(String, Handler)>,
@@ -15,6 +17,7 @@ pub struct OscServer {
 }
 
 impl OscServer {
+    /// Bind the server to the given UDP socket address.
     pub async fn bind(addr: impl tokio::net::ToSocketAddrs) -> Result<Self, Error> {
         let socket = UdpSocket::bind(addr).await?;
         Ok(Self {
@@ -24,6 +27,7 @@ impl OscServer {
         })
     }
 
+    /// Register a handler for OSC messages matching the given pattern.
     pub fn handle<F>(&mut self, pattern: impl Into<String>, f: F)
     where
         F: Fn(OscMessage, SocketAddr) + Send + Sync + 'static,
@@ -31,14 +35,17 @@ impl OscServer {
         self.handlers.push((pattern.into(), Arc::new(f)));
     }
 
+    /// Set the receive buffer size in bytes (default 65536).
     pub fn set_buffer_size(&mut self, size: usize) {
         self.buffer_size = size;
     }
 
+    /// Get the local socket address the server is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
         Ok(self.socket.local_addr()?)
     }
 
+    /// Run the OSC server loop, receiving and dispatching packets forever.
     pub async fn run(&self) -> Result<(), Error> {
         let mut buf = vec![0u8; self.buffer_size];
         loop {
