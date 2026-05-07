@@ -4,7 +4,7 @@ use std::path::PathBuf;
 /// Host-level configuration for a [`Runtime`](super::Runtime).
 ///
 /// Separate from `rill_graph::serialization::GraphDocument` and
-/// `rill_patchbay::document::PatchbayDocument` — this struct holds
+/// `rill_patchbay::serialization::PatchbayDocument` — this struct holds
 /// **host-level** parameters: sample rate, OSC bind address,
 /// and optional paths to initial preset files.
 pub struct RuntimeConfig {

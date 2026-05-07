@@ -85,16 +85,12 @@ pub mod automaton_task;
 /// Parameter-lock step sequencer
 pub mod sequencer;
 
-/// DOT patchbay visualization (Graphviz)
+/// Сериализация — документы, DOT, форматы
 #[cfg(feature = "serde")]
-pub mod dot;
-
-/// Сериализация конфигурации управления
-#[cfg(feature = "serde")]
-pub mod document;
+pub mod serialization;
 
 #[cfg(feature = "serde")]
-pub use document::PatchbayDocument;
+pub use serialization::PatchbayDocument;
 
 // =============================================================================
 // Реэкспорты для удобства

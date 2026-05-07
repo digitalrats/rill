@@ -9,13 +9,13 @@
 //!
 //! # Feature gate
 //!
-//! Requires the `serde` feature (for [`PatchbayDocument`](crate::document::PatchbayDocument)
+//! Requires the `serde` feature (for [`PatchbayDocument`](crate::serialization::PatchbayDocument)
 //! and [`SequencerDocument`](crate::sequencer::SequencerDocument) access).
 
 use std::fmt::Write;
 
 #[cfg(feature = "serde")]
-use crate::document::PatchbayDocument;
+use crate::serialization::PatchbayDocument;
 #[cfg(feature = "serde")]
 use crate::sequencer::SequencerDocument;
 
@@ -53,7 +53,7 @@ pub fn patchbay_to_dot(
     for auto in &patchbay.automata {
         let id = auto.id();
         let (label, fillcolor) = match auto {
-            crate::document::AutomatonDef::Lfo {
+            crate::serialization::AutomatonDef::Lfo {
                 frequency,
                 waveform,
                 ..
@@ -61,7 +61,7 @@ pub fn patchbay_to_dot(
                 let l = format!("LFO\\n{frequency} Hz\\n{waveform:?}");
                 (l, "#ccf")
             }
-            crate::document::AutomatonDef::Envelope {
+            crate::serialization::AutomatonDef::Envelope {
                 attack,
                 decay,
                 sustain,
@@ -71,11 +71,11 @@ pub fn patchbay_to_dot(
                 let l = format!("Envelope\\n{attack}/{decay}/{sustain}/{release}");
                 (l, "#fcf")
             }
-            crate::document::AutomatonDef::Sequencer { steps, tempo, .. } => {
+            crate::serialization::AutomatonDef::Sequencer { steps, tempo, .. } => {
                 let l = format!("SequencerAuto\\n{} steps @ {tempo} BPM", steps.len());
                 (l, "#ffc")
             }
-            crate::document::AutomatonDef::NamedFunction { function_name, .. } => {
+            crate::serialization::AutomatonDef::NamedFunction { function_name, .. } => {
                 let l = format!("Fn\\n{function_name}");
                 (l, "#cfc")
             }

@@ -49,7 +49,7 @@ use rill_patchbay::function_registry::FunctionRegistry;
 #[cfg(feature = "serialization")]
 use rill_graph::serialization::GraphDocument;
 #[cfg(feature = "serialization")]
-use rill_patchbay::document::PatchbayDocument;
+use rill_patchbay::serialization::PatchbayDocument;
 
 mod config;
 pub use config::RuntimeConfig;

@@ -2,7 +2,7 @@
 //!
 //! [`SequencerDocument`] is a standalone serialisable description of a
 //! parameter-lock sequencer configuration.  It is independent from
-//! [`PatchbayDocument`](crate::document::PatchbayDocument) — you can
+//! [`PatchbayDocument`](crate::serialization::PatchbayDocument) — you can
 //! load, save, and swap sequencer presets separately from LFO/envelope
 //! automation and event mappings.
 //!
