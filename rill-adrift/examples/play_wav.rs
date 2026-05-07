@@ -63,7 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.connect_signal(src, 1, snk, 1);
 
         let graph = builder
-            .build(Some(&backend_name), RATE as u32, BUF as u32, 2)
+            .with_backend(&backend_name, RATE as u32, BUF as u32, 2)
+            .build()
             .expect("graph build");
 
         graph.run(t_run).ok();

@@ -248,7 +248,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     def.populate(&mut builder)
         .map_err(|e| format!("populate: {e}"))?;
     let graph = builder
-        .build(Some(backend_name), RATE as u32, BUF as u32, 2)
+        .with_backend(backend_name, RATE as u32, BUF as u32, 2)
+        .build()
         .map_err(|e| format!("graph build: {e}"))?;
     let _actor_ref = graph.handle();
 

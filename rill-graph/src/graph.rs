@@ -85,6 +85,15 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     factory: Arc<NodeFactory<T, BUF_SIZE>>,
     /// Shared backend factory (required, from Runtime).
     backends: Arc<BackendFactory<T>>,
+    /// Optional backend configuration (set via [`with_backend`](Self::with_backend)).
+    backend_config: Option<BackendConfig>,
+}
+
+struct BackendConfig {
+    name: String,
+    sample_rate: u32,
+    buffer_size: u32,
+    channels: u32,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
@@ -99,6 +108,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             resources: Vec::new(),
             factory,
             backends,
+            backend_config: None,
         }
     }
 
@@ -242,20 +252,39 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Build the graph.
+    /// Configure an audio backend for this builder.
     ///
-    /// If `backend_name` is `Some`, the builder looks for a driver node in the
-    /// graph and auto-starts it with a command queue. The backend is created
-    /// from the builder's internal [`BackendFactory`] with the given audio
-    /// config. Without a backend name the graph is purely structural (no
-    /// audio I/O, no command queue).
-    pub fn build(
+    /// When set, [`build`](Self::build) looks for a driver node in the graph
+    /// and auto-starts it with a command queue and the given audio backend.
+    /// Without this method, the graph is purely structural (no audio I/O,
+    /// no command queue).
+    pub fn with_backend(
         mut self,
-        backend_name: Option<&str>,
+        backend_name: &str,
         sample_rate: u32,
         buffer_size: u32,
         channels: u32,
-    ) -> Result<Graph<T, BUF_SIZE>, BuildError> {
+    ) -> Self {
+        self.backend_config = Some(BackendConfig {
+            name: backend_name.to_string(),
+            sample_rate,
+            buffer_size,
+            channels,
+        });
+        self
+    }
+
+    /// Build the graph.
+    ///
+    /// If [`with_backend`](Self::with_backend) was called before, the builder
+    /// auto-starts a driver node with a command queue and the configured
+    /// audio backend. Otherwise the graph is purely structural (no audio I/O,
+    /// no command queue).
+    pub fn build(mut self) -> Result<Graph<T, BUF_SIZE>, BuildError> {
+        let backend_name = self.backend_config.as_ref().map(|c| c.name.as_str());
+        let sample_rate = self.backend_config.as_ref().map_or(0, |c| c.sample_rate);
+        let buffer_size = self.backend_config.as_ref().map_or(0, |c| c.buffer_size);
+        let channels = self.backend_config.as_ref().map_or(0, |c| c.channels);
         let num_nodes = self.nodes.len();
 
         // --- adjacency for Kahn (audio edges only; feedback is not a DAG edge) ---
@@ -949,7 +978,7 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, sink, 0);
 
-        let graph = builder.build(None, 0, 0, 0).expect("build failed");
+        let graph = builder.build().expect("build failed");
 
         let order = graph.topo_order();
         let src_pos = order.iter().position(|&i| i == src).unwrap();
@@ -970,7 +999,7 @@ mod tests {
         builder.connect_signal(a, 0, b, 0);
         builder.connect_signal(b, 0, a, 0);
 
-        let result = builder.build(None, 0, 0, 0);
+        let result = builder.build();
         assert!(matches!(result, Err(BuildError::CycleDetected)));
     }
 
@@ -979,7 +1008,7 @@ mod tests {
         const BUF: usize = 64;
         let mut builder = test_builder::<BUF>();
         let idx = builder.add_source(Box::new(ConstantSource::new(0.5, 44100.0)));
-        let graph = builder.build(None, 0, 0, 0).expect("build failed");
+        let graph = builder.build().expect("build failed");
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.topo_order(), &[idx]);
     }
@@ -1239,7 +1268,7 @@ mod tests {
         let src = builder.add_source(Box::new(ConstantSource::new(42.0, 44100.0)));
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(1), 44100.0)));
         builder.connect_signal(src, 0, snk, 0);
-        let graph = builder.build(None, 0, 0, 0).unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
@@ -1270,7 +1299,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let graph = builder.build(None, 0, 0, 0).unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
@@ -1304,7 +1333,7 @@ mod tests {
             44100.0,
             2.0,
         )));
-        let graph = builder.build(None, 0, 0, 0).unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, _, _, _bufs) = graph.into_parts();
 
         let _ = queue.push(SetParameter::new(
@@ -1351,7 +1380,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let graph = builder.build(None, 0, 0, 0).unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 
@@ -1407,7 +1436,7 @@ mod tests {
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
         builder.connect_feedback(proc, 0, proc, 0);
-        let graph = builder.build(None, 0, 0, 0).unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
 
         // ── Block 1: no feedback yet ──
@@ -1461,7 +1490,7 @@ mod tests {
         let snk = builder.add_sink(Box::new(TestSink::<f32, BUF>::new(NodeId(2), 44100.0)));
         builder.connect_signal(src, 0, proc, 0);
         builder.connect_signal(proc, 0, snk, 0);
-        let graph = builder.build(None, 0, 0, 0).unwrap();
+        let graph = builder.build().unwrap();
         let (mut nodes, topo, _, _bufs) = graph.into_parts();
         let tick = ClockTick::new(0, BUF as u32, 44100.0);
 

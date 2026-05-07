@@ -61,7 +61,8 @@ fn test_deserialize_input_biquad_output() {
     let builder = registration::load_graph_json::<B>(json).expect("load_graph_json should succeed");
 
     let graph = builder
-        .build(Some("null"), RATE as u32, B as u32, 2)
+        .with_backend("null", RATE as u32, B as u32, 2)
+        .build()
         .expect("graph build should succeed");
 
     // Treat Graph as a black box — read metadata only.
@@ -106,7 +107,8 @@ fn test_send_parameter_via_queue() {
     .expect("load_graph_json");
 
     let graph = builder
-        .build(Some("null"), RATE as u32, B as u32, 2)
+        .with_backend("null", RATE as u32, B as u32, 2)
+        .build()
         .expect("graph build");
 
     // Send parameter via queue

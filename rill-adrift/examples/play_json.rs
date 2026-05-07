@@ -24,7 +24,8 @@ fn build_graph(json: &str, backend_name: &str) -> Graph {
     let builder = registration::load_graph_json::<BUF>(json).expect("load_graph_json");
 
     builder
-        .build(Some(backend_name), RATE as u32, BUF as u32, 2)
+        .with_backend(backend_name, RATE as u32, BUF as u32, 2)
+        .build()
         .expect("graph build")
 }
 
