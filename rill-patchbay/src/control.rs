@@ -877,7 +877,7 @@ impl PatchbayControl {
                             new_bar,
                         );
                         for cmd in cmds {
-                            let _ = queue.send(cmd);
+                            queue.send(cmd);
                         }
                     }
                     Err(_) => return,
@@ -930,7 +930,7 @@ impl PatchbayControl {
                         .ui_tx
                         .send(UiCommand::SetValue(cmd.value.as_f32().unwrap_or(0.0) as f64));
                 } else {
-                    let _ = self.command_queue.send(cmd);
+                    self.command_queue.send(cmd);
                 }
             }
         }
@@ -945,7 +945,7 @@ impl PatchbayControl {
 
         for servo in self.servos.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
-                let _ = self.command_queue.send(cmd);
+                self.command_queue.send(cmd);
             }
         }
     }

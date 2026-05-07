@@ -62,7 +62,7 @@ impl OscHandle {
                 _ => return,
             };
             if let Ok(pid) = ParameterId::new(&param) {
-                let _ = q.send(SetParameter::new(
+                q.send(SetParameter::new(
                     PortId::param(node, 0),
                     pid,
                     ParamValue::Float(value),
@@ -107,7 +107,7 @@ impl OscHandle {
                     log::warn!("OSC surface: control lock failed");
                     if let Some(normalized) = event.normalized_value() {
                         if let Ok(pid) = ParameterId::new(&path) {
-                            let _ = q.send(SetParameter::new(
+                            q.send(SetParameter::new(
                                 PortId::param(NodeId(0), 0),
                                 pid,
                                 ParamValue::Float(normalized),

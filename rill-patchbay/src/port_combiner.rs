@@ -118,7 +118,7 @@ async fn combiner_loop(
 
                 let value = combine(mod_val, base, control, min, max);
                 let pid = ParameterId::new(&param_name).unwrap();
-                let _ = output_queue.send(SetParameter::new(
+                output_queue.send(SetParameter::new(
                     PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalOrigin::Manual,
                 ));
             }
@@ -129,7 +129,7 @@ async fn combiner_loop(
                         base = v;
                         frozen = true;
                         let pid = ParameterId::new(&param_name).unwrap();
-                        let _ = output_queue.send(SetParameter::new(
+                        output_queue.send(SetParameter::new(
                             PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalOrigin::Manual,
                         ));
                     }
@@ -138,14 +138,14 @@ async fn combiner_loop(
                         base = v;
                         let value = combine(latest_mod, v, control, min, max);
                         let pid = ParameterId::new(&param_name).unwrap();
-                        let _ = output_queue.send(SetParameter::new(
+                        output_queue.send(SetParameter::new(
                             PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalOrigin::Manual,
                         ));
                     }
 
                     (UiCommand::SetValue(v), ConflictStrategy::LastWriteWins) => {
                         let pid = ParameterId::new(&param_name).unwrap();
-                        let _ = output_queue.send(SetParameter::new(
+                        output_queue.send(SetParameter::new(
                             PortId::param(node_id, 0), pid, ParamValue::Float(v as f32), SignalOrigin::Manual,
                         ));
                     }
@@ -154,7 +154,7 @@ async fn combiner_loop(
                         frozen = false;
                         let value = combine(latest_mod, base, control, min, max);
                         let pid = ParameterId::new(&param_name).unwrap();
-                        let _ = output_queue.send(SetParameter::new(
+                        output_queue.send(SetParameter::new(
                             PortId::param(node_id, 0), pid, ParamValue::Float(value as f32), SignalOrigin::Manual,
                         ));
                     }
