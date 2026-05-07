@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use rill_adrift::io::output::Output;
 use rill_adrift::registration;
-use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_digital_filters::BiquadProcessor;
 use rill_adrift::rill_graph;
 use rill_adrift::sampler::player::SamplePlayerNode;
@@ -64,9 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.connect_signal(fx, 0, snk, 0);
         builder.connect_signal(src, 1, snk, 1);
 
-        let clock = Box::new(SystemClock::with_sample_rate(RATE));
         let graph = builder
-            .build(clock, Some(&backend_name), RATE as u32, BUF as u32, 2)
+            .build(Some(&backend_name), RATE as u32, BUF as u32, 2)
             .expect("graph build");
 
         graph.run(t_run).ok();

@@ -697,6 +697,9 @@ mod tests {
             node.init(params.sample_rate);
             NodeVariant::Source(Box::new(node))
         }
+        fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
+            Box::new(Self)
+        }
     }
 
     struct ParamCtor;
@@ -719,6 +722,9 @@ mod tests {
             node.init(params.sample_rate);
             NodeVariant::Processor(Box::new(node))
         }
+        fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
+            Box::new(Self)
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────
@@ -735,16 +741,11 @@ mod tests {
     }
 
     fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
-        let b = GraphBuilder::new(factory.clone(), empty_backends());
-        let mut b = b;
+        let mut b = GraphBuilder::new(Arc::new(factory.clone()), empty_backends());
         let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
-        b.build(
-            Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-            None,
-        )
-        .expect("build")
+        b.build(None, 0, 0, 0).expect("build")
     }
 
     // ==================================================================
@@ -754,52 +755,50 @@ mod tests {
     #[test]
     fn test_json_roundtrip() {
         let reg = empty_factory();
-        let graph = build_small_graph(&reg);
+        let graph = build_small_graph(&*reg);
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains("rill/test"));
         assert!(json.contains("format_version"));
         assert!(json.contains("connections"));
 
-        let restored = from_json(&json, &reg).expect("from_json");
+        let def = from_json(&json).expect("from_json");
+        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 2);
 
         // Must rebuild without errors
-        restored
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("rebuild");
+        restored.build(None, 0, 0, 0).expect("rebuild");
     }
 
     #[test]
     fn test_cbor_roundtrip() {
         let reg = empty_factory();
-        let graph = build_small_graph(&reg);
+        let graph = build_small_graph(&*reg);
 
         let cbor = to_cbor(&graph).expect("to_cbor");
         assert!(!cbor.is_empty());
 
-        let restored = from_cbor(&cbor, &reg).expect("from_cbor");
+        let def = from_cbor(&cbor).expect("from_cbor");
+        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 2);
     }
 
     #[test]
     fn test_empty_graph_roundtrip() {
         let reg = empty_factory();
-        let graph = GraphBuilder::<f32, 64>::new()
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
+        let graph = GraphBuilder::new(empty_factory(), empty_backends())
+            .build(None, 0, 0, 0)
             .expect("graph build");
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains(r#""nodes": []"#));
         assert!(json.contains(r#""connections": []"#));
 
-        let restored = from_json(&json, &reg).expect("from_json");
+        let def = from_json(&json).expect("from_json");
+        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 0);
     }
 
@@ -810,21 +809,15 @@ mod tests {
     #[test]
     fn test_export_parameters() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         b.add_node(
-            &reg,
             "rill/param",
             &NodeParams::new(44100.0)
                 .with("frequency", PV::Float(220.0))
                 .with("amplitude", PV::Float(0.8)),
         )
         .unwrap();
-        let graph = b
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("build");
+        let graph = b.build(None, 0, 0, 0).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes.len(), 1);
@@ -838,32 +831,22 @@ mod tests {
     #[test]
     fn test_roundtrip_parameters() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         b.add_node(
-            &reg,
             "rill/param",
             &NodeParams::new(48000.0)
                 .with("frequency", PV::Float(55.0))
                 .with("amplitude", PV::Float(0.25)),
         )
         .unwrap();
-        let graph = b
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(48000.0)),
-                None,
-            )
-            .expect("build");
+        let graph = b.build(None, 0, 0, 0).expect("build");
 
         let json = to_json(&graph).expect("to_json");
-        let restored = from_json(&json, &reg).expect("from_json");
+        let def = from_json(&json).expect("from_json");
+        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 1);
-        // Rebuild — should not error
-        restored
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(48000.0)),
-                None,
-            )
-            .expect("rebuild");
+        restored.build(None, 0, 0, 0).expect("rebuild");
     }
 
     // ==================================================================
@@ -873,17 +856,12 @@ mod tests {
     #[test]
     fn test_export_feedback_connection() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
         let src = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let proc = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
-        let graph = b
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("build");
+        let graph = b.build(None, 0, 0, 0).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         let sigs: Vec<SignalKind> = doc.connections.iter().map(|c| c.kind).collect();
@@ -900,14 +878,9 @@ mod tests {
     fn test_export_type_name_explicit() {
         // ParamCtor declares type_name = Some("rill/param")
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
         b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
-        let graph = b
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("build");
+        let graph = b.build(None, 0, 0, 0).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes[0].type_name, "rill/param");
@@ -916,32 +889,29 @@ mod tests {
     #[test]
     fn test_export_type_name_fallback_to_name() {
         // Node with type_name: None → doc uses metadata().name
-        let mut reg = empty_registry();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
-        // Register a name-only constructor for testing fallback
+        let mut reg = NodeFactory::<f32, 64>::new();
         struct FallbackCtor;
         impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for FallbackCtor {
             fn type_name(&self) -> &'static str {
                 "rill/fallback"
             }
             fn construct(&self, id: NodeId, params: &NodeParams) -> NodeVariant<T, B> {
-                // No with_type_name → type_name stays None
                 let mut node = TestNode::<T, B>::source();
                 node.set_id(id);
                 node.init(params.sample_rate);
                 NodeVariant::Source(Box::new(node))
             }
+            fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
+                Box::new(Self)
+            }
         }
         reg.register(FallbackCtor);
+        let reg = Arc::new(reg);
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
 
         b.add_node("rill/fallback", &NodeParams::new(44100.0))
             .unwrap();
-        let graph = b
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("build");
+        let graph = b.build(None, 0, 0, 0).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes[0].type_name, "TestNode");
@@ -961,24 +931,15 @@ mod tests {
         b.add_node_with_id("rill/param", &NodeParams::new(44100.0), NodeId(200))
             .unwrap();
         b.connect_signal(0, 0, 1, 0);
-        let graph = b
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("build");
+        let graph = b.build(None, 0, 0, 0).expect("build");
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains(r#""id": 100"#));
         assert!(json.contains(r#""id": 200"#));
 
-        let restored = from_json(&json, &reg).expect("from_json");
-        let rebuilt = restored
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("rebuild");
+        let def = from_json(&json).expect("from_json");
+        let mut rebuilt = GraphBuilder::new(reg.clone(), empty_backends());
+        def.populate(&mut rebuilt).expect("populate");
         assert_eq!(rebuilt.node_count(), 2);
     }
 
@@ -989,31 +950,23 @@ mod tests {
     #[test]
     fn test_roundtrip_complex_topology() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(empty_factory(), empty_backends()).with_factory(reg.clone());
+        let mut b = GraphBuilder::new(empty_factory(), empty_backends());
         let s0 = b.add_node("rill/test", &NodeParams::new(44100.0)).unwrap();
         let p1 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         let p2 = b.add_node("rill/param", &NodeParams::new(44100.0)).unwrap();
         b.connect_signal(s0, 0, p1, 0);
         b.connect_signal(p1, 0, p2, 0);
 
-        let graph = b
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("build");
+        let graph = b.build(None, 0, 0, 0).expect("build");
 
         let json = to_json(&graph).expect("to_json");
-        let restored = from_json(&json, &reg).expect("from_json");
+        let def = from_json(&json).expect("from_json");
+        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 3);
 
         // Verify connections
-        let rebuilt = restored
-            .build(
-                Box::new(rill_core::time::SystemClock::with_sample_rate(44100.0)),
-                None,
-            )
-            .expect("rebuild");
+        let rebuilt = restored.build(None, 0, 0, 0).expect("rebuild");
 
         // Topological order: source must be first
         assert_eq!(rebuilt.topo_order().len(), 3);
@@ -1040,7 +993,10 @@ mod tests {
             connections: vec![],
             description: None,
         };
-        let result = doc.into_builder(&reg);
+        let result = {
+            let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+            doc.populate(&mut b)
+        };
         assert!(result.is_err());
     }
 
@@ -1069,7 +1025,8 @@ mod tests {
             connections: vec![],
             description: None,
         };
-        match doc.into_builder(&reg) {
+        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        match doc.populate(&mut b) {
             Err(SerializationError::DuplicateNodeId(id)) => assert_eq!(id, 0),
             _ => panic!("expected DuplicateNodeId"),
         }
@@ -1086,8 +1043,9 @@ mod tests {
             connections: vec![],
             description: None,
         };
-        let r = NodeFactory::<f32, 256>::new();
-        match doc.into_builder(&r) {
+        let r = Arc::new(NodeFactory::<f32, 256>::new());
+        let mut b = GraphBuilder::new(r.clone(), empty_backends());
+        match doc.populate(&mut b) {
             Err(SerializationError::InvalidFormat(_)) => {}
             _ => panic!("expected InvalidFormat"),
         }
@@ -1096,6 +1054,6 @@ mod tests {
     #[test]
     fn test_invalid_json() {
         let reg = empty_factory();
-        assert!(from_json::<f32, 64>("not json", &reg).is_err());
+        assert!(from_json("not json").is_err());
     }
 }

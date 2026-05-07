@@ -11,7 +11,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeParams, NodeState, NodeVariant, ParamValue,
     ParameterId, Port, ProcessResult, Sink,
@@ -245,12 +244,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Сборка графа
-    let clock = Box::new(SystemClock::with_sample_rate(RATE));
     let mut builder = rt.create_builder();
     def.populate(&mut builder)
         .map_err(|e| format!("populate: {e}"))?;
     let graph = builder
-        .build(clock, Some(backend_name), RATE as u32, BUF as u32, 2)
+        .build(Some(backend_name), RATE as u32, BUF as u32, 2)
         .map_err(|e| format!("graph build: {e}"))?;
     let _actor_ref = graph.handle();
 

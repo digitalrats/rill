@@ -3,7 +3,6 @@ use rill_adrift::registration;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_core::time::SystemClock;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
@@ -61,9 +60,8 @@ fn test_deserialize_input_biquad_output() {
 
     let builder = registration::load_graph_json::<B>(json).expect("load_graph_json should succeed");
 
-    let clock = Box::new(SystemClock::with_sample_rate(RATE));
     let graph = builder
-        .build(clock, Some("null"), RATE as u32, B as u32, 2)
+        .build(Some("null"), RATE as u32, B as u32, 2)
         .expect("graph build should succeed");
 
     // Treat Graph as a black box — read metadata only.
@@ -107,11 +105,8 @@ fn test_send_parameter_via_queue() {
     )
     .expect("load_graph_json");
 
-    let clock = Box::new(rill_adrift::rill_core::time::SystemClock::with_sample_rate(
-        RATE,
-    ));
     let graph = builder
-        .build(clock, Some("null"), RATE as u32, B as u32, 2)
+        .build(Some("null"), RATE as u32, B as u32, 2)
         .expect("graph build");
 
     // Send parameter via queue

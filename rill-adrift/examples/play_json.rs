@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use rill_adrift::registration;
 use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
-use rill_adrift::rill_core::time::SystemClock;
 use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 
 const BUF: usize = 256;
@@ -22,11 +21,10 @@ const RATE: f32 = 44100.0;
 type Graph = rill_adrift::rill_graph::Graph<f32, BUF>;
 
 fn build_graph(json: &str, backend_name: &str) -> Graph {
-    let clock = Box::new(SystemClock::with_sample_rate(RATE));
     let mut builder = registration::load_graph_json::<BUF>(json).expect("load_graph_json");
 
     builder
-        .build(clock, Some(backend_name), RATE as u32, BUF as u32, 2)
+        .build(Some(backend_name), RATE as u32, BUF as u32, 2)
         .expect("graph build")
 }
 

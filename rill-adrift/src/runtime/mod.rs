@@ -43,7 +43,7 @@ use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::traits::{NodeId, NodeParams, NodeVariant};
 use rill_core_actor::ActorRef;
 use rill_graph::backend_factory::BackendFactory;
-use rill_graph::{GraphBuilder, NodeFactory, RegistryError};
+use rill_graph::{GraphBuilder, NodeFactory};
 #[cfg(feature = "osc")]
 use rill_patchbay::engine::{OscSurface, Patchbay};
 #[cfg(feature = "serialization")]
