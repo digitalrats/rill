@@ -589,6 +589,10 @@ pub struct PatchbayControl {
 
 impl PatchbayControl {
     /// Create a new patchbay controller.
+    ///
+    /// Async methods (green threads, PortCombiner) require an active
+    /// tokio runtime and will panic otherwise. Synchronous methods
+    /// (servo, mapping, update) work without tokio.
     pub fn new(command_queue: ActorRef<SetParameter>) -> Self {
         Self {
             mappings: Vec::new(),
@@ -916,6 +920,60 @@ impl PatchbayControl {
         self.detach_sequencer();
     }
 
+    // ── Convenience aliases (forwarded from removed PatchbayEngine) ────
+
+    /// Add an automaton as a green thread with PortCombiner.
+    pub fn add_automaton<A: Automaton + 'static>(
+        &mut self,
+        id: &str,
+        automaton: A,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        self.add_automaton_task(id, automaton, interval, target, range, control, conflict);
+    }
+
+    /// Add an LFO as a green thread (async automaton + PortCombiner).
+    pub fn add_lfo_async(
+        &mut self,
+        id: &str,
+        frequency: f64,
+        amplitude: f64,
+        offset: f64,
+        waveform: LfoWaveform,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        self.add_lfo_task(
+            id, frequency, amplitude, offset, waveform, interval, target, range, control, conflict,
+        );
+    }
+
+    /// Add an envelope as a green thread (async automaton + PortCombiner).
+    pub fn add_envelope_async(
+        &mut self,
+        id: &str,
+        attack: f64,
+        decay: f64,
+        sustain: f64,
+        release: f64,
+        interval: Duration,
+        target: (NodeId, String),
+        range: (f64, f64),
+        control: ControlStrategy,
+        conflict: ConflictStrategy,
+    ) {
+        self.add_envelope_task(
+            id, attack, decay, sustain, release, interval, target, range, control, conflict,
+        );
+    }
+
     /// Handle an external event (MIDI/OSC).
     ///
     /// If a `PortCombiner` exists for the target port the event is routed
@@ -990,6 +1048,12 @@ impl PatchbayControl {
     /// Current internal time in seconds.
     pub fn current_time(&self) -> Time {
         self.time
+    }
+}
+
+impl Drop for PatchbayControl {
+    fn drop(&mut self) {
+        self.stop_all();
     }
 }
 

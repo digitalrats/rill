@@ -43,7 +43,6 @@ use rill_core::NodeId;
 use rill_core_actor::ActorRef;
 #[cfg(feature = "osc")]
 use rill_patchbay::control::{OscSurface, PatchbayControl};
-use rill_patchbay::engine::PatchbayEngine;
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
 
@@ -125,7 +124,7 @@ pub struct Runtime {
     graph_doc: Option<GraphDocument>,
 
     /// Control engine: automata, mappings, port combiners.
-    control: Option<PatchbayEngine>,
+    control: Option<PatchbayControl>,
 
     /// Shared PatchbayControl reference (for OSC surface dispatch).
     #[cfg(feature = "osc")]
@@ -194,27 +193,26 @@ impl Runtime {
     ///
     /// The `cmd_queue` is typically obtained from a built [`Graph`](rill_graph::Graph)
     /// via [`Graph::handle`](rill_graph::Graph::handle).
-    /// Creates/replaces the [`PatchbayEngine`] and updates the OSC surface.
+    /// Creates/replaces the [`PatchbayControl`] and updates the OSC surface.
     #[cfg(feature = "serialization")]
     pub fn load_patchbay(
         &mut self,
         doc: PatchbayDocument,
         cmd_queue: ActorRef<SetParameter>,
     ) -> Result<(), RuntimeError> {
-        let mut engine = PatchbayEngine::new(cmd_queue.clone());
+        let mut control = PatchbayControl::new(cmd_queue.clone());
         let registry = FunctionRegistry::builtin();
-        engine
-            .load_document(&doc, &registry)
-            .map_err(RuntimeError::Patchbay)?;
+        doc.apply_to_async(&mut control, &registry)
+            .map_err(|e| RuntimeError::Patchbay(e))?;
 
-        self.control = Some(engine);
+        self.control = Some(control);
 
         #[cfg(feature = "osc")]
         {
             self.osc_surface = doc.osc_surface.clone();
             let mut ctrl = PatchbayControl::new(cmd_queue);
             doc.apply_to(&mut ctrl, &registry)
-                .map_err(RuntimeError::Patchbay)?;
+                .map_err(|e| RuntimeError::Patchbay(e))?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
         }
 
@@ -281,8 +279,8 @@ impl Runtime {
             o.task.abort();
         }
 
-        if let Some(ref mut pe) = self.control {
-            pe.stop();
+        if let Some(ref mut ctrl) = self.control {
+            ctrl.stop_all();
         }
 
         log::info!("runtime stopped");

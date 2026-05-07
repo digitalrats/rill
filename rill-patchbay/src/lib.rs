@@ -82,9 +82,6 @@ pub mod port_combiner;
 /// Обёртка Automaton в green thread (tokio task)
 pub mod automaton_task;
 
-/// Референсный оркестратор — high-level API над green threads
-pub mod engine;
-
 /// Parameter-lock step sequencer
 pub mod sequencer;
 
@@ -114,7 +111,7 @@ pub use control::{
     NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, PatchbayControl, Servo, Target,
     Transform,
 };
-pub use engine::PatchbayEngine;
+
 pub use manager::PatchbayManager;
 pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
@@ -137,7 +134,6 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::automaton_task::*;
     pub use crate::control::*;
-    pub use crate::engine::*;
     pub use crate::manager::*;
     pub use crate::port_combiner::*;
     pub use crate::sequencer::*;
