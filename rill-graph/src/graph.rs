@@ -4,8 +4,6 @@ use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::time::ClockTick;
-#[cfg(test)]
-use rill_core::time::SystemClock;
 use rill_core::traits::active::GraphHandle;
 use rill_core::traits::port::Port;
 use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};

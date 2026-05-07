@@ -5,7 +5,7 @@
 
 use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant};
 use rill_graph::backend_factory::BackendFactory;
-use rill_graph::node_ctor;
+use rill_graph::{node_ctor, NodeFactory};
 use std::sync::Arc;
 
 #[cfg(feature = "io")]

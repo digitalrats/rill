@@ -240,7 +240,7 @@ macro_rules! node_ctor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend_factory::BackendFactory;
+
     use rill_core::time::ClockTick;
     use rill_core::traits::node::NodeState;
     use rill_core::traits::port::Port;

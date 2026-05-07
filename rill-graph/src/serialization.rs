@@ -18,7 +18,9 @@ use rill_core::math::Transcendental;
 use rill_core::traits::{Node, NodeId, NodeParams, NodeVariant, ParamValue};
 use rill_core::ParameterId;
 
-use crate::factory::{NodeFactory, RegistryError};
+#[cfg(test)]
+use crate::factory::NodeFactory;
+use crate::factory::RegistryError;
 use crate::graph::GraphBuilder;
 
 // Re-export serde unconditionally — the whole module is feature-gated.
@@ -524,6 +526,7 @@ pub fn from_cbor(bytes: &[u8]) -> Result<GraphDef, SerializationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_factory::BackendFactory;
     use crate::factory::NodeConstructor;
     use crate::graph::Graph;
     use rill_core::math::Transcendental;
