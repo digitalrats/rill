@@ -52,6 +52,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  │  │   traits    │  │   queues    │                  │    │
 │  │  │ (traits)    │  │  (queues)  │                  │    │
 │  │  └─────────────┘  └─────────────┘                  │    │
+│  │  rill-core-actor (ActorRef, ActorCell, ActorSystem) │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -203,6 +204,20 @@ Convenient re-export of the most commonly used types from all core modules. It i
 ```rust
 use rill_core::prelude::*;
 // Now available: Node, AudioNum, PipeBuffer, CommandQueue, Clock, etc.
+```
+
+### `rill-core-actor` ( actor model)
+
+Domain-agnostic actor model infrastructure for lock-free message passing. Provides `ActorRef<M>` (thread-safe message handle), `ActorCell` (message processing trait), `MessageDispatcher<M>` (actor ref + dead letters), and `ActorSystem<M>` (named mailbox registry with routing). Generic over any `M: Send + 'static` with no coupling to audio or signal processing.
+
+The mailbox (`Arc<MpscQueue<M>>`) is the hard RT boundary — `send()` is lock-free and safe from any thread, while `receive()` runs on the consumer's thread and inherits its RT constraints.
+
+```rust
+use rill_core_actor::ActorRef;
+
+let (ar, mbox) = ActorRef::<String>::new_pair();
+ar.send("hello".into());
+assert_eq!(mbox.pop(), Some("hello".into()));
 ```
 
 ## Infrastructure crates
@@ -472,6 +487,7 @@ Dependency diagram between crates (solid arrows — mandatory dependencies, dash
 ```mermaid
 graph TD
     CORE[rill-core] --> CORE_DSP[rill-core-dsp]
+    CORE --> CORE_ACTOR[rill-core-actor]
     CORE --> GRAPH[rill-graph]
     CORE_DSP --> OSC[rill-oscillators]
     CORE_DSP --> FILTERS[rill-digital-filters]
@@ -489,6 +505,7 @@ graph TD
     
     style CORE fill:#90ee90
     style CORE_DSP fill:#90ee90
+    style CORE_ACTOR fill:#90ee90
     style GRAPH fill:#90ee90
     style OSC fill:#90ee90
     style FILTERS fill:#90ee90
