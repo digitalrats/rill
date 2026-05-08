@@ -1,5 +1,5 @@
-use crate::OperationalAmplifier;
 use rill_core_wdf::tape::{PlaybackHead, RecordHead};
+use rill_core_wdf::OpAmp;
 
 /// Cassette deck model (Sony TC-260 style).
 ///
@@ -11,8 +11,8 @@ pub struct CassetteDeck {
     sample_rate: f64,
     record: RecordHead<f64>,
     playback: PlaybackHead<f64>,
-    input_amp: OperationalAmplifier,
-    output_amp: OperationalAmplifier,
+    input_amp: OpAmp<f64>,
+    output_amp: OpAmp<f64>,
 }
 
 impl CassetteDeck {
@@ -22,8 +22,8 @@ impl CassetteDeck {
             sample_rate,
             record: RecordHead::<f64>::new(sample_rate as f32),
             playback: PlaybackHead::<f64>::new(sample_rate as f32),
-            input_amp: OperationalAmplifier::new(10.0, 0.5, 1e6),
-            output_amp: OperationalAmplifier::new(5.0, 0.5, 1e6),
+            input_amp: OpAmp::<f64>::new(10.0, 0.5, 1e6),
+            output_amp: OpAmp::<f64>::new(5.0, 0.5, 1e6),
         }
     }
 

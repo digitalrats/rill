@@ -22,12 +22,14 @@ pub trait SimdWdfElement: Send + Sync {
 
     /// Get SIMD current vector
     fn current_simd(&self) -> Self::SimdType;
+
+    /// Reset internal state to zero
+    fn reset(&mut self);
 }
 
 /// SIMD-accelerated resistor
 #[derive(Debug, Clone)]
 pub struct SimdResistor {
-    #[allow(dead_code)]
     resistance: f64,
     port_resistance: F64x4,
     voltage: F64x4,
@@ -43,6 +45,17 @@ impl SimdResistor {
             voltage: F64x4::splat(0.0),
             current: F64x4::splat(0.0),
         }
+    }
+
+    /// Get resistance value in ohms
+    pub fn resistance(&self) -> f64 {
+        self.resistance
+    }
+
+    /// Set resistance and recompute port resistance
+    pub fn set_resistance(&mut self, resistance: f64) {
+        self.resistance = resistance;
+        self.port_resistance = F64x4::splat(resistance);
     }
 }
 
@@ -64,19 +77,20 @@ impl SimdWdfElement for SimdResistor {
     fn current_simd(&self) -> F64x4 {
         self.current
     }
+
+    fn reset(&mut self) {
+        self.voltage = F64x4::splat(0.0);
+        self.current = F64x4::splat(0.0);
+    }
 }
 
 /// SIMD-accelerated capacitor
 #[derive(Debug, Clone)]
 pub struct SimdCapacitor {
-    #[allow(dead_code)]
     capacitance: f64,
-    #[allow(dead_code)]
     sample_rate: f64,
     port_resistance: F64x4,
     state: F64x4,
-    #[allow(dead_code)]
-    dt: f64,
 }
 
 impl SimdCapacitor {
@@ -90,8 +104,31 @@ impl SimdCapacitor {
             sample_rate,
             port_resistance: F64x4::splat(port_resistance),
             state: F64x4::splat(0.0),
-            dt: t,
         }
+    }
+
+    /// Get capacitance value in farads
+    pub fn capacitance(&self) -> f64 {
+        self.capacitance
+    }
+
+    /// Get sample rate in Hz
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+
+    /// Set capacitance and recompute port resistance
+    pub fn set_capacitance(&mut self, capacitance: f64) {
+        self.capacitance = capacitance;
+        let t = 1.0 / self.sample_rate;
+        self.port_resistance = F64x4::splat(t / (2.0 * capacitance));
+    }
+
+    /// Set sample rate and recompute port resistance
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate;
+        let t = 1.0 / sample_rate;
+        self.port_resistance = F64x4::splat(t / (2.0 * self.capacitance));
     }
 }
 
@@ -114,16 +151,17 @@ impl SimdWdfElement for SimdCapacitor {
     fn current_simd(&self) -> F64x4 {
         -self.state / self.port_resistance
     }
+
+    fn reset(&mut self) {
+        self.state = F64x4::splat(0.0);
+    }
 }
 
 /// SIMD-accelerated diode with vectorized Newton-Raphson
 #[derive(Debug, Clone)]
 pub struct SimdDiode {
-    #[allow(dead_code)]
     saturation_current: f64,
-    #[allow(dead_code)]
     thermal_voltage: f64,
-    #[allow(dead_code)]
     ideality_factor: f64,
     port_resistance: F64x4,
     vt_simd: F64x4,
@@ -132,7 +170,11 @@ pub struct SimdDiode {
 }
 
 impl SimdDiode {
-    /// Create a new SIMD diode
+    /// Create a new SIMD diode with Shockley parameters
+    ///
+    /// * `saturation_current` - Reverse saturation current Is (amperes)
+    /// * `ideality_factor` - Ideality factor n (1–2)
+    /// * `temperature_k` - Temperature in Kelvin
     pub fn new(saturation_current: f64, ideality_factor: f64, temperature_k: f64) -> Self {
         let k = BOLTZMANN;
         let q = ELECTRON_CHARGE;
@@ -150,8 +192,31 @@ impl SimdDiode {
         }
     }
 
+    /// Get saturation current in amperes
+    pub fn saturation_current(&self) -> f64 {
+        self.saturation_current
+    }
+
+    /// Get thermal voltage in volts
+    pub fn thermal_voltage(&self) -> f64 {
+        self.thermal_voltage
+    }
+
+    /// Get ideality factor
+    pub fn ideality_factor(&self) -> f64 {
+        self.ideality_factor
+    }
+
+    /// Solve diode equation via Newton-Raphson with improved initial guess.
+    ///
+    /// For each lane independently: initial guess `v = vt * ln(1 + a / (r * Is))`
+    /// tracks the scalar `Diode::solve_newton` logic but operates on 4-wide SIMD.
     fn solve_newton_simd(&self, a: F64x4, r: F64x4) -> F64x4 {
-        let mut v = F64x4::splat(0.0);
+        // Improved initial guess: v ≈ vt * ln(1 + a / (r * Is))
+        // For small a → v ≈ a / (1 + r*Is/vt)
+        // For large a → v ≈ vt * ln(a / (r*Is))
+        let guess = self.vt_simd * (F64x4::splat(1.0) + a / (r * self.is_simd)).ln();
+        let mut v = guess.max(F64x4::splat(0.0));
 
         for _ in 0..10 {
             let i = self.is_simd * ((v / self.vt_simd).exp() - F64x4::splat(1.0));
@@ -170,6 +235,11 @@ impl SimdDiode {
 
         v
     }
+
+    /// Shockley diode equation: I = Is * (exp(V / (n*Vt)) - 1)
+    fn diode_equation_simd(&self, v: F64x4) -> F64x4 {
+        self.is_simd * ((v / self.vt_simd).exp() - F64x4::splat(1.0))
+    }
 }
 
 impl SimdWdfElement for SimdDiode {
@@ -177,12 +247,14 @@ impl SimdWdfElement for SimdDiode {
 
     fn process_incident_simd(&mut self, a: F64x4) -> F64x4 {
         let v = self.solve_newton_simd(a, self.port_resistance);
-        let _i = self.is_simd * ((v / self.vt_simd).exp() - F64x4::splat(1.0));
+        let _i = self.diode_equation_simd(v);
 
         F64x4::splat(2.0) * v - a
     }
 
-    fn update_state_simd(&mut self) {}
+    fn update_state_simd(&mut self) {
+        // Diode is memoryless — no state to update between samples
+    }
 
     fn voltage_simd(&self) -> F64x4 {
         F64x4::splat(0.0)
@@ -190,6 +262,10 @@ impl SimdWdfElement for SimdDiode {
 
     fn current_simd(&self) -> F64x4 {
         F64x4::splat(0.0)
+    }
+
+    fn reset(&mut self) {
+        // Diode has no internal state
     }
 }
 

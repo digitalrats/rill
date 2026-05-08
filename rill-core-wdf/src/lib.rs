@@ -49,7 +49,7 @@ pub mod simd;
 pub mod filters;
 
 pub use adapters::{ParallelAdapter, SeriesAdapter};
-pub use elements::{Capacitor, Diode, Inductor, Resistor};
+pub use elements::{Capacitor, Diode, Inductor, OpAmp, Resistor};
 
 /// Wave port type for WDF adapters
 #[derive(Debug, Clone, Copy, PartialEq)]

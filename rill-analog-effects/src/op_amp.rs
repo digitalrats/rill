@@ -1,3 +1,4 @@
+#[deprecated = "Use rill_core_wdf::OpAmp instead"]
 /// Model of an operational amplifier with slew-rate limiting,
 /// bandwidth roll-off, and voltage rail clamping.
 #[derive(Debug, Clone)]
