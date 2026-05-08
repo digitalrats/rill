@@ -79,6 +79,18 @@ pub trait Transcendental: Scalar {
     fn cos(self) -> Self;
     /// Compute the tangent (input in radians).
     fn tan(self) -> Self;
+
+    /// Compute the hyperbolic tangent.
+    fn tanh(self) -> Self {
+        let e2x = (self + self).exp();
+        (e2x - Self::ONE) / (e2x + Self::ONE)
+    }
+
+    /// Return the sign of the value: -1, 0, or 1.
+    fn signum(self) -> Self;
+
+    /// Generate a random value in the range [-1, 1].
+    fn random() -> Self;
 }
 
 // -----------------------------------------------------------------------------
@@ -157,7 +169,22 @@ impl Transcendental for f32 {
 
     #[inline(always)]
     fn tan(self) -> f32 {
-        self.tan()
+        f32::tan(self)
+    }
+
+    #[inline(always)]
+    fn tanh(self) -> f32 {
+        f32::tanh(self)
+    }
+
+    #[inline(always)]
+    fn signum(self) -> f32 {
+        f32::signum(self)
+    }
+
+    #[inline(always)]
+    fn random() -> f32 {
+        rand::random::<f32>() * 2.0 - 1.0
     }
 }
 
@@ -238,6 +265,21 @@ impl Transcendental for f64 {
     #[inline(always)]
     fn tan(self) -> f64 {
         self.tan()
+    }
+
+    #[inline(always)]
+    fn tanh(self) -> f64 {
+        self.tanh()
+    }
+
+    #[inline(always)]
+    fn signum(self) -> f64 {
+        self.signum()
+    }
+
+    #[inline(always)]
+    fn random() -> f64 {
+        rand::random::<f64>() * 2.0 - 1.0
     }
 }
 
