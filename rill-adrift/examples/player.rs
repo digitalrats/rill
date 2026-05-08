@@ -2,7 +2,13 @@
 //!
 //! Usage:
 //!   cargo run --example player --features "cpal,sampler,serialization"
+//!   cargo run --example player --features "cpal,sampler,serialization" -- [backend] [wav]
+//!   cargo run --example player --features "cpal,sampler,serialization" -- [wav]
 //!   cargo run --example player --features "dot,sampler,serialization" -- --dot
+//!
+//! Positional arguments (optional):
+//!   backend   Audio backend name (e.g. cpal, alsa, null). Default from config.toml.
+//!   wav       Path to a WAV file to play. Overrides the file in graph.json.
 //!
 //! --dot: export graph to DOT format and exit
 
@@ -45,10 +51,28 @@ fn build_graph(
     cfg: &AppConfig,
     crate_dir: &std::path::Path,
     backend_name: &str,
+    wav_override: Option<&str>,
 ) -> Result<rill_adrift::rill_graph::Graph<f32, BUF>, Box<dyn std::error::Error>> {
     let graph_path = crate_dir.join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
     let json = std::fs::read_to_string(&graph_path)?;
-    let def = registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
+    let mut def =
+        registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
+
+    if let Some(wav_path) = wav_override {
+        let resolved = if std::path::Path::new(wav_path).is_absolute() {
+            wav_path.to_string()
+        } else {
+            crate_dir.join(wav_path).to_string_lossy().to_string()
+        };
+        for node in &mut def.nodes {
+            if node.type_name == "rill/sampler" {
+                node.parameters.insert(
+                    "file".to_string(),
+                    rill_adrift::rill_core::traits::ParamValue::String(resolved.clone()),
+                );
+            }
+        }
+    }
 
     let rt = Runtime::<BUF>::new(RuntimeConfig {
         sample_rate: cfg.sample_rate,
@@ -74,10 +98,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let args: Vec<String> = std::env::args().collect();
+
+    // Parse optional positional arguments:
+    //   positional[0] = backend name OR wav file
+    //   positional[1] = wav file (when positional[0] is a backend name)
+    let positional: Vec<&String> = args
+        .iter()
+        .skip(1)
+        .filter(|a| !a.starts_with("--"))
+        .collect();
+
+    let (backend_arg, wav_arg): (Option<&str>, Option<&str>) = match positional.len() {
+        0 => (None, None),
+        1 => {
+            let v = positional[0].as_str();
+            if v.ends_with(".wav") || std::path::Path::new(v).is_file() {
+                (None, Some(v))
+            } else {
+                (Some(v), None)
+            }
+        }
+        _ => (Some(positional[0].as_str()), Some(positional[1].as_str())),
+    };
+
     if args.iter().any(|a| a == "--dot") {
         #[cfg(feature = "dot")]
         {
-            let graph = build_graph(&cfg, &crate_dir, "null")?;
+            let graph = build_graph(&cfg, &crate_dir, "null", wav_arg)?;
             let dot = rill_adrift::rill_graph::dot::to_dot(
                 &graph,
                 &rill_adrift::rill_graph::dot::DotConfig::default(),
@@ -89,10 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let backend_name = cfg
-        .backend
-        .as_ref()
-        .map(|b| b.name.clone())
+    let backend_name = backend_arg
+        .map(|s| s.to_string())
+        .or_else(|| cfg.backend.as_ref().map(|b| b.name.clone()))
         .unwrap_or_else(|| "null".into());
     let running = Arc::new(AtomicBool::new(true));
 
@@ -101,8 +147,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let running = running.clone();
         let crate_dir = crate_dir.to_path_buf();
         let backend_name = backend_name.clone();
+        let wav_file = wav_arg.map(|s| s.to_string());
         std::thread::spawn(move || {
-            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+            let graph = build_graph(&cfg, &crate_dir, &backend_name, wav_file.as_deref())
+                .expect("build_graph");
             graph.run(running).ok();
         })
     };
