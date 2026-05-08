@@ -453,8 +453,9 @@ impl IoBackend<f32> for PipewireBackend {
                     if out_channels == 0 {
                         while ibuf.len() >= block_samps {
                             unsafe {
-                            let sr = nrate_proc.load(std::sync::atomic::Ordering::Relaxed) as f32;
-                            process_cb.call(if sr > 0.0 { sr } else { sample_rate as f32 });
+                                let sr =
+                                    nrate_proc.load(std::sync::atomic::Ordering::Relaxed) as f32;
+                                process_cb.call(if sr > 0.0 { sr } else { sample_rate as f32 });
                             }
                         }
                     }

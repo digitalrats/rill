@@ -116,8 +116,7 @@ fn alsa_io_loop(
                 }
                 // Start playback after buffer has 2 processing blocks.
                 if let Ok(sw) = pcm.sw_params_current() {
-                    let _ =
-                        sw.set_start_threshold((period_frames * 2) as alsa::pcm::Frames);
+                    let _ = sw.set_start_threshold((period_frames * 2) as alsa::pcm::Frames);
                     let _ = pcm.sw_params(&sw);
                 }
                 Some(pcm)

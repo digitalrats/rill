@@ -168,11 +168,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend_name = "pipewire";
     #[cfg(all(feature = "jack", not(feature = "pipewire")))]
     let backend_name = "jack";
-    #[cfg(all(feature = "portaudio", not(any(feature = "pipewire", feature = "jack"))))]
-    let backend_name = "portaudio";
     #[cfg(all(
-        not(any(feature = "portaudio", feature = "pipewire", feature = "jack"))
+        feature = "portaudio",
+        not(any(feature = "pipewire", feature = "jack"))
     ))]
+    let backend_name = "portaudio";
+    #[cfg(all(not(any(feature = "portaudio", feature = "pipewire", feature = "jack"))))]
     let backend_name = "null";
 
     let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -247,8 +248,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Build graph
         let mut builder = rt.create_builder();
         def.populate(&mut builder)
-            .map_err(|e| format!("populate: {e}")).ok();
-        let graph = builder.build().map_err(|e| format!("graph build: {e}")).ok();
+            .map_err(|e| format!("populate: {e}"))
+            .ok();
+        let graph = builder
+            .build()
+            .map_err(|e| format!("graph build: {e}"))
+            .ok();
         if let Some(g) = graph {
             g.run(t_run).ok();
         }

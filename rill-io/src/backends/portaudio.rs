@@ -144,36 +144,35 @@ impl IoBackend<f32> for PortAudioBackend {
                 )
                 .map_err(|e| format!("PortAudio output settings: {e}"))?;
             let mut stream = pa
-                .open_non_blocking_stream(
-                    settings,
-                    {
-                        let oslot = oslot.clone();
-                        let process_cb = process_cb;
-                        let running = running.clone();
-                        move |args: pa::OutputStreamCallbackArgs<f32>| {
-                            if !running.load(Ordering::Acquire) {
-                                return pa::Complete;
-                            }
-                            let buffer = args.buffer;
-                            let total = buffer.len();
-                            let block = buf_frames * out_channels as usize;
-                            let mut temp_buf = vec![0.0f32; block];
-                            let mut off = 0usize;
-                            while off + block <= total {
-                                unsafe {
-                                    oslot.set(OutputWindow::new(temp_buf.as_mut_ptr(), block));
-                                    process_cb.call(sample_rate as f32);
-                                    oslot.clear();
-                                }
-                                buffer[off..off + block].copy_from_slice(&temp_buf);
-                                off += block;
-                            }
-                            pa::Continue
+                .open_non_blocking_stream(settings, {
+                    let oslot = oslot.clone();
+                    let process_cb = process_cb;
+                    let running = running.clone();
+                    move |args: pa::OutputStreamCallbackArgs<f32>| {
+                        if !running.load(Ordering::Acquire) {
+                            return pa::Complete;
                         }
-                    },
-                )
+                        let buffer = args.buffer;
+                        let total = buffer.len();
+                        let block = buf_frames * out_channels as usize;
+                        let mut temp_buf = vec![0.0f32; block];
+                        let mut off = 0usize;
+                        while off + block <= total {
+                            unsafe {
+                                oslot.set(OutputWindow::new(temp_buf.as_mut_ptr(), block));
+                                process_cb.call(sample_rate as f32);
+                                oslot.clear();
+                            }
+                            buffer[off..off + block].copy_from_slice(&temp_buf);
+                            off += block;
+                        }
+                        pa::Continue
+                    }
+                })
                 .map_err(|e| format!("PortAudio output stream: {e}"))?;
-            stream.start().map_err(|e| format!("PortAudio output start: {e}"))?;
+            stream
+                .start()
+                .map_err(|e| format!("PortAudio output start: {e}"))?;
             unsafe {
                 *self.out_stream.get() = Some(stream);
             }
@@ -189,26 +188,25 @@ impl IoBackend<f32> for PortAudioBackend {
                 )
                 .map_err(|e| format!("PortAudio input settings: {e}"))?;
             let mut stream = pa
-                .open_non_blocking_stream(
-                    settings,
-                    {
-                        let iring = iring.clone();
-                        let process_cb = process_cb;
-                        let has_output = out_channels > 0;
-                        let block_samps = buf_frames * in_channels as usize;
-                        move |args: pa::InputStreamCallbackArgs<f32>| {
-                            iring.write(args.buffer);
-                            if !has_output && iring.len() >= block_samps {
-                                unsafe {
-                                    process_cb.call(sample_rate as f32);
-                                }
+                .open_non_blocking_stream(settings, {
+                    let iring = iring.clone();
+                    let process_cb = process_cb;
+                    let has_output = out_channels > 0;
+                    let block_samps = buf_frames * in_channels as usize;
+                    move |args: pa::InputStreamCallbackArgs<f32>| {
+                        iring.write(args.buffer);
+                        if !has_output && iring.len() >= block_samps {
+                            unsafe {
+                                process_cb.call(sample_rate as f32);
                             }
-                            pa::Continue
                         }
-                    },
-                )
+                        pa::Continue
+                    }
+                })
                 .map_err(|e| format!("PortAudio input stream: {e}"))?;
-            stream.start().map_err(|e| format!("PortAudio input start: {e}"))?;
+            stream
+                .start()
+                .map_err(|e| format!("PortAudio input start: {e}"))?;
             unsafe {
                 *self.in_stream.get() = Some(stream);
             }
