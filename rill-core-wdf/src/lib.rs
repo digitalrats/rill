@@ -39,6 +39,8 @@ pub mod analysis;
 /// Physical constants and tolerances
 pub mod constants;
 mod elements;
+/// Analog tape recording and playback head models
+pub mod tape;
 
 #[cfg(feature = "simd")]
 pub mod simd;
