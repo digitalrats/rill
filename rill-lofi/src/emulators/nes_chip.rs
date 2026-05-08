@@ -4,8 +4,6 @@ struct NesPulseChannel {
     frequency: f32,
     volume: f32,
     phase: f32,
-    sweep_enabled: bool,
-    sweep_rate: f32,
     enabled: bool,
 }
 
@@ -65,8 +63,6 @@ impl NesChip {
                 frequency: 440.0,
                 volume: 0.5,
                 phase: 0.0,
-                sweep_enabled: false,
-                sweep_rate: 0.0,
                 enabled: true,
             },
             pulse2: NesPulseChannel {
@@ -74,8 +70,6 @@ impl NesChip {
                 frequency: 660.0,
                 volume: 0.3,
                 phase: 0.0,
-                sweep_enabled: false,
-                sweep_rate: 0.0,
                 enabled: true,
             },
             triangle: NesTriangleChannel {
