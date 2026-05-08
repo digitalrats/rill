@@ -7,6 +7,6 @@ mod cassette;
 mod nodes;
 mod op_amp;
 
-pub use cassette::CassetteDeckModel;
+pub use cassette::CassetteDeck;
 pub use nodes::CassetteDeckProcessor;
 pub use op_amp::OperationalAmplifier;

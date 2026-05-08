@@ -7,7 +7,7 @@ use rill_core_wdf::{Capacitor, Inductor, WdfElement};
 /// nonlinearity (saturation + hysteresis). Output is the magnetized signal
 /// ready to be stored on tape.
 #[derive(Debug, Clone)]
-pub struct RecordHeadModel {
+pub struct RecordHead {
     sample_rate: f64,
     input_amp: OperationalAmplifier,
     bias_oscillator: f64,
@@ -25,7 +25,7 @@ pub struct RecordHeadModel {
     tape_position: f64,
 }
 
-impl RecordHeadModel {
+impl RecordHead {
     pub fn new(sample_rate: f64) -> Self {
         Self {
             sample_rate,
@@ -78,7 +78,7 @@ impl RecordHeadModel {
 /// Applies wow & flutter, head differentiator, gap loss, playback EQ,
 /// print-through, tape noise, and output amplification.
 #[derive(Debug, Clone)]
-pub struct PlaybackHeadModel {
+pub struct PlaybackHead {
     sample_rate: f64,
     playback_head: Inductor<f64>,
     eq_filters: [Capacitor<f64>; 2],
@@ -101,7 +101,7 @@ pub struct PlaybackHeadModel {
     playback_head_state: f64,
 }
 
-impl PlaybackHeadModel {
+impl PlaybackHead {
     pub fn new(sample_rate: f64) -> Self {
         Self {
             sample_rate,
@@ -200,21 +200,21 @@ impl PlaybackHeadModel {
 
 /// Cassette deck model (Sony TC-260 style).
 ///
-/// Combines `RecordHeadModel` and `PlaybackHeadModel` for the full
+/// Combines `RecordHead` and `PlaybackHead` for the full
 /// record + playback chain. For tape delay applications, use the
 /// head models separately with `TapeLoop`.
 #[derive(Debug, Clone)]
-pub struct CassetteDeckModel {
-    record: RecordHeadModel,
-    playback: PlaybackHeadModel,
+pub struct CassetteDeck {
+    record: RecordHead,
+    playback: PlaybackHead,
 }
 
-impl CassetteDeckModel {
+impl CassetteDeck {
     /// Create a new cassette deck model at the given sample rate.
     pub fn new(sample_rate: f64) -> Self {
         Self {
-            record: RecordHeadModel::new(sample_rate),
-            playback: PlaybackHeadModel::new(sample_rate),
+            record: RecordHead::new(sample_rate),
+            playback: PlaybackHead::new(sample_rate),
         }
     }
 
@@ -235,31 +235,31 @@ impl CassetteDeckModel {
     }
 
     /// Access the record head model.
-    pub fn record_head(&self) -> &RecordHeadModel {
+    pub fn record_head(&self) -> &RecordHead {
         &self.record
     }
 
     /// Access the record head model mutably.
-    pub fn record_head_mut(&mut self) -> &mut RecordHeadModel {
+    pub fn record_head_mut(&mut self) -> &mut RecordHead {
         &mut self.record
     }
 
     /// Access the playback head model.
-    pub fn playback_head(&self) -> &PlaybackHeadModel {
+    pub fn playback_head(&self) -> &PlaybackHead {
         &self.playback
     }
 
     /// Access the playback head model mutably.
-    pub fn playback_head_mut(&mut self) -> &mut PlaybackHeadModel {
+    pub fn playback_head_mut(&mut self) -> &mut PlaybackHead {
         &mut self.playback
     }
 
-    /// Process recording step (delegates to `RecordHeadModel`).
+    /// Process recording step (delegates to `RecordHead`).
     pub fn process_record(&mut self, input: f64) -> f64 {
         self.record.process(input)
     }
 
-    /// Process playback step (delegates to `PlaybackHeadModel`).
+    /// Process playback step (delegates to `PlaybackHead`).
     pub fn process_playback(&mut self, recorded_signal: f64) -> f64 {
         self.playback.process(recorded_signal)
     }
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_cassette_deck_process() {
-        let mut deck = CassetteDeckModel::new(44100.0);
+        let mut deck = CassetteDeck::new(44100.0);
         let test_freq = 1000.0;
         let num_samples = 4410;
 
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_cassette_deck_set_params() {
-        let mut deck = CassetteDeckModel::new(44100.0);
+        let mut deck = CassetteDeck::new(44100.0);
         deck.set_tape_speed(9.52);
         deck.set_bias_level(0.9);
         assert!((deck.record.tape_speed - 9.52).abs() < 1e-10);
