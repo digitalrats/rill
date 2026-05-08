@@ -1,5 +1,48 @@
 # CHANGELOG
 
+## [0.5.0-beta.4] — 2026-05-08
+
+### ✨ New
+
+- **Chip emulator architecture** — unified model for vintage sound chips:
+  - `Ay38910Chip` + `Ay38910Backend` — AY-3-8910 / YM2149 (3 tone, noise, envelope)
+  - `NesChip` + `NesBackend` — NES 2A03 APU (2 pulse + sweep, triangle, noise, DPCM)
+  - `IoControl` trait in `rill-core::io` — uniform register write interface
+  - `LofiInput<T, BUF_SIZE>` — `Source` node wrapping any `IoBackend` with lofi processing
+
+- **WDF tape module** in `rill-core-wdf`:
+  - `RecordHead<T>`, `PlaybackHead<T>` — analog tape physics, `Algorithm<T>`
+  - `OpAmp<T>` — operational amplifier as `WdfElement<T>`
+  - `CassetteDeck` in `rill-analog-effects` refactored to use heads from `rill-core-wdf`
+
+- **`Transcendental` trait extended**: `tanh()`, `signum()`, `random()` — enables
+  stochastic modeling in generic WDF/dsp code
+
+- **NES 2A03 sweep unit** — full hardware sweep emulation (divider, direction, shift,
+  period underflow/overflow mute)
+
+### 🔧 Fixes
+
+- **`rill-lofi/dsp/noise`**: `Custom` noise floor fixed — dB-to-linear conversion
+  (`10^(dB/20)`) instead of naive `dB / 100`. Reduced AY-3-8910 noise from 48%
+  to ~0.4% of full scale
+- **`rill-lofi/ay38910`**: phase accumulators use `while` instead of `if` (fixes
+  missed LFSR steps at high frequencies); LFSR feedback operator precedence fixed
+- **`rill-io/cpal`**: partial output block no longer zero-filled (fixes clicks/pops
+  on block boundaries)
+- **`rill-adrift/chiptune`**: corrected mixer register values for AY-3-8910
+  (noise was always enabled on channel C)
+
+### 🧹 Removed
+
+- `Ay38910Emulator`, `NesEmulator` — replaced by `Chip` + `Backend` + `LofiInput`
+- `rill-analog-effects::OperationalAmplifier` — replaced by `rill_core_wdf::OpAmp`
+
+### 📖 Documentation
+
+- New guide: **Chip Emulators** (`docs/src/guides/chip-emulators.md`)
+- Spec + plan for IoBackend-based emulator architecture in `docs/superpowers/`
+
 ## [0.5.0-beta.3] — 2026-05-07
 
 ### ✨ New
