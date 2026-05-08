@@ -144,44 +144,48 @@ const BASS: &[Note] = &[
 struct ChiptuneSource<const N: usize> {
     regs: [u8; 16],
     mel_step: usize,
-    mel_ms: u64,
+    mel_ms: f64,
     bass_step: usize,
-    bass_ms: u64,
+    bass_ms: f64,
     snare: u64,
-    block_ms: u64,
+    sample_rate: f32,
     lofi: LofiInput<f32, N>,
 }
 
 impl<const N: usize> ChiptuneSource<N> {
     fn new() -> Self {
-        let block_ms = (N as f64 * 1000.0 / RATE as f64) as u64;
         let lofi_config = LofiConfig::for_system(ClassicSystem::Custom {
             bit_depth: 8,
             sample_rate: RATE,
             nonlinear: false,
             noise_floor: -48.0,
         });
-        let mut lofi = LofiInput::<f32, N>::new(lofi_config);
-        lofi.set_backend(Box::new(Ay38910Backend::new(1_750_000.0, RATE)));
         Self {
             regs: [0; 16],
             mel_step: 0,
-            mel_ms: 0,
+            mel_ms: 0.0,
             bass_step: 0,
-            bass_ms: 0,
+            bass_ms: 0.0,
             snare: 0,
-            block_ms,
-            lofi,
+            sample_rate: 0.0,
+            lofi: LofiInput::<f32, N>::new(lofi_config),
         }
     }
 
-    fn step(&mut self) {
-        let ms = self.block_ms.max(1);
+    fn step(&mut self, sr: f32) {
+        // Lazy backend init with actual sample rate
+        if self.sample_rate != sr {
+            self.sample_rate = sr;
+            self.lofi.init(sr);
+            self.lofi
+                .set_backend(Box::new(Ay38910Backend::new(1_750_000.0, sr)));
+        }
+        let ms = N as f64 * 1000.0 / sr as f64;
 
         // Channel A — Melody
         self.mel_ms += ms;
-        if self.mel_ms >= MELODY[self.mel_step].dur_ms {
-            self.mel_ms -= MELODY[self.mel_step].dur_ms;
+        if self.mel_ms >= MELODY[self.mel_step].dur_ms as f64 {
+            self.mel_ms -= MELODY[self.mel_step].dur_ms as f64;
             self.mel_step = (self.mel_step + 1) % MELODY.len();
         }
         let tp = note_to_divider(MELODY[self.mel_step].freq);
@@ -195,8 +199,8 @@ impl<const N: usize> ChiptuneSource<N> {
 
         // Channel B — Bass
         self.bass_ms += ms;
-        if self.bass_ms >= BASS[self.bass_step].dur_ms {
-            self.bass_ms -= BASS[self.bass_step].dur_ms;
+        if self.bass_ms >= BASS[self.bass_step].dur_ms as f64 {
+            self.bass_ms -= BASS[self.bass_step].dur_ms as f64;
             self.bass_step = (self.bass_step + 1) % BASS.len();
         }
         let bp = note_to_divider(BASS[self.bass_step].freq);
@@ -209,7 +213,7 @@ impl<const N: usize> ChiptuneSource<N> {
         };
 
         // Channel C — Snare on beat
-        let snare_on = (self.mel_step % 4) == 0 && self.mel_ms < 60;
+        let snare_on = (self.mel_step % 4) == 0 && self.mel_ms < 60.0;
         if snare_on && self.snare == 0 {
             self.snare = 4;
         }
@@ -293,14 +297,14 @@ impl<const N: usize> Source<f32, N> for ChiptuneSource<N> {
         ctrl: &[f32],
         clk: &[rill_core::ClockTick],
     ) -> ProcessResult<()> {
-        self.step();
+        self.step(clock.sample_rate);
         self.lofi.generate(clock, ctrl, clk)
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let backend_name = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
+    let backend_name = args.get(1).cloned().unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
 
     let running = Arc::new(AtomicBool::new(true));

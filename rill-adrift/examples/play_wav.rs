@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run --example play_wav -- [backend] [wav_path]
 //!
-//! Backend: "cpal" (default), "alsa", "pipewire", "jack", "null"
+//! Backend: "portaudio" (default), "alsa", "pipewire", "jack", "null"
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,7 +19,7 @@ const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let backend_name = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
+    let backend_name = args.get(1).cloned().unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
     let wav_path = {
         let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

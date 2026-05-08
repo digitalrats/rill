@@ -168,97 +168,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend_name = "pipewire";
     #[cfg(all(feature = "jack", not(feature = "pipewire")))]
     let backend_name = "jack";
-    #[cfg(all(feature = "cpal", not(any(feature = "pipewire", feature = "jack"))))]
-    let backend_name = "cpal";
+    #[cfg(all(feature = "portaudio", not(any(feature = "pipewire", feature = "jack"))))]
+    let backend_name = "portaudio";
     #[cfg(all(
-        feature = "alsa",
-        not(any(feature = "pipewire", feature = "jack", feature = "cpal"))
+        not(any(feature = "portaudio", feature = "pipewire", feature = "jack"))
     ))]
-    let backend_name = "alsa";
-    #[cfg(not(any(
-        feature = "pipewire",
-        feature = "jack",
-        feature = "cpal",
-        feature = "alsa"
-    )))]
     let backend_name = "null";
 
     let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
 
-    // Runtime — owns factories
-    let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
-
-    // Configure default backend
-    let mut p = std::collections::HashMap::new();
-    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
-    p.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-    p.insert("channels".into(), ParamValue::Int(2));
-    rt.set_default_backend(backend_name, p);
-
-    // Register custom node
-    let rec = recorded.clone();
-    rt.register_node_fn("rill/record_sink", move |id: NodeId, params: &Params| {
-        let mut sink = RecordingSink::new(rec.clone());
-        Node::set_id(&mut sink, id);
-        Node::init(&mut sink, params.sample_rate);
-        NodeVariant::Sink(Box::new(sink))
-    });
-
-    // Graph topology via GraphDef
-    let def = GraphDef {
-        format_version: "rill/1".to_string(),
-        sample_rate: RATE,
-        block_size: BUF,
-        resources: vec![],
-        nodes: vec![
-            NodeDef {
-                id: 0,
-                type_name: "rill/input".into(),
-                name: "mic".into(),
-                parameters: [(
-                    "channels".into(),
-                    rill_adrift::rill_core::ParamValue::Float(2.0),
-                )]
-                .into(),
-            },
-            NodeDef {
-                id: 1,
-                type_name: "rill/record_sink".into(),
-                name: "recorder".into(),
-                parameters: [].into(),
-            },
-        ],
-        connections: vec![
-            ConnectionDef {
-                kind: SignalKind::Signal,
-                from_node: 0,
-                from_port: 0,
-                to_node: 1,
-                to_port: 0,
-            },
-            ConnectionDef {
-                kind: SignalKind::Signal,
-                from_node: 0,
-                from_port: 0,
-                to_node: 1,
-                to_port: 1,
-            },
-        ],
-        description: None,
-    };
-
-    // Build graph
-    let mut builder = rt.create_builder();
-    def.populate(&mut builder)
-        .map_err(|e| format!("populate: {e}"))?;
-    let graph = builder.build().map_err(|e| format!("graph build: {e}"))?;
-    let _actor_ref = graph.handle();
-
     // Start
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
+    let rec = recorded.clone();
     let audio_thread = std::thread::spawn(move || {
-        graph.run(t_run).ok();
+        // Runtime — owns factories
+        let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
+
+        // Configure default backend
+        let mut p = std::collections::HashMap::new();
+        p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
+        p.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+        p.insert("channels".into(), ParamValue::Int(2));
+        rt.set_default_backend(backend_name, p);
+
+        // Register custom node
+        let rec2 = rec.clone();
+        rt.register_node_fn("rill/record_sink", move |id: NodeId, params: &Params| {
+            let mut sink = RecordingSink::new(rec2.clone());
+            Node::set_id(&mut sink, id);
+            Node::init(&mut sink, params.sample_rate);
+            NodeVariant::Sink(Box::new(sink))
+        });
+
+        // Graph topology via GraphDef
+        let def = GraphDef {
+            format_version: "rill/1".to_string(),
+            sample_rate: RATE,
+            block_size: BUF,
+            resources: vec![],
+            nodes: vec![
+                NodeDef {
+                    id: 0,
+                    type_name: "rill/input".into(),
+                    name: "mic".into(),
+                    parameters: [(
+                        "channels".into(),
+                        rill_adrift::rill_core::ParamValue::Float(2.0),
+                    )]
+                    .into(),
+                },
+                NodeDef {
+                    id: 1,
+                    type_name: "rill/record_sink".into(),
+                    name: "recorder".into(),
+                    parameters: [].into(),
+                },
+            ],
+            connections: vec![
+                ConnectionDef {
+                    kind: SignalKind::Signal,
+                    from_node: 0,
+                    from_port: 0,
+                    to_node: 1,
+                    to_port: 0,
+                },
+                ConnectionDef {
+                    kind: SignalKind::Signal,
+                    from_node: 0,
+                    from_port: 0,
+                    to_node: 1,
+                    to_port: 1,
+                },
+            ],
+            description: None,
+        };
+
+        // Build graph
+        let mut builder = rt.create_builder();
+        def.populate(&mut builder)
+            .map_err(|e| format!("populate: {e}")).ok();
+        let graph = builder.build().map_err(|e| format!("graph build: {e}")).ok();
+        if let Some(g) = graph {
+            g.run(t_run).ok();
+        }
     });
 
     println!("▶ Recording... Press Enter to stop.");

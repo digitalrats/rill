@@ -88,7 +88,7 @@ let osc = builder.add_source(
 | `sampler` | `rill-sampler` | yes |
 | `analog` | WDF + analog filters + effects | no |
 | `serialization` | Graph/patchbay JSON/CBOR | no |
-| `alsa` / `cpal` / `jack` / `pipewire` | Audio backends (implies `io`) | no |
+| `alsa` / `portaudio` / `jack` / `pipewire` | Audio backends (implies `io`) | no |
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
 `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,

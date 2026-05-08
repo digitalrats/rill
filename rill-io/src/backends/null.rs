@@ -10,23 +10,21 @@ use rill_core::io::IoBackend;
 
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
-unsafe impl Send for CbSlot {}
-unsafe impl Sync for CbSlot {}
 
 impl CbSlot {
     fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
     }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) {
-        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
+        (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
     }
-    unsafe fn call(&self) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
-            cb();
+    unsafe fn call(&self, sr: f32) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn(f32)>>) {
+            cb(sr);
         }
     }
     unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn(f32)>>));
     }
 }
 
@@ -107,7 +105,7 @@ impl AudioBackend for NullBackend {
 }
 
 impl IoBackend<f32> for NullBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn()>) {
+    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
         unsafe {
             self.cb.set(cb);
         }
@@ -124,7 +122,7 @@ impl IoBackend<f32> for NullBackend {
     }
     fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
         unsafe {
-            self.cb.call();
+            self.cb.call(self.config.sample_rate as f32);
         }
         Ok(())
     }

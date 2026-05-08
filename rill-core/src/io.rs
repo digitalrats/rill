@@ -10,7 +10,7 @@ pub type IoResult<T> = Result<T, String>;
 
 /// Control interface for backends that accept operational data
 /// separate from the audio stream (e.g. chip register writes).
-pub trait IoControl: Send + Sync {
+pub trait IoControl {
     /// Write control data. Interpretation is device-specific.
     fn write_data(&self, data: &[u8]) -> usize;
 }
@@ -23,9 +23,11 @@ pub trait IoControl: Send + Sync {
 ///      poll‑driven backends (ALSA, PipeWire) or returns immediately for
 ///      callback‑driven ones (JACK, CPAL).  Checks `running` to know when to exit.
 ///   3. `stop()` — signals shutdown; tears down resources.
-pub trait IoBackend<T: Scalar>: Send + Sync {
+pub trait IoBackend<T: Scalar> {
     /// Register the process callback that the backend calls each block.
-    fn set_process_callback(&self, cb: Box<dyn Fn()>);
+    ///
+    /// The callback receives the actual negotiated sample rate as `f32`.
+    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>);
     /// Read audio data from the backend into the provided channel slices.
     ///
     /// Returns the number of frames read.
@@ -64,7 +66,7 @@ mod tests {
     }
 
     impl IoBackend<f32> for TestBackend {
-        fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+        fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
         fn read(&self, _: &mut [&mut [f32]]) -> usize {
             0
         }
@@ -105,7 +107,7 @@ mod tests {
     fn test_iocontrol_default_returns_none() {
         struct NoControl;
         impl IoBackend<f32> for NoControl {
-            fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+            fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
             fn read(&self, _: &mut [&mut [f32]]) -> usize {
                 0
             }

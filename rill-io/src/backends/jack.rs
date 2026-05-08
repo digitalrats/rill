@@ -23,23 +23,21 @@ use rill_core::io::IoBackend;
 /// Callback slot.
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
-unsafe impl Send for CbSlot {}
-unsafe impl Sync for CbSlot {}
 
 impl CbSlot {
     fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
     }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) {
-        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
+        (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
     }
-    unsafe fn call(&self) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
-            cb();
+    unsafe fn call(&self, sr: f32) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn(f32)>>) {
+            cb(sr);
         }
     }
     unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn(f32)>>));
     }
 }
 
@@ -55,9 +53,6 @@ pub struct JackBackend {
     /// Set once in `run()` (audio thread), taken once in `stop()` (control thread).
     active_client: UnsafeCell<Option<jack::AsyncClient<(), JackProcessHandler>>>,
 }
-
-unsafe impl Send for JackBackend {}
-unsafe impl Sync for JackBackend {}
 
 impl fmt::Debug for JackBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -134,6 +129,7 @@ impl JackBackend {
         let in_port_names: Vec<_> = in_ports.iter().filter_map(|p| p.name().ok()).collect();
 
         let in_ch = self.config.input_channels.max(1) as usize;
+        let sample_rate = client.sample_rate() as f32;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
             out_port,
@@ -141,6 +137,7 @@ impl JackBackend {
             in_ch,
             output_slot: self.output_slot.clone(),
             input_ring: self.input_ring.clone(),
+            sample_rate,
         };
 
         let active_client = client
@@ -179,6 +176,7 @@ struct JackProcessHandler {
     in_ch: usize,
     output_slot: OutputSlot,
     input_ring: Arc<IoRingBuffer>,
+    sample_rate: f32,
 }
 
 impl ProcessHandler for JackProcessHandler {
@@ -213,7 +211,7 @@ impl ProcessHandler for JackProcessHandler {
                 unsafe {
                     self.output_slot
                         .set(OutputWindow::new(buf.as_mut_ptr().add(off), chunk));
-                    self.process_cb.call();
+                    self.process_cb.call(self.sample_rate);
                     self.output_slot.clear();
                 }
                 off += chunk;
@@ -226,7 +224,7 @@ impl ProcessHandler for JackProcessHandler {
             let chunk_samps = 256 * self.in_ch;
             while self.input_ring.len() >= chunk_samps {
                 unsafe {
-                    self.process_cb.call();
+                    self.process_cb.call(self.sample_rate);
                 }
             }
         }
@@ -240,7 +238,7 @@ impl ProcessHandler for JackProcessHandler {
 // ============================================================================
 
 impl IoBackend<f32> for JackBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn()>) {
+    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
         unsafe {
             self.process_cb.set(cb);
         }

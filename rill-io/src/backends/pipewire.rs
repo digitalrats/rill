@@ -31,23 +31,21 @@ const MAX_BLOCK_SAMPLES: usize = 8192;
 /// Callback slot.
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
-unsafe impl Send for CbSlot {}
-unsafe impl Sync for CbSlot {}
 
 impl CbSlot {
     fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
     }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) {
-        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
+        (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
     }
-    unsafe fn call(&self) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
-            cb();
+    unsafe fn call(&self, sr: f32) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn(f32)>>) {
+            cb(sr);
         }
     }
     unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn(f32)>>));
     }
 }
 
@@ -124,7 +122,7 @@ impl PipewireBackend {
 // ============================================================================
 
 impl IoBackend<f32> for PipewireBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn()>) {
+    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
         unsafe {
             self.process_cb.set(cb);
         }
@@ -171,19 +169,20 @@ impl IoBackend<f32> for PipewireBackend {
     }
 
     fn write(&self, channels: &[&[f32]]) -> usize {
-        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
+        let nch = channels.len();
+        if nch == 0 {
+            return 0;
+        }
+        let frames = channels[0].len();
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity().min(frames * 2);
+            let cap = win.capacity().min(frames * nch);
             let dst = win.as_mut_slice();
-            for i in 0..(cap / 2) {
-                if let Some(ch) = channels.first() {
-                    dst[i * 2] = ch[i];
-                }
-                if let Some(ch) = channels.get(1) {
-                    dst[i * 2 + 1] = ch[i];
+            for i in 0..frames {
+                for ch in 0..nch {
+                    dst[i * nch + ch] = channels[ch][i];
                 }
             }
-            cap / 2
+            cap / nch
         } else {
             0
         }
@@ -219,6 +218,9 @@ impl IoBackend<f32> for PipewireBackend {
 
         if out_channels > 0 {
             let out_chan = out_channels;
+            let buf_frames = self.config.buffer_size as usize;
+            let chunk_frames = buf_frames;
+            let chunk_bytes = chunk_frames * out_chan as usize * 4;
             let out_node = out_device.as_deref().unwrap_or("rill-output");
             let out_desc = format!("Rill Audio Output ({out_node})");
             let mut out_props = properties! {
@@ -236,6 +238,7 @@ impl IoBackend<f32> for PipewireBackend {
 
             let out_running = running.clone();
             let out_ml = ml.clone();
+            let out_sr = sample_rate;
             let listener = stream
                 .add_local_listener_with_user_data(())
                 .process(move |s, _| {
@@ -256,15 +259,17 @@ impl IoBackend<f32> for PipewireBackend {
                         Some(s) => s,
                         None => return,
                     };
-                    let stride = out_channels as usize * 4;
+                    let stride = out_chan as usize * 4;
                     let n_frames = slice.len() / stride;
-                    let chunk_bytes = 512 * 4;
                     let mut offset = 0usize;
                     while offset + chunk_bytes <= slice.len() {
                         let chunk = &mut slice[offset..offset + chunk_bytes];
                         unsafe {
-                            oslot.set(OutputWindow::new(chunk.as_mut_ptr() as *mut f32, 512));
-                            process_cb.call();
+                            oslot.set(OutputWindow::new(
+                                chunk.as_mut_ptr() as *mut f32,
+                                chunk_frames * out_chan as usize,
+                            ));
+                            process_cb.call(out_sr as f32);
                             oslot.clear();
                         }
                         offset += chunk_bytes;
@@ -376,7 +381,7 @@ impl IoBackend<f32> for PipewireBackend {
             let nch_fmt = self.negotiated_input_channels.clone();
             let nrate_fmt = self.negotiated_input_rate.clone();
             let nch_proc = self.negotiated_input_channels.clone();
-            let _nrate_proc = self.negotiated_input_rate.clone();
+            let nrate_proc = self.negotiated_input_rate.clone();
 
             let listener = in_st
                 .add_local_listener_with_user_data(())
@@ -448,7 +453,8 @@ impl IoBackend<f32> for PipewireBackend {
                     if out_channels == 0 {
                         while ibuf.len() >= block_samps {
                             unsafe {
-                                process_cb.call();
+                            let sr = nrate_proc.load(std::sync::atomic::Ordering::Relaxed) as f32;
+                            process_cb.call(if sr > 0.0 { sr } else { sample_rate as f32 });
                             }
                         }
                     }

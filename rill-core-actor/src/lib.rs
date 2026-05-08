@@ -113,7 +113,7 @@ use rill_core::queues::MpscQueue;
 ///     }
 /// }
 /// ```
-pub trait ActorCell: Send + 'static {
+pub trait ActorCell: 'static {
     /// The message type this actor can process.
     type Msg: Send + 'static;
 

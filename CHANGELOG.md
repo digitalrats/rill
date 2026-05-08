@@ -23,18 +23,33 @@
 
 ### 🔧 Fixes
 
-- **`rill-lofi/dsp/noise`**: `Custom` noise floor fixed — dB-to-linear conversion
-  (`10^(dB/20)`) instead of naive `dB / 100`. Reduced AY-3-8910 noise from 48%
-  to ~0.4% of full scale
-- **`rill-lofi/ay38910`**: phase accumulators use `while` instead of `if` (fixes
-  missed LFSR steps at high frequencies); LFSR feedback operator precedence fixed
-- **`rill-io/cpal`**: partial output block no longer zero-filled (fixes clicks/pops
-  on block boundaries)
-- **`rill-adrift/chiptune`**: corrected mixer register values for AY-3-8910
-  (noise was always enabled on channel C)
+- **`rill-io`**: `set_process_callback` signature changed from `Fn()` to `Fn(f32)` —
+  each backend passes its actual negotiated sample rate to the process callback.
+  `ClockTick.sample_rate` now always reflects the true device rate.
+- **`rill-io/jack`**: reads `client.sample_rate()` after activation, passes to callback.
+- **`rill-io/alsa`**: queries `hw.get_rate()` after `set_rate(Nearest)`, enforces
+  exact period match (`hw.get_period_size() == BUF_SIZE`), rejects mismatches.
+  Fixed `write()` — was hardcoded for stereo, now handles N channels with proper interleaving.
+- **`rill-io/pipewire`**: output chunk no longer hardcoded to 512 samples — uses
+  `buf_frames * out_channels` for correct mono timing. `write()` fixed for N channels.
+- **`rill-lofi/emulators`**: removed `unsafe impl Send/Sync` — backends run exclusively
+  in the hard-RT audio thread.
+- **`rill-core/io`**: `IoBackend` and `IoControl` traits no longer require `Send + Sync`.
+- **`rill-core-actor`**: `ActorCell` no longer requires `Send`.
+- **`rill-adrift/chiptune`**: `step()` uses `f64` timing (no millisecond quantization),
+  `Ay38910Backend` lazily created with actual sample rate, `lofi.init(sr)` called
+  for correct processor configuration.
+- **`rill-adrift/record_mic`**: graph built inside audio thread spawn (no `Send` needed).
+
+### ✨ New
+
+- **`rill-io/portaudio`** — cross-platform PortAudio backend (`portaudio` feature).
+  Exact buffer size, no `BufferSize::Default` issues, simpler API.
+  Default backend replacing CPAL.
 
 ### 🧹 Removed
 
+- **`rill-io/cpal`** — replaced by `rill-io/portaudio` (cross-platform, cleaner API)
 - `Ay38910Emulator`, `NesEmulator` — replaced by `Chip` + `Backend` + `LofiInput`
 - `rill-analog-effects::OperationalAmplifier` — replaced by `rill_core_wdf::OpAmp`
 
