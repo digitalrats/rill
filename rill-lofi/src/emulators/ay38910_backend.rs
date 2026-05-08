@@ -17,6 +17,7 @@ pub struct Ay38910Backend {
 }
 
 impl Ay38910Backend {
+    /// Create a new AY-3-8910 backend with the given chip clock and sample rate.
     pub fn new(chip_clock: f32, sample_rate: f32) -> Self {
         Self {
             chip: std::cell::UnsafeCell::new(Ay38910Chip::new(chip_clock)),

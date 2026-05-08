@@ -18,6 +18,7 @@ pub struct NesBackend {
 }
 
 impl NesBackend {
+    /// Create a new NES 2A03 backend with the given output sample rate.
     pub fn new(sample_rate: f32) -> Self {
         Self {
             chip: std::cell::UnsafeCell::new(NesChip::new()),

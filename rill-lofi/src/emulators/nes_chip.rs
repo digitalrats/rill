@@ -333,6 +333,7 @@ impl NesChip {
         (pulse_mix * 0.5 + tnd_mix * 0.5) * 0.5
     }
 
+    /// Reset all channels and sweep units to initial state.
     pub fn reset(&mut self) {
         self.pulse1.phase = 0.0;
         self.pulse2.phase = 0.0;

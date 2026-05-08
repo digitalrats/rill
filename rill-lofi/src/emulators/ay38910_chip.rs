@@ -1,5 +1,5 @@
 #[derive(Clone)]
-struct AyChannel {
+pub(crate) struct AyChannel {
     tone_period: u16,
     volume: u8,
     phase: f32,
@@ -7,7 +7,7 @@ struct AyChannel {
 }
 
 #[derive(Clone)]
-struct AyNoise {
+pub(crate) struct AyNoise {
     period: u8,
     shift_register: u32,
     output: bool,
@@ -15,7 +15,7 @@ struct AyNoise {
 }
 
 #[derive(Clone)]
-struct AyEnvelope {
+pub(crate) struct AyEnvelope {
     period: u16,
     mode: u8,
     phase: f32,
@@ -24,7 +24,7 @@ struct AyEnvelope {
 }
 
 #[derive(Clone)]
-struct AyMixer {
+pub(crate) struct AyMixer {
     channel_modes: [u8; 3],
     io_a_enabled: bool,
     io_b_enabled: bool,
@@ -45,6 +45,7 @@ pub struct Ay38910Chip {
 }
 
 impl Ay38910Chip {
+    /// Create a new AY-3-8910 chip with the given master clock frequency.
     pub fn new(chip_clock: f32) -> Self {
         Self {
             channels: [
@@ -91,6 +92,7 @@ impl Ay38910Chip {
         }
     }
 
+    /// Write a value to one of the 16 chip registers.
     pub fn write_register(&mut self, reg: usize, value: u8) {
         if reg < 16 {
             self.registers[reg] = value;
@@ -98,6 +100,7 @@ impl Ay38910Chip {
         }
     }
 
+    /// Read the current value of a chip register. Returns 0 for out-of-range.
     pub fn read_register(&self, reg: usize) -> u8 {
         if reg < 16 {
             self.registers[reg]
@@ -106,6 +109,7 @@ impl Ay38910Chip {
         }
     }
 
+    /// Generate one audio sample at the given output sample rate.
     pub fn generate_sample(&mut self, sample_rate: f32) -> f32 {
         if self.registers_dirty {
             self.update_from_registers();
@@ -155,6 +159,7 @@ impl Ay38910Chip {
         (channel_samples[0] + channel_samples[1] + channel_samples[2]) / 3.0
     }
 
+    /// Reset chip registers and internal state to power-on defaults.
     pub fn reset(&mut self) {
         self.registers = [0; 16];
         self.registers_dirty = true;
