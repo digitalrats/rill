@@ -1,5 +1,5 @@
 #[derive(Clone)]
-pub(crate) struct AyChannel {
+struct AyChannel {
     tone_period: u16,
     volume: u8,
     phase: f32,
@@ -7,7 +7,7 @@ pub(crate) struct AyChannel {
 }
 
 #[derive(Clone)]
-pub(crate) struct AyNoise {
+struct AyNoise {
     period: u8,
     shift_register: u32,
     output: bool,
@@ -15,7 +15,7 @@ pub(crate) struct AyNoise {
 }
 
 #[derive(Clone)]
-pub(crate) struct AyEnvelope {
+struct AyEnvelope {
     period: u16,
     mode: u8,
     phase: f32,
@@ -24,7 +24,7 @@ pub(crate) struct AyEnvelope {
 }
 
 #[derive(Clone)]
-pub(crate) struct AyMixer {
+struct AyMixer {
     channel_modes: [u8; 3],
     io_a_enabled: bool,
     io_b_enabled: bool,
@@ -35,10 +35,10 @@ pub(crate) struct AyMixer {
 /// No graph node, no lofi processing, no I/O backend.
 /// Directly testable. `sample_rate` is passed to `generate_sample`.
 pub struct Ay38910Chip {
-    pub(crate) channels: [AyChannel; 3],
-    pub(crate) noise: AyNoise,
-    pub(crate) envelope: AyEnvelope,
-    pub(crate) mixer: AyMixer,
+    channels: [AyChannel; 3],
+    noise: AyNoise,
+    envelope: AyEnvelope,
+    mixer: AyMixer,
     pub(crate) chip_clock: f32,
     pub(crate) registers: [u8; 16],
     pub(crate) registers_dirty: bool,
