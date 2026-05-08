@@ -184,9 +184,22 @@ impl IoBackend<f32> for CpalBackend {
                             }
                             written += block;
                         }
-                        data[..written].copy_from_slice(&temp_buf[..written]);
-                        if written < total {
-                            data[written..].fill(0.0);
+                        // Process partial remaining block instead of zero-filling
+                        let remaining = total - written;
+                        if remaining > 0 {
+                            unsafe {
+                                oslot.set(OutputWindow::new(
+                                    temp_buf.as_mut_ptr().add(written),
+                                    block,
+                                ));
+                                process_cb.call();
+                                oslot.clear();
+                            }
+                            let to_copy = remaining.min(block);
+                            data[written..written + to_copy]
+                                .copy_from_slice(&temp_buf[written..written + to_copy]);
+                        } else {
+                            data[..written].copy_from_slice(&temp_buf[..written]);
                         }
                     },
                     {
