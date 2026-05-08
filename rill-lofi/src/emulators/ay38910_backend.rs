@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use rill_core::io::{IoBackend, IoControl, IoResult};
-use rill_core::math::Scalar;
 
 use super::ay38910_chip::Ay38910Chip;
 
