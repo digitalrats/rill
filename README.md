@@ -5,7 +5,7 @@
 [![version](https://img.shields.io/badge/version-0.5.0--beta.3-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
-Modular signal-processing ecosystem for Rust. 17 crates, from lock-free
+Modular signal-processing ecosystem for Rust. 18 crates, from lock-free
 queues and generic vector math to real-time audio I/O and analog circuit
 modelling.
 
@@ -22,6 +22,7 @@ modelling.
 │  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)   │
+│  rill-core-actor  (ActorRef, ActorCell, ActorSystem)       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,6 +59,7 @@ let osc = builder.add_source(
 | Crate | Description |
 |-------|-------------|
 | **rill-core** | Foundation: traits, math, buffers, queues, time, macros |
+| **rill-core-actor** | Actor model: ActorRef, ActorCell, ActorSystem for lock-free message passing |
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
 | **rill-core-wdf** | Wave Digital Filter elements and adapters |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
@@ -88,14 +90,16 @@ let osc = builder.add_source(
 | `serialization` | Graph/patchbay JSON/CBOR | no |
 | `alsa` / `cpal` / `jack` / `pipewire` | Audio backends (implies `io`) | no |
 
-Always-on: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-oscillators`,
-`rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-patchbay`.
+Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
+`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,
+`rill-router`, `rill-patchbay`.
 
 ## Dependencies
 
 ```mermaid
 graph TD
     CORE[rill-core] --> CORE_DSP[rill-core-dsp]
+    CORE --> CORE_ACTOR[rill-core-actor]
     CORE --> GRAPH[rill-graph]
     CORE_DSP --> OSC[rill-oscillators]
     CORE_DSP --> FILTERS[rill-digital-filters]
@@ -129,7 +133,7 @@ cargo fmt                 # format (max_width=100)
 
 ## Publications
 
-All 17 crates publish to [crates.io](https://crates.io) in dependency order.
+All 18 crates publish to [crates.io](https://crates.io) in dependency order.
 Use the publish script:
 
 ```bash
