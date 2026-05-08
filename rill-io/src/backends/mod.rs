@@ -2,9 +2,6 @@
 
 mod null;
 
-#[cfg(feature = "cpal")]
-mod cpal;
-
 #[cfg(feature = "alsa")]
 mod alsa;
 
@@ -14,10 +11,10 @@ mod pipewire;
 #[cfg(feature = "jack")]
 mod jack;
 
-pub use null::NullBackend;
+#[cfg(feature = "portaudio")]
+mod portaudio;
 
-#[cfg(feature = "cpal")]
-pub use cpal::CpalBackend;
+pub use null::NullBackend;
 
 #[cfg(feature = "alsa")]
 pub use alsa::AlsaBackend;
@@ -27,3 +24,6 @@ pub use pipewire::PipewireBackend;
 
 #[cfg(feature = "jack")]
 pub use jack::JackBackend;
+
+#[cfg(feature = "portaudio")]
+pub use portaudio::PortAudioBackend;

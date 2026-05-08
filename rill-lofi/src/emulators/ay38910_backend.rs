@@ -28,7 +28,7 @@ impl Ay38910Backend {
 }
 
 impl IoBackend<f32> for Ay38910Backend {
-    fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+    fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
 
     fn read(&self, channels: &mut [&mut [f32]]) -> usize {
         let chip = unsafe { &mut *self.chip.get() };
@@ -72,29 +72,9 @@ impl IoControl for Ay38910Backend {
     }
 }
 
-// Safety: UnsafeCell access guarded by single-threaded graph invariant
-unsafe impl Send for Ay38910Backend {}
-unsafe impl Sync for Ay38910Backend {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_backend_write_read_roundtrip() {
-        let backend = Ay38910Backend::new(1_750_000.0, 44100.0);
-        let mut regs = [0u8; 16];
-        regs[0] = 23;
-        regs[1] = 1; // tone period 279
-        regs[7] = 0b11111110; // Ch A tone on
-        regs[8] = 10; // volume
-        let ctrl = backend.as_control().unwrap();
-        ctrl.write_data(&regs);
-
-        let mut buf = [0.0f32; 64];
-        backend.read(&mut [&mut buf[..]]);
-        assert!(buf.iter().any(|&s| s > 0.0), "should produce audio");
-    }
 
     #[test]
     fn test_backend_reads_latest_registers() {

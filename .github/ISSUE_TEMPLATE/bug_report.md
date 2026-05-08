@@ -25,7 +25,7 @@ What actually happened (logs, backtrace, xruns).
 **Environment**
 - OS: [e.g. Linux 6.8, macOS 14]
 - Rust version: `rustc --version`
-- Backend: [cpal / alsa / pipewire / jack / null]
+- Backend: [portaudio / alsa / pipewire / jack / null]
 - Audio hardware: [e.g. Focusrite Scarlett 2i2, built-in ALSA]
 
 **Additional context**

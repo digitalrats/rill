@@ -40,7 +40,6 @@ impl OutputWindow {
 pub struct OutputSlot(Arc<UnsafeCell<Option<OutputWindow>>>);
 
 unsafe impl Send for OutputSlot {}
-unsafe impl Sync for OutputSlot {}
 
 impl Default for OutputSlot {
     #[allow(clippy::arc_with_non_send_sync)]

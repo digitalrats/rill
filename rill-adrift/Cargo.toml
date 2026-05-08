@@ -60,7 +60,7 @@ name = "chiptune"
 required-features = ["io", "lofi"]
 
 [features]
-default = ["io", "lofi", "telemetry", "osc", "sampler", "cpal", "serialization"]
+default = ["io", "lofi", "telemetry", "osc", "sampler", "portaudio", "serialization"]
 
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi"]
@@ -79,7 +79,7 @@ dot = ["rill-graph/dot"]
 
 # Audio backend passthrough
 alsa = ["rill-io/alsa"]
-cpal = ["rill-io/cpal"]
+portaudio = ["rill-io/portaudio"]
 jack = ["rill-io/jack"]
 pipewire = ["rill-io/pipewire"]
 

@@ -100,11 +100,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for Input<T, BUF_SIZE>
             let nodes_ptr = handle.nodes as *mut NodeVariant<T, BUF_SIZE>;
             let len = handle.len;
             let source_idx = handle.source_idx;
-            let sample_rate = handle.sample_rate;
             let queue_ptr = handle.queue;
             let sample_pos = Cell::new(0u64);
 
-            b.set_process_callback(Box::new(move || {
+            b.set_process_callback(Box::new(move |actual_sr: f32| {
                 #[allow(unsafe_code)]
                 unsafe {
                     let nodes = std::slice::from_raw_parts_mut(nodes_ptr, len);
@@ -120,7 +119,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for Input<T, BUF_SIZE>
                     }
 
                     // 2. Clock tick.
-                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, sample_rate);
+                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, actual_sr);
 
                     // 3. Process source node (generate → fills ports).
                     let mut ctx = ProcessContext { clock: &tick };
@@ -267,7 +266,7 @@ mod tests {
         output_ring: Arc<IoRingBuffer>,
     }
     impl IoBackend<f32> for RingIo {
-        fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+        fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
         fn read(&self, channels: &mut [&mut [f32]]) -> usize {
             let frames = channels.first().map(|c| c.len()).unwrap_or(0);
             let mut temp = vec![0.0f32; frames * 2];

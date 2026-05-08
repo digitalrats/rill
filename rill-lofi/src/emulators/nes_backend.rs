@@ -29,7 +29,7 @@ impl NesBackend {
 }
 
 impl IoBackend<f32> for NesBackend {
-    fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+    fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
 
     fn read(&self, channels: &mut [&mut [f32]]) -> usize {
         let chip = unsafe { &mut *self.chip.get() };
@@ -74,9 +74,6 @@ impl IoControl for NesBackend {
     }
 }
 
-unsafe impl Send for NesBackend {}
-unsafe impl Sync for NesBackend {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,9 +82,9 @@ mod tests {
     fn test_nes_backend_roundtrip() {
         let backend = NesBackend::new(44100.0);
         let mut regs = [0u8; NES_REG_COUNT];
-        regs[0] = 0x8F; // pulse1: duty=50%, vol=15
-        regs[3] = 0x01; // period high
-        regs[21] = 0x01; // enable pulse1
+        regs[0] = 0x8F;
+        regs[3] = 0x01;
+        regs[21] = 0x01;
         backend.as_control().unwrap().write_data(&regs);
 
         let mut buf = [0.0f32; 64];

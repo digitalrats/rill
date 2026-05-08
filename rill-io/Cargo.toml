@@ -13,7 +13,7 @@ rill-core = { workspace = true }
 thiserror = "1.0"
 log = "0.4"
 
-cpal = { version = "0.15", optional = true }
+portaudio = { version = "0.8", optional = true }
 alsa = { version = "0.9", optional = true }
 pipewire = { version = "0.9", optional = true }
 jack = { version = "0.10", optional = true }
@@ -23,11 +23,11 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 float-cmp = "0.9"
 
 [features]
-default = ["cpal"]
+default = ["portaudio"]
 
-cpal = ["dep:cpal"]
+portaudio = ["dep:portaudio"]
 alsa = ["dep:alsa"]
 pipewire = ["dep:pipewire"]
 jack = ["dep:jack"]
-all-backends = ["cpal", "alsa", "pipewire", "jack"]
+all-backends = ["portaudio", "alsa", "pipewire", "jack"]
 serde-config = ["dep:serde"]

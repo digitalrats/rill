@@ -162,9 +162,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
                 let nodes_ptr = handle.nodes as *mut NodeVariant<T, BUF_SIZE>;
                 let len = handle.len;
                 let queue_ptr = handle.queue;
-                let sample_rate = handle.sample_rate;
                 let sample_pos = Cell::new(0u64);
-                backend.set_process_callback(Box::new(move || unsafe {
+                backend.set_process_callback(Box::new(move |actual_sr: f32| unsafe {
                     let nodes = std::slice::from_raw_parts_mut(nodes_ptr, len);
                     if let Some(q) = queue_ptr.as_ref() {
                         while let Some(cmd) = q.pop() {
@@ -174,7 +173,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
                             }
                         }
                     }
-                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, sample_rate);
+                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, actual_sr);
                     let mut ctx = ProcessContext { clock: &tick };
                     let _ = nodes[idx].process_block(&mut ctx);
                     let action_ctx = ActionContext::new(&tick);

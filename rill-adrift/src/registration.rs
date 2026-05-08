@@ -406,13 +406,6 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
         Ok(Box::new(b))
     });
 
-    #[cfg(feature = "cpal")]
-    factory.register("cpal", |p| {
-        let b = crate::io::backends::CpalBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("cpal: {e}"))?;
-        Ok(Box::new(b))
-    });
-
     #[cfg(feature = "pipewire")]
     factory.register("pipewire", |p| {
         let b = crate::io::backends::PipewireBackend::new(cfg_from_params(p))
@@ -424,6 +417,13 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     factory.register("jack", |p| {
         let b = crate::io::backends::JackBackend::new(cfg_from_params(p))
             .map_err(|e| format!("jack: {e}"))?;
+        Ok(Box::new(b))
+    });
+
+    #[cfg(feature = "portaudio")]
+    factory.register("portaudio", |p| {
+        let b = crate::io::backends::PortAudioBackend::new(cfg_from_params(p))
+            .map_err(|e| format!("portaudio: {e}"))?;
         Ok(Box::new(b))
     });
 }

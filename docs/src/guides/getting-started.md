@@ -84,7 +84,7 @@ Enable the `io` feature on `rill-adrift` (default):
 rill-adrift = { version = "0.5.0-beta.2", features = ["io", "alsa"] }
 ```
 
-Available backends: `cpal` (default), `alsa`, `pipewire`, `jack`.
+Available backends: `portaudio` (default), `alsa`, `pipewire`, `jack`.
 
 The `AudioInput` node (push model) owns the backend and calls
 `Source::generate()` on each audio tick. `AudioOutput` (pull model)

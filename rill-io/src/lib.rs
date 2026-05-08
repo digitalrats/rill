@@ -42,9 +42,6 @@ pub use rings::PwBuffers;
 
 pub use backends::NullBackend;
 
-#[cfg(feature = "cpal")]
-pub use backends::CpalBackend;
-
 #[cfg(feature = "alsa")]
 pub use backends::AlsaBackend;
 
