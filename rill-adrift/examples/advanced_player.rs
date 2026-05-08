@@ -1,23 +1,29 @@
 //! Load graph from JSON and config from TOML, build and play.
 //!
+//! Demonstrates runtime parameter control via the actor mailbox:
+//! the graph is built as-is from `graph.json`, then parameter
+//! changes are sent through `Graph::handle()` before the audio
+//! thread starts.
+//!
 //! Usage:
-//!   cargo run --example player --features "cpal,sampler,serialization"
-//!   cargo run --example player --features "cpal,sampler,serialization" -- [backend] [wav]
-//!   cargo run --example player --features "cpal,sampler,serialization" -- [wav]
-//!   cargo run --example player --features "dot,sampler,serialization" -- --dot
+//!   cargo run --example advanced_player --features "cpal,sampler,serialization"
+//!   cargo run --example advanced_player --features "cpal,sampler,serialization" -- [backend] [wav]
+//!   cargo run --example advanced_player --features "cpal,sampler,serialization" -- [wav]
 //!
 //! Positional arguments (optional):
 //!   backend   Audio backend name (e.g. cpal, alsa, null). Default from config.toml.
-//!   wav       Path to a WAV file to play. Overrides the file in graph.json.
-//!
-//! --dot: export graph to DOT format and exit
+//!   wav       Path to a WAV file to play. Sent as a `SetParameter` command
+//!             via the graph's actor mailbox.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::registration;
-use rill_adrift::rill_core::ParamValue;
+use rill_adrift::rill_core::{
+    queues::{SetParameter, SignalOrigin},
+    NodeId, ParamValue, ParameterId, PortId,
+};
 use rill_adrift::runtime::{Runtime, RuntimeConfig};
 use serde::Deserialize;
 
@@ -48,32 +54,27 @@ fn load_config() -> Result<AppConfig, Box<dyn std::error::Error>> {
     Ok(cfg)
 }
 
+fn resolve_wav_path(wav_path: &str, crate_dir: &std::path::Path) -> String {
+    let path = std::path::Path::new(wav_path);
+    if path.is_absolute() {
+        path.to_string_lossy().to_string()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| crate_dir.join(path))
+            .to_string_lossy()
+            .to_string()
+    }
+}
+
 fn build_graph(
     cfg: &AppConfig,
     crate_dir: &std::path::Path,
     backend_name: &str,
-    wav_override: Option<&str>,
 ) -> Result<rill_adrift::rill_graph::Graph<f32, BUF>, Box<dyn std::error::Error>> {
     let graph_path = crate_dir.join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
     let json = std::fs::read_to_string(&graph_path)?;
-    let mut def =
-        registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
-
-    if let Some(wav_path) = wav_override {
-        let path = std::path::Path::new(wav_path);
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path))
-                .unwrap_or_else(|_| crate_dir.join(path))
-        };
-        def.set_node_param(
-            0,
-            "file",
-            ParamValue::String(resolved.to_string_lossy().to_string()),
-        );
-    }
+    let def = registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
 
     let rt = Runtime::<BUF>::new(RuntimeConfig {
         sample_rate: cfg.sample_rate,
@@ -122,25 +123,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => (Some(positional[0].as_str()), Some(positional[1].as_str())),
     };
 
-    if args.iter().any(|a| a == "--dot") {
-        #[cfg(feature = "dot")]
-        {
-            let graph = build_graph(&cfg, &crate_dir, "null", None)?;
-            let dot = rill_adrift::rill_graph::dot::to_dot(
-                &graph,
-                &rill_adrift::rill_graph::dot::DotConfig::default(),
-            );
-            println!("{dot}");
-        }
-        #[cfg(not(feature = "dot"))]
-        eprintln!("Enable --features dot for DOT export.");
-        return Ok(());
-    }
-
     let backend_name = backend_arg
         .map(|s| s.to_string())
         .or_else(|| cfg.backend.as_ref().map(|b| b.name.clone()))
         .unwrap_or_else(|| "null".into());
+
+    let wav_path = wav_arg.map(|s| resolve_wav_path(s, &crate_dir));
+
     let running = Arc::new(AtomicBool::new(true));
 
     let audio_thread = {
@@ -148,10 +137,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let running = running.clone();
         let crate_dir = crate_dir.to_path_buf();
         let backend_name = backend_name.clone();
-        let wav_file = wav_arg.map(|s| s.to_string());
+        let wav_path = wav_path.clone();
         std::thread::spawn(move || {
-            let graph = build_graph(&cfg, &crate_dir, &backend_name, wav_file.as_deref())
-                .expect("build_graph");
+            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+
+            // Send parameter changes via the actor mailbox
+            if let Some(handle) = graph.handle() {
+                if let Some(ref path) = wav_path {
+                    handle.send(SetParameter::new(
+                        PortId::signal_out(NodeId(0), 0),
+                        ParameterId::new("file").unwrap(),
+                        ParamValue::String(path.clone()),
+                        SignalOrigin::Manual,
+                    ));
+                }
+
+                // Example: set filter cutoff
+                handle.send(SetParameter::new(
+                    PortId::signal_in(NodeId(1), 0),
+                    ParameterId::new("cutoff").unwrap(),
+                    ParamValue::Float(800.0),
+                    SignalOrigin::Manual,
+                ));
+            }
+
             graph.run(running).ok();
         })
     };
