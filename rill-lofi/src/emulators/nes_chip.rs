@@ -42,6 +42,76 @@ enum NoiseMode {
     Long,
 }
 
+/// NES 2A03 APU sweep unit for pulse channels.
+///
+/// Modifies the channel's period at a configurable rate and direction.
+/// Clocked at ~120 Hz. Can mute the channel when the period underflows
+/// or exceeds 11 bits.
+struct NesSweepUnit {
+    enabled: bool,
+    reload: bool,
+    divider_period: u8,
+    divider_counter: u8,
+    negate: bool,
+    shift: u8,
+    target_period: u16,
+}
+
+impl NesSweepUnit {
+    fn new() -> Self {
+        Self {
+            enabled: false,
+            reload: false,
+            divider_period: 0,
+            divider_counter: 0,
+            negate: false,
+            shift: 0,
+            target_period: 0,
+        }
+    }
+
+    fn write_register(&mut self, value: u8) {
+        self.enabled = (value & 0x80) != 0;
+        self.divider_period = (value >> 4) & 0x07;
+        self.negate = (value & 0x08) != 0;
+        self.shift = value & 0x07;
+        self.reload = true;
+    }
+
+    fn set_target_period(&mut self, period: u16) {
+        self.target_period = period & 0x07FF;
+    }
+
+    /// Clock the sweep unit. Returns the current period,
+    /// or `None` if the channel should be silenced.
+    fn clock(&mut self) -> Option<u16> {
+        if self.divider_period == 0 && !self.reload {
+            return Some(self.target_period);
+        }
+        if self.reload {
+            self.divider_counter = self.divider_period;
+            self.reload = false;
+        }
+        if self.divider_counter > 0 {
+            self.divider_counter -= 1;
+        }
+        if self.divider_counter == 0 && self.divider_period > 0 {
+            let delta = self.target_period >> self.shift as u32;
+            let new = if self.negate {
+                self.target_period.saturating_sub(delta + 1)
+            } else {
+                self.target_period + delta
+            };
+            if new < 8 || new > 0x07FF {
+                return None;
+            }
+            self.target_period = new;
+            self.divider_counter = self.divider_period;
+        }
+        Some(self.target_period)
+    }
+}
+
 /// Pure NES 2A03 APU chip emulation logic.
 ///
 /// No graph node, no lofi processing. Directly testable.
@@ -52,6 +122,9 @@ pub struct NesChip {
     triangle: NesTriangleChannel,
     noise: NesNoiseChannel,
     dpcm: NesDpcmChannel,
+    sweep1: NesSweepUnit,
+    sweep2: NesSweepUnit,
+    sweep_phase: f32,
 }
 
 impl NesChip {
@@ -96,6 +169,9 @@ impl NesChip {
                 tick_counter: 0.0,
                 enabled: false,
             },
+            sweep1: NesSweepUnit::new(),
+            sweep2: NesSweepUnit::new(),
+            sweep_phase: 0.0,
         }
     }
 
@@ -116,6 +192,8 @@ impl NesChip {
         } else {
             0.0
         };
+        self.sweep1.write_register(regs[1]);
+        self.sweep1.set_target_period(p1_period);
 
         // Pulse 2 ($4004–$4007)
         self.pulse2.duty_cycle = duty_table[((regs[4] >> 6) & 0x03) as usize];
@@ -126,6 +204,8 @@ impl NesChip {
         } else {
             0.0
         };
+        self.sweep2.write_register(regs[5]);
+        self.sweep2.set_target_period(p2_period);
 
         // Triangle ($4008–$400B)
         self.triangle.volume = if (regs[8] & 0x80) != 0 { 0.4 } else { 0.0 };
@@ -161,6 +241,34 @@ impl NesChip {
 
     /// Generate one audio sample. `sample_rate` is the output sample rate.
     pub fn generate_sample(&mut self, sample_rate: f32) -> f32 {
+        // Sweep clock at ~120 Hz
+        self.sweep_phase += 120.0 / sample_rate;
+        while self.sweep_phase >= 1.0 {
+            self.sweep_phase -= 1.0;
+
+            let p1 = self.sweep1.clock();
+            if let Some(period) = p1 {
+                self.pulse1.frequency = if period > 0 {
+                    1_789_773.0 / (16.0 * (period + 1) as f32)
+                } else {
+                    0.0
+                };
+            } else {
+                self.pulse1.enabled = false;
+            }
+
+            let p2 = self.sweep2.clock();
+            if let Some(period) = p2 {
+                self.pulse2.frequency = if period > 0 {
+                    1_789_773.0 / (16.0 * (period + 1) as f32)
+                } else {
+                    0.0
+                };
+            } else {
+                self.pulse2.enabled = false;
+            }
+        }
+
         // Pulse 1
         let p1 = if self.pulse1.frequency > 0.0 && self.pulse1.enabled {
             self.pulse1.phase += self.pulse1.frequency / sample_rate;
@@ -234,6 +342,9 @@ impl NesChip {
         self.dpcm.position = 0;
         self.dpcm.current_output = 0.0;
         self.dpcm.tick_counter = 0.0;
+        self.sweep1 = NesSweepUnit::new();
+        self.sweep2 = NesSweepUnit::new();
+        self.sweep_phase = 0.0;
     }
 
     fn generate_noise(&mut self, sample_rate: f32) -> f32 {
@@ -334,5 +445,56 @@ mod tests {
         chip.reset();
         assert_eq!(chip.pulse1.phase, 0.0);
         assert_eq!(chip.noise.shift_register, 1);
+    }
+
+    #[test]
+    fn test_sweep_unit_decreases_period() {
+        let mut unit = NesSweepUnit::new();
+        unit.write_register(0xCF); // enabled, divider=4, negate, shift=7
+        unit.set_target_period(0x100);
+        let initial = unit.target_period;
+        // Clock many times; negate + shift=7 should decrease period
+        let mut last = initial;
+        for _ in 0..200 {
+            if let Some(p) = unit.clock() {
+                last = p;
+            }
+        }
+        assert!(
+            last < initial,
+            "sweep should decrease period (negate), initial={}, last={}",
+            initial,
+            last
+        );
+    }
+
+    #[test]
+    fn test_sweep_mutes_on_underflow() {
+        let mut unit = NesSweepUnit::new();
+        unit.write_register(0xCF); // aggressive sweep
+        unit.set_target_period(0x10);
+        let mut muted = false;
+        for _ in 0..200 {
+            if unit.clock().is_none() {
+                muted = true;
+                break;
+            }
+        }
+        assert!(muted, "should mute when period underflows below 8");
+    }
+
+    #[test]
+    fn test_sweep_disabled_when_divider_zero() {
+        let mut unit = NesSweepUnit::new();
+        unit.write_register(0x08); // enabled=false equivalent? Actually bit7=0
+        unit.set_target_period(0x100);
+        let initial = unit.target_period;
+        for _ in 0..100 {
+            unit.clock();
+        }
+        assert_eq!(
+            unit.target_period, initial,
+            "disabled sweep should not change period"
+        );
     }
 }
