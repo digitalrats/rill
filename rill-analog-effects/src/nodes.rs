@@ -64,8 +64,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE
     fn update_algorithm(&mut self) {
         self.algorithm.set_tape_speed(self.tape_speed as f64);
         self.algorithm.set_bias_level(self.bias_level as f64);
-        self.algorithm.noise_floor = self.noise_floor as f64;
-        self.algorithm.wow_flutter = self.wow_flutter as f64;
+        self.algorithm.playback_head_mut().noise_floor = self.noise_floor as f64;
+        self.algorithm.playback_head_mut().wow_flutter = self.wow_flutter as f64;
     }
 }
 
