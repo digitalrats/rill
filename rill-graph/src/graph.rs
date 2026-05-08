@@ -505,7 +505,6 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     #[allow(dead_code)]
     buffers: Vec<Box<dyn Buffer<T> + Send>>,
     /// Shared audio backend (alive for the graph's lifetime).
-    #[allow(dead_code)]
     backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
     /// Command queue for sending parameters from control to audio thread.
     command_queue: Option<Arc<MpscQueue<SetParameter>>>,
@@ -550,12 +549,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     #[allow(dead_code)]
     pub fn resources(&self) -> &[GraphResource] {
         &self.resources
-    }
-
-    /// Return a reference to the audio backend, if one was configured.
-    #[allow(dead_code)]
-    pub(crate) fn backend_ref(&self) -> Option<&dyn rill_core::io::IoBackend<T>> {
-        self.backend.as_deref()
     }
 
     /// Run the audio backend until `running` becomes false.
@@ -1026,10 +1019,6 @@ mod tests {
                 inputs,
                 last_value: T::ZERO,
             }
-        }
-        #[allow(dead_code)]
-        fn last_value(&self) -> T {
-            self.last_value
         }
     }
 

@@ -13,8 +13,7 @@ mod lofi_processor;
 
 // Re-export core types
 pub use config::{ClassicSystem, HardwareEmulation, LofiConfig};
-#[allow(deprecated)]
-pub use emulators::{AkaiS900Emulator, Ay38910Backend, Ay38910Chip, Ay38910Emulator, NesEmulator};
+pub use emulators::{AkaiS900Emulator, Ay38910Backend, Ay38910Chip, NesBackend, NesChip};
 pub use error::{LofiError, LofiResult};
 pub use lofi_input::LofiInput;
 pub use lofi_processor::LofiProcessor;
