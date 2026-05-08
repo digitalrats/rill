@@ -23,7 +23,6 @@ struct NesTriangleChannel {
     linear_counter: u8,
 }
 
-#[derive(Clone)]
 struct NesNoiseChannel {
     mode: NoiseMode,
     frequency: f32,
@@ -34,21 +33,17 @@ struct NesNoiseChannel {
 
 #[derive(Clone)]
 struct NesDpcmChannel {
-    #[allow(dead_code)]
     sample_rate: f32,
-    #[allow(dead_code)]
-    delta: i8,
-    #[allow(dead_code)]
+    delta: f32,
     sample_buffer: Vec<i8>,
-    #[allow(dead_code)]
     position: usize,
+    current_output: f32,
+    tick_counter: f32,
 }
 
 struct NesMixer {
     pulse_mix: f32,
     tnd_mix: f32,
-    #[allow(dead_code)]
-    output: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -70,7 +65,6 @@ pub struct NesEmulator<const BUF_SIZE: usize> {
     pulse2: NesPulseChannel,
     triangle: NesTriangleChannel,
     noise: NesNoiseChannel,
-    #[allow(dead_code)]
     dpcm: NesDpcmChannel,
     mixer: NesMixer,
     lofi: LofiProcessor<BUF_SIZE>,
@@ -137,15 +131,16 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
                 tick_counter: 0.0,
             },
             dpcm: NesDpcmChannel {
-                sample_rate: _sample_rate / 2.0,
-                delta: 0,
+                sample_rate: 44100.0 / 2.0,
+                delta: 0.01,
                 sample_buffer: Vec::new(),
                 position: 0,
+                current_output: 0.0,
+                tick_counter: 0.0,
             },
             mixer: NesMixer {
                 pulse_mix: 0.5,
                 tnd_mix: 0.5,
-                output: 0.0,
             },
             lofi: LofiProcessor::new(lofi_config),
         }
@@ -188,7 +183,7 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
         } * self.triangle.volume;
 
         let noise_val = self.generate_noise();
-        let dpcm_val = 0.0;
+        let dpcm_val = self.generate_dpcm();
 
         let pulse_mix = (pulse1_val + pulse2_val) * 0.5;
         let tnd_mix = (triangle_val * 3.0 + noise_val * 2.0 + dpcm_val) / 6.0;
@@ -227,6 +222,35 @@ impl<const BUF_SIZE: usize> NesEmulator<BUF_SIZE> {
         };
         sample * self.noise.volume
     }
+
+    fn generate_dpcm(&mut self) -> f32 {
+        if self.dpcm.sample_buffer.is_empty()
+            || self.dpcm.position >= self.dpcm.sample_buffer.len() * 8
+        {
+            return self.dpcm.current_output;
+        }
+
+        let ticks_per_sample = self.state.sample_rate / self.dpcm.sample_rate;
+        self.dpcm.tick_counter += 1.0;
+        if self.dpcm.tick_counter >= ticks_per_sample {
+            self.dpcm.tick_counter = 0.0;
+
+            let byte_idx = self.dpcm.position / 8;
+            let bit_idx = self.dpcm.position % 8;
+            if byte_idx < self.dpcm.sample_buffer.len() {
+                let bit = (self.dpcm.sample_buffer[byte_idx] >> bit_idx) & 1;
+                if bit != 0 {
+                    self.dpcm.current_output =
+                        (self.dpcm.current_output + self.dpcm.delta).min(1.0);
+                } else {
+                    self.dpcm.current_output =
+                        (self.dpcm.current_output - self.dpcm.delta).max(-1.0);
+                }
+                self.dpcm.position += 1;
+            }
+        }
+        self.dpcm.current_output
+    }
 }
 
 impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
@@ -251,6 +275,9 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NesEmulator<BUF_SIZE> {
         self.triangle.phase = 0.0;
         self.noise.shift_register = 1;
         self.noise.tick_counter = 0.0;
+        self.dpcm.position = 0;
+        self.dpcm.current_output = 0.0;
+        self.dpcm.tick_counter = 0.0;
     }
 
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
