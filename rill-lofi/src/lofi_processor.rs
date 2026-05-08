@@ -10,8 +10,6 @@ pub struct LofiProcessor<const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     inputs: Vec<Port<f32, BUF_SIZE>>,
     outputs: Vec<Port<f32, BUF_SIZE>>,
-    #[allow(dead_code)]
-    controls: Vec<Port<f32, BUF_SIZE>>,
 
     config: LofiConfig,
     delay_buffer: Vec<f32>,
@@ -45,7 +43,6 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
             metadata,
             inputs,
             outputs,
-            controls: Vec::new(),
             config,
             delay_buffer: vec![0.0; buffer_size],
             delay_write_pos: 0,

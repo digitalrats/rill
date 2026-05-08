@@ -380,36 +380,6 @@ where
     }
 }
 
-// Helper functions for converting FilterType to/from string.
-#[allow(dead_code)]
-fn filter_type_to_string(ft: FilterType) -> String {
-    match ft {
-        FilterType::LowPass => "LowPass".to_string(),
-        FilterType::HighPass => "HighPass".to_string(),
-        FilterType::BandPass => "BandPass".to_string(),
-        FilterType::Notch => "Notch".to_string(),
-        FilterType::Peak => "Peak".to_string(),
-        FilterType::LowShelf => "LowShelf".to_string(),
-        FilterType::HighShelf => "HighShelf".to_string(),
-        FilterType::AllPass => "AllPass".to_string(),
-    }
-}
-
-#[allow(dead_code)]
-fn string_to_filter_type(s: &str) -> Option<FilterType> {
-    match s {
-        "LowPass" => Some(FilterType::LowPass),
-        "HighPass" => Some(FilterType::HighPass),
-        "BandPass" => Some(FilterType::BandPass),
-        "Notch" => Some(FilterType::Notch),
-        "Peak" => Some(FilterType::Peak),
-        "LowShelf" => Some(FilterType::LowShelf),
-        "HighShelf" => Some(FilterType::HighShelf),
-        "AllPass" => Some(FilterType::AllPass),
-        _ => None,
-    }
-}
-
 /// Backward‑compatibility wrapper for `BiquadFilter::new` with four arguments.
 pub fn new(filter_type: FilterType, cutoff: f32, q: f32, gain_db: f32) -> BiquadFilter {
     BiquadFilter::new(FilterParams {

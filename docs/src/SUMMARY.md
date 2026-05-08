@@ -15,6 +15,7 @@
 
 - [Getting Started](src/guides/getting-started.md)
 - [Two-Thread Architecture](src/guides/two-thread-arch.md)
+- [Chip Emulators](src/guides/chip-emulators.md)
 - [Real-Time Safety](src/guides/real-time-safety.md)
 - [The World of Automatons](src/guides/world-of-automatons.md)
 - [eDSL: Embedded Domain-Specific Languages](src/guides/dsl.md)

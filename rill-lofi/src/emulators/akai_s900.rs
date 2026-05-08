@@ -12,8 +12,6 @@ pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
 
     buffer: Vec<f32>,
     position: f32,
-    #[allow(dead_code)]
-    bit_depth: u8,
     pitch: f32,
     loop_enabled: bool,
     loop_start: usize,
@@ -61,7 +59,6 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
             outputs,
             buffer: Vec::new(),
             position: 0.0,
-            bit_depth: 12,
             pitch: 1.0,
             loop_enabled: false,
             loop_start: 0,
