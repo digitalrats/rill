@@ -8,6 +8,13 @@ use crate::math::Scalar;
 /// Result alias for signal I/O operations.
 pub type IoResult<T> = Result<T, String>;
 
+/// Control interface for backends that accept operational data
+/// separate from the audio stream (e.g. chip register writes).
+pub trait IoControl: Send + Sync {
+    /// Write control data. Interpretation is device-specific.
+    fn write_data(&self, data: &[u8]) -> usize;
+}
+
 /// Generic multi‑channel real‑time signal I/O backend.
 ///
 /// Lifecycle (called by `rill-patchbay` or `rill-adrift` which own the audio thread):
@@ -38,4 +45,81 @@ pub trait IoBackend<T: Scalar>: Send + Sync {
     /// Signal the backend to shut down.  Called from the control thread.
     /// After this returns the backend must be safe to drop.
     fn stop(&self) -> IoResult<()>;
+
+    /// Returns a control interface if this backend supports runtime
+    /// register/data writes. Returns `None` by default.
+    fn as_control(&self) -> Option<&dyn IoControl> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Arc;
+
+    struct TestBackend {
+        reg: AtomicU8,
+    }
+
+    impl IoBackend<f32> for TestBackend {
+        fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+        fn read(&self, _: &mut [&mut [f32]]) -> usize {
+            0
+        }
+        fn write(&self, _: &[&[f32]]) -> usize {
+            0
+        }
+        fn run(&self, _: Arc<AtomicBool>) -> IoResult<()> {
+            Ok(())
+        }
+        fn stop(&self) -> IoResult<()> {
+            Ok(())
+        }
+        fn as_control(&self) -> Option<&dyn IoControl> {
+            Some(self)
+        }
+    }
+
+    impl IoControl for TestBackend {
+        fn write_data(&self, data: &[u8]) -> usize {
+            if let Some(&v) = data.first() {
+                self.reg.store(v, Ordering::Relaxed);
+            }
+            1
+        }
+    }
+
+    #[test]
+    fn test_iocontrol_write_data() {
+        let b = TestBackend {
+            reg: AtomicU8::new(0),
+        };
+        let ctrl = b.as_control().unwrap();
+        ctrl.write_data(&[42]);
+        assert_eq!(b.reg.load(Ordering::Relaxed), 42);
+    }
+
+    #[test]
+    fn test_iocontrol_default_returns_none() {
+        struct NoControl;
+        impl IoBackend<f32> for NoControl {
+            fn set_process_callback(&self, _cb: Box<dyn Fn()>) {}
+            fn read(&self, _: &mut [&mut [f32]]) -> usize {
+                0
+            }
+            fn write(&self, _: &[&[f32]]) -> usize {
+                0
+            }
+            fn run(&self, _: Arc<AtomicBool>) -> IoResult<()> {
+                Ok(())
+            }
+            fn stop(&self) -> IoResult<()> {
+                Ok(())
+            }
+        }
+        let b = NoControl;
+        assert!(b.as_control().is_none());
+    }
 }
