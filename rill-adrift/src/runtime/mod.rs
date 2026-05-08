@@ -53,7 +53,7 @@ use rill_patchbay::engine::Patchbay;
 use rill_patchbay::function_registry::FunctionRegistry;
 
 #[cfg(feature = "serialization")]
-use rill_graph::serialization::GraphDef;
+use rill_graph::serialization::{GraphDef, SerializationError};
 #[cfg(feature = "serialization")]
 use rill_patchbay::serialization::PatchbayDef;
 
@@ -241,6 +241,21 @@ impl<const BUF: usize> Runtime<BUF> {
             builder = builder.with_backend(name, params.clone());
         }
         builder
+    }
+
+    /// Create a [rill_graph::GraphBuilder] from a serialised [GraphDef].
+    ///
+    /// This is the canonical way to turn a deserialised (and possibly
+    /// modified) graph document into a runnable graph.  The builder
+    /// inherits all node and backend registrations from the runtime.
+    #[cfg(feature = "serialization")]
+    pub fn create_builder_from_graphdef(
+        &self,
+        def: &rill_graph::serialization::GraphDef,
+    ) -> Result<GraphBuilder<f32, BUF>, SerializationError> {
+        let mut builder = self.create_builder();
+        def.populate(&mut builder)?;
+        Ok(builder)
     }
 
     // ─── File loading ───────────────────────────────────────────────
