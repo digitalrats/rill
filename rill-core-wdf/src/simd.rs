@@ -216,7 +216,7 @@ impl SimdDiode {
         // For small a → v ≈ a / (1 + r*Is/vt)
         // For large a → v ≈ vt * ln(a / (r*Is))
         let guess = self.vt_simd * (F64x4::splat(1.0) + a / (r * self.is_simd)).ln();
-        let mut v = guess.max(F64x4::splat(0.0));
+        let mut v = guess.max(&F64x4::splat(0.0));
 
         for _ in 0..10 {
             let i = self.is_simd * ((v / self.vt_simd).exp() - F64x4::splat(1.0));
