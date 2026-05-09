@@ -102,7 +102,7 @@ impl NesSweepUnit {
             } else {
                 self.target_period + delta
             };
-            if new < 8 || new > 0x07FF {
+            if !(8..=0x07FF).contains(&new) {
                 return None;
             }
             self.target_period = new;
@@ -125,6 +125,12 @@ pub struct NesChip {
     sweep1: NesSweepUnit,
     sweep2: NesSweepUnit,
     sweep_phase: f32,
+}
+
+impl Default for NesChip {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NesChip {

@@ -3,25 +3,21 @@
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
 
 use std::cell::Cell;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use rill_core::{
+    io::IoBackend,
     math::Transcendental,
-    traits::{
-        active::{ActiveNode, GraphHandle},
-        algorithm::ActionContext,
-        node::Node,
-        processable::{NodeVariant, ProcessContext, Processable},
-        NodeCategory, NodeMetadata, NodeState, Source,
-    },
+    traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Source},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
-use crate::signal_io::IoBackendPtr;
-
 /// Signal input source. Reads from a backend in `generate()`, fills output ports.
 ///
-/// The backend is owned by the graph — this node stores only a non‑owning
-/// [`IoBackendPtr<T>`].
+/// The backend is owned by this node via `Arc`.  When used as the active
+/// (driver) node, [`ActiveNode::run`] sets up the process callback and
+/// blocks on the audio thread.
 ///
 /// # Ports
 /// - `n` output ports (one per channel), set via [`Self::with_channels`].
@@ -30,7 +26,7 @@ pub struct Input<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    io_ptr: IoBackendPtr<T>,
+    backend: Option<Box<dyn IoBackend<T>>>,
     bufs: Vec<[T; BUF_SIZE]>,
 }
 
@@ -69,83 +65,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> Input<T, BUF_SIZE> {
             metadata,
             outputs,
             state: NodeState::new(44100.0),
-            io_ptr: IoBackendPtr::<T>::null(),
+            backend: None,
             bufs,
         }
     }
 
-    /// Attach an I/O backend pointer to this input source.
-    pub fn set_io_ptr(&mut self, ptr: IoBackendPtr<T>) {
-        self.io_ptr = ptr;
-    }
-
-    /// Get the current I/O backend pointer.
-    pub fn io_ptr(&self) -> IoBackendPtr<T> {
-        self.io_ptr
-    }
-
     /// Returns `true` if a backend is attached.
     pub fn has_backend(&self) -> bool {
-        !self.io_ptr.is_null()
-    }
-}
-
-/// Backward-compatible alias.
-pub type AudioInput<T, const B: usize> = Input<T, B>;
-
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for Input<T, BUF_SIZE> {
-    #[allow(clippy::not_unsafe_ptr_arg_deref, clippy::type_complexity)]
-    fn start(&mut self, handle: GraphHandle) {
-        if let Some(b) = self.io_ptr.as_ref() {
-            let nodes_ptr = handle.nodes as *mut NodeVariant<T, BUF_SIZE>;
-            let len = handle.len;
-            let source_idx = handle.source_idx;
-            let queue_ptr = handle.queue;
-            let sample_pos = Cell::new(0u64);
-
-            b.set_process_callback(Box::new(move |actual_sr: f32| {
-                #[allow(unsafe_code)]
-                unsafe {
-                    let nodes = std::slice::from_raw_parts_mut(nodes_ptr, len);
-
-                    // 1. Drain command queue → apply parameters.
-                    if let Some(q) = queue_ptr.as_ref() {
-                        while let Some(cmd) = q.pop() {
-                            let idx = cmd.port.node_id().inner() as usize;
-                            if idx < len {
-                                let _ = nodes[idx].set_parameter(&cmd.parameter, cmd.value.clone());
-                            }
-                        }
-                    }
-
-                    // 2. Clock tick.
-                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, actual_sr);
-
-                    // 3. Process source node (generate → fills ports).
-                    let mut ctx = ProcessContext { clock: &tick };
-                    let _ = nodes[source_idx].process_block(&mut ctx);
-
-                    // 4. Propagate through the DAG.
-                    let action_ctx = ActionContext::new(&tick);
-                    for po in 0..nodes[source_idx].num_signal_outputs() {
-                        if let Some(port) = nodes[source_idx].output_port(po) {
-                            let _ = port.propagate(port.buffer(), &action_ctx);
-                        }
-                    }
-
-                    sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-                }
-            }));
-
-            // Thread ownership moved to caller — backend.run(running) is called
-            // on a pre-created audio thread (see rill-adrift examples).
-        }
+        self.backend.is_some()
     }
 
-    fn stop(&mut self) {
-        if let Some(b) = self.io_ptr.as_ref() {
-            let _ = b.stop();
-        }
+    /// Transfer backend ownership to this node.
+    ///
+    /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
+    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+        <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
     }
 }
 
@@ -170,17 +104,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
     }
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    fn resolve_backend(&mut self, backend: *mut dyn rill_core::io::IoBackend<T>) {
-        if !backend.is_null() {
-            self.io_ptr = IoBackendPtr::from_ref(unsafe { &*backend });
-        }
+    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
+        Some(self)
     }
-    fn start(&mut self, handle: GraphHandle) {
-        ActiveNode::start(self, handle);
-    }
-    fn stop(&mut self) {
-        ActiveNode::stop(self);
+    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
+        Some(self)
     }
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
         None
@@ -222,6 +150,39 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
     }
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
+    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+        self.backend = Some(backend);
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
+    fn run(
+        &mut self,
+        tick: Box<dyn FnMut(u64, f32)>,
+        running: Arc<AtomicBool>,
+    ) -> rill_core::io::IoResult<()> {
+        let Some(ref backend) = self.backend else {
+            return Err("Input: no backend".into());
+        };
+        let tick_ptr = Box::into_raw(Box::new(tick));
+        let sample_pos = Cell::new(0u64);
+        backend.set_process_callback(Box::new(move |actual_sr: f32| {
+            unsafe {
+                (*tick_ptr)(sample_pos.get(), actual_sr);
+            }
+            sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
+        }));
+        backend.run(running.clone())?;
+        while running.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::park();
+        }
+        let _ = backend.stop();
+        drop(unsafe { Box::from_raw(tick_ptr) });
+        Ok(())
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, BUF_SIZE> {
     fn generate(
         &mut self,
@@ -229,7 +190,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
     ) -> ProcessResult<()> {
-        if let Some(io) = self.io_ptr.as_ref() {
+        if let Some(ref io) = self.backend {
             let nch = self.outputs.len();
             if nch == 0 {
                 self.state.advance();
@@ -251,16 +212,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
     }
 }
 
+/// Backward-compatible alias.
+pub type AudioInput<T, const B: usize> = Input<T, B>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audio_io::IoResult;
     use crate::buffer::IoRingBuffer;
-    use crate::signal_io::IoBackendPtr;
-    use rill_core::io::IoBackend;
     use std::sync::Arc;
 
-    /// Mock backend for testing.
     struct RingIo {
         input_ring: Arc<IoRingBuffer>,
         output_ring: Arc<IoRingBuffer>,
@@ -295,7 +256,7 @@ mod tests {
             }
             self.output_ring.write(&temp) / 2
         }
-        fn run(&self, _running: Arc<std::sync::atomic::AtomicBool>) -> IoResult<()> {
+        fn run(&self, _running: Arc<AtomicBool>) -> IoResult<()> {
             Ok(())
         }
         fn stop(&self) -> IoResult<()> {
@@ -325,7 +286,6 @@ mod tests {
         assert!(inp.generate(&clock, &[], &[]).is_ok());
     }
 
-    /// Round-trip test: Input → Output through shared ring buffers.
     #[test]
     fn test_loopback_through_rings() {
         const BUF_SZ: usize = 64;
@@ -337,9 +297,8 @@ mod tests {
             output_ring: output_ring.clone(),
         });
         let mut input = Input::<f32, BUF_SZ>::new();
-        input.set_io_ptr(IoBackendPtr::from_ref(&*backend));
+        input.resolve_backend(backend);
 
-        // Write test data into the input ring
         let test_val: f32 = 42.0;
         let mut test_block = vec![0.0f32; BUF_SZ * 2];
         for i in 0..BUF_SZ {
@@ -348,11 +307,9 @@ mod tests {
         }
         input_ring.write(&test_block);
 
-        // Run generate
         let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
         input.generate(&tick, &[], &[]).unwrap();
 
-        // Read output from input's ports
         let l = input.output_port(0).unwrap().buffer.as_array();
         let r = input.output_port(1).unwrap().buffer.as_array();
         for i in 0..BUF_SZ {

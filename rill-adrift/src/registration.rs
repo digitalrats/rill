@@ -132,6 +132,23 @@ fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Processor(Box::new(n))
     });
+
+    node_ctor!(factory, "rill/lofi_input", |id: NodeId, params: &Params| {
+        use rill_lofi::{ClassicSystem, LofiConfig, LofiInput};
+        let bit_depth = params.get_i32("bit_depth", 8) as u8;
+        let nonlinear = params.get_bool("nonlinear", false);
+        let noise_floor = params.get_f32("noise_floor", -48.0);
+        let config = LofiConfig::for_system(ClassicSystem::Custom {
+            bit_depth,
+            sample_rate: params.sample_rate,
+            nonlinear,
+            noise_floor,
+        });
+        let mut n = LofiInput::<f32, BUF_SIZE>::new(config);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Source(Box::new(n))
+    });
 }
 
 // ============================================================================
@@ -425,6 +442,22 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
         let b = crate::io::backends::PortAudioBackend::new(cfg_from_params(p))
             .map_err(|e| format!("portaudio: {e}"))?;
         Ok(Box::new(b))
+    });
+}
+
+/// Register lo‑fi chip emulation backends.
+#[cfg(feature = "lofi")]
+pub fn register_lofi_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
+    factory.register("ay38910", |p| {
+        let sr = p
+            .get("sample_rate")
+            .and_then(|v| v.as_f32())
+            .unwrap_or(44100.0);
+        let chip_clock = p
+            .get("chip_clock")
+            .and_then(|v| v.as_f32())
+            .unwrap_or(1_750_000.0);
+        Ok(Box::new(rill_lofi::Ay38910Backend::new(chip_clock, sr)))
     });
 }
 

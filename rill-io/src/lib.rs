@@ -33,11 +33,13 @@ pub mod rings;
 /// Global PipeWire context (lazily initialised, shared by I/O nodes).
 pub mod pw;
 
-pub use backend::{AudioBackend, BackendType, DeviceInfo};
+pub use backend::{BackendType, DeviceInfo};
 pub use config::AudioConfig;
 pub use error::{IoError, IoResult};
 pub use input::AudioInput;
+pub use input::Input;
 pub use output::AudioOutput;
+pub use output::Output;
 pub use rings::PwBuffers;
 
 pub use backends::NullBackend;
@@ -51,7 +53,7 @@ pub use backends::PipewireBackend;
 #[cfg(feature = "jack")]
 pub use backends::JackBackend;
 
-pub use signal_io::IoBackendPtr;
+pub use audio_io::AudioIoPtr;
 
 #[cfg(test)]
 mod tests {

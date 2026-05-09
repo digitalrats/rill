@@ -17,7 +17,6 @@ use pw::properties::properties;
 use pw::spa;
 use pw::spa::sys as spa_sys;
 
-use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
@@ -493,59 +492,6 @@ impl IoBackend<f32> for PipewireBackend {
     fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
         Ok(())
-    }
-}
-
-// ============================================================================
-// AudioBackend
-// ============================================================================
-
-impl AudioBackend for PipewireBackend {
-    fn backend_type(&self) -> BackendType {
-        BackendType::PipeWire
-    }
-    fn config(&self) -> &AudioConfig {
-        &self.config
-    }
-    fn config_mut(&mut self) -> &mut AudioConfig {
-        &mut self.config
-    }
-    fn init(&mut self) -> IoResult<()> {
-        Ok(())
-    }
-
-    fn start(&mut self) -> IoResult<()> {
-        self.running.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    fn stop(&mut self) -> IoResult<()> {
-        self.running.store(false, Ordering::Release);
-        Ok(())
-    }
-
-    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        let n = self.input_buffer.read(buffer);
-        Ok(n)
-    }
-
-    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        Ok(buffer.len())
-    }
-
-    fn xruns(&self) -> u32 {
-        self.xruns.load(Ordering::Acquire)
-    }
-    fn latency(&self) -> std::time::Duration {
-        std::time::Duration::from_micros(
-            (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
-        )
-    }
-    fn list_input_devices(&self) -> Vec<String> {
-        vec!["default".to_string()]
-    }
-    fn list_output_devices(&self) -> Vec<String> {
-        vec!["default".to_string()]
     }
 }
 

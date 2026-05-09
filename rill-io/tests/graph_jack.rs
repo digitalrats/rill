@@ -10,13 +10,9 @@ mod graph_jack_it {
     use rill_core::io::IoBackend;
     use rill_core::traits::{Node, Sink, Source};
     use rill_core::ClockTick;
-    use rill_io::audio_io::AudioIoPtr;
-    use rill_io::AudioBackend;
     use rill_io::{AudioConfig, AudioInput, AudioOutput, JackBackend};
 
     fn has_jack() -> bool {
-        // Check that JACK libraries are available at the system level.
-        // JackBackend::new is not conclusive — it doesn't connect until start().
         std::process::Command::new("pactl")
             .args(["list", "modules"])
             .output()
@@ -42,28 +38,21 @@ mod graph_jack_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let mut backend = Box::new(JackBackend::new(config).unwrap());
-        let _ = AudioBackend::start(&mut *backend);
-        let ptr = AudioIoPtr::from_ref(&*backend as &dyn IoBackend<f32>);
+        let mut backend = JackBackend::new(config).unwrap();
+        let backend: Box<dyn rill_core::io::IoBackend<f32>> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
-        input.set_io_ptr(ptr);
         settle(300);
 
         let mut output = AudioOutput::<f32, BUF_SZ>::new();
-        output.set_backend(ptr);
+        output.resolve_backend(backend);
 
         let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
         input.generate(&tick, &[], &[]).unwrap();
 
         let l = input.output_port(0).unwrap().buffer.as_array();
         let r = input.output_port(1).unwrap().buffer.as_array();
-        let signal_inputs: [&[f32; BUF_SZ]; 2] = [l, r];
-        output
-            .consume(&tick, &signal_inputs, &[], &[], &[])
-            .unwrap();
-
-        input.stop();
+        let _ = output.consume(&tick, &[l, r], &[], &[], &[]);
     }
 
     #[test]
@@ -80,27 +69,20 @@ mod graph_jack_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let mut backend = Box::new(JackBackend::new(config).unwrap());
-        let _ = AudioBackend::start(&mut *backend);
-        let ptr = AudioIoPtr::from_ref(&*backend as &dyn IoBackend<f32>);
+        let mut backend = JackBackend::new(config).unwrap();
+        let backend: Box<dyn rill_core::io::IoBackend<f32>> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
-        input.set_io_ptr(ptr);
         settle(300);
 
         {
             let mut output = AudioOutput::<f32, BUF_SZ>::new();
-            output.set_backend(ptr);
+            output.resolve_backend(backend);
             let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
             input.generate(&tick, &[], &[]).unwrap();
             let l = input.output_port(0).unwrap().buffer.as_array();
             let r = input.output_port(1).unwrap().buffer.as_array();
-            let signal_inputs: [&[f32; BUF_SZ]; 2] = [l, r];
-            output
-                .consume(&tick, &signal_inputs, &[], &[], &[])
-                .unwrap();
+            let _ = output.consume(&tick, &[l, r], &[], &[], &[]);
         }
-
-        input.stop();
     }
 }

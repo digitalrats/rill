@@ -14,7 +14,6 @@ use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, ProcessHandl
 
 use crate::buffer::IoRingBuffer;
 
-use crate::backend::{AudioBackend, BackendType};
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use crate::output_window::{OutputSlot, OutputWindow};
@@ -47,6 +46,7 @@ pub struct JackBackend {
     process_cb: CbSlot,
     output_slot: OutputSlot,
     input_ring: Arc<IoRingBuffer>,
+    #[allow(dead_code)]
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     /// Stores the active JACK client handle.
@@ -87,7 +87,7 @@ impl JackBackend {
     }
 
     /// Common setup: create JACK client, register ports, activate.
-    /// Called from `run()` (non‑blocking) and `AudioBackend::start()`.
+    /// Called from `run()` (non‑blocking).
     fn setup(&self) -> Result<(), String> {
         let client_name = self.config.output_device.as_deref().unwrap_or("rill");
 
@@ -302,62 +302,6 @@ impl IoBackend<f32> for JackBackend {
             }
         }
         Ok(())
-    }
-}
-
-// ============================================================================
-// AudioBackend impl
-// ============================================================================
-
-impl AudioBackend for JackBackend {
-    fn backend_type(&self) -> BackendType {
-        BackendType::Jack
-    }
-    fn config(&self) -> &AudioConfig {
-        &self.config
-    }
-    fn config_mut(&mut self) -> &mut AudioConfig {
-        &mut self.config
-    }
-    fn init(&mut self) -> IoResult<()> {
-        Ok(())
-    }
-
-    fn start(&mut self) -> IoResult<()> {
-        self.setup().map_err(IoError::Backend)
-    }
-
-    fn stop(&mut self) -> IoResult<()> {
-        self.running.store(false, Ordering::Release);
-        unsafe {
-            if let Some(client) = (*self.active_client.get()).take() {
-                drop(client);
-            }
-        }
-        Ok(())
-    }
-
-    fn read(&mut self, _buffer: &mut [f32]) -> IoResult<usize> {
-        Ok(0)
-    }
-    fn write(&mut self, _buffer: &[f32]) -> IoResult<usize> {
-        Ok(0)
-    }
-    fn xruns(&self) -> u32 {
-        self.xruns.load(Ordering::Acquire)
-    }
-
-    fn latency(&self) -> std::time::Duration {
-        std::time::Duration::from_micros(
-            (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
-        )
-    }
-
-    fn list_input_devices(&self) -> Vec<String> {
-        vec!["default".to_string()]
-    }
-    fn list_output_devices(&self) -> Vec<String> {
-        vec!["default".to_string()]
     }
 }
 

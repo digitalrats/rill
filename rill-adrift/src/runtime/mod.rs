@@ -174,6 +174,8 @@ impl<const BUF: usize> Runtime<BUF> {
             let mut bf = BackendFactory::new();
             #[cfg(feature = "io")]
             crate::registration::register_backends(&mut bf);
+            #[cfg(feature = "lofi")]
+            crate::registration::register_lofi_backends(&mut bf);
             bf
         };
         let default_backend = config.backend_name.clone().map(|n| {
@@ -238,7 +240,7 @@ impl<const BUF: usize> Runtime<BUF> {
             self.backend_factory.clone(),
         );
         if let Some((ref name, ref params)) = self.default_backend {
-            builder = builder.with_backend(name, params.clone());
+            builder.set_default_backend(name.clone(), params.clone());
         }
         builder
     }

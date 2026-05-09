@@ -158,40 +158,51 @@ fn write_wav(
 // Main
 // ============================================================================
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let out_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "output.wav".into());
+// Usage:
+//   cargo run --example record_mic --features alsa [backend] [file.wav]
 
-    // Select backend based on active feature flag
-    #[cfg(feature = "pipewire")]
-    let backend_name = "pipewire";
-    #[cfg(all(feature = "jack", not(feature = "pipewire")))]
-    let backend_name = "jack";
-    #[cfg(all(
-        feature = "portaudio",
-        not(any(feature = "pipewire", feature = "jack"))
-    ))]
-    let backend_name = "portaudio";
-    #[cfg(all(not(any(feature = "portaudio", feature = "pipewire", feature = "jack"))))]
-    let backend_name = "null";
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let positional: Vec<&String> = args
+        .iter()
+        .skip(1)
+        .filter(|a| !a.starts_with("--"))
+        .collect();
+    let (backend_arg, out_path): (Option<&str>, &str) = match positional.len() {
+        0 => (None, "output.wav"),
+        1 => {
+            let v = positional[0].as_str();
+            if v.ends_with(".wav") || std::path::Path::new(v).is_file() {
+                (None, v)
+            } else {
+                (Some(v), "output.wav")
+            }
+        }
+        _ => (Some(positional[0].as_str()), positional[1].as_str()),
+    };
 
     let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
+
+    let backend_name = backend_arg.unwrap_or("portaudio").to_string();
+    let _backend_display = backend_name.clone();
 
     // Start
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
     let rec = recorded.clone();
     let audio_thread = std::thread::spawn(move || {
-        // Runtime — owns factories
-        let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
+        let mut be_params = std::collections::HashMap::new();
+        be_params.insert("sample_rate".into(), RATE.to_string());
+        be_params.insert("buffer_size".into(), BUF.to_string());
+        be_params.insert("channels".into(), "2".to_string());
 
-        // Configure default backend
-        let mut p = std::collections::HashMap::new();
-        p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
-        p.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-        p.insert("channels".into(), ParamValue::Int(2));
-        rt.set_default_backend(backend_name, p);
+        let rt = Runtime::<BUF>::new(RuntimeConfig {
+            sample_rate: RATE,
+            block_size: BUF,
+            backend_name: Some(backend_name.clone()),
+            backend_params: be_params,
+            ..Default::default()
+        });
 
         // Register custom node
         let rec2 = rec.clone();
@@ -213,6 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: 0,
                     type_name: "rill/input".into(),
                     name: "mic".into(),
+                    backend: None,
                     parameters: [(
                         "channels".into(),
                         rill_adrift::rill_core::ParamValue::Float(2.0),
@@ -223,6 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: 1,
                     type_name: "rill/record_sink".into(),
                     name: "recorder".into(),
+                    backend: None,
                     parameters: [].into(),
                 },
             ],
@@ -254,7 +267,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()
             .map_err(|e| format!("graph build: {e}"))
             .ok();
-        if let Some(g) = graph {
+        if let Some(mut g) = graph {
             g.run(t_run).ok();
         }
     });

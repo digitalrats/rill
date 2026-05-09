@@ -1,8 +1,7 @@
-use std::cell::UnsafeCell;
-
 use rill_core::{
+    io::IoBackend,
     math::Transcendental,
-    traits::{Node, Source},
+    traits::{IoNode, Node, Source},
     ClockTick, NodeCategory, NodeId, NodeMetadata, NodeState, ParamMetadata, ParamType, ParamValue,
     ParameterId, Port, ProcessResult,
 };
@@ -10,18 +9,18 @@ use rill_core::{
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
 
-/// Source node wrapping `IoBackend<T>` with lofi processing.
+/// Source node wrapping an [`IoBackend<T>`] with lofi processing.
 ///
 /// Follows `Input<T, BUF_SIZE>` pattern from rill-io. Reads audio from backend,
 /// applies lofi processing (bitcrush, noise, DAC, delay), fills output ports.
-/// Chip control goes through `write_to_backend(data)` — `as_control()`.
+/// Chip control goes through `write_to_backend(data)` or `set_parameter("io_write", ...)`.
 pub struct LofiInput<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
-    bufs: UnsafeCell<Vec<[T; BUF_SIZE]>>,
+    backend: Option<Box<dyn IoBackend<T>>>,
+    bufs: Vec<[T; BUF_SIZE]>,
     lofi: LofiProcessor<BUF_SIZE>,
 }
 
@@ -39,7 +38,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> LofiInput<T, BUF_SIZE> {
             category: NodeCategory::Source,
             description: "Lo-fi processed input source".to_string(),
             author: "Rill Lo-Fi".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.3.0".to_string(),
             signal_inputs: 0,
             signal_outputs: num,
             control_inputs: 0,
@@ -78,17 +77,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> LofiInput<T, BUF_SIZE> {
             outputs,
             state: NodeState::new(44100.0),
             backend: None,
-            bufs: UnsafeCell::new(bufs),
+            bufs,
             lofi: LofiProcessor::new(lofi_config),
         }
     }
 
-    /// Attach a backend.
-    pub fn set_backend(&mut self, backend: Box<dyn rill_core::io::IoBackend<T>>) {
-        self.backend = Some(backend);
+    /// Returns `true` if a backend is attached.
+    pub fn has_backend(&self) -> bool {
+        self.backend.is_some()
     }
 
-    /// Forward data to the inner backend via `as_control()?.write_data()`.
+    /// Forward raw bytes to the backend via [`IoControl::write_data`](rill_core::io::IoControl::write_data).
     pub fn write_to_backend(&self, data: &[u8]) -> usize {
         self.backend
             .as_ref()
@@ -97,11 +96,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> LofiInput<T, BUF_SIZE> {
             .unwrap_or(0)
     }
 }
-
-// Safety: UnsafeCell access guarded by single-threaded graph invariant.
-// buf is only accessed in generate() on the audio thread.
-unsafe impl<T: Transcendental, const BUF_SIZE: usize> Send for LofiInput<T, BUF_SIZE> {}
-unsafe impl<T: Transcendental, const BUF_SIZE: usize> Sync for LofiInput<T, BUF_SIZE> {}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LofiInput<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
@@ -124,10 +118,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LofiInput<T
         self.state.reset();
         self.lofi.reset();
     }
+    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
+        Some(self)
+    }
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
         self.lofi.get_parameter(id)
     }
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+        if id.as_str() == "io_write" {
+            if let Some(bytes) = value.as_bytes() {
+                self.write_to_backend(bytes);
+                return Ok(());
+            }
+            return Err(rill_core::ProcessError::parameter("io_write expects Bytes"));
+        }
         self.lofi.set_parameter(id, value)
     }
     fn input_port(&self, _: usize) -> Option<&Port<T, BUF_SIZE>> {
@@ -162,6 +166,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LofiInput<T
     }
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for LofiInput<T, BUF_SIZE> {
+    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+        self.backend = Some(backend);
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for LofiInput<T, BUF_SIZE> {
     fn generate(
         &mut self,
@@ -169,22 +179,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for LofiInput
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
     ) -> ProcessResult<()> {
-        if let Some(ref backend) = self.backend {
+        if let Some(ref io) = self.backend {
             let nch = self.outputs.len();
             if nch == 0 {
                 self.state.advance();
                 return Ok(());
             }
-            let bufs = unsafe { &mut *self.bufs.get() };
-            let mut channels: Vec<&mut [T]> = bufs.iter_mut().map(|b| &mut b[..]).collect();
-            let n = backend.read(&mut channels);
-            for buf in bufs.iter_mut() {
+            let mut channels: Vec<&mut [T]> = self.bufs.iter_mut().map(|b| &mut b[..]).collect();
+            let n = io.read(&mut channels);
+            for buf in self.bufs.iter_mut() {
                 for s in buf[..n.min(BUF_SIZE)].iter_mut() {
                     *s = T::from_f32(self.lofi.process_sample(s.to_f32()));
                 }
             }
             if n >= BUF_SIZE {
-                for (i, buf) in bufs.iter().enumerate() {
+                for (i, buf) in self.bufs.iter().enumerate() {
                     if let Some(port) = self.outputs.get_mut(i) {
                         port.buffer_mut().as_mut_array()[..BUF_SIZE]
                             .copy_from_slice(&buf[..BUF_SIZE]);

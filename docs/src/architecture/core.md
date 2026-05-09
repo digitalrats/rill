@@ -1,171 +1,153 @@
 # rill-core architecture
 
 The `rill-core` crate is the foundation of the Rill ecosystem — traits, math,
-buffers, queues, time, macros, and error types. It has **no audio-specific
-dependencies** and can be used in embedded, IoT, robotics, and signal
-processing contexts.
+buffers, queues, time, and error types.
+
+## Core traits
+
+### `Node`
+
+Base trait for all signal graph nodes. No `Send` or `Sync` bounds — nodes live on the
+audio thread exclusively.
+
+```rust
+pub trait Node<T: Transcendental, const BUF_SIZE: usize> {
+    fn metadata(&self) -> NodeMetadata;
+    fn init(&mut self, sample_rate: f32);
+    fn reset(&mut self);
+    fn id(&self) -> NodeId;
+    fn set_id(&mut self, id: NodeId);
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
+
+    // Downcasting helpers (default no-op)
+    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> { None }
+    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> { None }
+}
+```
+
+### `IoNode` and `ActiveNode`
+
+Two extension traits form a hierarchy for I/O-capable nodes:
+
+```rust
+pub trait IoNode<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
+    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>);
+}
+
+pub trait ActiveNode<T: Transcendental, const BUF_SIZE: usize>: IoNode<T, BUF_SIZE> {
+    fn run(
+        &mut self,
+        tick: Box<dyn FnMut(u64, f32)>,
+        running: Arc<AtomicBool>,
+    ) -> IoResult<()>;
+}
+```
+
+- **`IoNode`** — implemented by `Input`, `Output`, `LofiInput`. Receives a backend
+  during `GraphBuilder::build()`. Only nodes implementing this trait get backends.
+- **`ActiveNode`** — implemented by `Input` and `Output`. The single node in a graph
+  that drives the audio callback loop. `Graph::run()` calls `ActiveNode::run()` with
+  a tick closure that drains commands, processes the source, and propagates ports.
+
+`GraphBuilder::build()` uses `as_io_node_mut()` / `as_active_node_mut()` to detect
+which nodes implement these traits — no name-based matching required.
+
+### `Source`, `Processor`, `Sink`
+
+```rust
+pub trait Source<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
+    fn generate(&mut self, clock: &ClockTick, ctrl: &[T], clk: &[ClockTick]) -> ProcessResult<()>;
+}
+
+pub trait Processor<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
+    fn process(&mut self, clock: &ClockTick, signal: &[&[T; BUF_SIZE]], ...) -> ProcessResult<()>;
+}
+
+pub trait Sink<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
+    fn consume(&mut self, clock: &ClockTick, signal: &[&[T; BUF_SIZE]], ...) -> ProcessResult<()>;
+}
+```
+
+### `IoBackend` and `IoControl`
+
+Backends are owned by I/O nodes. No `Send + Sync` bounds — they live on
+the audio thread exclusively.
+
+```rust
+pub trait IoBackend<T: Scalar> {
+    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>);
+    fn read(&self, channels: &mut [&mut [T]]) -> usize;
+    fn write(&self, channels: &[&[T]]) -> usize;
+    fn run(&self, running: Arc<AtomicBool>) -> IoResult<()>;
+    fn stop(&self) -> IoResult<()>;
+    fn as_control(&self) -> Option<&dyn IoControl> { None }
+}
+
+pub trait IoControl {
+    fn write_data(&self, data: &[u8]) -> usize;
+}
+```
+
+`IoControl::write_data()` receives raw bytes — interpretation is
+backend-specific (e.g. AY-3-8910 register writes, MIDI, proprietary
+protocols).  Control actors send bytes via `ParamValue::Bytes` through
+the standard command queue.
+
+### `ParamValue`
+
+```rust
+pub enum ParamValue {
+    Float(f32),
+    Int(i32),
+    Bool(bool),
+    String(String),
+    Choice(String),
+    Bytes(Vec<u8>),  // for IoControl::write_data()
+}
+```
+
+## Queues
+
+Non-blocking SPSC queue for dual-thread communication:
+
+```rust
+use rill_core::queues::{MpscQueue, SetParameter};
+
+let cmd_queue = Arc::new(MpscQueue::<SetParameter>::with_capacity(64));
+
+// Control thread
+cmd_queue.push(SetParameter::new(port, param, value, SignalOrigin::Manual));
+
+// Audio thread (in tick closure)
+while let Some(cmd) = cmd_queue.pop() {
+    nodes[cmd.target].set_parameter(&cmd.parameter, cmd.value);
+}
+```
+
+## `ClockTick`
+
+Sample-accurate timing sent from audio to control thread:
+
+```rust
+pub struct ClockTick {
+    pub sample_pos: u64,
+    pub samples_since_last: u32,
+    pub is_new_block: bool,
+    pub sample_rate: f32,
+    pub tempo: Option<f32>,
+}
+```
 
 ## Module tree
 
 ```
 rill-core/
-├── lib.rs                 # Root module, re-exports
-├── prelude.rs             # Convenience prelude
-├── config.rs              # Configuration
-├── error.rs               # Error system
-├── utils.rs               # Utilities
-├── interpolate.rs         # Fractional-index interpolation
-├── traits/
-│   ├── mod.rs             # Node, Source, Processor, Sink
-│   ├── node.rs            # Nodes and identifiers
-│   ├── port.rs            # Ports
-│   ├── param.rs           # Parameters
-│   ├── processable.rs     # Processing interface
-│   ├── error.rs           # Trait errors
-│   ├── action.rs          # Node actions
-│   └── algorithm.rs       # Algorithm trait
-├── math/
-│   ├── mod.rs             # Numeric type abstractions
-│   ├── num.rs             # Scalar + Transcendental traits
-│   ├── vector/            # Vector<T, N>, ScalarVector, SIMD
-│   ├── conversions.rs     # Conversions
-│   └── functions.rs       # Functions
-├── buffer/
-│   ├── mod.rs             # PipeBuffer, FanOutBuffer, etc.
-│   ├── pipe.rs            # Point-to-point connections
-│   ├── fan.rs             # Fan-out and fan-in
-│   ├── delay.rs           # Delay line
-│   ├── ring.rs            # Ring buffer
-│   ├── storage.rs         # AtomicCell
-│   ├── pool.rs            # Buffer pool
-│   └── port_buffer.rs     # Port-owned buffer
-├── queues/
-│   ├── mod.rs             # Command and telemetry queues
-│   ├── rt_queue.rs        # Real-time queue
-│   ├── spsc.rs            # Single-producer single-consumer
-│   ├── mpsc.rs            # Multi-producer single-consumer
-│   ├── ring.rs            # Ring queue
-│   ├── command.rs         # Commands
-│   ├── telemetry.rs       # Telemetry
-│   ├── signal.rs          # Signals
-│   ├── observer.rs        # Observers
-│   ├── atomic.rs          # Atomic operations
-│   └── error.rs           # Queue errors
-├── time/
-│   ├── mod.rs             # Time and clock signals
-│   ├── clock.rs           # Clock and ClockSource traits
-│   ├── source.rs          # Clock implementations
-│   ├── tick.rs            # ClockTick
-│   └── error.rs           # Time errors
-└── macros/
-    ├── mod.rs             # Macros
-    ├── source.rs          # source_node!
-    ├── processor.rs       # processor_node!
-    ├── sink.rs            # sink_node!
-    ├── params.rs          # Parameters
-    ├── ports.rs           # Ports
-    └── tests.rs           # Macro tests
-```
-
-## Key components
-
-### buffer
-
-Real-time safe buffers for single-threaded signal processing:
-
-- `PipeBuffer` — single-producer single-consumer
-- `FanOutBuffer` — broadcast to multiple consumers
-- `FanInBuffer` — mix multiple producers
-- `DelayLine` — circular buffer with configurable delay
-- `TapeLoop` — heap-allocated circular buffer for large delays
-- `RingBuffer` — lock-free ring buffer for I/O
-
-```rust
-use rill_core::buffer::{PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine};
-
-let mut pipe = PipeBuffer::new(1024);
-pipe.write(&[1.0, 2.0, 3.0]);
-let read = pipe.read(3);
-```
-
-### macros
-
-Convenience macros for creating nodes without boilerplate:
-
-```rust
-use rill_core::macros::{processor, sink, source};
-
-processor!(Gain, |sample, _| sample * 0.5);
-sink!(Logger, |sample, _| println!("{}", sample));
-source!(Silence, || 0.0);
-```
-
-### math
-
-Numeric trait hierarchy:
-
-- **`Scalar`** — arithmetic, `min`/`max`/`clamp`/`abs`. Implemented for `f32`, `f64`, `i8`, `i16`, `i32`, `i64`.
-- **`Transcendental`** — extends `Scalar` with `sin`, `cos`, `sqrt`, `exp`, `ln`, `PI`. Only `f32`, `f64`.
-- **`Vector<T: Scalar, N>`** — SIMD-ready vector operations for any `Scalar`.
-
-```rust
-use rill_core::math::Scalar;
-
-fn scale<T: Scalar>(v: ScalarVector4<T>) -> ScalarVector4<T> {
-    v * T::from_f32(0.5)
-}
-```
-
-### queues
-
-Non-blocking queues for dual-thread communication (control ↔ audio):
-
-```rust
-use rill_core::queues::{CommandQueue, CommandEnum, SetParameter};
-
-let mut queue = CommandQueue::new();
-queue.send(CommandEnum::SetParameter(SetParameter {
-    node_id: 1,
-    param_id: "cutoff".to_string(),
-    value: 1000.0,
-}));
-```
-
-| Queue | Atomic | Alloc | Use case |
-|-------|--------|-------|----------|
-| `SpscQueue<T, CAP>` | yes | no | High-throughput SPSC |
-| `MpscQueue<T>` | yes | yes | Multi-producer to audio thread |
-| `RingQueue<T, CAP>` | yes | no | Lock-free delay line |
-
-### time
-
-Clock and timing abstractions:
-
-```rust
-use rill_core::time::{Clock, SystemClock};
-
-let clock = SystemClock::new(44100.0);
-let pos = clock.position_samples();
-clock.advance(64);
-```
-
-### error
-
-Typed error system with category codes:
-
-```rust
-use rill_core::{SignalError, SignalResult};
-
-fn safe_process() -> SignalResult<()> {
-    Ok(())
-}
-```
-
-### prelude
-
-Convenience re-export of common types:
-
-```rust
-use rill_core::prelude::*;
-// Node, Scalar, Transcendental, PipeBuffer, CommandQueue, Clock, etc.
+├── traits/   — Node, Source, Processor, Sink, ParamValue, Port
+├── math/     — Scalar, Transcendental, Vector
+├── buffer/   — PipeBuffer, DelayLine, RingBuffer, FixedBuffer
+├── queues/   — MpscQueue, SetParameter, Telemetry
+├── time/     — ClockTick, SystemClock
+├── io/       — IoBackend, IoControl, IoResult
+└── macros/   — source_node!, processor_node!, sink_node!
 ```

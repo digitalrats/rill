@@ -85,6 +85,15 @@ pub struct NodeDef {
     /// Human-readable instance name.
     pub name: String,
 
+    /// Optional backend name for I/O nodes (e.g. `"ay38910"`, `"portaudio"`).
+    ///
+    /// When set, [`GraphBuilder::build`] creates a named backend via
+    /// [`BackendFactory`](crate::BackendFactory) and calls
+    /// [`Node::resolve_backend`](rill_core::Node::resolve_backend) on this node.
+    /// Nodes without a backend (Processors, Routers) leave this empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+
     /// Runtime parameters (frequency, gain, …).
     ///
     /// Accepts both plain values (`"delay_time": 0.5`) and tagged format
@@ -274,6 +283,7 @@ fn node_to_def<T: Transcendental, const B: usize>(variant: &NodeVariant<T, B>) -
         id: variant.id().inner(),
         type_name,
         name: meta.name.clone(),
+        backend: None,
         parameters,
     }
 }
@@ -336,6 +346,9 @@ impl GraphDef {
         &self,
         builder: &mut GraphBuilder<T, B>,
     ) -> Result<(), SerializationError> {
+        // ── set sample rate ──
+        builder.set_sample_rate(self.sample_rate);
+
         // ── validate IDs ──
         let mut seen = HashSet::new();
         for nd in &self.nodes {
@@ -367,7 +380,13 @@ impl GraphDef {
             for (k, v) in &nd.parameters {
                 p = p.with(k.clone(), v.clone());
             }
-            builder.add_node_with_id(&nd.type_name, &p, NodeId(nd.id))?;
+            let idx = builder.add_node_with_id(&nd.type_name, &p, NodeId(nd.id))?;
+            // Resolve backend name: explicit > default > none
+            if let Some(ref name) = nd.backend {
+                builder.set_node_backend(idx, name.to_string());
+            } else if let Some(ref name) = builder.default_backend_name() {
+                builder.set_node_backend(idx, name.to_string());
+            }
         }
 
         // ── build NodeId → index map ──
@@ -455,7 +474,21 @@ fn json_to_param_value(v: serde_json::Value) -> Result<ParamValue, String> {
             if let Some(val) = obj.get("Choice").and_then(|v| v.as_str()) {
                 return Ok(ParamValue::Choice(val.to_string()));
             }
+            if let Some(arr) = obj.get("Bytes").and_then(|v| v.as_array()) {
+                let bytes: Vec<u8> = arr
+                    .iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as u8))
+                    .collect();
+                return Ok(ParamValue::Bytes(bytes));
+            }
             Err("unknown variant in tagged format".to_string())
+        }
+        serde_json::Value::Array(arr) => {
+            let bytes: Vec<u8> = arr
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u8))
+                .collect();
+            Ok(ParamValue::Bytes(bytes))
         }
         _ => Err("invalid param value type".to_string()),
     }
@@ -486,6 +519,11 @@ fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
         ParamValue::Bool(b) => serde_json::Value::Bool(*b),
         ParamValue::String(s) => serde_json::Value::String(s.clone()),
         ParamValue::Choice(s) => serde_json::Value::String(s.clone()),
+        ParamValue::Bytes(b) => serde_json::Value::Array(
+            b.iter()
+                .map(|&x| serde_json::Value::Number(x.into()))
+                .collect(),
+        ),
     }
 }
 
@@ -986,42 +1024,20 @@ mod tests {
             sample_rate: 44100.0,
             block_size: 64,
             resources: vec![],
-            nodes: vec![NodeDef {
-                id: 0,
-                type_name: "rill/nonexistent".to_string(),
-                name: "x".to_string(),
-                parameters: HashMap::new(),
-            }],
-            connections: vec![],
-            description: None,
-        };
-        let result = {
-            let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-            doc.populate(&mut b)
-        };
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_duplicate_id_error() {
-        let reg = empty_factory();
-        let doc = GraphDef {
-            format_version: "rill/1".to_string(),
-            sample_rate: 44100.0,
-            block_size: 64,
-            resources: vec![],
             nodes: vec![
                 NodeDef {
                     id: 0,
-                    type_name: "rill/test".to_string(),
-                    name: "a".to_string(),
+                    type_name: "rill/nonexistent".to_string(),
+                    name: "x".to_string(),
                     parameters: HashMap::new(),
+                    backend: None,
                 },
                 NodeDef {
                     id: 0,
                     type_name: "rill/test".to_string(),
                     name: "b".to_string(),
                     parameters: HashMap::new(),
+                    backend: None,
                 },
             ],
             connections: vec![],

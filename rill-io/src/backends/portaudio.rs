@@ -146,7 +146,6 @@ impl IoBackend<f32> for PortAudioBackend {
             let mut stream = pa
                 .open_non_blocking_stream(settings, {
                     let oslot = oslot.clone();
-                    let process_cb = process_cb;
                     let running = running.clone();
                     move |args: pa::OutputStreamCallbackArgs<f32>| {
                         if !running.load(Ordering::Acquire) {
@@ -190,7 +189,6 @@ impl IoBackend<f32> for PortAudioBackend {
             let mut stream = pa
                 .open_non_blocking_stream(settings, {
                     let iring = iring.clone();
-                    let process_cb = process_cb;
                     let has_output = out_channels > 0;
                     let block_samps = buf_frames * in_channels as usize;
                     move |args: pa::InputStreamCallbackArgs<f32>| {

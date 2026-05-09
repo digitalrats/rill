@@ -172,28 +172,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NodeVariant
             NodeVariant::Sink(sink) => sink.resolve_resources(buffers),
         }
     }
-    fn resolve_backend(&mut self, backend: *mut dyn crate::io::IoBackend<T>) {
+    fn as_io_node_mut(&mut self) -> Option<&mut dyn crate::traits::node::IoNode<T, BUF_SIZE>> {
         match self {
-            NodeVariant::Source(src) => src.resolve_backend(backend),
-            NodeVariant::Processor(proc) => proc.resolve_backend(backend),
-            NodeVariant::Router(rt) => rt.resolve_backend(backend),
-            NodeVariant::Sink(sink) => sink.resolve_backend(backend),
+            NodeVariant::Source(src) => src.as_io_node_mut(),
+            NodeVariant::Processor(proc) => proc.as_io_node_mut(),
+            NodeVariant::Router(rt) => rt.as_io_node_mut(),
+            NodeVariant::Sink(sink) => sink.as_io_node_mut(),
         }
     }
-    fn start(&mut self, handle: crate::traits::active::GraphHandle) {
+    fn as_active_node_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::traits::node::ActiveNode<T, BUF_SIZE>> {
         match self {
-            NodeVariant::Source(src) => src.start(handle),
-            NodeVariant::Processor(proc) => proc.start(handle),
-            NodeVariant::Router(rt) => rt.start(handle),
-            NodeVariant::Sink(sink) => sink.start(handle),
-        }
-    }
-    fn stop(&mut self) {
-        match self {
-            NodeVariant::Source(src) => src.stop(),
-            NodeVariant::Processor(proc) => proc.stop(),
-            NodeVariant::Router(rt) => rt.stop(),
-            NodeVariant::Sink(sink) => sink.stop(),
+            NodeVariant::Source(src) => src.as_active_node_mut(),
+            NodeVariant::Processor(proc) => proc.as_active_node_mut(),
+            NodeVariant::Router(rt) => rt.as_active_node_mut(),
+            NodeVariant::Sink(sink) => sink.as_active_node_mut(),
         }
     }
     fn reset(&mut self) {
