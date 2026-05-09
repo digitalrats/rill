@@ -39,6 +39,8 @@ pub mod analysis;
 /// Physical constants and tolerances
 pub mod constants;
 mod elements;
+/// Analog tape recording and playback head models
+pub mod tape;
 
 #[cfg(feature = "simd")]
 pub mod simd;
@@ -47,7 +49,7 @@ pub mod simd;
 pub mod filters;
 
 pub use adapters::{ParallelAdapter, SeriesAdapter};
-pub use elements::{Capacitor, Diode, Inductor, Resistor};
+pub use elements::{Capacitor, Diode, Inductor, OpAmp, Resistor};
 
 /// Wave port type for WDF adapters
 #[derive(Debug, Clone, Copy, PartialEq)]

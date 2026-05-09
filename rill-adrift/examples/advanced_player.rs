@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend_name = backend_name.clone();
         let wav_path = wav_path.clone();
         std::thread::spawn(move || {
-            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+            let mut graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
 
             // Send parameter changes via the actor mailbox
             if let Some(handle) = graph.handle() {

@@ -1,57 +1,50 @@
 # rill-io
 
-Audio I/O backends — ALSA, CPAL, PipeWire, JACK.
+Audio I/O backends — PortAudio, ALSA, PipeWire, JACK.
 
-This crate provides I/O backends and the `AudioInput`/`AudioOutput` graph
-nodes that own the reactive stream (PipeWire callback or similar).
+This crate provides I/O backends and the `Output`/`Input` graph
+nodes that own the reactive stream (process callback or similar).
 
-All backends implement [`AudioIo`] — a trait for reactive stream processing:
-`set_process_callback`, `read_input`, `write_output`, `start`, `stop`.
+All backends implement [`IoBackend`] — a trait for reactive stream processing:
+`set_process_callback`, `read`, `write`, `run`, `stop`.
+
+The process callback receives the actual negotiated sample rate (`f32`)
+from the backend so that `ClockTick` always contains the true device rate.
 
 ## Nodes
 
-- **`AudioInput`** — `Source` node (push model). Owns the backend
-  (`Box<dyn AudioIo>`). Creates the process callback via [`start()`].
-  Backend can be created externally via [`set_backend()`] or by name via
-  [`init_backend()`].
+- **`Output`** — `Sink` node. Borrows backend via [`IoBackendPtr`].
+  `start()` registers the process callback and drives the graph:
+
   ```rust
-  let mut input = AudioInput::<f32, 256>::new();
-  input.init_backend("pipewire", config)?;
-  input.start(nodes_ptr, source_idx, drain_fn, sample_rate);
+  let mut output = Output::<f32, 256>::with_channels(2);
   ```
 
-- **`AudioOutput`** — `Sink` node (push model or pull model). Borrows
-  backend via [`AudioIoPtr`]. In pull model, [`set_active()`] stores the
-  source index and [`start()`] drives the graph from that source:
-  ```rust
-  let mut output = AudioOutput::<f32, 256>::new();
-  output.set_backend(ptr);
-  output.set_active(source_idx);
-  output.start(nodes_ptr, drain_fn, sample_rate);
-  ```
-
-## Processing models
-
-| Model | Active node | Callback owner |
-|-------|-------------|----------------|
-| **Push** | `AudioInput` (Source) | `AudioInput::start()` |
-| **Pull** | `AudioOutput` (Sink) | `AudioOutput::start()` |
+- **`Input`** — `Source` node (push model). Borrows backend via
+  [`IoBackendPtr`]. `start()` registers the process callback.
 
 In both cases the callback does:
 1. Drain `MpscQueue<ParameterCommand>` into graph nodes
-2. `process_block()` on the source → `generate()` fills output ports
-3. `Port::propagate()` — recursive DAG traversal, data lands in port buffers
-4. `AudioOutput::consume()` reads from its input ports → `write_output()`
+2. Create `ClockTick` with the backend‑supplied sample rate
+3. `process_block()` on the driver node
+4. `Port::propagate()` — recursive DAG traversal
 
 ## Backends
 
-| Backend | Feature | AudioIo | Mechanism |
-|---------|---------|---------|-----------|
-| `NullBackend` | *(always)* | ✅ | No-op, for testing |
-| `PipewireBackend` | `pipewire` | ✅ | RT callback (PW thread) |
-| `JackBackend` | `jack` | ✅ | RT callback (JACK thread) |
-| `AlsaBackend` | `alsa` | ✅ | `snd_pcm_wait()` — event‑driven |
-| `CpalBackend` | `cpal` | ✅ | Thread + polling |
+| Backend | Feature | Thread model |
+|---------|---------|-------------|
+| `PortAudioBackend` | `portaudio` (default) | RT callback, exact buffer size |
+| `PipewireBackend` | `pipewire` | RT callback (PW thread) |
+| `JackBackend` | `jack` | RT callback (JACK thread) |
+| `AlsaBackend` | `alsa` | `snd_pcm_wait()` — poll‑driven, exact period required |
+| `NullBackend` | *(always)* | No‑op, for testing |
+
+Sample rate negotiation:
+- **JACK**: reads `client.sample_rate()` after activation
+- **ALSA**: queries `hw.get_rate()` after `set_rate(Nearest)`, checks `hw.get_period_size() == BUF_SIZE`
+- **PipeWire**: output uses requested rate, input reads negotiated rate atomically
+- **PortAudio**: opens stream with exact requested rate and buffer size
+- **Null**: uses `config.sample_rate` directly
 
 ## Links
 

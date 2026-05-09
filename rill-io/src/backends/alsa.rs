@@ -9,12 +9,10 @@ const MAX_BLOCK_SAMPLES: usize = 8192;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use alsa::pcm::{Access, Format, HwParams};
 use alsa::{Direction, ValueOr, PCM};
 
-use crate::backend::{AudioBackend, BackendType};
 use crate::buffer::IoRingBuffer;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
@@ -27,23 +25,21 @@ use rill_core::io::IoBackend;
 
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
-unsafe impl Send for CbSlot {}
-unsafe impl Sync for CbSlot {}
 
 impl CbSlot {
     fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn()>>)) as usize)
+        Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
     }
-    unsafe fn set(&self, cb: Box<dyn Fn()>) {
-        (*(self.0 as *mut Option<Box<dyn Fn()>>)) = Some(cb);
+    unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
+        (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
     }
-    unsafe fn call(&self) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn()>>) {
-            cb();
+    unsafe fn call(&self, sr: f32) {
+        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn(f32)>>) {
+            cb(sr);
         }
     }
     unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn()>>));
+        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn(f32)>>));
     }
 }
 
@@ -60,9 +56,6 @@ pub struct AlsaBackend {
     input_buffer: Arc<IoRingBuffer>,
     running: Arc<AtomicBool>,
 }
-
-unsafe impl Send for AlsaBackend {}
-unsafe impl Sync for AlsaBackend {}
 
 impl fmt::Debug for AlsaBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -104,16 +97,24 @@ fn alsa_io_loop(
     let out_dev = config.output_device.as_deref().unwrap_or("default");
 
     // Open playback PCM only if output is configured
+    let mut negotiated_rate = config.sample_rate as f32;
+    let period_frames;
     let pcm_playback: Option<PCM> = if config.output_channels > 0 {
         match PCM::new(out_dev, Direction::Playback, false) {
             Ok(pcm) => {
-                if let Err(e) = configure_pcm(&pcm, config.output_channels, config) {
-                    eprintln!("ALSA configure playback: {}", e);
-                    return;
+                match configure_pcm(&pcm, config.output_channels, config) {
+                    Ok((rate, period)) => {
+                        negotiated_rate = rate as f32;
+                        period_frames = period as usize;
+                    }
+                    Err(e) => {
+                        eprintln!("ALSA configure playback: {}", e);
+                        return;
+                    }
                 }
                 // Start playback after buffer has 2 processing blocks.
                 if let Ok(sw) = pcm.sw_params_current() {
-                    let _ = sw.set_start_threshold((config.buffer_size * 2) as alsa::pcm::Frames);
+                    let _ = sw.set_start_threshold((period_frames * 2) as alsa::pcm::Frames);
                     let _ = pcm.sw_params(&sw);
                 }
                 Some(pcm)
@@ -206,7 +207,7 @@ fn alsa_io_loop(
         // Generate one block
         unsafe {
             output_slot.set(OutputWindow::new(f32_buf.as_mut_ptr(), chunk_samples));
-            process_cb.call();
+            process_cb.call(negotiated_rate);
             output_slot.clear();
         }
 
@@ -254,7 +255,7 @@ fn alsa_io_loop(
 // PCM configuration
 // ============================================================================
 
-fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()> {
+fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<(u32, u32)> {
     let hw = HwParams::any(pcm).map_err(|e| IoError::Config(e.to_string()))?;
     hw.set_access(Access::RWInterleaved)
         .map_err(|e| IoError::Config(e.to_string()))?;
@@ -270,9 +271,19 @@ fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()>
         .map_err(|e| IoError::Config(e.to_string()))?;
     hw.set_period_size(config.buffer_size as alsa::pcm::Frames, ValueOr::Nearest)
         .map_err(|e| IoError::Config(e.to_string()))?;
+    let negotiated_rate = hw.get_rate().map_err(|e| IoError::Config(e.to_string()))?;
+    let negotiated_period = hw
+        .get_period_size()
+        .map_err(|e| IoError::Config(e.to_string()))?;
+    if negotiated_period != config.buffer_size as alsa::pcm::Frames {
+        return Err(IoError::Config(format!(
+            "ALSA period mismatch: requested {}, got {}. Use a different backend (portaudio, pipewire, jack).",
+            config.buffer_size, negotiated_period
+        )));
+    }
     pcm.hw_params(&hw)
         .map_err(|e| IoError::Config(e.to_string()))?;
-    Ok(())
+    Ok((negotiated_rate, negotiated_period as u32))
 }
 
 // ============================================================================
@@ -280,7 +291,7 @@ fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<()>
 // ============================================================================
 
 impl IoBackend<f32> for AlsaBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn()>) {
+    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
         unsafe {
             self.process_cb.set(cb);
         }
@@ -304,23 +315,21 @@ impl IoBackend<f32> for AlsaBackend {
     }
 
     fn write(&self, channels: &[&[f32]]) -> usize {
-        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-        if frames == 0 {
+        let nch = self.config.output_channels as usize;
+        if nch == 0 {
             return 0;
         }
+        let frames = channels[0].len();
         unsafe {
             if let Some(win) = self.output_slot.as_mut() {
-                let cap = win.capacity().min(frames * 2);
+                let cap = win.capacity().min(frames * nch);
                 let dst = win.as_mut_slice();
-                for i in 0..(cap / 2) {
-                    if let Some(ch) = channels.first() {
-                        dst[i * 2] = ch[i];
-                    }
-                    if let Some(ch) = channels.get(1) {
-                        dst[i * 2 + 1] = ch[i];
+                for i in 0..frames {
+                    for ch in 0..nch {
+                        dst[i * nch + ch] = channels[ch][i];
                     }
                 }
-                cap / 2
+                cap / nch
             } else {
                 0
             }
@@ -343,77 +352,6 @@ impl IoBackend<f32> for AlsaBackend {
     fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
         Ok(())
-    }
-}
-
-// ============================================================================
-// AudioBackend impl
-// ============================================================================
-
-impl AudioBackend for AlsaBackend {
-    fn backend_type(&self) -> BackendType {
-        BackendType::Alsa
-    }
-    fn config(&self) -> &AudioConfig {
-        &self.config
-    }
-    fn config_mut(&mut self) -> &mut AudioConfig {
-        &mut self.config
-    }
-
-    fn init(&mut self) -> IoResult<()> {
-        let cap = self.input_buffer.capacity();
-        self.input_buffer.write(&vec![0.0f32; cap]);
-        Ok(())
-    }
-
-    fn start(&mut self) -> IoResult<()> {
-        self.running.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    fn stop(&mut self) -> IoResult<()> {
-        self.running.store(false, Ordering::Release);
-        Ok(())
-    }
-
-    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        Ok(self.input_buffer.read(buffer))
-    }
-
-    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        Ok(buffer.len())
-    }
-
-    fn xruns(&self) -> u32 {
-        self.xruns.load(Ordering::Acquire)
-    }
-
-    fn latency(&self) -> Duration {
-        Duration::from_micros(
-            (1_000_000.0 * self.config.buffer_size as f64 / self.config.sample_rate as f64) as u64,
-        )
-    }
-
-    fn list_input_devices(&self) -> Vec<String> {
-        vec![
-            "default".into(),
-            "hw:0,0".into(),
-            "hw:1,0".into(),
-            "plughw:0,0".into(),
-            "plughw:1,0".into(),
-        ]
-    }
-
-    fn list_output_devices(&self) -> Vec<String> {
-        vec![
-            "default".into(),
-            "hw:0,0".into(),
-            "hw:1,0".into(),
-            "plughw:0,0".into(),
-            "plughw:1,0".into(),
-            "dmix:0".into(),
-        ]
     }
 }
 

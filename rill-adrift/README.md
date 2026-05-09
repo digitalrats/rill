@@ -14,8 +14,8 @@ crates for signal processing application development.
 | `sampler` | `rill-sampler` (sample playback) | yes |
 | `analog` | `rill-core-wdf` + `rill-analog-filters` + `rill-analog-effects` | no |
 | `serialization` | graph/patchbay serialization (JSON/CBOR) | yes |
+| `portaudio` | PortAudio backend (implies `io`) | no |
 | `alsa` | ALSA backend (implies `io`) | no |
-| `cpal` | CPAL backend (implies `io`) | no |
 | `jack` | JACK backend (implies `io`) | no |
 | `pipewire` | PipeWire backend (implies `io`) | no |
 

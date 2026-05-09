@@ -1,155 +1,83 @@
-use crate::OperationalAmplifier;
-use rill_core_wdf::{Capacitor, Inductor, WdfElement};
+use rill_core_wdf::tape::{PlaybackHead, RecordHead};
+use rill_core_wdf::OpAmp;
 
-/// Cassette deck model (Sony TC-260 style)
+/// Cassette deck model (Sony TC-260 style).
 ///
-/// Models tape recording and playback with non-linearities,
-/// wow & flutter, and tape noise.
+/// Combines `RecordHead`, `PlaybackHead`, and op-amp stages for the full
+/// record + playback chain. For tape delay applications, use the head
+/// models directly with `TapeLoop`.
 #[derive(Debug, Clone)]
-pub struct CassetteDeckModel {
-    /// Sample rate in Hz.
-    pub sample_rate: f64,
-
-    input_amp: OperationalAmplifier,
-    bias_oscillator: f64,
-    record_head: Inductor<f64>,
-    #[allow(dead_code)]
-    playback_head: Inductor<f64>,
-    eq_filters: [Capacitor<f64>; 2],
-    output_amp: OperationalAmplifier,
-
-    /// Tape speed in cm/s (default 4.76 for compact cassette).
-    pub tape_speed: f64,
-    #[allow(dead_code)]
-    tape_width: f64,
-    /// Bias level (0.0–1.0).
-    pub bias_level: f64,
-    /// Tape noise floor amplitude.
-    pub noise_floor: f64,
-
-    hysteresis: f64,
-    saturation: f64,
-    print_through: f64,
-    /// Wow & flutter intensity factor.
-    pub wow_flutter: f64,
-
-    tape_position: f64,
-    wow_phase: f64,
-    flutter_phase: f64,
+pub struct CassetteDeck {
+    sample_rate: f64,
+    record: RecordHead<f64>,
+    playback: PlaybackHead<f64>,
+    input_amp: OpAmp<f64>,
+    output_amp: OpAmp<f64>,
 }
 
-impl CassetteDeckModel {
-    /// Create a new cassette deck model at the given sample rate
+impl CassetteDeck {
+    /// Create a new cassette deck model at the given sample rate.
     pub fn new(sample_rate: f64) -> Self {
         Self {
             sample_rate,
-
-            input_amp: OperationalAmplifier::new(10.0, 0.5, 1e6),
-            bias_oscillator: 100_000.0,
-            record_head: Inductor::<f64>::new(100e-6, sample_rate),
-            playback_head: Inductor::<f64>::new(50e-6, sample_rate),
-            eq_filters: [
-                Capacitor::<f64>::new(100e-9, sample_rate),
-                Capacitor::<f64>::new(1e-6, sample_rate),
-            ],
-            output_amp: OperationalAmplifier::new(5.0, 0.5, 1e6),
-
-            tape_speed: 4.76,
-            tape_width: 3.81,
-            bias_level: 0.8,
-            noise_floor: 0.0001,
-
-            hysteresis: 0.1,
-            saturation: 0.9,
-            print_through: 0.01,
-            wow_flutter: 0.002,
-
-            tape_position: 0.0,
-            wow_phase: 0.0,
-            flutter_phase: 0.0,
+            record: RecordHead::<f64>::new(sample_rate as f32),
+            playback: PlaybackHead::<f64>::new(sample_rate as f32),
+            input_amp: OpAmp::<f64>::new(10.0, 0.5, 1e6),
+            output_amp: OpAmp::<f64>::new(5.0, 0.5, 1e6),
         }
     }
 
     /// Set the tape speed (clamped to 1.19–19.05 cm/s).
     pub fn set_tape_speed(&mut self, speed_cm_per_sec: f64) {
-        self.tape_speed = speed_cm_per_sec.clamp(1.19, 19.05);
+        self.record.tape_speed = speed_cm_per_sec.clamp(1.19, 19.05);
+        self.playback.tape_speed = speed_cm_per_sec.clamp(1.19, 19.05);
+    }
+
+    /// Set the tape width in mm (clamped to 1.0–25.4).
+    pub fn set_tape_width(&mut self, width_mm: f64) {
+        self.playback.tape_width = width_mm.clamp(1.0, 25.4);
     }
 
     /// Set the bias level (clamped to 0.0–1.0).
     pub fn set_bias_level(&mut self, bias: f64) {
-        self.bias_level = bias.clamp(0.0, 1.0);
+        self.record.bias_level = bias.clamp(0.0, 1.0);
     }
 
-    fn tape_nonlinearity(&self, signal: f64) -> f64 {
-        let saturated = signal.tanh() * self.saturation;
-        let hysteresis_effect = self.hysteresis * signal.signum() * 0.01;
-        saturated + hysteresis_effect
+    /// Access the record head model.
+    pub fn record_head(&self) -> &RecordHead<f64> {
+        &self.record
     }
 
-    fn wow_and_flutter(&mut self, dt: f64) -> f64 {
-        let wow_freq = 2.0;
-        self.wow_phase += 2.0 * std::f64::consts::PI * wow_freq * dt;
-        let wow = 0.01 * self.wow_flutter * self.wow_phase.sin();
-
-        let flutter_freq = 30.0;
-        self.flutter_phase += 2.0 * std::f64::consts::PI * flutter_freq * dt;
-        let flutter = 0.005 * self.wow_flutter * self.flutter_phase.sin();
-
-        wow + flutter
+    /// Access the record head model mutably.
+    pub fn record_head_mut(&mut self) -> &mut RecordHead<f64> {
+        &mut self.record
     }
 
-    fn tape_noise(&self) -> f64 {
-        let white_noise = (rand::random::<f64>() - 0.5) * 2.0;
-        let pink_noise = white_noise * self.noise_floor;
-
-        let click_probability = 0.0001;
-        let click = if rand::random::<f64>() < click_probability {
-            (rand::random::<f64>() - 0.5) * 0.1
-        } else {
-            0.0
-        };
-
-        pink_noise + click
+    /// Access the playback head model.
+    pub fn playback_head(&self) -> &PlaybackHead<f64> {
+        &self.playback
     }
 
-    /// Process recording step
+    /// Access the playback head model mutably.
+    pub fn playback_head_mut(&mut self) -> &mut PlaybackHead<f64> {
+        &mut self.playback
+    }
+
+    /// Process recording step: input_amp → record_head physics.
     pub fn process_record(&mut self, input: f64) -> f64 {
         let dt = 1.0 / self.sample_rate;
         let amplified = self.input_amp.process(input, dt);
-
-        let bias_phase = 2.0 * std::f64::consts::PI * self.bias_oscillator * dt;
-        let bias_signal = self.bias_level * bias_phase.sin();
-
-        let record_signal = amplified + bias_signal;
-        let recorded = self.tape_nonlinearity(record_signal);
-
-        let _head_current = recorded / self.record_head.port_resistance();
-        self.tape_position += self.tape_speed * dt;
-
-        recorded
+        self.record.process_sample(amplified)
     }
 
-    /// Process playback step
+    /// Process playback step: playback_head physics → output_amp.
     pub fn process_playback(&mut self, recorded_signal: f64) -> f64 {
         let dt = 1.0 / self.sample_rate;
-
-        let speed_variation = 1.0 + self.wow_and_flutter(dt);
-        let playback_voltage = recorded_signal * speed_variation;
-
-        let mut eq_signal = playback_voltage;
-        for filter in &mut self.eq_filters {
-            let alpha = 1.0 / (1.0 + filter.port_resistance() * 1000.0);
-            eq_signal *= alpha;
-        }
-
-        let print_through_signal = self.print_through * playback_voltage;
-        let noise = self.tape_noise();
-
-        let final_signal = eq_signal + print_through_signal + noise;
-        self.output_amp.process(final_signal, dt)
+        let signal = self.playback.process_sample(recorded_signal);
+        self.output_amp.process(signal, dt)
     }
 
-    /// Process one sample through record and playback chain
+    /// Process one sample through record and playback chain.
     pub fn process(&mut self, input: f64) -> f64 {
         let recorded = self.process_record(input);
         self.process_playback(recorded)
@@ -162,7 +90,7 @@ mod tests {
 
     #[test]
     fn test_cassette_deck_process() {
-        let mut deck = CassetteDeckModel::new(44100.0);
+        let mut deck = CassetteDeck::new(44100.0);
         let test_freq = 1000.0;
         let num_samples = 4410;
 
@@ -182,10 +110,10 @@ mod tests {
 
     #[test]
     fn test_cassette_deck_set_params() {
-        let mut deck = CassetteDeckModel::new(44100.0);
+        let mut deck = CassetteDeck::new(44100.0);
         deck.set_tape_speed(9.52);
         deck.set_bias_level(0.9);
-        assert!((deck.tape_speed - 9.52).abs() < 1e-10);
-        assert!((deck.bias_level - 0.9).abs() < 1e-10);
+        assert!((deck.record.tape_speed - 9.52).abs() < 1e-10);
+        assert!((deck.record.bias_level - 0.9).abs() < 1e-10);
     }
 }

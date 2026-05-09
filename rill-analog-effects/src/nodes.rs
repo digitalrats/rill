@@ -1,4 +1,4 @@
-use crate::CassetteDeckModel;
+use crate::CassetteDeck;
 use rill_core::prelude::*;
 
 /// Cassette deck emulation graph node.
@@ -12,7 +12,7 @@ pub struct CassetteDeckProcessor<T: Transcendental, const BUF_SIZE: usize> {
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
     /// The underlying cassette deck algorithm.
-    pub algorithm: CassetteDeckModel,
+    pub algorithm: CassetteDeck,
     /// Tape speed in cm/s.
     pub tape_speed: f32,
     /// Bias level (0.0–1.0).
@@ -53,7 +53,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE
             inputs,
             outputs,
             state: NodeState::new(sample_rate),
-            algorithm: CassetteDeckModel::new(sample_rate as f64),
+            algorithm: CassetteDeck::new(sample_rate as f64),
             tape_speed: 4.76,
             bias_level: 0.8,
             noise_floor: 0.0001,
@@ -64,8 +64,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> CassetteDeckProcessor<T, BUF_SIZE
     fn update_algorithm(&mut self) {
         self.algorithm.set_tape_speed(self.tape_speed as f64);
         self.algorithm.set_bias_level(self.bias_level as f64);
-        self.algorithm.noise_floor = self.noise_floor as f64;
-        self.algorithm.wow_flutter = self.wow_flutter as f64;
+        self.algorithm.playback_head_mut().noise_floor = self.noise_floor as f64;
+        self.algorithm.playback_head_mut().wow_flutter = self.wow_flutter as f64;
     }
 }
 
@@ -93,14 +93,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
 
     fn init(&mut self, sample_rate: f32) {
         self.state.sample_rate = sample_rate;
-        self.algorithm = CassetteDeckModel::new(sample_rate as f64);
+        self.algorithm = CassetteDeck::new(sample_rate as f64);
         self.update_algorithm();
     }
 
     fn reset(&mut self) {
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
-        self.algorithm = CassetteDeckModel::new(self.state.sample_rate as f64);
+        self.algorithm = CassetteDeck::new(self.state.sample_rate as f64);
         self.update_algorithm();
     }
 

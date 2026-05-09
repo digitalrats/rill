@@ -435,14 +435,16 @@ let output = opamp.process(0.3);
 ### `rill-io` (0.5.0-beta.2, active)
 Audio input/output. Pure I/O backends — no engine, no processors.
 
-Two traits:
+Single trait:
 
-- [`AudioBackend`] — low-level (`read`/`write`, used inside backends)
-- [`AudioIo`] — reactive stream (`set_process_callback`, `read_input`/`write_output`)
+- [`IoBackend`] — `set_process_callback(Fn(f32))`, `read`, `write`, `run`, `stop`
+
+The process callback receives the actual negotiated sample rate (`f32`)
+from the backend so that `ClockTick` always reflects the true device rate.
 
 Two graph nodes:
 
-- **`AudioInput`** (Source) — push model. Owns the backend (`Box<dyn AudioIo>`).
+- **`Output`** (Sink) — `start()` registers the callback, drives the graph.
   The backend can be created externally via `set_backend()` or by name via
   `init_backend("pipewire", config)`. `start()` sets the callback.
 - **`AudioOutput`** (Sink) — push or pull model. Borrows the backend via

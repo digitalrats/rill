@@ -3,7 +3,11 @@
 //! Usage:
 //!   cargo run --example play_wav -- [backend] [wav_path]
 //!
-//! Backend: "cpal" (default), "alsa", "pipewire", "jack", "null"
+//! Backend: "portaudio" (default), "alsa", "pipewire", "jack", "null"
+
+//! Usage:
+//!   cargo run --example play_wav -- [backend] [wav_path]
+//!   cargo run --example play_wav -- [wav_path]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,18 +22,38 @@ const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let args: Vec<String> = std::env::args().collect();
-    let backend_name = args.get(1).cloned().unwrap_or_else(|| "cpal".into());
-    let backend_display = backend_name.clone();
-    let wav_path = {
-        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        args.get(2).cloned().unwrap_or_else(|| {
+    let positional: Vec<&String> = args
+        .iter()
+        .skip(1)
+        .filter(|a| !a.starts_with("--"))
+        .collect();
+    let (backend_name, wav_path): (String, String) = match positional.len() {
+        0 => (
+            "portaudio".into(),
             crate_dir
                 .join("ESW Aura Inst - LoFi Steel - C.wav")
                 .to_string_lossy()
-                .to_string()
-        })
+                .to_string(),
+        ),
+        1 => {
+            let v = positional[0].as_str();
+            if v.ends_with(".wav") || std::path::Path::new(v).is_file() {
+                ("portaudio".into(), v.to_string())
+            } else {
+                (
+                    v.to_string(),
+                    crate_dir
+                        .join("ESW Aura Inst - LoFi Steel - C.wav")
+                        .to_string_lossy()
+                        .to_string(),
+                )
+            }
+        }
+        _ => (positional[0].clone(), positional[1].clone()),
     };
+    let backend_display = backend_name.clone();
 
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
@@ -44,16 +68,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sample.len()
         );
 
-        let mut rt = Runtime::<BUF>::new(RuntimeConfig::default());
+        let mut be_params = std::collections::HashMap::new();
+        be_params.insert("sample_rate".into(), RATE.to_string());
+        be_params.insert("buffer_size".into(), BUF.to_string());
+        be_params.insert("channels".into(), "2".to_string());
 
-        let mut params = std::collections::HashMap::new();
-        params.insert(
-            "sample_rate".into(),
-            rill_core::ParamValue::Int(RATE as i32),
-        );
-        params.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
-        params.insert("channels".into(), rill_core::ParamValue::Int(2));
-        rt.set_default_backend(&backend_name, params);
+        let rt = Runtime::<BUF>::new(RuntimeConfig {
+            sample_rate: RATE,
+            block_size: BUF,
+            backend_name: Some(backend_name.clone()),
+            backend_params: be_params,
+            ..Default::default()
+        });
 
         let mut builder = rt.create_builder();
 
@@ -73,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder.connect_signal(fx, 0, snk, 0);
         builder.connect_signal(src, 1, snk, 1);
 
-        let graph = builder.build().expect("graph build");
+        let mut graph = builder.build().expect("graph build");
 
         graph.run(t_run).ok();
     });

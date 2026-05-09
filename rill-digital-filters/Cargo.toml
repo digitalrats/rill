@@ -1,6 +1,6 @@
 [package]
 name = "rill-digital-filters"
-version = "0.5.0-beta.3"
+version = "0.5.0-beta.4"
 edition = "2021"
 description = "Digital filters for Rill - Biquad, OnePole, StateVariable, etc."
 license.workspace = true

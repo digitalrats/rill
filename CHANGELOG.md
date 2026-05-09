@@ -1,5 +1,77 @@
 # CHANGELOG
 
+## [0.5.0-beta.4] — 2026-05-08
+
+### ✨ New
+
+- **`IoNode` / `ActiveNode` trait hierarchy** in `rill-core::traits::node`:
+  - `Node` — base trait, no backend, no run method
+  - `IoNode: Node` — `resolve_backend(backend)` for I/O-capable nodes
+  - `ActiveNode: IoNode` — `run(tick, running)` for the single driver node
+  - `as_io_node_mut()` / `as_active_node_mut()` downcasting helpers on `Node`
+  - `Input`, `Output`, `LofiInput` implement `IoNode`
+  - `Input`, `Output` implement `ActiveNode`
+  - `GraphBuilder::build()` uses downcasting instead of name-based matching
+  - `Graph::run()` calls `ActiveNode::run()` instead of `Node::run()`
+  - `GraphRunner` trait removed — replaced by `Box<dyn FnMut(u64, f32)>`
+  - Inherent `resolve_backend()` convenience methods on `Input`/`Output`
+
+- **Chip emulator architecture** — unified model for vintage sound chips:
+  - `Ay38910Chip` + `Ay38910Backend` — AY-3-8910 / YM2149 (3 tone, noise, envelope)
+  - `NesChip` + `NesBackend` — NES 2A03 APU (2 pulse + sweep, triangle, noise, DPCM)
+  - `IoControl` trait in `rill-core::io` — uniform register write interface
+  - `LofiInput<T, BUF_SIZE>` — `Source` node wrapping any `IoBackend` with lofi processing
+
+- **WDF tape module** in `rill-core-wdf`:
+  - `RecordHead<T>`, `PlaybackHead<T>` — analog tape physics, `Algorithm<T>`
+  - `OpAmp<T>` — operational amplifier as `WdfElement<T>`
+  - `CassetteDeck` in `rill-analog-effects` refactored to use heads from `rill-core-wdf`
+
+- **`Transcendental` trait extended**: `tanh()`, `signum()`, `random()` — enables
+  stochastic modeling in generic WDF/dsp code
+
+- **NES 2A03 sweep unit** — full hardware sweep emulation (divider, direction, shift,
+  period underflow/overflow mute)
+
+### 🔧 Fixes
+
+- **`rill-io`**: `set_process_callback` signature changed from `Fn()` to `Fn(f32)` —
+  each backend passes its actual negotiated sample rate to the process callback.
+  `ClockTick.sample_rate` now always reflects the true device rate.
+- **`rill-io/jack`**: reads `client.sample_rate()` after activation, passes to callback.
+- **`rill-io/alsa`**: queries `hw.get_rate()` after `set_rate(Nearest)`, enforces
+  exact period match (`hw.get_period_size() == BUF_SIZE`), rejects mismatches.
+  Fixed `write()` — was hardcoded for stereo, now handles N channels with proper interleaving.
+- **`rill-io/pipewire`**: output chunk no longer hardcoded to 512 samples — uses
+  `buf_frames * out_channels` for correct mono timing. `write()` fixed for N channels.
+- **`rill-lofi/emulators`**: removed `unsafe impl Send/Sync` — backends run exclusively
+  in the hard-RT audio thread.
+- **`rill-core/io`**: `IoBackend` and `IoControl` traits no longer require `Send + Sync`.
+- **`rill-core-actor`**: `ActorCell` no longer requires `Send`.
+- **`rill-adrift/chiptune`**: `step()` uses `f64` timing (no millisecond quantization),
+  `Ay38910Backend` lazily created with actual sample rate, `lofi.init(sr)` called
+  for correct processor configuration.
+- **`rill-adrift/record_mic`**: graph built inside audio thread spawn (no `Send` needed).
+
+### ✨ New
+
+- **`rill-io/portaudio`** — cross-platform PortAudio backend (`portaudio` feature).
+  Exact buffer size, no `BufferSize::Default` issues, simpler API.
+  Default backend replacing CPAL.
+
+### 🧹 Removed
+
+- **`rill-io/cpal`** — replaced by `rill-io/portaudio` (cross-platform, cleaner API)
+- `Ay38910Emulator`, `NesEmulator` — replaced by `Chip` + `Backend` + `LofiInput`
+- `rill-analog-effects::OperationalAmplifier` — replaced by `rill_core_wdf::OpAmp`
+
+### 📖 Documentation
+
+- New guide: **Chip Emulators** (`docs/src/guides/chip-emulators.md`)
+- Examples section added to root `README.md` — all 5 `rill-adrift` examples
+  described with `cargo run` commands
+- Spec + plan for IoBackend-based emulator architecture in `docs/superpowers/`
+
 ## [0.5.0-beta.3] — 2026-05-07
 
 ### ✨ New

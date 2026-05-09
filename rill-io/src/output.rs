@@ -3,22 +3,20 @@
 //! Registered as `"rill/output"` with `NodeVariant::Sink`.
 
 use std::cell::Cell;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use rill_core::{
+    io::IoBackend,
     math::Transcendental,
-    traits::{
-        active::{ActiveNode, GraphHandle},
-        algorithm::ActionContext,
-        node::Node,
-        processable::{NodeVariant, ProcessContext, Processable},
-        NodeCategory, NodeMetadata, NodeState, Sink,
-    },
+    traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Sink},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
 };
 
-use crate::signal_io::IoBackendPtr;
-
 /// Signal output sink. Writes to backend in `consume()`.
+///
+/// When used as the active (driver) node, [`ActiveNode::run`] sets up the
+/// process callback and blocks on the audio thread.
 ///
 /// # Ports
 /// - `n` input ports (one per channel), set via [`Self::with_channels`].
@@ -27,7 +25,7 @@ pub struct Output<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: IoBackendPtr<T>,
+    backend: Option<Box<dyn IoBackend<T>>>,
     active: bool,
     source_idx: usize,
 }
@@ -66,15 +64,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
             metadata,
             inputs,
             state: NodeState::new(44100.0),
-            backend: IoBackendPtr::<T>::null(),
+            backend: None,
             active: true,
             source_idx: 0,
         }
-    }
-
-    /// Attach an I/O backend to this output sink.
-    pub fn set_backend(&mut self, backend: IoBackendPtr<T>) {
-        self.backend = backend;
     }
 
     /// Mark this output as active, setting its source node index.
@@ -82,10 +75,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
         self.active = true;
         self.source_idx = source_idx;
     }
-}
 
-/// Backward-compatible alias.
-pub type AudioOutput<T, const B: usize> = Output<T, B>;
+    /// Transfer backend ownership to this node.
+    ///
+    /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
+    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+        <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
+    }
+}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, BUF_SIZE> {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -108,6 +105,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
     fn reset(&mut self) {
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
+    }
+
+    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
+        Some(self)
+    }
+    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
+        Some(self)
     }
 
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
@@ -149,54 +153,38 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
     fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    fn resolve_backend(&mut self, backend: *mut dyn rill_core::io::IoBackend<T>) {
-        if !backend.is_null() {
-            self.backend = crate::signal_io::IoBackendPtr::from_ref(unsafe { &*backend });
-        }
-    }
-    fn start(&mut self, handle: GraphHandle) {
-        if self.active {
-            let idx = self.source_idx;
-            if let Some(backend) = self.backend.as_ref() {
-                let nodes_ptr = handle.nodes as *mut NodeVariant<T, BUF_SIZE>;
-                let len = handle.len;
-                let queue_ptr = handle.queue;
-                let sample_rate = handle.sample_rate;
-                let sample_pos = Cell::new(0u64);
-                backend.set_process_callback(Box::new(move || unsafe {
-                    let nodes = std::slice::from_raw_parts_mut(nodes_ptr, len);
-                    if let Some(q) = queue_ptr.as_ref() {
-                        while let Some(cmd) = q.pop() {
-                            let nid = cmd.port.node_id().inner() as usize;
-                            if nid < len {
-                                let _ = nodes[nid].set_parameter(&cmd.parameter, cmd.value.clone());
-                            }
-                        }
-                    }
-                    let tick = ClockTick::new(sample_pos.get(), BUF_SIZE as u32, sample_rate);
-                    let mut ctx = ProcessContext { clock: &tick };
-                    let _ = nodes[idx].process_block(&mut ctx);
-                    let action_ctx = ActionContext::new(&tick);
-                    for po in 0..nodes[idx].num_signal_outputs() {
-                        if let Some(port) = nodes[idx].output_port(po) {
-                            let _ = port.propagate(port.buffer(), &action_ctx);
-                        }
-                    }
-                    sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-                }));
-            }
-        }
-    }
-    fn stop(&mut self) {}
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode for Output<T, BUF_SIZE> {
-    fn start(&mut self, handle: GraphHandle) {
-        Node::start(self, handle);
+impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
+    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+        self.backend = Some(backend);
     }
-    fn stop(&mut self) {
-        Node::stop(self);
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
+    fn run(
+        &mut self,
+        tick: Box<dyn FnMut(u64, f32)>,
+        running: Arc<AtomicBool>,
+    ) -> rill_core::io::IoResult<()> {
+        let Some(ref backend) = self.backend else {
+            return Err("Output: no backend".into());
+        };
+        let tick_ptr = Box::into_raw(Box::new(tick));
+        let sample_pos = Cell::new(0u64);
+        backend.set_process_callback(Box::new(move |actual_sr: f32| {
+            unsafe {
+                (*tick_ptr)(sample_pos.get(), actual_sr);
+            }
+            sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
+        }));
+        backend.run(running.clone())?;
+        while running.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::park();
+        }
+        let _ = backend.stop();
+        drop(unsafe { Box::from_raw(tick_ptr) });
+        Ok(())
     }
 }
 
@@ -209,7 +197,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if let Some(backend) = self.backend.as_ref() {
+        if let Some(ref backend) = self.backend {
             let nch = self.inputs.len();
             if nch > 0 {
                 let mut channels: Vec<&[T]> = Vec::with_capacity(nch);
@@ -226,10 +214,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
     }
 }
 
+/// Backward-compatible alias.
+pub type AudioOutput<T, const B: usize> = Output<T, B>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::traits::Node;
 
     #[test]
     fn test_audio_output_creation() {

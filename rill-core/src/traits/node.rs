@@ -256,7 +256,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 /// - `Source` for generators
 /// - `Processor` for processors with inputs/outputs
 /// - `Sink` for consumers
-pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sync {
+pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
     /// Get node metadata
     fn metadata(&self) -> NodeMetadata;
 
@@ -310,17 +310,15 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sy
     /// Resolve named resource buffers (tape loops, etc.) from the registry.
     fn resolve_resources(&mut self, _buffers: &crate::buffer::BufferRegistry<T>) {}
 
-    /// Provide the shared audio backend pointer.
-    ///
-    /// Called during graph assembly so that audio I/O nodes can store
-    /// the pointer.  Default no‑op.
-    fn resolve_backend(&mut self, _backend: *mut dyn crate::io::IoBackend<T>) {}
+    /// Downcast to [`IoNode`] if this node implements it.
+    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
+        None
+    }
 
-    /// Start graph processing. Default no‑op — overridden by I/O nodes.
-    fn start(&mut self, _handle: crate::traits::active::GraphHandle) {}
-
-    /// Stop graph processing. Default no‑op — overridden by I/O nodes.
-    fn stop(&mut self) {}
+    /// Downcast to [`ActiveNode`] if this node implements it.
+    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
+        None
+    }
 
     /// Set node ID
     fn set_id(&mut self, id: NodeId);
@@ -417,6 +415,48 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize>: Send + Sy
     /// `process()` / `consume()` methods via `TelemetryTx::try_send`.
     /// Default is no-op — override only in nodes that produce telemetry.
     fn set_telemetry_tx(&mut self, _tx: crate::queues::telemetry::TelemetryTx) {}
+}
+
+// ============================================================================
+// IoNode Trait
+// ============================================================================
+
+/// A node that owns an audio I/O backend.
+///
+/// Implemented by nodes that read from or write to an audio device
+/// (`Input`, `Output`, `LofiInput`). The backend is injected during graph
+/// assembly via [`resolve_backend`](IoNode::resolve_backend).
+pub trait IoNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
+    /// Take ownership of an audio I/O backend.
+    fn resolve_backend(&mut self, backend: Box<dyn crate::io::IoBackend<T>>);
+}
+
+// ============================================================================
+// ActiveNode Trait
+// ============================================================================
+
+/// A node that drives graph processing through its audio backend.
+///
+/// The active node is the single node in a graph that hosts the audio
+/// callback loop. It receives a tick closure from [`Graph`] and registers
+/// it as the process callback on its backend.
+///
+/// Only one node per graph implements this trait — it must also implement
+/// [`IoNode`].
+pub trait ActiveNode<T: crate::math::Transcendental, const BUF_SIZE: usize>:
+    IoNode<T, BUF_SIZE>
+{
+    /// Run graph processing through this node's audio backend.
+    ///
+    /// The `tick` closure is called once per audio block with
+    /// `(sample_pos, sample_rate)`. The implementation must register it
+    /// as a process callback on the backend and block until `running`
+    /// becomes `false`.
+    fn run(
+        &mut self,
+        tick: Box<dyn FnMut(u64, f32)>,
+        running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> crate::io::IoResult<()>;
 }
 
 // ============================================================================

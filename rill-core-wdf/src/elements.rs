@@ -319,6 +319,100 @@ impl<T: Transcendental> WdfElement<T> for Diode<T> {
     }
 }
 
+/// Operational amplifier model with slew-rate limiting, bandwidth roll-off,
+/// and voltage rail clamping.
+#[derive(Debug, Clone)]
+pub struct OpAmp<T: Transcendental> {
+    gain: T,
+    slew_rate: T,
+    bandwidth: T,
+    pos_rail: T,
+    neg_rail: T,
+    state: T,
+    output: T,
+}
+
+impl<T: Transcendental> OpAmp<T> {
+    /// Create a new op-amp model.
+    ///
+    /// * `gain` — open-loop gain (V/V)
+    /// * `slew_rate` — slew rate in V/µs
+    /// * `bandwidth` — gain-bandwidth product (Hz)
+    pub fn new(gain: f64, slew_rate: f64, bandwidth: f64) -> Self {
+        Self {
+            gain: T::from_f64(gain),
+            slew_rate: T::from_f64(slew_rate * 1e6),
+            bandwidth: T::from_f64(bandwidth),
+            pos_rail: T::from_f64(15.0),
+            neg_rail: T::from_f64(-15.0),
+            state: T::ZERO,
+            output: T::ZERO,
+        }
+    }
+
+    /// Set output voltage rails.
+    pub fn set_rails(&mut self, neg: T, pos: T) {
+        self.neg_rail = neg;
+        self.pos_rail = pos;
+    }
+
+    /// Process one sample.
+    ///
+    /// * `input` — differential input voltage
+    /// * `dt` — sample period in seconds
+    pub fn process(&mut self, input: T, dt: T) -> T {
+        let ideal = input * self.gain;
+
+        let max_change = self.slew_rate * dt;
+        let diff = ideal - self.state;
+        let limited = diff.clamp(-max_change, max_change);
+        self.state += limited;
+
+        let pole_freq = self.bandwidth / self.gain;
+        let two_pi = T::from_f32(2.0) * T::PI;
+        let alpha = T::ONE / (T::ONE + two_pi * pole_freq * dt);
+        self.output = alpha * self.state + (T::ONE - alpha) * ideal;
+
+        self.output = self.output.clamp(self.neg_rail, self.pos_rail);
+        self.output
+    }
+
+    /// Reset internal state.
+    pub fn reset(&mut self) {
+        self.state = T::ZERO;
+        self.output = T::ZERO;
+    }
+
+    /// Current output voltage.
+    pub fn output_voltage(&self) -> T {
+        self.output
+    }
+}
+
+impl<T: Transcendental> WdfElement<T> for OpAmp<T> {
+    fn port_resistance(&self) -> T {
+        T::from_f32(100.0)
+    }
+
+    fn process_incident(&mut self, a: T) -> T {
+        self.process(a, T::ONE / T::from_f32(44100.0))
+    }
+
+    fn update_state(&mut self) {}
+
+    fn voltage(&self) -> T {
+        self.output
+    }
+
+    fn current(&self) -> T {
+        T::ZERO
+    }
+
+    fn reset(&mut self) {
+        self.reset();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

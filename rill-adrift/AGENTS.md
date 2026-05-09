@@ -6,7 +6,7 @@ Umbrella crate re-exporting all rill crates for signal processing application de
 
 - **Always-on core** (no feature gate): `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-patchbay`
 - **Feature-gated**: `io`, `lofi`, `telemetry`, `osc`, `sampler` (all in default), `analog` (opt-in)
-- **Audio backend passthrough**: `alsa`, `cpal`, `jack`, `pipewire` forward to `rill-io`
+- **Audio backend passthrough**: `alsa`, `portaudio`, `jack`, `pipewire` forward to `rill-io`
 
 ## Usage
 
@@ -25,4 +25,4 @@ cargo clippy -p rill-adrift
 ## Known issues
 
 - Feature `analog` enables three crates at once: `rill-core-wdf`, `rill-analog-filters`, `rill-analog-effects`.
-- Backend features (`alsa`, `cpal`, etc.) only work when `io` feature is also enabled.
+- Backend features (`alsa`, `portaudio`, etc.) only work when `io` feature is also enabled.

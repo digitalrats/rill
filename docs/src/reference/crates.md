@@ -32,6 +32,6 @@ The Rill workspace consists of 17 crates, all versioned synchronously.
 | `rill-digital-effects` | `modulation` (enables `rill-oscillators`) |
 | `rill-graph` | `serialization`, `dot` |
 | `rill-patchbay` | `serde`, `json`, `cbor`, `serialization` |
-| `rill-io` | `cpal` (default), `alsa`, `pipewire`, `jack`, `all-backends` |
+| `rill-io` | `portaudio` (default), `alsa`, `pipewire`, `jack`, `all-backends` |
 | `rill-sampler` | `wav` (default, enables `hound`) |
 | `rill-adrift` | `io`, `lofi`, `telemetry`, `osc`, `sampler` (default); `analog` (opt-in); backend passthrough |

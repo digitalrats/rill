@@ -15,7 +15,7 @@ Cargo workspace — 17 active crates:
 | `rill-router` | Active — EQ + mixer + routing |
 | `rill-patchbay` | Active — automation (LFO, envelopes, sensors, servos) |
 | `rill-lofi` | Active — lo-fi emulation |
-| `rill-io` | Active — audio I/O backends (ALSA, CPAL, PipeWire, JACK) |
+| `rill-io` | Active — audio I/O backends (PortAudio, ALSA, PipeWire, JACK) |
 | `rill-telemetry` | Active — probes, collectors |
 | `rill-core-wdf` | Active — WDF elements, adapters, analysis |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
@@ -28,7 +28,7 @@ Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
 - **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `Graph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
-- **`rill-io`** — audio I/O backends only (`AudioBackend` trait + ALSA/CPAL/JACK/PipeWire). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
+- **`rill-io`** — audio I/O backends only (`IoBackend` trait + PortAudio/ALSA/PipeWire/JACK). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
@@ -114,8 +114,8 @@ constraints depend on the backend model:
 
 | Model | Backends | RT guarantee |
 |---|---|---|
-| **Callback‑driven** | PipeWire, JACK | Hard RT — callback fires on the audio device's real‑time thread. No syscalls, no allocation, no locks. |
-| **Poll‑driven** | ALSA, CPAL | Soft RT — the backend's own thread loops polling the audio device. The thread **must not** use `thread::sleep()` to pace iterations. Use `poll()` / `epoll()` on audio FDs instead. |
+| **Callback‑driven** | PipeWire, JACK, PortAudio | Hard RT — callback fires on the audio device's real‑time thread. No syscalls, no allocation, no locks. |
+| **Poll‑driven** | ALSA | Soft RT — the backend's own thread loops polling the audio device. The thread **must not** use `thread::sleep()` to pace iterations. Use `poll()` / `epoll()` on audio FDs instead. |
 
 ### Rules for the RT path (applies to both models)
 
@@ -140,7 +140,7 @@ Any code reached from the process callback — `generate()`, `process()`,
 ### Known issues
 
 *(All originally identified RT-safety issues have been fixed — ALSA uses
-`snd_pcm_wait`, CPAL drives processing from its stream callback, and
+`snd_pcm_wait`, PortAudio drives processing from its stream callback, and
 no backend uses `thread::sleep` in the audio path.)*
 
 **Testing:** any new RT path code must be verified with `cargo test --release`
@@ -152,9 +152,9 @@ under `pw‑loopback` or similar virtual device to detect xruns.
 - `rill-digital-effects`: `modulation` (enables `rill-oscillators`)
 - `rill-core`: `serde`, `stats`
 - `rill-core-wdf`: `simd`
-- `rill-io`: `cpal` (default), `alsa`, `pipewire`, `jack`, `all-backends`
+- `rill-io`: `portaudio` (default), `alsa`, `pipewire`, `jack`, `all-backends`
 - `rill-sampler`: `wav` (default, enables `hound`)
-- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler` (default), `analog` (opt-in); `alsa`, `cpal`, `jack`, `pipewire` (backends, forward to `rill-io`)
+- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler` (default), `analog` (opt-in); `alsa`, `portaudio`, `jack`, `pipewire` (backends, forward to `rill-io`)
 
 ## Branching
 
@@ -214,9 +214,9 @@ chmod +x .git/hooks/pre-commit
 The `AudioIo::start()` callback fires on the backend's own thread. The nature
 of this thread depends on the backend:
 
-- **PipeWire / JACK** — the callback fires on the audio device's real‑time
+- **PipeWire / JACK / PortAudio** — the callback fires on the audio device's real‑time
   thread (SCHED_FIFO). This is **hard RT**.
-- **ALSA / CPAL** — the callback fires on a dedicated polling thread managed
+- **ALSA** — the callback fires on a dedicated polling thread managed
   by the backend. This is **soft RT**; `thread::sleep()` is **not** an
   acceptable wait primitive (see "Real-time safety" above).
 

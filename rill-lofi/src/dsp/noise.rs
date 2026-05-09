@@ -44,7 +44,9 @@ pub fn system_noise(system: crate::config::ClassicSystem, sample: f32) -> f32 {
         crate::config::ClassicSystem::Commodore64 => 0.03,
         crate::config::ClassicSystem::AkaiS900 => 0.01,
         crate::config::ClassicSystem::FairlightCMI => 0.04,
-        crate::config::ClassicSystem::Custom { noise_floor, .. } => noise_floor / 100.0,
+        crate::config::ClassicSystem::Custom { noise_floor, .. } => {
+            10.0_f32.powf(noise_floor / 20.0)
+        }
         _ => 0.02,
     };
 
