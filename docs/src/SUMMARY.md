@@ -10,6 +10,7 @@
 - [rill-core](src/architecture/core.md)
 - [Signal graph (rill-graph)](src/architecture/graph.md)
 - [Actor model (rill-core-actor)](src/architecture/actor.md)
+- [MIDI support](src/architecture/midi.md)
 
 # Guides
 

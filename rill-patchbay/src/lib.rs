@@ -92,6 +92,13 @@ pub mod serialization;
 #[cfg(feature = "serde")]
 pub use serialization::PatchbayDef;
 
+/// MIDI actor — raw MIDI → ControlEvent bridge
+#[cfg(feature = "midi")]
+pub mod midi_actor;
+
+#[cfg(feature = "midi")]
+pub use midi_actor::MidiActor;
+
 // =============================================================================
 // Re-exports for convenience
 // =============================================================================

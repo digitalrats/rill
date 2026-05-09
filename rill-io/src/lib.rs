@@ -1,8 +1,9 @@
-//! Audio I/O backends for Rill
+//! Audio and MIDI I/O backends for Rill
 //!
 //! This crate provides a unified interface to various audio backends
-//! (ALSA, CPAL, PipeWire, JACK). Graph processing is handled by
-//! `rill-graph` — this crate is purely about hardware I/O.
+//! (ALSA, PortAudio, PipeWire, JACK) and MIDI input backends.
+//! Graph processing is handled by `rill-graph` — this crate is
+//! purely about hardware I/O.
 
 #![warn(missing_docs)]
 
@@ -33,6 +34,12 @@ pub mod rings;
 /// Global PipeWire context (lazily initialised, shared by I/O nodes).
 pub mod pw;
 
+/// Raw MIDI message type.
+pub mod midi_message;
+
+/// MIDI backend trait.
+pub mod midi_backend;
+
 pub use backend::{BackendType, DeviceInfo};
 pub use config::AudioConfig;
 pub use error::{IoError, IoResult};
@@ -42,16 +49,24 @@ pub use output::AudioOutput;
 pub use output::Output;
 pub use rings::PwBuffers;
 
+pub use midi_backend::MidiBackend;
+pub use midi_message::MidiMessage;
+
 pub use backends::NullBackend;
 
 #[cfg(feature = "alsa")]
 pub use backends::AlsaBackend;
+#[cfg(feature = "alsa")]
+pub use backends::AlsaSeqBackend;
 
 #[cfg(feature = "pipewire")]
 pub use backends::PipewireBackend;
 
 #[cfg(feature = "jack")]
 pub use backends::JackBackend;
+
+#[cfg(feature = "midir")]
+pub use backends::MidirBackend;
 
 pub use audio_io::AudioIoPtr;
 

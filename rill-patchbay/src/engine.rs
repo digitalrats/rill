@@ -63,6 +63,15 @@ pub enum EventPattern {
         note: Option<u8>,
     },
 
+    /// MIDI Clock tick.
+    MidiClock,
+
+    /// MIDI Transport message (Start / Stop / Continue).
+    MidiTransport {
+        /// Transport kind (None = any transport message).
+        kind: Option<MidiTransportKind>,
+    },
+
     /// Exact OSC address.
     OscAddress(String),
 
@@ -94,6 +103,30 @@ impl EventPattern {
                     ..
                 },
             ) => (channel.is_none() || channel.unwrap() == *ech) && *controller == *ectr,
+
+            (
+                EventPattern::MidiNote { channel, note },
+                ControlEvent::MidiNote {
+                    channel: ech,
+                    note: en,
+                    ..
+                },
+            ) => {
+                (channel.is_none() || channel.unwrap() == *ech)
+                    && (note.is_none() || note.unwrap() == *en)
+            }
+
+            (EventPattern::AnyMidi, ControlEvent::MidiControl { .. })
+            | (EventPattern::AnyMidi, ControlEvent::MidiNote { .. })
+            | (EventPattern::AnyMidi, ControlEvent::MidiClock)
+            | (EventPattern::AnyMidi, ControlEvent::MidiTransport { .. }) => true,
+
+            (EventPattern::MidiClock, ControlEvent::MidiClock) => true,
+
+            (
+                EventPattern::MidiTransport { kind },
+                ControlEvent::MidiTransport { kind: ek, .. },
+            ) => kind.is_none_or(|k| k == *ek),
 
             (EventPattern::OscAddress(addr), ControlEvent::Osc { address, .. }) => addr == address,
 
@@ -173,6 +206,27 @@ pub enum ControlEvent {
         /// Message arguments.
         args: Vec<f32>,
     },
+
+    /// MIDI Clock tick (24 per quarter note).
+    MidiClock,
+
+    /// MIDI Transport message.
+    MidiTransport {
+        /// Transport command kind.
+        kind: MidiTransportKind,
+    },
+}
+
+/// MIDI transport commands.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MidiTransportKind {
+    /// Start playback.
+    Start,
+    /// Stop playback.
+    Stop,
+    /// Continue playback.
+    Continue,
 }
 
 impl ControlEvent {
