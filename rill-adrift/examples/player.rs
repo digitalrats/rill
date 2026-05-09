@@ -150,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend_name = backend_name.clone();
         let wav_file = wav_arg.map(|s| s.to_string());
         std::thread::spawn(move || {
-            let graph = build_graph(&cfg, &crate_dir, &backend_name, wav_file.as_deref())
+            let mut graph = build_graph(&cfg, &crate_dir, &backend_name, wav_file.as_deref())
                 .expect("build_graph");
             graph.run(running).ok();
         })

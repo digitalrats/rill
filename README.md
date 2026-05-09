@@ -1,8 +1,8 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests](https://img.shields.io/badge/tests-543-green)](https://github.com/DigitalRats/rill)
-[![version](https://img.shields.io/badge/version-0.5.0--beta.3-blue)](https://github.com/DigitalRats/rill)
+[![tests|68](https://img.shields.io/badge/tests-559-green)](https://github.com/DigitalRats/rill)
+[![version|130](https://img.shields.io/badge/version-0.5.0--beta.4-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
 Modular signal-processing ecosystem for Rust. 18 crates, from lock-free
@@ -53,6 +53,56 @@ let osc = builder.add_source(
 // Add processors, sinks, connections via builder...
 // Then call builder.build() to obtain the immutable Graph.
 ```
+
+## Examples
+
+Run from the workspace root (`rill/`). All examples are in `rill-adrift/examples/`.
+
+### WAV playback with low-pass filter
+
+```bash
+cargo run -p rill-adrift --example play_wav --features "portaudio,sampler" -- [backend] [wav_path]
+```
+
+Plays a WAV file through a biquad low-pass filter (600 Hz). Defaults to built-in demo sample.
+
+### Load graph from JSON + config TOML
+
+```bash
+cargo run -p rill-adrift --example player --features "cpal,sampler,serialization" -- [backend] [wav]
+```
+
+Deserialises a signal graph from `graph.json`, configures it from `config.toml`,
+builds and plays. Optionally export to DOT (`--dot` flag, needs `dot` feature).
+
+### Runtime parameter control via actor mailbox
+
+```bash
+cargo run -p rill-adrift --example advanced_player --features "cpal,sampler,serialization" -- [backend] [wav]
+```
+
+Same as `player` but sends `SetParameter` commands through the graph's actor
+mailbox before starting playback — demonstrates filter cutoff control and WAV
+path override at runtime.
+
+### AY-3-8910 chiptune (Popcorn)
+
+```bash
+cargo run -p rill-adrift --example chiptune --features "lofi,portaudio" -- [backend]
+```
+
+Plays the Popcorn melody on an emulated AY-3-8910 sound chip. The sequencer
+runs externally and sends register writes via the actor mailbox.
+
+### Microphone recording
+
+```bash
+cargo run -p rill-adrift --example record_mic --features "io,serialization,sampler" [backend] [output.wav]
+```
+
+Records from microphone through a standard `Input → RecordingSink` pipeline.
+Demonstrates custom node registration (`register_node_fn`) and `GraphDef`-based
+topology definition.
 
 ## Crates
 

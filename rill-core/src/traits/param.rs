@@ -109,6 +109,9 @@ pub enum ParamType {
 
     /// Choice from a list of options
     Choice,
+
+    /// Raw byte array (for IoControl writes)
+    Bytes,
 }
 
 impl ParamType {
@@ -120,6 +123,7 @@ impl ParamType {
             Self::Bool => "bool",
             Self::String => "string",
             Self::Choice => "choice",
+            Self::Bytes => "bytes",
         }
     }
 }
@@ -152,6 +156,9 @@ pub enum ParamValue {
 
     /// Choice from a list of options
     Choice(String),
+
+    /// Raw byte array for backend IoControl writes
+    Bytes(Vec<u8>),
 }
 
 impl ParamValue {
@@ -163,6 +170,7 @@ impl ParamValue {
             Self::Bool(_) => ParamType::Bool,
             Self::String(_) => ParamType::String,
             Self::Choice(_) => ParamType::Choice,
+            Self::Bytes(_) => ParamType::Bytes,
         }
     }
 
@@ -200,6 +208,14 @@ impl ParamValue {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) | Self::Choice(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Return the byte slice if this is a `Bytes` variant.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bytes(v) => Some(v.as_slice()),
             _ => None,
         }
     }

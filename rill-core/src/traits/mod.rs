@@ -5,8 +5,6 @@
 
 /// Action trait and types for node‑level commands.
 pub mod action;
-/// Active node trait — nodes that drive graph processing.
-pub mod active;
 /// Algorithm trait and action contexts.
 pub mod algorithm;
 mod error;
@@ -23,7 +21,6 @@ pub mod router;
 
 // Re-export all public items
 pub use action::*;
-pub use active::*;
 pub use algorithm::*;
 pub use error::*;
 pub use node::*;
@@ -57,6 +54,8 @@ pub mod prelude {
     // Re-export from parent modules
     pub use super::{
         // Core traits
+        ActiveNode,
+        IoNode,
         Node,
         NodeCategory,
         // Node types

@@ -118,7 +118,7 @@ fn test_send_parameter_via_queue() {
 
     let mut builder = rt.create_builder();
     def.populate(&mut builder).expect("populate");
-    let graph = builder.build().expect("graph build");
+    let mut graph = builder.build().expect("graph build");
 
     // Send parameter via queue
     graph

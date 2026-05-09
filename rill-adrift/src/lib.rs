@@ -2,6 +2,7 @@
 #![warn(missing_docs)]
 
 pub use rill_core;
+pub use rill_core_actor;
 pub use rill_core_dsp;
 pub use rill_digital_effects;
 pub use rill_digital_filters;

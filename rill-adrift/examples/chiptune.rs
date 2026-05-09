@@ -1,9 +1,19 @@
+//! AY-3-8910 Chiptune — Popcorn
+//!
+//! Demonstrates `GraphDef`-based graph construction with `LofiInput` + `Ay38910Backend`.
+//! The sequencer runs externally and sends register writes via the actor mailbox.
+//!
+//! Usage:
+//!   cargo run --example chiptune --features "lofi,portaudio" [portaudio]
+//!   cargo run --example chiptune --features "lofi,alsa" [alsa]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rill_adrift::io::output::Output;
-use rill_adrift::lofi::{Ay38910Backend, ClassicSystem, LofiConfig, LofiInput};
-use rill_adrift::rill_core::prelude::*;
+use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
+use rill_adrift::rill_core::time::ClockTick;
+use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::rill_graph::serialization::{ConnectionDef, GraphDef, NodeDef, SignalKind};
 use rill_adrift::runtime::{Runtime, RuntimeConfig};
 
 const BUF: usize = 256;
@@ -141,25 +151,17 @@ const BASS: &[Note] = &[
     },
 ];
 
-struct ChiptuneSource<const N: usize> {
+struct Sequencer {
     regs: [u8; 16],
     mel_step: usize,
     mel_ms: f64,
     bass_step: usize,
     bass_ms: f64,
     snare: u64,
-    sample_rate: f32,
-    lofi: LofiInput<f32, N>,
 }
 
-impl<const N: usize> ChiptuneSource<N> {
+impl Sequencer {
     fn new() -> Self {
-        let lofi_config = LofiConfig::for_system(ClassicSystem::Custom {
-            bit_depth: 8,
-            sample_rate: RATE,
-            nonlinear: false,
-            noise_floor: -48.0,
-        });
         Self {
             regs: [0; 16],
             mel_step: 0,
@@ -167,22 +169,10 @@ impl<const N: usize> ChiptuneSource<N> {
             bass_step: 0,
             bass_ms: 0.0,
             snare: 0,
-            sample_rate: 0.0,
-            lofi: LofiInput::<f32, N>::new(lofi_config),
         }
     }
 
-    fn step(&mut self, sr: f32) {
-        // Lazy backend init with actual sample rate
-        if self.sample_rate != sr {
-            self.sample_rate = sr;
-            self.lofi.init(sr);
-            self.lofi
-                .set_backend(Box::new(Ay38910Backend::new(1_750_000.0, sr)));
-        }
-        let ms = N as f64 * 1000.0 / sr as f64;
-
-        // Channel A — Melody
+    fn step(&mut self, ms: f64) -> [u8; 16] {
         self.mel_ms += ms;
         if self.mel_ms >= MELODY[self.mel_step].dur_ms as f64 {
             self.mel_ms -= MELODY[self.mel_step].dur_ms as f64;
@@ -197,7 +187,6 @@ impl<const N: usize> ChiptuneSource<N> {
             0
         };
 
-        // Channel B — Bass
         self.bass_ms += ms;
         if self.bass_ms >= BASS[self.bass_step].dur_ms as f64 {
             self.bass_ms -= BASS[self.bass_step].dur_ms as f64;
@@ -212,7 +201,6 @@ impl<const N: usize> ChiptuneSource<N> {
             0
         };
 
-        // Channel C — Snare on beat
         let snare_on = (self.mel_step % 4) == 0 && self.mel_ms < 60.0;
         if snare_on && self.snare == 0 {
             self.snare = 4;
@@ -221,84 +209,14 @@ impl<const N: usize> ChiptuneSource<N> {
             self.regs[6] = 4;
             self.regs[10] = 12;
             self.snare -= 1;
-            self.regs[7] = 0b00_00_10_10; // A(tone) B(tone) C(noise+tone)
+            self.regs[7] = 0b00_00_10_10;
         } else {
             self.regs[6] = 0;
             self.regs[10] = 0;
-            self.regs[7] = 0b11_11_10_10; // A(tone) B(tone) C(off)
+            self.regs[7] = 0b11_11_10_10;
         }
 
-        self.lofi.write_to_backend(&self.regs);
-    }
-}
-
-impl<const N: usize> Node<f32, N> for ChiptuneSource<N> {
-    fn metadata(&self) -> NodeMetadata {
-        self.lofi.metadata()
-    }
-    fn node_type_id(&self) -> rill_core::NodeTypeId {
-        rill_core::NodeTypeId::of::<Self>()
-    }
-    fn init(&mut self, sr: f32) {
-        self.lofi.init(sr);
-    }
-    fn reset(&mut self) {
-        self.regs = [0; 16];
-        self.lofi.reset();
-    }
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
-        self.lofi.get_parameter(id)
-    }
-    fn set_parameter(&mut self, id: &ParameterId, v: ParamValue) -> ProcessResult<()> {
-        self.lofi.set_parameter(id, v)
-    }
-    fn id(&self) -> NodeId {
-        self.lofi.id()
-    }
-    fn set_id(&mut self, id: NodeId) {
-        self.lofi.set_id(id)
-    }
-    fn input_port(&self, i: usize) -> Option<&Port<f32, N>> {
-        self.lofi.input_port(i)
-    }
-    fn input_port_mut(&mut self, i: usize) -> Option<&mut Port<f32, N>> {
-        self.lofi.input_port_mut(i)
-    }
-    fn output_port(&self, i: usize) -> Option<&Port<f32, N>> {
-        self.lofi.output_port(i)
-    }
-    fn output_port_mut(&mut self, i: usize) -> Option<&mut Port<f32, N>> {
-        self.lofi.output_port_mut(i)
-    }
-    fn control_port(&self, i: usize) -> Option<&Port<f32, N>> {
-        self.lofi.control_port(i)
-    }
-    fn control_port_mut(&mut self, i: usize) -> Option<&mut Port<f32, N>> {
-        self.lofi.control_port_mut(i)
-    }
-    fn state(&self) -> &NodeState<f32, N> {
-        self.lofi.state()
-    }
-    fn state_mut(&mut self) -> &mut NodeState<f32, N> {
-        self.lofi.state_mut()
-    }
-    fn num_signal_inputs(&self) -> usize {
-        0
-    }
-    fn num_signal_outputs(&self) -> usize {
-        1
-    }
-}
-
-impl<const N: usize> Source<f32, N> for ChiptuneSource<N> {
-    fn generate(
-        &mut self,
-        clock: &rill_core::ClockTick,
-        ctrl: &[f32],
-        clk: &[rill_core::ClockTick],
-    ) -> ProcessResult<()> {
-        self.step(clock.sample_rate);
-        self.lofi.generate(clock, ctrl, clk)
+        self.regs
     }
 }
 
@@ -311,27 +229,100 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_run = running.clone();
 
     let audio_thread = std::thread::spawn(move || {
-        let mut rt = Runtime::<BUF>::new(RuntimeConfig {
+        let mut be_params = std::collections::HashMap::new();
+        be_params.insert("sample_rate".into(), RATE.to_string());
+        be_params.insert("buffer_size".into(), BUF.to_string());
+        be_params.insert("channels".into(), "1".to_string());
+
+        let rt = Runtime::<BUF>::new(RuntimeConfig {
             sample_rate: RATE,
             block_size: BUF,
+            backend_name: Some(backend_name.clone()),
+            backend_params: be_params,
             ..Default::default()
         });
 
-        let mut params = std::collections::HashMap::new();
-        params.insert(
-            "sample_rate".into(),
-            rill_core::ParamValue::Int(RATE as i32),
-        );
-        params.insert("buffer_size".into(), rill_core::ParamValue::Int(BUF as i32));
-        params.insert("channels".into(), rill_core::ParamValue::Int(1));
-        rt.set_default_backend(&backend_name, params);
+        let def = GraphDef {
+            format_version: "rill/1".to_string(),
+            sample_rate: RATE,
+            block_size: BUF,
+            resources: vec![],
+            nodes: vec![
+                NodeDef {
+                    id: 0,
+                    type_name: "rill/lofi_input".into(),
+                    name: "ay_chip".into(),
+                    backend: Some("ay38910".into()),
+                    parameters: [
+                        ("bit_depth".into(), ParamValue::Int(8)),
+                        ("nonlinear".into(), ParamValue::Bool(false)),
+                        ("noise_floor".into(), ParamValue::Float(-48.0)),
+                    ]
+                    .into(),
+                },
+                NodeDef {
+                    id: 1,
+                    type_name: "rill/output".into(),
+                    name: "output".into(),
+                    backend: None,
+                    parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
+                },
+            ],
+            connections: vec![ConnectionDef {
+                kind: SignalKind::Signal,
+                from_node: 0,
+                from_port: 0,
+                to_node: 1,
+                to_port: 0,
+            }],
+            description: Some("AY-3-8910 Chiptune — Popcorn".into()),
+        };
 
         let mut builder = rt.create_builder();
-        let src = builder.add_source(Box::new(ChiptuneSource::<BUF>::new()));
-        let snk = builder.add_sink(Box::new(Output::<f32, BUF>::with_channels(1)));
-        builder.connect_signal(src, 0, snk, 0);
+        def.populate(&mut builder).expect("populate graph");
 
-        let graph = builder.build().expect("graph build");
+        // Clock channel: audio thread → sequencer (via ActorCell + ActorRef)
+        use rill_adrift::rill_core_actor::{ActorCell, ActorRef};
+        let (clock_tx, clock_rx) = ActorRef::<ClockTick>::new_pair();
+        builder.set_clock_tx(clock_tx);
+
+        let mut graph = builder.build().expect("graph build");
+
+        let handle = graph.handle().expect("actor handle");
+
+        // Sequencer actor
+        struct SequencerActor {
+            seq: Sequencer,
+            graph_ref: ActorRef<SetParameter>,
+        }
+        impl ActorCell for SequencerActor {
+            type Msg = ClockTick;
+            fn receive(&mut self, tick: ClockTick) {
+                let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+                let regs = self.seq.step(ms);
+                self.graph_ref.send(SetParameter::new(
+                    PortId::signal_out(NodeId(0), 0),
+                    ParameterId::new("io_write").unwrap(),
+                    ParamValue::Bytes(regs.to_vec()),
+                    SignalOrigin::Manual,
+                ));
+            }
+        }
+
+        let running_seq = t_run.clone();
+        std::thread::spawn(move || {
+            let mut sequencer = SequencerActor {
+                seq: Sequencer::new(),
+                graph_ref: handle,
+            };
+            while running_seq.load(Ordering::Acquire) {
+                while let Some(tick) = clock_rx.pop() {
+                    sequencer.receive(tick);
+                }
+                std::thread::yield_now();
+            }
+        });
+
         graph.run(t_run).ok();
     });
 

@@ -1,9 +1,6 @@
-//! Audio backend trait and related types
+//! Backend types and device info (legacy).
 
-use crate::config::AudioConfig;
-use crate::error::IoResult;
 use std::fmt::Debug;
-use std::time::Duration;
 
 /// Backend type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,96 +39,6 @@ impl BackendType {
             BackendType::Jack => cfg!(any(target_os = "linux", target_os = "macos")),
             BackendType::Null => true,
         }
-    }
-}
-
-/// Audio backend trait
-pub trait AudioBackend: Debug {
-    /// Get the backend type
-    fn backend_type(&self) -> BackendType;
-
-    /// Get the configuration
-    fn config(&self) -> &AudioConfig;
-
-    /// Get the mutable configuration
-    fn config_mut(&mut self) -> &mut AudioConfig;
-
-    /// Initialize the backend
-    fn init(&mut self) -> IoResult<()>;
-
-    /// Start processing
-    fn start(&mut self) -> IoResult<()>;
-
-    /// Stop processing
-    fn stop(&mut self) -> IoResult<()>;
-
-    /// Read data from the input stream
-    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize>;
-
-    /// Write data to the output stream
-    fn write(&mut self, buffer: &[f32]) -> IoResult<usize>;
-
-    /// Number of xruns (underflows/overflows)
-    fn xruns(&self) -> u32;
-
-    /// Current latency
-    fn latency(&self) -> Duration;
-
-    /// Get list of available input devices
-    fn list_input_devices(&self) -> Vec<String>;
-
-    /// Get list of available output devices
-    fn list_output_devices(&self) -> Vec<String>;
-}
-
-// Blanket impl so that `Box<dyn AudioBackend>` satisfies `B: AudioBackend`.
-impl<T: AudioBackend + ?Sized> AudioBackend for Box<T> {
-    fn backend_type(&self) -> BackendType {
-        (**self).backend_type()
-    }
-
-    fn config(&self) -> &AudioConfig {
-        (**self).config()
-    }
-
-    fn config_mut(&mut self) -> &mut AudioConfig {
-        (**self).config_mut()
-    }
-
-    fn init(&mut self) -> IoResult<()> {
-        (**self).init()
-    }
-
-    fn start(&mut self) -> IoResult<()> {
-        (**self).start()
-    }
-
-    fn stop(&mut self) -> IoResult<()> {
-        (**self).stop()
-    }
-
-    fn read(&mut self, buffer: &mut [f32]) -> IoResult<usize> {
-        (**self).read(buffer)
-    }
-
-    fn write(&mut self, buffer: &[f32]) -> IoResult<usize> {
-        (**self).write(buffer)
-    }
-
-    fn xruns(&self) -> u32 {
-        (**self).xruns()
-    }
-
-    fn latency(&self) -> Duration {
-        (**self).latency()
-    }
-
-    fn list_input_devices(&self) -> Vec<String> {
-        (**self).list_input_devices()
-    }
-
-    fn list_output_devices(&self) -> Vec<String> {
-        (**self).list_output_devices()
     }
 }
 

@@ -95,8 +95,8 @@ impl<T: Transcendental> Algorithm<T> for RecordHead<T> {
 
     fn metadata(&self) -> AlgorithmMetadata {
         AlgorithmMetadata {
-            name: "Tape Record Head".into(),
-            description: "Analog tape recording physics (bias + saturation)".into(),
+            name: "Tape Record Head",
+            description: "Analog tape recording physics (bias + saturation)",
             ..AlgorithmMetadata::empty()
         }
     }
@@ -244,8 +244,8 @@ impl<T: Transcendental> Algorithm<T> for PlaybackHead<T> {
 
     fn metadata(&self) -> AlgorithmMetadata {
         AlgorithmMetadata {
-            name: "Tape Playback Head".into(),
-            description: "Analog tape playback physics (wow/flutter, EQ, noise)".into(),
+            name: "Tape Playback Head",
+            description: "Analog tape playback physics (wow/flutter, EQ, noise)",
             ..AlgorithmMetadata::empty()
         }
     }

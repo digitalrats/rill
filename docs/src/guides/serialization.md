@@ -37,14 +37,31 @@ pub struct NodeDef {
     pub id: u32,                          // NodeId (important for patchbay bindings)
     pub type_name: String,                // factory lookup key, e.g. "rill/sine_osc"
     pub name: String,                     // human-readable instance name
+    pub backend: Option<String>,          // optional backend name (e.g. "ay38910")
     pub parameters: HashMap<String, ParamValue>,
 }
 ```
 
-- `type_name` comes from [`NodeMetadata::type_name`](crate::NodeMetadata).
-  When `type_name` is `None`, the `name` field is used as fallback.
-- `parameters` are read from each node via [`Node::get_parameter`],
-  iterating over [`NodeMetadata::parameters`].
+- `backend` — specifies a named backend from `BackendFactory` for this
+  I/O node.  When `None` and a default backend is configured on the
+  builder, the default is used.  Processor nodes leave this empty.
+
+### `ParamValue`
+
+```rust
+pub enum ParamValue {
+    Float(f32),
+    Int(i32),
+    Bool(bool),
+    String(String),
+    Choice(String),
+    Bytes(Vec<u8>),  // raw data for IoControl::write_data()
+}
+```
+
+`Bytes` carries raw byte arrays for backend-specific control protocols
+(e.g. AY-3-8910 register writes, MIDI SySex).  The `"io_write"` parameter
+on `LofiInput` forwards `Bytes` payloads to `IoControl::write_data()`.
 
 ### `ConnectionDef`
 

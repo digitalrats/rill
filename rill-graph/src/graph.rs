@@ -4,13 +4,14 @@ use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::time::ClockTick;
-use rill_core::traits::active::GraphHandle;
+use rill_core::traits::algorithm::ActionContext;
 use rill_core::traits::port::Port;
+use rill_core::traits::processable::{ProcessContext, Processable};
 use rill_core::traits::ParamValue;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params};
 use rill_core_actor::{ActorCell, ActorRef};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 // ============================================================================
@@ -74,6 +75,7 @@ pub struct GraphResource {
 /// type name, provided at construction via [`GraphBuilder::new`].
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Vec<NodeEntry<T, BUF_SIZE>>,
+    node_backends: Vec<Option<String>>,
     signal_edges: Vec<(usize, usize, usize, usize)>,
     control_edges: Vec<(usize, usize, usize, usize)>,
     clock_edges: Vec<(usize, usize, usize, usize)>,
@@ -82,29 +84,38 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     /// Shared node factory (required, from Runtime).
     factory: Arc<NodeFactory<T, BUF_SIZE>>,
     /// Shared backend factory (required, from Runtime).
-    backends: Arc<BackendFactory<T>>,
-    /// Optional backend configuration (set via [`with_backend`](Self::with_backend)).
-    backend_config: Option<BackendConfig>,
-}
-
-struct BackendConfig {
-    name: String,
-    params: HashMap<String, ParamValue>,
+    backend_factory: Arc<BackendFactory<T>>,
+    /// Default backend name for nodes that don't specify one explicitly.
+    default_backend: Option<String>,
+    /// Default backend parameters (sample_rate, buffer_size, channels).
+    backend_params: HashMap<String, ParamValue>,
+    /// Sample rate override. When set, used in [`build`](Self::build).
+    /// Populated from [`GraphDef::sample_rate`] during deserialization.
+    sample_rate: Option<f32>,
+    /// Telemetry queue for clock ticks (audio → control).
+    clock_tx: Option<ActorRef<ClockTick>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Create a new empty graph builder without a node factory.
-    pub fn new(factory: Arc<NodeFactory<T, BUF_SIZE>>, backends: Arc<BackendFactory<T>>) -> Self {
+    pub fn new(
+        factory: Arc<NodeFactory<T, BUF_SIZE>>,
+        backend_factory: Arc<BackendFactory<T>>,
+    ) -> Self {
         Self {
             nodes: Vec::new(),
+            node_backends: Vec::new(),
             signal_edges: Vec::new(),
             control_edges: Vec::new(),
             clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
             resources: Vec::new(),
             factory,
-            backends,
-            backend_config: None,
+            backend_factory,
+            default_backend: None,
+            backend_params: HashMap::new(),
+            sample_rate: None,
+            clock_tx: None,
         }
     }
 
@@ -138,7 +149,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let node = self.factory.construct(type_name, id, params)?;
         let idx = self.nodes.len();
         self.nodes.push(NodeEntry { node });
+        self.node_backends.push(None);
         Ok(idx)
+    }
+
+    /// Assign a named backend to the node at the given index.
+    ///
+    /// During [`build`](Self::build), the backend is created via the
+    /// builder's [`BackendFactory`](crate::BackendFactory) and passed to
+    /// the node's [`Node::resolve_backend`](rill_core::Node::resolve_backend).
+    pub fn set_node_backend(&mut self, idx: usize, name: String) {
+        if idx < self.node_backends.len() {
+            self.node_backends[idx] = Some(name);
+        }
     }
 
     /// Register a named resource (tape loop, buffer, etc.).
@@ -151,9 +174,31 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.nodes.len()
     }
 
-    /// Access the shared backend factory (for building with external configs).
+    /// Set the default backend name and parameters. Nodes without an explicit
+    /// backend in [`NodeDef::backend`] will use this during [`build`](Self::build).
+    pub fn set_default_backend(&mut self, name: String, params: HashMap<String, ParamValue>) {
+        self.default_backend = Some(name);
+        self.backend_params = params;
+    }
+
+    /// Get the default backend name, if set.
+    pub fn default_backend_name(&self) -> Option<&String> {
+        self.default_backend.as_ref()
+    }
+
+    /// Set the sample rate for this builder.
+    pub fn set_sample_rate(&mut self, sr: f32) {
+        self.sample_rate = Some(sr);
+    }
+
+    /// Set the clock tick channel (audio → control).
+    pub fn set_clock_tx(&mut self, tx: ActorRef<ClockTick>) {
+        self.clock_tx = Some(tx);
+    }
+
+    /// Access the shared backend factory.
     pub fn backend_factory(&self) -> &Arc<BackendFactory<T>> {
-        &self.backends
+        &self.backend_factory
     }
 
     /// Add a source node and return its index.
@@ -162,6 +207,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.nodes.push(NodeEntry {
             node: NodeVariant::Source(source),
         });
+        self.node_backends.push(None);
         idx
     }
 
@@ -174,6 +220,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.nodes.push(NodeEntry {
             node: NodeVariant::Processor(processor),
         });
+        self.node_backends.push(None);
         idx
     }
 
@@ -183,6 +230,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.nodes.push(NodeEntry {
             node: NodeVariant::Sink(sink),
         });
+        self.node_backends.push(None);
         idx
     }
 
@@ -192,6 +240,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.nodes.push(NodeEntry {
             node: NodeVariant::Router(router),
         });
+        self.node_backends.push(None);
         idx
     }
 
@@ -243,36 +292,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Configure an audio backend for this builder.
-    ///
-    /// When set, [`build`](Self::build) looks for a driver node in the graph
-    /// and auto-starts it with a command queue and the given audio backend.
-    /// Without this method, the graph is purely structural (no audio I/O,
-    /// no command queue).
-    /// Configure an audio backend for this builder.
-    ///
-    /// Params are passed blindly to the backend factory — keys like
-    /// `"sample_rate"`, `"buffer_size"`, `"channels"` are interpreted
-    /// by each backend constructor.
-    pub fn with_backend(mut self, backend_name: &str, params: HashMap<String, ParamValue>) -> Self {
-        self.backend_config = Some(BackendConfig {
-            name: backend_name.to_string(),
-            params,
-        });
-        self
-    }
-
     /// Build the graph.
     ///
-    /// If [`with_backend`](Self::with_backend) was called before, the builder
-    /// auto-starts a driver node with a command queue and the configured
-    /// audio backend. Otherwise the graph is purely structural (no audio I/O,
-    /// no command queue).
+    /// Creates backends for nodes that have a backend name set (via
+    /// [`NodeDef::backend`] or the builder's default).  Finds the active
+    /// (driver) node and stores its index for [`Graph::run`].
     pub fn build(mut self) -> Result<Graph<T, BUF_SIZE>, BuildError> {
-        let (backend_name, params) = match self.backend_config.as_ref() {
-            Some(cfg) => (Some(cfg.name.as_str()), &cfg.params),
-            None => (None, &HashMap::new()),
-        };
         let num_nodes = self.nodes.len();
 
         // --- adjacency for Kahn (audio edges only; feedback is not a DAG edge) ---
@@ -389,10 +414,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        let sr = params
-            .get("sample_rate")
-            .and_then(|v| v.as_i32())
-            .unwrap_or(44100) as f32;
+        let sr = self.sample_rate.unwrap_or(44100.0);
 
         // Allocate named buffers (tape loops, etc.) from resource definitions.
         let mut buffers = BufferRegistry::new();
@@ -411,61 +433,46 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             entry.node.resolve_resources(&buffers);
         }
 
-        // Resolve audio backend pointer for I/O nodes.
-        let backend_box = if let Some(name) = backend_name {
-            let b = self
-                .backends
-                .create(name, params)
-                .map_err(BuildError::Backend)?;
-            let ptr: *mut dyn rill_core::io::IoBackend<T> = &*b
-                as *const dyn rill_core::io::IoBackend<T>
-                as *mut dyn rill_core::io::IoBackend<T>;
-            for entry in &mut self.nodes {
-                entry.node.resolve_backend(ptr);
+        // Resolve audio backends for I/O nodes.
+        // Each node with a named backend gets its own instance.
+        // Nodes without explicit backend get the default (if set).
+        for (idx, be_name) in self.node_backends.iter().enumerate() {
+            let name = match be_name {
+                Some(ref n) => Some(n.clone()),
+                None => self.default_backend.clone(),
+            };
+            if let Some(ref name) = name {
+                let mut be_params = HashMap::new();
+                be_params.insert("sample_rate".into(), ParamValue::Float(sr));
+                be_params.insert("buffer_size".into(), ParamValue::Int(BUF_SIZE as i32));
+                if self.default_backend.as_ref() == Some(name) {
+                    for (k, v) in &self.backend_params {
+                        be_params.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                let backend = self
+                    .backend_factory
+                    .create(name, &be_params)
+                    .map_err(BuildError::Backend)?;
+                if let Some(io_node) = self.nodes[idx].node.as_io_node_mut() {
+                    io_node.resolve_backend(backend);
+                }
             }
-            Some(b)
-        } else {
-            None
-        };
+        }
 
         let mut nodes: Vec<NodeVariant<T, BUF_SIZE>> =
             self.nodes.into_iter().map(|e| e.node).collect();
 
-        // Auto-start driver node (registers process callback on backend).
+        // Find the active (driver) node via ActiveNode trait.
         let cmd_queue = Arc::new(MpscQueue::<SetParameter>::with_capacity(64));
-        let have_queue = if let Some(ref _backend) = backend_box {
-            let driver_idx = nodes
-                .iter()
-                .position(|n| {
-                    let name = n.metadata().name;
-                    name == "AudioInput" || name == "Input"
-                })
-                .or_else(|| {
-                    nodes.iter().position(|n| {
-                        let name = n.metadata().name;
-                        name == "AudioOutput" || name == "Output"
-                    })
-                });
-            if let Some(driver_idx) = driver_idx {
-                let nodes_ptr = nodes.as_mut_ptr();
-                let len = nodes.len();
-                let source_idx = topo[0];
-                let queue_ptr: *const MpscQueue<SetParameter> = Arc::as_ptr(&cmd_queue);
-                let handle = GraphHandle {
-                    nodes: nodes_ptr as *mut u8,
-                    len,
-                    source_idx,
-                    sample_rate: sr,
-                    queue: queue_ptr,
-                };
-                nodes[driver_idx].start(handle);
-                true
-            } else {
-                false
+        let mut active_node_idx = None;
+        for (i, n) in nodes.iter_mut().enumerate() {
+            if n.as_active_node_mut().is_some() {
+                active_node_idx = Some(i);
+                break;
             }
-        } else {
-            false
-        };
+        }
+        let have_queue = active_node_idx.is_some();
         let command_queue = if have_queue { Some(cmd_queue) } else { None };
 
         let owned_buffers = buffers.into_inner();
@@ -478,8 +485,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             resources: allocated,
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sr),
             buffers: owned_buffers,
-            backend: backend_box,
+            active_node_idx,
             command_queue,
+            clock_tx: self.clock_tx.clone(),
         })
     }
 }
@@ -504,10 +512,12 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     /// Named buffers (tape loops, etc.) shared between nodes.
     #[allow(dead_code)]
     buffers: Vec<Box<dyn Buffer<T> + Send>>,
-    /// Shared audio backend (alive for the graph's lifetime).
-    backend: Option<Box<dyn rill_core::io::IoBackend<T>>>,
+    /// Index of the active node that drives graph processing.
+    active_node_idx: Option<usize>,
     /// Command queue for sending parameters from control to audio thread.
     command_queue: Option<Arc<MpscQueue<SetParameter>>>,
+    /// Clock tick channel (audio → control sequencer).
+    clock_tx: Option<ActorRef<ClockTick>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
@@ -551,22 +561,53 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         &self.resources
     }
 
-    /// Run the audio backend until `running` becomes false.
+    /// Run graph processing through the active node.
     ///
-    /// For blocking backends (ALSA, PipeWire) this blocks inside
-    /// `backend.run()`. For non-blocking backends (CPAL, JACK) it
-    /// parks after setup. An external signal must unpark the thread
-    /// after setting `running` to false.
-    pub fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
-        if let Some(ref backend) = self.backend {
-            backend.run(running.clone())?;
-            while running.load(Ordering::Acquire) {
-                std::thread::park();
+    /// Creates a tick closure from the graph's runner and passes it to the
+    /// active node's [`Node::run`](rill_core::Node::run).
+    #[allow(unsafe_code)]
+    pub fn run(&mut self, running: Arc<AtomicBool>) -> Result<(), String> {
+        let Some(idx) = self.active_node_idx else {
+            return Ok(());
+        };
+        let source_idx = self.topo_order[0];
+        let cmd_queue = self
+            .command_queue
+            .clone()
+            .unwrap_or_else(|| Arc::new(MpscQueue::new()));
+        let clock_tx = self
+            .clock_tx
+            .clone()
+            .unwrap_or_else(|| ActorRef::new(&Arc::new(MpscQueue::new())));
+
+        let graph_ptr: *mut Graph<T, BUF_SIZE> = self;
+        let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
+            let graph = unsafe { &mut *graph_ptr };
+            // drain command queue
+            while let Some(cmd) = cmd_queue.pop() {
+                let i = cmd.port.node_id().inner() as usize;
+                if i < graph.nodes.len() {
+                    let _ = graph.nodes[i].set_parameter(&cmd.parameter, cmd.value);
+                }
             }
-            backend.stop()
-        } else {
-            Ok(())
-        }
+            // process source and propagate
+            let tick = ClockTick::new(sample_pos, BUF_SIZE as u32, sample_rate);
+            let mut ctx = ProcessContext { clock: &tick };
+            let _ = graph.nodes[source_idx].process_block(&mut ctx);
+            let action_ctx = ActionContext::new(&tick);
+            for po in 0..graph.nodes[source_idx].num_signal_outputs() {
+                if let Some(port) = graph.nodes[source_idx].output_port(po) {
+                    let _ = port.propagate(port.buffer(), &action_ctx);
+                }
+            }
+            // send clock tick
+            clock_tx.send(tick);
+        });
+
+        self.nodes[idx]
+            .as_active_node_mut()
+            .ok_or("no active node")?
+            .run(tick, running)
     }
 
     /// Obtain an [`ActorRef`] for sending commands to this graph.
@@ -595,8 +636,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             current_tick,
             resources: _,
             buffers,
-            backend: _,
+            active_node_idx: _,
             command_queue: _,
+            clock_tx: _,
         } = self;
         (nodes, topo_order, current_tick, buffers)
     }
@@ -623,7 +665,6 @@ mod tests {
     use super::*;
     use rill_core::math::Transcendental;
     use rill_core::time::ClockTick;
-    use rill_core::traits::active::ActiveNode;
     use rill_core::traits::algorithm::ActionContext;
     use rill_core::traits::processable::{ProcessContext, Processable};
     use rill_core::traits::{
@@ -749,29 +790,6 @@ mod tests {
         fn num_signal_outputs(&self) -> usize {
             1
         }
-    }
-
-    impl<const BUF_SIZE: usize> ActiveNode for ConstantSource<f32, BUF_SIZE> {
-        fn start(&mut self, handle: GraphHandle) {
-            #[allow(unsafe_code)]
-            unsafe {
-                let nodes = std::slice::from_raw_parts_mut(
-                    handle.nodes as *mut NodeVariant<f32, BUF_SIZE>,
-                    handle.len,
-                );
-                let idx = handle.source_idx;
-                let tick = ClockTick::new(0, BUF_SIZE as u32, handle.sample_rate);
-                let mut ctx = ProcessContext { clock: &tick };
-                let _ = nodes[idx].process_block(&mut ctx);
-                let action_ctx = ActionContext::new(&tick);
-                for po in 0..nodes[idx].num_signal_outputs() {
-                    if let Some(port) = nodes[idx].output_port(po) {
-                        let _ = port.propagate(port.buffer(), &action_ctx);
-                    }
-                }
-            }
-        }
-        fn stop(&mut self) {}
     }
 
     // ------------------------------------------------------------------------
