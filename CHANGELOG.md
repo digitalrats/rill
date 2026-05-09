@@ -4,6 +4,18 @@
 
 ### ✨ New
 
+- **`IoNode` / `ActiveNode` trait hierarchy** in `rill-core::traits::node`:
+  - `Node` — base trait, no backend, no run method
+  - `IoNode: Node` — `resolve_backend(backend)` for I/O-capable nodes
+  - `ActiveNode: IoNode` — `run(tick, running)` for the single driver node
+  - `as_io_node_mut()` / `as_active_node_mut()` downcasting helpers on `Node`
+  - `Input`, `Output`, `LofiInput` implement `IoNode`
+  - `Input`, `Output` implement `ActiveNode`
+  - `GraphBuilder::build()` uses downcasting instead of name-based matching
+  - `Graph::run()` calls `ActiveNode::run()` instead of `Node::run()`
+  - `GraphRunner` trait removed — replaced by `Box<dyn FnMut(u64, f32)>`
+  - Inherent `resolve_backend()` convenience methods on `Input`/`Output`
+
 - **Chip emulator architecture** — unified model for vintage sound chips:
   - `Ay38910Chip` + `Ay38910Backend` — AY-3-8910 / YM2149 (3 tone, noise, envelope)
   - `NesChip` + `NesBackend` — NES 2A03 APU (2 pulse + sweep, triangle, noise, DPCM)
@@ -56,6 +68,8 @@
 ### 📖 Documentation
 
 - New guide: **Chip Emulators** (`docs/src/guides/chip-emulators.md`)
+- Examples section added to root `README.md` — all 5 `rill-adrift` examples
+  described with `cargo run` commands
 - Spec + plan for IoBackend-based emulator architecture in `docs/superpowers/`
 
 ## [0.5.0-beta.3] — 2026-05-07
