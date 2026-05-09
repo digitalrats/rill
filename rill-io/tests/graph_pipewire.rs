@@ -22,7 +22,7 @@ mod graph_pipewire_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let mut backend = PipewireBackend::new(config).unwrap();
+        let backend = PipewireBackend::new(config).unwrap();
         let backend: Box<dyn IoBackend<f32>> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
@@ -48,7 +48,7 @@ mod graph_pipewire_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let mut backend = PipewireBackend::new(config).unwrap();
+        let backend = PipewireBackend::new(config).unwrap();
         let backend: Box<dyn IoBackend<f32>> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();

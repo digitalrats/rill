@@ -7,7 +7,6 @@
 mod graph_jack_it {
     use std::time::Duration;
 
-    use rill_core::io::IoBackend;
     use rill_core::traits::{Node, Sink, Source};
     use rill_core::ClockTick;
     use rill_io::{AudioConfig, AudioInput, AudioOutput, JackBackend};
@@ -38,7 +37,7 @@ mod graph_jack_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let mut backend = JackBackend::new(config).unwrap();
+        let backend = JackBackend::new(config).unwrap();
         let backend: Box<dyn rill_core::io::IoBackend<f32>> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
@@ -69,7 +68,7 @@ mod graph_jack_it {
             .with_buffer_size(BUF_SZ as u32)
             .with_channels(2);
 
-        let mut backend = JackBackend::new(config).unwrap();
+        let backend = JackBackend::new(config).unwrap();
         let backend: Box<dyn rill_core::io::IoBackend<f32>> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();

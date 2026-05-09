@@ -3,7 +3,6 @@
 #[cfg(feature = "alsa")]
 mod graph_alsa_it {
     use std::process::Command;
-    use std::time::Duration;
 
     use rill_core::io::IoBackend;
     use rill_io::{AlsaBackend, AudioConfig};
