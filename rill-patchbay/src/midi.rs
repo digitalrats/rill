@@ -96,60 +96,6 @@ impl Drop for MidiHub {
     }
 }
 
-impl MidiHub {
-    /// Start the MIDI actor.
-    ///
-    /// Spawns a dedicated thread that polls `backend` for messages,
-    /// parses them, and calls `patchbay.handle_event()`.
-    pub fn start(backend: Box<dyn MidiBackend>, patchbay: Arc<Mutex<Patchbay>>) -> Self {
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-
-        let thread = thread::spawn(move || {
-            let mut backend = backend;
-            while r.load(Ordering::Acquire) {
-                match backend.poll() {
-                    Ok(events) => {
-                        for msg in events {
-                            if let Some(event) = parse_midi(&msg) {
-                                let _ = patchbay.lock().map(|mut pb| {
-                                    pb.handle_event(event);
-                                });
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("midi backend poll error: {e}");
-                        // Brief pause on error to avoid tight spin loop.
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                }
-                // Small yield to avoid busy-waiting when no events.
-                thread::sleep(Duration::from_millis(1));
-            }
-        });
-
-        MidiHub {
-            thread: Some(thread),
-            running,
-        }
-    }
-
-    /// Stop the actor and join its thread.
-    pub fn stop(&mut self) {
-        self.running.store(false, Ordering::Release);
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for MidiHub {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
 /// Parse a raw [`MidiMessage`] into a [`ControlEvent`].
 fn parse_midi(msg: &MidiMessage) -> Option<ControlEvent> {
     let status = msg.status();
