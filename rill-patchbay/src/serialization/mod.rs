@@ -199,7 +199,10 @@ impl SensorDef {
     #[cfg(feature = "midi")]
     pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
         match self {
-            SensorDef::Midi { backend, port_name } => {
+            SensorDef::Midi {
+                backend: _,
+                port_name,
+            } => {
                 use rill_io::backends::MidirBackend;
                 let be = Box::new(MidirBackend::new(port_name).ok()?);
                 let hub = crate::midi::MidiHub::new(be);

@@ -735,9 +735,9 @@ impl Module for SensorModule {
 pub type BoxedModule = Box<dyn Module>;
 
 /// Trait for rack modules — unified interface for servos and sensors.
-pub trait Module: Send + Sync {
+pub trait Module: Send {
     /// Update the module and produce a parameter command (servos only).
-    fn update(&mut self, time: Time) -> Option<SetParameter> {
+    fn update(&mut self, _time: Time) -> Option<SetParameter> {
         None
     }
     /// Return the module's unique identifier.
@@ -1013,7 +1013,7 @@ impl Patchbay {
     }
 
     /// Get a servo by ID.
-    pub fn get_servo(&self, id: &str) -> Option<&dyn AnyServo> {
+    pub fn get_servo(&self, id: &str) -> Option<&dyn Module> {
         self.modules.get(id).map(|b| b.as_ref())
     }
 
