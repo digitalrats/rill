@@ -538,8 +538,6 @@ impl<A: Automaton> Servo<A> {
         automaton: A,
         target_node: NodeId,
         target_param: impl Into<String>,
-        /// Parameter mapping (kept for backward compat, superseded by ControlStrategy).
-        #[allow(dead_code)]
         mapping: ParameterMapping,
         min: f64,
         max: f64,
