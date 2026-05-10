@@ -83,21 +83,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> SawOsc<T, BUF_SIZE> {
     fn t_to_param(value: T) -> ParamValue {
         ParamValue::Float(value.to_f32())
     }
-
-    /// Generate a block of samples
-    fn generate_block(
-        &mut self,
-        output: &mut [T; BUF_SIZE],
-        clock: &ClockTick,
-    ) -> ProcessResult<()> {
-        self.osc.set_frequency(self.frequency.to_f32());
-        self.osc
-            .process(None, &mut output[..], &ActionContext::new(clock))?;
-        for out in output.iter_mut() {
-            *out *= self.amplitude;
-        }
-        Ok(())
-    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
@@ -228,9 +213,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SawOsc<T,
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
     ) -> ProcessResult<()> {
-        let mut temp = [T::ZERO; BUF_SIZE];
-        self.generate_block(&mut temp, clock)?;
-        *self.outputs[0].buffer.as_mut_array() = temp;
+        let out = self.outputs[0].buffer.as_mut_array();
+        self.osc.set_frequency(self.frequency.to_f32());
+        self.osc
+            .process(None, &mut out[..], &ActionContext::new(clock))?;
+        for o in out.iter_mut() {
+            *o *= self.amplitude;
+        }
+        self.state.as_mut().unwrap().advance();
         Ok(())
     }
 }

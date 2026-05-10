@@ -13,6 +13,7 @@
 //! ├── buffer/           # Lock-free signal buffers with AtomicCell safety
 //! ├── queues/           # Real-time safe command queues
 //! ├── time/             # Time and clock abstractions (ClockTick, SystemClock)
+//! ├── io/               # Generic I/O backend trait (IoBackend)
 //! ├── macros/           # Node creation macros (source_node!, processor_node!, etc.)
 //! ├── prelude           # Convenience prelude for common imports
 //! ├── interpolate       # Fractional-index interpolation trait

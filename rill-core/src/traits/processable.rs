@@ -44,6 +44,14 @@ where
     T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
+        // Compile-time guard: BUF_SIZE must be SIMD-aligned (multiple of 4).
+        // Fires at monomorphization time when a concrete BUF_SIZE is used.
+        const {
+            assert!(
+                BUF_SIZE.is_multiple_of(4),
+                "BUF_SIZE must be a multiple of 4 for SIMD"
+            )
+        }
         self.as_mut().generate(ctx.clock, &[], &[])
     }
 }

@@ -18,6 +18,7 @@ use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
+use rill_core::math::functions::{f32_to_i16_chunk, i16_to_f32_chunk};
 
 // ============================================================================
 // Callback slot
@@ -165,9 +166,7 @@ fn alsa_io_loop(
                 if let Ok(n_read) = io.readi(&mut cb_i16[..in_sz]) {
                     let n = (n_read * in_ch).min(in_sz);
                     let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                    for (i, s) in cb_i16[..n].iter().enumerate() {
-                        temp[i] = *s as f32 / 32768.0;
-                    }
+                    i16_to_f32_chunk(&cb_i16[..n], &mut temp[..n]);
                     input_buffer.write(&temp[..n]);
                 }
             }
@@ -213,9 +212,7 @@ fn alsa_io_loop(
 
         // Write to playback PCM if present
         if let Some(ref pcm) = pcm_playback {
-            for i in 0..chunk_samples {
-                i16_buf[i] = (f32_buf[i].clamp(-1.0, 1.0) * 32767.0) as i16;
-            }
+            f32_to_i16_chunk(&f32_buf[..chunk_samples], &mut i16_buf[..chunk_samples]);
             let mut retries = 3usize;
             loop {
                 match pcm.io_i16() {

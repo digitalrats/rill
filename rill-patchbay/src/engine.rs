@@ -637,6 +637,10 @@ pub struct Patchbay {
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
     sequencer_handle: Option<SequencerHandle>,
     sequencer_task: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(feature = "midi")]
+    midi_actor: Option<super::MidiActor>,
+    #[cfg(not(feature = "midi"))]
+    midi_actor: Option<()>,
     command_queue: ActorRef<SetParameter>,
     time: Time,
 }
@@ -655,6 +659,7 @@ impl Patchbay {
             automaton_handles: HashMap::new(),
             sequencer_handle: None,
             sequencer_task: None,
+            midi_actor: None,
             command_queue,
             time: 0.0,
         }
@@ -964,7 +969,7 @@ impl Patchbay {
         self.sequencer_handle.as_ref()
     }
 
-    /// Stop all async automata and the sequencer.
+    /// Stop all async automata, the sequencer, and the MIDI actor.
     pub fn stop_all(&mut self) {
         for combiner in self.port_combiners.values() {
             combiner.stop();
@@ -972,6 +977,33 @@ impl Patchbay {
         self.port_combiners.clear();
         self.automaton_handles.clear();
         self.detach_sequencer();
+        self.stop_midi();
+    }
+
+    /// Start the MIDI input module.
+    ///
+    /// Takes a pre‑built backend and the shared `Arc<Mutex<Patchbay>>`
+    /// that wraps this Patchbay. The MidiActor dispatches events
+    /// through `handle_event()` by locking this same mutex.
+    ///
+    /// If a MidiActor is already running, it is stopped first.
+    #[cfg(feature = "midi")]
+    pub fn start_midi(
+        &mut self,
+        backend: Box<dyn rill_io::midi_backend::MidiBackend>,
+        shared: Arc<std::sync::Mutex<Patchbay>>,
+    ) {
+        self.stop_midi();
+        self.midi_actor = Some(super::MidiActor::start(backend, shared));
+    }
+
+    /// Stop the MIDI actor if running.
+    fn stop_midi(&mut self) {
+        #[cfg(feature = "midi")]
+        if let Some(ref mut actor) = self.midi_actor {
+            actor.stop();
+        }
+        self.midi_actor = None;
     }
 
     // ── Convenience aliases (forwarded from removed PatchbayEngine) ────

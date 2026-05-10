@@ -49,25 +49,68 @@ impl Default for SimdDetector {
 }
 
 impl SimdDetector {
-    /// Creates a detector and determines the current CPU's capabilities
+    /// Creates a detector and determines the current CPU's capabilities.
+    ///
+    /// Uses `std::arch::is_x86_feature_detected!` on x86/x86_64
+    /// and `std::arch::is_aarch64_feature_detected!` on AArch64.
+    /// On other targets, all features are reported as unavailable.
     pub fn new() -> Self {
-        // Temporary stub: always returns false for SIMD extensions
-        // In a real implementation, detection would be done via raw_cpuid or similar libraries
         Self {
+            #[cfg(target_arch = "x86_64")]
+            has_sse2: std::arch::is_x86_feature_detected!("sse2"),
+            #[cfg(target_arch = "x86")]
+            has_sse2: std::arch::is_x86_feature_detected!("sse2"),
+            #[cfg(target_arch = "x86_64")]
+            has_sse4_1: std::arch::is_x86_feature_detected!("sse4.1"),
+            #[cfg(target_arch = "x86")]
+            has_sse4_1: std::arch::is_x86_feature_detected!("sse4.1"),
+            #[cfg(target_arch = "x86_64")]
+            has_avx: std::arch::is_x86_feature_detected!("avx"),
+            #[cfg(target_arch = "x86")]
+            has_avx: std::arch::is_x86_feature_detected!("avx"),
+            #[cfg(target_arch = "x86_64")]
+            has_avx2: std::arch::is_x86_feature_detected!("avx2"),
+            #[cfg(target_arch = "x86")]
+            has_avx2: std::arch::is_x86_feature_detected!("avx2"),
+            #[cfg(target_arch = "x86_64")]
+            has_avx512: std::arch::is_x86_feature_detected!("avx512f"),
+            #[cfg(target_arch = "x86")]
+            has_avx512: std::arch::is_x86_feature_detected!("avx512f"),
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             has_sse2: false,
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             has_sse4_1: false,
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             has_avx: false,
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             has_avx2: false,
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             has_avx512: false,
+            #[cfg(target_arch = "aarch64")]
+            has_neon: std::arch::is_aarch64_feature_detected!("neon"),
+            #[cfg(not(target_arch = "aarch64"))]
             has_neon: false,
+            #[cfg(target_arch = "wasm32")]
+            has_wasm_simd128: true,
+            #[cfg(not(target_arch = "wasm32"))]
             has_wasm_simd128: false,
         }
     }
 
-    /// Returns the maximum recommended SIMD width for the current platform
+    /// Returns the maximum recommended SIMD width for the current platform.
+    ///
+    /// On x86_64: 8 if AVX available, 4 if SSE2 available.
+    /// On AArch64: 4 if NEON available.
+    /// On wasm32: 4.
+    /// Fallback: 1 (scalar).
     pub fn recommended_simd_width<T: crate::Transcendental>() -> usize {
-        // Temporary stub: always returns scalar width
-        // In a real implementation, selection logic based on detection would go here
+        let det = Self::new();
+        if det.has_avx {
+            return 8;
+        }
+        if det.has_sse2 || det.has_neon || det.has_wasm_simd128 {
+            return 4;
+        }
         1
     }
 }

@@ -16,6 +16,27 @@ thiserror = "1.0"
 
 [dev-dependencies]
 float-cmp = "0.9"
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "oscillator_bench"
+harness = false
+path = "benches/oscillator_bench.rs"
+
+[[bench]]
+name = "filter_bench"
+harness = false
+path = "benches/filter_bench.rs"
+
+[[bench]]
+name = "noise_bench"
+harness = false
+path = "benches/noise_bench.rs"
+
+[[bench]]
+name = "reader_bench"
+harness = false
+path = "benches/reader_bench.rs"
 
 [features]
 default = []

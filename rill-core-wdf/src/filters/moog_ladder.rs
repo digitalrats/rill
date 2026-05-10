@@ -1,3 +1,4 @@
+use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{
     ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult,
 };
@@ -45,6 +46,22 @@ crate::wdf_cascade! {
         let alpha = g / (T::ONE + g);
         for p in &mut s.poles { p.alpha = alpha; }
     },
+}
+
+impl<T: Transcendental> MoogLadder<T> {
+    /// Process 4 independent voices via `ScalarVector4`.
+    ///
+    /// Each lane of the input vector represents one voice; each lane
+    /// of the output vector is the corresponding filtered sample.
+    /// Reduces function-call overhead in polyphonic synthesis.
+    pub fn process_4_voices(
+        &mut self,
+        inputs: rill_core::math::vector::scalar::ScalarVector4<T>,
+    ) -> rill_core::math::vector::scalar::ScalarVector4<T> {
+        rill_core::math::vector::scalar::ScalarVector4::from_fn(|i| {
+            self.process_sample(inputs.extract(i))
+        })
+    }
 }
 
 impl<T: Transcendental> crate::WdfElement<T> for MoogLadder<T> {

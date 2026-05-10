@@ -154,7 +154,8 @@ impl IoBackend<f32> for PortAudioBackend {
                         let buffer = args.buffer;
                         let total = buffer.len();
                         let block = buf_frames * out_channels as usize;
-                        let mut temp_buf = vec![0.0f32; block];
+                        // Stack-allocated temp buffer (max sane PA block size)
+                        let mut temp_buf = [0.0f32; 8192];
                         let mut off = 0usize;
                         while off + block <= total {
                             unsafe {
@@ -162,7 +163,7 @@ impl IoBackend<f32> for PortAudioBackend {
                                 process_cb.call(sample_rate as f32);
                                 oslot.clear();
                             }
-                            buffer[off..off + block].copy_from_slice(&temp_buf);
+                            buffer[off..off + block].copy_from_slice(&temp_buf[..block]);
                             off += block;
                         }
                         pa::Continue

@@ -41,8 +41,8 @@ pub use algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, Parameteriz
 pub use context::DspContext;
 pub use filters::{Filter, FilterParams, FilterType};
 pub use generators::{
-    EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator, SamplePlayer,
-    WavetableOscillator, LFO,
+    EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator, Resampler,
+    SamplePlayer, WavetableOscillator, LFO,
 };
 
 /// Prelude for convenient imports
@@ -53,8 +53,8 @@ pub mod prelude {
     pub use crate::context::DspContext;
     pub use crate::filters::{Filter, FilterParams, FilterType};
     pub use crate::generators::{
-        EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator, SamplePlayer,
-        WavetableOscillator, LFO,
+        EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator, Resampler,
+        SamplePlayer, WavetableOscillator, LFO,
     };
     pub use crate::mapping::{ControlMapper, MappingStrategy};
     pub use crate::math::*;

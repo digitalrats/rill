@@ -390,36 +390,35 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
     ) -> ProcessResult<()> {
         let amp = self.amplitude;
 
-        let mut temp = [T::ZERO; BUF_SIZE];
+        let left_out = self.outputs[0].buffer.as_mut_array();
         self.left.process(
             None,
-            &mut temp[..],
+            &mut left_out[..],
             &rill_core::traits::ActionContext::new(clock),
         )?;
         if amp != T::from_f32(1.0) {
-            for s in temp.iter_mut() {
+            for s in left_out.iter_mut() {
                 *s *= amp;
             }
         }
-        *self.outputs[0].buffer.as_mut_array() = temp;
 
         if let Some(ref mut right_player) = self.right {
-            let mut right_temp = [T::ZERO; BUF_SIZE];
-            right_player.process(
-                None,
-                &mut right_temp[..],
-                &rill_core::traits::ActionContext::new(clock),
-            )?;
-            if amp != T::from_f32(1.0) {
-                for s in right_temp.iter_mut() {
-                    *s *= amp;
-                }
-            }
             if self.outputs.len() > 1 {
-                *self.outputs[1].buffer.as_mut_array() = right_temp;
+                let right_out = self.outputs[1].buffer.as_mut_array();
+                right_player.process(
+                    None,
+                    &mut right_out[..],
+                    &rill_core::traits::ActionContext::new(clock),
+                )?;
+                if amp != T::from_f32(1.0) {
+                    for s in right_out.iter_mut() {
+                        *s *= amp;
+                    }
+                }
             }
         }
 
+        self.state.as_mut().unwrap().advance();
         Ok(())
     }
 }

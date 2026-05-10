@@ -20,6 +20,13 @@ pub struct ScalarVector2<T: Scalar>([T; 2]);
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector4<T: Scalar>([T; 4]);
 
+impl<T: Scalar> ScalarVector4<T> {
+    /// Construct a vector by applying a function to each lane index.
+    pub fn from_fn<F: FnMut(usize) -> T>(f: F) -> Self {
+        Self(core::array::from_fn(f))
+    }
+}
+
 /// Scalar vector of 8 elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector8<T: Scalar>([T; 8]);
@@ -114,6 +121,77 @@ impl<T: Transcendental> VectorTranscendental<T, 4> for ScalarVector4<T> {
     }
     fn tan(&self) -> Self {
         ScalarVector4(core::array::from_fn(|i| self.0[i].tan()))
+    }
+}
+
+impl<T: Scalar + PartialEq> VectorMask<T, 4> for ScalarVector4<T> {
+    type Mask = ScalarVector4<T>;
+
+    fn eq(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] == other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn ne(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] != other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn gt(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] > other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn ge(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] >= other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn lt(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] < other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn le(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] <= other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn select(&self, other: &Self, mask: Self::Mask) -> Self {
+        ScalarVector4(core::array::from_fn(|i| {
+            if mask.0[i] != T::ZERO {
+                self.0[i]
+            } else {
+                other.0[i]
+            }
+        }))
+    }
+    fn all(mask: &Self::Mask) -> bool {
+        mask.0.iter().all(|&v| v != T::ZERO)
     }
 }
 

@@ -22,8 +22,6 @@
 //!
 //! ## Available macros
 //! - [`vec_map!`] – applies a vector expression to the entire slice.
-//! - [`vec_expr!`] – creates a lazy vector expression (stub, requires fixing the expr module).
-//! - [`vec_eval!`] – immediately evaluates a vector expression (stub).
 
 use crate::math::vector::scalar::ScalarVector4;
 use crate::math::vector::traits::Vector;
@@ -73,29 +71,6 @@ macro_rules! vec_map {
     }};
 }
 
-/// Creates a lazy vector expression (stub).
-///
-/// In the current implementation, the `expr` module is temporarily disabled due to compilation
-/// errors, so this macro returns the passed value unchanged.
-#[macro_export]
-macro_rules! vec_expr {
-    ($val:expr) => {
-        $val
-    };
-}
-
-/// Immediately evaluates a vector expression (stub).
-///
-/// In the current implementation, simply returns the passed expression.
-#[macro_export]
-macro_rules! vec_eval {
-    ($($t:tt)*) => {
-        $($t)*
-    };
-}
-
-pub use crate::vec_eval;
-pub use crate::vec_expr;
 pub use crate::vec_map;
 
 // -----------------------------------------------------------------------------
@@ -155,20 +130,5 @@ mod tests {
         assert_eq!(output[0], 11.0);
         assert_eq!(output[1], 12.0);
         assert_eq!(output[2], 13.0);
-    }
-
-    #[test]
-    fn test_vec_expr_stub() {
-        let vec = ScalarVector4::splat(5.0);
-        let result = vec_expr!(vec);
-        assert_eq!(result, vec);
-    }
-
-    #[test]
-    fn test_vec_eval_stub() {
-        let a = ScalarVector4::splat(2.0);
-        let b = ScalarVector4::splat(3.0);
-        let result = vec_eval!(a + b);
-        assert_eq!(result, ScalarVector4::splat(5.0));
     }
 }

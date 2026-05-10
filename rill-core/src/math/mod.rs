@@ -8,7 +8,7 @@
 //! - Fast approximations for DSP
 
 mod conversions;
-mod functions;
+pub mod functions;
 mod num;
 pub mod vector;
 

@@ -6,6 +6,8 @@
 //! that receive data from upstream output ports.
 
 use crate::buffer::{Buffer, FixedBuffer};
+use crate::math::vector::scalar::ScalarVector4;
+use crate::math::vector::traits::Vector as VecTrait;
 use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::algorithm::Algorithm;
@@ -517,16 +519,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     ///
     /// For input ports on a feedback edge, mixes the delayed feedback
     /// (from `feedback_buffer`) into the current `buffer`.
-    /// No-op when `feedback_buffer` is `None`.
-    ///
-    /// `tick` is the current clock tick, available for future
-    /// sample-accurate or time-varying port-level processing.
     pub fn pre_process(&mut self, _tick: &ClockTick) {
         if let Some(ref fb) = self.feedback_buffer {
             let arr = self.buffer.as_mut_array();
             let fb_arr = fb.as_array();
-            for (v, &s) in arr.iter_mut().zip(fb_arr.iter()) {
-                *v += s;
+            let chunks = BUF_SIZE / 4;
+
+            for chunk in 0..chunks {
+                let o = chunk * 4;
+                let a = ScalarVector4::load(&arr[o..o + 4]);
+                let b = ScalarVector4::load(&fb_arr[o..o + 4]);
+                a.add(&b).store(&mut arr[o..o + 4]);
+            }
+
+            for i in chunks * 4..BUF_SIZE {
+                arr[i] += fb_arr[i];
             }
         }
     }

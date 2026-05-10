@@ -78,31 +78,78 @@ pub trait VectorTranscendental<T: Transcendental, const N: usize>: Vector<T, N> 
 /// Scalar-vector arithmetic operations.
 ///
 /// Each method broadcasts the scalar across all lanes.
-pub trait VectorScalarOps<T: Scalar, const N: usize> {
+/// Blanket-implemented for all [`Vector`] types.
+pub trait VectorScalarOps<T: Scalar, const N: usize>: Vector<T, N> {
     /// Add a scalar to every lane.
-    fn add_scalar(&self, scalar: T) -> Self;
+    fn add_scalar(&self, scalar: T) -> Self {
+        self.add(&Self::splat(scalar))
+    }
     /// Subtract a scalar from every lane.
-    fn sub_scalar(&self, scalar: T) -> Self;
+    fn sub_scalar(&self, scalar: T) -> Self {
+        self.sub(&Self::splat(scalar))
+    }
     /// Multiply every lane by a scalar.
-    fn mul_scalar(&self, scalar: T) -> Self;
+    fn mul_scalar(&self, scalar: T) -> Self {
+        self.mul(&Self::splat(scalar))
+    }
     /// Divide every lane by a scalar.
-    fn div_scalar(&self, scalar: T) -> Self;
+    fn div_scalar(&self, scalar: T) -> Self {
+        self.div(&Self::splat(scalar))
+    }
     /// Compute the remainder of every lane divided by a scalar.
-    fn rem_scalar(&self, scalar: T) -> Self;
+    fn rem_scalar(&self, scalar: T) -> Self {
+        self.rem(&Self::splat(scalar))
+    }
 }
 
+/// Blanket implementation: every [`Vector`] gets scalar ops for free.
+impl<T: Scalar, const N: usize, V: Vector<T, N>> VectorScalarOps<T, N> for V {}
+
+/// Blanket implementation: every [`Vector`] gets reduce ops for free.
+///
+/// Uses element-wise extraction and accumulation. SIMD types may override
+/// individual methods with shuffle-based reductions for better performance.
+impl<T: Scalar, const N: usize, V: Vector<T, N>> VectorReduce<T, N> for V {}
+
 /// Horizontal reduction operations (vector → scalar).
-pub trait VectorReduce<T: Scalar, const N: usize> {
+pub trait VectorReduce<T: Scalar, const N: usize>: Vector<T, N> {
     /// Sum of all lanes.
-    fn horizontal_sum(&self) -> T;
+    fn horizontal_sum(&self) -> T {
+        let mut sum = T::ZERO;
+        for i in 0..N {
+            sum += self.extract(i);
+        }
+        sum
+    }
     /// Product of all lanes.
-    fn horizontal_product(&self) -> T;
+    fn horizontal_product(&self) -> T {
+        let mut prod = T::ONE;
+        for i in 0..N {
+            prod *= self.extract(i);
+        }
+        prod
+    }
     /// Minimum value across all lanes.
-    fn horizontal_min(&self) -> T;
+    fn horizontal_min(&self) -> T {
+        let mut min = self.extract(0);
+        for i in 1..N {
+            min = min.min(self.extract(i));
+        }
+        min
+    }
     /// Maximum value across all lanes.
-    fn horizontal_max(&self) -> T;
+    fn horizontal_max(&self) -> T {
+        let mut max = self.extract(0);
+        for i in 1..N {
+            max = max.max(self.extract(i));
+        }
+        max
+    }
     /// Arithmetic mean of all lanes.
-    fn horizontal_mean(&self) -> T;
+    fn horizontal_mean(&self) -> T {
+        let sum = self.horizontal_sum();
+        sum / T::from_usize(N)
+    }
 }
 
 /// Vector comparison and masking operations.

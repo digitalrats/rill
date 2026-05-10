@@ -1,5 +1,7 @@
 use crate::constants::{BOLTZMANN, ELECTRON_CHARGE, NEWTON_TOLERANCE};
 use crate::WdfElement;
+use rill_core::math::vector::scalar::ScalarVector4;
+use rill_core::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
 use rill_core::Transcendental;
 
 /// Resistor WDF element
@@ -25,6 +27,11 @@ impl<T: Transcendental> Resistor<T> {
     /// Get resistance value
     pub fn resistance(&self) -> T {
         self.resistance
+    }
+
+    /// Process 4 incident waves at once — SIMD vector path.
+    pub fn process_incident_vector(&mut self, _a: ScalarVector4<T>) -> ScalarVector4<T> {
+        ScalarVector4::splat(T::ZERO)
     }
 }
 
@@ -103,6 +110,20 @@ impl<T: Transcendental> Capacitor<T> {
         let t = T::ONE / sample_rate;
         self.port_resistance = t / (two * self.capacitance);
     }
+
+    /// Process 4 incident waves at once — SIMD vector path.
+    pub fn process_incident_vector(&mut self, a: ScalarVector4<T>) -> ScalarVector4<T> {
+        let two = ScalarVector4::splat(T::from_f32(2.0));
+        let r = ScalarVector4::splat(self.port_resistance);
+        let b = ScalarVector4::splat(self.state).sub(&a);
+        let v = a.add(&b).div(&two);
+        let i = a.sub(&b).div(&two.mul(&r));
+        self.voltage = v.extract(0);
+        self.current = i.extract(0);
+        let next = v.add(&r.mul(&i));
+        self.state = next.extract(0);
+        b
+    }
 }
 
 impl<T: Transcendental> WdfElement<T> for Capacitor<T> {
@@ -165,6 +186,11 @@ impl<T: Transcendental> Inductor<T> {
             current: T::ZERO,
             state: T::ZERO,
         }
+    }
+
+    /// Process 4 incident waves at once — SIMD vector path.
+    pub fn process_incident_vector(&mut self, _a: ScalarVector4<T>) -> ScalarVector4<T> {
+        ScalarVector4::splat(-self.state)
     }
 }
 
@@ -279,6 +305,33 @@ impl<T: Transcendental> Diode<T> {
         }
 
         v
+    }
+
+    /// Process 4 incident waves at once — SIMD vector path with Newton-Raphson.
+    pub fn process_incident_vector(&mut self, a: ScalarVector4<T>) -> ScalarVector4<T> {
+        let vt = T::from_f64(self.thermal_voltage.to_f64() * self.ideality_factor.to_f64());
+        let is_val = T::from_f64(self.saturation_current.to_f64());
+        let r_val = self.port_resistance;
+        let vt_s = ScalarVector4::splat(vt);
+        let is_s = ScalarVector4::splat(is_val);
+        let r_s = ScalarVector4::splat(r_val);
+        let tol = ScalarVector4::splat(T::from_f64(NEWTON_TOLERANCE));
+
+        let guess = vt_s.mul(&(ScalarVector4::splat(T::ONE).add(&a.div(&r_s.mul(&is_s)))).ln());
+        let mut v = guess.max(&ScalarVector4::splat(T::ZERO));
+
+        for _ in 0..10 {
+            let i = is_s.mul(&v.div(&vt_s).exp().sub(&ScalarVector4::splat(T::ONE)));
+            let g = is_s.mul(&v.div(&vt_s).exp()).div(&vt_s);
+            let f = v.add(&r_s.mul(&i)).sub(&a);
+            if <ScalarVector4<T> as VectorMask<T, 4>>::all(&f.abs().lt(&tol)) {
+                break;
+            }
+            let df = ScalarVector4::splat(T::ONE).add(&r_s.mul(&g));
+            v = v.sub(&f.div(&df));
+        }
+
+        ScalarVector4::splat(T::from_f32(2.0)).mul(&v).sub(&a)
     }
 }
 
@@ -410,6 +463,37 @@ impl<T: Transcendental> WdfElement<T> for OpAmp<T> {
 
     fn reset(&mut self) {
         self.reset();
+    }
+}
+
+/// Process a batch of samples through any element that supports
+/// `process_incident_vector`, chunking into 4-wide SIMD blocks.
+#[allow(dead_code)]
+pub fn process_batch_simd<T: Transcendental>(
+    process_fn: &mut dyn FnMut(ScalarVector4<T>) -> ScalarVector4<T>,
+    inputs: &[T],
+    outputs: &mut [T],
+) {
+    let len = inputs.len().min(outputs.len());
+    let chunks = len / 4;
+    let remainder = len % 4;
+
+    for i in 0..chunks {
+        let offset = i * 4;
+        let a = ScalarVector4::load(&inputs[offset..offset + 4]);
+        let b = process_fn(a);
+        b.store(&mut outputs[offset..offset + 4]);
+    }
+
+    if remainder > 0 {
+        let offset = chunks * 4;
+        let mut tail = [T::ZERO; 4];
+        tail[..remainder].copy_from_slice(&inputs[offset..offset + remainder]);
+        let a = ScalarVector4::load(&tail);
+        let b = process_fn(a);
+        let mut b_arr = [T::ZERO; 4];
+        b.store(&mut b_arr);
+        outputs[offset..offset + remainder].copy_from_slice(&b_arr[..remainder]);
     }
 }
 

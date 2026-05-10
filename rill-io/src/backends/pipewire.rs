@@ -8,6 +8,7 @@
 //! enters mainloop iterate loop. Exits when `running` becomes false.
 //! No `std::thread`, `std::sync`.
 
+use rill_core::math::functions::{deinterleave_stereo, interleave_stereo};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -145,15 +146,11 @@ impl IoBackend<f32> for PipewireBackend {
         let n_read = self.input_buffer.read(&mut temp[..max_s]);
         let frames_out = n_read / out_ch;
         let out = frames_out.min(frames);
-        if out_ch >= 2 {
-            for i in 0..out {
-                if let Some(c) = channels.get_mut(0) {
-                    c[i] = temp[i * out_ch];
-                }
-                if let Some(c) = channels.get_mut(1) {
-                    c[i] = temp[i * out_ch + 1];
-                }
-            }
+        if out_ch >= 2 && channels.len() >= 2 {
+            let (ch0, rest) = channels.split_at_mut(1);
+            let (ch1, _) = rest.split_at_mut(1);
+            let (c0, c1) = (&mut ch0[0][..out], &mut ch1[0][..out]);
+            deinterleave_stereo(&temp[..out * 2], c0, c1);
         } else {
             for i in 0..out {
                 if let Some(c) = channels.get_mut(0) {
@@ -176,10 +173,10 @@ impl IoBackend<f32> for PipewireBackend {
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
             let cap = win.capacity().min(frames * nch);
             let dst = win.as_mut_slice();
-            for i in 0..frames {
-                for ch in 0..nch {
-                    dst[i * nch + ch] = channels[ch][i];
-                }
+            if nch >= 2 {
+                interleave_stereo(channels[0], channels[1], &mut dst[..frames * 2]);
+            } else {
+                dst[..frames].copy_from_slice(&channels[0][..frames]);
             }
             cap / nch
         } else {
@@ -439,12 +436,31 @@ impl IoBackend<f32> for PipewireBackend {
                     let n_samp = (chunk_size as usize / stride) * actual_channels;
                     let len = n_samp.min(MAX_BLOCK_SAMPLES);
                     let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                    for (i, item) in temp.iter_mut().enumerate().take(len) {
+                    let mut i = 0usize;
+                    while i + 4 <= len {
                         let off = i * 4;
+                        if off + 16 <= slice.len() {
+                            let mut b0 = [0u8; 4];
+                            let mut b1 = [0u8; 4];
+                            let mut b2 = [0u8; 4];
+                            let mut b3 = [0u8; 4];
+                            b0.copy_from_slice(&slice[off..off + 4]);
+                            b1.copy_from_slice(&slice[off + 4..off + 8]);
+                            b2.copy_from_slice(&slice[off + 8..off + 12]);
+                            b3.copy_from_slice(&slice[off + 12..off + 16]);
+                            temp[i] = f32::from_le_bytes(b0);
+                            temp[i + 1] = f32::from_le_bytes(b1);
+                            temp[i + 2] = f32::from_le_bytes(b2);
+                            temp[i + 3] = f32::from_le_bytes(b3);
+                        }
+                        i += 4;
+                    }
+                    for (j, t) in temp[i..len].iter_mut().enumerate() {
+                        let off = (i + j) * 4;
                         if off + 4 <= slice.len() {
                             let mut bytes = [0u8; 4];
                             bytes.copy_from_slice(&slice[off..off + 4]);
-                            *item = f32::from_le_bytes(bytes);
+                            *t = f32::from_le_bytes(bytes);
                         }
                     }
                     let block_samps = buf_frames * actual_channels;

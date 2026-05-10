@@ -37,6 +37,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -58,7 +59,7 @@ use rill_graph::serialization::{GraphDef, SerializationError};
 use rill_patchbay::serialization::PatchbayDef;
 
 mod config;
-pub use config::RuntimeConfig;
+pub use config::{LaunchConfig, RuntimeConfig};
 
 #[cfg(feature = "osc")]
 mod dispatch;
@@ -156,6 +157,23 @@ pub struct Runtime<const BUF: usize = 64> {
     /// Running OSC server + dispatch task.
     #[cfg(feature = "osc")]
     osc: Option<OscHandle>,
+
+    // ── Fields set by [`launch`](Self::launch) ──────────────
+    /// Shared Patchbay (single instance for MIDI + automata).
+    #[cfg(feature = "serialization")]
+    control_arc: Option<Arc<Mutex<Patchbay>>>,
+
+    /// Tokio runtime for the control rack.
+    #[cfg(feature = "serialization")]
+    tokio_rt: Option<tokio::runtime::Runtime>,
+
+    /// Audio thread handle.
+    #[cfg(feature = "serialization")]
+    audio_thread: Option<std::thread::JoinHandle<()>>,
+
+    /// Shared stop flag.
+    #[cfg(feature = "serialization")]
+    running: Option<Arc<AtomicBool>>,
 }
 
 impl<const BUF: usize> Runtime<BUF> {
@@ -202,6 +220,14 @@ impl<const BUF: usize> Runtime<BUF> {
             osc_surface: Vec::new(),
             #[cfg(feature = "osc")]
             osc: None,
+            #[cfg(feature = "serialization")]
+            control_arc: None,
+            #[cfg(feature = "serialization")]
+            tokio_rt: None,
+            #[cfg(feature = "serialization")]
+            audio_thread: None,
+            #[cfg(feature = "serialization")]
+            running: None,
         }
     }
 
@@ -376,16 +402,165 @@ impl<const BUF: usize> Runtime<BUF> {
     pub fn stop(&mut self) {
         log::info!("stopping runtime…");
 
+        // Stop control rack — automata, MIDI, sequencer, PortCombiners.
+        #[cfg(feature = "serialization")]
+        if let Some(ref shared) = self.control_arc {
+            if let Ok(mut pb) = shared.lock() {
+                pb.stop_all();
+            }
+        }
+
+        // Legacy control (non-Arc, used by load_patchbay without launch).
+        if let Some(ref mut ctrl) = self.control {
+            ctrl.stop_all();
+        }
+
         #[cfg(feature = "osc")]
         if let Some(ref o) = self.osc {
             o.task.abort();
         }
 
-        if let Some(ref mut ctrl) = self.control {
-            ctrl.stop_all();
+        // Signal audio thread to stop.
+        #[cfg(feature = "serialization")]
+        if let Some(ref running) = self.running {
+            running.store(false, Ordering::Release);
+        }
+
+        // Wait for audio thread.
+        #[cfg(feature = "serialization")]
+        if let Some(handle) = self.audio_thread.take() {
+            let _ = handle.join();
+        }
+
+        // Drop tokio runtime — remaining green threads cancelled.
+        #[cfg(feature = "serialization")]
+        {
+            self.tokio_rt = None;
         }
 
         log::info!("runtime stopped");
+    }
+
+    // ─── Launch (two‑rack, one command) ─────────────────────────
+
+    /// Build and start both racks in one call.
+    ///
+    /// The signal graph is constructed on the audio thread (Graph is not Send).
+    /// The control rack (Patchbay, MIDI) runs on a separate tokio runtime.
+    /// An `ActorRef<SetParameter>` channel bridges the two racks.
+    ///
+    /// Requires `serialization` feature.
+    #[cfg(feature = "serialization")]
+    pub fn launch(mut self, launch_config: LaunchConfig) -> Result<Self, RuntimeError> {
+        // ── Extract config before moving into the audio thread ──
+        let node_factory = self.node_factory.clone();
+        let backend_factory = self.backend_factory.clone();
+        let default_backend = self.default_backend.clone();
+        let graph_def = launch_config.graph_def;
+        let patchbay_def = launch_config.patchbay_def;
+
+        // ── Spawn audio thread (Rack 2) ───────────────────────
+        // Graph is NOT Send — must be built inside its thread.
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        let (handle_tx, handle_rx) = std::sync::mpsc::channel();
+
+        let audio_thread = std::thread::spawn(move || {
+            let mut builder = GraphBuilder::new(
+                Arc::new(node_factory.lock().unwrap().clone()),
+                backend_factory,
+            );
+            if let Some((ref name, ref params)) = default_backend {
+                builder.set_default_backend(name.clone(), params.clone());
+            }
+            if let Err(e) = graph_def.populate(&mut builder) {
+                log::error!("graph populate: {e}");
+                return;
+            }
+            match builder.build() {
+                Ok(mut graph) => {
+                    let h = graph
+                        .handle()
+                        .expect("graph has no active node (no audio backend)");
+                    handle_tx.send(h).ok();
+                    graph.run(r).ok();
+                }
+                Err(e) => {
+                    log::error!("graph build: {e:?}");
+                }
+            }
+        });
+
+        let graph_handle = handle_rx.recv().map_err(|_| {
+            RuntimeError::Graph("audio thread died before returning graph handle".into())
+        })?;
+
+        // ── Build control rack (Rack 1) on tokio ──────────────
+        let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| RuntimeError::Graph(format!("tokio: {e}")))?;
+        let _guard = tokio_rt.enter();
+
+        let registry = FunctionRegistry::builtin();
+        let mut control = Patchbay::new(graph_handle);
+
+        let _midi_def = if let Some(ref pb_def) = patchbay_def {
+            pb_def
+                .apply_to_async(&mut control, &registry)
+                .map_err(RuntimeError::Patchbay)?;
+            pb_def.midi.clone()
+        } else {
+            None
+        };
+
+        let shared = Arc::new(Mutex::new(control));
+
+        // Start MIDI input module if configured.
+        #[cfg(feature = "midi")]
+        if let Some(ref midi_def) = _midi_def {
+            use rill_io::midi_backend::MidiBackend;
+
+            let backend: Box<dyn MidiBackend> = match midi_def.backend.as_str() {
+                "midir" => Box::new(
+                    rill_io::backends::MidirBackend::new(&midi_def.port_name)
+                        .map_err(|e| RuntimeError::Patchbay(format!("midir: {e}")))?,
+                ),
+                "alsa_seq" => {
+                    #[cfg(feature = "alsa")]
+                    {
+                        Box::new(
+                            rill_io::backends::AlsaSeqBackend::new(&midi_def.port_name)
+                                .map_err(|e| RuntimeError::Patchbay(format!("alsa_seq: {e}")))?,
+                        )
+                    }
+                    #[cfg(not(feature = "alsa"))]
+                    {
+                        return Err(RuntimeError::Patchbay(
+                            "alsa_seq backend not available (enable 'alsa' feature)".into(),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(RuntimeError::Patchbay(format!(
+                        "unknown midi backend: {other}"
+                    )));
+                }
+            };
+
+            shared
+                .lock()
+                .map_err(|e| RuntimeError::Patchbay(format!("patchbay lock: {e}")))?
+                .start_midi(backend, shared.clone());
+        }
+
+        self.control_arc = Some(shared);
+        self.tokio_rt = Some(tokio_rt);
+        self.audio_thread = Some(audio_thread);
+        self.running = Some(running);
+
+        log::info!("runtime launched — both racks running");
+        Ok(self)
     }
 }
 

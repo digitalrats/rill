@@ -1,4 +1,6 @@
 use rill_core::{
+    math::vector::scalar::ScalarVector4,
+    math::vector::traits::Vector as VecTrait,
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
@@ -179,27 +181,33 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for DryWet
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let dry_buf = *self.inputs[0].buffer.as_array();
-        let wet_buf = *self.inputs[1].buffer.as_array();
-        let (out_l, out_r) = self.outputs.split_at_mut(1);
-        let (out_l, out_r) = (
-            out_l[0].buffer.as_mut_array(),
-            out_r[0].buffer.as_mut_array(),
-        );
+        let dry_buf = self.inputs[0].buffer.as_array();
+        let wet_buf = self.inputs[1].buffer.as_array();
+        let (out_left, out_right) = self.outputs.split_at_mut(1);
+        let out_l = out_left[0].buffer.as_mut_array();
+        let out_r = out_right[0].buffer.as_mut_array();
 
-        let dry_gain = T::from_f32(self.dry);
-        let wet_gain = T::from_f32(self.wet);
-        let master_gain = T::from_f32(self.master);
+        let dg = ScalarVector4::splat(T::from_f32(self.dry));
+        let wg = ScalarVector4::splat(T::from_f32(self.wet));
+        let mg = ScalarVector4::splat(T::from_f32(self.master));
+        let chunks = BUF_SIZE / 4;
 
-        for (((&dry, &wet), out_l), out_r) in dry_buf
-            .iter()
-            .zip(wet_buf.iter())
-            .zip(out_l.iter_mut())
-            .zip(out_r.iter_mut())
-        {
-            let sig = dry * dry_gain + wet * wet_gain;
-            *out_l = sig * master_gain;
-            *out_r = sig * master_gain;
+        for chunk in 0..chunks {
+            let o = chunk * 4;
+            let dry_v = ScalarVector4::load(&dry_buf[o..o + 4]);
+            let wet_v = ScalarVector4::load(&wet_buf[o..o + 4]);
+            let sig = dry_v.mul(&dg).add(&wet_v.mul(&wg));
+            let out_v = sig.mul(&mg);
+            out_v.store(&mut out_l[o..o + 4]);
+            out_v.store(&mut out_r[o..o + 4]);
+        }
+
+        // Remainder
+        for i in chunks * 4..BUF_SIZE {
+            let sig = dry_buf[i] * dg.extract(0) + wet_buf[i] * wg.extract(0);
+            let o = sig * mg.extract(0);
+            out_l[i] = o;
+            out_r[i] = o;
         }
 
         self.state.advance();

@@ -4,6 +4,8 @@ use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::filters::{FilterParams, FilterType, OnePole};
 use crate::vector::prelude::*;
+use rill_core::math::vector::scalar::ScalarVector4;
+use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
@@ -110,15 +112,37 @@ impl<T: Transcendental> NoiseGenerator<T> {
         T::from_f32(float_val)
     }
 
+    /// Generate white noise — batched xorshift + SIMD amplitude
+    fn generate_white_block(&mut self, out: &mut [T]) {
+        let chunks = out.len() / 4;
+        let amp = ScalarVector4::splat(self.amplitude.extract(0));
+
+        for chunk in 0..chunks {
+            let offset = chunk * 4;
+            // Run xorshift 4 times in a batch
+            let w0 = self.xorshift();
+            let w1 = self.xorshift();
+            let w2 = self.xorshift();
+            let w3 = self.xorshift();
+
+            let v = ScalarVector4::load(&[w0, w1, w2, w3]);
+            v.mul(&amp).store(&mut out[offset..offset + 4]);
+        }
+
+        // Scalar remainder
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_white().extract(0);
+        }
+    }
+
     /// Generate white noise
     #[inline(always)]
     fn generate_white(&mut self) -> ScalarVector1<T> {
         ScalarVector1::splat(self.xorshift()) * self.amplitude
     }
 
-    /// Generate pink noise (1/f)
-    /// Paul Kellett's method
-    fn generate_pink(&mut self) -> ScalarVector1<T> {
+    /// Generate pink noise (1/f) — scalar path
+    fn generate_pink_scalar(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
 
         // 6-band filter for 1/f approximation
@@ -131,44 +155,140 @@ impl<T: Transcendental> NoiseGenerator<T> {
         // normalization
     }
 
-    /// Generate brown noise (1/f²)
-    fn generate_brown(&mut self) -> ScalarVector1<T> {
-        let white = self.xorshift();
+    /// Generate brown noise — batched integrator with SIMD amplitude
+    fn generate_brown_block(&mut self, out: &mut [T]) {
+        let chunks = out.len() / 4;
+        let amp = self.amplitude.extract(0);
+        let factor = T::from_f32(0.1);
+        let one = T::ONE;
+        let neg_one = -T::ONE;
+        let mut state = self.brown_state.extract(0);
 
+        for chunk in 0..chunks {
+            let offset = chunk * 4;
+            let w0 = self.xorshift();
+            let w1 = self.xorshift();
+            let w2 = self.xorshift();
+            let w3 = self.xorshift();
+
+            // Unrolled integrator with per-step clamping
+            state = (state + w0 * factor).clamp(neg_one, one);
+            out[offset] = state * amp;
+
+            state = (state + w1 * factor).clamp(neg_one, one);
+            out[offset + 1] = state * amp;
+
+            state = (state + w2 * factor).clamp(neg_one, one);
+            out[offset + 2] = state * amp;
+
+            state = (state + w3 * factor).clamp(neg_one, one);
+            out[offset + 3] = state * amp;
+        }
+
+        self.brown_state = ScalarVector1::splat(state);
+
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_brown_scalar().extract(0);
+        }
+    }
+
+    /// Generate brown noise — scalar path
+    fn generate_brown_scalar(&mut self) -> ScalarVector1<T> {
+        let white = self.xorshift();
         // Integrator with clipping
         self.brown_state =
             self.brown_state + ScalarVector1::splat(white) * ScalarVector1::splat(T::from_f32(0.1));
-        // Clipping
-        let one_vec = ScalarVector1::splat(T::from_f32(1.0));
-        let neg_one_vec = ScalarVector1::splat(T::from_f32(-1.0));
+        let one_vec = ScalarVector1::splat(T::ONE);
+        let neg_one_vec = ScalarVector1::splat(-T::ONE);
         self.brown_state = self.brown_state.clamp(&neg_one_vec, &one_vec);
-
         self.brown_state * self.amplitude
     }
 
-    /// Generate blue noise (+3dB/octave)
-    fn generate_blue(&mut self) -> ScalarVector1<T> {
+    /// Generate blue noise — SIMD batch of 4
+    fn generate_blue_block(&mut self, out: &mut [T]) {
+        let chunks = out.len() / 4;
+        let amp = self.amplitude.extract(0);
+        let mut last = self.last_white.extract(0);
+
+        for chunk in 0..chunks {
+            let offset = chunk * 4;
+            let w0 = self.xorshift();
+            let w1 = self.xorshift();
+            let w2 = self.xorshift();
+            let w3 = self.xorshift();
+
+            let white_v = ScalarVector4::load(&[w0, w1, w2, w3]);
+            let shifted_v = ScalarVector4::load(&[last, w0, w1, w2]);
+            let diff = white_v.sub(&shifted_v);
+            diff.mul(&ScalarVector4::splat(amp))
+                .store(&mut out[offset..offset + 4]);
+            last = w3;
+        }
+
+        self.last_white = ScalarVector1::splat(last);
+
+        // Scalar remainder
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_blue_scalar().extract(0);
+        }
+    }
+
+    /// Generate violet noise — SIMD batch of 4
+    fn generate_violet_block(&mut self, out: &mut [T]) {
+        let chunks = out.len() / 4;
+        let amp = self.amplitude.extract(0);
+        let mut l1 = self.last_white1.extract(0);
+        let mut l2 = self.last_white2.extract(0);
+
+        for chunk in 0..chunks {
+            let offset = chunk * 4;
+            let w0 = self.xorshift();
+            let w1 = self.xorshift();
+            let w2 = self.xorshift();
+            let w3 = self.xorshift();
+
+            // First differentiator: diff1_v = [w0-l1, w1-w0, w2-w1, w3-w2]
+            let white_v = ScalarVector4::load(&[w0, w1, w2, w3]);
+            let s1_v = ScalarVector4::load(&[l1, w0, w1, w2]);
+            let diff1 = white_v.sub(&s1_v);
+
+            // Second differentiator: diff2_v = [d1_0-l2, d1_1-d1_0, d1_2-d1_1, d1_3-d1_2]
+            let s2_v =
+                ScalarVector4::load(&[l2, diff1.extract(0), diff1.extract(1), diff1.extract(2)]);
+            let diff2 = diff1.sub(&s2_v);
+
+            diff2
+                .mul(&ScalarVector4::splat(amp))
+                .store(&mut out[offset..offset + 4]);
+            l1 = w3;
+            l2 = diff1.extract(3);
+        }
+
+        self.last_white1 = ScalarVector1::splat(l1);
+        self.last_white2 = ScalarVector1::splat(l2);
+
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_violet_scalar().extract(0);
+        }
+    }
+
+    /// Generate blue noise — scalar path
+    fn generate_blue_scalar(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         let white_vec = ScalarVector1::splat(white);
-
-        // Differentiator (high-pass)
         let diff = white_vec - self.last_white;
         self.last_white = white_vec;
-
         diff * self.amplitude
     }
 
-    /// Generate violet noise (+6dB/octave)
-    fn generate_violet(&mut self) -> ScalarVector1<T> {
+    /// Generate violet noise — scalar path
+    fn generate_violet_scalar(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         let white_vec = ScalarVector1::splat(white);
-
-        // Double differentiator
         let diff1 = white_vec - self.last_white1;
         let diff2 = diff1 - self.last_white2;
         self.last_white2 = diff1;
         self.last_white1 = white_vec;
-
         diff2 * self.amplitude
     }
 }
@@ -206,14 +326,19 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenerator<T> {
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        for out in output.iter_mut() {
-            *out = match self.noise_type {
-                NoiseType::White => self.generate_white().extract(0),
-                NoiseType::Pink => self.generate_pink().extract(0),
-                NoiseType::Brown => self.generate_brown().extract(0),
-                NoiseType::Blue => self.generate_blue().extract(0),
-                NoiseType::Violet => self.generate_violet().extract(0),
-            };
+        match self.noise_type {
+            NoiseType::White => self.generate_white_block(output),
+            NoiseType::Brown => self.generate_brown_block(output),
+            NoiseType::Blue => self.generate_blue_block(output),
+            NoiseType::Violet => self.generate_violet_block(output),
+            _ => {
+                for out in output.iter_mut() {
+                    *out = match self.noise_type {
+                        NoiseType::Pink => self.generate_pink_scalar().extract(0),
+                        _ => unreachable!(),
+                    };
+                }
+            }
         }
         Ok(())
     }
