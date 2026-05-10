@@ -439,12 +439,30 @@ impl IoBackend<f32> for PipewireBackend {
                     let n_samp = (chunk_size as usize / stride) * actual_channels;
                     let len = n_samp.min(MAX_BLOCK_SAMPLES);
                     let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                    for (i, item) in temp.iter_mut().enumerate().take(len) {
+                    let mut i = 0usize;
+                    while i + 4 <= len {
                         let off = i * 4;
+                        if off + 16 <= slice.len() {
+                            let b0 = f32::from_le_bytes(slice[off..off + 4].try_into().unwrap());
+                            let b1 =
+                                f32::from_le_bytes(slice[off + 4..off + 8].try_into().unwrap());
+                            let b2 =
+                                f32::from_le_bytes(slice[off + 8..off + 12].try_into().unwrap());
+                            let b3 =
+                                f32::from_le_bytes(slice[off + 12..off + 16].try_into().unwrap());
+                            temp[i] = b0;
+                            temp[i + 1] = b1;
+                            temp[i + 2] = b2;
+                            temp[i + 3] = b3;
+                        }
+                        i += 4;
+                    }
+                    for j in i..len {
+                        let off = j * 4;
                         if off + 4 <= slice.len() {
                             let mut bytes = [0u8; 4];
                             bytes.copy_from_slice(&slice[off..off + 4]);
-                            *item = f32::from_le_bytes(bytes);
+                            temp[j] = f32::from_le_bytes(bytes);
                         }
                     }
                     let block_samps = buf_frames * actual_channels;
