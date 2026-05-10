@@ -156,7 +156,41 @@ impl Automaton for LfoAutomaton {
         _action: &Self::Action,
     ) -> ParamValue {
         *phase = (time * self.frequency).fract();
-        let val = (*phase * 2.0 * PI).sin() * self.amplitude + self.offset;
+        let raw = match self.waveform {
+            LfoWaveform::Sine => (*phase * 2.0 * PI).sin(),
+            LfoWaveform::Triangle => {
+                if *phase < 0.5 {
+                    4.0 * *phase - 1.0
+                } else {
+                    3.0 - 4.0 * *phase
+                }
+            }
+            LfoWaveform::Saw => 2.0 * *phase - 1.0,
+            LfoWaveform::ReverseSaw => 1.0 - 2.0 * *phase,
+            LfoWaveform::Square => {
+                if *phase < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            LfoWaveform::Pulse(width) => {
+                if *phase < width {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            LfoWaveform::SampleAndHold => {
+                // hold current value, phase changes
+                return ParamValue::Float((*phase * 2.0 * PI).sin() as f32);
+            }
+            LfoWaveform::RandomWalk => {
+                // smooth random — return sine for now
+                (*phase * 2.0 * PI).sin()
+            }
+        };
+        let val = raw * self.amplitude + self.offset;
         ParamValue::Float(val as f32)
     }
 

@@ -11,31 +11,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Component statistics
 #[derive(Debug, Clone, Default)]
 pub struct ComponentStats {
+    /// Number of operations performed.
     pub operations: u64,
+    /// Total execution time in nanoseconds.
     pub total_time_ns: u64,
+    /// Maximum observed execution time in nanoseconds.
     pub max_time_ns: u64,
+    /// Number of timing violations.
     pub violations: u64,
+    /// Average execution time in nanoseconds.
     pub avg_time_ns: f64,
 }
 
 /// Violation record
 #[derive(Debug, Clone)]
 pub struct Violation {
+    /// Name of the component that violated its time budget.
     pub component: String,
+    /// Expected execution time in nanoseconds.
     pub expected_ns: u64,
+    /// Actual execution time in nanoseconds.
     pub actual_ns: u64,
+    /// When the violation occurred (microseconds since UNIX epoch).
     pub timestamp: u64,
+    /// Optional value associated with the violation.
     pub value: Option<f32>,
 }
 
 /// Sandbox summary
 #[derive(Debug, Default, Clone)]
 pub struct SandboxSummary {
+    /// Total number of operations across all components.
     pub total_operations: u64,
+    /// Total number of violations across all components.
     pub total_violations: u64,
+    /// Names of active components.
     pub components: Vec<String>,
+    /// Maximum operation time across all components.
     pub max_time_ns: u64,
+    /// Name of the component with the maximum operation time.
     pub max_time_component: Option<String>,
+    /// Number of recorded violations.
     pub violations_count: usize,
 }
 
@@ -54,6 +70,7 @@ impl Default for MicroControlObserver {
 }
 
 impl MicroControlObserver {
+    /// Create an observer without telemetry reporting.
     pub fn new() -> Self {
         Self {
             stats: Arc::new(RwLock::new(HashMap::new())),
@@ -62,6 +79,7 @@ impl MicroControlObserver {
         }
     }
 
+    /// Create an observer that sends events to the given actor.
     pub fn with_actor(tx: ActorRef<Telemetry>) -> Self {
         Self {
             stats: Arc::new(RwLock::new(HashMap::new())),
@@ -76,6 +94,7 @@ impl MicroControlObserver {
         }
     }
 
+    /// Start observing an operation for the given component.
     pub fn observe_start(&self, component: &str) -> OperationGuard {
         OperationGuard {
             component: component.to_string(),
@@ -84,6 +103,7 @@ impl MicroControlObserver {
         }
     }
 
+    /// Start observing with parameter context (port + parameter).
     pub fn observe_start_with_params(
         &self,
         component: &str,
@@ -99,6 +119,7 @@ impl MicroControlObserver {
         guard
     }
 
+    /// Record a timing violation for a component.
     pub fn record_violation(
         &self,
         component: &str,
@@ -129,14 +150,17 @@ impl MicroControlObserver {
         );
     }
 
+    /// Get statistics for a specific component.
     pub fn component_stats(&self, component: &str) -> Option<ComponentStats> {
         self.stats.read().get(component).cloned()
     }
 
+    /// Get all recorded violations.
     pub fn violations(&self) -> Vec<Violation> {
         self.violations.read().clone()
     }
 
+    /// Get a summary of the entire sandbox.
     pub fn sandbox_summary(&self) -> SandboxSummary {
         let stats = self.stats.read();
         let mut summary = SandboxSummary::default();

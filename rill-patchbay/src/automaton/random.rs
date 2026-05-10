@@ -116,17 +116,27 @@ impl RandomAutomaton {
 }
 
 impl Automaton for RandomAutomaton {
-    type Internal = (u64, f64);
+    type Internal = (u64, f64, f64); // rng_state, last_value, last_update_time
     type Action = NoAction;
 
     fn step(
         &self,
         internal: &mut Self::Internal,
         _current: &ParamValue,
-        _time: Time,
+        time: Time,
         _action: &Self::Action,
     ) -> ParamValue {
-        let (rng_state, last_value) = internal;
+        let (rng_state, last_value, last_update_time) = internal;
+        let period = if self.update_rate > 0.0 {
+            1.0 / self.update_rate
+        } else {
+            0.0
+        };
+
+        if period > 0.0 && time - *last_update_time < period {
+            return ParamValue::Float(*last_value as f32);
+        }
+        *last_update_time = time;
 
         let new_value = match self.rng_type {
             RandomType::Walk => {
@@ -140,8 +150,6 @@ impl Automaton for RandomAutomaton {
             RandomType::Henon => {
                 let a = self.chaos_params.0;
                 let x = *last_value;
-                // Hénon: x_{n+1} = 1 - a*x_n^2 + y_n,  y_{n+1} = b*x_n
-                // Simplified: track only x, using first-order approximation
                 let y = *last_value - x;
                 1.0 - a * x * x + y
             }
@@ -160,7 +168,7 @@ impl Automaton for RandomAutomaton {
             RandomType::Henon => 0.0,
             _ => 0.0,
         };
-        (123456789, initial_value)
+        (123456789, initial_value, 0.0)
     }
 
     fn name(&self) -> &str {
