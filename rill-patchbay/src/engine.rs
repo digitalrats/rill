@@ -14,7 +14,7 @@ use rill_core_actor::{ActorCell, ActorRef};
 
 // crossbeam removed: // crossbeam removed (dead code)
 
-pub use crate::automaton::Range;
+pub use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform, Range};
 use crate::sensor::Sensor;
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
@@ -518,6 +518,7 @@ pub struct Servo<A: Automaton> {
     mailbox: Arc<MpscQueue<AutomatonMsg>>,
     target_node: NodeId,
     target_param: String,
+    #[allow(dead_code)]
     mapping: ParameterMapping,
     min: f64,
     max: f64,
@@ -538,6 +539,8 @@ impl<A: Automaton> Servo<A> {
         automaton: A,
         target_node: NodeId,
         target_param: impl Into<String>,
+        /// Parameter mapping (kept for backward compat, superseded by ControlStrategy).
+        #[allow(dead_code)]
         mapping: ParameterMapping,
         min: f64,
         max: f64,
@@ -746,6 +749,8 @@ pub trait Module: Send {
     fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
         None
     }
+    /// Enable or disable the module (servos only, no-op for sensors).
+    fn set_enabled(&mut self, _enabled: bool) {}
     /// Stop the module (disable, shutdown tasks, release resources).
     fn stop(&mut self);
 }
@@ -759,6 +764,9 @@ impl<A: Automaton + 'static> Module for Servo<A> {
     }
     fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
         Some(Servo::handle(self))
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.set_enabled(enabled);
     }
     fn stop(&mut self) {
         self.set_enabled(false);
@@ -982,7 +990,7 @@ impl Patchbay {
                 let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
                 if let Some(servo) = self.modules.get(&key) {
                     if let Some(ref servo_handle) = servo.handle() {
-                        let _ = servo_handle.send(AutomatonMsg::Ui(UiCommand::SetValue(
+                        servo_handle.send(AutomatonMsg::Ui(UiCommand::SetValue(
                             cmd.value.as_f32().unwrap_or(0.0) as f64,
                         )));
                     }
@@ -1007,6 +1015,16 @@ impl Patchbay {
         }
     }
 
+    /// Return a clone of the command queue ActorRef for async task spawning.
+    pub fn command_queue(&self) -> ActorRef<SetParameter> {
+        self.command_queue.clone()
+    }
+
+    /// Store a task handle for lifecycle management (async automaton tasks).
+    pub fn store_task_handle(&mut self, id: String, handle: tokio::task::JoinHandle<()>) {
+        self.automaton_handles.insert(id, handle);
+    }
+
     /// Return all mappings.
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
@@ -1018,7 +1036,7 @@ impl Patchbay {
     }
 
     /// Get a mutable servo by ID.
-    pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedServo> {
+    pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedModule> {
         self.modules.get_mut(id)
     }
 
@@ -1052,7 +1070,9 @@ impl Patchbay {
         while let Some(clock) = self.clock_mailbox.pop() {
             let msg = AutomatonMsg::Tick(clock);
             for servo in self.modules.values() {
-                servo.handle().send(msg.clone());
+                if let Some(ref handle) = servo.handle() {
+                    handle.send(msg.clone());
+                }
             }
             let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
             self.time += dt;

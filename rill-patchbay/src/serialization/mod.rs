@@ -10,14 +10,17 @@ use std::time::Duration;
 use rill_core::NodeId;
 
 use crate::automaton::envelope::{EnvelopeAutomaton, EnvelopeType};
-use crate::automaton::lfo::LfoWaveform;
+use crate::automaton::lfo::{LfoAutomaton, LfoWaveform};
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use crate::engine::EventPattern;
 use crate::engine::{
-    BoxedModule, Mapping, OscSurface, ParameterMapping, Patchbay, Servo, Target, Transform,
+    Automaton, BoxedModule, Mapping, OscSurface, ParameterMapping, Patchbay, Servo, Target, Time,
+    Transform,
 };
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
+use rill_core::queues::{SetParameter, SignalOrigin};
+use rill_core::traits::{ParamValue, ParameterId, PortId};
 
 pub mod dot;
 
@@ -203,11 +206,21 @@ impl SensorDef {
                 use rill_io::midi_backend::MidiBackend;
                 let be: Box<dyn MidiBackend> = match backend.as_str() {
                     "midir" => Box::new(rill_io::backends::MidirBackend::new(port_name).ok()?),
-                    "alsa_seq" => Box::new(
-                        rill_io::backends::AlsaSeqBackend::new(port_name)
-                            .map_err(|e| log::warn!("AlsaSeqBackend: {e}"))
-                            .ok()?,
-                    ),
+                    "alsa_seq" => {
+                        #[cfg(feature = "alsa")]
+                        {
+                            Box::new(
+                                rill_io::backends::AlsaSeqBackend::new(port_name)
+                                    .map_err(|e| log::warn!("AlsaSeqBackend: {e}"))
+                                    .ok()?,
+                            )
+                        }
+                        #[cfg(not(feature = "alsa"))]
+                        {
+                            log::warn!("ALSA seq backend requires 'alsa' feature");
+                            return None;
+                        }
+                    }
                     _ => {
                         log::warn!("unknown MIDI backend '{backend}'");
                         return None;
@@ -435,8 +448,6 @@ impl PatchbayDef {
                         .find(|a| a.id() == s.automaton_id)
                         .unwrap();
                     let nid = NodeId(s.target_node);
-                    let target = (nid, s.target_param.clone());
-                    let range = (s.min, s.max);
 
                     match def {
                         AutomatonDef::Lfo {
@@ -447,24 +458,47 @@ impl PatchbayDef {
                             waveform,
                         } => {
                             if let Some(interval_ms) = s.async_interval_ms {
+                                let id_str = id.to_string();
                                 let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                                let control_strategy =
-                                    s.control_strategy.unwrap_or(ControlStrategy::Absolute);
-                                let conflict_strategy = s
-                                    .conflict_strategy
-                                    .unwrap_or(ConflictStrategy::LastWriteWins);
-                                control.add_lfo_task(
-                                    id,
-                                    *frequency,
-                                    *amplitude,
-                                    *offset,
-                                    *waveform,
-                                    interval,
-                                    target,
-                                    range,
-                                    control_strategy,
-                                    conflict_strategy,
+                                let automaton = LfoAutomaton::new(
+                                    &id_str, *frequency, *amplitude, *offset, *waveform,
                                 );
+                                let mapping = s.mapping.to_parameter_mapping();
+                                let command_queue = control.command_queue();
+                                let node_id = nid;
+                                let param = s.target_param.clone();
+                                let min = s.min;
+                                let max = s.max;
+                                let task_id = id_str.clone();
+
+                                let handle = tokio::spawn(async move {
+                                    let mut internal = automaton.initial_internal();
+                                    let mut current = ParamValue::Float(0.0);
+                                    let mut time: Time = 0.0;
+                                    let mut ticker = tokio::time::interval(interval);
+                                    ticker.tick().await;
+                                    loop {
+                                        ticker.tick().await;
+                                        time += interval.as_secs_f64();
+                                        current = automaton.step(
+                                            &mut internal,
+                                            &current,
+                                            time,
+                                            &<LfoAutomaton as Automaton>::Action::default(),
+                                        );
+                                        let raw = current.as_f32().unwrap_or(0.0) as f64;
+                                        let mapped = mapping.apply(raw);
+                                        let value = min + mapped * (max - min);
+                                        let pid = ParameterId::new(&param).unwrap();
+                                        command_queue.send(SetParameter::new(
+                                            PortId::param(node_id, 0),
+                                            pid,
+                                            ParamValue::Float(value as f32),
+                                            SignalOrigin::Automaton(id_str.clone()),
+                                        ));
+                                    }
+                                });
+                                control.store_task_handle(task_id, handle);
                             } else {
                                 control.add_lfo(
                                     id,
@@ -489,24 +523,48 @@ impl PatchbayDef {
                             ..
                         } => {
                             if let Some(interval_ms) = s.async_interval_ms {
+                                let id_str = id.to_string();
                                 let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                                let control_strategy =
-                                    s.control_strategy.unwrap_or(ControlStrategy::Absolute);
-                                let conflict_strategy = s
-                                    .conflict_strategy
-                                    .unwrap_or(ConflictStrategy::LastWriteWins);
-                                control.add_envelope_task(
-                                    id,
-                                    *attack,
-                                    *decay,
-                                    *sustain,
-                                    *release,
-                                    interval,
-                                    target,
-                                    range,
-                                    control_strategy,
-                                    conflict_strategy,
-                                );
+                                let automaton = EnvelopeAutomaton::adsr(
+                                    &id_str, *attack, *decay, *sustain, *release,
+                                )
+                                .with_curve(*curve);
+                                let mapping = s.mapping.to_parameter_mapping();
+                                let command_queue = control.command_queue();
+                                let node_id = nid;
+                                let param = s.target_param.clone();
+                                let min = s.min;
+                                let max = s.max;
+                                let task_id = id_str.clone();
+
+                                let handle = tokio::spawn(async move {
+                                    let mut internal = automaton.initial_internal();
+                                    let mut current = ParamValue::Float(0.0);
+                                    let mut time: Time = 0.0;
+                                    let mut ticker = tokio::time::interval(interval);
+                                    ticker.tick().await;
+                                    loop {
+                                        ticker.tick().await;
+                                        time += interval.as_secs_f64();
+                                        current = automaton.step(
+                                            &mut internal,
+                                            &current,
+                                            time,
+                                            &<EnvelopeAutomaton as Automaton>::Action::default(),
+                                        );
+                                        let raw = current.as_f32().unwrap_or(0.0) as f64;
+                                        let mapped = mapping.apply(raw);
+                                        let value = min + mapped * (max - min);
+                                        let pid = ParameterId::new(&param).unwrap();
+                                        command_queue.send(SetParameter::new(
+                                            PortId::param(node_id, 0),
+                                            pid,
+                                            ParamValue::Float(value as f32),
+                                            SignalOrigin::Automaton(id_str.clone()),
+                                        ));
+                                    }
+                                });
+                                control.store_task_handle(task_id, handle);
                             } else {
                                 let automaton = EnvelopeAutomaton::adsr(
                                     id, *attack, *decay, *sustain, *release,
