@@ -734,6 +734,7 @@ pub struct Patchbay {
     #[cfg(not(feature = "midi"))]
     midi_actor: Option<()>,
     command_queue: ActorRef<SetParameter>,
+    clock_mailbox: Arc<MpscQueue<ClockTick>>,
     time: Time,
 }
 
@@ -751,8 +752,14 @@ impl Patchbay {
             automaton_handles: HashMap::new(),
             midi_actor: None,
             command_queue,
+            clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
             time: 0.0,
         }
+    }
+
+    /// Return an [`ActorRef`] for the graph to send `ClockTick` to.
+    pub fn clock_handle(&self) -> ActorRef<ClockTick> {
+        ActorRef::new(&self.clock_mailbox)
     }
 
     /// Add an event mapping.
@@ -1141,14 +1148,44 @@ impl Patchbay {
     pub fn current_time(&self) -> Time {
         self.time
     }
-}
 
-impl Drop for Patchbay {
-    fn drop(&mut self) {
-        self.stop_all();
+    /// Drain the clock mailbox and broadcast to all servos.
+    ///
+    /// Call this from the main loop (not the audio thread).
+    pub fn drain_clock(&mut self) {
+        while let Some(clock) = self.clock_mailbox.pop() {
+            let msg = AutomatonMsg::Tick(clock.clone());
+            for servo in self.servos.values() {
+                servo.handle().send(msg.clone());
+            }
+            // Update sync servos with time from clock
+            let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
+            self.time += dt;
+            self.update(dt as f32);
+        }
+    }
+
+    /// Spawn a periodic tokio task that drains the clock mailbox.
+    ///
+    /// Returns a `JoinHandle` for lifecycle management.
+    pub fn spawn_clock_loop(
+        patchbay: Arc<std::sync::Mutex<Patchbay>>,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if let Ok(mut pb) = patchbay.lock() {
+                    pb.drain_clock();
+                }
+            }
+        })
     }
 }
 
+// =============================================================================
+// 9. Helper constructors
 // =============================================================================
 // 9. Helper functions for creating mappings
 // =============================================================================
