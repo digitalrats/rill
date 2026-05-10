@@ -300,31 +300,30 @@ impl<T: Transcendental> BasicOscillator<T> {
     fn simd_saw_blep(
         &mut self,
         phases: &ScalarVector4<T>,
-        _inc: T,
+        inc: T,
         amp: &ScalarVector1<T>,
     ) -> ScalarVector4<T> {
-        // For simplicity, use raw saw for SIMD path.
-        // BLEP correction is a per-sample conditional that requires
-        // knowing the next-phase value — compute it element-wise.
-        let inc = self.phase_inc.extract(0);
-        let one_t = T::ONE;
         let raw = self.simd_saw_raw(phases, amp);
+        let one = ScalarVector4::splat(T::ONE);
+        let two = ScalarVector4::splat(T::from_f32(2.0));
+        let inc_v = ScalarVector4::splat(inc);
+        let amp_v = ScalarVector4::splat(amp.extract(0));
 
-        // Compute BLEP correction lane-by-lane (BLEP is inherently
-        // per-sample due to the reset-to-0 at the discontinuity).
-        // We still get 4× throughput for the raw computation;
-        // only the BLEP check is scalar in this version.
-        ScalarVector4::from_fn(|i| {
-            let p = phases.extract(i);
-            let next = p + inc;
-            let mut val = raw.extract(i);
-            if next >= one_t {
-                let t = (one_t - p) / inc;
-                let blep = t * T::from_f32(2.0) - T::from_f32(1.0);
-                val -= blep * amp.extract(0);
-            }
-            val
-        })
+        // next_phases = phases + inc for each lane
+        let next = phases.add(&inc_v);
+
+        // Mask: true where next >= 1.0 (discontinuity)
+        let wrap_mask = next.ge(&one);
+
+        // t = (1 - phase) / inc (pre-compute for all lanes, used only where wrapping)
+        let t = one.sub(phases).div(&inc_v);
+
+        // BLEP = 2*t - 1, then scale by amplitude
+        let blep = t.mul(&two).sub(&one).mul(&amp_v);
+
+        let corrected = raw.sub(&blep);
+
+        <ScalarVector4<T> as VectorMask<T, 4>>::select(&corrected, &raw, wrap_mask)
     }
 
     /// Backward-compatible public API (used by LFO and existing callers).
