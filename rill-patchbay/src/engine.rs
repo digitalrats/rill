@@ -19,6 +19,7 @@ pub use crate::automaton::Range;
 use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
 use crate::automaton_task::spawn_automaton_task;
 use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
+use crate::sensor::Sensor;
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
@@ -727,12 +728,9 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 pub struct Patchbay {
     mappings: Vec<Mapping>,
     servos: HashMap<String, BoxedServo>,
+    sensors: Vec<Box<dyn Sensor>>,
     port_combiners: HashMap<String, PortCombinerHandle>,
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
-    #[cfg(feature = "midi")]
-    midi_actor: Option<super::MidiHub>,
-    #[cfg(not(feature = "midi"))]
-    midi_actor: Option<()>,
     command_queue: ActorRef<SetParameter>,
     clock_mailbox: Arc<MpscQueue<ClockTick>>,
     event_mailbox: Arc<MpscQueue<ControlEvent>>,
@@ -749,9 +747,9 @@ impl Patchbay {
         Self {
             mappings: Vec::new(),
             servos: HashMap::new(),
+            sensors: Vec::new(),
             port_combiners: HashMap::new(),
             automaton_handles: HashMap::new(),
-            midi_actor: None,
             command_queue,
             clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
             event_mailbox: Arc::new(MpscQueue::with_capacity(64)),
@@ -990,36 +988,25 @@ impl Patchbay {
         );
     }
 
-    /// Stop all async automata, the sequencer, and the MIDI actor.
+    /// Stop all async automata, sensors, and port combiners.
     pub fn stop_all(&mut self) {
         for combiner in self.port_combiners.values() {
             combiner.stop();
         }
         self.port_combiners.clear();
         self.automaton_handles.clear();
-        self.stop_midi();
-    }
-
-    /// Start the MIDI input module.
-    ///
-    /// Takes a pre‑built backend and the shared `Arc<Mutex<Patchbay>>`
-    /// that wraps this Patchbay. The MidiHub dispatches events
-    /// through `handle_event()` by locking this same mutex.
-    ///
-    /// If a MidiHub is already running, it is stopped first.
-    #[cfg(feature = "midi")]
-    pub fn start_midi(&mut self, backend: Box<dyn rill_io::midi_backend::MidiBackend>) {
-        self.stop_midi();
-        self.midi_actor = Some(super::MidiHub::start(backend, self.event_handle()));
-    }
-
-    /// Stop the MIDI actor if running.
-    fn stop_midi(&mut self) {
-        #[cfg(feature = "midi")]
-        if let Some(ref mut actor) = self.midi_actor {
-            actor.stop();
+        for sensor in &mut self.sensors {
+            sensor.stop();
         }
-        self.midi_actor = None;
+        self.sensors.clear();
+    }
+
+    /// Add a sensor (MIDI, OSC, etc.) to the rack.
+    ///
+    /// The sensor should already be started via `Sensor::start()`.
+    /// Use `sensor.attach(self.event_handle())` before `start()`.
+    pub fn add_sensor(&mut self, sensor: Box<dyn Sensor>) {
+        self.sensors.push(sensor);
     }
 
     // ── Convenience aliases (forwarded from removed PatchbayEngine) ────
