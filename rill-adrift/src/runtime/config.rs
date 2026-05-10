@@ -6,6 +6,11 @@ use std::collections::HashMap;
 #[cfg(feature = "serialization")]
 use serde::Deserialize;
 
+#[cfg(feature = "serialization")]
+use rill_graph::serialization::GraphDef;
+#[cfg(feature = "serialization")]
+use rill_patchbay::serialization::PatchbayDef;
+
 /// Host-level configuration for a [`Runtime`](super::Runtime).
 ///
 /// Separate from `rill_graph::serialization::GraphDef` and
@@ -69,5 +74,51 @@ impl RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// LaunchConfig — all-in-one construction for Runtime::launch()
+// ============================================================================
+
+/// Configuration for [`Runtime::launch`](super::Runtime::launch).
+///
+/// Bundles everything needed to build and start both racks
+/// (signal graph + control patchbay) in one call.
+#[cfg(feature = "serialization")]
+pub struct LaunchConfig {
+    /// Audio sample rate (e.g. 48000.0).
+    pub sample_rate: f32,
+
+    /// Block / buffer size (e.g. 256).
+    pub block_size: usize,
+
+    /// Audio backend name (`"pipewire"`, `"alsa"`, `"null"`).
+    pub backend_name: Option<String>,
+
+    /// Raw string-keyed backend parameters
+    /// (`"channels"`, `"buffer_size"`, etc.).
+    pub backend_params: HashMap<String, String>,
+
+    /// Signal graph topology (nodes, connections, resources).
+    pub graph_def: GraphDef,
+
+    /// Control rack configuration (automata, mappings, MIDI).
+    /// `None` = no control rack, audio passthrough only.
+    pub patchbay_def: Option<PatchbayDef>,
+}
+
+#[cfg(feature = "serialization")]
+impl LaunchConfig {
+    /// Create a minimal launch configuration from a [`GraphDef`].
+    pub fn from_graph(graph_def: GraphDef) -> Self {
+        Self {
+            sample_rate: graph_def.sample_rate,
+            block_size: graph_def.block_size,
+            backend_name: None,
+            backend_params: HashMap::new(),
+            graph_def,
+            patchbay_def: None,
+        }
     }
 }

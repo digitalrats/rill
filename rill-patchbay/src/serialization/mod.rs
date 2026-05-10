@@ -186,6 +186,22 @@ pub struct MappingDef {
 }
 
 // ============================================================================
+// MidiInputDef
+// ============================================================================
+
+/// Configuration for a MIDI input module on the rack.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
+pub struct MidiInputDef {
+    /// Backend name: `"midir"` (cross‑platform) or `"alsa_seq"` (Linux).
+    pub backend: String,
+
+    /// Virtual port name shown to external MIDI applications
+    /// (e.g. `"drift-midi"` for `aconnect`).
+    pub port_name: String,
+}
+
+// ============================================================================
 // PatchbayDef
 // ============================================================================
 
@@ -205,6 +221,10 @@ pub struct PatchbayDef {
     #[serde(default)]
     pub osc_surface: OscSurface,
 
+    /// MIDI input module. `None` means no MIDI (the default).
+    #[serde(default)]
+    pub midi: Option<MidiInputDef>,
+
     /// Optional human-readable description (attribution, preset notes, …).
     /// Not interpreted by the engine; preserved through serialisation round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,6 +238,7 @@ impl PatchbayDef {
             servos: Vec::new(),
             mappings: Vec::new(),
             osc_surface: Vec::new(),
+            midi: None,
             description: None,
         }
     }
@@ -562,6 +583,7 @@ mod tests {
             }],
             mappings: vec![],
             osc_surface: vec![],
+            midi: None,
             description: None,
         }
     }
@@ -614,6 +636,7 @@ mod tests {
             }],
             mappings: vec![],
             osc_surface: vec![],
+            midi: None,
             description: None,
         };
         let _mailbox = Arc::new(MpscQueue::with_capacity(64));
@@ -647,6 +670,7 @@ mod tests {
             }],
             mappings: vec![],
             osc_surface: vec![],
+            midi: None,
             description: None,
         };
 
@@ -690,6 +714,7 @@ mod tests {
             }],
             mappings: vec![],
             osc_surface: vec![],
+            midi: None,
             description: None,
         };
 

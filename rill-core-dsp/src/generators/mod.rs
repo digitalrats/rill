@@ -21,6 +21,7 @@ mod fm;
 mod lfo;
 mod noise;
 mod reader;
+mod resampler;
 mod sample_player;
 mod wavetable;
 
@@ -31,6 +32,7 @@ pub use fm::*;
 pub use lfo::*;
 pub use noise::*;
 pub use reader::*;
+pub use resampler::*;
 pub use sample_player::*;
 pub use wavetable::*;
 

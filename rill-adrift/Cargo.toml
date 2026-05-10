@@ -38,7 +38,7 @@ rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
-tokio = { workspace = true, optional = true, features = ["signal"] }
+tokio = { workspace = true, optional = true, features = ["signal", "rt", "rt-multi-thread", "macros"] }
 serde = { workspace = true, optional = true }
 serde_json = { version = "1.0", optional = true }
 toml = { version = "0.8", optional = true }
@@ -74,6 +74,7 @@ serialization = [
     "dep:serde",
     "dep:serde_json",
     "dep:toml",
+    "dep:tokio",
 ]
 dot = ["rill-graph/dot"]
 
@@ -82,4 +83,7 @@ alsa = ["rill-io/alsa"]
 portaudio = ["rill-io/portaudio"]
 jack = ["rill-io/jack"]
 pipewire = ["rill-io/pipewire"]
+
+# MIDI
+midi = ["rill-patchbay/midi", "rill-io/midir", "io"]
 

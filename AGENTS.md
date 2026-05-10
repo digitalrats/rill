@@ -309,3 +309,9 @@ I/O callback (see "Audio I/O thread" above). No external engine loop —
   Communication via `MpscQueue<ParameterCommand>`. Source/Sink nodes own
   I/O buffers — no external engine loop, `Port::propagate` replaces
   `Port::propagate::process_block`.
+
+## Licensing
+
+- **All workspace crates** — Apache 2.0 (see `LICENSE.md`).
+- **Examples** (`examples/` in each crate) — MIT (see `LICENSE-MIT`).
+- Do not add new licenses without explicit discussion.
