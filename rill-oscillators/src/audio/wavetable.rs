@@ -248,13 +248,13 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Source<T, B
         _control_inputs: &[T],
         _clock_inputs: &[ClockTick],
     ) -> ProcessResult<()> {
-        let mut temp = [T::ZERO; BUF_SIZE];
+        let out = self.outputs[0].buffer.as_mut_array();
         self.osc
-            .process(None, &mut temp[..], &ActionContext::new(clock))?;
-        for t in temp.iter_mut() {
-            *t *= self.amplitude;
+            .process(None, &mut out[..], &ActionContext::new(clock))?;
+        for o in out.iter_mut() {
+            *o *= self.amplitude;
         }
-        *self.outputs[0].buffer.as_mut_array() = temp;
+        self.state.as_mut().unwrap().advance();
         Ok(())
     }
 }

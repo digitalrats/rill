@@ -259,12 +259,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Delay<
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let input_buf = *self.inputs[0].buffer.as_array();
-        let mut temp = [T::ZERO; BUF_SIZE];
+        let inp = self.inputs[0].buffer.as_array();
+        let out = self.outputs[0].buffer.as_mut_array();
+        let mix = T::from_f32(self.mix);
+        let one_minus_mix = T::ONE - mix;
+        let feedback = T::from_f32(self.feedback);
+        let delay_samples = self.delay_samples;
         for i in 0..BUF_SIZE {
-            temp[i] = self.process_sample(input_buf[i]);
+            let input = inp[i];
+            let delayed = self.delay_line.read_delayed(delay_samples);
+            let output = input.mul(one_minus_mix).add(delayed.mul(mix));
+            let write_sample = input.add(delayed.mul(feedback));
+            self.delay_line.write(write_sample);
+            out[i] = output;
         }
-        *self.outputs[0].buffer.as_mut_array() = temp;
+        self.state.advance();
         Ok(())
     }
 

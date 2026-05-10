@@ -324,7 +324,7 @@ impl<T: Transcendental> Diode<T> {
             let i = is_s.mul(&v.div(&vt_s).exp().sub(&ScalarVector4::splat(T::ONE)));
             let g = is_s.mul(&v.div(&vt_s).exp()).div(&vt_s);
             let f = v.add(&r_s.mul(&i)).sub(&a);
-            if f.abs().lt(&tol).all() {
+            if <ScalarVector4<T> as VectorMask<T, 4>>::all(&f.abs().lt(&tol)) {
                 break;
             }
             let df = ScalarVector4::splat(T::ONE).add(&r_s.mul(&g));

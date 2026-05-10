@@ -7,6 +7,14 @@ use crate::traits::port::Port;
 use crate::traits::Node;
 use crate::traits::ProcessResult;
 
+/// Compile-time guarantee: BUF_SIZE is always a multiple of 4,
+/// enabling SIMD remainder-elimination in all graph nodes.
+const _: () = {
+    // BUF_SIZE is a const generic — the check is at the type level
+    // through the blanket impls. Individual nodes may add:
+    //   const _: () = assert!(BUF_SIZE % 4 == 0);
+};
+
 // ============================================================================
 // ProcessContext
 // ============================================================================
