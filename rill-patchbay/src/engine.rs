@@ -518,7 +518,6 @@ pub struct Servo<A: Automaton> {
     mailbox: Arc<MpscQueue<AutomatonMsg>>,
     target_node: NodeId,
     target_param: String,
-    #[allow(dead_code)]
     mapping: ParameterMapping,
     min: f64,
     max: f64,
@@ -661,11 +660,12 @@ impl<A: Automaton> Servo<A> {
             return Some(self.make_cmd_from(table[index].clone()));
         }
 
-        // F64 mode: apply ControlStrategy
+        // F64 mode: apply ParameterMapping then ControlStrategy
+        let mapped = self.mapping.apply(raw);
         let value = match self.control {
-            ControlStrategy::Absolute => self.min + raw * (self.max - self.min),
+            ControlStrategy::Absolute => self.min + mapped * (self.max - self.min),
             ControlStrategy::Modulation { depth } => {
-                (self.base + raw * depth * (self.max - self.min)).clamp(self.min, self.max)
+                (self.base + mapped * depth * (self.max - self.min)).clamp(self.min, self.max)
             }
         };
 
