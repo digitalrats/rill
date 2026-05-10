@@ -239,9 +239,9 @@ this path. No atomics, no locks — the graph is a single-threaded static DAG.
 | Type | Spawn | Source | Output |
 |---|---|---|---|
 | **LFO / Envelope** | `tokio::spawn` | `tokio::time::interval` | `mpsc::Sender<f64>` → PortCombiner |
-| **PortCombiner** | `tokio::spawn` | `mpsc::Receiver<f64>` + `mpsc::UnboundedReceiver<UiCommand>` | `MpscQueue<ParameterCommand>` |
-| **Sequencer** | `tokio::task::spawn_blocking` | `crossbeam_channel::Receiver<Telemetry>` (CLOCK_TICK) | `MpscQueue<ParameterCommand>` |
-| **Sync Servos** | (no thread, called inline) | `control.update(dt)` | `MpscQueue<ParameterCommand>` |
+| **PortCombiner** | `tokio::spawn` | `mpsc::Receiver<f64>` + `mpsc::UnboundedReceiver<UiCommand>` | `ActorRef<SetParameter>` |
+| **Sync Servos** | (no thread, called inline) | `control.update(dt)` | `ActorRef<SetParameter>` |
+| **MIDI / Sensors** | OS thread (`MidiHub`) | `MidiBackend::poll()` | `ActorRef<ControlEvent>` → Patchbay::event_mailbox |
 
 **LFO/Envelope Automaton** — spawned via `tokio::spawn`. On each `tokio::time::interval`
 tick it calls `automaton.step(time, action, state)` and sends the resulting value
@@ -256,24 +256,21 @@ audio thread. Uses `tokio::select!` to listen on three channels:
 
 Applies `ControlStrategy` (Absolute / Modulation) and `ConflictStrategy`
 (TouchOverride / BasePlusModulation / LastWriteWins) to resolve conflicts
-between automaton and UI. Output: `MpscQueue<ParameterCommand>`.
-
-**Sequencer** — spawned via `tokio::task::spawn_blocking` (uses blocking
-`crossbeam_channel::Receiver::recv()`). Listens for `CLOCK_TICK` telemetry from
-the audio thread through a `crossbeam_channel::Receiver<Telemetry>`. Each tick
-contains `(sample_pos, sample_rate, tempo, beat_pos, is_new_beat, is_new_bar)`.
-`SnapshotSequencer::tick_ext()` decides whether to advance to the next step and
-returns `Vec<ParameterCommand>` which are pushed to `MpscQueue`. Controlled via
-`SequencerHandle` (start/stop/reset/set_pattern) over a crossbeam channel.
+between automaton and UI. Output: `ActorRef<SetParameter>`.
 
 ### Communication channels
 
 ```
-                               tokio / crossbeam                    MpscQueue
-Automaton ──── mpsc<f64> ───→ PortCombiner ──── ParameterCommand ──→ Audio
-UI/MIDI/OSC ── mpsc<UiCmd> ─→ PortCombiner ──── ParameterCommand ──→ Audio
-Sequencer ◀─── crossbeam<Telemetry> (CLOCK_TICK) ◀──── Audio thread
-Sequencer ──── ParameterCommand ──────────────────────────────────────→ Audio
+                               tokio / mpsc                ActorRef
+Automaton ──── mpsc<f64> ───→ PortCombiner ── SetParameter ──→ Audio
+UI/MIDI/OSC ── mpsc<UiCmd> ─→ PortCombiner ── SetParameter ──→ Audio
+MIDI/Sensor ── ActorRef<ControlEvent> ──→ Patchbay::event_mailbox
+                                               │
+                                          drain_events()
+                                               │
+                                         handle_event()
+                                               │
+                                    Mapping → SetParameter ──→ Audio
 ```
 
 All control → audio paths converge on `rill_core::queues::MpscQueue<ParameterCommand>`
@@ -287,8 +284,8 @@ Each PortCombiner + automaton pair has an isolated `watch::Sender<bool>` /
 causes both the automaton loop and the combiner loop to exit. This per-port
 cancellation domain means stopping one LFO doesn't affect others.
 
-The sequencer is stopped via `JoinHandle::abort()` (or naturally when the
-telemetry channel closes on audio thread shutdown).
+Sensors (MIDI, OSC) are stopped via their `Sensor::stop()` method, which
+joins the polling thread and releases the backend.
 
 ### Rule of thumb
 
@@ -306,7 +303,7 @@ I/O callback (see "Audio I/O thread" above). No external engine loop —
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
 - **Two-thread architecture**: the audio I/O thread (see "Audio I/O thread"
   above) runs `AudioInput`'s callback which drives the entire signal graph.
-  The control thread (soft RT) runs `rill-patchbay::Manager`.
+  The control thread (soft RT) runs `rill-patchbay::Patchbay`.
   Communication via `MpscQueue<ParameterCommand>`. Source/Sink nodes own
   I/O buffers — no external engine loop, `Port::propagate` replaces
   `Port::propagate::process_block`.

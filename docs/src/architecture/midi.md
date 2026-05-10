@@ -1,7 +1,7 @@
 # MIDI support (rill-io + rill-patchbay)
 
 MIDI input is handled through a layered architecture:
-raw hardware I/O → `MidiBackend` → `MidiHub` → `ControlEvent` → `Patchbay` → `SetParameter` → Graph.
+raw hardware I/O → `MidiBackend` → `MidiHub` → `ActorRef<ControlEvent>` → `Patchbay::event_mailbox` → `drain_events()` → `handle_event()` → `SetParameter` → Graph.
 
 ## Architecture
 
@@ -9,22 +9,31 @@ raw hardware I/O → `MidiBackend` → `MidiHub` → `ControlEvent` → `Patchba
 ┌──────────────────────────────────────────────────────────────────┐
 │  DEDICATED MIDI THREAD (non‑RT)                                   │
 │                                                                    │
-│  MidiBackend::poll()  ──→  MidiHub  ──→  Patchbay::handle_event()
+│  MidiBackend::poll()  ──→  MidiHub  ──→  ActorRef<ControlEvent>  │
 │       │                        │                    │              │
-│  raw [u8; 3]             parse bytes         mappings             │
-│                           into               MIDI CC → param      │
-│                           ControlEvent       Note → frequency     │
+│  raw [u8; 3]             parse bytes        events.send(event)    │
+│                           into                                    │
+│                           ControlEvent                            │
 └──────────────────────────────────────────────────────────────────┘
-                                                       │
-                                              ActorRef<SetParameter>
-                                                       │
-                                                       ▼
-                                              Graph command queue
+                                                     │
+                                        Patchbay::event_mailbox
+                                                     │
+                                               drain_events()
+                                                     │
+                                               handle_event()
+                                                     │
+                                               Mapping → SetParameter
+                                                     │
+                                               ActorRef<SetParameter>
+                                                     │
+                                                     ▼
+                                             Graph command queue
 ```
 
 - **MIDI thread is NOT the audio RT thread** — blocking I/O is allowed
 - All MIDI → parameter mapping happens through `Patchbay`'s existing event infrastructure
-- The actor owns a `Box<dyn MidiBackend>` and polls at 1 ms intervals
+- The sensor sends `ControlEvent` via `ActorRef` — lock‑free, no `Arc<Mutex>`
+- Multiple sensors (MIDI, OSC, future) share one event mailbox
 
 ## `MidiMessage` — raw MIDI bytes
 
@@ -70,22 +79,22 @@ let backend: Box<dyn MidiBackend> = Box::new(AlsaSeqBackend::new("rill-midi").un
 
 ## `MidiHub` — byte parser + dispatcher
 
-Lives in `rill-patchby` behind the `midi` feature gate.
-Spawns a dedicated thread, polls the backend, and dispatches parsed events
-to a shared `Patchbay`.
+Lives in `rill-patchbay` behind the `midi` feature gate. Implements the
+[`Sensor`] trait. Spawns a dedicated OS thread, polls the backend, parses
+bytes into `ControlEvent`, and sends via `ActorRef` — no locking required.
 
 ```rust,no_run
-use std::sync::{Arc, Mutex};
+use rill_core_actor::ActorRef;
 use rill_patchbay::midi::MidiHub;
-use rill_patchbay::Patchbay;
+use rill_patchbay::engine::ControlEvent;
 use rill_io::midi_backend::MidiBackend;
 
-let patchbay = Arc::new(Mutex::new(Patchbay::new(actor_ref)));
+let events: ActorRef<ControlEvent> = /* from Patchbay::event_handle() */;
 let backend: Box<dyn MidiBackend> = /* ... */;
 
-let mut actor = MidiHub::start(backend, patchbay.clone());
+let mut hub = MidiHub::start(backend, events);
 // ... run ...
-actor.stop();
+hub.stop();
 ```
 
 ### MIDI → ControlEvent translation
@@ -128,7 +137,6 @@ pub enum ControlEvent {
 ## Wiring: MidiHub → Patchbay → Graph
 
 ```rust,no_run
-use std::sync::{Arc, Mutex};
 use rill_core_actor::ActorRef;
 use rill_patchbay::{
     midi::MidiHub,
@@ -151,16 +159,21 @@ patchbay.add_midi_mapping(
     Transform::Linear,
 );
 
-// 3. Start MIDI actor
-let patchbay = Arc::new(Mutex::new(patchbay));
+// 3. Start MIDI sensor — no Arc<Mutex> needed
 let backend = Box::new(MidirBackend::new("rill-midi").unwrap());
-let mut actor = MidiHub::start(backend, patchbay.clone());
+patchbay.start_midi(backend);
 
-// 4. Run graph on audio thread, drain commands
+// 4. Run graph on audio thread
 // ... graph.run(running) ...
 
-// 5. Stop
-actor.stop();
+// 5. Drain clock & events in control loop (or use spawn_clock_loop)
+// loop {
+//     patchbay.drain_clock();
+//     std::thread::sleep(Duration::from_millis(10));
+// }
+
+// 6. Stop — calls stop_all() which stops MIDI sensor
+patchbay.stop_all();
 ```
 
 ## Feature flags
@@ -169,9 +182,40 @@ actor.stop();
 |---------|-------|---------|
 | `midir` (default) | `rill-io` | `MidirBackend` — cross‑platform MIDI input |
 | `alsa` | `rill-io` | `AlsaSeqBackend` — ALSA sequencer virtual port |
-| `midi` | `rill-patchbay` | `MidiHub` — pulls `rill-io` dependency |
+| `midi` | `rill-patchbay` | `MidiHub` + `Sensor` trait — pulls `rill-io` dependency |
 
-`rill-adrift` enables `midi` in `default` features when MIDI is available on the target platform.
+## Sensor trait
+
+The [`Sensor`] trait provides a unified interface for external input sources.
+All sensors send `ControlEvent` to a shared `ActorRef`, drained by
+`Patchbay::drain_events()`.
+
+```rust
+pub trait Sensor: Send + 'static {
+    fn attach(&mut self, events: ActorRef<ControlEvent>);
+    fn start(&mut self);
+    fn stop(&mut self);
+}
+```
+
+`MidiHub` implements `Sensor`. Future sensors (OSC, hardware knobs, acoustic
+analysis via [`Hearing`]) follow the same pattern — multiple sensors feed
+one event mailbox with no locking.
+
+## Hearing — audio analysis for acoustic sensors
+
+The [`hearing`] module provides audio analysis algorithms for acoustic
+sensors that react to graph audio output:
+
+| Algorithm | What it detects |
+|---|---|
+| `PitchDetector` | Pitch via autocorrelation |
+| `EnvelopeFollower` | Amplitude envelope with attack/release |
+| `ZeroCrossing` | Frequency via zero-crossing rate |
+
+Each implements `Hearing: process(&mut self, audio: &[f32]) -> f32`.
+An `AcousticSensor` (future) wraps a `Hearing` implementation, subscribes
+to graph telemetry, and produces `ControlEvent`s from audio features.
 
 ## Commands
 
