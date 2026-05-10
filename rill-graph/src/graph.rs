@@ -583,12 +583,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         let graph_ptr: *mut Graph<T, BUF_SIZE> = self;
         let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
             let graph = unsafe { &mut *graph_ptr };
-            // drain command queue
+            // drain command queue via actor pattern
             while let Some(cmd) = cmd_queue.pop() {
-                let i = cmd.port.node_id().inner() as usize;
-                if i < graph.nodes.len() {
-                    let _ = graph.nodes[i].set_parameter(&cmd.parameter, cmd.value);
-                }
+                graph.receive(cmd);
             }
             // process source and propagate
             let tick = ClockTick::new(sample_pos, BUF_SIZE as u32, sample_rate);
