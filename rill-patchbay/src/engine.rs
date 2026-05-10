@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rill_core::prelude::*;
-use rill_core::queues::{SetParameter, SignalOrigin};
-use rill_core_actor::ActorRef;
+use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
+use rill_core_actor::{ActorCell, ActorRef};
 
 // crossbeam removed: // crossbeam removed (dead code)
 
@@ -457,8 +457,19 @@ pub trait Automaton: Send + Sync + Debug {
 }
 
 // =============================================================================
-// 6. Servo — automaton-to-parameter bridge
+// 6. AutomatonMsg + Servo — automaton-to-parameter bridge
 // =============================================================================
+
+/// Message for automaton actors — clock tick or control command.
+#[derive(Debug, Clone)]
+pub enum AutomatonMsg {
+    /// Clock tick from audio thread.
+    Tick(ClockTick),
+    /// Enable or disable the automaton.
+    SetEnabled(bool),
+    /// Reset to initial state.
+    Reset,
+}
 
 /// Mapping type for a servo's output value.
 #[derive(Clone)]
@@ -501,6 +512,9 @@ impl ParameterMapping {
 }
 
 /// A servo bridges an automaton to a graph-node parameter.
+///
+/// Stores the automaton state externally (the automaton itself is a pure
+/// function) and provides an [`ActorRef`] for receiving control messages.
 pub struct Servo<A: Automaton> {
     id: String,
     automaton: A,
@@ -513,6 +527,7 @@ pub struct Servo<A: Automaton> {
     last_value: f64,
     enabled: bool,
     last_time: Time,
+    mailbox: Arc<MpscQueue<AutomatonMsg>>,
 }
 
 impl<A: Automaton> Servo<A> {
@@ -539,11 +554,29 @@ impl<A: Automaton> Servo<A> {
             last_value: 0.0,
             enabled: true,
             last_time: 0.0,
+            mailbox: Arc::new(MpscQueue::with_capacity(16)),
         }
     }
 
+    /// Return an [`ActorRef`] for sending control messages to this servo.
+    pub fn handle(&self) -> ActorRef<AutomatonMsg> {
+        ActorRef::new(&self.mailbox)
+    }
+
     /// Advance the servo and return a parameter command if the value changed.
+    ///
+    /// Drains the command queue before stepping the automaton (same pattern
+    /// as Graph::run).
     pub fn update(&mut self, time: Time) -> Option<SetParameter> {
+        // Drain command queue (like Graph::run)
+        while let Some(cmd) = self.mailbox.pop() {
+            match cmd {
+                AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
+                AutomatonMsg::Reset => self.state = self.automaton.initial_state(),
+                AutomatonMsg::Tick(_) => {} // time from caller, not from mailbox
+            }
+        }
+
         if !self.enabled {
             return None;
         }
@@ -585,6 +618,20 @@ impl<A: Automaton> Servo<A> {
     }
 }
 
+// ── Actor pattern: Servo is an actor ───────────────────────────────
+
+impl<A: Automaton + 'static> ActorCell for Servo<A> {
+    type Msg = AutomatonMsg;
+
+    fn receive(&mut self, msg: AutomatonMsg) {
+        match msg {
+            AutomatonMsg::Tick(_) => {} // handled in update()
+            AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
+            AutomatonMsg::Reset => self.state = self.automaton.initial_state(),
+        }
+    }
+}
+
 /// Type-erased boxed servo.
 pub type BoxedServo = Box<dyn AnyServo>;
 
@@ -596,19 +643,22 @@ pub trait AnyServo: Send + Sync {
     fn id(&self) -> &str;
     /// Enable or disable the servo.
     fn set_enabled(&mut self, enabled: bool);
+    /// Return an ActorRef for sending control messages.
+    fn handle(&self) -> ActorRef<AutomatonMsg>;
 }
 
 impl<A: Automaton + 'static> AnyServo for Servo<A> {
     fn update(&mut self, time: Time) -> Option<SetParameter> {
         Servo::update(self, time)
     }
-
     fn id(&self) -> &str {
-        &self.id
+        Servo::id(self)
     }
-
     fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        Servo::set_enabled(self, enabled);
+    }
+    fn handle(&self) -> ActorRef<AutomatonMsg> {
+        Servo::handle(self)
     }
 }
 
@@ -668,8 +718,10 @@ impl Patchbay {
     ///
     /// Useful for automaton types not covered by `add_lfo` / `add_envelope`
     /// (e.g. sequencers, named functions).
-    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) {
+    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) -> ActorRef<AutomatonMsg> {
+        let handle = servo.handle();
         self.servos.insert(id, servo);
+        handle
     }
 
     /// Add a mapping from string descriptions (convenient for scripting).
@@ -728,8 +780,11 @@ impl Patchbay {
     }
 
     /// Add a servo (automaton → parameter bridge).
-    pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) {
+    /// Returns an [`ActorRef`] for sending control messages.
+    pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) -> ActorRef<AutomatonMsg> {
+        let handle = servo.handle();
         self.servos.insert(servo.id().to_string(), Box::new(servo));
+        handle
     }
 
     /// Add an LFO as a servo.
