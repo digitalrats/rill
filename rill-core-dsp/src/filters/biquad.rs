@@ -2,12 +2,111 @@
 
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
-use crate::vector::{ScalarVector1, Vector};
+use crate::vector::{ScalarVector1, ScalarVector4, Vector};
+use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 use std::f32::consts::PI;
 
-/// Biquad filter
+/// Pre-computed 4-sample block coefficients for SIMD biquad processing.
+pub(crate) struct BiquadBlock<T: Transcendental> {
+    /// Feedforward 4×4 matrix: y[i] = sum_j ff[i*4+j] * x[j], row-major
+    ff: [T; 16],
+    /// Feedback from old y1 state
+    fb_y1: [T; 4],
+    /// Feedback from old y2 state
+    fb_y2: [T; 4],
+    /// Feedback from old x1 state
+    fb_x1: [T; 4],
+    /// Feedback from old x2 state
+    fb_x2: [T; 4],
+}
+
+impl<T: Transcendental> BiquadBlock<T> {
+    /// Create empty block coefficients.
+    fn empty() -> Self {
+        Self {
+            ff: [T::ZERO; 16],
+            fb_y1: [T::ZERO; 4],
+            fb_y2: [T::ZERO; 4],
+            fb_x1: [T::ZERO; 4],
+            fb_x2: [T::ZERO; 4],
+        }
+    }
+
+    /// Pre-compute block coefficients from biquad coefficients.
+    fn compute(&mut self, coeffs: &(T, T, T, T, T)) {
+        let (b0, b1, b2, a1, a2) = coeffs;
+        let neg_a1 = -(*a1);
+        let neg_a2 = -(*a2);
+
+        // Feedforward: run filter for 4 steps with impulse at each input position
+        for j in 0..4 {
+            let (mut x1, mut x2, mut y1, mut y2) = (T::ZERO, T::ZERO, T::ZERO, T::ZERO);
+            for i in 0..4 {
+                let x = if i == j { T::ONE } else { T::ZERO };
+                let y = *b0 * x + *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
+                self.ff[i * 4 + j] = y;
+                x2 = x1;
+                x1 = x;
+                y2 = y1;
+                y1 = y;
+            }
+        }
+
+        // Feedback from old y1 state (y1=1, others=0, no input)
+        {
+            let (mut x1, mut x2, mut y1, mut y2) = (T::ZERO, T::ZERO, T::ONE, T::ZERO);
+            for i in 0..4 {
+                let y = *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
+                self.fb_y1[i] = y;
+                x2 = x1;
+                x1 = T::ZERO;
+                y2 = y1;
+                y1 = y;
+            }
+        }
+
+        // Feedback from old y2 state
+        {
+            let (mut x1, mut x2, mut y1, mut y2) = (T::ZERO, T::ZERO, T::ZERO, T::ONE);
+            for i in 0..4 {
+                let y = *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
+                self.fb_y2[i] = y;
+                x2 = x1;
+                x1 = T::ZERO;
+                y2 = y1;
+                y1 = y;
+            }
+        }
+
+        // Feedback from old x1 state
+        {
+            let (mut x1, mut x2, mut y1, mut y2) = (T::ONE, T::ZERO, T::ZERO, T::ZERO);
+            for i in 0..4 {
+                let y = *b0 * T::ZERO + *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
+                self.fb_x1[i] = y;
+                x2 = x1;
+                x1 = T::ZERO;
+                y2 = y1;
+                y1 = y;
+            }
+        }
+
+        // Feedback from old x2 state
+        {
+            let (mut x1, mut x2, mut y1, mut y2) = (T::ZERO, T::ONE, T::ZERO, T::ZERO);
+            for i in 0..4 {
+                let y = *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
+                self.fb_x2[i] = y;
+                x2 = x1;
+                x1 = T::ZERO;
+                y2 = y1;
+                y1 = y;
+            }
+        }
+    }
+}
 #[allow(clippy::type_complexity)]
 pub struct Biquad<T: Transcendental> {
     params: FilterParams,
@@ -25,6 +124,7 @@ pub struct Biquad<T: Transcendental> {
         ScalarVector1<T>,
     ),
     sample_rate: f32,
+    block: BiquadBlock<T>,
 }
 
 impl<T: Transcendental> Biquad<T> {
@@ -49,6 +149,7 @@ impl<T: Transcendental> Biquad<T> {
                 ScalarVector1::splat(T::ZERO),
             ),
             sample_rate: 44100.0,
+            block: BiquadBlock::empty(),
         };
         filter.update_coeffs();
         filter
@@ -203,6 +304,18 @@ impl<T: Transcendental> Biquad<T> {
                 );
             }
         }
+        self.recompute_block();
+    }
+
+    fn recompute_block(&mut self) {
+        let (b0, b1, b2, a1, a2) = self.coeffs;
+        self.block.compute(&(
+            b0.extract(0),
+            b1.extract(0),
+            b2.extract(0),
+            a1.extract(0),
+            a2.extract(0),
+        ));
     }
 }
 
@@ -230,16 +343,50 @@ impl<T: Transcendental> Algorithm<T> for Biquad<T> {
     ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
-        let (b0, b1, b2, a1, a2) = self.coeffs;
+        let chunks = len / 4;
         let (mut x1, mut x2, mut y1, mut y2) = self.state;
 
-        for i in 0..len {
+        // SIMD block path: process 4 samples at once
+        for chunk in 0..chunks {
+            let offset = chunk * 4;
+            let x = ScalarVector4::load(&input[offset..offset + 4]);
+            let mut y = [T::ZERO; 4];
+
+            // Feedforward: y[i] = sum_j ff[i*4+j] * x[j]
+            for i in 0..4 {
+                y[i] = self.block.ff[i * 4] * x.extract(0)
+                    + self.block.ff[i * 4 + 1] * x.extract(1)
+                    + self.block.ff[i * 4 + 2] * x.extract(2)
+                    + self.block.ff[i * 4 + 3] * x.extract(3);
+            }
+
+            // Add state feedback
+            let x1_t = x1.extract(0);
+            let x2_t = x2.extract(0);
+            let y1_t = y1.extract(0);
+            let y2_t = y2.extract(0);
+            for i in 0..4 {
+                y[i] += self.block.fb_x1[i] * x1_t
+                    + self.block.fb_x2[i] * x2_t
+                    + self.block.fb_y1[i] * y1_t
+                    + self.block.fb_y2[i] * y2_t;
+            }
+
+            output[offset..offset + 4].copy_from_slice(&y);
+
+            // State for next block: x = last 2 inputs, y = last 2 outputs
+            x2 = ScalarVector1::splat(x.extract(2));
+            x1 = ScalarVector1::splat(x.extract(3));
+            y2 = ScalarVector1::splat(y[2]);
+            y1 = ScalarVector1::splat(y[3]);
+        }
+
+        // Scalar remainder
+        let (b0, b1, b2, a1, a2) = self.coeffs;
+        for i in chunks * 4..len {
             let inp = input[i];
             let out = b0 * inp + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-
             output[i] = out.extract(0);
-
-            // Update state
             x2 = x1;
             x1 = ScalarVector1::splat(inp);
             y2 = y1;
