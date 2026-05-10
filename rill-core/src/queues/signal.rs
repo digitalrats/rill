@@ -14,29 +14,15 @@
 //!
 //! ## Example
 //!
-//! ```rust
+//! ```no_run
 //! use rill_core::queues::*;
 //! use rill_core::traits::*;
-//! #
-//! // Create a command queue
-//! let queue: CommandQueue<CommandEnum> = CommandQueue::new("signal-control", 1024);
 //!
-//! // Create identifiers
 //! let node = NodeId(1);
 //! let port = PortId::control_in(node, 0);
 //! let param = ParameterId::new("gain").unwrap();
-//!
-//! // Somewhere in the world of automatons
 //! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalOrigin::Automaton("lfo".into()));
-//! queue.send(CommandEnum::SetParameter(cmd)).unwrap();
-//!
-//! // Somewhere in the sound world
-//! while let Ok(cmd_enum) = queue.try_recv() {
-//!     if let CommandEnum::SetParameter(cmd) = cmd_enum {
-//!         // apply_parameter(cmd); // function must be defined
-//!     }
-//! }
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! // Send via ActorRef<SetParameter> or MpscQueue<SetParameter>
 //! ```
 
 use super::command::Command;
@@ -652,7 +638,7 @@ impl fmt::Display for CommandEnum {
     }
 }
 
-// Implement the Command trait for CommandEnum so it can be used in CommandQueue
+// Implement the Command trait for CommandEnum (used via actor mailboxes).
 impl Command for CommandEnum {}
 
 // ===== Conversions =====

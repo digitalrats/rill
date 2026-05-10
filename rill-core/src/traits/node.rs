@@ -407,14 +407,6 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
     fn num_outputs(&self) -> usize {
         self.num_signal_outputs() + self.num_control_outputs() + self.num_clock_outputs()
     }
-
-    /// Attach a telemetry sender to this node.
-    ///
-    /// Nodes that push telemetry (e.g. clock tick from a hardware source)
-    /// should store this sender and use it from their `generate()` /
-    /// `process()` / `consume()` methods via `TelemetryTx::try_send`.
-    /// Default is no-op — override only in nodes that produce telemetry.
-    fn set_telemetry_tx(&mut self, _tx: crate::queues::telemetry::TelemetryTx) {}
 }
 
 // ============================================================================

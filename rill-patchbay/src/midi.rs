@@ -17,12 +17,12 @@ use crate::engine::{ControlEvent, MidiTransportKind, Patchbay};
 ///
 /// The actor is intentionally simple — no message passing, just
 /// a polling loop → parse → dispatch cycle on its own thread.
-pub struct MidiActor {
+pub struct MidiHub {
     thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
 }
 
-impl MidiActor {
+impl MidiHub {
     /// Start the MIDI actor.
     ///
     /// Spawns a dedicated thread that polls `backend` for messages,
@@ -55,7 +55,7 @@ impl MidiActor {
             }
         });
 
-        MidiActor {
+        MidiHub {
             thread: Some(thread),
             running,
         }
@@ -70,7 +70,7 @@ impl MidiActor {
     }
 }
 
-impl Drop for MidiActor {
+impl Drop for MidiHub {
     fn drop(&mut self) {
         self.stop();
     }

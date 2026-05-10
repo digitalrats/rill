@@ -4,7 +4,7 @@
 //! of values over time.
 
 use crate::engine::{Automaton, NoAction, Range, Time};
-use std::collections::VecDeque;
+use rill_core::traits::ParamValue;
 
 /// Sequencer step
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -35,23 +35,6 @@ pub enum PlayMode {
     Brownian,
 }
 
-/// Sequencer state
-#[derive(Debug, Clone)]
-pub struct SequencerState {
-    /// Current step index
-    pub current_step: usize,
-    /// Start time of the current step
-    pub step_start_time: Time,
-    /// Value at the current step
-    pub current_value: f64,
-    /// Target value (for interpolation)
-    pub target_value: f64,
-    /// Direction (for PingPong)
-    pub direction: i8,
-    /// History of recent steps (for Brownian)
-    pub history: VecDeque<usize>,
-}
-
 /// Sequencer automaton
 #[derive(Debug, Clone)]
 pub struct SequencerAutomaton {
@@ -69,8 +52,6 @@ pub struct SequencerAutomaton {
     interpolate: bool,
     /// Output value range
     range: Range,
-    /// Random seed
-    rng_state: u64,
 }
 
 impl SequencerAutomaton {
@@ -84,7 +65,6 @@ impl SequencerAutomaton {
             duration_scale: 1.0,
             interpolate: false,
             range: Range::unipolar(),
-            rng_state: 123456789,
         }
     }
 
@@ -117,139 +97,100 @@ impl SequencerAutomaton {
         step.duration * 60.0 / self.tempo * 4.0 * self.duration_scale
     }
 
-    /// Select the next step
-    fn next_step(&self, state: &SequencerState) -> usize {
-        match self.mode {
-            PlayMode::OneShot => {
-                if state.current_step < self.steps.len() - 1 {
-                    state.current_step + 1
-                } else {
-                    state.current_step
-                }
-            }
-
-            PlayMode::Loop => (state.current_step + 1) % self.steps.len(),
-
-            PlayMode::PingPong => {
-                let next = state.current_step as i32 + state.direction as i32;
-                if next < 0 {
-                    1
-                } else if next >= self.steps.len() as i32 {
-                    self.steps.len() - 2
-                } else {
-                    next as usize
-                }
-            }
-
-            PlayMode::Random => self.random_index(&mut self.rng_state.clone()),
-
-            PlayMode::Brownian => self.brownian_next(state, &mut self.rng_state.clone()),
-        }
-    }
-
-    /// Random index
-    fn random_index(&self, rng: &mut u64) -> usize {
+    /// Xorshift PRNG
+    fn xorshift(&self, rng: &mut u64) -> u64 {
         let mut x = *rng;
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
         *rng = x;
+        x
+    }
 
+    /// Random index
+    fn random_index(&self, rng: &mut u64) -> usize {
+        let x = self.xorshift(rng);
         (x as usize) % self.steps.len()
     }
 
-    /// Next step for Brownian motion
-    fn brownian_next(&self, state: &SequencerState, rng: &mut u64) -> usize {
-        let mut candidates = Vec::new();
+    /// Select the next step based on mode and current state
+    fn next_step(&self, current_step: usize, direction: i8, rng_state: &mut u64) -> (usize, i8) {
+        match self.mode {
+            PlayMode::OneShot => {
+                if current_step < self.steps.len() - 1 {
+                    (current_step + 1, direction)
+                } else {
+                    (current_step, direction)
+                }
+            }
 
-        // Can stay in place
-        candidates.push(state.current_step);
+            PlayMode::Loop => ((current_step + 1) % self.steps.len(), direction),
 
-        // Or move to neighbors
-        if state.current_step > 0 {
-            candidates.push(state.current_step - 1);
+            PlayMode::PingPong => {
+                let next = current_step as i32 + direction as i32;
+                if next < 0 {
+                    (1, 1)
+                } else if next >= self.steps.len() as i32 {
+                    (self.steps.len() - 2, -1)
+                } else {
+                    (next as usize, direction)
+                }
+            }
+
+            PlayMode::Random => (self.random_index(rng_state), direction),
+
+            PlayMode::Brownian => {
+                let mut candidates = vec![current_step];
+                if current_step > 0 {
+                    candidates.push(current_step - 1);
+                }
+                if current_step < self.steps.len() - 1 {
+                    candidates.push(current_step + 1);
+                }
+                let idx = self.random_index(rng_state) % candidates.len();
+                (candidates[idx], direction)
+            }
         }
-        if state.current_step < self.steps.len() - 1 {
-            candidates.push(state.current_step + 1);
-        }
-
-        let idx = self.random_index(rng) % candidates.len();
-        candidates[idx]
     }
 }
 
 impl Automaton for SequencerAutomaton {
-    type State = SequencerState;
+    type Internal = (usize, f64, i8, u64);
     type Action = NoAction;
 
     fn step(
         &self,
+        internal: &mut Self::Internal,
+        _current: &ParamValue,
         time: Time,
         _action: &Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<f64>) {
-        let mut new_state = state.clone();
+    ) -> ParamValue {
+        let (current_step, step_start_time, direction, mut rng_state) = *internal;
 
-        // Check if it's time to advance to the next step
-        let current_step = &self.steps[new_state.current_step];
-        let step_dur = self.step_duration(current_step);
-        let elapsed = time - new_state.step_start_time;
+        if self.steps.is_empty() {
+            return ParamValue::Int(0);
+        }
+
+        let current_step_data = &self.steps[current_step];
+        let step_dur = self.step_duration(current_step_data);
+        let elapsed = time - step_start_time;
 
         if elapsed >= step_dur {
-            // Advance to the next step
-            let next = self.next_step(&new_state);
-            new_state.current_step = next;
-            new_state.step_start_time = time;
-            new_state.current_value = self.steps[next].value;
-            new_state.target_value = self.steps[next].value;
-
-            if let PlayMode::PingPong = self.mode {
-                if next == 0 {
-                    new_state.direction = 1;
-                } else if next == self.steps.len() - 1 {
-                    new_state.direction = -1;
-                }
-            }
-
-            if let PlayMode::Brownian = self.mode {
-                new_state.history.push_back(next);
-                if new_state.history.len() > 10 {
-                    new_state.history.pop_front();
-                }
-            }
-        } else if self.interpolate && step_dur > 0.0 {
-            let t = elapsed / step_dur;
-            let next_idx = (new_state.current_step + 1) % self.steps.len();
-            let next_val = self.steps[next_idx].value;
-
-            let curve = current_step.curve.unwrap_or(1.0);
-            let tt = t.powf(curve);
-
-            new_state.current_value = current_step.value * (1.0 - tt) + next_val * tt;
+            let (next, new_dir) = self.next_step(current_step, direction, &mut rng_state);
+            *internal = (next, time, new_dir, rng_state);
+            ParamValue::Int(next as i32)
+        } else {
+            // Same step — no change
+            ParamValue::Float(current_step as f32)
         }
-
-        let value = self.range.denormalize(new_state.current_value);
-
-        (new_state, Some(value))
     }
 
-    fn initial_state(&self) -> Self::State {
-        SequencerState {
-            current_step: 0,
-            step_start_time: 0.0,
-            current_value: self.steps[0].value,
-            target_value: self.steps[0].value,
-            direction: 1,
-            history: VecDeque::with_capacity(10),
-        }
+    fn initial_internal(&self) -> Self::Internal {
+        (0, 0.0, 1, 123456789)
     }
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        self.range.denormalize(state.current_value)
     }
 }
 
@@ -273,11 +214,12 @@ mod tests {
     fn test_sequencer() {
         let steps = simple_sequence(vec![0.0, 0.5, 1.0, 0.5], 0.25);
         let seq = SequencerAutomaton::new("Test", steps);
-        let state = seq.initial_state();
+        let mut internal = seq.initial_internal();
+        let current = ParamValue::Float(0.0);
 
-        assert_eq!(state.current_value, 0.0);
+        assert_eq!(internal.0, 0);
 
-        let (new_state, _value) = seq.step(0.6, &NoAction, &state);
-        assert_eq!(new_state.current_step, 1);
+        let _value = seq.step(&mut internal, &current, 0.6, &NoAction);
+        assert_eq!(internal.0, 1);
     }
 }

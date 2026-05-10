@@ -3,6 +3,7 @@
 //! Supports ADSR, AR, ASR, and AHDSR envelope types.
 
 use crate::engine::{Automaton, Range, Time};
+use rill_core::traits::ParamValue;
 
 /// Envelope shape type.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -50,27 +51,6 @@ impl EnvelopeStage {
     }
 }
 
-/// Runtime state of an envelope automaton.
-///
-/// Tracks the current stage, output level, timing information, and gate status.
-#[derive(Debug, Clone)]
-pub struct EnvelopeState {
-    /// Current envelope phase.
-    pub stage: EnvelopeStage,
-    /// Current output level (0.0 – 1.0).
-    pub level: f64,
-    /// Time when the current stage began.
-    pub stage_start_time: Time,
-    /// Output level at the start of the current stage.
-    pub stage_start_level: f64,
-    /// Target level of the current stage.
-    pub stage_target_level: f64,
-    /// Duration of the current stage in seconds.
-    pub stage_duration: f64,
-    /// Whether the gate is on (triggered).
-    pub gate: bool,
-}
-
 /// An envelope automaton that generates time-varying control signals.
 ///
 /// The envelope progresses through stages (Attack, Decay, Sustain, Release, etc.)
@@ -88,6 +68,9 @@ pub struct EnvelopeAutomaton {
     range: Range,
     curve: f64,
 }
+
+/// Internal envelope state: (stage, stage_start_time, stage_start_level).
+type EnvelopeInternal = (EnvelopeStage, f64, f64);
 
 impl EnvelopeAutomaton {
     /// Create a new ADSR envelope.
@@ -178,94 +161,41 @@ impl EnvelopeAutomaton {
         }
     }
 
-    /// Advance the envelope stage based on elapsed time.
-    fn update_stage(&self, state: &mut EnvelopeState, time: Time) {
-        let elapsed = time - state.stage_start_time;
+    /// Get the duration for a given stage.
+    fn stage_duration(&self, stage: EnvelopeStage) -> f64 {
+        match stage {
+            EnvelopeStage::Attack => self.attack,
+            EnvelopeStage::Hold => self.hold,
+            EnvelopeStage::Decay => self.decay,
+            EnvelopeStage::Release => self.release,
+            EnvelopeStage::Sustain | EnvelopeStage::Off => f64::INFINITY,
+        }
+    }
 
-        match state.stage {
-            EnvelopeStage::Attack => {
-                if elapsed >= self.attack {
-                    match self.env_type {
-                        EnvelopeType::ADSR => {
-                            state.stage = EnvelopeStage::Decay;
-                            state.stage_start_time = time;
-                            state.stage_start_level = 1.0;
-                            state.stage_target_level = self.sustain;
-                            state.stage_duration = self.decay;
-                        }
-                        EnvelopeType::AR => {
-                            state.stage = EnvelopeStage::Release;
-                            state.stage_start_time = time;
-                            state.stage_start_level = 1.0;
-                            state.stage_target_level = 0.0;
-                            state.stage_duration = self.release;
-                        }
-                        EnvelopeType::ASR => {
-                            state.stage = EnvelopeStage::Sustain;
-                            state.stage_start_time = time;
-                            state.stage_start_level = 1.0;
-                            state.stage_target_level = self.sustain;
-                            state.stage_duration = 0.0;
-                        }
-                        EnvelopeType::AHDSR => {
-                            state.stage = EnvelopeStage::Hold;
-                            state.stage_start_time = time;
-                            state.stage_start_level = 1.0;
-                            state.stage_target_level = 1.0;
-                            state.stage_duration = self.hold;
-                        }
-                    }
-                } else {
-                    let t = elapsed / self.attack;
-                    state.level = state.stage_start_level
-                        + (state.stage_target_level - state.stage_start_level)
-                            * self.apply_curve(t);
-                }
-            }
+    /// Get the target level for a given stage.
+    fn stage_target(&self, stage: EnvelopeStage) -> f64 {
+        match stage {
+            EnvelopeStage::Attack => 1.0,
+            EnvelopeStage::Hold => 1.0,
+            EnvelopeStage::Decay => self.sustain,
+            EnvelopeStage::Sustain => self.sustain,
+            EnvelopeStage::Release => 0.0,
+            EnvelopeStage::Off => 0.0,
+        }
+    }
 
-            EnvelopeStage::Hold => {
-                if elapsed >= self.hold {
-                    state.stage = EnvelopeStage::Decay;
-                    state.stage_start_time = time;
-                    state.stage_start_level = 1.0;
-                    state.stage_target_level = self.sustain;
-                    state.stage_duration = self.decay;
-                } else {
-                    state.level = 1.0;
-                }
-            }
-
-            EnvelopeStage::Decay => {
-                if elapsed >= self.decay {
-                    state.stage = EnvelopeStage::Sustain;
-                    state.level = self.sustain;
-                } else {
-                    let t = elapsed / self.decay;
-                    state.level = state.stage_start_level
-                        + (state.stage_target_level - state.stage_start_level)
-                            * self.apply_curve(t);
-                }
-            }
-
-            EnvelopeStage::Sustain => {
-                state.level = self.sustain;
-            }
-
-            EnvelopeStage::Release => {
-                if elapsed >= self.release {
-                    state.stage = EnvelopeStage::Off;
-                    state.level = 0.0;
-                } else {
-                    let t = elapsed / self.release;
-                    state.level = state.stage_start_level
-                        + (state.stage_target_level - state.stage_start_level)
-                            * self.apply_curve(t);
-                }
-            }
-
-            EnvelopeStage::Off => {
-                state.level = 0.0;
-            }
+    /// Transition to the next stage after the current one ends.
+    fn next_stage(&self, current: EnvelopeStage) -> EnvelopeStage {
+        match (current, self.env_type) {
+            (EnvelopeStage::Attack, EnvelopeType::ADSR) => EnvelopeStage::Decay,
+            (EnvelopeStage::Attack, EnvelopeType::AR) => EnvelopeStage::Release,
+            (EnvelopeStage::Attack, EnvelopeType::ASR) => EnvelopeStage::Sustain,
+            (EnvelopeStage::Attack, EnvelopeType::AHDSR) => EnvelopeStage::Hold,
+            (EnvelopeStage::Hold, _) => EnvelopeStage::Decay,
+            (EnvelopeStage::Decay, _) => EnvelopeStage::Sustain,
+            (EnvelopeStage::Release, _) => EnvelopeStage::Off,
+            (EnvelopeStage::Sustain, _) => EnvelopeStage::Sustain,
+            (EnvelopeStage::Off, _) => EnvelopeStage::Off,
         }
     }
 }
@@ -286,60 +216,57 @@ pub enum EnvelopeAction {
 }
 
 impl Automaton for EnvelopeAutomaton {
-    type State = EnvelopeState;
+    type Internal = EnvelopeInternal;
     type Action = EnvelopeAction;
 
     fn step(
         &self,
+        internal: &mut Self::Internal,
+        current: &ParamValue,
         time: Time,
         action: &Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<f64>) {
-        let mut new_state = state.clone();
+    ) -> ParamValue {
+        let (stage, stage_start_time, stage_start_level) = *internal;
+        let current_level = current.as_f32().unwrap_or(0.0) as f64;
 
-        match action {
-            EnvelopeAction::GateOn => {
-                new_state.gate = true;
-                new_state.stage = EnvelopeStage::Attack;
-                new_state.stage_start_time = time;
-                new_state.stage_start_level = new_state.level;
-                new_state.stage_target_level = 1.0;
+        let (new_stage, new_start_time, new_start_level) = match action {
+            EnvelopeAction::GateOn => (EnvelopeStage::Attack, time, current_level),
+            EnvelopeAction::GateOff => (EnvelopeStage::Release, time, current_level),
+            EnvelopeAction::None => (stage, stage_start_time, stage_start_level),
+        };
+
+        let elapsed = time - new_start_time;
+        let duration = self.stage_duration(new_stage);
+        let target = self.stage_target(new_stage);
+
+        let (next_stage, next_start_time, next_start_level, level) = if elapsed >= duration {
+            let next = self.next_stage(new_stage);
+            let next_target = self.stage_target(next);
+            let next_dur = self.stage_duration(next);
+            if next_dur.is_infinite() {
+                (next, time, next_target, next_target)
+            } else {
+                // Stage ended exactly — use target level as output, start next stage
+                (next, time, target, target)
             }
-            EnvelopeAction::GateOff => {
-                new_state.gate = false;
-                new_state.stage = EnvelopeStage::Release;
-                new_state.stage_start_time = time;
-                new_state.stage_start_level = new_state.level;
-                new_state.stage_target_level = 0.0;
-            }
-            EnvelopeAction::None => {}
-        }
+        } else {
+            let t = elapsed / duration;
+            let curved = self.apply_curve(t);
+            let lvl = new_start_level + (target - new_start_level) * curved;
+            (new_stage, new_start_time, new_start_level, lvl)
+        };
 
-        self.update_stage(&mut new_state, time);
-
-        let value = self.range.denormalize(new_state.level);
-
-        (new_state, Some(value))
+        *internal = (next_stage, next_start_time, next_start_level);
+        let value = self.range.denormalize(level);
+        ParamValue::Float(value as f32)
     }
 
-    fn initial_state(&self) -> Self::State {
-        EnvelopeState {
-            stage: EnvelopeStage::Off,
-            level: 0.0,
-            stage_start_time: 0.0,
-            stage_start_level: 0.0,
-            stage_target_level: 0.0,
-            stage_duration: 0.0,
-            gate: false,
-        }
+    fn initial_internal(&self) -> Self::Internal {
+        (EnvelopeStage::Off, 0.0, 0.0)
     }
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        self.range.denormalize(state.level)
     }
 }
 
@@ -350,20 +277,20 @@ mod tests {
     #[test]
     fn test_adsr_envelope() {
         let env = EnvelopeAutomaton::adsr("ADSR", 0.1, 0.2, 0.7, 0.3);
-        let mut state = env.initial_state();
+        let mut internal = env.initial_internal();
+        let current = ParamValue::Float(0.0);
 
-        assert_eq!(state.stage, EnvelopeStage::Off);
+        assert_eq!(internal.0, EnvelopeStage::Off);
 
-        let (_s, _value) = env.step(0.0, &EnvelopeAction::GateOn, &state);
-        state = _s;
-        assert_eq!(state.stage, EnvelopeStage::Attack);
+        let value = env.step(&mut internal, &current, 0.0, &EnvelopeAction::GateOn);
+        assert_eq!(internal.0, EnvelopeStage::Attack);
 
-        let (s, value) = env.step(0.05, &EnvelopeAction::None, &state);
-        state = s;
-        assert!(value.unwrap() > 0.0);
-        assert!(value.unwrap() < 1.0);
+        let value = env.step(&mut internal, &value, 0.05, &EnvelopeAction::None);
+        let val = value.as_f32().unwrap();
+        assert!(val > 0.0);
+        assert!(val < 1.0);
 
-        let (s, _) = env.step(0.5, &EnvelopeAction::GateOff, &state);
-        assert_eq!(s.stage, EnvelopeStage::Release);
+        let _value = env.step(&mut internal, &value, 0.5, &EnvelopeAction::GateOff);
+        assert_eq!(internal.0, EnvelopeStage::Release);
     }
 }

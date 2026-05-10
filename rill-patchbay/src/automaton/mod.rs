@@ -17,7 +17,6 @@ pub use envelope::*;
 pub use function::*;
 pub use lfo::*;
 pub use random::*;
-pub use sequencer::*;
 
 use std::fmt::Debug;
 

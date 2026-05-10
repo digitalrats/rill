@@ -1,7 +1,6 @@
 //! Processable trait and NodeVariant.
 
 use crate::math::Transcendental;
-use crate::queues::telemetry::TelemetryTx;
 use crate::time::ClockTick;
 use crate::traits::port::Port;
 use crate::traits::Node;
@@ -117,18 +116,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
-    /// Set the telemetry sender for the wrapped node.
-    pub fn set_telemetry_tx(&mut self, tx: TelemetryTx) {
-        match self {
-            NodeVariant::Source(src) => Node::set_telemetry_tx(src.as_mut(), tx),
-            NodeVariant::Processor(proc) => Node::set_telemetry_tx(proc.as_mut(), tx),
-            NodeVariant::Router(rt) => Node::set_telemetry_tx(rt.as_mut(), tx),
-            NodeVariant::Sink(sink) => Node::set_telemetry_tx(sink.as_mut(), tx),
-        }
-    }
-}
-
+// ============================================================================
+// Node for NodeVariant
 // ============================================================================
 // Node for NodeVariant
 // ============================================================================

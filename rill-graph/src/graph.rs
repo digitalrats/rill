@@ -583,12 +583,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         let graph_ptr: *mut Graph<T, BUF_SIZE> = self;
         let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
             let graph = unsafe { &mut *graph_ptr };
-            // drain command queue
+            // drain command queue via actor pattern
             while let Some(cmd) = cmd_queue.pop() {
-                let i = cmd.port.node_id().inner() as usize;
-                if i < graph.nodes.len() {
-                    let _ = graph.nodes[i].set_parameter(&cmd.parameter, cmd.value);
-                }
+                graph.receive(cmd);
             }
             // process source and propagate
             let tick = ClockTick::new(sample_pos, BUF_SIZE as u32, sample_rate);
@@ -654,8 +651,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActorCell for Graph<T, BUF_SIZE> 
     /// Process a single parameter command by writing to the target node.
     fn receive(&mut self, msg: SetParameter) {
         let idx = msg.port.node_id().inner() as usize;
+        debug_assert!(
+            idx < self.nodes.len(),
+            "SetParameter: node {} out of bounds (max {})",
+            idx,
+            self.nodes.len()
+        );
         if idx < self.nodes.len() {
-            let _ = self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+            let result = self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+            debug_assert!(
+                result.is_ok(),
+                "SetParameter: node {} has no parameter '{}'",
+                idx,
+                msg.parameter.as_str()
+            );
         }
     }
 }

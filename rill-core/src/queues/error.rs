@@ -30,30 +30,3 @@ pub enum QueueError {
     #[error("Receive failed: {0}")]
     ReceiveFailed(String),
 }
-
-impl<T> From<crossbeam_channel::TrySendError<T>> for QueueError {
-    fn from(err: crossbeam_channel::TrySendError<T>) -> Self {
-        match err {
-            crossbeam_channel::TrySendError::Full(_) => QueueError::QueueFull,
-            crossbeam_channel::TrySendError::Disconnected(_) => QueueError::ChannelDisconnected,
-        }
-    }
-}
-
-impl From<crossbeam_channel::TryRecvError> for QueueError {
-    fn from(err: crossbeam_channel::TryRecvError) -> Self {
-        match err {
-            crossbeam_channel::TryRecvError::Empty => QueueError::QueueEmpty,
-            crossbeam_channel::TryRecvError::Disconnected => QueueError::ChannelDisconnected,
-        }
-    }
-}
-
-impl From<crossbeam_channel::RecvTimeoutError> for QueueError {
-    fn from(err: crossbeam_channel::RecvTimeoutError) -> Self {
-        match err {
-            crossbeam_channel::RecvTimeoutError::Timeout => QueueError::Timeout,
-            crossbeam_channel::RecvTimeoutError::Disconnected => QueueError::ChannelDisconnected,
-        }
-    }
-}

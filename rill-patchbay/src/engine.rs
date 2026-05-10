@@ -10,17 +10,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rill_core::prelude::*;
-use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
-use rill_core::queues::{SetParameter, SignalOrigin};
-use rill_core_actor::ActorRef;
+use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
+use rill_core_actor::{ActorCell, ActorRef};
 
-use crossbeam_channel::Receiver as CrossbeamReceiver;
+// crossbeam removed: // crossbeam removed (dead code)
 
 pub use crate::automaton::Range;
 use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
 use crate::automaton_task::spawn_automaton_task;
 use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
-use crate::sequencer::{SequencerCommand, SequencerHandle, SnapshotSequencer};
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
@@ -417,50 +415,55 @@ pub struct NoAction;
 
 /// Core trait for all automata.
 ///
-/// An automaton is a stateful function generator. Each call to [`step`](Self::step)
-/// takes the current time, an action, and the current state, and returns a
-/// new state together with an optional output value.  Automata are `Send`
-/// and run on the control thread (soft RT).
+/// An automaton is a generator: `(internal, current, time, action) → new_value`.
+/// - `internal` — mutable automaton-specific state (phase, RNG, step counter, ...)
+/// - `current` — current value at the control port (for reference, immutable)
+/// - `time` — wall-clock seconds since start
+/// - `action` — optional action to apply
+///
+/// `&self` is the immutable automaton configuration (frequency, waveform, ...).
 pub trait Automaton: Send + Sync + Debug {
-    /// State type.
-    type State: Clone + Send + Sync + 'static + Debug;
+    /// Internal mutable state type (stored by Servo alongside the control port value).
+    type Internal: Clone + Send + Sync + 'static;
 
     /// Action type (a pure function applied to the state).
     type Action: Debug + Clone + Send + Sync + Default + 'static;
 
-    /// Advance the automaton by one time step.
-    ///
-    /// # Arguments
-    /// * `time` — current time
-    /// * `action` — action to apply
-    /// * `state` — current state
-    ///
-    /// Returns `(new_state, optional_output_value)`.
+    /// Compute the next control port value.
     fn step(
         &self,
+        internal: &mut Self::Internal,
+        current: &ParamValue,
         time: Time,
         action: &Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<f64>);
+    ) -> ParamValue;
 
-    /// Return the initial state.
-    fn initial_state(&self) -> Self::State;
+    /// Initial internal state.
+    fn initial_internal(&self) -> Self::Internal;
+
+    /// Reset the automaton to its initial internal state.
+    fn reset(&self) -> Self::Internal {
+        self.initial_internal()
+    }
 
     /// Automaton name.
     fn name(&self) -> &str;
-
-    /// Extract the output value from the state.
-    fn extract_value(&self, state: &Self::State) -> f64;
-
-    /// Reset the automaton to its initial state.
-    fn reset(&self) -> Self::State {
-        self.initial_state()
-    }
 }
 
 // =============================================================================
-// 6. Servo — automaton-to-parameter bridge
+// 6. AutomatonMsg + Servo — automaton-to-parameter bridge
 // =============================================================================
+
+/// Message for automaton actors — clock tick or control command.
+#[derive(Debug, Clone)]
+pub enum AutomatonMsg {
+    /// Clock tick from audio thread.
+    Tick(ClockTick),
+    /// Enable or disable the automaton.
+    SetEnabled(bool),
+    /// Reset to initial state.
+    Reset,
+}
 
 /// Mapping type for a servo's output value.
 #[derive(Clone)]
@@ -503,22 +506,30 @@ impl ParameterMapping {
 }
 
 /// A servo bridges an automaton to a graph-node parameter.
+///
+/// Stores the automaton state externally (the automaton itself is a pure
+/// function), provides an [`ActorRef`] for receiving control messages,
+/// and sends output directly to the graph via `ActorRef<SetParameter>`.
 pub struct Servo<A: Automaton> {
     id: String,
     automaton: A,
-    state: A::State,
+    internal: A::Internal,
+    state: ParamValue,
+    enabled: bool,
+    mailbox: Arc<MpscQueue<AutomatonMsg>>,
     target_node: NodeId,
     target_param: String,
     mapping: ParameterMapping,
     min: f64,
     max: f64,
-    last_value: f64,
-    enabled: bool,
-    last_time: Time,
+    last_sent_value: f64,
+    /// Value table for sequence automata (index → value).
+    table: Option<Vec<ParamValue>>,
+    last_sent_index: i64,
 }
 
 impl<A: Automaton> Servo<A> {
-    /// Create a new servo.
+    /// Create a servo.
     pub fn new(
         id: impl Into<String>,
         automaton: A,
@@ -528,52 +539,118 @@ impl<A: Automaton> Servo<A> {
         min: f64,
         max: f64,
     ) -> Self {
-        let state = automaton.initial_state();
+        let mut internal = automaton.initial_internal();
+        let state = automaton.step(
+            &mut internal,
+            &ParamValue::Float(0.0),
+            0.0,
+            &A::Action::default(),
+        );
         Self {
             id: id.into(),
             automaton,
+            internal,
             state,
+            enabled: true,
+            mailbox: Arc::new(MpscQueue::with_capacity(16)),
             target_node,
             target_param: target_param.into(),
             mapping,
             min,
             max,
-            last_value: 0.0,
-            enabled: true,
-            last_time: 0.0,
+            last_sent_value: f64::NAN,
+            table: None,
+            last_sent_index: -1,
         }
     }
 
+    /// Create a servo driven by a sequence table.
+    ///
+    /// The automaton returns `ParamValue::Float(index)` and the servo looks up
+    /// the actual `ParamValue` from the provided table.
+    pub fn with_table(
+        id: impl Into<String>,
+        automaton: A,
+        target_node: NodeId,
+        target_param: impl Into<String>,
+        table: Vec<ParamValue>,
+    ) -> Self {
+        let mut s = Self::new(
+            id,
+            automaton,
+            target_node,
+            target_param,
+            ParameterMapping::Linear,
+            0.0,
+            1.0,
+        );
+        s.table = Some(table);
+        s
+    }
+
+    /// Return an [`ActorRef`] for sending control messages.
+    pub fn handle(&self) -> ActorRef<AutomatonMsg> {
+        ActorRef::new(&self.mailbox)
+    }
+
     /// Advance the servo and return a parameter command if the value changed.
+    ///
+    /// Drains the command queue before stepping the automaton.
     pub fn update(&mut self, time: Time) -> Option<SetParameter> {
+        while let Some(cmd) = self.mailbox.pop() {
+            match cmd {
+                AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
+                AutomatonMsg::Reset => self.internal = self.automaton.reset(),
+                AutomatonMsg::Tick(_) => {}
+            }
+        }
+
         if !self.enabled {
             return None;
         }
 
-        let (new_state, value_opt) = self
+        let action = A::Action::default();
+        self.state = self
             .automaton
-            .step(time, &A::Action::default(), &self.state);
-        self.state = new_state;
+            .step(&mut self.internal, &self.state, time, &action);
 
-        if let Some(raw_value) = value_opt {
-            let mapped = self.mapping.apply(raw_value);
-            let clamped = mapped.clamp(self.min, self.max);
-
-            if (clamped - self.last_value).abs() > 1e-6 {
-                self.last_value = clamped;
-                self.last_time = time;
-
-                let pid = ParameterId::new(&self.target_param).unwrap();
-                return Some(SetParameter::new(
-                    PortId::param(self.target_node, 0),
-                    pid,
-                    ParamValue::Float(clamped as f32),
-                    SignalOrigin::Automaton(self.id.clone()),
-                ));
+        if let Some(ref table) = self.table {
+            // Table mode: automaton returns index, lookup value from table
+            let index = self.state.as_i32().unwrap_or(0) as usize;
+            if index >= table.len() {
+                return None;
             }
+            let idx = index as i64;
+            if idx == self.last_sent_index {
+                return None;
+            }
+            self.last_sent_index = idx;
+            let pid = ParameterId::new(&self.target_param).unwrap();
+            return Some(SetParameter::new(
+                PortId::param(self.target_node, 0),
+                pid,
+                table[index].clone(),
+                SignalOrigin::Automaton(self.id.clone()),
+            ));
         }
 
-        None
+        // F64 mode: map through ParameterMapping
+        let raw = self.state.as_f32().unwrap_or(0.0) as f64;
+        let mapped = self.mapping.apply(raw);
+        let clamped = mapped.clamp(self.min, self.max);
+
+        if (clamped - self.last_sent_value).abs() < 1e-6 {
+            return None;
+        }
+        self.last_sent_value = clamped;
+
+        let pid = ParameterId::new(&self.target_param).unwrap();
+        Some(SetParameter::new(
+            PortId::param(self.target_node, 0),
+            pid,
+            ParamValue::Float(clamped as f32),
+            SignalOrigin::Automaton(self.id.clone()),
+        ))
     }
 
     /// Enable or disable this servo.
@@ -587,30 +664,47 @@ impl<A: Automaton> Servo<A> {
     }
 }
 
+// ── Actor pattern: Servo is an actor ───────────────────────────────
+
+impl<A: Automaton + 'static> ActorCell for Servo<A> {
+    type Msg = AutomatonMsg;
+
+    fn receive(&mut self, msg: AutomatonMsg) {
+        match msg {
+            AutomatonMsg::Tick(_) => {}
+            AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
+            AutomatonMsg::Reset => self.internal = self.automaton.reset(),
+        }
+    }
+}
+
 /// Type-erased boxed servo.
 pub type BoxedServo = Box<dyn AnyServo>;
 
 /// Trait for type-erased servo operations.
 pub trait AnyServo: Send + Sync {
-    /// Update the servo and return a parameter command if the value changed.
+    /// Update the servo and produce a parameter command.
     fn update(&mut self, time: Time) -> Option<SetParameter>;
     /// Return the servo's unique identifier.
     fn id(&self) -> &str;
     /// Enable or disable the servo.
     fn set_enabled(&mut self, enabled: bool);
+    /// Return an ActorRef for sending control messages.
+    fn handle(&self) -> ActorRef<AutomatonMsg>;
 }
 
 impl<A: Automaton + 'static> AnyServo for Servo<A> {
     fn update(&mut self, time: Time) -> Option<SetParameter> {
         Servo::update(self, time)
     }
-
     fn id(&self) -> &str {
-        &self.id
+        Servo::id(self)
     }
-
     fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        Servo::set_enabled(self, enabled);
+    }
+    fn handle(&self) -> ActorRef<AutomatonMsg> {
+        Servo::handle(self)
     }
 }
 
@@ -635,13 +729,12 @@ pub struct Patchbay {
     servos: HashMap<String, BoxedServo>,
     port_combiners: HashMap<String, PortCombinerHandle>,
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
-    sequencer_handle: Option<SequencerHandle>,
-    sequencer_task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "midi")]
-    midi_actor: Option<super::MidiActor>,
+    midi_actor: Option<super::MidiHub>,
     #[cfg(not(feature = "midi"))]
     midi_actor: Option<()>,
     command_queue: ActorRef<SetParameter>,
+    clock_mailbox: Arc<MpscQueue<ClockTick>>,
     time: Time,
 }
 
@@ -657,12 +750,16 @@ impl Patchbay {
             servos: HashMap::new(),
             port_combiners: HashMap::new(),
             automaton_handles: HashMap::new(),
-            sequencer_handle: None,
-            sequencer_task: None,
             midi_actor: None,
             command_queue,
+            clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
             time: 0.0,
         }
+    }
+
+    /// Return an [`ActorRef`] for the graph to send `ClockTick` to.
+    pub fn clock_handle(&self) -> ActorRef<ClockTick> {
+        ActorRef::new(&self.clock_mailbox)
     }
 
     /// Add an event mapping.
@@ -674,8 +771,10 @@ impl Patchbay {
     ///
     /// Useful for automaton types not covered by `add_lfo` / `add_envelope`
     /// (e.g. sequencers, named functions).
-    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) {
+    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) -> ActorRef<AutomatonMsg> {
+        let handle = servo.handle();
         self.servos.insert(id, servo);
+        handle
     }
 
     /// Add a mapping from string descriptions (convenient for scripting).
@@ -734,8 +833,11 @@ impl Patchbay {
     }
 
     /// Add a servo (automaton → parameter bridge).
-    pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) {
+    /// Returns an [`ActorRef`] for sending control messages.
+    pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) -> ActorRef<AutomatonMsg> {
+        let handle = servo.handle();
         self.servos.insert(servo.id().to_string(), Box::new(servo));
+        handle
     }
 
     /// Add an LFO as a servo.
@@ -881,94 +983,6 @@ impl Patchbay {
         );
     }
 
-    /// Attach a parameter-lock sequencer driven by audio-thread clock ticks.
-    ///
-    /// Spawns a blocking tokio task that reads `CLOCK_TICK` telemetry and
-    /// pushes returned parameter commands to the queue.
-    ///
-    /// Returns a [`SequencerHandle`] for external control.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a sequencer is already attached (call `detach_sequencer()` first).
-    pub fn attach_sequencer(
-        &mut self,
-        tel_rx: CrossbeamReceiver<Telemetry>,
-        sequencer: SnapshotSequencer,
-    ) -> SequencerHandle {
-        assert!(
-            self.sequencer_task.is_none(),
-            "sequencer already attached — detach first"
-        );
-
-        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<SequencerCommand>();
-        let queue = self.command_queue.clone();
-
-        let task = tokio::task::spawn_blocking(move || {
-            let mut seq = sequencer;
-
-            loop {
-                loop {
-                    match cmd_rx.try_recv() {
-                        Ok(SequencerCommand::Start) => seq.start(),
-                        Ok(SequencerCommand::Stop) => seq.stop(),
-                        Ok(SequencerCommand::Reset { sample_pos }) => seq.reset(sample_pos),
-                        Ok(SequencerCommand::SetPattern(id)) => seq.set_active_pattern(&id),
-                        Err(crossbeam_channel::TryRecvError::Empty) => break,
-                        Err(crossbeam_channel::TryRecvError::Disconnected) => return,
-                    }
-                }
-
-                match tel_rx.recv() {
-                    Ok(Telemetry::Event { kind, data, .. })
-                        if kind == CLOCK_TICK && data.len() >= 3 =>
-                    {
-                        let sample_pos = data[0] as u64;
-                        let sample_rate = data[1];
-                        let tempo = data[2];
-
-                        let beat_pos = data.get(3).copied().unwrap_or(0.0);
-                        let new_beat = data.get(4).copied().unwrap_or(0.0) > 0.5;
-                        let new_bar = data.get(5).copied().unwrap_or(0.0) > 0.5;
-
-                        let cmds = seq.tick_ext(
-                            sample_pos,
-                            sample_rate,
-                            tempo,
-                            beat_pos,
-                            new_beat,
-                            new_bar,
-                        );
-                        for cmd in cmds {
-                            queue.send(cmd);
-                        }
-                    }
-                    Err(_) => return,
-                    _ => {}
-                }
-            }
-        });
-
-        let handle = SequencerHandle::new(cmd_tx);
-        self.sequencer_handle = Some(handle.clone());
-        self.sequencer_task = Some(task);
-
-        handle
-    }
-
-    /// Detach the sequencer: abort its task and drop the handle.
-    pub fn detach_sequencer(&mut self) {
-        if let Some(task) = self.sequencer_task.take() {
-            task.abort();
-        }
-        self.sequencer_handle = None;
-    }
-
-    /// Get a reference to the sequencer handle, if attached.
-    pub fn sequencer_handle(&self) -> Option<&SequencerHandle> {
-        self.sequencer_handle.as_ref()
-    }
-
     /// Stop all async automata, the sequencer, and the MIDI actor.
     pub fn stop_all(&mut self) {
         for combiner in self.port_combiners.values() {
@@ -976,17 +990,16 @@ impl Patchbay {
         }
         self.port_combiners.clear();
         self.automaton_handles.clear();
-        self.detach_sequencer();
         self.stop_midi();
     }
 
     /// Start the MIDI input module.
     ///
     /// Takes a pre‑built backend and the shared `Arc<Mutex<Patchbay>>`
-    /// that wraps this Patchbay. The MidiActor dispatches events
+    /// that wraps this Patchbay. The MidiHub dispatches events
     /// through `handle_event()` by locking this same mutex.
     ///
-    /// If a MidiActor is already running, it is stopped first.
+    /// If a MidiHub is already running, it is stopped first.
     #[cfg(feature = "midi")]
     pub fn start_midi(
         &mut self,
@@ -994,7 +1007,7 @@ impl Patchbay {
         shared: Arc<std::sync::Mutex<Patchbay>>,
     ) {
         self.stop_midi();
-        self.midi_actor = Some(super::MidiActor::start(backend, shared));
+        self.midi_actor = Some(super::MidiHub::start(backend, shared));
     }
 
     /// Stop the MIDI actor if running.
@@ -1135,14 +1148,44 @@ impl Patchbay {
     pub fn current_time(&self) -> Time {
         self.time
     }
-}
 
-impl Drop for Patchbay {
-    fn drop(&mut self) {
-        self.stop_all();
+    /// Drain the clock mailbox and broadcast to all servos.
+    ///
+    /// Call this from the main loop (not the audio thread).
+    pub fn drain_clock(&mut self) {
+        while let Some(clock) = self.clock_mailbox.pop() {
+            let msg = AutomatonMsg::Tick(clock);
+            for servo in self.servos.values() {
+                servo.handle().send(msg.clone());
+            }
+            // Update sync servos with time from clock
+            let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
+            self.time += dt;
+            self.update(dt as f32);
+        }
+    }
+
+    /// Spawn a periodic tokio task that drains the clock mailbox.
+    ///
+    /// Returns a `JoinHandle` for lifecycle management.
+    pub fn spawn_clock_loop(
+        patchbay: Arc<std::sync::Mutex<Patchbay>>,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if let Ok(mut pb) = patchbay.lock() {
+                    pb.drain_clock();
+                }
+            }
+        })
     }
 }
 
+// =============================================================================
+// 9. Helper constructors
 // =============================================================================
 // 9. Helper functions for creating mappings
 // =============================================================================

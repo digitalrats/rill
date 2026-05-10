@@ -8,7 +8,6 @@
 //! - [`SpscQueue`](crate::queues::SpscQueue) — Single-producer single-consumer queue (maximum throughput)
 //! - [`RtQueueBase`](crate::queues::RtQueueBase) — Base trait for all queues
 //! - [`QueueError`](crate::queues::QueueError) — Queue operation error type
-//! - [`CommandQueue`](crate::queues::CommandQueue) — Commands from control thread to signal thread
 //! - [`OverflowPolicy`](crate::queues::OverflowPolicy) — Overflow behaviour policies
 //! - [`UnderflowPolicy`](crate::queues::UnderflowPolicy) — Underflow behaviour policies
 
@@ -19,14 +18,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // Submodules
 // =============================================================================
 
-/// Bounded command queue using a crossbeam channel.
+/// Command trait for actor message types.
 pub mod command;
 /// Queue error types.
 pub mod error;
 /// Multi-producer single-consumer queue for automation.
 pub mod mpsc;
-/// Observer pattern helpers for queue monitoring.
-pub mod observer;
 /// Lock-free ring buffer for real-time use.
 pub mod ring;
 /// Base real-time queue implementation.
@@ -35,12 +32,11 @@ pub mod rt_queue;
 pub mod signal;
 /// Lock-free single-producer single-consumer queue.
 pub mod spsc;
-/// Telemetry data types and senders.
+/// Telemetry data types (future functionality).
 pub mod telemetry;
 /// Telemetry block batching utilities.
 pub mod telemetry_block;
 
-pub use command::CommandQueue;
 pub use error::{QueueError, QueueResult};
 pub use mpsc::MpscQueue;
 pub use rt_queue::RtQueue;

@@ -6,7 +6,7 @@
 ///
 /// Backends produce this type via [`MidiBackend::poll`].
 /// The interpretation (NoteOn, CC, Clock, Transport) happens downstream
-/// in the [`MidiActor`].
+/// in the [`MidiHub`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiMessage(pub [u8; 3]);
 

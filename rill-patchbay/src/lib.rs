@@ -61,9 +61,6 @@ pub mod automaton;
 /// Control and event mapping
 pub mod engine;
 
-/// Patchbay manager — central coordinator
-pub mod manager;
-
 /// Sensors — event sources from the external world
 pub mod sensor;
 
@@ -82,9 +79,6 @@ pub mod port_combiner;
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
-/// Parameter-lock step sequencer
-pub mod sequencer;
-
 /// Serialization — documents, DOT, formats
 #[cfg(feature = "serde")]
 pub mod serialization;
@@ -92,21 +86,25 @@ pub mod serialization;
 #[cfg(feature = "serde")]
 pub use serialization::PatchbayDef;
 
-/// MIDI actor — raw MIDI → ControlEvent bridge
+/// MIDI hub — raw MIDI → ControlEvent bridge
 #[cfg(feature = "midi")]
-pub mod midi_actor;
+pub mod midi;
+
+/// Micro-control observer for RT safety monitoring
+pub mod observer;
 
 #[cfg(feature = "midi")]
-pub use midi_actor::MidiActor;
+pub use midi::MidiHub;
 
 // =============================================================================
 // Re-exports for convenience
 // =============================================================================
 
 // Selective re-exports
+pub use automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use automaton::{
     EnvelopeAutomaton, EnvelopeStage, EnvelopeType, FunctionAutomaton, LfoAutomaton, LfoWaveform,
-    PlayMode, Range, SequencerAutomaton, StatefulFunctionAutomaton, Step, SyncMode,
+    Range, StatefulFunctionAutomaton, SyncMode,
 };
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{
@@ -114,18 +112,10 @@ pub use engine::{
     NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
 };
 
-pub use manager::Manager;
 pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
-// Sequencer re-exports
-pub use sequencer::{
-    ParameterTarget, Pattern, SequenceStep, SequencerHandle, Snapshot, SnapshotSequencer,
-    StepPlayMode,
-};
 #[cfg(feature = "serde")]
-pub use serialization::SequencerDef;
-
 // =============================================================================
 // Prelude for convenient imports
 // =============================================================================
@@ -136,9 +126,7 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::automaton_task::*;
     pub use crate::engine::*;
-    pub use crate::manager::*;
     pub use crate::port_combiner::*;
-    pub use crate::sequencer::*;
     pub use crate::strategy::*;
     pub use crate::utils::*;
 
@@ -161,6 +149,5 @@ mod tests {
         // Just check that everything imports
         let _ = automaton::LfoWaveform::Sine;
         let _ = engine::Transform::Linear;
-        let _ = manager::Config::default();
     }
 }

@@ -1,7 +1,7 @@
 # Patchbay Rack
 
 The Patchbay is the **control rack** — an independent subsystem that hosts
-modulation generators (automata), event dispatch (MidiActor, OSC), and the
+modulation generators (automata), event dispatch (MidiHub, OSC), and the
 mapping layer that translates external events into graph parameter commands.
 
 ```
@@ -76,8 +76,8 @@ pub struct PatchbayDef {
 
 ### Proposed: `MidiInputDef`
 
-Currently, `MidiActor` is created programmatically — `PatchbayDef` has no
-`midi` field. Adding it makes the MidiActor a **first‑class rack module**,
+Currently, `MidiHub` is created programmatically — `PatchbayDef` has no
+`midi` field. Adding it makes the MidiHub a **first‑class rack module**,
 configurable from JSON:
 
 ```rust
@@ -91,7 +91,7 @@ pub struct MidiInputDef {
 ```
 
 **Behaviour:** `apply_to_async()` creates the `MidiBackend`, starts the
-`MidiActor`, and stores the handle. `stop_all()` stops it.
+`MidiHub`, and stores the handle. `stop_all()` stops it.
 
 ```rust
 #[cfg(feature = "midi")]
@@ -105,7 +105,7 @@ pub fn apply_to_async(&self, control: &mut Patchbay, registry: &FunctionRegistry
             _ => return Err(format!("unknown midi backend: {}", midi_def.backend)),
         };
         let shared = Arc::new(Mutex::new(control.as_shared()));
-        control.set_midi_actor(MidiActor::start(backend, shared));
+        control.set_midi_actor(MidiHub::start(backend, shared));
     }
 
     Ok(())
@@ -135,21 +135,21 @@ mappings.
 let pb = Arc::new(Mutex::new(Patchbay::new(graph_handle)));
 ```
 
-- **Event dispatch** (MidiActor): `pb.lock().handle_event(event)` — brief lock
+- **Event dispatch** (MidiHub): `pb.lock().handle_event(event)` — brief lock
 - **Automaton setup**: `pb.lock().add_automaton_task(...)` — done once at init
 - **Shutdown**: `pb.lock().stop_all()` — done once
 
 The Mutex is **not** contended during runtime because automata communicate via
-channels, not by locking Patchbay. Only the MidiActor's OS thread locks (briefly,
+channels, not by locking Patchbay. Only the MidiHub's OS thread locks (briefly,
 to run `handle_event`). One instance is sufficient.
 
 ### Option B: actor model via `ActorCell` (cleaner, long‑term)
 
 `Patchbay` implements `ActorCell<ControlEvent>`, runs its own processing loop,
-and MidiActor sends events via `ActorRef<ControlEvent>::send()` — lock‑free.
+and MidiHub sends events via `ActorRef<ControlEvent>::send()` — lock‑free.
 
 ```
-MidiActor (OS thread)                Patchbay (tokio task)
+MidiHub (OS thread)                Patchbay (tokio task)
      │                                      │
      │  ActorRef<ControlEvent>::send()     │
      ├──────── lock‑free push ────────────→│
@@ -212,7 +212,7 @@ pub fn launch(config: LaunchConfig) -> Result<Runtime, Error> {
 pub fn stop(&mut self) {
     self.running.store(false, Ordering::Release);
 
-    // Stop control rack: automata, MidiActor, PortCombiners.
+    // Stop control rack: automata, MidiHub, PortCombiners.
     if let Ok(mut pb) = self.control.lock() {
         pb.stop_all();
     }
@@ -246,7 +246,7 @@ default = []
 lfo       = []           # LfoAutomaton + ServoDef::Lfo variant
 envelope  = []           # EnvelopeAutomaton + ServoDef::Envelope variant
 sequencer = []           # SnapshotSequencer + attach_sequencer
-midi      = ["rill-io"]  # MidiActor + MidiInputDef (already behind "midi")
+midi      = ["rill-io"]  # MidiHub + MidiInputDef (already behind "midi")
 osc       = ["rill-osc"] # OscSurface dispatch (deferred)
 ```
 
