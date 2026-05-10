@@ -80,6 +80,7 @@ mdbook serve docs/                # dev server at localhost:3000
     - All crate-level docs (`README.md`, module doc comments, API docs) must be in **English**.
     - Code comments (inline `//`) should also be in English.
     - The only exception is `docs/src/guides/world-of-automatons.md` — a full-fledged published article intentionally written in Russian as a deliberate stylistic choice.
+    - The term **Automaton** is canonical in the codebase (`Automaton` trait, `AutomatonDef`, etc.). Do not use the alternative form "Automata" in code identifiers, documentation, or commit messages. In prose, prefer "automaton" (singular) / "automatons" (plural).
     - Rationale: English is the lingua franca of open-source. One Russian-language article is an exception, not a precedent — do not add more without explicit discussion.
 
 - **Zero-copy data flow:**
