@@ -33,36 +33,33 @@ struct StcPlayer {
     data: Vec<u8>,
     delay: u8,
     pos_ptr: usize,
-    orn_ptr: usize,
     pat_ptr: usize,
-    samples: Vec<[u8; 99]>,
-    pos_count: u8,
+    song_length: u8,
+    ornament_ptrs: [Option<usize>; 16],
+    sample_ptrs: [Option<usize>; 16],
     // Player state
-    current_pos: usize,
-    current_row: usize,
-    int_counter: u8,
+    delay_counter: u8,
+    position: usize,
+    position_height: i8,
     // Time accumulator for audio-rate stepping
-    int_ms: f64, // accumulated ms, reset on each STC interrupt
-    // AY registers
-    regs: [u8; 14],
+    int_ms: f64,
+    // AY registers (last known state)
+    last_regs: [u8; 14],
     // Per-channel state
-    ch_note: [u8; 3],
-    ch_sample: [u8; 3],
-    ch_ornament: [u8; 3],
-    ch_envelope: [u16; 3],
-    ch_enabled: [bool; 3],
-    ch_orn_pos: [u8; 3],
-    ch_sample_pos: [u8; 3],
-    ch_delay: [u8; 3],
-    ch_delay_cnt: [u8; 3],
-    // Pattern data offsets for current pattern
-    pat_off_a: usize,
-    pat_off_b: usize,
-    pat_off_c: usize,
-    pat_next_a: usize,
-    pat_next_b: usize,
-    pat_next_c: usize,
+    ch_events: [usize; 3],
+    ch_current_ornament: [Option<usize>; 3],
+    ch_current_sample: [Option<usize>; 3],
+    ch_sample_repeat_counter: [isize; 3],
+    ch_sample_position: [usize; 3],
+    ch_note_value: [u8; 3],
+    ch_row_skip: [isize; 3],
+    ch_row_counter: [isize; 3],
+    ch_envelope_state: [i8; 3],
 }
+
+const ENVELOPE_OFF: i8 = 0;
+const ENVELOPE_TRIGGERED: i8 = 1;
+const ENVELOPE_ON: i8 = 2;
 
 impl StcPlayer {
     fn new(data: Vec<u8>) -> Self {
@@ -71,179 +68,138 @@ impl StcPlayer {
         let orn_ptr = u16::from_le_bytes([data[3], data[4]]) as usize;
         let pat_ptr = u16::from_le_bytes([data[5], data[6]]) as usize;
 
-        let pos_count = data[pos_ptr];
+        let song_length = data[pos_ptr];
 
-        // Read samples
-        let sample_start = 27;
-        let mut samples: Vec<[u8; 99]> = Vec::new();
-        let mut off = sample_start;
-        while off + 99 <= data.len() && data[off] != 0 && samples.len() < 16 {
-            let mut s = [0u8; 99];
-            s.copy_from_slice(&data[off..off + 99]);
-            samples.push(s);
-            off += 99;
+        // Read samples table starting at offset 0x1B (27)
+        let mut sample_ptrs: [Option<usize>; 16] = [None; 16];
+        let mut samp_off: usize = 27;
+        let mut sample_count: usize = 0;
+        while sample_count < 16 && samp_off + 99 <= data.len() && data[samp_off] < 16 {
+            let num = data[samp_off] as usize;
+            if sample_ptrs[num].is_none() {
+                sample_ptrs[num] = Some(samp_off + 1);
+            }
+            samp_off += 99;
+            sample_count += 1;
+        }
+        let _ = sample_count;
+
+        // Read ornaments table
+        let mut ornament_ptrs: [Option<usize>; 16] = [None; 16];
+        let mut orn_off = orn_ptr;
+        let mut orn_count: usize = 0;
+        while orn_count < 16 && orn_off + 33 <= data.len() && data[orn_off] < 16 {
+            let num = data[orn_off] as usize;
+            if ornament_ptrs[num].is_none() {
+                ornament_ptrs[num] = Some(orn_off + 1);
+            }
+            orn_off += 33;
+            orn_count += 1;
         }
 
         let mut p = Self {
             data,
             delay,
             pos_ptr,
-            orn_ptr,
             pat_ptr,
-            samples,
-            pos_count,
-            current_pos: 0,
-            current_row: 0,
-            int_counter: 0,
+            song_length,
+            ornament_ptrs,
+            sample_ptrs,
+            delay_counter: 1, // process immediately on first call
+            position: 0,
+            position_height: 0,
             int_ms: 0.0,
-            regs: [0; 14],
-            ch_note: [0; 3],
-            ch_sample: [0; 3],
-            ch_ornament: [0; 3],
-            ch_envelope: [0; 3],
-            ch_enabled: [true; 3],
-            ch_orn_pos: [0; 3],
-            ch_sample_pos: [0; 3],
-            ch_delay: [0; 3],
-            ch_delay_cnt: [0; 3],
-            pat_off_a: 0,
-            pat_off_b: 0,
-            pat_off_c: 0,
-            pat_next_a: 0,
-            pat_next_b: 0,
-            pat_next_c: 0,
+            last_regs: [0; 14],
+            ch_events: [0; 3],
+            ch_current_ornament: [None; 3],
+            ch_current_sample: [None; 3],
+            ch_sample_repeat_counter: [-1; 3],
+            ch_sample_position: [0; 3],
+            ch_note_value: [0; 3],
+            ch_row_skip: [0; 3],
+            ch_row_counter: [0; 3],
+            ch_envelope_state: [ENVELOPE_OFF; 3],
         };
+
+        // Set channel A events to sentinel so first frame triggers position load
+        p.ch_events[0] = usize::MAX;
+
+        // Default: set ornaments[0] to the first ornament data
+        p.ch_current_ornament = [p.ornament_ptrs[0]; 3];
+        // Default: set samples[1] as current sample (match C code behavior)
+        p.ch_current_sample = [p.sample_ptrs[1]; 3];
+
         // Enable all tone channels, noise off
-        p.regs[7] = 0b11_11_10_10;
-        // Default volume
+        p.last_regs[7] = 0x38;
         for i in 8..11 {
-            p.regs[i] = 15;
+            p.last_regs[i] = 15;
         }
-        // Load first position
-        p.load_position(0);
+
         p
     }
 
-    fn load_position(&mut self, pos_idx: usize) {
-        let pos_off = self.pos_ptr + 1 + pos_idx * 2;
-        let transposition = self.data[pos_off] as i8;
-        let pat_num = self.data[pos_off + 1] as usize;
+    fn get_sample_pos(&mut self, ch: usize) -> usize {
+        if self.ch_sample_repeat_counter[ch] != -1 {
+            self.ch_sample_repeat_counter[ch] -= 1;
 
-        // Find pattern in patterns table
-        let mut po = self.pat_ptr + 1;
-        loop {
-            let pn = self.data[po] as usize;
-            let a_off = u16::from_le_bytes([self.data[po + 1], self.data[po + 2]]) as usize;
-            let b_off = u16::from_le_bytes([self.data[po + 3], self.data[po + 4]]) as usize;
-            let c_off = u16::from_le_bytes([self.data[po + 5], self.data[po + 6]]) as usize;
-            if pn == pat_num {
-                self.pat_off_a = a_off;
-                self.pat_off_b = b_off;
-                self.pat_off_c = c_off;
-                break;
+            let pos = self.ch_sample_position[ch];
+            self.ch_sample_position[ch] = (pos + 1) & 0x1F;
+
+            if self.ch_sample_repeat_counter[ch] == 0 {
+                if let Some(samp_ptr) = self.ch_current_sample[ch] {
+                    let repeat_info = samp_ptr + 0x60; // 96 bytes of sample data, then repeat_info at +0x60 from data start
+                    if repeat_info + 1 < self.data.len() {
+                        let first = self.data[repeat_info];
+                        let replen = self.data[repeat_info + 1];
+                        if first == 0 {
+                            self.ch_sample_repeat_counter[ch] = -1;
+                        } else {
+                            let new_pos = (first as usize).wrapping_sub(1) & 0x1F;
+                            self.ch_sample_position[ch] = (new_pos + 1) & 0x1F;
+                            self.ch_sample_repeat_counter[ch] = replen as isize;
+                            return first as usize;
+                        }
+                    }
+                }
             }
-            po += 7;
-            if po >= self.data.len() || self.data[po] == 0 {
-                break;
-            }
+            return pos;
         }
-
-        self.current_row = 0;
-        // Reset per-channel pattern pointers
-        for ch in 0..3 {
-            self.ch_delay_cnt[ch] = 0;
-            self.ch_delay[ch] = 0;
-        }
-        // Load first notes
-        self.advance_channel_a(self.pat_off_a, transposition);
-        self.advance_channel_b(self.pat_off_b, transposition);
-        self.advance_channel_c(self.pat_off_c, transposition);
+        0
     }
 
-    fn get_tone_period(&self, note: u8, transposition: i8) -> u16 {
-        if note >= 96 {
-            return 0;
-        }
-        let idx = (note as i16 + transposition as i16).clamp(0, 95) as usize;
-        ST_TABLE[idx]
-    }
-
-    fn apply_note(&mut self, ch: u8, note: u8, transposition: i8) {
-        let ci = ch as usize;
-        if note < 0x60 {
-            self.ch_note[ci] = note;
-            let tp = self.get_tone_period(note, transposition);
-            self.regs[ci * 2] = tp as u8;
-            self.regs[ci * 2 + 1] = (tp >> 8) as u8;
-            if self.ch_sample[ci] > 0 {
-                self.ch_sample_pos[ci] = 0;
+    fn get_pitch(
+        sample_pitch: u16,
+        sample_pos: usize,
+        note_value: u8,
+        ornament_ptr: Option<usize>,
+        height: i8,
+        data: &[u8],
+    ) -> u16 {
+        let orn_delta: i16 = match ornament_ptr {
+            Some(ptr) => {
+                let off = ptr + sample_pos;
+                if off < data.len() {
+                    data[off] as i8 as i16
+                } else {
+                    0
+                }
             }
-            if self.ch_ornament[ci] > 0 {
-                self.ch_orn_pos[ci] = 0;
-            }
+            None => 0,
+        };
+        let note_idx = (note_value as i16 + orn_delta + height as i16).clamp(0, 95) as usize;
+        let mut pitch = ST_TABLE[note_idx];
+        if sample_pitch & 0x1000 != 0 {
+            pitch = pitch.wrapping_add(sample_pitch & 0xEFFF);
+        } else {
+            pitch = pitch.wrapping_sub(sample_pitch);
         }
-    }
-
-    fn advance_channel(&mut self, ch: usize, start_off: usize, transposition: i8) -> usize {
-        let mut off = start_off;
-        loop {
-            if off >= self.data.len() {
-                return off;
-            }
-            let b = self.data[off];
-            off += 1;
-            match b {
-                0x00..=0x5F => {
-                    self.apply_note(ch as u8, b, transposition);
-                    return off; // finish position
-                }
-                0x60..=0x6F => {
-                    self.ch_sample[ch] = b - 0x60 + 1;
-                }
-                0x70..=0x7F => {
-                    self.ch_ornament[ch] = b - 0x70;
-                }
-                0x80 => {
-                    self.ch_enabled[ch] = false;
-                    self.regs[7] |= 1 << ch;
-                    return off;
-                }
-                0x81 => return off, // empty, finish
-                0x82 => {
-                    self.ch_ornament[ch] = 0;
-                }
-                0x83..=0x8E => {
-                    let ev = b - 0x80;
-                    let ep_lo = self.data[off] as u16;
-                    off += 1;
-                    self.ch_envelope[ch] = (ev as u16) << 8 | ep_lo;
-                    self.ch_ornament[ch] = 0;
-                    self.ch_enabled[ch] = true;
-                    self.regs[7] &= !(1 << ch);
-                }
-                0xA1..=0xFE => {
-                    self.ch_delay[ch] = b - 0xA1;
-                }
-                0xFF => return off, // end
-                _ => {}             // 0x8F-0xA0 reserved
-            }
-        }
-    }
-
-    fn advance_channel_a(&mut self, start_off: usize, transposition: i8) {
-        self.pat_next_a = self.advance_channel(0, start_off, transposition);
-    }
-    fn advance_channel_b(&mut self, start_off: usize, transposition: i8) {
-        self.pat_next_b = self.advance_channel(1, start_off, transposition);
-    }
-    fn advance_channel_c(&mut self, start_off: usize, transposition: i8) {
-        self.pat_next_c = self.advance_channel(2, start_off, transposition);
+        pitch
     }
 
     /// Step from audio-rate callback. Accumulates ms and calls step_int()
     /// at the STC interrupt rate (48.828 Hz = 20.48 ms per interrupt).
     fn step_ms(&mut self, ms: f64) -> Option<[u8; 14]> {
-        const INT_MS: f64 = 1000.0 / 48.828125; // 20.48 ms per STC interrupt
+        const INT_MS: f64 = 1000.0 / 48.828125;
         self.int_ms += ms;
         if self.int_ms >= INT_MS {
             self.int_ms -= INT_MS;
@@ -253,89 +209,178 @@ impl StcPlayer {
         }
     }
 
-    /// Step one interrupt (48.828 Hz). Returns current AY registers.
+    /// Step one interrupt. Returns current AY registers per libayemu reference.
     fn step_int(&mut self) -> [u8; 14] {
-        self.int_counter += 1;
+        let mut regs = [0u8; 14];
+        regs.copy_from_slice(&self.last_regs);
 
-        // Check per-channel delays
-        for ch in 0..3 {
-            if self.ch_delay[ch] > 0 {
-                self.ch_delay_cnt[ch] += 1;
-                if self.ch_delay_cnt[ch] >= self.ch_delay[ch] {
-                    self.ch_delay_cnt[ch] = 0;
-                    // Advance this channel
-                    let pos_off = self.pos_ptr + 1 + self.current_pos * 2;
-                    let trans = self.data[pos_off] as i8;
-                    match ch {
-                        0 => self.advance_channel_a(self.pat_next_a, trans),
-                        1 => self.advance_channel_b(self.pat_next_b, trans),
-                        2 => self.advance_channel_c(self.pat_next_c, trans),
-                        _ => {}
+        self.delay_counter = self.delay_counter.wrapping_sub(1);
+        if self.delay_counter == 0 {
+            self.delay_counter = self.delay;
+
+            for ch in 0..3usize {
+                let row_counter = &mut self.ch_row_counter[ch];
+                *row_counter -= 1;
+                if *row_counter < 0 {
+                    *row_counter = self.ch_row_skip[ch];
+
+                    // Position advance: check channel A event stream for end marker
+                    if ch == 0 {
+                        let ev_ptr = self.ch_events[0];
+                        let need_advance = ev_ptr == usize::MAX
+                            || (ev_ptr < self.data.len() && self.data[ev_ptr] == 0xFF);
+                        if need_advance {
+                            let mut pos = self.position;
+                            if pos >= self.song_length as usize {
+                                pos = 0;
+                            }
+                            self.position = pos + 1;
+                            let pos_off = self.pos_ptr + 1 + pos * 2;
+                            let pat_num = self.data[pos_off] as usize;
+                            self.position_height = self.data[pos_off + 1] as i8;
+                            // Find pattern and set channel event pointers
+                            let mut po = self.pat_ptr;
+                            loop {
+                                if po + 6 >= self.data.len() || self.data[po] == 0 {
+                                    break;
+                                }
+                                let pn = self.data[po] as usize;
+                                if pn == pat_num {
+                                    let a_off =
+                                        u16::from_le_bytes([self.data[po + 1], self.data[po + 2]])
+                                            as usize;
+                                    let b_off =
+                                        u16::from_le_bytes([self.data[po + 3], self.data[po + 4]])
+                                            as usize;
+                                    let c_off =
+                                        u16::from_le_bytes([self.data[po + 5], self.data[po + 6]])
+                                            as usize;
+                                    self.ch_events[0] = a_off;
+                                    self.ch_events[1] = b_off;
+                                    self.ch_events[2] = c_off;
+                                    break;
+                                }
+                                po += 7;
+                            }
+                        }
+                    }
+
+                    // Read event bytes until finding a note
+                    loop {
+                        let ev_off = self.ch_events[ch];
+                        if ev_off >= self.data.len() {
+                            break;
+                        }
+                        let event = self.data[ev_off];
+                        self.ch_events[ch] = ev_off + 1;
+
+                        if event < 0x60 {
+                            self.ch_note_value[ch] = event;
+                            self.ch_sample_position[ch] = 0;
+                            self.ch_sample_repeat_counter[ch] = 0x20;
+                            break;
+                        } else if event < 0x70 {
+                            let sn = (event - 0x60) as usize;
+                            self.ch_current_sample[ch] = self.sample_ptrs[sn];
+                        } else if event < 0x80 {
+                            let on = (event - 0x70) as usize;
+                            self.ch_current_ornament[ch] = self.ornament_ptrs[on];
+                            self.ch_envelope_state[ch] = ENVELOPE_OFF;
+                        } else if event == 0x80 {
+                            self.ch_sample_repeat_counter[ch] = -1;
+                            break;
+                        } else if event == 0x81 {
+                            break;
+                        } else if event == 0x82 {
+                            self.ch_current_ornament[ch] = self.ornament_ptrs[0];
+                            self.ch_envelope_state[ch] = ENVELOPE_OFF;
+                        } else if event < 0x8F {
+                            regs[13] = event - 0x80;
+                            regs[12] = 0;
+                            let next_ev_off = self.ch_events[ch];
+                            if next_ev_off < self.data.len() {
+                                regs[11] = self.data[next_ev_off];
+                            }
+                            self.ch_events[ch] = next_ev_off + 1;
+                            self.ch_envelope_state[ch] = ENVELOPE_TRIGGERED;
+                            self.ch_current_ornament[ch] = self.ornament_ptrs[0];
+                        } else {
+                            let skip = (event - 0xA1) as isize;
+                            self.ch_row_counter[ch] = skip;
+                            self.ch_row_skip[ch] = skip;
+                        }
                     }
                 }
             }
         }
 
-        if self.int_counter >= self.delay {
-            self.int_counter = 0;
-            self.current_row += 1;
+        // Render AY output for current frame (matching libayemu reference)
+        regs[7] = 0; // mixer — rebuilt each frame
+        for ch in 0..3usize {
+            let sample_pos = self.get_sample_pos(ch);
 
-            // Advance all channels
-            let pos_off = self.pos_ptr + 1 + self.current_pos * 2;
-            let trans = self.data[pos_off] as i8;
-            self.advance_channel_a(self.pat_next_a, trans);
-            self.advance_channel_b(self.pat_next_b, trans);
-            self.advance_channel_c(self.pat_next_c, trans);
+            let sample_is_active = ch == 0 || self.ch_sample_repeat_counter[ch] != -1;
 
-            if self.current_row >= 64 {
-                self.current_row = 0;
-                self.current_pos += 1;
-                if self.current_pos >= self.pos_count as usize {
-                    self.current_pos = 0; // loop
-                }
-                self.load_position(self.current_pos);
-            }
-        }
+            if sample_is_active {
+                if let Some(samp_ptr) = self.ch_current_sample[ch] {
+                    let step_off = samp_ptr + sample_pos * 3;
+                    if step_off + 2 < self.data.len() {
+                        let sd0 = self.data[step_off];
+                        let sd1 = self.data[step_off + 1];
+                        let sd2 = self.data[step_off + 2];
+                        let mask = sd1;
+                        let noise_mask: u8 = if mask & 0x80 != 0 { 0x08 } else { 0x00 };
+                        let tone_mask: u8 = if mask & 0x40 != 0 { 0x01 } else { 0x00 };
+                        let noise_value = mask & 0x1F;
+                        let mut sample_pitch = ((sd0 as u16 & 0xF0) << 4) | sd2 as u16;
+                        if mask & 0x20 != 0 {
+                            sample_pitch |= 0x1000;
+                        }
+                        let volume = sd0 & 0x0F;
 
-        // Apply ornaments
-        for ch in 0..3 {
-            let ci = ch;
-            if self.ch_ornament[ci] > 0 {
-                let orn_num = self.ch_ornament[ci] as usize;
-                let orn_off =
-                    self.orn_ptr + 1 + (orn_num - 1) * 33 + 1 + self.ch_orn_pos[ci] as usize;
-                if orn_off < self.data.len() {
-                    let delta = self.data[orn_off] as i8;
-                    let note = self.ch_note[ci] as i16 + delta as i16;
-                    if note >= 0 && note < 96 {
-                        let tp = ST_TABLE[note as usize];
-                        self.regs[ci * 2] = tp as u8;
-                        self.regs[ci * 2 + 1] = (tp >> 8) as u8;
+                        regs[7] |= (noise_mask | tone_mask) << ch;
+
+                        if self.ch_sample_repeat_counter[ch] != -1 {
+                            if noise_mask == 0 {
+                                regs[6] = noise_value;
+                            }
+                            let pitch = Self::get_pitch(
+                                sample_pitch,
+                                sample_pos,
+                                self.ch_note_value[ch],
+                                self.ch_current_ornament[ch],
+                                self.position_height,
+                                &self.data,
+                            );
+                            regs[ch * 2] = pitch as u8;
+                            regs[(ch * 2) + 1] = (pitch >> 8) as u8;
+                            regs[8 + ch] = volume;
+                        } else {
+                            regs[8 + ch] = 0; // sample ended, silence
+                        }
+
+                        // Envelope handling
+                        if self.ch_sample_repeat_counter[ch] != 0xFF
+                            && self.ch_envelope_state[ch] != ENVELOPE_OFF
+                        {
+                            if self.ch_envelope_state[ch] != ENVELOPE_ON {
+                                self.ch_envelope_state[ch] = ENVELOPE_ON;
+                            } else {
+                                regs[13] = 0xFF;
+                            }
+                            regs[8 + ch] |= 0x10;
+                        }
                     }
                 }
-                self.ch_orn_pos[ci] = self.ch_orn_pos[ci].wrapping_add(1) % 32;
+            } else {
+                // Inactive channel: disable tone + noise, silence
+                regs[7] |= (0x01 | 0x08) << ch;
+                regs[8 + ch] = 0;
             }
         }
 
-        // Apply samples (volume + noise/tone mask)
-        for ch in 0..3 {
-            let ci = ch;
-            if self.ch_sample[ci] > 0 && self.ch_sample_pos[ci] < 32 {
-                let sn = self.ch_sample[ci] as usize;
-                if sn <= self.samples.len() {
-                    let off = 1 + (sn - 1) * 99 + self.ch_sample_pos[ci] as usize * 3;
-                    if off + 2 < self.samples[0].len() * self.samples.len() {
-                        // volume = data & 0x0F
-                        // noise_mask = (data2 >> 7) & 1
-                        // tone_mask = (data2 >> 6) & 1
-                        // pitch = (data << 4) low bits | data3
-                    }
-                }
-                self.ch_sample_pos[ci] = self.ch_sample_pos[ci].wrapping_add(1) % 32;
-            }
-        }
-
-        self.regs
+        self.last_regs = regs;
+        regs
     }
 }
 

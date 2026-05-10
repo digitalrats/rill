@@ -104,6 +104,20 @@
 - Documentation synced with code (12 discrepancies fixed)
 - Zero compiler warnings with `--all-features`
 
+### ✨ STC chiptune player (feature/feat/stc-player)
+
+- **`rill-adrift/examples/chiptune_stc.rs`** — full Sound Tracker Compiled (STC) player
+  - Plays ZX Spectrum chiptune files through the `Ay38910Backend` AY-3-8910 emulator
+  - Loads the STC file (`Bonysoft - Popcorn (1993).stc`) via `include_bytes!`
+  - Implements the libayemu-compatible event-driven architecture:
+    - Per-channel byte-stream event reading with delay/interrupt timing
+    - Per-frame pitch computation: `ST_TABLE[note + ornament[pos] + transposition] ± sample_delta`
+    - 32-step sample (instrument) rendering with volume, tone/noise mixer masks, and pitch deltas
+    - Synchronized 32-step ornament (pitch modulation) and sample position advancement
+    - Sample repeat/loop logic, envelope triggering, position advancement on channel A end marker
+  - Timing at 48.828 Hz Pentagon INT rate via `step_ms()` time accumulation from audio callbacks
+  - Uses the same graph/clock architecture as `chiptune.rs` — validates the engine timing
+
 ## [0.5.0-beta.4] — 2026-05-08
 
 ### ✨ New
