@@ -20,6 +20,13 @@ pub struct ScalarVector2<T: Scalar>([T; 2]);
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector4<T: Scalar>([T; 4]);
 
+impl<T: Scalar> ScalarVector4<T> {
+    /// Construct a vector by applying a function to each lane index.
+    pub fn from_fn<F: FnMut(usize) -> T>(f: F) -> Self {
+        Self(core::array::from_fn(f))
+    }
+}
+
 /// Scalar vector of 8 elements
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScalarVector8<T: Scalar>([T; 8]);

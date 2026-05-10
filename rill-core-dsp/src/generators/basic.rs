@@ -3,6 +3,8 @@
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator, SyncableGenerator};
 use crate::vector::prelude::*;
+use rill_core::math::vector::scalar::ScalarVector4;
+use rill_core::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 use std::f32::consts::PI;
@@ -101,36 +103,111 @@ impl<T: Transcendental> BasicOscillator<T> {
         self.phase_inc = ScalarVector1::splat(T::from_f32(self.frequency / self.sample_rate));
     }
 
-    /// Generate sine wave
+    /// SIMD block generation — processes `output` in chunks of 4,
+    /// falling back to scalar for remainder and high-frequency edge cases.
+    fn generate_block_simd(&mut self, output: &mut [T]) {
+        let chunks = output.len() / 4;
+        let _remainder = output.len() % 4;
+
+        if chunks > 0 {
+            let inc = self.phase_inc;
+            let inc4 = inc * ScalarVector1::splat(T::from_usize(4));
+            let one = ScalarVector1::splat(T::ONE);
+            let use_simd = (inc.extract(0) * T::from_usize(4)) < T::ONE;
+
+            if use_simd {
+                let mut phase = self.phase;
+                let amp_v = self.amplitude;
+
+                for chunk in 0..chunks {
+                    let offset = chunk * 4;
+                    let p0 = phase.extract(0);
+                    let inc_t = inc.extract(0);
+
+                    let phases = ScalarVector4::load(&[
+                        p0,
+                        p0 + inc_t,
+                        p0 + inc_t + inc_t,
+                        p0 + inc_t + inc_t + inc_t,
+                    ]);
+
+                    let vals = match self.waveform {
+                        Waveform::Sine => self.simd_sine(&phases, &amp_v),
+                        Waveform::Saw => self.simd_saw_blep(&phases, inc_t, &amp_v),
+                        Waveform::Square => self.simd_square(&phases, &amp_v),
+                        Waveform::Triangle => self.simd_triangle(&phases, &amp_v),
+                        Waveform::Pulse(width) => {
+                            self.simd_pulse(&phases, T::from_f32(width.clamp(0.01, 0.99)), &amp_v)
+                        }
+                    };
+
+                    vals.store(&mut output[offset..offset + 4]);
+
+                    phase = phase + inc4;
+                    if phase.extract(0) >= one.extract(0) {
+                        phase = phase - one;
+                        self.periods += 1;
+                    }
+                }
+                self.phase = phase;
+            } else {
+                // High frequency: fall back to scalar for the block
+                for i in 0..chunks * 4 {
+                    output[i] = self.generate_scalar();
+                }
+            }
+        }
+
+        // Scalar remainder
+        for i in chunks * 4..output.len() {
+            output[i] = self.generate_scalar();
+        }
+    }
+
+    /// Generate ONE sample via the scalar path (same as old generate()).
+    /// Renamed from `generate()` to avoid confusion with SIMD methods.
+    fn generate_scalar(&mut self) -> T {
+        let effective_inc = self.phase_inc + self.fm_amount;
+        let output_vec = match self.waveform {
+            Waveform::Sine => self.scalar_sine(),
+            Waveform::Saw => self.scalar_saw_bandlimited(),
+            Waveform::Square => self.scalar_square(),
+            Waveform::Triangle => self.scalar_triangle(),
+            Waveform::Pulse(width) => self.scalar_pulse(width),
+        };
+        self.phase = self.phase + effective_inc;
+        let one = ScalarVector1::splat(T::ONE);
+        if self.phase.extract(0) >= one.extract(0) {
+            self.phase = self.phase - one;
+            self.periods += 1;
+        }
+        output_vec.extract(0)
+    }
+
+    // ─── Scalar waveform methods (renamed, same logic) ───
+
     #[inline(always)]
-    fn generate_sine(&self) -> ScalarVector1<T> {
+    fn scalar_sine(&self) -> ScalarVector1<T> {
         let phase_rad = self.phase.mul(&ScalarVector1::splat(T::from_f32(2.0 * PI)));
         phase_rad.sin().mul(&self.amplitude)
     }
 
-    /// Generate sawtooth wave (without anti-aliasing)
     #[inline(always)]
-    fn generate_saw_raw(&self) -> ScalarVector1<T> {
-        // 2 * phase - 1
+    fn scalar_saw_raw(&self) -> ScalarVector1<T> {
         self.phase
             .mul(&ScalarVector1::splat(T::from_f32(2.0)))
             .sub(&ScalarVector1::splat(T::from_f32(1.0)))
             .mul(&self.amplitude)
     }
 
-    /// Generate sawtooth wave with anti-aliasing
     #[inline(always)]
-    fn generate_saw_bandlimited(&mut self) -> ScalarVector1<T> {
-        let raw = self.generate_saw_raw();
-        // Check for zero-crossing (discontinuity)
+    fn scalar_saw_bandlimited(&mut self) -> ScalarVector1<T> {
+        let raw = self.scalar_saw_raw();
         let next_phase = self.phase.add(&self.phase_inc).extract(0);
         let one = T::from_f32(1.0);
-
         if next_phase >= one {
-            // Compute discontinuity position
             let one_vec = ScalarVector1::splat(one);
             let t = (one_vec - self.phase) / self.phase_inc;
-            // Simple BLEP correction
             let blep =
                 t * ScalarVector1::splat(T::from_f32(2.0)) - ScalarVector1::splat(T::from_f32(1.0));
             raw - blep * self.amplitude
@@ -139,9 +216,8 @@ impl<T: Transcendental> BasicOscillator<T> {
         }
     }
 
-    /// Generate square wave
     #[inline(always)]
-    fn generate_square(&self) -> ScalarVector1<T> {
+    fn scalar_square(&self) -> ScalarVector1<T> {
         let half = T::from_f32(0.5);
         if self.phase.extract(0) < half {
             self.amplitude
@@ -150,19 +226,16 @@ impl<T: Transcendental> BasicOscillator<T> {
         }
     }
 
-    /// Generate triangle wave
     #[inline(always)]
-    fn generate_triangle(&self) -> ScalarVector1<T> {
-        // 4 * |phase - 0.5| - 1
+    fn scalar_triangle(&self) -> ScalarVector1<T> {
         let half = ScalarVector1::splat(T::from_f32(0.5));
         let p = self.phase - half;
         (p.abs() * ScalarVector1::splat(T::from_f32(4.0)) - ScalarVector1::splat(T::from_f32(1.0)))
             * self.amplitude
     }
 
-    /// Generate pulse wave with variable duty cycle
     #[inline(always)]
-    fn generate_pulse(&self, width: f32) -> ScalarVector1<T> {
+    fn scalar_pulse(&self, width: f32) -> ScalarVector1<T> {
         let width_t = T::from_f32(width.clamp(0.01, 0.99));
         if self.phase.extract(0) < width_t {
             self.amplitude
@@ -171,28 +244,105 @@ impl<T: Transcendental> BasicOscillator<T> {
         }
     }
 
-    /// Main sample generation method
+    // ─── SIMD waveform methods (4 lanes at once) ───
+
+    #[inline(always)]
+    fn simd_sine(&self, phases: &ScalarVector4<T>, amp: &ScalarVector1<T>) -> ScalarVector4<T> {
+        let pi2 = ScalarVector4::splat(T::from_f32(2.0 * PI));
+        let rad = phases.mul(&pi2);
+        let raw = rad.sin();
+        let amp_broadcast = ScalarVector4::splat(amp.extract(0));
+        raw.mul(&amp_broadcast)
+    }
+
+    #[inline(always)]
+    fn simd_triangle(&self, phases: &ScalarVector4<T>, amp: &ScalarVector1<T>) -> ScalarVector4<T> {
+        let half = ScalarVector4::splat(T::from_f32(0.5));
+        let four = ScalarVector4::splat(T::from_f32(4.0));
+        let one = ScalarVector4::splat(T::from_f32(1.0));
+        let amp_b = ScalarVector4::splat(amp.extract(0));
+        let p = phases.sub(&half);
+        p.abs().mul(&four).sub(&one).mul(&amp_b)
+    }
+
+    #[inline(always)]
+    fn simd_square(&self, phases: &ScalarVector4<T>, amp: &ScalarVector1<T>) -> ScalarVector4<T> {
+        let half = ScalarVector4::splat(T::from_f32(0.5));
+        let pos = ScalarVector4::splat(amp.extract(0));
+        let neg = ScalarVector4::splat(-amp.extract(0));
+        let mask = phases.lt(&half);
+        <ScalarVector4<T> as VectorMask<T, 4>>::select(&pos, &neg, mask)
+    }
+
+    #[inline(always)]
+    fn simd_pulse(
+        &self,
+        phases: &ScalarVector4<T>,
+        width_t: T,
+        amp: &ScalarVector1<T>,
+    ) -> ScalarVector4<T> {
+        let threshold = ScalarVector4::splat(width_t);
+        let pos = ScalarVector4::splat(amp.extract(0));
+        let neg = ScalarVector4::splat(-amp.extract(0));
+        let mask = phases.lt(&threshold);
+        <ScalarVector4<T> as VectorMask<T, 4>>::select(&pos, &neg, mask)
+    }
+
+    #[inline(always)]
+    fn simd_saw_raw(&self, phases: &ScalarVector4<T>, amp: &ScalarVector1<T>) -> ScalarVector4<T> {
+        let two = ScalarVector4::splat(T::from_f32(2.0));
+        let one = ScalarVector4::splat(T::from_f32(1.0));
+        let amp_b = ScalarVector4::splat(amp.extract(0));
+        phases.mul(&two).sub(&one).mul(&amp_b)
+    }
+
+    #[inline(always)]
+    fn simd_saw_blep(
+        &mut self,
+        phases: &ScalarVector4<T>,
+        _inc: T,
+        amp: &ScalarVector1<T>,
+    ) -> ScalarVector4<T> {
+        // For simplicity, use raw saw for SIMD path.
+        // BLEP correction is a per-sample conditional that requires
+        // knowing the next-phase value — compute it element-wise.
+        let inc = self.phase_inc.extract(0);
+        let one_t = T::ONE;
+        let raw = self.simd_saw_raw(phases, amp);
+
+        // Compute BLEP correction lane-by-lane (BLEP is inherently
+        // per-sample due to the reset-to-0 at the discontinuity).
+        // We still get 4× throughput for the raw computation;
+        // only the BLEP check is scalar in this version.
+        ScalarVector4::from_fn(|i| {
+            let p = phases.extract(i);
+            let next = p + inc;
+            let mut val = raw.extract(i);
+            if next >= one_t {
+                let t = (one_t - p) / inc;
+                let blep = t * T::from_f32(2.0) - T::from_f32(1.0);
+                val -= blep * amp.extract(0);
+            }
+            val
+        })
+    }
+
+    /// Backward-compatible public API (used by LFO and existing callers).
     pub(crate) fn generate(&mut self) -> ScalarVector1<T> {
-        // Apply FM modulation if present
         let effective_inc = self.phase_inc + self.fm_amount;
-
-        // Generate sample based on waveform
         let output_vec = match self.waveform {
-            Waveform::Sine => self.generate_sine(),
-            Waveform::Saw => self.generate_saw_bandlimited(),
-            Waveform::Square => self.generate_square(),
-            Waveform::Triangle => self.generate_triangle(),
-            Waveform::Pulse(width) => self.generate_pulse(width),
+            Waveform::Sine => self.scalar_sine(),
+            Waveform::Saw => self.scalar_saw_bandlimited(),
+            Waveform::Square => self.scalar_square(),
+            Waveform::Triangle => self.scalar_triangle(),
+            Waveform::Pulse(width) => self.scalar_pulse(width),
         };
-
-        // Update phase
         self.phase = self.phase + effective_inc;
         let one = ScalarVector1::splat(T::from_f32(1.0));
         if self.phase.extract(0) >= one.extract(0) {
             self.phase = self.phase - one;
             self.periods += 1;
         }
-
         output_vec
     }
 
@@ -242,9 +392,7 @@ impl<T: Transcendental> Algorithm<T> for BasicOscillator<T> {
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        for out in output.iter_mut() {
-            *out = self.generate().extract(0);
-        }
+        self.generate_block_simd(output);
         Ok(())
     }
 

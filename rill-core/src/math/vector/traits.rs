@@ -121,6 +121,7 @@ pub trait VectorReduce<T: Scalar, const N: usize>: Vector<T, N> {
         }
         sum
     }
+    /// Product of all lanes.
     fn horizontal_product(&self) -> T {
         let mut prod = T::ONE;
         for i in 0..N {
