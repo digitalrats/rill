@@ -408,36 +408,193 @@ White noise uses xorshift which is sequential. To generate 4 samples at once:
 - [ ] Scalar fallback for remainder samples
 - [ ] All existing tests pass (75 tests in `rill-core-dsp`)
 
-## Phase 4: WDF SIMD Completion (Lower Priority)
+## Phase 4: WDF — Unified Trait (Lower Priority)
 
 **Target crate:** `rill-core-wdf`
-**Effort:** ~400 LOC
-**Prerequisite:** Phase 1 complete
+**Effort:** ~350 LOC net (delete ~400, write ~750)
+**Prerequisite:** Phase 1 complete (`VectorMask` for all types, `SimdDetector`)
 
-### Current state
+### The problem: two parallel type hierarchies
 
-The `rill-core-wdf/src/simd.rs` module has SIMD leaf elements (Resistor, Capacitor, Diode) but:
-- No SIMD adapters (SeriesAdapter, ParallelAdapter)
-- No SIMD MoogLadder
-- No SIMD DiodeClipper
-- Hardcoded to `f64` (`F64x4`), not generic
+The current WDF crate maintains **two independent worlds** linked by nothing:
 
-### Plan
+```
+Scalar side (prod):              SIMD side (simd.rs, separate!):
+  WdfElement<T>                    SimdWdfElement
+  Resistor                         SimdResistor
+  Capacitor                        SimdCapacitor
+  Diode                            SimdDiode
+  SeriesAdapter                    (none)
+  ParallelAdapter                  (none)
+  wdf_cascade! → MoogLadder        (none)
+```
 
-1. **Generic SIMD types** — parameterize `SimdWdfElement` over `T` (f32/f64), not hardcoded `F64x4`
-2. **SIMD adapters** — `SimdSeriesAdapter`, `SimdParallelAdapter` using vectorized port resistance distribution
-3. **SIMD MoogLadder** — 4-pole cascade with vectorized feedback
-4. **SIMD DiodeClipper** — vectorized Newton-Raphson for anti-parallel diodes
-5. **Integration** — wire SIMD path into `WdfMoogLadder` processor node
+This means:
+- SIMD adapters would need their own independent implementations — doubling maintenance
+- Adding SIMD to a filter means writing a parallel `*Simd` struct with identical physics
+- 378 lines in `simd.rs` cover only leaf elements — the heavy parts (adapters, filters) remain scalar
+
+### Solution: Unify through `Vector<T, N>` from `rill-core`
+
+Replace TWO traits with ONE, generic over vector width `N`:
+
+```rust
+// OLD — two unrelated traits:
+pub trait WdfElement<T: Transcendental>: Send + Sync {
+    fn process_incident(&mut self, a: T) -> T;              // scalar
+}
+pub trait SimdWdfElement: Send + Sync {
+    type SimdType;
+    fn process_incident_simd(&mut self, a: Self::SimdType) -> Self::SimdType; // SIMD
+}
+
+// NEW — one trait, scalar when N=1, SIMD when N=4/8:
+pub trait WdfElement<T: Transcendental, const N: usize>: Send + Sync
+where
+    ScalarVector<T, N>: Vector<T, N> + VectorTranscendental<T, N> + VectorMask<T, N>,
+{
+    type V: Vector<T, N> + VectorTranscendental<T, N> + VectorMask<T, N>;
+
+    fn port_resistance(&self) -> Self::V;
+    fn process_incident(&mut self, a: Self::V) -> Self::V;
+    fn update_state(&mut self);
+    fn voltage(&self) -> Self::V;
+    fn current(&self) -> Self::V;
+    fn reset(&mut self);
+}
+```
+
+**Backward compatibility** via type alias:
+
+```rust
+// Existing code using WdfElement<f64> continues to work:
+type WdfElement1<T> = WdfElement<T, 1>;
+```
+
+### What gets unified
+
+| Old (2 structs per element) | New (1 struct) |
+|---|---|
+| `Resistor<T>` + `SimdResistor` | `Resistor<V>` |
+| `Capacitor<T>` + `SimdCapacitor` | `Capacitor<V>` |
+| `Inductor<T>` *(scalar only)* | `Inductor<V>` |
+| `Diode<T>` + `SimdDiode` | `Diode<V>` |
+| `OpAmp<T>` *(scalar only)* | `OpAmp<V>` |
+| `SeriesAdapter<T>` *(scalar only)* | `SeriesAdapter<V>` |
+| `ParallelAdapter<T>` *(scalar only)* | `ParallelAdapter<V>` |
+
+All math delegates to `rill-core::math::vector` traits (`+ - * / sqrt exp ln abs min max clamp select`). Zero WDF-specific SIMD code — the vector infrastructure carries it.
+
+### Element example — Capacitor (before/after)
+
+**Before (scalar only):**
+```rust
+pub struct Capacitor<T: Transcendental> {
+    capacitance: f64,
+    sample_rate: f64,
+    port_resistance: T,
+    state: T,
+}
+
+impl<T: Transcendental> WdfElement<T> for Capacitor<T> {
+    fn process_incident(&mut self, a: T) -> T {
+        self.state - a
+    }
+}
+```
+
+**After (generic over vector width):**
+```rust
+pub struct Capacitor<V> {
+    capacitance: f64,
+    sample_rate: f64,
+    port_resistance: V,
+    state: V,
+}
+
+impl<T: Transcendental, const N: usize> WdfElement<T, N>
+    for Capacitor<<Self as WdfElement<T, N>>::V>
+{
+    type V = ScalarVector<T, N>;
+
+    fn process_incident(&mut self, a: Self::V) -> Self::V {
+        // Same math — works for N=1 (scalar) and N=4 (SIMD)
+        self.state - a
+    }
+}
+```
+
+### Diode Newton-Raphson — the only per-element nuance
+
+The diode uses iterative Newton-Raphson. In scalar mode (N=1) we iterate all 10 times. In SIMD mode (N=4) we can early-exit when all lanes converge:
+
+```rust
+fn solve_newton<V>(&self, a: V, r: V) -> V
+where
+    V: Vector<T, N> + VectorTranscendental<T, N> + VectorMask<T, N>,
+{
+    let guess = self.vt * (V::ONE + a / (r * self.is)).ln();
+    let mut v = guess.max(&V::ZERO);
+
+    for _ in 0..10 {
+        let i = self.is * ((v / self.vt).exp() - V::ONE);
+        let g = self.is * (v / self.vt).exp() / self.vt;
+        let f = v + r * i - a;
+
+        if N > 1 {
+            // SIMD path — early exit when all 4 lanes converged
+            if f.abs().lt(&self.tolerance).all() { break; }
+        }
+
+        let df = V::ONE + r * g;
+        v = v - f / df;
+    }
+    v
+}
+```
+
+### Filters get SIMD for free
+
+Because `MoogLadder`, `RcPole`, and `DiodeClipper` are built via macros (`wdf_cascade!`, `wdf_compose!`) that compose `WdfElement` traits, they automatically become SIMD-capable once the underlying elements are generic:
+
+```rust
+// Before: scalar-only cascade
+wdf_cascade! {
+    struct MoogLadder<T: Transcendental> { ... }
+    // inner loop: a = WdfElement::process_incident(&mut self.poles[i], a);
+}
+
+// After: generic over N
+wdf_cascade! {
+    struct MoogLadder<T: Transcendental, const N: usize> { ... }
+    // inner loop: a = WdfElement::process_incident(&mut self.poles[i], a);
+    //                   ^^^ same code, works for N=1 and N=4 ^^^
+}
+```
+
+### What gets removed
+
+| File/Item | LOC | Reason |
+|---|---|---|
+| `rill-core-wdf/src/simd.rs` | 378 | Superseded by unified `WdfElement<T,N>` — zero SIMD-specific code needed |
+| `SimdWdfElement` trait | — | Replaced by `WdfElement<T,N>` |
+| `SimdResistor`, `SimdCapacitor`, `SimdDiode` | — | Replaced by generic `Resistor<V>`, `Capacitor<V>`, `Diode<V>` |
+| `process_batch_simd()` | — | Not needed — `process_incident(V)` already handles N lanes |
 
 ### Phase 4 Checklist
 
-- [ ] Generic `SimdWdfElement<T>` replacing hardcoded f64
-- [ ] `SimdSeriesAdapter`
-- [ ] `SimdParallelAdapter`
-- [ ] `SimdMoogLadder` (4-pole cascade in SIMD)
-- [ ] `SimdDiodeClipper`
-- [ ] Enable SIMD path in processor node (`process_sample_simd()`)
+- [ ] Parameterize `WdfElement<T, N>` trait — add `const N: usize` + `type V` with vector bounds
+- [ ] Convert `Resistor`, `Capacitor`, `Inductor` to `*<V>` generic structs
+- [ ] Convert `Diode`, `OpAmp` to `*<V>` — Newton-Raphson on `V` with N-dependent early exit
+- [ ] Update `wdf_element!` macro to emit generic `V`-based structs
+- [ ] Update `wdf_compose!` macro (Series/Parallel of 2 elements)
+- [ ] Update `wdf_cascade!` macro (N-section cascade with feedback) — MoogLadder, DiodeClipper
+- [ ] Convert `SeriesAdapter`, `ParallelAdapter` to `*<V>` generic
+- [ ] Delete `rill-core-wdf/src/simd.rs`
+- [ ] Add backward-compatible type alias: `type WdfElement1<T> = WdfElement<T, 1>`
+- [ ] Scalar tests pass (N=1, zero regression in 21 WDF tests)
+- [ ] SIMD tests: verify element-by-element output matches scalar within 1e-12 for f64
+- [ ] Wire SIMD path into `WdfMoogLadder` processor node in `rill-analog-filters`
 
 ## Phase 5: I/O Boundary Optimization (Lowest Priority)
 
@@ -544,7 +701,7 @@ Note: `as_chunks_mut` is stabilized in Rust 1.77+.
 | 1 — Foundation fixes | **Now** | ~200 LOC | Enables everything else |
 | 2 — Trivially vectorizable | **High** | ~500 LOC | Sine/Saw/Triangle/Square — the most-used oscillators |
 | 3 — Block state-space | **Medium** | ~800 LOC | Biquad/OnePole — the most-used filters |
-| 4 — WDF SIMD | **Low** | ~400 LOC | Analog filter acceleration |
+| 4 — WDF unified trait | **Low** | ~350 LOC net | Deletes 378 LOC simd.rs, replaces with generic WdfElement<T,N>. All filters get SIMD automatically |
 | 5 — I/O SIMD | **Deferred** | ~300 LOC | Wait for benchmarks to justify |
 
 ## References
@@ -554,7 +711,11 @@ Note: `as_chunks_mut` is stabilized in Rust 1.77+.
 - `rill-core/src/math/vector/traits.rs` — `Vector<T, N>`, `VectorTranscendental<T, N>`, `VectorMask<T, N>`, `VectorReduce<T, N>`
 - `rill-core-dsp/src/filters/` — all filter implementations with scalar loops
 - `rill-core-dsp/src/generators/` — all generator implementations with scalar loops
-- `rill-core-wdf/src/simd.rs` — existing WDF SIMD leaf elements
+- `rill-core-wdf/src/simd.rs` — existing WDF SIMD leaf elements (**to be deleted** in Phase 4)
+- `rill-core-wdf/src/lib.rs:105` — `WdfElement<T>` trait (**to be unified** with `Vector<T,N>` in Phase 4)
+- `rill-core-wdf/src/elements.rs` — Resistor, Capacitor, Inductor, Diode, OpAmp scalar impls
+- `rill-core-wdf/src/adapters.rs` — SeriesAdapter, ParallelAdapter scalar impls
+- `rill-core-wdf/src/macros/cascade.rs:45` — `wdf_cascade!` macro-generated `process_sample()`
 - `rill-core/src/traits/port.rs:569` — `Port::propagate()` — the processing loop (block-granular, no SIMD needed)
 - `rill-core/src/traits/port.rs:527` — `pre_process()` — feedback mix (element-wise add, SIMD-able)
 - `rill-io/src/backends/alsa.rs` — ALSA f32↔i16 conversion (SIMD-able)

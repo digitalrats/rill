@@ -460,48 +460,134 @@ impl VectorTranscendental<f64, 4> for F64x4 {
 }
 
 // -----------------------------------------------------------------------------
-// VectorMask implementation
+// VectorMask implementation for F64x4
 // -----------------------------------------------------------------------------
 
 impl VectorMask<f64, 4> for F64x4 {
-    // In wide 0.7, comparison masks are the same type as the vector,
-    // where -1.0 = true and 0.0 = false.
     type Mask = F64x4;
 
     fn eq(&self, other: &Self) -> F64x4 {
         F64x4(self.0.cmp_eq(other.0))
     }
-
     fn ne(&self, other: &Self) -> F64x4 {
         F64x4(self.0.cmp_ne(other.0))
     }
-
     fn gt(&self, other: &Self) -> F64x4 {
         F64x4(self.0.cmp_gt(other.0))
     }
-
     fn ge(&self, other: &Self) -> F64x4 {
         F64x4(self.0.cmp_ge(other.0))
     }
-
     fn lt(&self, other: &Self) -> F64x4 {
         F64x4(self.0.cmp_lt(other.0))
     }
-
     fn le(&self, other: &Self) -> F64x4 {
         F64x4(self.0.cmp_le(other.0))
     }
-
     fn select(&self, other: &Self, mask: F64x4) -> Self {
-        // f64x4::blend(self=mask, t=true_vals, f=false_vals)
-        // returns t where self != 0, f where self == 0
         F64x4(mask.0.blend(self.0, other.0))
     }
-
     fn all(mask: &F64x4) -> bool {
-        // move_mask returns bit i = sign bit of lane i
-        // For -1.0 (true), sign bit is 1; for 0.0 (false), sign bit is 0.
         mask.0.move_mask() == 0b1111
+    }
+}
+
+// -----------------------------------------------------------------------------
+// VectorMask implementation for F64x2
+// -----------------------------------------------------------------------------
+
+impl VectorMask<f64, 2> for F64x2 {
+    type Mask = F64x2;
+
+    fn eq(&self, other: &Self) -> F64x2 {
+        F64x2(self.0.cmp_eq(other.0))
+    }
+    fn ne(&self, other: &Self) -> F64x2 {
+        F64x2(self.0.cmp_ne(other.0))
+    }
+    fn gt(&self, other: &Self) -> F64x2 {
+        F64x2(self.0.cmp_gt(other.0))
+    }
+    fn ge(&self, other: &Self) -> F64x2 {
+        F64x2(self.0.cmp_ge(other.0))
+    }
+    fn lt(&self, other: &Self) -> F64x2 {
+        F64x2(self.0.cmp_lt(other.0))
+    }
+    fn le(&self, other: &Self) -> F64x2 {
+        F64x2(self.0.cmp_le(other.0))
+    }
+    fn select(&self, other: &Self, mask: F64x2) -> Self {
+        F64x2(mask.0.blend(self.0, other.0))
+    }
+    fn all(mask: &F64x2) -> bool {
+        mask.0.move_mask() == 0b11
+    }
+}
+
+// -----------------------------------------------------------------------------
+// VectorMask implementation for F32x4
+// -----------------------------------------------------------------------------
+
+impl VectorMask<f32, 4> for F32x4 {
+    type Mask = F32x4;
+
+    fn eq(&self, other: &Self) -> F32x4 {
+        F32x4(self.0.cmp_eq(other.0))
+    }
+    fn ne(&self, other: &Self) -> F32x4 {
+        F32x4(self.0.cmp_ne(other.0))
+    }
+    fn gt(&self, other: &Self) -> F32x4 {
+        F32x4(self.0.cmp_gt(other.0))
+    }
+    fn ge(&self, other: &Self) -> F32x4 {
+        F32x4(self.0.cmp_ge(other.0))
+    }
+    fn lt(&self, other: &Self) -> F32x4 {
+        F32x4(self.0.cmp_lt(other.0))
+    }
+    fn le(&self, other: &Self) -> F32x4 {
+        F32x4(self.0.cmp_le(other.0))
+    }
+    fn select(&self, other: &Self, mask: F32x4) -> Self {
+        F32x4(mask.0.blend(self.0, other.0))
+    }
+    fn all(mask: &F32x4) -> bool {
+        mask.0.move_mask() == 0b1111
+    }
+}
+
+// -----------------------------------------------------------------------------
+// VectorMask implementation for F32x8
+// -----------------------------------------------------------------------------
+
+impl VectorMask<f32, 8> for F32x8 {
+    type Mask = F32x8;
+
+    fn eq(&self, other: &Self) -> F32x8 {
+        F32x8(self.0.cmp_eq(other.0))
+    }
+    fn ne(&self, other: &Self) -> F32x8 {
+        F32x8(self.0.cmp_ne(other.0))
+    }
+    fn gt(&self, other: &Self) -> F32x8 {
+        F32x8(self.0.cmp_gt(other.0))
+    }
+    fn ge(&self, other: &Self) -> F32x8 {
+        F32x8(self.0.cmp_ge(other.0))
+    }
+    fn lt(&self, other: &Self) -> F32x8 {
+        F32x8(self.0.cmp_lt(other.0))
+    }
+    fn le(&self, other: &Self) -> F32x8 {
+        F32x8(self.0.cmp_le(other.0))
+    }
+    fn select(&self, other: &Self, mask: F32x8) -> Self {
+        F32x8(mask.0.blend(self.0, other.0))
+    }
+    fn all(mask: &F32x8) -> bool {
+        mask.0.move_mask() == 0b1111_1111
     }
 }
 

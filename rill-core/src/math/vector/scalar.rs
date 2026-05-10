@@ -117,6 +117,77 @@ impl<T: Transcendental> VectorTranscendental<T, 4> for ScalarVector4<T> {
     }
 }
 
+impl<T: Scalar + PartialEq> VectorMask<T, 4> for ScalarVector4<T> {
+    type Mask = ScalarVector4<T>;
+
+    fn eq(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] == other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn ne(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] != other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn gt(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] > other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn ge(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] >= other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn lt(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] < other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn le(&self, other: &Self) -> Self::Mask {
+        ScalarVector4(core::array::from_fn(|i| {
+            if self.0[i] <= other.0[i] {
+                T::ONE
+            } else {
+                T::ZERO
+            }
+        }))
+    }
+    fn select(&self, other: &Self, mask: Self::Mask) -> Self {
+        ScalarVector4(core::array::from_fn(|i| {
+            if mask.0[i] != T::ZERO {
+                self.0[i]
+            } else {
+                other.0[i]
+            }
+        }))
+    }
+    fn all(mask: &Self::Mask) -> bool {
+        mask.0.iter().all(|&v| v != T::ZERO)
+    }
+}
+
 impl<T: Scalar> Default for ScalarVector4<T> {
     fn default() -> Self {
         ScalarVector4([T::ZERO; 4])

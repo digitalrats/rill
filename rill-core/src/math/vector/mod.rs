@@ -7,7 +7,6 @@
 //! - Basic vector types for f32 and f64 with various SIMD lane widths
 //! - Arithmetic operations (+, -, *, /, %)
 //! - Math functions (sin, cos, exp, ln, sqrt, ...)
-//! - Expression system for lazy evaluation and optimisations
 //! - Automatic CPU SIMD capability detection
 //!
 //! ## Usage
@@ -25,7 +24,6 @@
 //! - `ops` — arithmetic operator implementations
 //! - `math` — math function implementations
 //! - `simd` — SIMD backends for different architectures
-//! - `expr` — expression system and optimisations
 //! - `scalar` — scalar fallback implementations
 //!
 //! ## Supported platforms
@@ -37,38 +35,35 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+/// Vector construction macros.
+pub mod macros;
 /// Vector math functions (sin, cos, etc.).
 pub mod math;
 /// Arithmetic operator implementations for vectors.
 pub mod ops;
-/// Core vector traits (`Vector`, `VectorTranscendental`, etc.).
-pub mod traits;
-// pub mod expr;  // temporarily disabled due to compilation errors
-/// Vector construction macros.
-pub mod macros;
 /// Scalar fallback vector implementations.
 pub mod scalar;
+/// Core vector traits (`Vector`, `VectorTranscendental`, etc.).
+pub mod traits;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 /// SIMD-accelerated vector implementations.
 pub mod simd;
 
 // Re-exports
+pub use macros::*;
 pub use math::*;
 pub use ops::*;
-pub use traits::*;
-// pub use expr::*;
-pub use macros::*;
 pub use scalar::*;
+pub use traits::*;
 
 /// Convenience prelude for importing all vector types and traits.
 pub mod prelude {
+    pub use crate::math::vector::macros::*;
     pub use crate::math::vector::math::*;
     pub use crate::math::vector::ops::*;
-    pub use crate::math::vector::traits::*;
-    // pub use crate::math::vector::expr::*;  // temporarily disabled
-    pub use crate::math::vector::macros::*;
     pub use crate::math::vector::scalar::*;
+    pub use crate::math::vector::traits::*;
 
     /// SIMD vector types (conditionally available).
     #[cfg(feature = "simd")]
