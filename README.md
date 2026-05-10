@@ -1,7 +1,7 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests|68](https://img.shields.io/badge/tests-559-green)](https://github.com/DigitalRats/rill)
+[![tests|68](https://img.shields.io/badge/tests-544-green)](https://github.com/DigitalRats/rill)
 [![version|130](https://img.shields.io/badge/version-0.5.0--beta.4-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
@@ -94,7 +94,7 @@ Key performance drivers:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.2"
+rill-adrift = "0.5.0-beta.4"
 ```
 
 Enable optional features as needed (see table below).
@@ -235,7 +235,7 @@ graph TD
 ## Testing
 
 ```bash
-cargo test --workspace    # 487 tests, all passing
+cargo test --workspace    # 544 tests, all passing
 cargo clippy --workspace  # lint
 cargo fmt                 # format (max_width=100)
 ```

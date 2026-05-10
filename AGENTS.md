@@ -2,11 +2,12 @@
 
 ## Workspace layout
 
-Cargo workspace — 17 active crates:
+Cargo workspace — 18 active crates:
 
 | Crate | Status |
 |---|---|
 | `rill-core` | Active — base traits, math, buffers, queues, time, macros, executor, interpolation |
+| `rill-core-actor` | Active — actor model (ActorRef, ActorCell, ActorSystem) for lock-free message passing |
 | `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops, sample player |
 | `rill-graph` | Active — signal graph (DAG) with topological sort |
 | `rill-oscillators` | Active — oscillators, LFO, envelopes, wavetable oscillator node |
@@ -101,7 +102,7 @@ mdbook serve docs/                # dev server at localhost:3000
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
 - **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
-- **Versioning:** crates version synchronously (all at 0.4.0). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
+- **Versioning:** crates version synchronously (all at 0.5.0-beta.4). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
@@ -149,13 +150,13 @@ under `pw‑loopback` or similar virtual device to detect xruns.
 
 ## Feature flags (non-default)
 
-- `rill-core-dsp`: `simd`, `f64`, `fast_math`, `unstable`
+- `rill-core-dsp`: `simd`, `f64`, `fast_math`
 - `rill-digital-effects`: `modulation` (enables `rill-oscillators`)
-- `rill-core`: `serde`, `stats`
-- `rill-core-wdf`: `simd`
-- `rill-io`: `portaudio` (default), `alsa`, `pipewire`, `jack`, `all-backends`
+- `rill-core`: `serde`, `simd` (enables `wide` crate)
+- `rill-core-wdf`: (no non-default features)
+- `rill-io`: `portaudio` (default), `midir` (default), `alsa`, `pipewire`, `jack`, `all-backends` (includes `midir`)
 - `rill-sampler`: `wav` (default, enables `hound`)
-- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler` (default), `analog` (opt-in); `alsa`, `portaudio`, `jack`, `pipewire` (backends, forward to `rill-io`)
+- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler`, `serialization`, `portaudio` (default); `analog`, `midi`, `dot` (opt-in); `alsa`, `portaudio`, `jack`, `pipewire` (backends, forward to `rill-io`)
 
 ## Branching
 
