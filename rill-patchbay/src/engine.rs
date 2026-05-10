@@ -719,37 +719,58 @@ impl<A: Automaton + 'static> ActorCell for Servo<A> {
     }
 }
 
-/// Type-erased boxed servo.
-pub type BoxedServo = Box<dyn AnyServo>;
+/// Wrapper: converts a `Sensor` into a `Module` for unified storage.
+struct SensorModule(Box<dyn Sensor>);
 
-/// Trait for type-erased servo operations.
-pub trait AnyServo: Send + Sync {
-    /// Update the servo and produce a parameter command.
-    fn update(&mut self, time: Time) -> Option<SetParameter>;
-    /// Return the servo's unique identifier.
-    fn id(&self) -> &str;
-    /// Enable or disable the servo.
-    fn set_enabled(&mut self, enabled: bool);
-    /// Return an ActorRef for sending control messages.
-    fn handle(&self) -> ActorRef<AutomatonMsg>;
-    /// Stop the servo (disable, shutdown any tasks).
+impl Module for SensorModule {
+    fn id(&self) -> &str {
+        "sensor"
+    }
     fn stop(&mut self) {
-        self.set_enabled(false);
+        self.0.stop();
     }
 }
 
-impl<A: Automaton + 'static> AnyServo for Servo<A> {
+/// Type-erased rack module (servo or sensor).
+pub type BoxedModule = Box<dyn Module>;
+
+/// Trait for rack modules — unified interface for servos and sensors.
+pub trait Module: Send + Sync {
+    /// Update the module and produce a parameter command (servos only).
+    fn update(&mut self, time: Time) -> Option<SetParameter> {
+        None
+    }
+    /// Return the module's unique identifier.
+    fn id(&self) -> &str;
+    /// Return an ActorRef for sending control messages (servos only).
+    fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
+        None
+    }
+    /// Stop the module (disable, shutdown tasks, release resources).
+    fn stop(&mut self);
+}
+
+impl<A: Automaton + 'static> Module for Servo<A> {
     fn update(&mut self, time: Time) -> Option<SetParameter> {
         Servo::update(self, time)
     }
     fn id(&self) -> &str {
         Servo::id(self)
     }
-    fn set_enabled(&mut self, enabled: bool) {
-        Servo::set_enabled(self, enabled);
+    fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
+        Some(Servo::handle(self))
     }
-    fn handle(&self) -> ActorRef<AutomatonMsg> {
-        Servo::handle(self)
+    fn stop(&mut self) {
+        self.set_enabled(false);
+    }
+}
+
+impl Module for Box<dyn Sensor> {
+    fn id(&self) -> &str {
+        "sensor"
+    }
+    fn stop(&mut self) {
+        Sensor::stop(self.as_mut());
     }
 }
 
@@ -771,8 +792,7 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 ///   tokio runtime.
 pub struct Patchbay {
     mappings: Vec<Mapping>,
-    servos: HashMap<String, BoxedServo>,
-    sensors: Vec<Box<dyn Sensor>>,
+    modules: HashMap<String, BoxedModule>,
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
     command_queue: ActorRef<SetParameter>,
     clock_mailbox: Arc<MpscQueue<ClockTick>>,
@@ -789,8 +809,7 @@ impl Patchbay {
     pub fn new(command_queue: ActorRef<SetParameter>) -> Self {
         Self {
             mappings: Vec::new(),
-            servos: HashMap::new(),
-            sensors: Vec::new(),
+            modules: HashMap::new(),
             automaton_handles: HashMap::new(),
             command_queue,
             clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
@@ -818,9 +837,13 @@ impl Patchbay {
     ///
     /// Useful for automaton types not covered by `add_lfo` / `add_envelope`
     /// (e.g. sequencers, named functions).
-    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) -> ActorRef<AutomatonMsg> {
+    pub fn add_boxed_servo(
+        &mut self,
+        id: String,
+        servo: BoxedModule,
+    ) -> Option<ActorRef<AutomatonMsg>> {
         let handle = servo.handle();
-        self.servos.insert(id, servo);
+        self.modules.insert(id, servo);
         handle
     }
 
@@ -883,7 +906,7 @@ impl Patchbay {
     /// Returns an [`ActorRef`] for sending control messages.
     pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) -> ActorRef<AutomatonMsg> {
         let handle = servo.handle();
-        self.servos.insert(servo.id().to_string(), Box::new(servo));
+        self.modules.insert(servo.id().to_string(), Box::new(servo));
         handle
     }
 
@@ -939,24 +962,22 @@ impl Patchbay {
         self.add_servo(servo);
     }
 
-    /// Stop all modules — servos, sensors.
+    /// Stop all modules — servos and sensors.
     pub fn stop_all(&mut self) {
         self.automaton_handles.clear();
-        for servo in self.servos.values_mut() {
-            servo.stop();
+        for module in self.modules.values_mut() {
+            module.stop();
         }
-        for sensor in &mut self.sensors {
-            sensor.stop();
-        }
-        self.sensors.clear();
+        self.modules.clear();
     }
 
     /// Add a sensor (MIDI, OSC, etc.) to the rack.
     ///
     /// The sensor should already be started via `Sensor::start()`.
     /// Use `sensor.attach(self.event_handle())` before `start()`.
-    pub fn add_sensor(&mut self, sensor: Box<dyn Sensor>) {
-        self.sensors.push(sensor);
+    pub fn add_sensor(&mut self, id: &str, sensor: Box<dyn Sensor>) {
+        self.modules
+            .insert(id.to_string(), Box::new(SensorModule(sensor)));
     }
 
     /// Process an incoming control event (MIDI, OSC, button, etc.).
@@ -968,10 +989,12 @@ impl Patchbay {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
                 let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
-                if let Some(servo) = self.servos.get(&key) {
-                    let _ = servo.handle().send(AutomatonMsg::Ui(UiCommand::SetValue(
-                        cmd.value.as_f32().unwrap_or(0.0) as f64,
-                    )));
+                if let Some(servo) = self.modules.get(&key) {
+                    if let Some(ref servo_handle) = servo.handle() {
+                        let _ = servo_handle.send(AutomatonMsg::Ui(UiCommand::SetValue(
+                            cmd.value.as_f32().unwrap_or(0.0) as f64,
+                        )));
+                    }
                 } else {
                     self.command_queue.send(cmd);
                 }
@@ -986,7 +1009,7 @@ impl Patchbay {
     pub fn update(&mut self, dt: f32) {
         self.time += dt as f64;
 
-        for servo in self.servos.values_mut() {
+        for servo in self.modules.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
                 self.command_queue.send(cmd);
             }
@@ -1000,23 +1023,23 @@ impl Patchbay {
 
     /// Get a servo by ID.
     pub fn get_servo(&self, id: &str) -> Option<&dyn AnyServo> {
-        self.servos.get(id).map(|b| b.as_ref())
+        self.modules.get(id).map(|b| b.as_ref())
     }
 
     /// Get a mutable servo by ID.
     pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedServo> {
-        self.servos.get_mut(id)
+        self.modules.get_mut(id)
     }
 
     /// Remove a servo by ID.
     pub fn remove_servo(&mut self, id: &str) -> bool {
-        self.servos.remove(id).is_some()
+        self.modules.remove(id).is_some()
     }
 
     /// Clear all mappings, servos, and async automata.
     pub fn clear(&mut self) {
         self.mappings.clear();
-        self.servos.clear();
+        self.modules.clear();
         self.stop_all();
     }
 
@@ -1037,7 +1060,7 @@ impl Patchbay {
         self.drain_events();
         while let Some(clock) = self.clock_mailbox.pop() {
             let msg = AutomatonMsg::Tick(clock);
-            for servo in self.servos.values() {
+            for servo in self.modules.values() {
                 servo.handle().send(msg.clone());
             }
             let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
