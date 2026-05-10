@@ -225,6 +225,7 @@ mod tests {
     use super::*;
     use rill_core_actor::{ActorCell, ActorRef};
 
+    #[allow(dead_code)]
     struct CollectActor {
         events: Vec<Telemetry>,
     }
