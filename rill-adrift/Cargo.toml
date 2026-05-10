@@ -25,7 +25,6 @@ rill-patchbay = { workspace = true }
 
 # Dependencies for Runtime (always needed)
 log = "0.4"
-crossbeam-channel = "0.5"
 
 # Optional (feature-gated)
 rill-io = { workspace = true, optional = true }

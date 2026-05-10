@@ -19,12 +19,11 @@ use rill_core::traits::{ParameterId, PortId};
 /// `SnapshotSequencer` is `Send` but **not** `Sync`.  It should live inside
 /// a single task (typically the tokio task that drains the telemetry
 /// receiver).  External control (start/stop/pattern change) uses a command
-/// channel (see [`SequencerHandle`]).
+
 #[derive(Debug, Clone)]
 pub struct SnapshotSequencer {
     /// Named snapshots for quick recall.
     snapshots: HashMap<String, Snapshot>,
-    /// Registered patterns.
     patterns: HashMap<String, Pattern>,
     /// Currently active pattern ID.
     active_pattern: String,
@@ -311,67 +310,6 @@ impl Default for SnapshotSequencer {
     }
 }
 
-// =============================================================================
-// Sequencer command channel & handle
-// =============================================================================
-
-/// Commands sent to a running sequencer from another thread.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SequencerCommand {
-    /// Start playback.
-    Start,
-    /// Stop playback.
-    Stop,
-    /// Reset to the given sample position.
-    Reset {
-        /// Target sample position for the reset.
-        sample_pos: u64,
-    },
-    /// Switch to a named pattern.
-    SetPattern(String),
-}
-
-/// Handle for controlling a [`SnapshotSequencer`] that lives inside a
-/// tokio task.
-///
-/// Clone the handle to share control of the sequencer across multiple
-/// threads (e.g. multiple OSC handlers).
-#[derive(Debug, Clone)]
-pub struct SequencerHandle {
-    cmd_tx: std::sync::Arc<crossbeam_channel::Sender<SequencerCommand>>,
-}
-
-impl SequencerHandle {
-    pub(crate) fn new(cmd_tx: crossbeam_channel::Sender<SequencerCommand>) -> Self {
-        Self {
-            cmd_tx: std::sync::Arc::new(cmd_tx),
-        }
-    }
-
-    /// Start the sequencer.
-    pub fn start(&self) {
-        let _ = self.cmd_tx.try_send(SequencerCommand::Start);
-    }
-
-    /// Stop the sequencer.
-    pub fn stop(&self) {
-        let _ = self.cmd_tx.try_send(SequencerCommand::Stop);
-    }
-
-    /// Reset the sequencer to the given sample position.
-    pub fn reset(&self, sample_pos: u64) {
-        let _ = self.cmd_tx.try_send(SequencerCommand::Reset { sample_pos });
-    }
-
-    /// Switch to a different pattern by ID.
-    pub fn set_pattern(&self, id: &str) {
-        let _ = self
-            .cmd_tx
-            .try_send(SequencerCommand::SetPattern(id.to_string()));
-    }
-}
-
-// =============================================================================
 // Tests
 // =============================================================================
 
@@ -532,30 +470,6 @@ mod tests {
         assert_eq!(pt.node_id, NodeId(1));
         assert_eq!(pt.param_name, "gain");
         assert_eq!(pt.value, 0.5);
-    }
-
-    #[test]
-    fn test_sequencer_handle_send() {
-        let (tx, rx) = crossbeam_channel::unbounded::<SequencerCommand>();
-        let handle = SequencerHandle::new(tx);
-
-        handle.start();
-        assert_eq!(rx.try_recv(), Ok(SequencerCommand::Start));
-
-        handle.stop();
-        assert_eq!(rx.try_recv(), Ok(SequencerCommand::Stop));
-
-        handle.set_pattern("foo");
-        assert_eq!(
-            rx.try_recv(),
-            Ok(SequencerCommand::SetPattern("foo".into()))
-        );
-
-        handle.reset(12345);
-        assert_eq!(
-            rx.try_recv(),
-            Ok(SequencerCommand::Reset { sample_pos: 12345 })
-        );
     }
 
     #[test]

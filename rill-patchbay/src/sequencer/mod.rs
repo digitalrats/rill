@@ -23,7 +23,7 @@
 //!
 //! Use [`Patchbay::attach_sequencer`](crate::engine::Patchbay::attach_sequencer)
 //! to spawn the sequencer task and start listening for clock ticks.
-//! A [`SequencerHandle`] is returned for external control (start/stop/pattern
+//! Returns parameter commands to be dispatched via `ActorRef<SetParameter>`.
 //! select).
 
 mod engine;
@@ -31,7 +31,7 @@ mod pattern;
 mod snapshot;
 mod step;
 
-pub use engine::{SequencerCommand, SequencerHandle, SnapshotSequencer};
+pub use engine::SnapshotSequencer;
 pub use pattern::{Pattern, StepPlayMode};
 pub use snapshot::{ParameterTarget, Snapshot};
 pub use step::SequenceStep;

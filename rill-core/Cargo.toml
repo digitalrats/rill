@@ -11,7 +11,6 @@ documentation = "https://docs.rs/rill-core"
 [dependencies]
 parking_lot = "0.12"
 thiserror = "1.0"
-crossbeam-channel = "0.5"
 rand = "0.8"
 wide = { version = "0.7", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }

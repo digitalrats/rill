@@ -1,9 +1,9 @@
 //! Micro-control observer — RT safety monitor with actor-based telemetry.
 
+use parking_lot::RwLock;
 use rill_core::queues::telemetry::Telemetry;
 use rill_core::traits::{ParameterId, PortId};
 use rill_core_actor::ActorRef;
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -111,7 +111,12 @@ impl MicroControlObserver {
         let mut stats = self.stats.write();
         let comp_stats = stats.entry(component.to_string()).or_default();
         comp_stats.violations += 1;
-        self.send_telemetry(Telemetry::violation(component, expected_ns, actual_ns, value));
+        self.send_telemetry(Telemetry::violation(
+            component,
+            expected_ns,
+            actual_ns,
+            value,
+        ));
         println!(
             "⚠️ Violation in {}: {}ns (expected {}ns)",
             component, actual_ns, expected_ns
@@ -168,8 +173,11 @@ impl Drop for OperationGuard {
             comp_stats.max_time_ns = duration;
         }
         comp_stats.avg_time_ns = comp_stats.total_time_ns as f64 / comp_stats.operations as f64;
-        self.observer
-            .send_telemetry(Telemetry::event("observer", "micro_complete", vec![duration as f32]));
+        self.observer.send_telemetry(Telemetry::event(
+            "observer",
+            "micro_complete",
+            vec![duration as f32],
+        ));
     }
 }
 

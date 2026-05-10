@@ -61,9 +61,6 @@ pub mod automaton;
 /// Control and event mapping
 pub mod engine;
 
-/// Patchbay manager — central coordinator
-pub mod manager;
-
 /// Sensors — event sources from the external world
 pub mod sensor;
 
@@ -96,6 +93,9 @@ pub use serialization::PatchbayDef;
 #[cfg(feature = "midi")]
 pub mod midi;
 
+/// Micro-control observer for RT safety monitoring
+pub mod observer;
+
 #[cfg(feature = "midi")]
 pub use midi::MidiHub;
 
@@ -114,14 +114,12 @@ pub use engine::{
     NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
 };
 
-pub use manager::Manager;
 pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // Sequencer re-exports
 pub use sequencer::{
-    ParameterTarget, Pattern, SequenceStep, SequencerHandle, Snapshot, SnapshotSequencer,
-    StepPlayMode,
+    ParameterTarget, Pattern, SequenceStep, Snapshot, SnapshotSequencer, StepPlayMode,
 };
 #[cfg(feature = "serde")]
 pub use serialization::SequencerDef;
@@ -136,7 +134,6 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::automaton_task::*;
     pub use crate::engine::*;
-    pub use crate::manager::*;
     pub use crate::port_combiner::*;
     pub use crate::sequencer::*;
     pub use crate::strategy::*;
@@ -161,6 +158,5 @@ mod tests {
         // Just check that everything imports
         let _ = automaton::LfoWaveform::Sine;
         let _ = engine::Transform::Linear;
-        let _ = manager::Config::default();
     }
 }

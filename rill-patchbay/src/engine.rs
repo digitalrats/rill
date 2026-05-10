@@ -10,17 +10,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rill_core::prelude::*;
-use rill_core::queues::telemetry::{Telemetry, CLOCK_TICK};
 use rill_core::queues::{SetParameter, SignalOrigin};
 use rill_core_actor::ActorRef;
 
-use crossbeam_channel::Receiver as CrossbeamReceiver;
+// crossbeam removed: // crossbeam removed (dead code)
 
 pub use crate::automaton::Range;
 use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
 use crate::automaton_task::spawn_automaton_task;
 use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
-use crate::sequencer::{SequencerCommand, SequencerHandle, SnapshotSequencer};
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
@@ -635,8 +633,6 @@ pub struct Patchbay {
     servos: HashMap<String, BoxedServo>,
     port_combiners: HashMap<String, PortCombinerHandle>,
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
-    sequencer_handle: Option<SequencerHandle>,
-    sequencer_task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "midi")]
     midi_actor: Option<super::MidiHub>,
     #[cfg(not(feature = "midi"))]
@@ -657,8 +653,6 @@ impl Patchbay {
             servos: HashMap::new(),
             port_combiners: HashMap::new(),
             automaton_handles: HashMap::new(),
-            sequencer_handle: None,
-            sequencer_task: None,
             midi_actor: None,
             command_queue,
             time: 0.0,
@@ -881,94 +875,6 @@ impl Patchbay {
         );
     }
 
-    /// Attach a parameter-lock sequencer driven by audio-thread clock ticks.
-    ///
-    /// Spawns a blocking tokio task that reads `CLOCK_TICK` telemetry and
-    /// pushes returned parameter commands to the queue.
-    ///
-    /// Returns a [`SequencerHandle`] for external control.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a sequencer is already attached (call `detach_sequencer()` first).
-    pub fn attach_sequencer(
-        &mut self,
-        tel_rx: CrossbeamReceiver<Telemetry>,
-        sequencer: SnapshotSequencer,
-    ) -> SequencerHandle {
-        assert!(
-            self.sequencer_task.is_none(),
-            "sequencer already attached — detach first"
-        );
-
-        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<SequencerCommand>();
-        let queue = self.command_queue.clone();
-
-        let task = tokio::task::spawn_blocking(move || {
-            let mut seq = sequencer;
-
-            loop {
-                loop {
-                    match cmd_rx.try_recv() {
-                        Ok(SequencerCommand::Start) => seq.start(),
-                        Ok(SequencerCommand::Stop) => seq.stop(),
-                        Ok(SequencerCommand::Reset { sample_pos }) => seq.reset(sample_pos),
-                        Ok(SequencerCommand::SetPattern(id)) => seq.set_active_pattern(&id),
-                        Err(crossbeam_channel::TryRecvError::Empty) => break,
-                        Err(crossbeam_channel::TryRecvError::Disconnected) => return,
-                    }
-                }
-
-                match tel_rx.recv() {
-                    Ok(Telemetry::Event { kind, data, .. })
-                        if kind == CLOCK_TICK && data.len() >= 3 =>
-                    {
-                        let sample_pos = data[0] as u64;
-                        let sample_rate = data[1];
-                        let tempo = data[2];
-
-                        let beat_pos = data.get(3).copied().unwrap_or(0.0);
-                        let new_beat = data.get(4).copied().unwrap_or(0.0) > 0.5;
-                        let new_bar = data.get(5).copied().unwrap_or(0.0) > 0.5;
-
-                        let cmds = seq.tick_ext(
-                            sample_pos,
-                            sample_rate,
-                            tempo,
-                            beat_pos,
-                            new_beat,
-                            new_bar,
-                        );
-                        for cmd in cmds {
-                            queue.send(cmd);
-                        }
-                    }
-                    Err(_) => return,
-                    _ => {}
-                }
-            }
-        });
-
-        let handle = SequencerHandle::new(cmd_tx);
-        self.sequencer_handle = Some(handle.clone());
-        self.sequencer_task = Some(task);
-
-        handle
-    }
-
-    /// Detach the sequencer: abort its task and drop the handle.
-    pub fn detach_sequencer(&mut self) {
-        if let Some(task) = self.sequencer_task.take() {
-            task.abort();
-        }
-        self.sequencer_handle = None;
-    }
-
-    /// Get a reference to the sequencer handle, if attached.
-    pub fn sequencer_handle(&self) -> Option<&SequencerHandle> {
-        self.sequencer_handle.as_ref()
-    }
-
     /// Stop all async automata, the sequencer, and the MIDI actor.
     pub fn stop_all(&mut self) {
         for combiner in self.port_combiners.values() {
@@ -976,7 +882,6 @@ impl Patchbay {
         }
         self.port_combiners.clear();
         self.automaton_handles.clear();
-        self.detach_sequencer();
         self.stop_midi();
     }
 
