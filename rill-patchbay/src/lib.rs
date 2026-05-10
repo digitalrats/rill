@@ -80,7 +80,6 @@ pub mod port_combiner;
 pub mod automaton_task;
 
 /// Parameter-lock step sequencer
-pub mod sequencer;
 
 /// Serialization — documents, DOT, formats
 #[cfg(feature = "serde")]
@@ -117,13 +116,7 @@ pub use engine::{
 pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
-// Sequencer re-exports
-pub use sequencer::{
-    ParameterTarget, Pattern, SequenceStep, Snapshot, SnapshotSequencer, StepPlayMode,
-};
 #[cfg(feature = "serde")]
-pub use serialization::SequencerDef;
-
 // =============================================================================
 // Prelude for convenient imports
 // =============================================================================
@@ -135,7 +128,6 @@ pub mod prelude {
     pub use crate::automaton_task::*;
     pub use crate::engine::*;
     pub use crate::port_combiner::*;
-    pub use crate::sequencer::*;
     pub use crate::strategy::*;
     pub use crate::utils::*;
 

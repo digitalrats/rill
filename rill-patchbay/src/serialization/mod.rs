@@ -20,8 +20,6 @@ use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 
 pub mod dot;
-pub mod sequencer_def;
-pub use sequencer_def::SequencerDef;
 
 // ============================================================================
 // AutomatonDef
