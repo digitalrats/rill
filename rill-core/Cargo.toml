@@ -26,6 +26,11 @@ name = "vector_bench"
 harness = false
 path = "benches/vector_bench.rs"
 
+[[bench]]
+name = "alignment_bench"
+harness = false
+path = "benches/alignment_bench.rs"
+
 [features]
 default = []
 serde = ["dep:serde"]

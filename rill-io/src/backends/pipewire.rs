@@ -8,7 +8,7 @@
 //! enters mainloop iterate loop. Exits when `running` becomes false.
 //! No `std::thread`, `std::sync`.
 
-use std::fmt;
+use rill_core::math::functions::{deinterleave_stereo, interleave_stereo};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -146,14 +146,13 @@ impl IoBackend<f32> for PipewireBackend {
         let frames_out = n_read / out_ch;
         let out = frames_out.min(frames);
         if out_ch >= 2 {
-            for i in 0..out {
-                if let Some(c) = channels.get_mut(0) {
-                    c[i] = temp[i * out_ch];
-                }
-                if let Some(c) = channels.get_mut(1) {
-                    c[i] = temp[i * out_ch + 1];
-                }
-            }
+            let (ch0, ch1) =
+                if let (Some(c0), Some(c1)) = (channels.get_mut(0), channels.get_mut(1)) {
+                    (&mut c0[..out], &mut c1[..out])
+                } else {
+                    return out;
+                };
+            deinterleave_stereo(&temp[..out * 2], ch0, ch1);
         } else {
             for i in 0..out {
                 if let Some(c) = channels.get_mut(0) {
@@ -176,9 +175,11 @@ impl IoBackend<f32> for PipewireBackend {
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
             let cap = win.capacity().min(frames * nch);
             let dst = win.as_mut_slice();
-            for i in 0..frames {
-                for ch in 0..nch {
-                    dst[i * nch + ch] = channels[ch][i];
+            if nch >= 2 {
+                interleave_stereo(channels[0], channels[1], &mut dst[..frames * 2]);
+            } else {
+                for i in 0..frames {
+                    dst[i] = channels[0][i];
                 }
             }
             cap / nch
