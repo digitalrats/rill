@@ -1,4 +1,3 @@
-use rill_core::math::vector::scalar::ScalarVector4;
 use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{
     ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult,

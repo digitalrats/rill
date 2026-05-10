@@ -2,8 +2,7 @@
 
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
-use crate::filters::biquad::BiquadBlock;
-use crate::vector::{ScalarVector1, ScalarVector4, Vector};
+use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
 use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{ActionContext, ProcessResult};

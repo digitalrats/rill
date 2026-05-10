@@ -9,6 +9,7 @@
 //! No `std::thread`, `std::sync`.
 
 use rill_core::math::functions::{deinterleave_stereo, interleave_stereo};
+use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -145,14 +146,11 @@ impl IoBackend<f32> for PipewireBackend {
         let n_read = self.input_buffer.read(&mut temp[..max_s]);
         let frames_out = n_read / out_ch;
         let out = frames_out.min(frames);
-        if out_ch >= 2 {
-            let (ch0, ch1) =
-                if let (Some(c0), Some(c1)) = (channels.get_mut(0), channels.get_mut(1)) {
-                    (&mut c0[..out], &mut c1[..out])
-                } else {
-                    return out;
-                };
-            deinterleave_stereo(&temp[..out * 2], ch0, ch1);
+        if out_ch >= 2 && channels.len() >= 2 {
+            let (ch0, rest) = channels.split_at_mut(1);
+            let (ch1, _) = rest.split_at_mut(1);
+            let (c0, c1) = (&mut ch0[0][..out], &mut ch1[0][..out]);
+            deinterleave_stereo(&temp[..out * 2], c0, c1);
         } else {
             for i in 0..out {
                 if let Some(c) = channels.get_mut(0) {

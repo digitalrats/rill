@@ -215,10 +215,10 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
             if self.cubic && self.len() >= 4 {
                 for chunk in 0..chunks {
                     let offset = chunk * 4;
-                    let p0 = pos;
-                    let p1 = pos + rate;
-                    let p2 = pos + rate * 2.0;
-                    let p3 = pos + rate * 3.0;
+                    let _p0 = pos;
+                    let _p1 = pos + rate;
+                    let _p2 = pos + rate * 2.0;
+                    let _p3 = pos + rate * 3.0;
                     pos += rate * 4.0;
 
                     // Cubic interpolation: 4 reads per sample (16 total per block)

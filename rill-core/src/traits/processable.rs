@@ -48,7 +48,7 @@ where
         // Fires at monomorphization time when a concrete BUF_SIZE is used.
         const {
             assert!(
-                BUF_SIZE % 4 == 0,
+                BUF_SIZE.is_multiple_of(4),
                 "BUF_SIZE must be a multiple of 4 for SIMD"
             )
         }

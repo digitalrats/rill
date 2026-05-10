@@ -468,6 +468,7 @@ impl<T: Transcendental> WdfElement<T> for OpAmp<T> {
 
 /// Process a batch of samples through any element that supports
 /// `process_incident_vector`, chunking into 4-wide SIMD blocks.
+#[allow(dead_code)]
 pub fn process_batch_simd<T: Transcendental>(
     process_fn: &mut dyn FnMut(ScalarVector4<T>) -> ScalarVector4<T>,
     inputs: &[T],
