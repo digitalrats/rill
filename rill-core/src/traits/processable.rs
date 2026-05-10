@@ -7,14 +7,6 @@ use crate::traits::port::Port;
 use crate::traits::Node;
 use crate::traits::ProcessResult;
 
-/// Compile-time guarantee: BUF_SIZE is always a multiple of 4,
-/// enabling SIMD remainder-elimination in all graph nodes.
-const _: () = {
-    // BUF_SIZE is a const generic — the check is at the type level
-    // through the blanket impls. Individual nodes may add:
-    //   const _: () = assert!(BUF_SIZE % 4 == 0);
-};
-
 // ============================================================================
 // ProcessContext
 // ============================================================================
@@ -52,6 +44,14 @@ where
     T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
+        // Compile-time guard: BUF_SIZE must be SIMD-aligned (multiple of 4).
+        // Fires at monomorphization time when a concrete BUF_SIZE is used.
+        const {
+            assert!(
+                BUF_SIZE % 4 == 0,
+                "BUF_SIZE must be a multiple of 4 for SIMD"
+            )
+        }
         self.as_mut().generate(ctx.clock, &[], &[])
     }
 }
