@@ -8,6 +8,8 @@ use super::FilterParams;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::buffer::DelayLine;
+use rill_core::math::vector::scalar::ScalarVector4;
+use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::math::Transcendental;
 use rill_core::traits::{ActionContext, ProcessResult};
 
@@ -64,16 +66,51 @@ impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, M
     ) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
-        for i in 0..len {
-            // Read delayed signal
-            let delayed = self.delay.read_delayed(self.delay_samples);
+        let fb = self.feedback.extract(0);
 
-            // Output is the delayed signal
-            output[i] = delayed;
+        // SIMD path: when delay >= 4 samples, reads and writes don't overlap
+        // within a block, so we can batch 4 at a time
+        if self.delay_samples >= 4 {
+            let chunks = len / 4;
 
-            // Write with feedback
-            let write_signal = input[i] + delayed * self.feedback.extract(0);
-            let _ = self.delay.write(write_signal);
+            for chunk in 0..chunks {
+                let offset = chunk * 4;
+
+                // Batch read 4 delayed samples
+                let mut delayed_buf = [T::ZERO; 4];
+                for k in 0..4 {
+                    delayed_buf[k] = self.delay.read_delayed(self.delay_samples);
+                }
+                let delayed_v = ScalarVector4::load(&delayed_buf);
+
+                // SIMD math
+                let input_v = ScalarVector4::load(&input[offset..offset + 4]);
+                let write_v = input_v.add(&delayed_v.mul(&ScalarVector4::splat(fb)));
+
+                // Store output
+                delayed_v.store(&mut output[offset..offset + 4]);
+
+                // Batch write 4 feedback samples
+                for k in 0..4 {
+                    let _ = self.delay.write(write_v.extract(k));
+                }
+            }
+
+            // Scalar remainder
+            for i in chunks * 4..len {
+                let delayed = self.delay.read_delayed(self.delay_samples);
+                output[i] = delayed;
+                let write_signal = input[i] + delayed * fb;
+                let _ = self.delay.write(write_signal);
+            }
+        } else {
+            // Short delay: scalar path (reads overlap with writes)
+            for i in 0..len {
+                let delayed = self.delay.read_delayed(self.delay_samples);
+                output[i] = delayed;
+                let write_signal = input[i] + delayed * fb;
+                let _ = self.delay.write(write_signal);
+            }
         }
         Ok(())
     }

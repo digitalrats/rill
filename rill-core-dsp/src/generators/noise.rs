@@ -4,6 +4,8 @@ use super::Generator;
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::filters::{FilterParams, FilterType, OnePole};
 use crate::vector::prelude::*;
+use rill_core::math::vector::scalar::ScalarVector4;
+use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 
@@ -146,29 +148,91 @@ impl<T: Transcendental> NoiseGenerator<T> {
         self.brown_state * self.amplitude
     }
 
-    /// Generate blue noise (+3dB/octave)
-    fn generate_blue(&mut self) -> ScalarVector1<T> {
+    /// Generate blue noise — SIMD batch of 4
+    fn generate_blue_block(&mut self, out: &mut [T]) {
+        let chunks = out.len() / 4;
+        let amp = self.amplitude.extract(0);
+        let mut last = self.last_white.extract(0);
+
+        for chunk in 0..chunks {
+            let offset = chunk * 4;
+            let w0 = self.xorshift();
+            let w1 = self.xorshift();
+            let w2 = self.xorshift();
+            let w3 = self.xorshift();
+
+            let white_v = ScalarVector4::load(&[w0, w1, w2, w3]);
+            let shifted_v = ScalarVector4::load(&[last, w0, w1, w2]);
+            let diff = white_v.sub(&shifted_v);
+            diff.mul(&ScalarVector4::splat(amp))
+                .store(&mut out[offset..offset + 4]);
+            last = w3;
+        }
+
+        self.last_white = ScalarVector1::splat(last);
+
+        // Scalar remainder
+        for i in chunks * 4..out.len() {
+            out[i] = self.generate_blue_scalar().extract(0);
+        }
+    }
+
+    /// Generate violet noise — SIMD batch of 4
+    fn generate_violet_block(&mut self, out: &mut [T]) {
+        let chunks = out.len() / 4;
+        let amp = self.amplitude.extract(0);
+        let mut l1 = self.last_white1.extract(0);
+        let mut l2 = self.last_white2.extract(0);
+
+        for chunk in 0..chunks {
+            let offset = chunk * 4;
+            let w0 = self.xorshift();
+            let w1 = self.xorshift();
+            let w2 = self.xorshift();
+            let w3 = self.xorshift();
+
+            // First differentiator: diff1_v = [w0-l1, w1-w0, w2-w1, w3-w2]
+            let white_v = ScalarVector4::load(&[w0, w1, w2, w3]);
+            let s1_v = ScalarVector4::load(&[l1, w0, w1, w2]);
+            let diff1 = white_v.sub(&s1_v);
+
+            // Second differentiator: diff2_v = [d1_0-l2, d1_1-d1_0, d1_2-d1_1, d1_3-d1_2]
+            let s2_v =
+                ScalarVector4::load(&[l2, diff1.extract(0), diff1.extract(1), diff1.extract(2)]);
+            let diff2 = diff1.sub(&s2_v);
+
+            diff2
+                .mul(&ScalarVector4::splat(amp))
+                .store(&mut out[offset..offset + 4]);
+            l1 = w3;
+            l2 = diff1.extract(3);
+        }
+
+        self.last_white1 = ScalarVector1::splat(l1);
+        self.last_white2 = ScalarVector1::splat(l2);
+
+        for i in chunks * 4..out.len() {
+            out[i] = self.generate_violet_scalar().extract(0);
+        }
+    }
+
+    /// Generate blue noise — scalar path
+    fn generate_blue_scalar(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         let white_vec = ScalarVector1::splat(white);
-
-        // Differentiator (high-pass)
         let diff = white_vec - self.last_white;
         self.last_white = white_vec;
-
         diff * self.amplitude
     }
 
-    /// Generate violet noise (+6dB/octave)
-    fn generate_violet(&mut self) -> ScalarVector1<T> {
+    /// Generate violet noise — scalar path
+    fn generate_violet_scalar(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         let white_vec = ScalarVector1::splat(white);
-
-        // Double differentiator
         let diff1 = white_vec - self.last_white1;
         let diff2 = diff1 - self.last_white2;
         self.last_white2 = diff1;
         self.last_white1 = white_vec;
-
         diff2 * self.amplitude
     }
 }
@@ -206,14 +270,19 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenerator<T> {
         output: &mut [T],
         _ctx: &ActionContext,
     ) -> ProcessResult<()> {
-        for out in output.iter_mut() {
-            *out = match self.noise_type {
-                NoiseType::White => self.generate_white().extract(0),
-                NoiseType::Pink => self.generate_pink().extract(0),
-                NoiseType::Brown => self.generate_brown().extract(0),
-                NoiseType::Blue => self.generate_blue().extract(0),
-                NoiseType::Violet => self.generate_violet().extract(0),
-            };
+        match self.noise_type {
+            NoiseType::Blue => self.generate_blue_block(output),
+            NoiseType::Violet => self.generate_violet_block(output),
+            _ => {
+                for out in output.iter_mut() {
+                    *out = match self.noise_type {
+                        NoiseType::White => self.generate_white().extract(0),
+                        NoiseType::Pink => self.generate_pink().extract(0),
+                        NoiseType::Brown => self.generate_brown().extract(0),
+                        _ => unreachable!(),
+                    };
+                }
+            }
         }
         Ok(())
     }
