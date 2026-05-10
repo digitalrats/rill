@@ -321,9 +321,8 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
         self.position = pos;
 
         // Scalar remainder
-        let remainder_start = chunks * 4;
-        for i in remainder_start..output.len() {
-            output[i] = self.read_one();
+        for out in output[chunks * 4..].iter_mut() {
+            *out = self.read_one();
             self.advance();
         }
     }
@@ -360,8 +359,8 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
         wrap: bool,
         _cubic: bool,
     ) {
-        for i in start..start + count {
-            output[i] = if wrap {
+        for out in output[start..start + count].iter_mut() {
+            *out = if wrap {
                 let len = self.len() as f64;
                 self.read_wrap_linear(len_remainder(self.position, len))
             } else {

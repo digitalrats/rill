@@ -4,7 +4,6 @@ use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
-use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 use std::f64::consts::PI as PI64;

@@ -152,15 +152,15 @@ impl<T: Transcendental> BasicOscillator<T> {
                 self.phase = phase;
             } else {
                 // High frequency: fall back to scalar for the block
-                for i in 0..chunks * 4 {
-                    output[i] = self.generate_scalar();
+                for out in output[..chunks * 4].iter_mut() {
+                    *out = self.generate_scalar();
                 }
             }
         }
 
         // Scalar remainder
-        for i in chunks * 4..output.len() {
-            output[i] = self.generate_scalar();
+        for out in output[chunks * 4..].iter_mut() {
+            *out = self.generate_scalar();
         }
     }
 

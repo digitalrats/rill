@@ -130,8 +130,8 @@ impl<T: Transcendental> NoiseGenerator<T> {
         }
 
         // Scalar remainder
-        for i in chunks * 4..out.len() {
-            out[i] = self.generate_white().extract(0);
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_white().extract(0);
         }
     }
 
@@ -187,8 +187,8 @@ impl<T: Transcendental> NoiseGenerator<T> {
 
         self.brown_state = ScalarVector1::splat(state);
 
-        for i in chunks * 4..out.len() {
-            out[i] = self.generate_brown_scalar().extract(0);
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_brown_scalar().extract(0);
         }
     }
 
@@ -228,8 +228,8 @@ impl<T: Transcendental> NoiseGenerator<T> {
         self.last_white = ScalarVector1::splat(last);
 
         // Scalar remainder
-        for i in chunks * 4..out.len() {
-            out[i] = self.generate_blue_scalar().extract(0);
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_blue_scalar().extract(0);
         }
     }
 
@@ -267,8 +267,8 @@ impl<T: Transcendental> NoiseGenerator<T> {
         self.last_white1 = ScalarVector1::splat(l1);
         self.last_white2 = ScalarVector1::splat(l2);
 
-        for i in chunks * 4..out.len() {
-            out[i] = self.generate_violet_scalar().extract(0);
+        for out in out[chunks * 4..].iter_mut() {
+            *out = self.generate_violet_scalar().extract(0);
         }
     }
 

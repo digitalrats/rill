@@ -3,7 +3,6 @@
 use super::{FilterParams, FilterType};
 use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
 use crate::vector::{ScalarVector1, ScalarVector4, Vector};
-use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::traits::{ActionContext, ProcessResult};
 use rill_core::Transcendental;
 use std::f32::consts::PI;
@@ -35,6 +34,7 @@ impl<T: Transcendental> BiquadBlock<T> {
     }
 
     /// Pre-compute block coefficients from biquad coefficients.
+    #[allow(clippy::needless_range_loop)]
     fn compute(&mut self, coeffs: &(T, T, T, T, T)) {
         let (b0, b1, b2, a1, a2) = coeffs;
         let neg_a1 = -(*a1);
@@ -57,9 +57,9 @@ impl<T: Transcendental> BiquadBlock<T> {
         // Feedback from old y1 state (y1=1, others=0, no input)
         {
             let (mut x1, mut x2, mut y1, mut y2) = (T::ZERO, T::ZERO, T::ONE, T::ZERO);
-            for i in 0..4 {
+            for item in self.fb_y1.iter_mut() {
                 let y = *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
-                self.fb_y1[i] = y;
+                *item = y;
                 x2 = x1;
                 x1 = T::ZERO;
                 y2 = y1;
@@ -70,9 +70,9 @@ impl<T: Transcendental> BiquadBlock<T> {
         // Feedback from old y2 state
         {
             let (mut x1, mut x2, mut y1, mut y2) = (T::ZERO, T::ZERO, T::ZERO, T::ONE);
-            for i in 0..4 {
+            for item in self.fb_y2.iter_mut() {
                 let y = *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
-                self.fb_y2[i] = y;
+                *item = y;
                 x2 = x1;
                 x1 = T::ZERO;
                 y2 = y1;
@@ -83,9 +83,9 @@ impl<T: Transcendental> BiquadBlock<T> {
         // Feedback from old x1 state
         {
             let (mut x1, mut x2, mut y1, mut y2) = (T::ONE, T::ZERO, T::ZERO, T::ZERO);
-            for i in 0..4 {
+            for item in self.fb_x1.iter_mut() {
                 let y = *b0 * T::ZERO + *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
-                self.fb_x1[i] = y;
+                *item = y;
                 x2 = x1;
                 x1 = T::ZERO;
                 y2 = y1;
@@ -96,9 +96,9 @@ impl<T: Transcendental> BiquadBlock<T> {
         // Feedback from old x2 state
         {
             let (mut x1, mut x2, mut y1, mut y2) = (T::ZERO, T::ONE, T::ZERO, T::ZERO);
-            for i in 0..4 {
+            for item in self.fb_x2.iter_mut() {
                 let y = *b1 * x1 + *b2 * x2 + neg_a1 * y1 + neg_a2 * y2;
-                self.fb_x2[i] = y;
+                *item = y;
                 x2 = x1;
                 x1 = T::ZERO;
                 y2 = y1;
@@ -107,6 +107,7 @@ impl<T: Transcendental> BiquadBlock<T> {
         }
     }
 }
+/// Biquad filter — Direct Form II Transposed with SIMD block processing.
 #[allow(clippy::type_complexity)]
 pub struct Biquad<T: Transcendental> {
     params: FilterParams,
@@ -353,8 +354,8 @@ impl<T: Transcendental> Algorithm<T> for Biquad<T> {
             let mut y = [T::ZERO; 4];
 
             // Feedforward: y[i] = sum_j ff[i*4+j] * x[j]
-            for i in 0..4 {
-                y[i] = self.block.ff[i * 4] * x.extract(0)
+            for (i, y_item) in y.iter_mut().enumerate() {
+                *y_item = self.block.ff[i * 4] * x.extract(0)
                     + self.block.ff[i * 4 + 1] * x.extract(1)
                     + self.block.ff[i * 4 + 2] * x.extract(2)
                     + self.block.ff[i * 4 + 3] * x.extract(3);
@@ -365,8 +366,8 @@ impl<T: Transcendental> Algorithm<T> for Biquad<T> {
             let x2_t = x2.extract(0);
             let y1_t = y1.extract(0);
             let y2_t = y2.extract(0);
-            for i in 0..4 {
-                y[i] += self.block.fb_x1[i] * x1_t
+            for (i, y_item) in y.iter_mut().enumerate() {
+                *y_item += self.block.fb_x1[i] * x1_t
                     + self.block.fb_x2[i] * x2_t
                     + self.block.fb_y1[i] * y1_t
                     + self.block.fb_y2[i] * y2_t;
@@ -383,14 +384,16 @@ impl<T: Transcendental> Algorithm<T> for Biquad<T> {
 
         // Scalar remainder
         let (b0, b1, b2, a1, a2) = self.coeffs;
-        for i in chunks * 4..len {
-            let inp = input[i];
-            let out = b0 * inp + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-            output[i] = out.extract(0);
+        for (inp, out) in input[chunks * 4..len]
+            .iter()
+            .zip(output[chunks * 4..len].iter_mut())
+        {
+            let result = b0 * *inp + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            *out = result.extract(0);
             x2 = x1;
-            x1 = ScalarVector1::splat(inp);
+            x1 = ScalarVector1::splat(*inp);
             y2 = y1;
-            y1 = out;
+            y1 = result;
         }
 
         self.state = (x1, x2, y1, y2);

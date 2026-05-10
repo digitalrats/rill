@@ -176,9 +176,7 @@ impl IoBackend<f32> for PipewireBackend {
             if nch >= 2 {
                 interleave_stereo(channels[0], channels[1], &mut dst[..frames * 2]);
             } else {
-                for i in 0..frames {
-                    dst[i] = channels[0][i];
-                }
+                dst[..frames].copy_from_slice(&channels[0][..frames]);
             }
             cap / nch
         } else {
@@ -442,26 +440,27 @@ impl IoBackend<f32> for PipewireBackend {
                     while i + 4 <= len {
                         let off = i * 4;
                         if off + 16 <= slice.len() {
-                            let b0 = f32::from_le_bytes(slice[off..off + 4].try_into().unwrap());
-                            let b1 =
-                                f32::from_le_bytes(slice[off + 4..off + 8].try_into().unwrap());
-                            let b2 =
-                                f32::from_le_bytes(slice[off + 8..off + 12].try_into().unwrap());
-                            let b3 =
-                                f32::from_le_bytes(slice[off + 12..off + 16].try_into().unwrap());
-                            temp[i] = b0;
-                            temp[i + 1] = b1;
-                            temp[i + 2] = b2;
-                            temp[i + 3] = b3;
+                            let mut b0 = [0u8; 4];
+                            let mut b1 = [0u8; 4];
+                            let mut b2 = [0u8; 4];
+                            let mut b3 = [0u8; 4];
+                            b0.copy_from_slice(&slice[off..off + 4]);
+                            b1.copy_from_slice(&slice[off + 4..off + 8]);
+                            b2.copy_from_slice(&slice[off + 8..off + 12]);
+                            b3.copy_from_slice(&slice[off + 12..off + 16]);
+                            temp[i] = f32::from_le_bytes(b0);
+                            temp[i + 1] = f32::from_le_bytes(b1);
+                            temp[i + 2] = f32::from_le_bytes(b2);
+                            temp[i + 3] = f32::from_le_bytes(b3);
                         }
                         i += 4;
                     }
-                    for j in i..len {
-                        let off = j * 4;
+                    for (j, t) in temp[i..len].iter_mut().enumerate() {
+                        let off = (i + j) * 4;
                         if off + 4 <= slice.len() {
                             let mut bytes = [0u8; 4];
                             bytes.copy_from_slice(&slice[off..off + 4]);
-                            temp[j] = f32::from_le_bytes(bytes);
+                            *t = f32::from_le_bytes(bytes);
                         }
                     }
                     let block_samps = buf_frames * actual_channels;

@@ -9,7 +9,6 @@ use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, Paramete
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::buffer::DelayLine;
 use rill_core::math::vector::scalar::ScalarVector4;
-use rill_core::math::vector::traits::Vector as VecTrait;
 use rill_core::math::Transcendental;
 use rill_core::traits::{ActionContext, ProcessResult};
 
@@ -78,8 +77,8 @@ impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, M
 
                 // Batch read 4 delayed samples
                 let mut delayed_buf = [T::ZERO; 4];
-                for k in 0..4 {
-                    delayed_buf[k] = self.delay.read_delayed(self.delay_samples);
+                for item in delayed_buf.iter_mut() {
+                    *item = self.delay.read_delayed(self.delay_samples);
                 }
                 let delayed_v = ScalarVector4::load(&delayed_buf);
 
@@ -91,16 +90,25 @@ impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, M
                 delayed_v.store(&mut output[offset..offset + 4]);
 
                 // Batch write 4 feedback samples
-                for k in 0..4 {
-                    let _ = self.delay.write(write_v.extract(k));
+                let vals = [
+                    write_v.extract(0),
+                    write_v.extract(1),
+                    write_v.extract(2),
+                    write_v.extract(3),
+                ];
+                for &v in &vals {
+                    let _ = self.delay.write(v);
                 }
             }
 
             // Scalar remainder
-            for i in chunks * 4..len {
+            for (inp, out) in input[chunks * 4..len]
+                .iter()
+                .zip(output[chunks * 4..len].iter_mut())
+            {
                 let delayed = self.delay.read_delayed(self.delay_samples);
-                output[i] = delayed;
-                let write_signal = input[i] + delayed * fb;
+                *out = delayed;
+                let write_signal = *inp + delayed * fb;
                 let _ = self.delay.write(write_signal);
             }
         } else {
