@@ -159,20 +159,23 @@ patchbay.add_midi_mapping(
     Transform::Linear,
 );
 
-// 3. Start MIDI sensor — no Arc<Mutex> needed
+// 3. Create and attach MIDI sensor
 let backend = Box::new(MidirBackend::new("rill-midi").unwrap());
-patchbay.start_midi(backend);
+let mut hub = MidiHub::new(backend);
+hub.attach(patchbay.event_handle());
+hub.start();
+patchbay.add_sensor(Box::new(hub));
 
 // 4. Run graph on audio thread
 // ... graph.run(running) ...
 
-// 5. Drain clock & events in control loop (or use spawn_clock_loop)
+// 5. Drain clock & events in control loop
 // loop {
 //     patchbay.drain_clock();
 //     std::thread::sleep(Duration::from_millis(10));
 // }
 
-// 6. Stop — calls stop_all() which stops MIDI sensor
+// 6. Stop — calls stop_all() which stops all sensors
 patchbay.stop_all();
 ```
 
