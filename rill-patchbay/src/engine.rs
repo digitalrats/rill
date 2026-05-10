@@ -765,15 +765,6 @@ impl<A: Automaton + 'static> Module for Servo<A> {
     }
 }
 
-impl Module for Box<dyn Sensor> {
-    fn id(&self) -> &str {
-        "sensor"
-    }
-    fn stop(&mut self) {
-        Sensor::stop(self.as_mut());
-    }
-}
-
 // =============================================================================
 // 8. Main patchbay controller
 // =============================================================================
