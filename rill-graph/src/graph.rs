@@ -651,8 +651,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActorCell for Graph<T, BUF_SIZE> 
     /// Process a single parameter command by writing to the target node.
     fn receive(&mut self, msg: SetParameter) {
         let idx = msg.port.node_id().inner() as usize;
+        debug_assert!(
+            idx < self.nodes.len(),
+            "SetParameter: node {} out of bounds (max {})",
+            idx,
+            self.nodes.len()
+        );
         if idx < self.nodes.len() {
-            let _ = self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+            let result = self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+            debug_assert!(
+                result.is_ok(),
+                "SetParameter: node {} has no parameter '{}'",
+                idx,
+                msg.parameter.as_str()
+            );
         }
     }
 }
