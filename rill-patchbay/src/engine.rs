@@ -735,6 +735,7 @@ pub struct Patchbay {
     midi_actor: Option<()>,
     command_queue: ActorRef<SetParameter>,
     clock_mailbox: Arc<MpscQueue<ClockTick>>,
+    event_mailbox: Arc<MpscQueue<ControlEvent>>,
     time: Time,
 }
 
@@ -753,6 +754,7 @@ impl Patchbay {
             midi_actor: None,
             command_queue,
             clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
+            event_mailbox: Arc::new(MpscQueue::with_capacity(64)),
             time: 0.0,
         }
     }
@@ -760,6 +762,11 @@ impl Patchbay {
     /// Return an [`ActorRef`] for the graph to send `ClockTick` to.
     pub fn clock_handle(&self) -> ActorRef<ClockTick> {
         ActorRef::new(&self.clock_mailbox)
+    }
+
+    /// Return an [`ActorRef`] for sensors (MIDI, OSC, knobs) to send events to.
+    pub fn event_handle(&self) -> ActorRef<ControlEvent> {
+        ActorRef::new(&self.event_mailbox)
     }
 
     /// Add an event mapping.
@@ -1001,13 +1008,9 @@ impl Patchbay {
     ///
     /// If a MidiHub is already running, it is stopped first.
     #[cfg(feature = "midi")]
-    pub fn start_midi(
-        &mut self,
-        backend: Box<dyn rill_io::midi_backend::MidiBackend>,
-        shared: Arc<std::sync::Mutex<Patchbay>>,
-    ) {
+    pub fn start_midi(&mut self, backend: Box<dyn rill_io::midi_backend::MidiBackend>) {
         self.stop_midi();
-        self.midi_actor = Some(super::MidiHub::start(backend, shared));
+        self.midi_actor = Some(super::MidiHub::start(backend, self.event_handle()));
     }
 
     /// Stop the MIDI actor if running.
@@ -1153,15 +1156,22 @@ impl Patchbay {
     ///
     /// Call this from the main loop (not the audio thread).
     pub fn drain_clock(&mut self) {
+        self.drain_events();
         while let Some(clock) = self.clock_mailbox.pop() {
             let msg = AutomatonMsg::Tick(clock);
             for servo in self.servos.values() {
                 servo.handle().send(msg.clone());
             }
-            // Update sync servos with time from clock
             let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
             self.time += dt;
             self.update(dt as f32);
+        }
+    }
+
+    /// Drain the event mailbox and dispatch to mappings.
+    pub fn drain_events(&mut self) {
+        while let Some(event) = self.event_mailbox.pop() {
+            self.handle_event(event);
         }
     }
 

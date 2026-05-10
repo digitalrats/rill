@@ -95,6 +95,7 @@ pub mod observer;
 
 #[cfg(feature = "midi")]
 pub use midi::MidiHub;
+pub use sensor::Sensor;
 
 // =============================================================================
 // Re-exports for convenience
@@ -115,7 +116,6 @@ pub use engine::{
 pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
-#[cfg(feature = "serde")]
 // =============================================================================
 // Prelude for convenient imports
 // =============================================================================

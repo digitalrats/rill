@@ -1,25 +1,99 @@
-//! MIDI actor — receives raw MIDI messages from a backend,
-//! parses them into [`ControlEvent`]s, and feeds the [`Patchbay`].
+//! MIDI sensor — receives raw MIDI messages from a backend,
+//! parses them into [`ControlEvent`]s, and sends them via [`ActorRef`].
+//!
+//! Uses a dedicated OS thread for polling. Multiple sensors can run
+//! independently — events from all sources arrive via a shared mailbox.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rill_core_actor::ActorRef;
 use rill_io::midi_backend::MidiBackend;
 use rill_io::midi_message::MidiMessage;
 
-use crate::engine::{ControlEvent, MidiTransportKind, Patchbay};
+use crate::engine::{ControlEvent, MidiTransportKind};
+use crate::sensor::Sensor;
 
-/// Drives a [`MidiBackend`] on a dedicated thread, converts raw
-/// MIDI bytes into [`ControlEvent`]s, and dispatches them to a
-/// shared [`Patchbay`].
-///
-/// The actor is intentionally simple — no message passing, just
-/// a polling loop → parse → dispatch cycle on its own thread.
+/// MIDI sensor — polls a [`MidiBackend`] on a dedicated OS thread,
+/// parses raw bytes into [`ControlEvent`]s, and dispatches via [`ActorRef`].
 pub struct MidiHub {
     thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
+    events: Option<ActorRef<ControlEvent>>,
+    backend: Option<Box<dyn MidiBackend>>,
+}
+
+impl MidiHub {
+    /// Create a new MIDI sensor with a backend.
+    pub fn new(backend: Box<dyn MidiBackend>) -> Self {
+        Self {
+            thread: None,
+            running: Arc::new(AtomicBool::new(true)),
+            events: None,
+            backend: Some(backend),
+        }
+    }
+
+    /// Convenience: create, attach, and start in one call.
+    pub fn start(backend: Box<dyn MidiBackend>, events: ActorRef<ControlEvent>) -> Self {
+        let mut hub = Self::new(backend);
+        hub.attach(events);
+        hub.start();
+        hub
+    }
+}
+
+impl Sensor for MidiHub {
+    fn attach(&mut self, events: ActorRef<ControlEvent>) {
+        self.events = Some(events);
+    }
+
+    fn start(&mut self) {
+        let events = self
+            .events
+            .take()
+            .expect("MidiHub: attach() must be called before start()");
+        let backend = self
+            .backend
+            .take()
+            .expect("MidiHub: already started or no backend");
+        let r = self.running.clone();
+
+        self.thread = Some(thread::spawn(move || {
+            let mut backend = backend;
+            while r.load(Ordering::Acquire) {
+                match backend.poll() {
+                    Ok(msgs) => {
+                        for msg in msgs {
+                            if let Some(event) = parse_midi(&msg) {
+                                events.send(event);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("midi backend poll error: {e}");
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }));
+    }
+
+    fn stop(&mut self) {
+        self.running.store(false, Ordering::Release);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for MidiHub {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl MidiHub {
