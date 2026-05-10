@@ -40,6 +40,7 @@ rand = "0.8"
 log = "0.4"
 crossbeam-channel = "0.5"
 tokio = "1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 # Internal workspace crates
 rill-core = { path = "rill-core", version = "0.5.0-beta.4" }
