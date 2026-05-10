@@ -692,6 +692,10 @@ pub trait AnyServo: Send + Sync {
     fn set_enabled(&mut self, enabled: bool);
     /// Return an ActorRef for sending control messages.
     fn handle(&self) -> ActorRef<AutomatonMsg>;
+    /// Stop the servo (disable, shutdown any tasks).
+    fn stop(&mut self) {
+        self.set_enabled(false);
+    }
 }
 
 impl<A: Automaton + 'static> AnyServo for Servo<A> {
@@ -988,13 +992,16 @@ impl Patchbay {
         );
     }
 
-    /// Stop all async automata, sensors, and port combiners.
+    /// Stop all modules — servos, sensors, and port combiners.
     pub fn stop_all(&mut self) {
         for combiner in self.port_combiners.values() {
             combiner.stop();
         }
         self.port_combiners.clear();
         self.automaton_handles.clear();
+        for servo in self.servos.values_mut() {
+            servo.stop();
+        }
         for sensor in &mut self.sensors {
             sensor.stop();
         }
