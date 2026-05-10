@@ -159,7 +159,6 @@ pub struct Runtime<const BUF: usize = 64> {
     osc: Option<OscHandle>,
 
     // ── Fields set by [`launch`](Self::launch) ──────────────
-
     /// Shared Patchbay (single instance for MIDI + automata).
     #[cfg(feature = "serialization")]
     control_arc: Option<Arc<Mutex<Patchbay>>>,

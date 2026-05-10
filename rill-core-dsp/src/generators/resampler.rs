@@ -237,7 +237,11 @@ mod tests {
         assert!((out[0] - 0.0).abs() < 1e-10, "pos 0.0, got {}", out[0]);
         assert!((out[1] - 5.0).abs() < 1e-10, "pos 0.5, got {}", out[1]);
         assert!((out[2] - 10.0).abs() < 1e-10, "pos 1.0, got {}", out[2]);
-        assert!((out[3] - 10.0).abs() < 1e-10, "pos 1.5 clamped, got {}", out[3]);
+        assert!(
+            (out[3] - 10.0).abs() < 1e-10,
+            "pos 1.5 clamped, got {}",
+            out[3]
+        );
     }
 
     #[test]
