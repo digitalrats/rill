@@ -76,7 +76,7 @@ to a shared `Patchbay`.
 
 ```rust,no_run
 use std::sync::{Arc, Mutex};
-use rill_patchbay::midi_actor::MidiHub;
+use rill_patchbay::midi::MidiHub;
 use rill_patchbay::Patchbay;
 use rill_io::midi_backend::MidiBackend;
 
@@ -131,7 +131,7 @@ pub enum ControlEvent {
 use std::sync::{Arc, Mutex};
 use rill_core_actor::ActorRef;
 use rill_patchbay::{
-    midi_actor::MidiHub,
+    midi::MidiHub,
     engine::{Patchbay, EventPattern, midi_cc},
     Transform,
 };
