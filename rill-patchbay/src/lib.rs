@@ -73,9 +73,6 @@ pub mod function_registry;
 /// Automaton control strategies
 pub mod strategy;
 
-/// PortCombiner — combining automaton and UI per port
-pub mod port_combiner;
-
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
@@ -113,7 +110,6 @@ pub use engine::{
     NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
 };
 
-pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
@@ -126,7 +122,6 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::automaton_task::*;
     pub use crate::engine::*;
-    pub use crate::port_combiner::*;
     pub use crate::strategy::*;
     pub use crate::utils::*;
 

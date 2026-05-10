@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Duration;
 
 use rill_core::prelude::*;
 use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
@@ -16,9 +15,6 @@ use rill_core_actor::{ActorCell, ActorRef};
 // crossbeam removed: // crossbeam removed (dead code)
 
 pub use crate::automaton::Range;
-use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
-use crate::automaton_task::spawn_automaton_task;
-use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
 use crate::sensor::Sensor;
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
@@ -464,6 +460,8 @@ pub enum AutomatonMsg {
     SetEnabled(bool),
     /// Reset to initial state.
     Reset,
+    /// UI command (from handle_event via patchbay).
+    Ui(UiCommand),
 }
 
 /// Mapping type for a servo's output value.
@@ -524,9 +522,13 @@ pub struct Servo<A: Automaton> {
     min: f64,
     max: f64,
     last_sent_value: f64,
-    /// Value table for sequence automata (index → value).
     table: Option<Vec<ParamValue>>,
     last_sent_index: i64,
+    // ── Conflict resolution (ex-PortCombiner) ──
+    control: ControlStrategy,
+    conflict: ConflictStrategy,
+    frozen: bool,
+    base: f64,
 }
 
 impl<A: Automaton> Servo<A> {
@@ -562,6 +564,10 @@ impl<A: Automaton> Servo<A> {
             last_sent_value: f64::NAN,
             table: None,
             last_sent_index: -1,
+            control: ControlStrategy::Absolute,
+            conflict: ConflictStrategy::LastWriteWins,
+            frozen: false,
+            base: (min + max) / 2.0,
         }
     }
 
@@ -603,10 +609,32 @@ impl<A: Automaton> Servo<A> {
                 AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
                 AutomatonMsg::Reset => self.internal = self.automaton.reset(),
                 AutomatonMsg::Tick(_) => {}
+                AutomatonMsg::Ui(UiCommand::SetValue(v)) => match self.conflict {
+                    ConflictStrategy::TouchOverride => {
+                        self.base = v;
+                        self.frozen = true;
+                        return Some(self.make_cmd(v));
+                    }
+                    ConflictStrategy::BasePlusModulation => {
+                        self.base = v;
+                    }
+                    ConflictStrategy::LastWriteWins => {
+                        return Some(self.make_cmd(v));
+                    }
+                },
+                AutomatonMsg::Ui(UiCommand::Release) => {
+                    if self.frozen {
+                        self.frozen = false;
+                    }
+                }
             }
         }
 
         if !self.enabled {
+            return None;
+        }
+
+        if self.frozen && matches!(self.conflict, ConflictStrategy::TouchOverride) {
             return None;
         }
 
@@ -615,9 +643,10 @@ impl<A: Automaton> Servo<A> {
             .automaton
             .step(&mut self.internal, &self.state, time, &action);
 
+        let raw = self.state.as_f32().unwrap_or(0.0) as f64;
+
         if let Some(ref table) = self.table {
-            // Table mode: automaton returns index, lookup value from table
-            let index = self.state.as_i32().unwrap_or(0) as usize;
+            let index = raw as usize;
             if index >= table.len() {
                 return None;
             }
@@ -626,32 +655,42 @@ impl<A: Automaton> Servo<A> {
                 return None;
             }
             self.last_sent_index = idx;
-            let pid = ParameterId::new(&self.target_param).unwrap();
-            return Some(SetParameter::new(
-                PortId::param(self.target_node, 0),
-                pid,
-                table[index].clone(),
-                SignalOrigin::Automaton(self.id.clone()),
-            ));
+            return Some(self.make_cmd_from(table[index].clone()));
         }
 
-        // F64 mode: map through ParameterMapping
-        let raw = self.state.as_f32().unwrap_or(0.0) as f64;
-        let mapped = self.mapping.apply(raw);
-        let clamped = mapped.clamp(self.min, self.max);
+        // F64 mode: apply ControlStrategy
+        let value = match self.control {
+            ControlStrategy::Absolute => self.min + raw * (self.max - self.min),
+            ControlStrategy::Modulation { depth } => {
+                (self.base + raw * depth * (self.max - self.min)).clamp(self.min, self.max)
+            }
+        };
 
-        if (clamped - self.last_sent_value).abs() < 1e-6 {
+        if (value - self.last_sent_value).abs() < 1e-6 {
             return None;
         }
-        self.last_sent_value = clamped;
+        self.last_sent_value = value;
+        Some(self.make_cmd(value))
+    }
 
+    fn make_cmd(&self, value: f64) -> SetParameter {
         let pid = ParameterId::new(&self.target_param).unwrap();
-        Some(SetParameter::new(
+        SetParameter::new(
             PortId::param(self.target_node, 0),
             pid,
-            ParamValue::Float(clamped as f32),
+            ParamValue::Float(value as f32),
             SignalOrigin::Automaton(self.id.clone()),
-        ))
+        )
+    }
+
+    fn make_cmd_from(&self, value: ParamValue) -> SetParameter {
+        let pid = ParameterId::new(&self.target_param).unwrap();
+        SetParameter::new(
+            PortId::param(self.target_node, 0),
+            pid,
+            value,
+            SignalOrigin::Automaton(self.id.clone()),
+        )
     }
 
     /// Enable or disable this servo.
@@ -675,6 +714,7 @@ impl<A: Automaton + 'static> ActorCell for Servo<A> {
             AutomatonMsg::Tick(_) => {}
             AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
             AutomatonMsg::Reset => self.internal = self.automaton.reset(),
+            AutomatonMsg::Ui(_) => {} // handled in update()
         }
     }
 }
@@ -733,7 +773,6 @@ pub struct Patchbay {
     mappings: Vec<Mapping>,
     servos: HashMap<String, BoxedServo>,
     sensors: Vec<Box<dyn Sensor>>,
-    port_combiners: HashMap<String, PortCombinerHandle>,
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
     command_queue: ActorRef<SetParameter>,
     clock_mailbox: Arc<MpscQueue<ClockTick>>,
@@ -752,7 +791,6 @@ impl Patchbay {
             mappings: Vec::new(),
             servos: HashMap::new(),
             sensors: Vec::new(),
-            port_combiners: HashMap::new(),
             automaton_handles: HashMap::new(),
             command_queue,
             clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
@@ -901,103 +939,8 @@ impl Patchbay {
         self.add_servo(servo);
     }
 
-    /// Add an automaton as a green thread (tokio task).
-    ///
-    /// Requires an active tokio runtime. Ports with async automata receive
-    /// a `PortCombiner` that resolves UI ↔ automaton conflicts.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` — unique identifier
-    /// * `automaton` — the automaton implementation
-    /// * `interval` — update interval (e.g. 10 ms = 100 Hz)
-    /// * `target` — `(node_id, param_name)`
-    /// * `range` — `(min, max)` parameter range
-    /// * `control` — control strategy
-    /// * `conflict` — conflict resolution strategy
-    pub fn add_automaton_task<A: Automaton + 'static>(
-        &mut self,
-        id: &str,
-        automaton: A,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        let key = target_key(target.0, &target.1);
-
-        let combiner = spawn_combiner(target, range, control, conflict, self.command_queue.clone());
-
-        let task = spawn_automaton_task(
-            automaton,
-            interval,
-            combiner.automaton_tx.clone(),
-            combiner.cancel_rx(),
-        );
-
-        self.port_combiners.insert(key, combiner);
-        self.automaton_handles.insert(id.to_string(), task);
-    }
-
-    /// Add an LFO as an async automaton task.
-    pub fn add_lfo_task(
-        &mut self,
-        id: &str,
-        frequency: f64,
-        amplitude: f64,
-        offset: f64,
-        waveform: LfoWaveform,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        let automaton = LfoAutomaton::new(id, frequency, amplitude, offset, waveform);
-        self.add_automaton_task(
-            format!("{}_auto", id).as_str(),
-            automaton,
-            interval,
-            target,
-            range,
-            control,
-            conflict,
-        );
-    }
-
-    /// Add an envelope ADSR as an async automaton task.
-    pub fn add_envelope_task(
-        &mut self,
-        id: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        let automaton = EnvelopeAutomaton::adsr(id, attack, decay, sustain, release);
-        self.add_automaton_task(
-            format!("{}_auto", id).as_str(),
-            automaton,
-            interval,
-            target,
-            range,
-            control,
-            conflict,
-        );
-    }
-
-    /// Stop all modules — servos, sensors, and port combiners.
+    /// Stop all modules — servos, sensors.
     pub fn stop_all(&mut self) {
-        for combiner in self.port_combiners.values() {
-            combiner.stop();
-        }
-        self.port_combiners.clear();
         self.automaton_handles.clear();
         for servo in self.servos.values_mut() {
             servo.stop();
@@ -1016,73 +959,19 @@ impl Patchbay {
         self.sensors.push(sensor);
     }
 
-    // ── Convenience aliases (forwarded from removed PatchbayEngine) ────
-
-    /// Add an automaton as a green thread with PortCombiner.
-    pub fn add_automaton<A: Automaton + 'static>(
-        &mut self,
-        id: &str,
-        automaton: A,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        self.add_automaton_task(id, automaton, interval, target, range, control, conflict);
-    }
-
-    /// Add an LFO as a green thread (async automaton + PortCombiner).
-    pub fn add_lfo_async(
-        &mut self,
-        id: &str,
-        frequency: f64,
-        amplitude: f64,
-        offset: f64,
-        waveform: LfoWaveform,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        self.add_lfo_task(
-            id, frequency, amplitude, offset, waveform, interval, target, range, control, conflict,
-        );
-    }
-
-    /// Add an envelope as a green thread (async automaton + PortCombiner).
-    pub fn add_envelope_async(
-        &mut self,
-        id: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        self.add_envelope_task(
-            id, attack, decay, sustain, release, interval, target, range, control, conflict,
-        );
-    }
-
-    /// Handle an external event (MIDI/OSC).
+    /// Process an incoming control event (MIDI, OSC, button, etc.).
     ///
-    /// If a `PortCombiner` exists for the target port the event is routed
-    /// there for conflict resolution; otherwise it is pushed directly to
-    /// the command queue.
+    /// If a Servo exists for the target port, the event is routed via
+    /// `AutomatonMsg::Ui` for conflict resolution; otherwise it is pushed
+    /// directly to the command queue.
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
                 let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
-                if let Some(combiner) = self.port_combiners.get(&key) {
-                    let _ = combiner
-                        .ui_tx
-                        .send(UiCommand::SetValue(cmd.value.as_f32().unwrap_or(0.0) as f64));
+                if let Some(servo) = self.servos.get(&key) {
+                    let _ = servo.handle().send(AutomatonMsg::Ui(UiCommand::SetValue(
+                        cmd.value.as_f32().unwrap_or(0.0) as f64,
+                    )));
                 } else {
                     self.command_queue.send(cmd);
                 }
@@ -1102,11 +991,6 @@ impl Patchbay {
                 self.command_queue.send(cmd);
             }
         }
-    }
-
-    /// Get a combiner by key (format: `"node_id:param_name"`).
-    pub fn get_combiner(&self, key: &str) -> Option<&PortCombinerHandle> {
-        self.port_combiners.get(key)
     }
 
     /// Return all mappings.
