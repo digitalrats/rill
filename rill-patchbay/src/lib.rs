@@ -79,8 +79,6 @@ pub mod port_combiner;
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
-/// Parameter-lock step sequencer
-
 /// Serialization — documents, DOT, formats
 #[cfg(feature = "serde")]
 pub mod serialization;
@@ -103,9 +101,10 @@ pub use midi::MidiHub;
 // =============================================================================
 
 // Selective re-exports
+pub use automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use automaton::{
     EnvelopeAutomaton, EnvelopeStage, EnvelopeType, FunctionAutomaton, LfoAutomaton, LfoWaveform,
-    PlayMode, Range, SequencerAutomaton, StatefulFunctionAutomaton, Step, SyncMode,
+    Range, StatefulFunctionAutomaton, SyncMode,
 };
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{

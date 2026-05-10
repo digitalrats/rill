@@ -1154,7 +1154,7 @@ impl Patchbay {
     /// Call this from the main loop (not the audio thread).
     pub fn drain_clock(&mut self) {
         while let Some(clock) = self.clock_mailbox.pop() {
-            let msg = AutomatonMsg::Tick(clock.clone());
+            let msg = AutomatonMsg::Tick(clock);
             for servo in self.servos.values() {
                 servo.handle().send(msg.clone());
             }
