@@ -165,40 +165,24 @@ impl Automaton for SequencerAutomaton {
         time: Time,
         _action: &Self::Action,
     ) -> ParamValue {
-        let (current_step, step_start_time, direction, rng_state) = *internal;
+        let (current_step, step_start_time, direction, mut rng_state) = *internal;
 
         if self.steps.is_empty() {
-            return ParamValue::Float(0.0);
+            return ParamValue::Int(0);
         }
 
         let current_step_data = &self.steps[current_step];
         let step_dur = self.step_duration(current_step_data);
         let elapsed = time - step_start_time;
 
-        let (new_step, new_start_time, new_direction, new_rng, value) = if elapsed >= step_dur {
-            let (next, new_dir) = self.next_step(current_step, direction, &mut rng_state.clone());
-            (next, time, new_dir, rng_state, self.steps[next].value)
-        } else if self.interpolate && step_dur > 0.0 {
-            let t = elapsed / step_dur;
-            let next_idx = (current_step + 1) % self.steps.len();
-            let next_val = self.steps[next_idx].value;
-            let curve = current_step_data.curve.unwrap_or(1.0);
-            let tt = t.powf(curve);
-            let v = current_step_data.value * (1.0 - tt) + next_val * tt;
-            (current_step, step_start_time, direction, rng_state, v)
+        if elapsed >= step_dur {
+            let (next, new_dir) = self.next_step(current_step, direction, &mut rng_state);
+            *internal = (next, time, new_dir, rng_state);
+            ParamValue::Int(next as i32)
         } else {
-            (
-                current_step,
-                step_start_time,
-                direction,
-                rng_state,
-                current_step_data.value,
-            )
-        };
-
-        *internal = (new_step, new_start_time, new_direction, new_rng);
-        let out = self.range.denormalize(value);
-        ParamValue::Float(out as f32)
+            // Same step — no change
+            ParamValue::Float(current_step as f32)
+        }
     }
 
     fn initial_internal(&self) -> Self::Internal {

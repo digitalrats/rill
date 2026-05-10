@@ -441,6 +441,11 @@ pub trait Automaton: Send + Sync + Debug {
     /// Initial internal state.
     fn initial_internal(&self) -> Self::Internal;
 
+    /// Reset the automaton to its initial internal state.
+    fn reset(&self) -> Self::Internal {
+        self.initial_internal()
+    }
+
     /// Automaton name.
     fn name(&self) -> &str;
 }
@@ -518,6 +523,9 @@ pub struct Servo<A: Automaton> {
     min: f64,
     max: f64,
     last_sent_value: f64,
+    /// Value table for sequence automata (index → value).
+    table: Option<Vec<ParamValue>>,
+    last_sent_index: i64,
 }
 
 impl<A: Automaton> Servo<A> {
@@ -551,7 +559,33 @@ impl<A: Automaton> Servo<A> {
             min,
             max,
             last_sent_value: f64::NAN,
+            table: None,
+            last_sent_index: -1,
         }
+    }
+
+    /// Create a servo driven by a sequence table.
+    ///
+    /// The automaton returns `ParamValue::Float(index)` and the servo looks up
+    /// the actual `ParamValue` from the provided table.
+    pub fn with_table(
+        id: impl Into<String>,
+        automaton: A,
+        target_node: NodeId,
+        target_param: impl Into<String>,
+        table: Vec<ParamValue>,
+    ) -> Self {
+        let mut s = Self::new(
+            id,
+            automaton,
+            target_node,
+            target_param,
+            ParameterMapping::Linear,
+            0.0,
+            1.0,
+        );
+        s.table = Some(table);
+        s
     }
 
     /// Return an [`ActorRef`] for sending control messages.
@@ -566,7 +600,7 @@ impl<A: Automaton> Servo<A> {
         while let Some(cmd) = self.mailbox.pop() {
             match cmd {
                 AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
-                AutomatonMsg::Reset => self.internal = self.automaton.initial_internal(),
+                AutomatonMsg::Reset => self.internal = self.automaton.reset(),
                 AutomatonMsg::Tick(_) => {}
             }
         }
@@ -580,6 +614,27 @@ impl<A: Automaton> Servo<A> {
             .automaton
             .step(&mut self.internal, &self.state, time, &action);
 
+        if let Some(ref table) = self.table {
+            // Table mode: automaton returns index, lookup value from table
+            let index = self.state.as_i32().unwrap_or(0) as usize;
+            if index >= table.len() {
+                return None;
+            }
+            let idx = index as i64;
+            if idx == self.last_sent_index {
+                return None;
+            }
+            self.last_sent_index = idx;
+            let pid = ParameterId::new(&self.target_param).unwrap();
+            return Some(SetParameter::new(
+                PortId::param(self.target_node, 0),
+                pid,
+                table[index].clone(),
+                SignalOrigin::Automaton(self.id.clone()),
+            ));
+        }
+
+        // F64 mode: map through ParameterMapping
         let raw = self.state.as_f32().unwrap_or(0.0) as f64;
         let mapped = self.mapping.apply(raw);
         let clamped = mapped.clamp(self.min, self.max);
@@ -618,7 +673,7 @@ impl<A: Automaton + 'static> ActorCell for Servo<A> {
         match msg {
             AutomatonMsg::Tick(_) => {}
             AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
-            AutomatonMsg::Reset => self.internal = self.automaton.initial_internal(),
+            AutomatonMsg::Reset => self.internal = self.automaton.reset(),
         }
     }
 }
