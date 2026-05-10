@@ -2,15 +2,16 @@
 //! for analog circuit modeling.
 //!
 //! All types are generic over [`rill_core::Transcendental`], supporting both `f32`
-//! and `f64`. The SIMD module (behind the `simd` feature) uses the
-//! [`rill_core_dsp`](https://docs.rs/rill-core-dsp) vector infrastructure.
+//! and `f64`. SIMD-accelerated batch processing is available via
+//! `process_incident_vector` methods on [`Resistor`], [`Capacitor`],
+//! [`Inductor`], and [`Diode`], plus the free function
+//! [`elements::process_batch_simd`].
 //!
 //! ## Modules
 //! - `macros` — WDF eDSL macros for defining elements and filters
 //! - `analysis` — frequency response and distortion analysis
 //! - `constants` — physical constants and tolerances
 //! - `filters` — WDF-based filter models
-//! - `simd` — SIMD-accelerated WDF processing (behind `simd` feature)
 //!
 //! # Design
 //!
@@ -42,24 +43,35 @@ mod elements;
 /// Analog tape recording and playback head models
 pub mod tape;
 
-#[cfg(feature = "simd")]
-pub mod simd;
-
 /// WDF-based filter models
 pub mod filters;
 
 pub use adapters::{ParallelAdapter, SeriesAdapter};
 pub use elements::{Capacitor, Diode, Inductor, OpAmp, Resistor};
 
-/// Wave port type for WDF adapters
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PortType {
-    /// Series connection
-    Series,
-    /// Parallel connection
-    Parallel,
-    /// Reflection port
-    Reflection,
+/// Base WDF element trait.
+///
+/// Every WDF element has a port resistance and processes incident
+/// waves to produce reflected waves. For SIMD batch processing,
+/// see the `process_incident_vector` methods on concrete element types.
+pub trait WdfElement<T: Transcendental>: Send + Sync {
+    /// Port resistance
+    fn port_resistance(&self) -> T;
+
+    /// Process incident wave, return reflected wave
+    fn process_incident(&mut self, a: T) -> T;
+
+    /// Update internal state (called after wave computation)
+    fn update_state(&mut self);
+
+    /// Current voltage across the element
+    fn voltage(&self) -> T;
+
+    /// Current current through the element
+    fn current(&self) -> T;
+
+    /// Reset to initial state
+    fn reset(&mut self);
 }
 
 /// Wave variables: a (incident), b (reflected)
@@ -100,30 +112,6 @@ impl<T: Transcendental> Default for WaveVariables<T> {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Base WDF element trait
-///
-/// Every WDF element has a port resistance and processes incident
-/// waves to produce reflected waves.
-pub trait WdfElement<T: Transcendental>: Send + Sync {
-    /// Port resistance
-    fn port_resistance(&self) -> T;
-
-    /// Process incident wave, return reflected wave
-    fn process_incident(&mut self, a: T) -> T;
-
-    /// Update internal state (called after wave computation)
-    fn update_state(&mut self);
-
-    /// Current voltage across the element
-    fn voltage(&self) -> T;
-
-    /// Current current through the element
-    fn current(&self) -> T;
-
-    /// Reset to initial state
-    fn reset(&mut self);
 }
 
 #[cfg(test)]

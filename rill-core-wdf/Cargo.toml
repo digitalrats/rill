@@ -14,4 +14,3 @@ parking_lot = { workspace = true }
 
 [features]
 default = []
-simd = ["rill-core/simd"]
