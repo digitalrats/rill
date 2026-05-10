@@ -415,45 +415,34 @@ pub struct NoAction;
 
 /// Core trait for all automata.
 ///
-/// An automaton is a stateful function generator. Each call to [`step`](Self::step)
-/// takes the current time, an action, and the current state, and returns a
-/// new state together with an optional output value.  Automata are `Send`
-/// and run on the control thread (soft RT).
+/// An automaton is a generator: `(internal, current, time, action) → new_value`.
+/// - `internal` — mutable automaton-specific state (phase, RNG, step counter, ...)
+/// - `current` — current value at the control port (for reference, immutable)
+/// - `time` — wall-clock seconds since start
+/// - `action` — optional action to apply
+///
+/// `&self` is the immutable automaton configuration (frequency, waveform, ...).
 pub trait Automaton: Send + Sync + Debug {
-    /// State type.
-    type State: Clone + Send + Sync + 'static + Debug;
+    /// Internal mutable state type (stored by Servo alongside the control port value).
+    type Internal: Clone + Send + Sync + 'static;
 
     /// Action type (a pure function applied to the state).
     type Action: Debug + Clone + Send + Sync + Default + 'static;
 
-    /// Advance the automaton by one time step.
-    ///
-    /// # Arguments
-    /// * `time` — current time
-    /// * `action` — action to apply
-    /// * `state` — current state
-    ///
-    /// Returns `(new_state, optional_output_value)`.
+    /// Compute the next control port value.
     fn step(
         &self,
+        internal: &mut Self::Internal,
+        current: &ParamValue,
         time: Time,
         action: &Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<f64>);
+    ) -> ParamValue;
 
-    /// Return the initial state.
-    fn initial_state(&self) -> Self::State;
+    /// Initial internal state.
+    fn initial_internal(&self) -> Self::Internal;
 
     /// Automaton name.
     fn name(&self) -> &str;
-
-    /// Extract the output value from the state.
-    fn extract_value(&self, state: &Self::State) -> f64;
-
-    /// Reset the automaton to its initial state.
-    fn reset(&self) -> Self::State {
-        self.initial_state()
-    }
 }
 
 // =============================================================================
@@ -514,24 +503,25 @@ impl ParameterMapping {
 /// A servo bridges an automaton to a graph-node parameter.
 ///
 /// Stores the automaton state externally (the automaton itself is a pure
-/// function) and provides an [`ActorRef`] for receiving control messages.
+/// function), provides an [`ActorRef`] for receiving control messages,
+/// and sends output directly to the graph via `ActorRef<SetParameter>`.
 pub struct Servo<A: Automaton> {
     id: String,
     automaton: A,
-    state: A::State,
+    internal: A::Internal,
+    state: ParamValue,
+    enabled: bool,
+    mailbox: Arc<MpscQueue<AutomatonMsg>>,
     target_node: NodeId,
     target_param: String,
     mapping: ParameterMapping,
     min: f64,
     max: f64,
-    last_value: f64,
-    enabled: bool,
-    last_time: Time,
-    mailbox: Arc<MpscQueue<AutomatonMsg>>,
+    last_sent_value: f64,
 }
 
 impl<A: Automaton> Servo<A> {
-    /// Create a new servo.
+    /// Create a servo.
     pub fn new(
         id: impl Into<String>,
         automaton: A,
@@ -541,39 +531,43 @@ impl<A: Automaton> Servo<A> {
         min: f64,
         max: f64,
     ) -> Self {
-        let state = automaton.initial_state();
+        let mut internal = automaton.initial_internal();
+        let state = automaton.step(
+            &mut internal,
+            &ParamValue::Float(0.0),
+            0.0,
+            &A::Action::default(),
+        );
         Self {
             id: id.into(),
             automaton,
+            internal,
             state,
+            enabled: true,
+            mailbox: Arc::new(MpscQueue::with_capacity(16)),
             target_node,
             target_param: target_param.into(),
             mapping,
             min,
             max,
-            last_value: 0.0,
-            enabled: true,
-            last_time: 0.0,
-            mailbox: Arc::new(MpscQueue::with_capacity(16)),
+            last_sent_value: f64::NAN,
         }
     }
 
-    /// Return an [`ActorRef`] for sending control messages to this servo.
+    /// Return an [`ActorRef`] for sending control messages.
     pub fn handle(&self) -> ActorRef<AutomatonMsg> {
         ActorRef::new(&self.mailbox)
     }
 
     /// Advance the servo and return a parameter command if the value changed.
     ///
-    /// Drains the command queue before stepping the automaton (same pattern
-    /// as Graph::run).
+    /// Drains the command queue before stepping the automaton.
     pub fn update(&mut self, time: Time) -> Option<SetParameter> {
-        // Drain command queue (like Graph::run)
         while let Some(cmd) = self.mailbox.pop() {
             match cmd {
                 AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
-                AutomatonMsg::Reset => self.state = self.automaton.initial_state(),
-                AutomatonMsg::Tick(_) => {} // time from caller, not from mailbox
+                AutomatonMsg::Reset => self.internal = self.automaton.initial_internal(),
+                AutomatonMsg::Tick(_) => {}
             }
         }
 
@@ -581,30 +575,27 @@ impl<A: Automaton> Servo<A> {
             return None;
         }
 
-        let (new_state, value_opt) = self
+        let action = A::Action::default();
+        self.state = self
             .automaton
-            .step(time, &A::Action::default(), &self.state);
-        self.state = new_state;
+            .step(&mut self.internal, &self.state, time, &action);
 
-        if let Some(raw_value) = value_opt {
-            let mapped = self.mapping.apply(raw_value);
-            let clamped = mapped.clamp(self.min, self.max);
+        let raw = self.state.as_f32().unwrap_or(0.0) as f64;
+        let mapped = self.mapping.apply(raw);
+        let clamped = mapped.clamp(self.min, self.max);
 
-            if (clamped - self.last_value).abs() > 1e-6 {
-                self.last_value = clamped;
-                self.last_time = time;
-
-                let pid = ParameterId::new(&self.target_param).unwrap();
-                return Some(SetParameter::new(
-                    PortId::param(self.target_node, 0),
-                    pid,
-                    ParamValue::Float(clamped as f32),
-                    SignalOrigin::Automaton(self.id.clone()),
-                ));
-            }
+        if (clamped - self.last_sent_value).abs() < 1e-6 {
+            return None;
         }
+        self.last_sent_value = clamped;
 
-        None
+        let pid = ParameterId::new(&self.target_param).unwrap();
+        Some(SetParameter::new(
+            PortId::param(self.target_node, 0),
+            pid,
+            ParamValue::Float(clamped as f32),
+            SignalOrigin::Automaton(self.id.clone()),
+        ))
     }
 
     /// Enable or disable this servo.
@@ -625,9 +616,9 @@ impl<A: Automaton + 'static> ActorCell for Servo<A> {
 
     fn receive(&mut self, msg: AutomatonMsg) {
         match msg {
-            AutomatonMsg::Tick(_) => {} // handled in update()
+            AutomatonMsg::Tick(_) => {}
             AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
-            AutomatonMsg::Reset => self.state = self.automaton.initial_state(),
+            AutomatonMsg::Reset => self.internal = self.automaton.initial_internal(),
         }
     }
 }
@@ -637,7 +628,7 @@ pub type BoxedServo = Box<dyn AnyServo>;
 
 /// Trait for type-erased servo operations.
 pub trait AnyServo: Send + Sync {
-    /// Update the servo and return a parameter command if the value changed.
+    /// Update the servo and produce a parameter command.
     fn update(&mut self, time: Time) -> Option<SetParameter>;
     /// Return the servo's unique identifier.
     fn id(&self) -> &str;

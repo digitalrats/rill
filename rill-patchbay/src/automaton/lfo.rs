@@ -2,7 +2,8 @@
 //!
 //! Supports various waveform shapes and synchronisation modes.
 
-use crate::engine::{Automaton, Range, Time};
+use crate::engine::{Automaton, NoAction, Range, Time};
+use rill_core::traits::ParamValue;
 use std::f64::consts::PI;
 
 /// LFO waveform shape.
@@ -87,24 +88,6 @@ impl LfoWaveform {
     }
 }
 
-/// Runtime state of an LFO automaton.
-///
-/// Tracks the current phase, output value, random state, and timing.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
-pub struct LfoState {
-    /// Current phase in radians.
-    pub phase: f64,
-    /// Current output value.
-    pub value: f64,
-    /// Samples remaining in hold phase (for sample-and-hold / stepped waveforms).
-    pub hold_counter: usize,
-    /// Internal RNG state for randomised waveforms.
-    pub rng_state: u64,
-    /// Timestamp of the last update (seconds).
-    pub last_time: f64,
-}
-
 /// An LFO automaton that generates periodic modulation signals.
 ///
 /// Supports multiple waveform shapes, configurable frequency, amplitude,
@@ -159,102 +142,30 @@ impl LfoAutomaton {
         self.walk_rate = rate.max(0.0);
         self
     }
-
-    /// Simple xorshift PRNG returning a value in [-1, 1].
-    fn random(&self, state: &mut u64) -> f64 {
-        let mut x = *state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *state = x;
-        (x as f64 / u64::MAX as f64) * 2.0 - 1.0
-    }
-
-    /// Advance the random-walk state by a time step.
-    fn update_random_walk(&self, state: &mut LfoState, dt: f64) {
-        let step = (self.random(&mut state.rng_state) - 0.5) * self.walk_rate * dt * 100.0;
-        state.value = (state.value + step).clamp(-1.0, 1.0);
-    }
-}
-
-/// Control action for an LFO automaton.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Default)]
-pub enum LfoAction {
-    #[default]
-    /// Continue normal operation.
-    None,
-    /// Reset the phase to zero.
-    Reset,
 }
 
 impl Automaton for LfoAutomaton {
-    type State = LfoState;
-    type Action = LfoAction;
+    type Internal = f64;
+    type Action = NoAction;
 
     fn step(
         &self,
+        phase: &mut Self::Internal,
+        _current: &ParamValue,
         time: Time,
-        action: &Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<f64>) {
-        let mut new_state = state.clone();
-
-        if let LfoAction::Reset = action {
-            new_state.phase = 0.0;
-            new_state.last_time = time;
-        }
-
-        let dt = time - new_state.last_time;
-
-        new_state.phase += self.frequency * dt;
-        if new_state.phase >= 1.0 {
-            new_state.phase -= 1.0;
-            if let LfoWaveform::SampleAndHold = self.waveform {
-                new_state.value = self.random(&mut new_state.rng_state);
-            }
-        }
-        new_state.last_time = time;
-
-        if let LfoWaveform::RandomWalk = self.waveform {
-            self.update_random_walk(&mut new_state, dt);
-        }
-
-        let raw_value = match self.waveform {
-            LfoWaveform::SampleAndHold => new_state.value,
-            LfoWaveform::RandomWalk => new_state.value,
-            _ => self
-                .waveform
-                .evaluate(new_state.phase, Some(self.pulse_width)),
-        };
-
-        let value = raw_value * self.amplitude + self.offset;
-        let clamped = self.range.clamp(value);
-
-        (new_state, Some(clamped))
+        _action: &Self::Action,
+    ) -> ParamValue {
+        *phase = (time * self.frequency).fract();
+        let val = (*phase * 2.0 * PI).sin() * self.amplitude + self.offset;
+        ParamValue::Float(val as f32)
     }
 
-    fn initial_state(&self) -> Self::State {
-        LfoState {
-            phase: 0.0,
-            value: 0.0,
-            hold_counter: 0,
-            rng_state: 123456789,
-            last_time: 0.0,
-        }
+    fn initial_internal(&self) -> Self::Internal {
+        0.0
     }
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        let raw = match self.waveform {
-            LfoWaveform::SampleAndHold => state.value,
-            LfoWaveform::RandomWalk => state.value,
-            _ => self.waveform.evaluate(state.phase, Some(self.pulse_width)),
-        };
-        self.range.clamp(raw * self.amplitude + self.offset)
     }
 }
 
@@ -266,22 +177,15 @@ mod tests {
     #[test]
     fn test_sine_lfo() {
         let lfo = LfoAutomaton::new("Sine", 1.0, 1.0, 0.0, LfoWaveform::Sine);
-        let state = lfo.initial_state();
+        let mut phase = lfo.initial_internal();
+        let current = ParamValue::Float(0.0);
 
-        let (new_state, value) = lfo.step(0.0, &LfoAction::None, &state);
-        assert!(approx_eq!(f64, value.unwrap(), 0.0, epsilon = 0.01));
+        let value = lfo.step(&mut phase, &current, 0.0, &NoAction);
+        let val = value.as_f32().unwrap();
+        assert!(approx_eq!(f64, val as f64, 0.0, epsilon = 0.01));
 
-        let (_, value) = lfo.step(0.25, &LfoAction::None, &new_state);
-        assert!(approx_eq!(f64, value.unwrap(), 1.0, epsilon = 0.01));
-    }
-
-    #[test]
-    fn test_reset_action() {
-        let lfo = LfoAutomaton::new("Test", 1.0, 1.0, 0.0, LfoWaveform::Sine);
-        let mut state = lfo.initial_state();
-        state.phase = 0.5;
-
-        let (new_state, _) = lfo.step(1.0, &LfoAction::Reset, &state);
-        assert!(approx_eq!(f64, new_state.phase, 0.0, epsilon = 0.01));
+        let value = lfo.step(&mut phase, &current, 0.25, &NoAction);
+        let val = value.as_f32().unwrap();
+        assert!(approx_eq!(f64, val as f64, 1.0, epsilon = 0.01));
     }
 }

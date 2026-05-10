@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use crate::engine::{Automaton, Time};
+use rill_core::traits::ParamValue;
 
 /// Run an automaton as a green thread (tokio task)
 ///
@@ -42,7 +43,8 @@ async fn automaton_loop<A>(
 ) where
     A: Automaton,
 {
-    let mut state = automaton.initial_state();
+    let mut internal = automaton.initial_internal();
+    let mut current = ParamValue::Float(0.0);
     let mut time: Time = 0.0;
     let mut ticker = tokio::time::interval(interval);
     // Skip the first tick (immediate)
@@ -52,14 +54,12 @@ async fn automaton_loop<A>(
         tokio::select! {
             _ = ticker.tick() => {
                 time += interval.as_secs_f64();
-                let (new_state, value_opt) = automaton.step(time, &A::Action::default(), &state);
-                if let Some(value) = value_opt {
-                    if value_tx.send(value).await.is_err() {
-                        // Channel closed — PortCombiner stopped
-                        break;
-                    }
+                current = automaton.step(&mut internal, &current, time, &A::Action::default());
+                let value = current.as_f32().unwrap_or(0.0) as f64;
+                if value_tx.send(value).await.is_err() {
+                    // Channel closed — PortCombiner stopped
+                    break;
                 }
-                state = new_state;
             }
 
             _ = cancel_rx.changed() => {

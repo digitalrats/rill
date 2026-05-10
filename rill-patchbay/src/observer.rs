@@ -47,6 +47,12 @@ pub struct MicroControlObserver {
     telemetry_tx: Option<ActorRef<Telemetry>>,
 }
 
+impl Default for MicroControlObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MicroControlObserver {
     pub fn new() -> Self {
         Self {

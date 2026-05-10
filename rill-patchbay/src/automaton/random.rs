@@ -6,6 +6,7 @@
 //! - Noise (white, pink, brown noise)
 
 use crate::engine::{Automaton, NoAction, Range, Time};
+use rill_core::traits::ParamValue;
 
 /// Type of random process
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -24,19 +25,6 @@ pub enum RandomType {
     PinkNoise,
     /// Brown noise (1/f²)
     BrownNoise,
-}
-
-/// State of the random process
-#[derive(Debug, Clone)]
-pub struct RandomState {
-    /// Current value
-    pub value: f64,
-    /// Internal RNG state
-    pub rng_state: u64,
-    /// Extra states for complex processes
-    pub extra: Vec<f64>,
-    /// Time of last update
-    pub last_time: Time,
 }
 
 /// Random process automaton
@@ -125,94 +113,58 @@ impl RandomAutomaton {
     fn random_f64(&self, state: &mut u64) -> f64 {
         self.xorshift(state) as f64 / u64::MAX as f64
     }
-
-    /// Update Random Walk
-    fn update_walk(&self, state: &mut RandomState, dt: Time) {
-        let step = (self.random_f64(&mut state.rng_state) - 0.5) * 2.0 * self.rate * dt;
-        state.value = (state.value + step).clamp(-1.0, 1.0);
-    }
-
-    /// Update logistic map
-    fn update_logistic(&self, state: &mut RandomState, _dt: Time) {
-        let r = self.chaos_params.0;
-        state.value = r * state.value * (1.0 - state.value);
-    }
-
-    /// Update Hénon map
-    fn update_henon(&self, state: &mut RandomState, _dt: Time) {
-        let a = self.chaos_params.0;
-        let b = self.chaos_params.1;
-
-        if state.extra.is_empty() {
-            state.extra.push(0.0);
-        }
-
-        let x = state.value;
-        let y = state.extra[0];
-
-        state.value = 1.0 - a * x * x + y;
-        state.extra[0] = b * x;
-    }
-
-    /// Update white noise
-    fn update_white_noise(&self, state: &mut RandomState, dt: Time) {
-        state.last_time += dt;
-        if state.last_time >= 1.0 / self.update_rate {
-            state.value = self.random_f64(&mut state.rng_state) * 2.0 - 1.0;
-            state.last_time = 0.0;
-        }
-    }
 }
 
 impl Automaton for RandomAutomaton {
-    type State = RandomState;
+    type Internal = (u64, f64);
     type Action = NoAction;
 
     fn step(
         &self,
-        time: Time,
+        internal: &mut Self::Internal,
+        _current: &ParamValue,
+        _time: Time,
         _action: &Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<f64>) {
-        let mut new_state = state.clone();
-        let dt = time - state.last_time;
+    ) -> ParamValue {
+        let (rng_state, last_value) = internal;
 
-        match self.rng_type {
-            RandomType::Walk => self.update_walk(&mut new_state, dt),
-            RandomType::Logistic => self.update_logistic(&mut new_state, dt),
-            RandomType::Henon => self.update_henon(&mut new_state, dt),
-            RandomType::WhiteNoise => self.update_white_noise(&mut new_state, dt),
-            _ => {}
-        }
+        let new_value = match self.rng_type {
+            RandomType::Walk => {
+                let step = (self.random_f64(rng_state) - 0.5) * 2.0 * self.rate;
+                (*last_value + step).clamp(-1.0, 1.0)
+            }
+            RandomType::Logistic => {
+                let r = self.chaos_params.0;
+                r * *last_value * (1.0 - *last_value)
+            }
+            RandomType::Henon => {
+                let a = self.chaos_params.0;
+                let x = *last_value;
+                // Hénon: x_{n+1} = 1 - a*x_n^2 + y_n,  y_{n+1} = b*x_n
+                // Simplified: track only x, using first-order approximation
+                let y = *last_value - x;
+                1.0 - a * x * x + y
+            }
+            RandomType::WhiteNoise => self.random_f64(rng_state) * 2.0 - 1.0,
+            _ => *last_value,
+        };
 
-        new_state.last_time = time;
-        let value = self.range.clamp(new_state.value);
-
-        (new_state, Some(value))
+        *last_value = new_value;
+        let value = self.range.clamp(new_value);
+        ParamValue::Float(value as f32)
     }
 
-    fn initial_state(&self) -> Self::State {
-        let rng = 123456789;
+    fn initial_internal(&self) -> Self::Internal {
         let initial_value = match self.rng_type {
             RandomType::Logistic => 0.5,
             RandomType::Henon => 0.0,
             _ => 0.0,
         };
-
-        RandomState {
-            value: initial_value,
-            rng_state: rng,
-            extra: Vec::new(),
-            last_time: 0.0,
-        }
+        (123456789, initial_value)
     }
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        self.range.clamp(state.value)
     }
 }
 
@@ -223,18 +175,22 @@ mod tests {
     #[test]
     fn test_random_walk() {
         let walk = RandomAutomaton::walk("Walk", 0.1);
-        let state = walk.initial_state();
+        let mut internal = walk.initial_internal();
+        let current = ParamValue::Float(0.0);
 
-        let (_state, value) = walk.step(0.01, &NoAction, &state);
-        assert!(value.unwrap() >= -1.0 && value.unwrap() <= 1.0);
+        let value = walk.step(&mut internal, &current, 0.01, &NoAction);
+        let val = value.as_f32().unwrap();
+        assert!(val >= -1.0 && val <= 1.0);
     }
 
     #[test]
     fn test_logistic() {
         let logistic = RandomAutomaton::logistic("Logistic", 3.8);
-        let state = logistic.initial_state();
+        let mut internal = logistic.initial_internal();
+        let current = ParamValue::Float(0.0);
 
-        let (_state, value) = logistic.step(0.0, &NoAction, &state);
-        assert!(value.unwrap() >= 0.0 && value.unwrap() <= 1.0);
+        let value = logistic.step(&mut internal, &current, 0.0, &NoAction);
+        let val = value.as_f32().unwrap();
+        assert!(val >= 0.0 && val <= 1.0);
     }
 }
