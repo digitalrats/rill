@@ -97,7 +97,7 @@ pub use serialization::PatchbayDef;
 pub mod midi_actor;
 
 #[cfg(feature = "midi")]
-pub use midi_actor::MidiActor;
+pub use midi_actor::MidiHub;
 
 // =============================================================================
 // Re-exports for convenience

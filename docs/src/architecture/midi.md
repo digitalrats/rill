@@ -1,7 +1,7 @@
 # MIDI support (rill-io + rill-patchbay)
 
 MIDI input is handled through a layered architecture:
-raw hardware I/O → `MidiBackend` → `MidiActor` → `ControlEvent` → `Patchbay` → `SetParameter` → Graph.
+raw hardware I/O → `MidiBackend` → `MidiHub` → `ControlEvent` → `Patchbay` → `SetParameter` → Graph.
 
 ## Architecture
 
@@ -9,7 +9,7 @@ raw hardware I/O → `MidiBackend` → `MidiActor` → `ControlEvent` → `Patch
 ┌──────────────────────────────────────────────────────────────────┐
 │  DEDICATED MIDI THREAD (non‑RT)                                   │
 │                                                                    │
-│  MidiBackend::poll()  ──→  MidiActor  ──→  Patchbay::handle_event()
+│  MidiBackend::poll()  ──→  MidiHub  ──→  Patchbay::handle_event()
 │       │                        │                    │              │
 │  raw [u8; 3]             parse bytes         mappings             │
 │                           into               MIDI CC → param      │
@@ -34,7 +34,7 @@ pub struct MidiMessage(pub [u8; 3]);
 
 A lightweight container for three MIDI bytes. Single-byte system messages
 (Clock: `0xF8`, Start: `0xFA`, Stop: `0xFC`, Continue: `0xFB`) have data
-bytes set to zero. No MIDI semantics — interpretation happens in `MidiActor`.
+bytes set to zero. No MIDI semantics — interpretation happens in `MidiHub`.
 
 ## `MidiBackend` trait
 
@@ -68,7 +68,7 @@ use rill_io::backends::AlsaSeqBackend;
 let backend: Box<dyn MidiBackend> = Box::new(AlsaSeqBackend::new("rill-midi").unwrap());
 ```
 
-## `MidiActor` — byte parser + dispatcher
+## `MidiHub` — byte parser + dispatcher
 
 Lives in `rill-patchby` behind the `midi` feature gate.
 Spawns a dedicated thread, polls the backend, and dispatches parsed events
@@ -76,14 +76,14 @@ to a shared `Patchbay`.
 
 ```rust,no_run
 use std::sync::{Arc, Mutex};
-use rill_patchbay::midi_actor::MidiActor;
+use rill_patchbay::midi_actor::MidiHub;
 use rill_patchbay::Patchbay;
 use rill_io::midi_backend::MidiBackend;
 
 let patchbay = Arc::new(Mutex::new(Patchbay::new(actor_ref)));
 let backend: Box<dyn MidiBackend> = /* ... */;
 
-let mut actor = MidiActor::start(backend, patchbay.clone());
+let mut actor = MidiHub::start(backend, patchbay.clone());
 // ... run ...
 actor.stop();
 ```
@@ -125,13 +125,13 @@ pub enum ControlEvent {
 - `EventPattern::AnyMidi` matches all four MIDI event types
 - `EventPattern::MidiTransport { kind: None }` matches Start/Stop/Continue
 
-## Wiring: MidiActor → Patchbay → Graph
+## Wiring: MidiHub → Patchbay → Graph
 
 ```rust,no_run
 use std::sync::{Arc, Mutex};
 use rill_core_actor::ActorRef;
 use rill_patchbay::{
-    midi_actor::MidiActor,
+    midi_actor::MidiHub,
     engine::{Patchbay, EventPattern, midi_cc},
     Transform,
 };
@@ -154,7 +154,7 @@ patchbay.add_midi_mapping(
 // 3. Start MIDI actor
 let patchbay = Arc::new(Mutex::new(patchbay));
 let backend = Box::new(MidirBackend::new("rill-midi").unwrap());
-let mut actor = MidiActor::start(backend, patchbay.clone());
+let mut actor = MidiHub::start(backend, patchbay.clone());
 
 // 4. Run graph on audio thread, drain commands
 // ... graph.run(running) ...
@@ -169,7 +169,7 @@ actor.stop();
 |---------|-------|---------|
 | `midir` (default) | `rill-io` | `MidirBackend` — cross‑platform MIDI input |
 | `alsa` | `rill-io` | `AlsaSeqBackend` — ALSA sequencer virtual port |
-| `midi` | `rill-patchbay` | `MidiActor` — pulls `rill-io` dependency |
+| `midi` | `rill-patchbay` | `MidiHub` — pulls `rill-io` dependency |
 
 `rill-adrift` enables `midi` in `default` features when MIDI is available on the target platform.
 
@@ -179,7 +179,7 @@ actor.stop();
 # Build with MIDI support
 cargo check -p rill-io --features "midir,alsa"
 
-# Build patchbay with MidiActor
+# Build patchbay with MidiHub
 cargo check -p rill-patchbay --features midi
 
 # Build drift with MIDI (all features)

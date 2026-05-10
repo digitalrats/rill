@@ -638,7 +638,7 @@ pub struct Patchbay {
     sequencer_handle: Option<SequencerHandle>,
     sequencer_task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "midi")]
-    midi_actor: Option<super::MidiActor>,
+    midi_actor: Option<super::MidiHub>,
     #[cfg(not(feature = "midi"))]
     midi_actor: Option<()>,
     command_queue: ActorRef<SetParameter>,
@@ -983,10 +983,10 @@ impl Patchbay {
     /// Start the MIDI input module.
     ///
     /// Takes a pre‑built backend and the shared `Arc<Mutex<Patchbay>>`
-    /// that wraps this Patchbay. The MidiActor dispatches events
+    /// that wraps this Patchbay. The MidiHub dispatches events
     /// through `handle_event()` by locking this same mutex.
     ///
-    /// If a MidiActor is already running, it is stopped first.
+    /// If a MidiHub is already running, it is stopped first.
     #[cfg(feature = "midi")]
     pub fn start_midi(
         &mut self,
@@ -994,7 +994,7 @@ impl Patchbay {
         shared: Arc<std::sync::Mutex<Patchbay>>,
     ) {
         self.stop_midi();
-        self.midi_actor = Some(super::MidiActor::start(backend, shared));
+        self.midi_actor = Some(super::MidiHub::start(backend, shared));
     }
 
     /// Stop the MIDI actor if running.
