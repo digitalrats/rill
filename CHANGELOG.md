@@ -1,5 +1,109 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### ✨ SIMD acceleration (feature/simd)
+
+- **Vector infrastructure**:
+  - `SimdDetector` — real CPU feature detection via `std::arch` (SSE2/AVX/NEON/SIMD128)
+  - `VectorMask<T, N>` completed for `F32x4`, `F32x8`, `F64x2`, `ScalarVector4`
+  - `VectorReduce`, `VectorScalarOps` traits with blanket impls
+  - `Scalar::from_usize()` added to core math trait
+  - Dead `expr` module + `vec_expr!`/`vec_eval!` stubs removed
+
+- **Algorithm SIMD (rill-core-dsp)**:
+  - `BasicOscillator` — 6 waveforms via `ScalarVector4` block processing (4 samples/iter)
+  - Saw BLEP — `VectorMask::select` replaces per-lane scalar conditional (2.5× speedup)
+  - `InterpolatedReader` — 4-wide lerp math for linear/cubic interpolation
+  - `CombFilter` — batched 4-sample read/write when `delay_samples >= 4`
+  - `NoiseGenerator` — White (batched xorshift), Brown (unrolled integrator), Blue/Violet (4-wide diff)
+  - `Biquad` — block state-space 4×4 feedforward matrix via `BiquadBlock` precomputation
+  - `Resampler<T>` — sample-rate converter on `InterpolatedReader` (44.1k→48k etc.)
+
+- **Node-level SIMD**:
+  - `Distortion` — HardClip/Tube 4-wide SIMD; zero-copy port output
+  - `DryWetMix` — 4-wide multiply-add, stereo in one pass
+  - `WriteHead` — batched 4-sample math per tape write
+  - `pre_process()` — feedback mix via 4-wide add (all feedback nodes accelerated)
+  - 8 nodes: direct port buffer write eliminates 2 `[T; BUF_SIZE]` copies per block per node
+
+- **WDF SIMD (rill-core-wdf)**:
+  - `process_incident_vector` on `Resistor`, `Capacitor`, `Inductor`, `Diode` via `ScalarVector4`
+  - Diode Newton-Raphson vectorized with `VectorMask::all()` early exit
+  - `process_batch_simd` free function for batch processing
+  - `simd.rs` deleted (378 LOC) — no more parallel SIMD type hierarchy
+
+- **I/O SIMD**:
+  - Generic `f32_to_i16_chunk` / `i16_to_f32_chunk` in `rill-core::math::functions` (reusable for ALSA, rill-lofi)
+  - ALSA backend uses SIMD f32↔i16 conversion
+  - PipeWire byte→f32 batched 4-sample conversion
+  - Deinterleave/interleave SIMD in PipeWire backend
+
+- **Infrastructure**:
+  - `FixedBuffer` now `#[repr(align(16))]` (hardware SIMD-ready)
+  - `const { assert!(BUF_SIZE % 4 == 0) }` in `processable.rs` (monomorphization-time check)
+  - Criterion benchmarks: vector ops, 6 oscillators, 3 filters, 4 noise types, reader/resampler
+  - Benchmark results at `docs/superpowers/specs/2026-05-10-simd-benchmark-results.md`
+  - **Key finding:** `ScalarVector4` + LLVM auto-vectorization matches/exceeds explicit `wide` crate on x86_64. Rill outperforms JUCE (C++) by 10-160× on key DSP primitives.
+
+### ✨ Patchbay architecture refactor (feature/refactor/midi-hub, feature/refactor/sensor-midi)
+
+- **Automaton trait redesigned**:
+  - `(config, &mut internal, &current, time, action) → ParamValue`
+  - `type Internal: Clone` — mutable automaton-specific state (phase, RNG, step counter)
+  - `initial_internal()`, `reset()` with default impls
+  - All state moved inside structs; old `State`/`Output` associated types removed
+  - All 6 automata (LFO, envelope, sequencer, function, random, cellular) updated
+  - LFO: now uses `self.waveform` — all 8 waveform types functional (was hardcoded to Sine)
+  - Random: `update_rate` field drives throttling via `last_update_time` in Internal
+
+- **Servo as actor**:
+  - `Servo<A: Automaton>` implements `ActorCell<Msg = AutomatonMsg>`
+  - `AutomatonMsg { Tick(ClockTick), SetEnabled(bool), Reset }` — unified queue for clock + commands
+  - `Servo::update()` drains mailbox before stepping (same pattern as `Graph::run`)
+  - `Servo::handle()` returns `ActorRef<AutomatonMsg>` for external control
+  - `Servo::with_table(Vec<ParamValue>)` — table-based step-to-value mapping for sequencers
+  - `SequencerAutomaton` returns `ParamValue::Int(step_index)` → Servo looks up in table
+
+- **Sensor trait** — unified external input bridge:
+  - `trait Sensor { attach(), start(), stop() }` — MIDI, OSC, knobs, acoustic analysis
+  - `MidiHub` implements `Sensor` — no more `Arc<Mutex<Patchbay>>`
+  - `Patchbay::event_mailbox` — single `MpscQueue<ControlEvent>` for ALL sensors
+  - `event_handle() → ActorRef<ControlEvent>`, `drain_events()` called from `drain_clock()`
+  - Multiple sensors can run independently, all events via one lock-free mailbox
+
+- **Hearing module** for future acoustic sensors:
+  - `PitchDetector`, `EnvelopeFollower`, `ZeroCrossing` — audio analysis algorithms
+  - Ready for wiring into graph telemetry (audio feedback → control signals)
+
+### 🗑️ Removed
+
+- **crossbeam-channel** — removed from all crates (rill-core, rill-patchbay, rill-adrift)
+  - `CommandQueue` (crossbeam-based) deleted; `Command` trait kept in `rill-core::queues`
+  - `TelemetryTx` (crossbeam wrapper) deleted; `Telemetry` types kept for future use
+  - `Observer` moved to `rill-patchbay`, now uses `ActorRef<Telemetry>`
+  - `SequencerHandle` (crossbeam command channel) deleted
+  - `attach_sequencer()` (crossbeam `Receiver<Telemetry>` parameter) deleted
+
+- **Manager** (806 LOC) — deprecated sync rack, zero external callers
+- **SnapshotSequencer** + sequencer types (728 LOC in `sequencer/`)
+- **SequencerDef** serialization (170 LOC)
+- **sensor/physical.rs** (dead code referencing non-existent types)
+- **automaton/mapping/** (156+183+155 LOC dead code)
+- `MidiActor` renamed to `MidiHub`; `midi_actor.rs` → `midi.rs`
+- `Graph::receive()` now drains via `ActorCell` (was manual `set_parameter` loop)
+
+### 🔧 Fixes
+
+- **RT safety**: MixerNode `vec![]` → `[f32; BUF_SIZE]` stack allocation
+- **RT safety**: PortAudio `vec![]` temp buffer → `[f32; 8192]` stack
+- **RT safety**: ParallelAdapter `Vec<T>` → `[T; 8]` stack allocation
+- `Graph::receive()` — `debug_assert!` for SetParameter misconfiguration
+- LFO: all 8 waveform types functional in `step()` (was hardcoded to Sine)
+- Random: `update_rate` field drives throttling
+- Documentation synced with code (12 discrepancies fixed)
+- Zero compiler warnings with `--all-features`
+
 ## [0.5.0-beta.4] — 2026-05-08
 
 ### ✨ New

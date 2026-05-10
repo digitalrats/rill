@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Duration;
 
 use rill_core::prelude::*;
 use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
@@ -15,10 +14,8 @@ use rill_core_actor::{ActorCell, ActorRef};
 
 // crossbeam removed: // crossbeam removed (dead code)
 
-pub use crate::automaton::Range;
-use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform};
-use crate::automaton_task::spawn_automaton_task;
-use crate::port_combiner::{spawn_combiner, PortCombinerHandle};
+pub use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform, Range};
+use crate::sensor::Sensor;
 use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
 // =============================================================================
@@ -463,6 +460,8 @@ pub enum AutomatonMsg {
     SetEnabled(bool),
     /// Reset to initial state.
     Reset,
+    /// UI command (from handle_event via patchbay).
+    Ui(UiCommand),
 }
 
 /// Mapping type for a servo's output value.
@@ -523,9 +522,13 @@ pub struct Servo<A: Automaton> {
     min: f64,
     max: f64,
     last_sent_value: f64,
-    /// Value table for sequence automata (index → value).
     table: Option<Vec<ParamValue>>,
     last_sent_index: i64,
+    // ── Conflict resolution (ex-PortCombiner) ──
+    control: ControlStrategy,
+    conflict: ConflictStrategy,
+    frozen: bool,
+    base: f64,
 }
 
 impl<A: Automaton> Servo<A> {
@@ -561,6 +564,10 @@ impl<A: Automaton> Servo<A> {
             last_sent_value: f64::NAN,
             table: None,
             last_sent_index: -1,
+            control: ControlStrategy::Absolute,
+            conflict: ConflictStrategy::LastWriteWins,
+            frozen: false,
+            base: (min + max) / 2.0,
         }
     }
 
@@ -602,10 +609,32 @@ impl<A: Automaton> Servo<A> {
                 AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
                 AutomatonMsg::Reset => self.internal = self.automaton.reset(),
                 AutomatonMsg::Tick(_) => {}
+                AutomatonMsg::Ui(UiCommand::SetValue(v)) => match self.conflict {
+                    ConflictStrategy::TouchOverride => {
+                        self.base = v;
+                        self.frozen = true;
+                        return Some(self.make_cmd(v));
+                    }
+                    ConflictStrategy::BasePlusModulation => {
+                        self.base = v;
+                    }
+                    ConflictStrategy::LastWriteWins => {
+                        return Some(self.make_cmd(v));
+                    }
+                },
+                AutomatonMsg::Ui(UiCommand::Release) => {
+                    if self.frozen {
+                        self.frozen = false;
+                    }
+                }
             }
         }
 
         if !self.enabled {
+            return None;
+        }
+
+        if self.frozen && matches!(self.conflict, ConflictStrategy::TouchOverride) {
             return None;
         }
 
@@ -614,9 +643,10 @@ impl<A: Automaton> Servo<A> {
             .automaton
             .step(&mut self.internal, &self.state, time, &action);
 
+        let raw = self.state.as_f32().unwrap_or(0.0) as f64;
+
         if let Some(ref table) = self.table {
-            // Table mode: automaton returns index, lookup value from table
-            let index = self.state.as_i32().unwrap_or(0) as usize;
+            let index = raw as usize;
             if index >= table.len() {
                 return None;
             }
@@ -625,32 +655,43 @@ impl<A: Automaton> Servo<A> {
                 return None;
             }
             self.last_sent_index = idx;
-            let pid = ParameterId::new(&self.target_param).unwrap();
-            return Some(SetParameter::new(
-                PortId::param(self.target_node, 0),
-                pid,
-                table[index].clone(),
-                SignalOrigin::Automaton(self.id.clone()),
-            ));
+            return Some(self.make_cmd_from(table[index].clone()));
         }
 
-        // F64 mode: map through ParameterMapping
-        let raw = self.state.as_f32().unwrap_or(0.0) as f64;
+        // F64 mode: apply ParameterMapping then ControlStrategy
         let mapped = self.mapping.apply(raw);
-        let clamped = mapped.clamp(self.min, self.max);
+        let value = match self.control {
+            ControlStrategy::Absolute => self.min + mapped * (self.max - self.min),
+            ControlStrategy::Modulation { depth } => {
+                (self.base + mapped * depth * (self.max - self.min)).clamp(self.min, self.max)
+            }
+        };
 
-        if (clamped - self.last_sent_value).abs() < 1e-6 {
+        if (value - self.last_sent_value).abs() < 1e-6 {
             return None;
         }
-        self.last_sent_value = clamped;
+        self.last_sent_value = value;
+        Some(self.make_cmd(value))
+    }
 
+    fn make_cmd(&self, value: f64) -> SetParameter {
         let pid = ParameterId::new(&self.target_param).unwrap();
-        Some(SetParameter::new(
+        SetParameter::new(
             PortId::param(self.target_node, 0),
             pid,
-            ParamValue::Float(clamped as f32),
+            ParamValue::Float(value as f32),
             SignalOrigin::Automaton(self.id.clone()),
-        ))
+        )
+    }
+
+    fn make_cmd_from(&self, value: ParamValue) -> SetParameter {
+        let pid = ParameterId::new(&self.target_param).unwrap();
+        SetParameter::new(
+            PortId::param(self.target_node, 0),
+            pid,
+            value,
+            SignalOrigin::Automaton(self.id.clone()),
+        )
     }
 
     /// Enable or disable this servo.
@@ -674,37 +715,59 @@ impl<A: Automaton + 'static> ActorCell for Servo<A> {
             AutomatonMsg::Tick(_) => {}
             AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
             AutomatonMsg::Reset => self.internal = self.automaton.reset(),
+            AutomatonMsg::Ui(_) => {} // handled in update()
         }
     }
 }
 
-/// Type-erased boxed servo.
-pub type BoxedServo = Box<dyn AnyServo>;
+/// Wrapper: converts a `Sensor` into a `Module` for unified storage.
+struct SensorModule(Box<dyn Sensor>);
 
-/// Trait for type-erased servo operations.
-pub trait AnyServo: Send + Sync {
-    /// Update the servo and produce a parameter command.
-    fn update(&mut self, time: Time) -> Option<SetParameter>;
-    /// Return the servo's unique identifier.
-    fn id(&self) -> &str;
-    /// Enable or disable the servo.
-    fn set_enabled(&mut self, enabled: bool);
-    /// Return an ActorRef for sending control messages.
-    fn handle(&self) -> ActorRef<AutomatonMsg>;
+impl Module for SensorModule {
+    fn id(&self) -> &str {
+        "sensor"
+    }
+    fn stop(&mut self) {
+        self.0.stop();
+    }
 }
 
-impl<A: Automaton + 'static> AnyServo for Servo<A> {
+/// Type-erased rack module (servo or sensor).
+pub type BoxedModule = Box<dyn Module>;
+
+/// Trait for rack modules — unified interface for servos and sensors.
+pub trait Module: Send {
+    /// Update the module and produce a parameter command (servos only).
+    fn update(&mut self, _time: Time) -> Option<SetParameter> {
+        None
+    }
+    /// Return the module's unique identifier.
+    fn id(&self) -> &str;
+    /// Return an ActorRef for sending control messages (servos only).
+    fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
+        None
+    }
+    /// Enable or disable the module (servos only, no-op for sensors).
+    fn set_enabled(&mut self, _enabled: bool) {}
+    /// Stop the module (disable, shutdown tasks, release resources).
+    fn stop(&mut self);
+}
+
+impl<A: Automaton + 'static> Module for Servo<A> {
     fn update(&mut self, time: Time) -> Option<SetParameter> {
         Servo::update(self, time)
     }
     fn id(&self) -> &str {
         Servo::id(self)
     }
-    fn set_enabled(&mut self, enabled: bool) {
-        Servo::set_enabled(self, enabled);
+    fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
+        Some(Servo::handle(self))
     }
-    fn handle(&self) -> ActorRef<AutomatonMsg> {
-        Servo::handle(self)
+    fn set_enabled(&mut self, enabled: bool) {
+        self.set_enabled(enabled);
+    }
+    fn stop(&mut self) {
+        self.set_enabled(false);
     }
 }
 
@@ -726,15 +789,11 @@ impl<A: Automaton + 'static> AnyServo for Servo<A> {
 ///   tokio runtime.
 pub struct Patchbay {
     mappings: Vec<Mapping>,
-    servos: HashMap<String, BoxedServo>,
-    port_combiners: HashMap<String, PortCombinerHandle>,
+    modules: HashMap<String, BoxedModule>,
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
-    #[cfg(feature = "midi")]
-    midi_actor: Option<super::MidiHub>,
-    #[cfg(not(feature = "midi"))]
-    midi_actor: Option<()>,
     command_queue: ActorRef<SetParameter>,
     clock_mailbox: Arc<MpscQueue<ClockTick>>,
+    event_mailbox: Arc<MpscQueue<ControlEvent>>,
     time: Time,
 }
 
@@ -747,12 +806,11 @@ impl Patchbay {
     pub fn new(command_queue: ActorRef<SetParameter>) -> Self {
         Self {
             mappings: Vec::new(),
-            servos: HashMap::new(),
-            port_combiners: HashMap::new(),
+            modules: HashMap::new(),
             automaton_handles: HashMap::new(),
-            midi_actor: None,
             command_queue,
             clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
+            event_mailbox: Arc::new(MpscQueue::with_capacity(64)),
             time: 0.0,
         }
     }
@@ -760,6 +818,11 @@ impl Patchbay {
     /// Return an [`ActorRef`] for the graph to send `ClockTick` to.
     pub fn clock_handle(&self) -> ActorRef<ClockTick> {
         ActorRef::new(&self.clock_mailbox)
+    }
+
+    /// Return an [`ActorRef`] for sensors (MIDI, OSC, knobs) to send events to.
+    pub fn event_handle(&self) -> ActorRef<ControlEvent> {
+        ActorRef::new(&self.event_mailbox)
     }
 
     /// Add an event mapping.
@@ -771,9 +834,13 @@ impl Patchbay {
     ///
     /// Useful for automaton types not covered by `add_lfo` / `add_envelope`
     /// (e.g. sequencers, named functions).
-    pub fn add_boxed_servo(&mut self, id: String, servo: BoxedServo) -> ActorRef<AutomatonMsg> {
+    pub fn add_boxed_servo(
+        &mut self,
+        id: String,
+        servo: BoxedModule,
+    ) -> Option<ActorRef<AutomatonMsg>> {
         let handle = servo.handle();
-        self.servos.insert(id, servo);
+        self.modules.insert(id, servo);
         handle
     }
 
@@ -836,7 +903,7 @@ impl Patchbay {
     /// Returns an [`ActorRef`] for sending control messages.
     pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) -> ActorRef<AutomatonMsg> {
         let handle = servo.handle();
-        self.servos.insert(servo.id().to_string(), Box::new(servo));
+        self.modules.insert(servo.id().to_string(), Box::new(servo));
         handle
     }
 
@@ -892,200 +959,39 @@ impl Patchbay {
         self.add_servo(servo);
     }
 
-    /// Add an automaton as a green thread (tokio task).
-    ///
-    /// Requires an active tokio runtime. Ports with async automata receive
-    /// a `PortCombiner` that resolves UI ↔ automaton conflicts.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` — unique identifier
-    /// * `automaton` — the automaton implementation
-    /// * `interval` — update interval (e.g. 10 ms = 100 Hz)
-    /// * `target` — `(node_id, param_name)`
-    /// * `range` — `(min, max)` parameter range
-    /// * `control` — control strategy
-    /// * `conflict` — conflict resolution strategy
-    pub fn add_automaton_task<A: Automaton + 'static>(
-        &mut self,
-        id: &str,
-        automaton: A,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        let key = target_key(target.0, &target.1);
-
-        let combiner = spawn_combiner(target, range, control, conflict, self.command_queue.clone());
-
-        let task = spawn_automaton_task(
-            automaton,
-            interval,
-            combiner.automaton_tx.clone(),
-            combiner.cancel_rx(),
-        );
-
-        self.port_combiners.insert(key, combiner);
-        self.automaton_handles.insert(id.to_string(), task);
-    }
-
-    /// Add an LFO as an async automaton task.
-    pub fn add_lfo_task(
-        &mut self,
-        id: &str,
-        frequency: f64,
-        amplitude: f64,
-        offset: f64,
-        waveform: LfoWaveform,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        let automaton = LfoAutomaton::new(id, frequency, amplitude, offset, waveform);
-        self.add_automaton_task(
-            format!("{}_auto", id).as_str(),
-            automaton,
-            interval,
-            target,
-            range,
-            control,
-            conflict,
-        );
-    }
-
-    /// Add an envelope ADSR as an async automaton task.
-    pub fn add_envelope_task(
-        &mut self,
-        id: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        let automaton = EnvelopeAutomaton::adsr(id, attack, decay, sustain, release);
-        self.add_automaton_task(
-            format!("{}_auto", id).as_str(),
-            automaton,
-            interval,
-            target,
-            range,
-            control,
-            conflict,
-        );
-    }
-
-    /// Stop all async automata, the sequencer, and the MIDI actor.
+    /// Stop all modules — servos and sensors.
     pub fn stop_all(&mut self) {
-        for combiner in self.port_combiners.values() {
-            combiner.stop();
-        }
-        self.port_combiners.clear();
         self.automaton_handles.clear();
-        self.stop_midi();
-    }
-
-    /// Start the MIDI input module.
-    ///
-    /// Takes a pre‑built backend and the shared `Arc<Mutex<Patchbay>>`
-    /// that wraps this Patchbay. The MidiHub dispatches events
-    /// through `handle_event()` by locking this same mutex.
-    ///
-    /// If a MidiHub is already running, it is stopped first.
-    #[cfg(feature = "midi")]
-    pub fn start_midi(
-        &mut self,
-        backend: Box<dyn rill_io::midi_backend::MidiBackend>,
-        shared: Arc<std::sync::Mutex<Patchbay>>,
-    ) {
-        self.stop_midi();
-        self.midi_actor = Some(super::MidiHub::start(backend, shared));
-    }
-
-    /// Stop the MIDI actor if running.
-    fn stop_midi(&mut self) {
-        #[cfg(feature = "midi")]
-        if let Some(ref mut actor) = self.midi_actor {
-            actor.stop();
+        for module in self.modules.values_mut() {
+            module.stop();
         }
-        self.midi_actor = None;
+        self.modules.clear();
     }
 
-    // ── Convenience aliases (forwarded from removed PatchbayEngine) ────
-
-    /// Add an automaton as a green thread with PortCombiner.
-    pub fn add_automaton<A: Automaton + 'static>(
-        &mut self,
-        id: &str,
-        automaton: A,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        self.add_automaton_task(id, automaton, interval, target, range, control, conflict);
-    }
-
-    /// Add an LFO as a green thread (async automaton + PortCombiner).
-    pub fn add_lfo_async(
-        &mut self,
-        id: &str,
-        frequency: f64,
-        amplitude: f64,
-        offset: f64,
-        waveform: LfoWaveform,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        self.add_lfo_task(
-            id, frequency, amplitude, offset, waveform, interval, target, range, control, conflict,
-        );
-    }
-
-    /// Add an envelope as a green thread (async automaton + PortCombiner).
-    pub fn add_envelope_async(
-        &mut self,
-        id: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-        interval: Duration,
-        target: (NodeId, String),
-        range: (f64, f64),
-        control: ControlStrategy,
-        conflict: ConflictStrategy,
-    ) {
-        self.add_envelope_task(
-            id, attack, decay, sustain, release, interval, target, range, control, conflict,
-        );
-    }
-
-    /// Handle an external event (MIDI/OSC).
+    /// Add a sensor (MIDI, OSC, etc.) to the rack.
     ///
-    /// If a `PortCombiner` exists for the target port the event is routed
-    /// there for conflict resolution; otherwise it is pushed directly to
-    /// the command queue.
+    /// The sensor should already be started via `Sensor::start()`.
+    /// Use `sensor.attach(self.event_handle())` before `start()`.
+    pub fn add_sensor(&mut self, id: &str, sensor: Box<dyn Sensor>) {
+        self.modules
+            .insert(id.to_string(), Box::new(SensorModule(sensor)));
+    }
+
+    /// Process an incoming control event (MIDI, OSC, button, etc.).
+    ///
+    /// If a Servo exists for the target port, the event is routed via
+    /// `AutomatonMsg::Ui` for conflict resolution; otherwise it is pushed
+    /// directly to the command queue.
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
                 let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
-                if let Some(combiner) = self.port_combiners.get(&key) {
-                    let _ = combiner
-                        .ui_tx
-                        .send(UiCommand::SetValue(cmd.value.as_f32().unwrap_or(0.0) as f64));
+                if let Some(servo) = self.modules.get(&key) {
+                    if let Some(ref servo_handle) = servo.handle() {
+                        servo_handle.send(AutomatonMsg::Ui(UiCommand::SetValue(
+                            cmd.value.as_f32().unwrap_or(0.0) as f64,
+                        )));
+                    }
                 } else {
                     self.command_queue.send(cmd);
                 }
@@ -1100,16 +1006,21 @@ impl Patchbay {
     pub fn update(&mut self, dt: f32) {
         self.time += dt as f64;
 
-        for servo in self.servos.values_mut() {
+        for servo in self.modules.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
                 self.command_queue.send(cmd);
             }
         }
     }
 
-    /// Get a combiner by key (format: `"node_id:param_name"`).
-    pub fn get_combiner(&self, key: &str) -> Option<&PortCombinerHandle> {
-        self.port_combiners.get(key)
+    /// Return a clone of the command queue ActorRef for async task spawning.
+    pub fn command_queue(&self) -> ActorRef<SetParameter> {
+        self.command_queue.clone()
+    }
+
+    /// Store a task handle for lifecycle management (async automaton tasks).
+    pub fn store_task_handle(&mut self, id: String, handle: tokio::task::JoinHandle<()>) {
+        self.automaton_handles.insert(id, handle);
     }
 
     /// Return all mappings.
@@ -1118,24 +1029,24 @@ impl Patchbay {
     }
 
     /// Get a servo by ID.
-    pub fn get_servo(&self, id: &str) -> Option<&dyn AnyServo> {
-        self.servos.get(id).map(|b| b.as_ref())
+    pub fn get_servo(&self, id: &str) -> Option<&dyn Module> {
+        self.modules.get(id).map(|b| b.as_ref())
     }
 
     /// Get a mutable servo by ID.
-    pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedServo> {
-        self.servos.get_mut(id)
+    pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedModule> {
+        self.modules.get_mut(id)
     }
 
     /// Remove a servo by ID.
     pub fn remove_servo(&mut self, id: &str) -> bool {
-        self.servos.remove(id).is_some()
+        self.modules.remove(id).is_some()
     }
 
     /// Clear all mappings, servos, and async automata.
     pub fn clear(&mut self) {
         self.mappings.clear();
-        self.servos.clear();
+        self.modules.clear();
         self.stop_all();
     }
 
@@ -1153,15 +1064,24 @@ impl Patchbay {
     ///
     /// Call this from the main loop (not the audio thread).
     pub fn drain_clock(&mut self) {
+        self.drain_events();
         while let Some(clock) = self.clock_mailbox.pop() {
             let msg = AutomatonMsg::Tick(clock);
-            for servo in self.servos.values() {
-                servo.handle().send(msg.clone());
+            for servo in self.modules.values() {
+                if let Some(ref handle) = servo.handle() {
+                    handle.send(msg.clone());
+                }
             }
-            // Update sync servos with time from clock
             let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
             self.time += dt;
             self.update(dt as f32);
+        }
+    }
+
+    /// Drain the event mailbox and dispatch to mappings.
+    pub fn drain_events(&mut self) {
+        while let Some(event) = self.event_mailbox.pop() {
+            self.handle_event(event);
         }
     }
 

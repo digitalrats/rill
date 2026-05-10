@@ -505,54 +505,13 @@ impl<const BUF: usize> Runtime<BUF> {
         let registry = FunctionRegistry::builtin();
         let mut control = Patchbay::new(graph_handle);
 
-        let _midi_def = if let Some(ref pb_def) = patchbay_def {
+        if let Some(ref pb_def) = patchbay_def {
             pb_def
                 .apply_to_async(&mut control, &registry)
                 .map_err(RuntimeError::Patchbay)?;
-            pb_def.midi.clone()
-        } else {
-            None
-        };
+        }
 
         let shared = Arc::new(Mutex::new(control));
-
-        // Start MIDI input module if configured.
-        #[cfg(feature = "midi")]
-        if let Some(ref midi_def) = _midi_def {
-            use rill_io::midi_backend::MidiBackend;
-
-            let backend: Box<dyn MidiBackend> = match midi_def.backend.as_str() {
-                "midir" => Box::new(
-                    rill_io::backends::MidirBackend::new(&midi_def.port_name)
-                        .map_err(|e| RuntimeError::Patchbay(format!("midir: {e}")))?,
-                ),
-                "alsa_seq" => {
-                    #[cfg(feature = "alsa")]
-                    {
-                        Box::new(
-                            rill_io::backends::AlsaSeqBackend::new(&midi_def.port_name)
-                                .map_err(|e| RuntimeError::Patchbay(format!("alsa_seq: {e}")))?,
-                        )
-                    }
-                    #[cfg(not(feature = "alsa"))]
-                    {
-                        return Err(RuntimeError::Patchbay(
-                            "alsa_seq backend not available (enable 'alsa' feature)".into(),
-                        ));
-                    }
-                }
-                other => {
-                    return Err(RuntimeError::Patchbay(format!(
-                        "unknown midi backend: {other}"
-                    )));
-                }
-            };
-
-            shared
-                .lock()
-                .map_err(|e| RuntimeError::Patchbay(format!("patchbay lock: {e}")))?
-                .start_midi(backend, shared.clone());
-        }
 
         self.control_arc = Some(shared);
         self.tokio_rt = Some(tokio_rt);

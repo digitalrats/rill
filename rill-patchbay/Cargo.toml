@@ -28,6 +28,7 @@ json = ["serde", "dep:serde_json"]
 cbor = ["serde", "dep:serde_cbor"]
 serialization = ["json", "cbor"]
 midi = ["dep:rill-io"]
+alsa = ["midi", "rill-io/alsa"]
 
 [dev-dependencies]
 float-cmp = "0.9"

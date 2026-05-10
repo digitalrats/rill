@@ -225,6 +225,7 @@ mod tests {
     use super::*;
     use rill_core_actor::{ActorCell, ActorRef};
 
+    #[allow(dead_code)]
     struct CollectActor {
         events: Vec<Telemetry>,
     }
@@ -244,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_observer_record_violation() {
-        let (tx, mut rx) = ActorRef::<Telemetry>::new_pair();
+        let (tx, rx) = ActorRef::<Telemetry>::new_pair();
         let observer = MicroControlObserver::with_actor(tx);
         observer.record_violation("test_comp", 100, 250, Some(0.5));
         let stats = observer.sandbox_summary();
@@ -261,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_observer_operation_guard() {
-        let (tx, mut rx) = ActorRef::<Telemetry>::new_pair();
+        let (tx, rx) = ActorRef::<Telemetry>::new_pair();
         let observer = MicroControlObserver::with_actor(tx);
         {
             let _guard = observer.observe_start("test_op");

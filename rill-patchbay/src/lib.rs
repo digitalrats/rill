@@ -73,9 +73,6 @@ pub mod function_registry;
 /// Automaton control strategies
 pub mod strategy;
 
-/// PortCombiner — combining automaton and UI per port
-pub mod port_combiner;
-
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
@@ -95,6 +92,7 @@ pub mod observer;
 
 #[cfg(feature = "midi")]
 pub use midi::MidiHub;
+pub use sensor::Sensor;
 
 // =============================================================================
 // Re-exports for convenience
@@ -108,14 +106,12 @@ pub use automaton::{
 };
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{
-    midi_cc, osc_address, AnyServo, Automaton, BoxedServo, ControlEvent, EventPattern, Mapping,
+    midi_cc, osc_address, Automaton, BoxedModule, ControlEvent, EventPattern, Mapping, Module,
     NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
 };
 
-pub use port_combiner::{spawn_combiner, PortCombinerHandle};
 pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
 
-#[cfg(feature = "serde")]
 // =============================================================================
 // Prelude for convenient imports
 // =============================================================================
@@ -126,7 +122,6 @@ pub mod prelude {
     pub use crate::automaton::*;
     pub use crate::automaton_task::*;
     pub use crate::engine::*;
-    pub use crate::port_combiner::*;
     pub use crate::strategy::*;
     pub use crate::utils::*;
 
