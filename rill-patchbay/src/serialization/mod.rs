@@ -199,12 +199,20 @@ impl SensorDef {
     #[cfg(feature = "midi")]
     pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
         match self {
-            SensorDef::Midi {
-                backend: _,
-                port_name,
-            } => {
-                use rill_io::backends::MidirBackend;
-                let be = Box::new(MidirBackend::new(port_name).ok()?);
+            SensorDef::Midi { backend, port_name } => {
+                use rill_io::midi_backend::MidiBackend;
+                let be: Box<dyn MidiBackend> = match backend.as_str() {
+                    "midir" => Box::new(rill_io::backends::MidirBackend::new(port_name).ok()?),
+                    "alsa_seq" => Box::new(
+                        rill_io::backends::AlsaSeqBackend::new(port_name)
+                            .map_err(|e| log::warn!("AlsaSeqBackend: {e}"))
+                            .ok()?,
+                    ),
+                    _ => {
+                        log::warn!("unknown MIDI backend '{backend}'");
+                        return None;
+                    }
+                };
                 let hub = crate::midi::MidiHub::new(be);
                 Some(Box::new(hub))
             }
