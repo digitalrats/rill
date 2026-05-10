@@ -1,6 +1,6 @@
 # SIMD Activation Plan
 
-**Status:** deferred (spec exists for future implementation)
+**Status:** ✅ completed (see benchmark results)
 **Date:** 2026-05-10
 **Target:** `rill-core`, `rill-core-dsp`, `rill-core-wdf`
 

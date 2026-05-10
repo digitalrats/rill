@@ -31,6 +31,65 @@ tied to audio hardware. The core (`Scalar`, `Vector`, lock-free queues,
 `Interpolate` trait) works in embedded, IoT, robotics, and any signal
 processing context.
 
+## High Performance
+
+Rill is designed for speed — two-thread architecture, zero-copy everywhere,
+lock-free queues, and SIMD-optimised block processing. Benchmarks on
+**AMD Ryzen 7 7735HS** (Zen 3+, AVX2+FMA), release build, 256-sample blocks:
+
+### Oscillators
+
+| Waveform | Time per block | Per sample | Voices at 44.1 kHz† |
+|---|---|---|---|
+| Sine | 795 ns | 3.1 ns | 322 000 |
+| Saw (BLEP) | 181 ns | 0.71 ns | 1 400 000 |
+| Square | 94 ns | 0.37 ns | 2 700 000 |
+| Triangle | 101 ns | 0.39 ns | 2 500 000 |
+| Pulse | 90 ns | 0.35 ns | 2 800 000 |
+
+### Filters (Biquad)
+
+| Type | Time per block | Per sample |
+|---|---|---|
+| LowPass | 244 ns | 0.95 ns |
+| HighPass | 247 ns | 0.96 ns |
+| Peak | 249 ns | 0.97 ns |
+
+### Noise generators
+
+| Type | Time per block | Per sample |
+|---|---|---|
+| White | 361 ns | 1.41 ns |
+| Brown | 380 ns | 1.48 ns |
+| Blue | 360 ns | 1.41 ns |
+| Violet | 350 ns | 1.37 ns |
+
+### Interpolated reader
+
+| Operation | Time per block | Per sample |
+|---|---|---|
+| Linear read | 707 ns | 2.76 ns |
+| Cubic read | 1.06 µs | 4.16 ns |
+| Resampler 44.1→48k | 1.11 µs | 4.32 ns |
+
+### Comparison with known solutions
+
+| Benchmark | Rill | JUCE (C++) | fundsp (Rust) |
+|---|---|---|---|
+| Sine osc | **3.1 ns** | 8–12 ns | 500 ns |
+| Biquad | **0.95 ns** | 10–15 ns | 20–30 ns |
+| Square/Pulse | **0.35 ns** | 3–5 ns | 50–100 ns |
+
+†Theoretical maximum single-core voice count. Full block bench results and
+hardware SIMD comparison in
+[docs/superpowers/specs/2026-05-10-simd-benchmark-results.md](docs/superpowers/specs/2026-05-10-simd-benchmark-results.md).
+
+Key performance drivers:
+- **Block processing** (BUF_SIZE=256) — eliminates per-sample call overhead
+- **ScalarVector4** — LLVM auto-vectorises `[f32; 4]` into SSE/AVX2 on x86_64
+- **VectorMask::select** — branchless SIMD (3.9× speedup on clamp)
+- **Block state-space** — biquad 4×4 matrix multiply replaces sequential feedback
+
 ## Quick start
 
 ```toml
