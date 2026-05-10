@@ -7,7 +7,7 @@
 use std::fmt::Write;
 
 #[cfg(feature = "serde")]
-use crate::serialization::PatchbayDef;
+use crate::serialization::{ModuleDef, PatchbayDef};
 
 /// Configuration for patchbay DOT generation.
 #[derive(Default)]
@@ -77,14 +77,16 @@ pub fn patchbay_to_dot(patchbay: &PatchbayDef, _config: &DotConfig) -> String {
     writeln!(dot, "    }}").ok();
 
     // ── Servo edges (automaton → target) ──────────────────────────
-    for srv in &patchbay.servos {
-        let auto_id = &srv.automaton_id;
-        let target = format!("node_{}:{}", srv.target_node, srv.target_param);
-        let label = format!("{:?} [{:.3}, {:.3}]", srv.mapping, srv.min, srv.max);
-        writeln!(
+    for m in &patchbay.modules {
+        if let ModuleDef::Servo(srv) = m {
+            let auto_id = &srv.automaton_id;
+            let target = format!("node_{}:{}", srv.target_node, srv.target_param);
+            let label = format!("{:?} [{:.3}, {:.3}]", srv.mapping, srv.min, srv.max);
+            writeln!(
             dot,
             "    auto_{auto_id} -> param_{target} [label=\"{label}\", style=dashed, color=\"#44a\"];"
         ).ok();
+        }
     }
 
     // ── Mappings ──────────────────────────────────────────────────

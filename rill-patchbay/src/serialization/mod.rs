@@ -14,7 +14,7 @@ use crate::automaton::lfo::LfoWaveform;
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use crate::engine::EventPattern;
 use crate::engine::{
-    BoxedServo, Mapping, OscSurface, ParameterMapping, Patchbay, Servo, Target, Transform,
+    BoxedModule, Mapping, OscSurface, ParameterMapping, Patchbay, Servo, Target, Transform,
 };
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
@@ -184,19 +184,47 @@ pub struct MappingDef {
 }
 
 // ============================================================================
-// MidiInputDef
+// SensorDef
 // ============================================================================
 
-/// Configuration for a MIDI input module on the rack.
+/// Serializable external input sensor.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
-pub struct MidiInputDef {
-    /// Backend name: `"midir"` (cross‑platform) or `"alsa_seq"` (Linux).
-    pub backend: String,
+pub enum SensorDef {
+    /// MIDI input.
+    Midi { backend: String, port_name: String },
+}
 
-    /// Virtual port name shown to external MIDI applications
-    /// (e.g. `"drift-midi"` for `aconnect`).
-    pub port_name: String,
+impl SensorDef {
+    #[cfg(feature = "midi")]
+    pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
+        match self {
+            SensorDef::Midi { backend, port_name } => {
+                use rill_io::backends::MidirBackend;
+                let be = Box::new(MidirBackend::new(port_name).ok()?);
+                let hub = crate::midi::MidiHub::new(be);
+                Some(Box::new(hub))
+            }
+        }
+    }
+    #[cfg(not(feature = "midi"))]
+    pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
+        None
+    }
+}
+
+// ============================================================================
+// ModuleDef — unified servo and sensor serialization
+// ============================================================================
+
+/// A rack module — either a Servo (automaton → parameter) or a Sensor (external input).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
+pub enum ModuleDef {
+    /// Servo: automaton → graph parameter bridge.
+    Servo(ServoDef),
+    /// Sensor: external input (MIDI, OSC, etc.).
+    Sensor(SensorDef),
 }
 
 // ============================================================================
@@ -204,27 +232,19 @@ pub struct MidiInputDef {
 // ============================================================================
 
 /// Serializable patchbay configuration.
-///
-/// Analogous to `rill_graph::serialization::GraphDef`, linked through
-/// shared `node_id` values.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct PatchbayDef {
     pub automata: Vec<AutomatonDef>,
-    pub servos: Vec<ServoDef>,
+    /// Unified modules — servos and sensors.
+    pub modules: Vec<ModuleDef>,
     pub mappings: Vec<MappingDef>,
 
-    /// OSC → EventPattern bridge (see [`OscSurfaceEntry`](crate::engine::OscSurfaceEntry)).
-    /// Consumed by the host runtime to register user‑facing OSC handlers.
+    /// OSC → EventPattern bridge.
     #[serde(default)]
     pub osc_surface: OscSurface,
 
-    /// MIDI input module. `None` means no MIDI (the default).
-    #[serde(default)]
-    pub midi: Option<MidiInputDef>,
-
-    /// Optional human-readable description (attribution, preset notes, …).
-    /// Not interpreted by the engine; preserved through serialisation round-trips.
+    /// Optional human-readable description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -233,10 +253,9 @@ impl PatchbayDef {
     pub fn new() -> Self {
         Self {
             automata: Vec::new(),
-            servos: Vec::new(),
+            modules: Vec::new(),
             mappings: Vec::new(),
             osc_surface: Vec::new(),
-            midi: None,
             description: None,
         }
     }
@@ -250,95 +269,106 @@ impl PatchbayDef {
         let auto_ids: std::collections::HashSet<&str> =
             self.automata.iter().map(|a| a.id()).collect();
 
-        for s in &self.servos {
-            if !auto_ids.contains(s.automaton_id.as_str()) {
-                return Err(format!(
-                    "servo references unknown automaton '{}'",
-                    s.automaton_id
-                ));
-            }
-
-            let def = self
-                .automata
-                .iter()
-                .find(|a| a.id() == s.automaton_id)
-                .unwrap();
-            let nid = NodeId(s.target_node);
-            let mapping = s.mapping.to_parameter_mapping();
-
-            match def {
-                AutomatonDef::Lfo {
-                    id,
-                    frequency,
-                    amplitude,
-                    offset,
-                    waveform,
-                } => {
-                    control.add_lfo(
-                        id,
-                        *frequency,
-                        *amplitude,
-                        *offset,
-                        *waveform,
-                        nid,
-                        &s.target_param,
-                        s.min,
-                        s.max,
-                    );
-                }
-                AutomatonDef::Envelope {
-                    id,
-                    envelope_type: _,
-                    attack,
-                    decay,
-                    sustain,
-                    release,
-                    curve,
-                } => {
-                    let automaton =
-                        EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
-                            .with_curve(*curve);
-                    let servo: BoxedServo = Box::new(Servo::new(
-                        id,
-                        automaton,
-                        nid,
-                        &s.target_param,
-                        mapping,
-                        s.min,
-                        s.max,
-                    ));
-                    control.add_boxed_servo(id.clone(), servo);
-                }
-                AutomatonDef::Sequencer {
-                    id,
-                    steps,
-                    play_mode,
-                    tempo,
-                } => {
-                    let seq_steps: Vec<Step> = steps
+        for m in &self.modules {
+            match m {
+                ModuleDef::Servo(s) => {
+                    if !auto_ids.contains(s.automaton_id.as_str()) {
+                        return Err(format!(
+                            "servo references unknown automaton '{}'",
+                            s.automaton_id
+                        ));
+                    }
+                    let def = self
+                        .automata
                         .iter()
-                        .map(|sd| Step {
-                            value: sd.value,
-                            duration: sd.duration,
-                            curve: sd.curve,
-                        })
-                        .collect();
-                    let automaton = SequencerAutomaton::new(id, seq_steps)
-                        .with_mode(*play_mode)
-                        .with_tempo(*tempo);
-                    let servo: BoxedServo = Box::new(Servo::new(
-                        id,
-                        automaton,
-                        nid,
-                        &s.target_param,
-                        mapping,
-                        s.min,
-                        s.max,
-                    ));
-                    control.add_boxed_servo(id.clone(), servo);
+                        .find(|a| a.id() == s.automaton_id)
+                        .unwrap();
+                    let nid = NodeId(s.target_node);
+                    let mapping = s.mapping.to_parameter_mapping();
+
+                    match def {
+                        AutomatonDef::Lfo {
+                            id,
+                            frequency,
+                            amplitude,
+                            offset,
+                            waveform,
+                        } => {
+                            control.add_lfo(
+                                id,
+                                *frequency,
+                                *amplitude,
+                                *offset,
+                                *waveform,
+                                nid,
+                                &s.target_param,
+                                s.min,
+                                s.max,
+                            );
+                        }
+                        AutomatonDef::Envelope {
+                            id,
+                            envelope_type: _,
+                            attack,
+                            decay,
+                            sustain,
+                            release,
+                            curve,
+                        } => {
+                            let automaton =
+                                EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
+                                    .with_curve(*curve);
+                            let servo: BoxedModule = Box::new(Servo::new(
+                                id,
+                                automaton,
+                                nid,
+                                &s.target_param,
+                                mapping,
+                                s.min,
+                                s.max,
+                            ));
+                            control.add_boxed_servo(id.clone(), servo);
+                        }
+                        AutomatonDef::Sequencer {
+                            id,
+                            steps,
+                            play_mode,
+                            tempo,
+                        } => {
+                            let seq_steps: Vec<Step> = steps
+                                .iter()
+                                .map(|sd| Step {
+                                    value: sd.value,
+                                    duration: sd.duration,
+                                    curve: sd.curve,
+                                })
+                                .collect();
+                            let automaton = SequencerAutomaton::new(id, seq_steps)
+                                .with_mode(*play_mode)
+                                .with_tempo(*tempo);
+                            let servo: BoxedModule = Box::new(Servo::new(
+                                id,
+                                automaton,
+                                nid,
+                                &s.target_param,
+                                mapping,
+                                s.min,
+                                s.max,
+                            ));
+                            control.add_boxed_servo(id.clone(), servo);
+                        }
+                        AutomatonDef::NamedFunction { id, .. } => {
+                            log::warn!("NamedFunction automaton '{}' requires manual setup", id);
+                        }
+                    }
                 }
-                AutomatonDef::NamedFunction { id, .. } => {
-                    log::warn!("NamedFunction automaton '{}' requires manual setup", id);
+                ModuleDef::Sensor(s) => {
+                    if let Some(mut sensor) = s.into_sensor() {
+                        let events = control.event_handle();
+                        sensor.attach(events);
+                        sensor.start();
+                        control.add_sensor("midi", sensor);
+                    }
                 }
             }
         }
@@ -378,122 +408,135 @@ impl PatchbayDef {
         let auto_ids: std::collections::HashSet<&str> =
             self.automata.iter().map(|a| a.id()).collect();
 
-        for s in &self.servos {
-            if !auto_ids.contains(s.automaton_id.as_str()) {
-                return Err(format!(
-                    "servo references unknown automaton '{}'",
-                    s.automaton_id
-                ));
-            }
-
-            let def = self
-                .automata
-                .iter()
-                .find(|a| a.id() == s.automaton_id)
-                .unwrap();
-            let nid = NodeId(s.target_node);
-            let target = (nid, s.target_param.clone());
-            let range = (s.min, s.max);
-
-            match def {
-                AutomatonDef::Lfo {
-                    id,
-                    frequency,
-                    amplitude,
-                    offset,
-                    waveform,
-                } => {
-                    if let Some(interval_ms) = s.async_interval_ms {
-                        let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                        let control_strategy =
-                            s.control_strategy.unwrap_or(ControlStrategy::Absolute);
-                        let conflict_strategy = s
-                            .conflict_strategy
-                            .unwrap_or(ConflictStrategy::LastWriteWins);
-                        control.add_lfo_task(
-                            id,
-                            *frequency,
-                            *amplitude,
-                            *offset,
-                            *waveform,
-                            interval,
-                            target,
-                            range,
-                            control_strategy,
-                            conflict_strategy,
-                        );
-                    } else {
-                        control.add_lfo(
-                            id,
-                            *frequency,
-                            *amplitude,
-                            *offset,
-                            *waveform,
-                            nid,
-                            &s.target_param,
-                            s.min,
-                            s.max,
-                        );
-                    }
-                }
-                AutomatonDef::Envelope {
-                    id,
-                    attack,
-                    decay,
-                    sustain,
-                    release,
-                    curve,
-                    ..
-                } => {
-                    if let Some(interval_ms) = s.async_interval_ms {
-                        let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                        let control_strategy =
-                            s.control_strategy.unwrap_or(ControlStrategy::Absolute);
-                        let conflict_strategy = s
-                            .conflict_strategy
-                            .unwrap_or(ConflictStrategy::LastWriteWins);
-                        control.add_envelope_task(
-                            id,
-                            *attack,
-                            *decay,
-                            *sustain,
-                            *release,
-                            interval,
-                            target,
-                            range,
-                            control_strategy,
-                            conflict_strategy,
-                        );
-                    } else {
-                        let automaton =
-                            EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
-                                .with_curve(*curve);
-                        let mapping = s.mapping.to_parameter_mapping();
-                        let servo: BoxedServo = Box::new(Servo::new(
-                            id,
-                            automaton,
-                            nid,
-                            &s.target_param,
-                            mapping,
-                            s.min,
-                            s.max,
+        for m in &self.modules {
+            match m {
+                ModuleDef::Servo(s) => {
+                    if !auto_ids.contains(s.automaton_id.as_str()) {
+                        return Err(format!(
+                            "servo references unknown automaton '{}'",
+                            s.automaton_id
                         ));
-                        control.add_boxed_servo(id.clone(), servo);
+                    }
+
+                    let def = self
+                        .automata
+                        .iter()
+                        .find(|a| a.id() == s.automaton_id)
+                        .unwrap();
+                    let nid = NodeId(s.target_node);
+                    let target = (nid, s.target_param.clone());
+                    let range = (s.min, s.max);
+
+                    match def {
+                        AutomatonDef::Lfo {
+                            id,
+                            frequency,
+                            amplitude,
+                            offset,
+                            waveform,
+                        } => {
+                            if let Some(interval_ms) = s.async_interval_ms {
+                                let interval = Duration::from_secs_f64(interval_ms / 1000.0);
+                                let control_strategy =
+                                    s.control_strategy.unwrap_or(ControlStrategy::Absolute);
+                                let conflict_strategy = s
+                                    .conflict_strategy
+                                    .unwrap_or(ConflictStrategy::LastWriteWins);
+                                control.add_lfo_task(
+                                    id,
+                                    *frequency,
+                                    *amplitude,
+                                    *offset,
+                                    *waveform,
+                                    interval,
+                                    target,
+                                    range,
+                                    control_strategy,
+                                    conflict_strategy,
+                                );
+                            } else {
+                                control.add_lfo(
+                                    id,
+                                    *frequency,
+                                    *amplitude,
+                                    *offset,
+                                    *waveform,
+                                    nid,
+                                    &s.target_param,
+                                    s.min,
+                                    s.max,
+                                );
+                            }
+                        }
+                        AutomatonDef::Envelope {
+                            id,
+                            attack,
+                            decay,
+                            sustain,
+                            release,
+                            curve,
+                            ..
+                        } => {
+                            if let Some(interval_ms) = s.async_interval_ms {
+                                let interval = Duration::from_secs_f64(interval_ms / 1000.0);
+                                let control_strategy =
+                                    s.control_strategy.unwrap_or(ControlStrategy::Absolute);
+                                let conflict_strategy = s
+                                    .conflict_strategy
+                                    .unwrap_or(ConflictStrategy::LastWriteWins);
+                                control.add_envelope_task(
+                                    id,
+                                    *attack,
+                                    *decay,
+                                    *sustain,
+                                    *release,
+                                    interval,
+                                    target,
+                                    range,
+                                    control_strategy,
+                                    conflict_strategy,
+                                );
+                            } else {
+                                let automaton = EnvelopeAutomaton::adsr(
+                                    id, *attack, *decay, *sustain, *release,
+                                )
+                                .with_curve(*curve);
+                                let mapping = s.mapping.to_parameter_mapping();
+                                let servo: BoxedModule = Box::new(Servo::new(
+                                    id,
+                                    automaton,
+                                    nid,
+                                    &s.target_param,
+                                    mapping,
+                                    s.min,
+                                    s.max,
+                                ));
+                                control.add_boxed_servo(id.clone(), servo);
+                            }
+                        }
+                        AutomatonDef::Sequencer {
+                            id,
+                            steps,
+                            play_mode,
+                            tempo,
+                        } => {
+                            log::warn!(
+                                "Sequencer sync mode not fully wired in apply_to_async; use manual setup"
+                            );
+                            let _ = (id, steps, play_mode, tempo, nid, s);
+                        }
+                        AutomatonDef::NamedFunction { id, .. } => {
+                            log::warn!("NamedFunction automaton '{}' requires manual setup", id);
+                        }
                     }
                 }
-                AutomatonDef::Sequencer {
-                    id,
-                    steps,
-                    play_mode,
-                    tempo,
-                } => {
-                    log::warn!(
-                        "Sequencer sync mode not fully wired in apply_to_async; use manual setup"
-                    );
-                    let _ = (id, steps, play_mode, tempo, nid, s);
-                }
-                AutomatonDef::NamedFunction { id, .. } => {
-                    log::warn!("NamedFunction automaton '{}' requires manual setup", id);
+                ModuleDef::Sensor(s) => {
+                    if let Some(mut sensor) = s.into_sensor() {
+                        let events = control.event_handle();
+                        sensor.attach(events);
+                        sensor.start();
+                        control.add_sensor("midi", sensor);
+                    }
                 }
             }
         }
@@ -567,7 +610,7 @@ mod tests {
                 offset: 0.0,
                 waveform: LfoWaveform::Sine,
             }],
-            servos: vec![ServoDef {
+            modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "lfo1".into(),
                 target_node: 1,
                 target_param: "delay_time".into(),
@@ -578,10 +621,9 @@ mod tests {
                 async_interval_ms: None,
                 control_strategy: None,
                 conflict_strategy: None,
-            }],
+            })],
             mappings: vec![],
             osc_surface: vec![],
-            midi: None,
             description: None,
         }
     }
@@ -592,8 +634,11 @@ mod tests {
         let json = to_json(&doc).unwrap();
         let restored = from_json(&json).unwrap();
         assert_eq!(restored.automata.len(), 1);
-        assert_eq!(restored.servos.len(), 1);
-        assert_eq!(restored.servos[0].target_param, "delay_time");
+        assert_eq!(restored.modules.len(), 1);
+        match &restored.modules[0] {
+            ModuleDef::Servo(s) => assert_eq!(s.target_param, "delay_time"),
+            _ => panic!("expected Servo"),
+        }
     }
 
     #[test]
@@ -620,7 +665,7 @@ mod tests {
     fn test_missing_automaton_error() {
         let doc = PatchbayDef {
             automata: vec![],
-            servos: vec![ServoDef {
+            modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "nonexistent".into(),
                 target_node: 1,
                 target_param: "gain".into(),
@@ -631,10 +676,9 @@ mod tests {
                 async_interval_ms: None,
                 control_strategy: None,
                 conflict_strategy: None,
-            }],
+            })],
             mappings: vec![],
             osc_surface: vec![],
-            midi: None,
             description: None,
         };
         let _mailbox = Arc::new(MpscQueue::with_capacity(64));
@@ -654,7 +698,7 @@ mod tests {
                 offset: 0.0,
                 waveform: LfoWaveform::Sine,
             }],
-            servos: vec![ServoDef {
+            modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "lfo1".into(),
                 target_node: 1,
                 target_param: "cutoff".into(),
@@ -665,25 +709,23 @@ mod tests {
                 async_interval_ms: Some(10.0),
                 control_strategy: Some(ControlStrategy::Absolute),
                 conflict_strategy: Some(ConflictStrategy::LastWriteWins),
-            }],
+            })],
             mappings: vec![],
             osc_surface: vec![],
-            midi: None,
             description: None,
         };
 
         let json = to_json(&doc).unwrap();
         let restored = from_json(&json).unwrap();
-        assert_eq!(restored.servos.len(), 1);
-        assert_eq!(restored.servos[0].async_interval_ms, Some(10.0));
-        assert_eq!(
-            restored.servos[0].control_strategy,
-            Some(ControlStrategy::Absolute)
-        );
-        assert_eq!(
-            restored.servos[0].conflict_strategy,
-            Some(ConflictStrategy::LastWriteWins)
-        );
+        assert_eq!(restored.modules.len(), 1);
+        match &restored.modules[0] {
+            ModuleDef::Servo(s) => {
+                assert_eq!(s.async_interval_ms, Some(10.0));
+                assert_eq!(s.control_strategy, Some(ControlStrategy::Absolute));
+                assert_eq!(s.conflict_strategy, Some(ConflictStrategy::LastWriteWins));
+            }
+            _ => panic!("expected Servo"),
+        }
     }
 
     #[tokio::test]
@@ -698,7 +740,7 @@ mod tests {
                 offset: 0.0,
                 waveform: LfoWaveform::Sine,
             }],
-            servos: vec![ServoDef {
+            modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "lfo1".into(),
                 target_node: 1,
                 target_param: "cutoff".into(),
@@ -709,10 +751,9 @@ mod tests {
                 async_interval_ms: Some(10.0),
                 control_strategy: Some(ControlStrategy::Absolute),
                 conflict_strategy: Some(ConflictStrategy::LastWriteWins),
-            }],
+            })],
             mappings: vec![],
             osc_surface: vec![],
-            midi: None,
             description: None,
         };
 
