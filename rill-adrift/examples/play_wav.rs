@@ -12,10 +12,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rill_adrift::io::output::Output;
 use rill_adrift::modular::{ModularConfig, ModularSystem};
-use rill_adrift::rill_digital_filters::BiquadProcessor;
-use rill_adrift::sampler::player::SamplePlayerNode;
 use rill_adrift::sampler::wav::load_wav;
 
 const BUF: usize = 256;
@@ -83,25 +80,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut builder = system.create_builder();
 
-        let mut player = SamplePlayerNode::<f32, BUF>::new();
-        player.load(sample);
-        player.play();
-        let src = builder.add_source(Box::new(player));
-
-        let mut filter = BiquadProcessor::<f32, BUF>::new(RATE);
-        filter.set_cutoff(600.0);
-        filter.set_q(1.5);
-        let fx = builder.add_processor(Box::new(filter));
-
-        let snk = builder.add_sink(Box::new(Output::<f32, BUF>::new()));
-
-        builder.connect_signal(src, 0, fx, 0);
-        builder.connect_signal(fx, 0, snk, 0);
-        builder.connect_signal(src, 1, snk, 1);
-
-        let mut graph = builder.build().expect("graph build");
-
-        graph.run(t_run).ok();
+        // TODO: restore when manual construction API is re-added
+        let _builder = builder;
+        eprintln!("manual construction not yet available — use serialization via GraphDef");
     });
 
     let t_run = running.clone();

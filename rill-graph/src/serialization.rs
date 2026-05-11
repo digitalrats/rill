@@ -560,7 +560,7 @@ impl GraphDef {
             for (k, v) in nd.parameters() {
                 p = p.with(k.clone(), v.clone());
             }
-            let idx = builder.add_node_with_id(nd.type_name(), &p, NodeId(nd.id()))?;
+            let idx = builder.add_node_with_id(nd.type_name(), &p, NodeId(nd.id()));
 
             // Resolve backend name (only Source/Sink)
             if let Some(name) = nd.backend() {
@@ -572,13 +572,7 @@ impl GraphDef {
             // Apply pre-configured routing matrix (Router only)
             if let NodeDef::Router(ref r) = nd {
                 for entry in &r.routing_matrix {
-                    match &mut builder.nodes[idx].node {
-                        NodeVariant::Router(router) => {
-                            let gain = T::from_f32(entry.gain);
-                            router.set_connection(entry.from, entry.to, gain).ok();
-                        }
-                        _ => {}
-                    }
+                    builder.add_routing_entry(idx, entry.from, entry.to, entry.gain);
                 }
             }
         }
@@ -977,8 +971,8 @@ mod tests {
 
     fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
         let mut b = GraphBuilder::new(Arc::new(factory.clone()), empty_backends());
-        let src = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
-        let proc = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
+        let src = b.add_node("rill/test", &Params::new(44100.0));
+        let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
         b.build().expect("build")
     }
@@ -1050,8 +1044,7 @@ mod tests {
             &Params::new(44100.0)
                 .with("frequency", PV::Float(220.0))
                 .with("amplitude", PV::Float(0.8)),
-        )
-        .unwrap();
+        );
         let graph = b.build().expect("build");
 
         let doc = GraphDef::from_graph(&graph);
@@ -1072,8 +1065,7 @@ mod tests {
             &Params::new(48000.0)
                 .with("frequency", PV::Float(55.0))
                 .with("amplitude", PV::Float(0.25)),
-        )
-        .unwrap();
+        );
         let graph = b.build().expect("build");
 
         let json = to_json(&graph).expect("to_json");
@@ -1092,8 +1084,8 @@ mod tests {
     fn test_export_feedback_connection() {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        let src = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
-        let proc = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
+        let src = b.add_node("rill/test", &Params::new(44100.0));
+        let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
         let graph = b.build().expect("build");
@@ -1114,7 +1106,7 @@ mod tests {
         // ParamCtor declares type_name = Some("rill/param")
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        b.add_node("rill/param", &Params::new(44100.0)).unwrap();
+        b.add_node("rill/param", &Params::new(44100.0));
         let graph = b.build().expect("build");
 
         let doc = GraphDef::from_graph(&graph);
@@ -1144,7 +1136,7 @@ mod tests {
         let reg = Arc::new(reg);
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
 
-        b.add_node("rill/fallback", &Params::new(44100.0)).unwrap();
+        b.add_node("rill/fallback", &Params::new(44100.0));
         let graph = b.build().expect("build");
 
         let doc = GraphDef::from_graph(&graph);
@@ -1160,10 +1152,8 @@ mod tests {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         // Explicit IDs via add_node_with_id
-        b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100))
-            .unwrap();
-        b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200))
-            .unwrap();
+        b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100));
+        b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200));
         b.connect_signal(0, 0, 1, 0);
         let graph = b.build().expect("build");
 
@@ -1185,9 +1175,9 @@ mod tests {
     fn test_roundtrip_complex_topology() {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        let s0 = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
-        let p1 = b.add_node("rill/param", &Params::new(44100.0)).unwrap();
-        let p2 = b.add_node("rill/param", &Params::new(44100.0)).unwrap();
+        let s0 = b.add_node("rill/test", &Params::new(44100.0));
+        let p1 = b.add_node("rill/param", &Params::new(44100.0));
+        let p2 = b.add_node("rill/param", &Params::new(44100.0));
         b.connect_signal(s0, 0, p1, 0);
         b.connect_signal(p1, 0, p2, 0);
 
