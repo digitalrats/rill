@@ -180,8 +180,7 @@ impl Automaton for SequencerAutomaton {
             *internal = (next, time, new_dir, rng_state);
             ParamValue::Int(next as i32)
         } else {
-            // Same step — no change
-            ParamValue::Float(current_step as f32)
+            ParamValue::Int(current_step as i32)
         }
     }
 

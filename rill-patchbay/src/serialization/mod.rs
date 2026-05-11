@@ -143,6 +143,11 @@ pub struct ServoDef {
     /// Async mode: conflict resolution (defaults to `LastWriteWins`).
     #[serde(default)]
     pub conflict_strategy: Option<ConflictStrategy>,
+
+    /// Optional value table for index-based automata.
+    /// When set, the servo looks up `table[automaton_output]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<Vec<ParamValue>>,
 }
 
 // ============================================================================
@@ -410,6 +415,7 @@ impl PatchbayDef {
                                 mapping,
                                 min: s.min,
                                 max: s.max,
+                                table: s.table.clone(),
                             };
                             if let Some(ref factory) = control.automaton_factory {
                                 match factory.construct(type_name, id, &p, &target) {
@@ -735,6 +741,7 @@ mod tests {
                 async_interval_ms: None,
                 control_strategy: None,
                 conflict_strategy: None,
+                table: None,
             })],
             mappings: vec![],
             osc_surface: vec![],
@@ -790,6 +797,7 @@ mod tests {
                 async_interval_ms: None,
                 control_strategy: None,
                 conflict_strategy: None,
+                table: None,
             })],
             mappings: vec![],
             osc_surface: vec![],

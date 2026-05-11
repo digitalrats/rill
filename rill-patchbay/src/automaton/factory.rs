@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use rill_core::queues::SetParameter;
-use rill_core::traits::{NodeId, Params};
+use rill_core::traits::{NodeId, ParamValue, Params};
 use rill_core_actor::ActorRef;
 
 use crate::engine::{BoxedModule, ParameterMapping};
@@ -30,6 +30,8 @@ pub struct ServoTarget {
     pub mapping: ParameterMapping,
     pub min: f64,
     pub max: f64,
+    /// Optional value table for index-based automata.
+    pub table: Option<Vec<ParamValue>>,
 }
 
 pub trait AutomatonConstructor: Send + Sync {
