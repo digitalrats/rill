@@ -240,21 +240,6 @@ impl<M: Send + 'static> ActorRef<M> {
         mailbox.actor_ref()
     }
 
-    /// Create a new `(ActorRef, Arc<Mbox>)` pair with a fresh mailbox.
-    ///
-    /// This is a convenience constructor for simple setups where the actor
-    /// does not pre-own a mailbox. The caller should typically store the
-    /// `Arc<Mbox<M>>` (the mailbox) in the actor and keep the
-    /// `ActorRef` for external communication.
-    ///
-    /// The mailbox has capacity **64** (bounded). If the queue is full,
-    /// [`send`](Self::send) silently drops the message.
-    pub fn new_pair() -> (Self, Arc<Mbox<M>>) {
-        let mbox = Arc::new(Mbox::new(64));
-        let this = Self::new(&mbox);
-        (this, mbox)
-    }
-
     /// Send a message to the actor.
     ///
     /// Pushes the message into the actor's lock-free MPSC queue. If the
