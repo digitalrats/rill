@@ -21,16 +21,20 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rill_core::queues::{CommandEnum, MpscQueue};
+use rill_core::queues::CommandEnum;
 use rill_core::traits::Eurorack;
-use rill_core_actor::ActorRef;
+use rill_core_actor::{ActorCell, ActorRef, Mbox};
 use rill_patchbay::engine::Patchbay;
+#[cfg(feature = "serialization")]
+use rill_patchbay::function_registry::FunctionRegistry;
+#[cfg(feature = "serialization")]
+use rill_patchbay::serialization::PatchbayDef;
 
 /// A single Eurorack processing case.
 pub struct RackCase<const BUF: usize> {
     name: String,
     sample_rate: f32,
-    mailbox: Arc<MpscQueue<CommandEnum>>,
+    mailbox: Arc<Mbox<CommandEnum>>,
     outgoing: Vec<CommandEnum>,
     patchbay: Option<Patchbay>,
 
@@ -46,11 +50,7 @@ impl<const BUF: usize> RackCase<BUF> {
     ///
     /// Called by [`ModularSystem::create_case`] — not intended for
     /// direct construction.
-    pub(crate) fn new(
-        name: String,
-        sample_rate: f32,
-        mailbox: Arc<MpscQueue<CommandEnum>>,
-    ) -> Self {
+    pub(crate) fn new(name: String, sample_rate: f32, mailbox: Arc<Mbox<CommandEnum>>) -> Self {
         Self {
             name,
             sample_rate,
@@ -64,7 +64,7 @@ impl<const BUF: usize> RackCase<BUF> {
 
     /// Return the actor handle for sending commands TO this case.
     pub fn handle(&self) -> ActorRef<CommandEnum> {
-        ActorRef::new(&self.mailbox)
+        self.mailbox.actor_ref()
     }
 
     /// Send a command FROM this case to another actor in the system.
@@ -86,9 +86,9 @@ impl<const BUF: usize> RackCase<BUF> {
     /// Drain the incoming mailbox and return all pending commands.
     ///
     /// Called by [`ModularSystem::tick`] at the start of each frame.
-    /// The caller is responsible for dispatching commands to the
-    /// appropriate subsystem (Graph, Patchbay).
-    pub fn receive(&self) -> Vec<CommandEnum> {
+    /// Note: distinct from [`ActorCell::receive`] — this drains all messages
+    /// at once for routing through the actor system.
+    pub fn drain(&mut self) -> Vec<CommandEnum> {
         let mut msgs = Vec::new();
         while let Some(cmd) = self.mailbox.pop() {
             msgs.push(cmd);
@@ -101,10 +101,27 @@ impl<const BUF: usize> RackCase<BUF> {
         self.patchbay.as_ref()
     }
 
-    /// Launch the audio thread for this case.
+    /// Create the patchbay from a serialized definition.
+    ///
+    /// The patchbay uses `graph_ref` to send `SetParameter` commands to the
+    /// audio graph. ClockTick is delivered through the parent RackCase mailbox.
+    #[cfg(feature = "serialization")]
+    pub(crate) fn create_patchbay(
+        &mut self,
+        def: &PatchbayDef,
+        graph_ref: ActorRef<CommandEnum>,
+    ) -> Result<(), String> {
+        let mut patchbay = Patchbay::new(self.mailbox.clone(), graph_ref);
+        let registry = FunctionRegistry::builtin();
+        def.apply_to(&mut patchbay, &registry)?;
+        self.patchbay = Some(patchbay);
+        Ok(())
+    }
+
+    /// Start the audio thread for this case.
     ///
     /// Takes a closure that builds the graph on the target thread.
-    pub(crate) fn launch<F>(&mut self, build: F)
+    pub(crate) fn start<F>(&mut self, build: F)
     where
         F: FnOnce(Arc<AtomicBool>) + Send + 'static,
     {
@@ -115,13 +132,38 @@ impl<const BUF: usize> RackCase<BUF> {
         self.audio_thread = Some(handle);
     }
 
-    /// Stop the audio thread.
+    /// Stop the audio thread and the patchbay.
     pub fn stop(&mut self) {
+        if let Some(ref mut patchbay) = self.patchbay {
+            patchbay.stop_all();
+        }
         if let Some(ref running) = self.running {
             running.store(false, Ordering::Release);
         }
         if let Some(handle) = self.audio_thread.take() {
             let _ = handle.join();
+        }
+    }
+}
+
+// ============================================================================
+// ActorCell implementation
+// ============================================================================
+
+impl<const BUF: usize> ActorCell for RackCase<BUF> {
+    type Msg = CommandEnum;
+
+    fn receive(&mut self, msg: CommandEnum) {
+        match msg {
+            CommandEnum::ClockTick(tick) => {
+                // Forward ClockTick to the patchbay's mailbox
+                if let Some(ref patchbay) = self.patchbay {
+                    let _ = patchbay.mailbox_ref().send(CommandEnum::ClockTick(tick));
+                }
+            }
+            _ => {
+                self.outgoing.push(msg);
+            }
         }
     }
 }

@@ -1,14 +1,15 @@
 use rill_core::NodeId;
-use rill_core_actor::ActorRef;
+use rill_core_actor::{ActorRef, Mbox};
 use rill_patchbay::{
     FunctionAutomaton, ParameterMapping, Patchbay, Servo, StatefulFunctionAutomaton,
 };
+use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Custom Automaton Examples ===\n");
 
     let (actor_ref, _mailbox) = ActorRef::new_pair();
-    let mut control = Patchbay::new(actor_ref);
+    let mut control = Patchbay::new(Arc::new(Mbox::new(64)), actor_ref.clone());
     let node = NodeId(1);
 
     // Example 1: Simple closure

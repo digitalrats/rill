@@ -1,12 +1,13 @@
 use rill_core::NodeId;
-use rill_core_actor::ActorRef;
+use rill_core_actor::{ActorRef, Mbox};
 use rill_patchbay::{LfoWaveform, Patchbay};
+use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== LFO + Envelope Example ===\n");
 
     let (actor_ref, mailbox) = ActorRef::new_pair();
-    let mut control = Patchbay::new(actor_ref);
+    let mut control = Patchbay::new(Arc::new(Mbox::new(64)), actor_ref.clone());
     let node = NodeId(1);
 
     // LFO

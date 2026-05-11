@@ -9,8 +9,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use rill_core::prelude::*;
-use rill_core::queues::{AutomatonCommand, CommandEnum, MpscQueue, SetParameter, SignalOrigin};
-use rill_core_actor::{ActorCell, ActorRef};
+use rill_core::queues::{AutomatonCommand, CommandEnum, SetParameter, SignalOrigin};
+use rill_core_actor::{ActorCell, ActorRef, Mbox};
 
 // crossbeam removed: // crossbeam removed (dead code)
 
@@ -503,7 +503,7 @@ pub struct Servo<A: Automaton> {
     internal: A::Internal,
     state: ParamValue,
     enabled: bool,
-    mailbox: Arc<MpscQueue<CommandEnum>>,
+    mailbox: Arc<Mbox<CommandEnum>>,
     target_node: NodeId,
     target_param: String,
     mapping: ParameterMapping,
@@ -543,7 +543,7 @@ impl<A: Automaton> Servo<A> {
             internal,
             state,
             enabled: true,
-            mailbox: Arc::new(MpscQueue::with_capacity(16)),
+            mailbox: Arc::new(Mbox::new(16)),
             target_node,
             target_param: target_param.into(),
             mapping,
@@ -585,7 +585,7 @@ impl<A: Automaton> Servo<A> {
 
     /// Return an [`ActorRef`] for sending control messages.
     pub fn handle(&self) -> ActorRef<CommandEnum> {
-        ActorRef::new(&self.mailbox)
+        self.mailbox.actor_ref()
     }
 
     /// Advance the servo and return a parameter command if the value changed.
@@ -768,7 +768,7 @@ impl<A: Automaton + 'static> Module for Servo<A> {
 /// The central patchbay controller.
 ///
 /// Operates on the **control thread** (soft RT) and sends parameter commands
-/// to the audio thread via [`MpscQueue<SetParameter>`](rill_core::queues::MpscQueue).
+/// to the audio thread via [`ActorRef<CommandEnum>`](rill_core_actor::ActorRef).
 ///
 /// ## Operation modes
 ///
@@ -781,9 +781,9 @@ pub struct Patchbay {
     mappings: Vec<Mapping>,
     modules: HashMap<String, BoxedModule>,
     automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
-    command_queue: ActorRef<SetParameter>,
-    clock_mailbox: Arc<MpscQueue<ClockTick>>,
-    event_mailbox: Arc<MpscQueue<ControlEvent>>,
+    graph_ref: ActorRef<CommandEnum>,
+    mailbox: Arc<Mbox<CommandEnum>>,
+    event_mailbox: Arc<Mbox<ControlEvent>>,
     time: Time,
     /// Automaton factory for custom type dispatch during deserialization.
     pub(crate) automaton_factory: Option<AutomatonFactory>,
@@ -795,27 +795,29 @@ impl Patchbay {
     /// Async methods (green threads, PortCombiner) require an active
     /// tokio runtime and will panic otherwise. Synchronous methods
     /// (servo, mapping, update) work without tokio.
-    pub fn new(command_queue: ActorRef<SetParameter>) -> Self {
+    pub fn new(mailbox: Arc<Mbox<CommandEnum>>, graph_ref: ActorRef<CommandEnum>) -> Self {
         Self {
             mappings: Vec::new(),
             modules: HashMap::new(),
             automaton_handles: HashMap::new(),
-            command_queue,
-            clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
-            event_mailbox: Arc::new(MpscQueue::with_capacity(64)),
+            graph_ref,
+            mailbox,
+            event_mailbox: Arc::new(Mbox::new(64)),
             time: 0.0,
             automaton_factory: None,
         }
     }
 
-    /// Return an [`ActorRef`] for the graph to send `ClockTick` to.
-    pub fn clock_handle(&self) -> ActorRef<ClockTick> {
-        ActorRef::new(&self.clock_mailbox)
+    /// Return an [`ActorRef`] for this patchbay's mailbox.
+    ///
+    /// Used by RackCase to forward ClockTick from Graph.
+    pub fn mailbox_ref(&self) -> ActorRef<CommandEnum> {
+        self.mailbox.actor_ref()
     }
 
     /// Return an [`ActorRef`] for sensors (MIDI, OSC, knobs) to send events to.
     pub fn event_handle(&self) -> ActorRef<ControlEvent> {
-        ActorRef::new(&self.event_mailbox)
+        self.event_mailbox.actor_ref()
     }
 
     /// Add an event mapping.
@@ -986,7 +988,7 @@ impl Patchbay {
                         }));
                     }
                 } else {
-                    self.command_queue.send(cmd);
+                    self.graph_ref.send(CommandEnum::SetParameter(cmd));
                 }
             }
         }
@@ -1001,14 +1003,14 @@ impl Patchbay {
 
         for servo in self.modules.values_mut() {
             if let Some(cmd) = servo.update(self.time) {
-                self.command_queue.send(cmd);
+                self.graph_ref.send(CommandEnum::SetParameter(cmd));
             }
         }
     }
 
-    /// Return a clone of the command queue ActorRef for async task spawning.
-    pub fn command_queue(&self) -> ActorRef<SetParameter> {
-        self.command_queue.clone()
+    /// Return a clone of the graph ActorRef for async task spawning.
+    pub fn graph_ref(&self) -> ActorRef<CommandEnum> {
+        self.graph_ref.clone()
     }
 
     /// Store a task handle for lifecycle management (async automaton tasks).
@@ -1058,22 +1060,13 @@ impl Patchbay {
         self.time
     }
 
-    /// Drain the clock mailbox and broadcast to all servos.
+    /// Drain the mailbox through the actor receive loop.
     ///
     /// Call this from the main loop (not the audio thread).
-    pub fn drain_clock(&mut self) {
+    pub fn drain_mailbox(&mut self) {
         self.drain_events();
-        while let Some(clock) = self.clock_mailbox.pop() {
-            for servo in self.modules.values() {
-                if let Some(ref handle) = servo.handle() {
-                    handle.send(CommandEnum::Automaton(AutomatonCommand::Wake {
-                        id: servo.id().to_string(),
-                    }));
-                }
-            }
-            let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
-            self.time += dt;
-            self.update(dt as f32);
+        while let Some(msg) = self.mailbox.pop() {
+            self.receive(msg);
         }
     }
 
@@ -1084,10 +1077,10 @@ impl Patchbay {
         }
     }
 
-    /// Spawn a periodic tokio task that drains the clock mailbox.
+    /// Spawn a periodic tokio task that drains the mailbox.
     ///
     /// Returns a `JoinHandle` for lifecycle management.
-    pub fn spawn_clock_loop(
+    pub fn spawn_mailbox_loop(
         patchbay: Arc<std::sync::Mutex<Patchbay>>,
         interval: std::time::Duration,
     ) -> tokio::task::JoinHandle<()> {
@@ -1096,10 +1089,36 @@ impl Patchbay {
             loop {
                 ticker.tick().await;
                 if let Ok(mut pb) = patchbay.lock() {
-                    pb.drain_clock();
+                    pb.drain_mailbox();
                 }
             }
         })
+    }
+}
+
+// =============================================================================
+// ActorCell implementation
+// =============================================================================
+
+impl ActorCell for Patchbay {
+    type Msg = CommandEnum;
+
+    fn receive(&mut self, msg: CommandEnum) {
+        match msg {
+            CommandEnum::ClockTick(clock) => {
+                let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
+                self.time += dt;
+                for servo in self.modules.values() {
+                    if let Some(ref handle) = servo.handle() {
+                        handle.send(CommandEnum::Automaton(AutomatonCommand::Wake {
+                            id: servo.id().to_string(),
+                        }));
+                    }
+                }
+                self.update(dt as f32);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1190,8 +1209,9 @@ mod tests {
     #[test]
     fn test_lfo_servo() {
         let node = NodeId(1);
-        let (actor_ref, _mailbox) = ActorRef::new_pair();
-        let mut control = Patchbay::new(actor_ref);
+        let (graph_ref, _mailbox) = ActorRef::new_pair();
+        let (_, patchbay_mbox) = ActorRef::new_pair();
+        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
 
         control.add_lfo(
             "test_lfo",
@@ -1215,8 +1235,9 @@ mod tests {
     #[test]
     fn test_envelope_servo() {
         let node = NodeId(1);
-        let (actor_ref, _mailbox) = ActorRef::new_pair();
-        let mut control = Patchbay::new(actor_ref);
+        let (graph_ref, _mailbox) = ActorRef::new_pair();
+        let (_, patchbay_mbox) = ActorRef::new_pair();
+        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
 
         control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
 

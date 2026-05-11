@@ -21,7 +21,7 @@ use crate::engine::{
 };
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
-use rill_core::queues::{SetParameter, SignalOrigin};
+use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 
 pub mod dot;
 
@@ -510,7 +510,7 @@ impl PatchbayDef {
                                     &id_str, *frequency, *amplitude, *offset, *waveform,
                                 );
                                 let mapping = s.mapping.to_parameter_mapping();
-                                let command_queue = control.command_queue();
+                                let command_queue = control.graph_ref();
                                 let node_id = nid;
                                 let param = s.target_param.clone();
                                 let min = s.min;
@@ -536,11 +536,13 @@ impl PatchbayDef {
                                         let mapped = mapping.apply(raw);
                                         let value = min + mapped * (max - min);
                                         let pid = ParameterId::new(&param).unwrap();
-                                        command_queue.send(SetParameter::new(
-                                            PortId::param(node_id, 0),
-                                            pid,
-                                            ParamValue::Float(value as f32),
-                                            SignalOrigin::Automaton(id_str.clone()),
+                                        command_queue.send(CommandEnum::SetParameter(
+                                            SetParameter::new(
+                                                PortId::param(node_id, 0),
+                                                pid,
+                                                ParamValue::Float(value as f32),
+                                                SignalOrigin::Automaton(id_str.clone()),
+                                            ),
                                         ));
                                     }
                                 });
@@ -576,7 +578,7 @@ impl PatchbayDef {
                                 )
                                 .with_curve(*curve);
                                 let mapping = s.mapping.to_parameter_mapping();
-                                let command_queue = control.command_queue();
+                                let command_queue = control.graph_ref();
                                 let node_id = nid;
                                 let param = s.target_param.clone();
                                 let min = s.min;
@@ -602,11 +604,13 @@ impl PatchbayDef {
                                         let mapped = mapping.apply(raw);
                                         let value = min + mapped * (max - min);
                                         let pid = ParameterId::new(&param).unwrap();
-                                        command_queue.send(SetParameter::new(
-                                            PortId::param(node_id, 0),
-                                            pid,
-                                            ParamValue::Float(value as f32),
-                                            SignalOrigin::Automaton(id_str.clone()),
+                                        command_queue.send(CommandEnum::SetParameter(
+                                            SetParameter::new(
+                                                PortId::param(node_id, 0),
+                                                pid,
+                                                ParamValue::Float(value as f32),
+                                                SignalOrigin::Automaton(id_str.clone()),
+                                            ),
                                         ));
                                     }
                                 });
@@ -774,9 +778,9 @@ mod tests {
     #[test]
     fn test_apply_to_adds_servo() {
         let doc = sample_doc();
-        let _mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let actor_ref = ActorRef::new(&_mailbox);
-        let mut control = Patchbay::new(actor_ref);
+        let (graph_ref, _) = ActorRef::new_pair();
+        let (_, patchbay_mbox) = ActorRef::new_pair();
+        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to(&mut control, &registry).unwrap();
         control.update(0.01);
@@ -803,9 +807,9 @@ mod tests {
             osc_surface: vec![],
             description: None,
         };
-        let _mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let actor_ref = ActorRef::new(&_mailbox);
-        let mut control = Patchbay::new(actor_ref);
+        let (graph_ref, _) = ActorRef::new_pair();
+        let (_, patchbay_mbox) = ActorRef::new_pair();
+        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
         let registry = FunctionRegistry::builtin();
         assert!(doc.apply_to(&mut control, &registry).is_err());
     }
@@ -881,9 +885,9 @@ mod tests {
             description: None,
         };
 
-        let mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let actor_ref = ActorRef::new(&mailbox);
-        let mut control = Patchbay::new(actor_ref);
+        let (graph_ref, _) = ActorRef::new_pair();
+        let (_, patchbay_mbox) = ActorRef::new_pair();
+        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry).unwrap();
 

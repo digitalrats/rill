@@ -3,7 +3,7 @@ use rill_adrift::modular::{ModularConfig, ModularSystem};
 #[cfg(feature = "serialization")]
 use rill_adrift::registration;
 #[cfg(feature = "serialization")]
-use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
+use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
@@ -127,13 +127,12 @@ fn test_send_parameter_via_queue() {
     // Send parameter via queue
     graph
         .handle()
-        .expect("graph has a command queue")
-        .send(SetParameter::new(
+        .send(CommandEnum::SetParameter(SetParameter::new(
             PortId::param(rill_adrift::rill_core::NodeId(0), 0),
             ParameterId::new("frequency").unwrap(),
             ParamValue::Float(880.0),
             SignalOrigin::Manual,
-        ));
+        )));
 
     // Parameter is in the queue — not yet applied (no callback fired).
     // Run graph once — NullBackend fires the callback and returns.

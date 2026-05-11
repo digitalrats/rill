@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use rill_core::queues::SetParameter;
+use rill_core::queues::CommandEnum;
 use rill_core::traits::{NodeId, ParamValue, Params};
 use rill_core_actor::ActorRef;
 
@@ -43,7 +43,7 @@ pub trait AutomatonConstructor: Send + Sync {
         params: &Params,
         target: &ServoTarget,
         interval_ms: f64,
-        command_queue: ActorRef<SetParameter>,
+        command_queue: ActorRef<CommandEnum>,
     ) -> Option<tokio::task::JoinHandle<()>> {
         None
     }
@@ -90,7 +90,7 @@ impl AutomatonFactory {
         params: &Params,
         target: &ServoTarget,
         interval_ms: f64,
-        command_queue: ActorRef<SetParameter>,
+        command_queue: ActorRef<CommandEnum>,
     ) -> Result<Option<tokio::task::JoinHandle<()>>, FactoryError> {
         self.entries
             .get(type_name)

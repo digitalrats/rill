@@ -26,6 +26,7 @@
 //! ```
 
 use super::command::Command;
+use crate::time::ClockTick;
 use crate::traits::{ParamValue, ParameterId, PortId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -553,6 +554,8 @@ pub enum CommandType {
     Sensor,
     /// Servo control command.
     Servo,
+    /// Audio clock tick.
+    ClockTick,
     /// System command.
     System,
 }
@@ -564,6 +567,7 @@ impl fmt::Display for CommandType {
             CommandType::Automaton => write!(f, "Automaton"),
             CommandType::Sensor => write!(f, "Sensor"),
             CommandType::Servo => write!(f, "Servo"),
+            CommandType::ClockTick => write!(f, "ClockTick"),
             CommandType::System => write!(f, "System"),
         }
     }
@@ -583,6 +587,8 @@ pub enum CommandEnum {
     Sensor(SensorCommand),
     /// Servo control command.
     Servo(ServoCommand),
+    /// Audio clock tick — sent from Graph to Patchbay each processing block.
+    ClockTick(ClockTick),
     /// System-level command with opaque payload.
     System {
         /// System command kind.
@@ -600,6 +606,7 @@ impl CommandEnum {
             CommandEnum::Automaton(_) => CommandType::Automaton,
             CommandEnum::Sensor(_) => CommandType::Sensor,
             CommandEnum::Servo(_) => CommandType::Servo,
+            CommandEnum::ClockTick(_) => CommandType::ClockTick,
             CommandEnum::System { .. } => CommandType::System,
         }
     }
@@ -651,6 +658,14 @@ impl CommandEnum {
             _ => None,
         }
     }
+
+    /// Try to downcast to `ClockTick`.
+    pub fn as_clock_tick(&self) -> Option<&ClockTick> {
+        match self {
+            CommandEnum::ClockTick(tick) => Some(tick),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for CommandEnum {
@@ -660,6 +675,11 @@ impl fmt::Display for CommandEnum {
             CommandEnum::Automaton(cmd) => write!(f, "{}", cmd),
             CommandEnum::Sensor(cmd) => write!(f, "{}", cmd),
             CommandEnum::Servo(cmd) => write!(f, "{}", cmd),
+            CommandEnum::ClockTick(tick) => write!(
+                f,
+                "ClockTick(pos={}, dt={}samp)",
+                tick.sample_pos, tick.samples_since_last
+            ),
             CommandEnum::System { kind, data } => {
                 write!(f, "System[{}] ({} bytes)", kind, data.len())
             }

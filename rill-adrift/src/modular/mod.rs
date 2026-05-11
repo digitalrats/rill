@@ -49,6 +49,8 @@ use rill_core::traits::{NodeId, NodeVariant, ParamValue, Params};
 use rill_core_actor::ActorRef;
 #[cfg(feature = "serialization")]
 use rill_core_actor::ActorSystem;
+#[cfg(any(feature = "osc", feature = "serialization"))]
+use rill_core_actor::Mbox;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{Graph, GraphBuilder, NodeFactory};
 use rill_patchbay::automaton::factory::AutomatonFactory;
@@ -297,7 +299,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     /// Returns a mutable reference to the newly created case.
     #[cfg(feature = "serialization")]
     pub fn create_case(&mut self, name: &str, sample_rate: f32) -> &mut RackCase<BUF> {
-        let mbox = self.actor_system.register(name);
+        let mbox = self.actor_system.create_mbox(name);
         let case = RackCase::new(name.to_string(), sample_rate, mbox);
         self.cases.insert(name.to_string(), case);
         self.cases.get_mut(name).expect("just inserted")
@@ -355,7 +357,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
         for (case_name, case) in self.cases.iter_mut() {
             // 1. Drain incoming commands
-            let incoming = case.receive();
+            let incoming = case.drain();
             // Dispatch will be handled by the case when Graph/Patchbay are running
             for _cmd in incoming {
                 // TODO: dispatch to Graph (SetParameter) or Patchbay (AutomatonCommand)
@@ -381,10 +383,13 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
     /// Validate a system definition and create cases.
     ///
-    /// Launch the modular system — for each case, spawn an audio thread.
+    /// Launch the modular system — for each case, spawn an audio thread
+    /// and activate the patchbay (control rack).
     ///
     /// The signal graph is built inside the case's audio thread
     /// (Graph is not Send) and the run loop begins immediately.
+    /// The patchbay (automata, mappings) is created synchronously
+    /// and connected to the same command queue the graph will drain.
     #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         for cd in &def.cases {
@@ -395,35 +400,47 @@ impl<const BUF: usize> ModularSystem<BUF> {
         let backend_factory = self.backend_factory.clone();
         let default_backend = self.default_backend.clone();
 
-        let case_defs: Vec<_> = def
-            .cases
-            .iter()
-            .map(|cd| (cd.name.clone(), cd.graph.clone()))
-            .collect();
-
-        // Spawn one audio thread per case
-        for (case_name, graph_def) in &case_defs {
-            if let Some(case) = self.cases.get_mut(case_name) {
+        // Spawn one audio thread per case, wire up patchbay if present
+        for cd in &def.cases {
+            if let Some(case) = self.cases.get_mut(&cd.name) {
                 let nf = node_factory.clone();
                 let bf = backend_factory.clone();
                 let db = default_backend.clone();
-                let gd = graph_def.clone();
-                case.launch(move |running| {
+                let gd = cd.graph.clone();
+
+                // Oneshot to receive the graph's ActorRef after build
+                let (graph_tx, graph_rx) = std::sync::mpsc::channel();
+
+                // Spawn audio thread with graph
+                let parent_ref = case.handle();
+                case.start(move |running| {
                     let mut builder = GraphBuilder::new(Arc::new(nf.lock().unwrap().clone()), bf);
                     if let Some((ref name, ref params)) = db {
                         builder.set_default_backend(name.clone(), params.clone());
                     }
+                    builder.set_parent_ref(parent_ref);
                     if let Err(e) = gd.populate(&mut builder) {
                         log::error!("graph populate: {e}");
                         return;
                     }
                     match builder.build() {
                         Ok(mut graph) => {
+                            let _ = graph_tx.send(graph.handle());
                             graph.run(running).ok();
                         }
                         Err(e) => log::error!("graph build: {e:?}"),
                     };
                 });
+
+                // Receive graph handle and create patchbay
+                let graph_ref = graph_rx
+                    .recv()
+                    .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
+
+                if let Some(ref patchbay_def) = cd.patchbay {
+                    case.create_patchbay(patchbay_def, graph_ref)
+                        .map_err(ModularError::Patchbay)?;
+                }
             }
         }
 
@@ -524,9 +541,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
     pub(crate) fn load_patchbay(
         &mut self,
         doc: PatchbayDef,
-        cmd_queue: ActorRef<SetParameter>,
+        graph_ref: ActorRef<CommandEnum>,
     ) -> Result<(), ModularError> {
-        let mut control = Patchbay::new(cmd_queue.clone());
+        let mut control = Patchbay::new(Arc::new(Mbox::new(64)), graph_ref.clone());
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry)
             .map_err(ModularError::Patchbay)?;
@@ -536,7 +553,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         #[cfg(feature = "osc")]
         {
             self.osc_surface = doc.osc_surface.clone();
-            let mut ctrl = Patchbay::new(cmd_queue);
+            let mut ctrl = Patchbay::new(Arc::new(Mbox::new(64)), graph_ref);
             doc.apply_to(&mut ctrl, &registry)
                 .map_err(ModularError::Patchbay)?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
@@ -574,16 +591,17 @@ impl<const BUF: usize> ModularSystem<BUF> {
     pub async fn start_osc(
         &mut self,
         bind: &str,
-        cmd_queue: ActorRef<SetParameter>,
+        cmd_queue: ActorRef<CommandEnum>,
     ) -> Result<(), ModularError> {
         if self.osc.is_some() {
             return Err(ModularError::Osc("already running".into()));
         }
 
         let control = self.control_shared.clone().unwrap_or_else(|| {
-            Arc::new(std::sync::Mutex::new(Patchbay::new(ActorRef::new(
-                &Arc::new(MpscQueue::with_capacity(64)),
-            ))))
+            Arc::new(std::sync::Mutex::new(Patchbay::new(
+                Arc::new(Mbox::new(64)),
+                cmd_queue.clone(),
+            )))
         });
         let surface = self.osc_surface.clone();
 

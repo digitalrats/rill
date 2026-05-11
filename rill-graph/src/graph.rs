@@ -2,14 +2,14 @@ use crate::backend_factory::BackendFactory;
 use crate::factory::NodeFactory;
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
-use rill_core::queues::{MpscQueue, SetParameter};
+use rill_core::queues::CommandEnum;
 use rill_core::time::ClockTick;
 use rill_core::traits::algorithm::ActionContext;
 use rill_core::traits::port::Port;
 use rill_core::traits::processable::{ProcessContext, Processable};
 use rill_core::traits::ParamValue;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params};
-use rill_core_actor::{ActorCell, ActorRef};
+use rill_core_actor::{ActorCell, ActorRef, Mbox};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -111,8 +111,8 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     /// Sample rate override. When set, used in [`build`](Self::build).
     /// Populated from [`GraphDef::sample_rate`] during deserialization.
     sample_rate: Option<f32>,
-    /// Telemetry queue for clock ticks (audio → control).
-    clock_tx: Option<ActorRef<ClockTick>>,
+    /// Parent RackCase ActorRef — Graph sends ClockTick here.
+    parent_ref: Option<ActorRef<CommandEnum>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
@@ -133,7 +133,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             default_backend: None,
             backend_params: HashMap::new(),
             sample_rate: None,
-            clock_tx: None,
+            parent_ref: None,
         }
     }
 
@@ -206,9 +206,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.sample_rate = Some(sr);
     }
 
-    /// Set the clock tick channel (audio → control).
-    pub fn set_clock_tx(&mut self, tx: ActorRef<ClockTick>) {
-        self.clock_tx = Some(tx);
+    /// Set the parent RackCase actor reference (Graph → parent ClockTick).
+    pub fn set_parent_ref(&mut self, parent: ActorRef<CommandEnum>) {
+        self.parent_ref = Some(parent);
     }
 
     /// Access the shared backend factory.
@@ -444,8 +444,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let mut nodes: Vec<NodeVariant<T, BUF_SIZE>> =
             node_entries.into_iter().map(|e| e.node).collect();
 
-        // Find the active (driver) node via ActiveNode trait.
-        let cmd_queue = Arc::new(MpscQueue::<SetParameter>::with_capacity(64));
+        // Create the command mailbox — shared between Graph and Patchbay via ActorRef.
+        let mailbox = Arc::new(Mbox::new(64));
         let mut active_node_idx = None;
         for (i, n) in nodes.iter_mut().enumerate() {
             if n.as_active_node_mut().is_some() {
@@ -453,8 +453,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 break;
             }
         }
-        let have_queue = active_node_idx.is_some();
-        let command_queue = if have_queue { Some(cmd_queue) } else { None };
 
         let owned_buffers = buffers.into_inner();
 
@@ -467,8 +465,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             current_tick: ClockTick::new(0, BUF_SIZE as u32, sr),
             buffers: owned_buffers,
             active_node_idx,
-            command_queue,
-            clock_tx: self.clock_tx.clone(),
+            mailbox,
+            parent_ref: self.parent_ref.clone(),
         })
     }
 }
@@ -495,10 +493,10 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     buffers: Vec<Box<dyn Buffer<T> + Send>>,
     /// Index of the active node that drives graph processing.
     active_node_idx: Option<usize>,
-    /// Command queue for sending parameters from control to audio thread.
-    command_queue: Option<Arc<MpscQueue<SetParameter>>>,
-    /// Clock tick channel (audio → control sequencer).
-    clock_tx: Option<ActorRef<ClockTick>>,
+    /// Mailbox for receiving commands from control actors (Patchbay, RackCase).
+    mailbox: Arc<Mbox<CommandEnum>>,
+    /// Parent RackCase ActorRef — Graph sends ClockTick here.
+    parent_ref: Option<ActorRef<CommandEnum>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
@@ -552,23 +550,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             return Ok(());
         };
         let source_idx = self.topo_order[0];
-        let cmd_queue = self
-            .command_queue
-            .clone()
-            .unwrap_or_else(|| Arc::new(MpscQueue::new()));
-        let clock_tx = self
-            .clock_tx
-            .clone()
-            .unwrap_or_else(|| ActorRef::new(&Arc::new(MpscQueue::new())));
+        let mailbox = self.mailbox.clone();
+        let parent_ref = self.parent_ref.clone();
 
         let graph_ptr: *mut Graph<T, BUF_SIZE> = self;
         let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
             let graph = unsafe { &mut *graph_ptr };
-            // drain command queue via actor pattern
-            while let Some(cmd) = cmd_queue.pop() {
+            while let Some(cmd) = mailbox.pop() {
                 graph.receive(cmd);
             }
-            // process source and propagate
             let tick = ClockTick::new(sample_pos, BUF_SIZE as u32, sample_rate);
             let mut ctx = ProcessContext { clock: &tick };
             let _ = graph.nodes[source_idx].process_block(&mut ctx);
@@ -578,8 +568,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
                     let _ = port.propagate(port.buffer(), &action_ctx);
                 }
             }
-            // send clock tick
-            clock_tx.send(tick);
+            if let Some(ref parent) = parent_ref {
+                parent.send(CommandEnum::ClockTick(tick));
+            }
         });
 
         self.nodes[idx]
@@ -590,12 +581,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 
     /// Obtain an [`ActorRef`] for sending commands to this graph.
     ///
-    /// The returned handle holds a weak reference — when the `Graph` is
-    /// dropped, all subsequent `send` calls route to dead letters.
-    /// Returns `None` if no audio backend was configured (no queue created).
-    pub fn handle(&self) -> Option<ActorRef<SetParameter>> {
-        let mailbox = self.command_queue.as_ref()?;
-        Some(ActorRef::new(mailbox))
+    /// The returned handle shares the graph's [`Mbox`]. When the `Graph`
+    /// is dropped the mailbox remains alive as long as any `ActorRef`
+    /// holds a reference; messages are silently dropped once the mailbox
+    /// is killed.
+    pub fn handle(&self) -> ActorRef<CommandEnum> {
+        self.mailbox.actor_ref()
     }
 
     /// Consume the graph and return its owned parts (test only).
@@ -615,8 +606,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             resources: _,
             buffers,
             active_node_idx: _,
-            command_queue: _,
-            clock_tx: _,
+            mailbox: _,
+            parent_ref: _,
         } = self;
         (nodes, topo_order, current_tick, buffers)
     }
@@ -627,11 +618,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 // ============================================================================
 
 impl<T: Transcendental, const BUF_SIZE: usize> ActorCell for Graph<T, BUF_SIZE> {
-    type Msg = SetParameter;
+    type Msg = CommandEnum;
 
-    /// Process a single parameter command by writing to the target node.
-    fn receive(&mut self, msg: SetParameter) {
-        let idx = msg.port.node_id().inner() as usize;
+    fn receive(&mut self, msg: CommandEnum) {
+        let CommandEnum::SetParameter(param) = msg else {
+            return;
+        };
+        let idx = param.port.node_id().inner() as usize;
         debug_assert!(
             idx < self.nodes.len(),
             "SetParameter: node {} out of bounds (max {})",
@@ -639,12 +632,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActorCell for Graph<T, BUF_SIZE> 
             self.nodes.len()
         );
         if idx < self.nodes.len() {
-            let result = self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+            let result = self.nodes[idx].set_parameter(&param.parameter, param.value);
             debug_assert!(
                 result.is_ok(),
                 "SetParameter: node {} has no parameter '{}'",
                 idx,
-                msg.parameter.as_str()
+                param.parameter.as_str()
             );
         }
     }

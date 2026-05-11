@@ -22,7 +22,7 @@ use std::sync::Arc;
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::registration;
 use rill_adrift::rill_core::{
-    queues::{SetParameter, SignalOrigin},
+    queues::{CommandEnum, SetParameter, SignalOrigin},
     NodeId, ParamValue, ParameterId, PortId,
 };
 use serde::Deserialize;
@@ -141,24 +141,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
 
             // Send parameter changes via the actor mailbox
-            if let Some(handle) = graph.handle() {
-                if let Some(ref path) = wav_path {
-                    handle.send(SetParameter::new(
-                        PortId::signal_out(NodeId(0), 0),
-                        ParameterId::new("file").unwrap(),
-                        ParamValue::String(path.clone()),
-                        SignalOrigin::Manual,
-                    ));
-                }
-
-                // Example: set filter cutoff
-                handle.send(SetParameter::new(
-                    PortId::signal_in(NodeId(1), 0),
-                    ParameterId::new("cutoff").unwrap(),
-                    ParamValue::Float(800.0),
+            let handle = graph.handle();
+            if let Some(ref path) = wav_path {
+                handle.send(CommandEnum::SetParameter(SetParameter::new(
+                    PortId::signal_out(NodeId(0), 0),
+                    ParameterId::new("file").unwrap(),
+                    ParamValue::String(path.clone()),
                     SignalOrigin::Manual,
-                ));
+                )));
             }
+
+            // Example: set filter cutoff
+            handle.send(CommandEnum::SetParameter(SetParameter::new(
+                PortId::signal_in(NodeId(1), 0),
+                ParameterId::new("cutoff").unwrap(),
+                ParamValue::Float(800.0),
+                SignalOrigin::Manual,
+            )));
 
             graph.run(running).ok();
         })
