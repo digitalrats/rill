@@ -190,14 +190,6 @@ pub struct ModularSystem<const BUF: usize = 64> {
     /// Tokio runtime for the control rack.
     #[cfg(feature = "serialization")]
     tokio_rt: Option<tokio::runtime::Runtime>,
-
-    /// Audio thread handle.
-    #[cfg(feature = "serialization")]
-    audio_thread: Option<std::thread::JoinHandle<()>>,
-
-    /// Shared stop flag.
-    #[cfg(feature = "serialization")]
-    running: Option<Arc<AtomicBool>>,
 }
 
 impl<const BUF: usize> ModularSystem<BUF> {
@@ -247,10 +239,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
             control_arc: None,
             #[cfg(feature = "serialization")]
             tokio_rt: None,
-            #[cfg(feature = "serialization")]
-            audio_thread: None,
-            #[cfg(feature = "serialization")]
-            running: None,
         }
     }
 
@@ -393,11 +381,10 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
     /// Validate a system definition and create cases.
     ///
-    /// Launch the modular system — spawn audio thread, build graphs, run.
+    /// Launch the modular system — for each case, spawn an audio thread.
     ///
-    /// This is the canonical entry point.  The signal graph is built
-    /// inside the audio thread (Graph is not Send) and the run loop
-    /// begins immediately.
+    /// The signal graph is built inside the case's audio thread
+    /// (Graph is not Send) and the run loop begins immediately.
     #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         for cd in &def.cases {
@@ -414,33 +401,32 @@ impl<const BUF: usize> ModularSystem<BUF> {
             .map(|cd| (cd.name.clone(), cd.graph.clone()))
             .collect();
 
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-
-        let audio_thread = std::thread::spawn(move || {
-            for (_name, graph_def) in &case_defs {
-                let mut builder = GraphBuilder::new(
-                    Arc::new(node_factory.lock().unwrap().clone()),
-                    backend_factory.clone(),
-                );
-                if let Some((ref name, ref params)) = default_backend {
-                    builder.set_default_backend(name.clone(), params.clone());
-                }
-                if let Err(e) = graph_def.populate(&mut builder) {
-                    log::error!("graph populate: {e}");
-                    return;
-                }
-                match builder.build() {
-                    Ok(mut graph) => {
-                        graph.run(r.clone()).ok();
+        // Spawn one audio thread per case
+        for (case_name, graph_def) in &case_defs {
+            if let Some(case) = self.cases.get_mut(case_name) {
+                let nf = node_factory.clone();
+                let bf = backend_factory.clone();
+                let db = default_backend.clone();
+                let gd = graph_def.clone();
+                case.launch(move |running| {
+                    let mut builder = GraphBuilder::new(Arc::new(nf.lock().unwrap().clone()), bf);
+                    if let Some((ref name, ref params)) = db {
+                        builder.set_default_backend(name.clone(), params.clone());
                     }
-                    Err(e) => log::error!("graph build: {e:?}"),
-                };
+                    if let Err(e) = gd.populate(&mut builder) {
+                        log::error!("graph populate: {e}");
+                        return;
+                    }
+                    match builder.build() {
+                        Ok(mut graph) => {
+                            graph.run(running).ok();
+                        }
+                        Err(e) => log::error!("graph build: {e:?}"),
+                    };
+                });
             }
-        });
+        }
 
-        self.running = Some(running);
-        self.audio_thread = Some(audio_thread);
         Ok(self)
     }
 
@@ -632,16 +618,10 @@ impl<const BUF: usize> ModularSystem<BUF> {
             o.task.abort();
         }
 
-        // Signal audio thread to stop.
+        // Stop all cases (each owns its audio thread).
         #[cfg(feature = "serialization")]
-        if let Some(ref running) = self.running {
-            running.store(false, Ordering::Release);
-        }
-
-        // Wait for audio thread.
-        #[cfg(feature = "serialization")]
-        if let Some(handle) = self.audio_thread.take() {
-            let _ = handle.join();
+        for (_name, case) in self.cases.iter_mut() {
+            case.stop();
         }
 
         // Drop tokio runtime — remaining green threads cancelled.

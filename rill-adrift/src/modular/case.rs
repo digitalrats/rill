@@ -18,6 +18,7 @@
 //!     └── Command queue (MpscQueue<SetParameter>)
 //! ```
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_core::queues::{CommandEnum, MpscQueue};
@@ -26,36 +27,18 @@ use rill_core_actor::ActorRef;
 use rill_patchbay::engine::Patchbay;
 
 /// A single Eurorack processing case.
-///
-/// Holds an audio signal graph and a control patchbay.
-/// Created and managed by [`ModularSystem`] which registers each
-/// case as an actor in the system's [`ActorSystem`].
-///
-/// ## Communication model
-///
-/// * **Internal** (Graph ↔ Patchbay within the same case):
-///   direct [`MpscQueue<SetParameter>`] for RT-safe parameter changes.
-/// * **External** (cross‑case / system‑level):
-///   through the case's mailbox ([`CommandEnum`] messages).
-///   Incoming commands are drained via [`receive`](Self::receive).
-///   Outgoing commands are pushed via [`send`](Self::send) and
-///   collected by [`ModularSystem::tick`] for routing.
 pub struct RackCase<const BUF: usize> {
-    /// Case identifier (unique within the system).
     name: String,
-
-    /// Audio sample rate in Hz.
     sample_rate: f32,
-
-    /// Actor mailbox for **incoming** commands from other cases or external actors.
     mailbox: Arc<MpscQueue<CommandEnum>>,
-
-    /// Outgoing command queue — commands destined for other cases.
-    /// Collected by [`ModularSystem::tick`] and routed via [`ActorSystem`](rill_core_actor::ActorSystem).
     outgoing: Vec<CommandEnum>,
-
-    /// Control patchbay (automata, sensors, mappings).
     patchbay: Option<Patchbay>,
+
+    /// Audio thread handle — the graph runs here (Graph is !Send).
+    audio_thread: Option<std::thread::JoinHandle<()>>,
+
+    /// Stop flag for the audio thread's run loop.
+    running: Option<Arc<AtomicBool>>,
 }
 
 impl<const BUF: usize> RackCase<BUF> {
@@ -74,6 +57,8 @@ impl<const BUF: usize> RackCase<BUF> {
             mailbox,
             outgoing: Vec::new(),
             patchbay: None,
+            audio_thread: None,
+            running: None,
         }
     }
 
@@ -114,6 +99,30 @@ impl<const BUF: usize> RackCase<BUF> {
     /// Access the case's patchbay (read-only).
     pub fn patchbay(&self) -> Option<&Patchbay> {
         self.patchbay.as_ref()
+    }
+
+    /// Launch the audio thread for this case.
+    ///
+    /// Takes a closure that builds the graph on the target thread.
+    pub(crate) fn launch<F>(&mut self, build: F)
+    where
+        F: FnOnce(Arc<AtomicBool>) + Send + 'static,
+    {
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        let handle = std::thread::spawn(move || build(r));
+        self.running = Some(running);
+        self.audio_thread = Some(handle);
+    }
+
+    /// Stop the audio thread.
+    pub fn stop(&mut self) {
+        if let Some(ref running) = self.running {
+            running.store(false, Ordering::Release);
+        }
+        if let Some(handle) = self.audio_thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
