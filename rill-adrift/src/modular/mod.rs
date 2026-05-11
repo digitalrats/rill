@@ -51,6 +51,7 @@ use rill_core_actor::ActorRef;
 use rill_core_actor::ActorSystem;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{Graph, GraphBuilder, NodeFactory};
+use rill_patchbay::automaton::factory::AutomatonFactory;
 #[cfg(feature = "osc")]
 use rill_patchbay::engine::OscSurface;
 use rill_patchbay::engine::Patchbay;
@@ -135,6 +136,9 @@ pub struct ModularSystem<const BUF: usize = 64> {
     /// Shared node factory (populated at construction, extended via
     /// [`register_node_fn`](Self::register_node_fn)).
     node_factory: Arc<Mutex<NodeFactory<f32, BUF>>>,
+
+    /// Shared automaton factory for Patchbay custom type dispatch.
+    automaton_factory: Arc<Mutex<AutomatonFactory>>,
 
     /// Shared backend factory (populated at construction).
     backend_factory: Arc<BackendFactory<f32>>,
@@ -221,6 +225,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         Self {
             dead: Arc::new(MpscQueue::new()),
             node_factory: Arc::new(Mutex::new(nf)),
+            automaton_factory: Arc::new(Mutex::new(AutomatonFactory::new())),
             backend_factory: Arc::new(bf),
             default_backend,
             control: None,
@@ -249,6 +254,28 @@ impl<const BUF: usize> ModularSystem<BUF> {
         }
     }
 
+    /// Register a custom automaton constructor.
+    ///
+    /// The closure receives `(id: &str, params: &Params, target: &ServoTarget)`
+    /// and must return a ready-made [`BoxedModule`] (Servo + automaton).
+    #[cfg(feature = "serialization")]
+    pub fn register_automaton_fn(
+        &self,
+        type_name: &'static str,
+        f: impl Fn(
+                &str,
+                &rill_core::traits::Params,
+                &rill_patchbay::automaton::factory::ServoTarget,
+            ) -> rill_patchbay::engine::BoxedModule
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.automaton_factory
+            .lock()
+            .unwrap()
+            .register_fn(type_name, move |id, params, target| f(id, params, target));
+    }
     /// Register a custom node type via a closure.
     ///
     /// Must be called before [`create_builder`](Self::create_builder).

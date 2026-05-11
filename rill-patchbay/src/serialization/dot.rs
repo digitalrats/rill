@@ -65,6 +65,10 @@ pub fn patchbay_to_dot(patchbay: &PatchbayDef, _config: &DotConfig) -> String {
                 let l = format!("Fn\\n{function_name}");
                 (l, "#cfc")
             }
+            crate::serialization::AutomatonDef::Custom { type_name, .. } => {
+                let l = format!("Custom\\n{type_name}");
+                (l, "#fcf")
+            }
         };
         let escaped = label.replace('\"', "\\\"");
         writeln!(

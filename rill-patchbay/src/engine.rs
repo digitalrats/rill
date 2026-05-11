@@ -14,6 +14,7 @@ use rill_core_actor::{ActorCell, ActorRef};
 
 // crossbeam removed: // crossbeam removed (dead code)
 
+use crate::automaton::factory::AutomatonFactory;
 pub use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform, Range};
 use crate::sensor::Sensor;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
@@ -784,6 +785,8 @@ pub struct Patchbay {
     clock_mailbox: Arc<MpscQueue<ClockTick>>,
     event_mailbox: Arc<MpscQueue<ControlEvent>>,
     time: Time,
+    /// Automaton factory for custom type dispatch during deserialization.
+    pub(crate) automaton_factory: Option<AutomatonFactory>,
 }
 
 impl Patchbay {
@@ -801,6 +804,7 @@ impl Patchbay {
             clock_mailbox: Arc::new(MpscQueue::with_capacity(16)),
             event_mailbox: Arc::new(MpscQueue::with_capacity(64)),
             time: 0.0,
+            automaton_factory: None,
         }
     }
 
@@ -1010,6 +1014,11 @@ impl Patchbay {
     /// Store a task handle for lifecycle management (async automaton tasks).
     pub fn store_task_handle(&mut self, id: String, handle: tokio::task::JoinHandle<()>) {
         self.automaton_handles.insert(id, handle);
+    }
+
+    /// Set the automaton factory for custom type dispatch.
+    pub fn set_automaton_factory(&mut self, factory: AutomatonFactory) {
+        self.automaton_factory = Some(factory);
     }
 
     /// Return all mappings.

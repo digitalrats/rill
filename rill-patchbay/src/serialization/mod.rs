@@ -7,9 +7,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rill_core::traits::{ParamValue, ParameterId, Params, PortId};
 use rill_core::NodeId;
 
 use crate::automaton::envelope::{EnvelopeAutomaton, EnvelopeType};
+use crate::automaton::factory::{AutomatonFactory, ServoTarget};
 use crate::automaton::lfo::{LfoAutomaton, LfoWaveform};
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use crate::engine::EventPattern;
@@ -20,7 +22,6 @@ use crate::engine::{
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 use rill_core::queues::{SetParameter, SignalOrigin};
-use rill_core::traits::{ParamValue, ParameterId, PortId};
 
 pub mod dot;
 
@@ -59,6 +60,13 @@ pub enum AutomatonDef {
         function_name: String,
         params: HashMap<String, f64>,
     },
+    /// Custom automaton — dispatched via [`AutomatonFactory`].
+    Custom {
+        id: String,
+        type_name: String,
+        #[serde(default)]
+        params: HashMap<String, ParamValue>,
+    },
 }
 
 impl AutomatonDef {
@@ -68,6 +76,7 @@ impl AutomatonDef {
             AutomatonDef::Envelope { id, .. } => id,
             AutomatonDef::Sequencer { id, .. } => id,
             AutomatonDef::NamedFunction { id, .. } => id,
+            AutomatonDef::Custom { id, .. } => id,
         }
     }
 }
@@ -384,6 +393,37 @@ impl PatchbayDef {
                         AutomatonDef::NamedFunction { id, .. } => {
                             log::warn!("NamedFunction automaton '{}' requires manual setup", id);
                         }
+                        AutomatonDef::Custom {
+                            id,
+                            type_name,
+                            params,
+                        } => {
+                            let nid = NodeId(s.target_node);
+                            let mapping = s.mapping.to_parameter_mapping();
+                            let mut p = Params::new(48000.0);
+                            for (k, v) in params {
+                                p = p.with(k.clone(), v.clone());
+                            }
+                            let target = ServoTarget {
+                                target_node: nid,
+                                target_param: s.target_param.clone(),
+                                mapping,
+                                min: s.min,
+                                max: s.max,
+                            };
+                            if let Some(ref factory) = control.automaton_factory {
+                                match factory.construct(type_name, id, &p, &target) {
+                                    Ok(module) => {
+                                        control.add_boxed_servo(id.clone(), module);
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Custom automaton '{}': {e}", id);
+                                    }
+                                }
+                            } else {
+                                log::warn!("Custom '{}' needs factory — none set", id);
+                            }
+                        }
                     }
                 }
                 ModuleDef::Sensor(s) => {
@@ -597,6 +637,12 @@ impl PatchbayDef {
                         AutomatonDef::NamedFunction { id, .. } => {
                             log::warn!("NamedFunction automaton '{}' requires manual setup", id);
                         }
+                        AutomatonDef::Custom { id, .. } => {
+                            log::warn!(
+                                "Custom automaton '{}' not supported in async mode; use sync",
+                                id
+                            );
+                        }
                     }
                 }
                 ModuleDef::Sensor(s) => {
@@ -612,7 +658,6 @@ impl PatchbayDef {
 
         for m in &self.mappings {
             let transform = m.transform.to_transform(registry);
-            let name = format!("{:?} -> {}", m.event_pattern, m.target_param);
             control.add_mapping(Mapping {
                 pattern: m.event_pattern.clone(),
                 target: Target {
@@ -622,7 +667,7 @@ impl PatchbayDef {
                     max: m.max as f32,
                 },
                 transform,
-                name,
+                name: format!("{:?} -> {}", m.event_pattern, m.target_param),
                 enabled: m.enabled,
             });
         }
