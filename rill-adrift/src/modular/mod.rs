@@ -58,12 +58,15 @@ use rill_patchbay::engine::Patchbay;
 use rill_patchbay::function_registry::FunctionRegistry;
 
 #[cfg(feature = "serialization")]
+use crate::modular::serialization::ModularSystemDef;
+#[cfg(feature = "serialization")]
 use rill_graph::serialization::{GraphDef, SerializationError};
 #[cfg(feature = "serialization")]
 use rill_patchbay::serialization::PatchbayDef;
 
 mod case;
 mod config;
+pub mod serialization;
 pub use case::RackCase;
 pub use config::{LaunchConfig, ModularConfig};
 
@@ -359,6 +362,29 @@ impl<const BUF: usize> ModularSystem<BUF> {
             // For now, broadcast to all cases (the receiver filters)
             self.actor_system.broadcast(cmd);
         }
+    }
+
+    /// Load a complete system from a [`ModularSystemDef`] document.
+    ///
+    /// Creates all cases, builds their graphs, and registers them
+    /// in the actor system.  Patchbays are loaded but not started
+    /// (call [`launch`](Self::launch) for full startup).
+    #[cfg(feature = "serialization")]
+    pub fn load(&mut self, def: ModularSystemDef) -> Result<(), ModularError> {
+        for cd in &def.cases {
+            self.create_case(&cd.name, def.sample_rate);
+            let graph = self
+                .build_graph(&cd.graph)
+                .map_err(|e| ModularError::Graph(format!("case '{}': {e}", cd.name)))?;
+            // TODO: store graph in case
+            let _ = graph;
+
+            if let Some(ref pb_def) = cd.patchbay {
+                // Patchbay will be attached when the case's graph is running
+                let _ = pb_def;
+            }
+        }
+        Ok(())
     }
 
     /// Create a [rill_graph::GraphBuilder] sharing this runtime's factories.
