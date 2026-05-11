@@ -391,27 +391,57 @@ impl<const BUF: usize> ModularSystem<BUF> {
         }
     }
 
-    /// Load a complete system from a [`ModularSystemDef`] document.
+    /// Validate a system definition and create cases.
     ///
-    /// Creates all cases, builds their graphs, and registers them
-    /// in the actor system.  Patchbays are loaded but not started
-    /// (call [`launch`](Self::launch) for full startup).
+    /// Launch the modular system — spawn audio thread, build graphs, run.
+    ///
+    /// This is the canonical entry point.  The signal graph is built
+    /// inside the audio thread (Graph is not Send) and the run loop
+    /// begins immediately.
     #[cfg(feature = "serialization")]
-    pub fn load(&mut self, def: ModularSystemDef) -> Result<(), ModularError> {
+    pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         for cd in &def.cases {
             self.create_case(&cd.name, def.sample_rate);
-            let graph = self
-                .build_graph(&cd.graph)
-                .map_err(|e| ModularError::Graph(format!("case '{}': {e}", cd.name)))?;
-            // TODO: store graph in case
-            let _ = graph;
-
-            if let Some(ref pb_def) = cd.patchbay {
-                // Patchbay will be attached when the case's graph is running
-                let _ = pb_def;
-            }
         }
-        Ok(())
+
+        let node_factory = self.node_factory.clone();
+        let backend_factory = self.backend_factory.clone();
+        let default_backend = self.default_backend.clone();
+
+        let case_defs: Vec<_> = def
+            .cases
+            .iter()
+            .map(|cd| (cd.name.clone(), cd.graph.clone()))
+            .collect();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+
+        let audio_thread = std::thread::spawn(move || {
+            for (_name, graph_def) in &case_defs {
+                let mut builder = GraphBuilder::new(
+                    Arc::new(node_factory.lock().unwrap().clone()),
+                    backend_factory.clone(),
+                );
+                if let Some((ref name, ref params)) = default_backend {
+                    builder.set_default_backend(name.clone(), params.clone());
+                }
+                if let Err(e) = graph_def.populate(&mut builder) {
+                    log::error!("graph populate: {e}");
+                    return;
+                }
+                match builder.build() {
+                    Ok(mut graph) => {
+                        graph.run(r.clone()).ok();
+                    }
+                    Err(e) => log::error!("graph build: {e:?}"),
+                };
+            }
+        });
+
+        self.running = Some(running);
+        self.audio_thread = Some(audio_thread);
+        Ok(self)
     }
 
     /// Create a [rill_graph::GraphBuilder] sharing this runtime's factories.
@@ -633,75 +663,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
     ///
     /// Requires `serialization` feature.
     #[cfg(feature = "serialization")]
-    pub fn launch(mut self, launch_config: LaunchConfig) -> Result<Self, ModularError> {
-        // ── Extract config before moving into the audio thread ──
-        let node_factory = self.node_factory.clone();
-        let backend_factory = self.backend_factory.clone();
-        let default_backend = self.default_backend.clone();
-        let graph_def = launch_config.graph_def;
-        let patchbay_def = launch_config.patchbay_def;
-
-        // ── Spawn audio thread (Rack 2) ───────────────────────
-        // Graph is NOT Send — must be built inside its thread.
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-        let (handle_tx, handle_rx) = std::sync::mpsc::channel();
-
-        let audio_thread = std::thread::spawn(move || {
-            let mut builder = GraphBuilder::new(
-                Arc::new(node_factory.lock().unwrap().clone()),
-                backend_factory,
-            );
-            if let Some((ref name, ref params)) = default_backend {
-                builder.set_default_backend(name.clone(), params.clone());
-            }
-            if let Err(e) = graph_def.populate(&mut builder) {
-                log::error!("graph populate: {e}");
-                return;
-            }
-            match builder.build() {
-                Ok(mut graph) => {
-                    let h = graph
-                        .handle()
-                        .expect("graph has no active node (no audio backend)");
-                    handle_tx.send(h).ok();
-                    graph.run(r).ok();
-                }
-                Err(e) => {
-                    log::error!("graph build: {e:?}");
-                }
-            }
-        });
-
-        let graph_handle = handle_rx.recv().map_err(|_| {
-            ModularError::Graph("audio thread died before returning graph handle".into())
-        })?;
-
-        // ── Build control rack (Rack 1) on tokio ──────────────
-        let tokio_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
-        let _guard = tokio_rt.enter();
-
-        let registry = FunctionRegistry::builtin();
-        let mut control = Patchbay::new(graph_handle);
-
-        if let Some(ref pb_def) = patchbay_def {
-            pb_def
-                .apply_to_async(&mut control, &registry)
-                .map_err(ModularError::Patchbay)?;
-        }
-
-        let shared = Arc::new(Mutex::new(control));
-
-        self.control_arc = Some(shared);
-        self.tokio_rt = Some(tokio_rt);
-        self.audio_thread = Some(audio_thread);
-        self.running = Some(running);
-
-        log::info!("runtime launched — both racks running");
-        Ok(self)
+    pub fn run(&mut self, _running: Arc<AtomicBool>) {
+        // TODO: run loop for existing cases
     }
 }
 

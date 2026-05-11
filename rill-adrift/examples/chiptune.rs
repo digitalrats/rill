@@ -19,49 +19,21 @@ use rill_adrift::rill_graph::serialization::{
 };
 use rill_adrift::rill_patchbay::automaton::sequencer::PlayMode;
 use rill_adrift::rill_patchbay::serialization::{
-    AutomatonDef, MappingDef, ModuleDef, PatchbayDef, ServoDef, StepDef,
+    AutomatonDef, ModuleDef, PatchbayDef, ServoDef, StepDef,
 };
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
-/// Convert a frequency to AY-3-8910 divider value.
-fn freq_to_divider(freq: f32) -> u16 {
-    if freq <= 0.0 {
+fn ay_regs(freq: f32) -> Vec<u8> {
+    let div = if freq <= 0.0 {
         0
     } else {
         (1_750_000.0 / (16.0 * freq)).max(1.0) as u16
-    }
-}
-
-/// Build AY-3-8910 register state for channel A with a given frequency.
-fn ay_regs(
-    freq_a: f32,
-    freq_b: f32,
-    freq_c: f32,
-    noise: u8,
-    mixer: u8,
-    vol_a: u8,
-    env: u8,
-) -> [u8; 14] {
-    let da = freq_to_divider(freq_a);
-    let db = freq_to_divider(freq_b);
-    let dc = freq_to_divider(freq_c);
-    [
-        0,     // R0: chan A fine tune
-        0,     // R1: chan A coarse tune
-        0,     // R2: chan B fine tune
-        0,     // R3: chan B coarse tune
-        0,     // R4: chan C fine tune
-        0,     // R5: chan C coarse tune
-        noise, // R6: noise period
-        mixer, // R7: mixer (tone/noise enable)
-        vol_a, // R8: chan A volume
-        0,     // R9: chan B volume
-        0,     // R10: chan C volume
-        0, 0, // R11-R12: envelope period
-        0, // R13: envelope shape
-    ]
+    };
+    let lo = (div & 0xFF) as u8;
+    let hi = (div >> 8) as u8;
+    vec![lo, hi, 0, 0, 0, 0, 0, 0x38, 10, 0, 0, 0, 0, 0]
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,147 +45,136 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
     let backend_display = backend_name.clone();
 
-    let running = Arc::new(AtomicBool::new(true));
-    let t_run = running.clone();
+    let melody = [
+        (392.0, 120),
+        (440.0, 120),
+        (392.0, 120),
+        (329.6, 120),
+        (392.0, 120),
+        (440.0, 120),
+        (392.0, 120),
+        (329.6, 120),
+        (261.6, 120),
+        (329.6, 120),
+        (261.6, 120),
+        (220.0, 120),
+        (261.6, 120),
+        (329.6, 120),
+        (261.6, 120),
+        (220.0, 120),
+    ];
 
-    let audio_thread = std::thread::spawn(move || {
-        let mut be_params = std::collections::HashMap::new();
-        be_params.insert("sample_rate".into(), RATE.to_string());
-        be_params.insert("buffer_size".into(), BUF.to_string());
-        be_params.insert("channels".into(), "1".to_string());
-
-        let mut system = ModularSystem::<BUF>::new(ModularConfig {
-            sample_rate: RATE,
-            block_size: BUF,
-            backend_name: Some(backend_name.clone()),
-            backend_params: be_params,
-            ..Default::default()
+    let mut register_table: Vec<ParamValue> = Vec::new();
+    let mut step_defs: Vec<StepDef> = Vec::new();
+    for &(freq, dur_ms) in &melody {
+        register_table.push(ParamValue::Bytes(ay_regs(freq)));
+        step_defs.push(StepDef {
+            value: 0.0,
+            duration: dur_ms as f64 / 1000.0,
+            curve: None,
         });
+    }
 
-        // -- Build register table from melody --
-        let melody = [
-            (392.0, 120u64),
-            (440.0, 120),
-            (392.0, 120),
-            (329.6, 120),
-            (392.0, 120),
-            (440.0, 120),
-            (392.0, 120),
-            (329.6, 120),
-            (261.6, 120),
-            (329.6, 120),
-            (261.6, 120),
-            (220.0, 120),
-            (261.6, 120),
-            (329.6, 120),
-            (261.6, 120),
-            (220.0, 120),
-        ];
+    let mut be_params = std::collections::HashMap::new();
+    be_params.insert("sample_rate".into(), RATE.to_string());
+    be_params.insert("buffer_size".into(), BUF.to_string());
+    be_params.insert("channels".into(), "1".to_string());
 
-        let mut register_table: Vec<ParamValue> = Vec::new();
-        let mut step_defs: Vec<StepDef> = Vec::new();
-        for &(freq, dur_ms) in &melody {
-            let regs = ay_regs(freq, 0.0, 0.0, 0, 0x38, 10, 0);
-            register_table.push(ParamValue::Bytes(regs.to_vec()));
-            step_defs.push(StepDef {
-                value: 0.0,
-                duration: dur_ms as f64 / 1000.0,
-                curve: None,
-            });
-        }
+    let def = ModularSystemDef {
+        format_version: "rill/1".into(),
+        sample_rate: RATE,
+        block_size: BUF,
+        cases: vec![rill_adrift::modular::serialization::CaseDef {
+            name: "chiptune".into(),
+            graph: GraphDef {
+                format_version: "rill/1".into(),
+                sample_rate: RATE,
+                block_size: BUF,
+                resources: vec![],
+                nodes: vec![
+                    NodeDef::Source(SourceDef {
+                        id: 0,
+                        type_name: "rill/lofi_input".into(),
+                        name: "ay_chip".into(),
+                        backend: Some("ay38910".into()),
+                        parameters: [
+                            ("bit_depth".into(), ParamValue::Int(8)),
+                            ("nonlinear".into(), ParamValue::Bool(false)),
+                            ("noise_floor".into(), ParamValue::Float(-48.0)),
+                        ]
+                        .into(),
+                    }),
+                    NodeDef::Sink(SinkDef {
+                        id: 1,
+                        type_name: "rill/output".into(),
+                        name: "output".into(),
+                        backend: None,
+                        parameters: HashMap::new(),
+                    }),
+                ],
+                connections: vec![ConnectionDef {
+                    kind: SignalKind::Signal,
+                    from_node: 0,
+                    from_port: 0,
+                    to_node: 1,
+                    to_port: 0,
+                }],
+                description: None,
+            },
+            patchbay: Some(PatchbayDef {
+                automata: vec![AutomatonDef::Sequencer {
+                    id: "melody".into(),
+                    steps: step_defs,
+                    play_mode: PlayMode::Loop,
+                    tempo: 120.0,
+                }],
+                modules: vec![ModuleDef::Servo(ServoDef {
+                    automaton_id: "melody".into(),
+                    target_node: 0,
+                    target_param: "io_write".into(),
+                    mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
+                    min: 0.0,
+                    max: 1.0,
+                    enabled: true,
+                    async_interval_ms: None,
+                    control_strategy: None,
+                    conflict_strategy: None,
+                    table: Some(register_table),
+                })],
+                mappings: vec![],
+                osc_surface: vec![],
+                description: None,
+            }),
+        }],
+        description: Some("AY-3-8910 Chiptune — Popcorn".into()),
+    };
 
-        // -- Build ModularSystemDef --
-        let graph = GraphDef {
-            format_version: "rill/1".into(),
-            sample_rate: RATE,
-            block_size: BUF,
-            resources: vec![],
-            nodes: vec![
-                NodeDef::Source(SourceDef {
-                    id: 0,
-                    type_name: "rill/lofi_input".into(),
-                    name: "ay_chip".into(),
-                    backend: Some("ay38910".into()),
-                    parameters: [
-                        ("bit_depth".into(), ParamValue::Int(8)),
-                        ("nonlinear".into(), ParamValue::Bool(false)),
-                        ("noise_floor".into(), ParamValue::Float(-48.0)),
-                    ]
-                    .into(),
-                }),
-                NodeDef::Sink(SinkDef {
-                    id: 1,
-                    type_name: "rill/output".into(),
-                    name: "output".into(),
-                    backend: None,
-                    parameters: HashMap::new(),
-                }),
-            ],
-            connections: vec![ConnectionDef {
-                kind: SignalKind::Signal,
-                from_node: 0,
-                from_port: 0,
-                to_node: 1,
-                to_port: 0,
-            }],
-            description: None,
-        };
+    let config = ModularConfig {
+        sample_rate: RATE,
+        block_size: BUF,
+        backend_name: Some(backend_name.clone()),
+        backend_params: be_params,
+        ..Default::default()
+    };
 
-        let patchbay = PatchbayDef {
-            automata: vec![AutomatonDef::Sequencer {
-                id: "melody".into(),
-                steps: step_defs,
-                play_mode: PlayMode::Loop,
-                tempo: 120.0,
-            }],
-            modules: vec![ModuleDef::Servo(ServoDef {
-                automaton_id: "melody".into(),
-                target_node: 0,
-                target_param: "io_write".into(),
-                mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
-                min: 0.0,
-                max: 1.0,
-                enabled: true,
-                async_interval_ms: None,
-                control_strategy: None,
-                conflict_strategy: None,
-                table: Some(register_table),
-            })],
-            mappings: vec![],
-            osc_surface: vec![],
-            description: None,
-        };
-
-        let def = ModularSystemDef {
-            format_version: "rill/1".into(),
-            sample_rate: RATE,
-            block_size: BUF,
-            cases: vec![rill_adrift::modular::serialization::CaseDef {
-                name: "chiptune".into(),
-                graph,
-                patchbay: Some(patchbay),
-            }],
-            description: Some("AY-3-8910 Chiptune — Popcorn".into()),
-        };
-
-        system.load(def).expect("load system");
-        eprintln!("System loaded.");
-    });
-
-    let t_run = running.clone();
-    let ah = audio_thread.thread().clone();
-    std::thread::spawn(move || {
-        let mut input = String::new();
-        let _ = std::io::stdin().read_line(&mut input);
-        t_run.store(false, Ordering::Release);
-        ah.unpark();
-    });
+    let system = ModularSystem::<BUF>::new(config);
+    let _system = system.launch(&def).expect("launch system");
 
     println!("AY-3-8910 Chiptune — Popcorn");
     println!("   Backend: {}\n", backend_display);
     println!("   Press Enter to stop.\n");
 
-    audio_thread.join().ok();
-    println!("Stopped.");
+    let running = Arc::new(AtomicBool::new(true));
+    let t_run = running.clone();
+    std::thread::spawn(move || {
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        t_run.store(false, Ordering::Release);
+    });
+
+    // Wait for Ctrl+C
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+
     Ok(())
 }
