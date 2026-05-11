@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::io::output::Output;
+use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_digital_filters::BiquadProcessor;
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
 use rill_adrift::sampler::player::SamplePlayerNode;
 use rill_adrift::sampler::wav::load_wav;
 
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         be_params.insert("buffer_size".into(), BUF.to_string());
         be_params.insert("channels".into(), "2".to_string());
 
-        let rt = Runtime::<BUF>::new(RuntimeConfig {
+        let system = ModularSystem::<BUF>::new(ModularConfig {
             sample_rate: RATE,
             block_size: BUF,
             backend_name: Some(backend_name.clone()),
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         });
 
-        let mut builder = rt.create_builder();
+        let mut builder = system.create_builder();
 
         let mut player = SamplePlayerNode::<f32, BUF>::new();
         player.load(sample);

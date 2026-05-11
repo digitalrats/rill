@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::registration;
 use rill_adrift::rill_core::ParamValue;
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
 use serde::Deserialize;
 
 const BUF: usize = 256;
@@ -75,7 +75,7 @@ fn build_graph(
         );
     }
 
-    let rt = Runtime::<BUF>::new(RuntimeConfig {
+    let system = ModularSystem::<BUF>::new(ModularConfig {
         sample_rate: cfg.sample_rate,
         block_size: cfg.block_size,
         backend_name: Some(backend_name.to_string()),
@@ -87,7 +87,7 @@ fn build_graph(
         ..Default::default()
     });
 
-    let builder = rt
+    let builder = system
         .create_builder_from_graphdef(&def)
         .map_err(|e| format!("create_builder: {e}"))?;
     let graph = builder.build().map_err(|e| format!("build: {e}"))?;

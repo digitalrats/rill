@@ -1,10 +1,12 @@
-//! # rill_adrift::Runtime — data-driven signal processing host
+//! # ModularSystem — modular/semi-modular audio processing host
 //!
-//! Creates a fully configured "rill world" from serialised documents:
+//! Implements the [`Eurorack`](rill_core::Eurorack) archetype — unifies a signal
+//! graph with a control/automation patchbay.
+//!
+//! Creates a fully configured rack from serialised documents:
 //!
 //! * GraphDef — signal topology (nodes, connections, resources)
 //! * PatchbayDef — control system (LFO, envelope, mappings)
-//!   including the [`OscSurface`] that maps OSC paths to controller IDs
 //!
 //! ## Feature gates
 //!
@@ -19,10 +21,10 @@
 //!
 //! ```text
 //! ┌────────────────────────────────────────────────────────────────┐
-//! │                    RILL_ADRIFT::RUNTIME                         │
+//! │                   MODULARSYSTEM                                 │
 //! │                                                                │
 //! │  ┌──────────────┐   ┌──────────────────────────────────────┐  │
-//! │  │  OscServer    │   │  Engine                          │  │
+//! │  │  OscServer    │   │  Patchbay                        │  │
 //! │  │  (tokio)      │   │  (tokio tasks: LFO, envelope, …)    │  │
 //! │  │               │   │                                      │  │
 //! │  │  /sys/*       │   │  handle_event(event) ──→ mapping    │  │
@@ -41,10 +43,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use rill_core::queues::{MpscQueue, SetParameter};
+use rill_core::queues::{CommandEnum, MpscQueue, SetParameter};
 use rill_core::traits::{NodeId, NodeVariant, ParamValue, Params};
 #[cfg(any(feature = "osc", feature = "serialization"))]
 use rill_core_actor::ActorRef;
+#[cfg(feature = "serialization")]
+use rill_core_actor::ActorSystem;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};
 #[cfg(feature = "osc")]
@@ -58,8 +62,10 @@ use rill_graph::serialization::{GraphDef, SerializationError};
 #[cfg(feature = "serialization")]
 use rill_patchbay::serialization::PatchbayDef;
 
+mod case;
 mod config;
-pub use config::{LaunchConfig, RuntimeConfig};
+pub use case::RackCase;
+pub use config::{LaunchConfig, ModularConfig};
 
 #[cfg(feature = "osc")]
 mod dispatch;
@@ -79,14 +85,14 @@ use dispatch::OscHandle;
 /// If `config.graph_path` or `config.patchbay_path` are set, the
 /// corresponding files are loaded before starting subsystems.
 #[cfg(feature = "serialization")]
-pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
-    let mut rt = Runtime::<64>::new(config);
-    rt.load_files_from_config()?;
-    rt.start().await?;
+pub async fn run(config: ModularConfig) -> Result<(), ModularError> {
+    let mut system = ModularSystem::<64>::new(config);
+    system.load_files_from_config()?;
+    system.start().await?;
     tokio::signal::ctrl_c()
         .await
-        .map_err(|e| RuntimeError::Osc(format!("ctrl+c: {e}")))?;
-    rt.stop();
+        .map_err(|e| ModularError::Osc(format!("ctrl+c: {e}")))?;
+    system.stop();
     Ok(())
 }
 
@@ -94,9 +100,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), RuntimeError> {
 // Error type
 // ============================================================================
 
-/// Runtime error.
+/// Modular system error.
 #[derive(Debug)]
-pub enum RuntimeError {
+pub enum ModularError {
     /// Graph document could not be loaded or built.
     #[cfg(feature = "serialization")]
     Graph(String),
@@ -109,15 +115,16 @@ pub enum RuntimeError {
 }
 
 // ============================================================================
-// Runtime struct
+// ModularSystem struct
 // ============================================================================
 
-/// Fully data-driven signal processing host.
+/// Fully data-driven modular processing host.
 ///
-/// Create via [`Runtime::new`], start subsystems individually with
-/// start, or use the free function run for
-/// the all-in-one lifecycle.
-pub struct Runtime<const BUF: usize = 64> {
+/// Implements the [`Rack`](rill_core::Rack) archetype — combines an audio
+/// signal graph with a control/automation patchbay in a single rack.
+/// Create via [`ModularSystem::new`] and configure with
+/// [`set_default_backend`](Self::set_default_backend) before creating builders.
+pub struct ModularSystem<const BUF: usize = 64> {
     /// Dead letters — undeliverable commands collected when the graph
     /// is not running (stale queue detected by the application layer).
     dead: Arc<MpscQueue<SetParameter>>,
@@ -129,6 +136,16 @@ pub struct Runtime<const BUF: usize = 64> {
     /// Shared backend factory (populated at construction).
     backend_factory: Arc<BackendFactory<f32>>,
 
+    /// Actor system for inter-case message routing.
+    /// Each [`RackCase`] registered via [`create_case`](Self::create_case)
+    /// gets a named mailbox in this system.
+    #[cfg(feature = "serialization")]
+    actor_system: ActorSystem<CommandEnum>,
+
+    /// Registered Eurorack cases (name → case).
+    #[cfg(feature = "serialization")]
+    cases: HashMap<String, RackCase<BUF>>,
+
     /// Default backend configuration. When set, every
     /// [rill_graph::GraphBuilder]
     /// created by [`create_builder`](Self::create_builder) is pre-configured
@@ -137,7 +154,7 @@ pub struct Runtime<const BUF: usize = 64> {
 
     /// Host configuration (stored for serialized graph/patchbay loading).
     #[cfg(feature = "serialization")]
-    config: RuntimeConfig,
+    config: ModularConfig,
 
     /// Current graph document (loaded, not yet built).
     #[cfg(feature = "serialization")]
@@ -176,15 +193,9 @@ pub struct Runtime<const BUF: usize = 64> {
     running: Option<Arc<AtomicBool>>,
 }
 
-impl<const BUF: usize> Runtime<BUF> {
-    /// Create a new (stopped) runtime with the given configuration.
-    ///
-    /// Initialises the node and backend factories with all built-in types.
-    /// Use [`register_node_fn`](Self::register_node_fn) to add custom node
-    /// types before calling [`create_builder`](Self::create_builder).
-    /// If `config.backend_name` is set, the default backend is configured
-    /// automatically from the config's string-typed parameters.
-    pub fn new(#[allow(unused_variables)] config: RuntimeConfig) -> Self {
+impl<const BUF: usize> ModularSystem<BUF> {
+    /// Create a new modular system with the given configuration.
+    pub fn new(#[allow(unused_variables)] config: ModularConfig) -> Self {
         let mut nf = NodeFactory::new();
         crate::registration::register_all_nodes(&mut nf);
         let bf = {
@@ -212,6 +223,10 @@ impl<const BUF: usize> Runtime<BUF> {
             control: None,
             #[cfg(feature = "serialization")]
             config,
+            #[cfg(feature = "serialization")]
+            actor_system: ActorSystem::new(),
+            #[cfg(feature = "serialization")]
+            cases: HashMap::new(),
             #[cfg(feature = "serialization")]
             graph_doc: None,
             #[cfg(feature = "osc")]
@@ -254,6 +269,105 @@ impl<const BUF: usize> Runtime<BUF> {
         self.default_backend = Some((name.to_string(), params));
     }
 
+    /// Create a new Eurorack case and register it in the actor system.
+    ///
+    /// The case gets a named mailbox in the system's [`ActorSystem`].
+    /// Other cases (or external actors) can send [`CommandEnum`]
+    /// messages to this case via [`ModularSystem::route`] or
+    /// [`ModularSystem::broadcast`].
+    ///
+    /// Returns a mutable reference to the newly created case.
+    #[cfg(feature = "serialization")]
+    pub fn create_case(&mut self, name: &str, sample_rate: f32) -> &mut RackCase<BUF> {
+        let mbox = self.actor_system.register(name);
+        let case = RackCase::new(
+            name.to_string(),
+            sample_rate,
+            Arc::new(self.node_factory.lock().unwrap().clone()),
+            self.backend_factory.clone(),
+            self.default_backend.clone(),
+            mbox,
+        );
+        self.cases.insert(name.to_string(), case);
+        self.cases.get_mut(name).expect("just inserted")
+    }
+
+    /// Route a command to a named case.
+    ///
+    /// If the case is registered, the command is pushed to its mailbox.
+    /// Otherwise it goes to dead letters.
+    #[cfg(feature = "serialization")]
+    pub fn route(&mut self, case_name: &str, cmd: CommandEnum) {
+        self.actor_system.route(case_name, cmd);
+    }
+
+    /// Broadcast a command to all registered cases.
+    #[cfg(feature = "serialization")]
+    pub fn broadcast(&mut self, cmd: CommandEnum) {
+        self.actor_system.broadcast(cmd);
+    }
+
+    /// Drain dead letters — undeliverable messages for unregistered actors.
+    #[cfg(feature = "serialization")]
+    pub fn drain_dead(&self) -> Vec<CommandEnum> {
+        self.actor_system.drain_dead()
+    }
+
+    /// Return the number of registered cases (actors).
+    #[cfg(feature = "serialization")]
+    pub fn case_count(&self) -> usize {
+        self.actor_system.actor_count()
+    }
+
+    /// Access a case by name.
+    #[cfg(feature = "serialization")]
+    pub fn case(&self, name: &str) -> Option<&RackCase<BUF>> {
+        self.cases.get(name)
+    }
+
+    /// Access a case mutably by name.
+    #[cfg(feature = "serialization")]
+    pub fn case_mut(&mut self, name: &str) -> Option<&mut RackCase<BUF>> {
+        self.cases.get_mut(name)
+    }
+
+    /// Process one frame across all cases.
+    ///
+    /// For each case (in registration order):
+    /// 1. Drain incoming mailbox — dispatch commands to local Graph/Patchbay
+    /// 2. Process audio frame (if Graph is running)
+    /// 3. Collect outgoing commands destined for other cases
+    /// 4. Route outgoing commands through the actor system
+    #[cfg(feature = "serialization")]
+    pub fn tick(&mut self) {
+        let mut all_outgoing: Vec<(String, CommandEnum)> = Vec::new();
+
+        for (case_name, case) in self.cases.iter_mut() {
+            // 1. Drain incoming commands
+            let incoming = case.receive();
+            // Dispatch will be handled by the case when Graph/Patchbay are running
+            for _cmd in incoming {
+                // TODO: dispatch to Graph (SetParameter) or Patchbay (AutomatonCommand)
+            }
+
+            // 2. Process audio frame — placeholder
+            // case.process_frame();
+
+            // 3. Collect outgoing commands
+            let outgoing = case.take_outgoing();
+            for cmd in outgoing {
+                all_outgoing.push((case_name.clone(), cmd));
+            }
+        }
+
+        // 4. Route outgoing commands through the actor system
+        for (_from_case, cmd) in all_outgoing {
+            // Determine target from command metadata or routing table
+            // For now, broadcast to all cases (the receiver filters)
+            self.actor_system.broadcast(cmd);
+        }
+    }
+
     /// Create a [rill_graph::GraphBuilder] sharing this runtime's factories.
     ///
     /// The builder uses the runtime's pre-populated node and backend
@@ -288,14 +402,14 @@ impl<const BUF: usize> Runtime<BUF> {
 
     // ─── File loading ───────────────────────────────────────────────
 
-    /// Load graph and/or patchbay documents from paths in `RuntimeConfig`.
+    /// Load graph and/or patchbay documents from paths in `ModularConfig`.
     #[cfg(feature = "serialization")]
-    fn load_files_from_config(&mut self) -> Result<(), RuntimeError> {
+    fn load_files_from_config(&mut self) -> Result<(), ModularError> {
         if let Some(ref path) = self.config.graph_path {
             let json = std::fs::read_to_string(path)
-                .map_err(|e| RuntimeError::Graph(format!("read '{:?}': {e}", path)))?;
+                .map_err(|e| ModularError::Graph(format!("read '{:?}': {e}", path)))?;
             let doc: GraphDef = serde_json::from_str(&json)
-                .map_err(|e| RuntimeError::Graph(format!("parse '{:?}': {e}", path)))?;
+                .map_err(|e| ModularError::Graph(format!("parse '{:?}': {e}", path)))?;
             self.load_graph(doc);
         }
 
@@ -327,11 +441,11 @@ impl<const BUF: usize> Runtime<BUF> {
         &mut self,
         doc: PatchbayDef,
         cmd_queue: ActorRef<SetParameter>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), ModularError> {
         let mut control = Patchbay::new(cmd_queue.clone());
         let registry = FunctionRegistry::builtin();
         doc.apply_to_async(&mut control, &registry)
-            .map_err(RuntimeError::Patchbay)?;
+            .map_err(ModularError::Patchbay)?;
 
         self.control = Some(control);
 
@@ -340,7 +454,7 @@ impl<const BUF: usize> Runtime<BUF> {
             self.osc_surface = doc.osc_surface.clone();
             let mut ctrl = Patchbay::new(cmd_queue);
             doc.apply_to(&mut ctrl, &registry)
-                .map_err(RuntimeError::Patchbay)?;
+                .map_err(ModularError::Patchbay)?;
             self.control_shared = Some(Arc::new(std::sync::Mutex::new(ctrl)));
         }
 
@@ -361,7 +475,7 @@ impl<const BUF: usize> Runtime<BUF> {
 
     /// Start control and OSC subsystems according to configuration.
     #[cfg(feature = "serialization")]
-    pub async fn start(&mut self) -> Result<(), RuntimeError> {
+    pub async fn start(&mut self) -> Result<(), ModularError> {
         #[cfg(feature = "osc")]
         if let Some(ref _bind) = self.config.osc_bind.clone() {
             // OSC server needs a command queue — provide via start_osc
@@ -377,9 +491,9 @@ impl<const BUF: usize> Runtime<BUF> {
         &mut self,
         bind: &str,
         cmd_queue: ActorRef<SetParameter>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), ModularError> {
         if self.osc.is_some() {
-            return Err(RuntimeError::Osc("already running".into()));
+            return Err(ModularError::Osc("already running".into()));
         }
 
         let control = self.control_shared.clone().unwrap_or_else(|| {
@@ -391,7 +505,7 @@ impl<const BUF: usize> Runtime<BUF> {
 
         let handle = OscHandle::start(bind, cmd_queue, control, surface)
             .await
-            .map_err(RuntimeError::Osc)?;
+            .map_err(ModularError::Osc)?;
 
         self.osc = Some(handle);
         log::info!("OSC server started on {bind}");
@@ -451,7 +565,7 @@ impl<const BUF: usize> Runtime<BUF> {
     ///
     /// Requires `serialization` feature.
     #[cfg(feature = "serialization")]
-    pub fn launch(mut self, launch_config: LaunchConfig) -> Result<Self, RuntimeError> {
+    pub fn launch(mut self, launch_config: LaunchConfig) -> Result<Self, ModularError> {
         // ── Extract config before moving into the audio thread ──
         let node_factory = self.node_factory.clone();
         let backend_factory = self.backend_factory.clone();
@@ -492,14 +606,14 @@ impl<const BUF: usize> Runtime<BUF> {
         });
 
         let graph_handle = handle_rx.recv().map_err(|_| {
-            RuntimeError::Graph("audio thread died before returning graph handle".into())
+            ModularError::Graph("audio thread died before returning graph handle".into())
         })?;
 
         // ── Build control rack (Rack 1) on tokio ──────────────
         let tokio_rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .map_err(|e| RuntimeError::Graph(format!("tokio: {e}")))?;
+            .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
         let _guard = tokio_rt.enter();
 
         let registry = FunctionRegistry::builtin();
@@ -508,7 +622,7 @@ impl<const BUF: usize> Runtime<BUF> {
         if let Some(ref pb_def) = patchbay_def {
             pb_def
                 .apply_to_async(&mut control, &registry)
-                .map_err(RuntimeError::Patchbay)?;
+                .map_err(ModularError::Patchbay)?;
         }
 
         let shared = Arc::new(Mutex::new(control));
@@ -541,7 +655,7 @@ fn str_to_param(s: &str) -> ParamValue {
     ParamValue::String(s.to_string())
 }
 
-impl<const BUF: usize> Drop for Runtime<BUF> {
+impl<const BUF: usize> Drop for ModularSystem<BUF> {
     fn drop(&mut self) {
         self.stop();
     }

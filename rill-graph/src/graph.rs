@@ -74,7 +74,7 @@ pub struct GraphResource {
 /// The builder holds an [`Arc<NodeFactory>`] for constructing nodes by
 /// type name, provided at construction via [`GraphBuilder::new`].
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
-    nodes: Vec<NodeEntry<T, BUF_SIZE>>,
+    pub(crate) nodes: Vec<NodeEntry<T, BUF_SIZE>>,
     node_backends: Vec<Option<String>>,
     signal_edges: Vec<(usize, usize, usize, usize)>,
     control_edges: Vec<(usize, usize, usize, usize)>,
@@ -175,7 +175,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     }
 
     /// Set the default backend name and parameters. Nodes without an explicit
-    /// backend in [`NodeDef::backend`] will use this during [`build`](Self::build).
+    /// backend in `SourceDef::backend` or `SinkDef::backend` will use this during [`build`](Self::build).
     pub fn set_default_backend(&mut self, name: String, params: HashMap<String, ParamValue>) {
         self.default_backend = Some(name);
         self.backend_params = params;
@@ -295,7 +295,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Build the graph.
     ///
     /// Creates backends for nodes that have a backend name set (via
-    /// [`NodeDef::backend`] or the builder's default).  Finds the active
+    /// `SourceDef::backend` / `SinkDef::backend` or the builder's default).  Finds the active
     /// (driver) node and stores its index for [`Graph::run`].
     pub fn build(mut self) -> Result<Graph<T, BUF_SIZE>, BuildError> {
         let num_nodes = self.nodes.len();

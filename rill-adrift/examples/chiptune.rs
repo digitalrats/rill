@@ -10,11 +10,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 use rill_adrift::rill_core::time::ClockTick;
 use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
-use rill_adrift::rill_graph::serialization::{ConnectionDef, GraphDef, NodeDef, SignalKind};
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
+use rill_adrift::rill_graph::serialization::{
+    ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
+};
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -234,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         be_params.insert("buffer_size".into(), BUF.to_string());
         be_params.insert("channels".into(), "1".to_string());
 
-        let rt = Runtime::<BUF>::new(RuntimeConfig {
+        let system = ModularSystem::<BUF>::new(ModularConfig {
             sample_rate: RATE,
             block_size: BUF,
             backend_name: Some(backend_name.clone()),
@@ -248,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             block_size: BUF,
             resources: vec![],
             nodes: vec![
-                NodeDef {
+                NodeDef::Source(SourceDef {
                     id: 0,
                     type_name: "rill/lofi_input".into(),
                     name: "ay_chip".into(),
@@ -259,14 +261,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ("noise_floor".into(), ParamValue::Float(-48.0)),
                     ]
                     .into(),
-                },
-                NodeDef {
+                }),
+                NodeDef::Sink(SinkDef {
                     id: 1,
                     type_name: "rill/output".into(),
                     name: "output".into(),
                     backend: None,
                     parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
-                },
+                }),
             ],
             connections: vec![ConnectionDef {
                 kind: SignalKind::Signal,
@@ -278,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             description: Some("AY-3-8910 Chiptune — Popcorn".into()),
         };
 
-        let mut builder = rt.create_builder();
+        let mut builder = system.create_builder();
         def.populate(&mut builder).expect("populate graph");
 
         // Clock channel: audio thread → sequencer (via ActorCell + ActorRef)

@@ -1,4 +1,6 @@
 #[cfg(feature = "serialization")]
+use rill_adrift::modular::{ModularConfig, ModularSystem};
+#[cfg(feature = "serialization")]
 use rill_adrift::registration;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
@@ -6,8 +8,6 @@ use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
-#[cfg(feature = "serialization")]
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
 #[cfg(feature = "serialization")]
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "serialization")]
@@ -26,26 +26,32 @@ fn test_deserialize_input_biquad_output() {
         "resources": [],
         "nodes": [
             {
-                "id": 0,
-                "type_name": "rill/input",
-                "name": "input",
-                "parameters": {}
-            },
-            {
-                "id": 1,
-                "type_name": "rill/biquad",
-                "name": "filter",
-                "parameters": {
-                    "cutoff": 600.0,
-                    "q": 1.5,
-                    "filter": 1.0
+                "Source": {
+                    "id": 0,
+                    "type_name": "rill/input",
+                    "name": "input",
+                    "parameters": {}
                 }
             },
             {
-                "id": 2,
-                "type_name": "rill/output",
-                "name": "output",
-                "parameters": {}
+                "Processor": {
+                    "id": 1,
+                    "type_name": "rill/biquad",
+                    "name": "filter",
+                    "parameters": {
+                        "cutoff": 600.0,
+                        "q": 1.5,
+                        "filter": 1.0
+                    }
+                }
+            },
+            {
+                "Sink": {
+                    "id": 2,
+                    "type_name": "rill/output",
+                    "name": "output",
+                    "parameters": {}
+                }
             }
         ],
         "connections": [
@@ -58,14 +64,14 @@ fn test_deserialize_input_biquad_output() {
     }"#;
 
     let def = registration::load_graph_json(json).expect("load_graph_json");
-    let mut rt = Runtime::<B>::new(RuntimeConfig::default());
+    let mut system = ModularSystem::<B>::new(ModularConfig::default());
     let mut p = std::collections::HashMap::new();
     p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
     p.insert("buffer_size".into(), ParamValue::Int(B as i32));
     p.insert("channels".into(), ParamValue::Int(2));
-    rt.set_default_backend("null", p);
+    system.set_default_backend("null", p);
 
-    let mut builder = rt.create_builder();
+    let mut builder = system.create_builder();
     def.populate(&mut builder).expect("populate");
     let graph = builder.build().expect("graph build should succeed");
 
@@ -98,8 +104,8 @@ fn test_send_parameter_via_queue() {
         "block_size": 256,
         "resources": [],
         "nodes": [
-            {"id": 0, "type_name": "rill/sine", "name": "osc", "parameters": {"freq": 440.0, "amp": 0.5}},
-            {"id": 1, "type_name": "rill/output", "name": "out", "parameters": {}}
+            {"Source": {"id": 0, "type_name": "rill/sine", "name": "osc", "parameters": {"freq": 440.0, "amp": 0.5}}},
+            {"Sink": {"id": 1, "type_name": "rill/output", "name": "out", "parameters": {}}}
         ],
         "connections": [
             {"kind": "Signal", "from_node": 0, "from_port": 0, "to_node": 1, "to_port": 0},
@@ -109,14 +115,14 @@ fn test_send_parameter_via_queue() {
     }"#,
     )
     .expect("load_graph_json");
-    let mut rt = Runtime::<B>::new(RuntimeConfig::default());
+    let mut system = ModularSystem::<B>::new(ModularConfig::default());
     let mut p = std::collections::HashMap::new();
     p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
     p.insert("buffer_size".into(), ParamValue::Int(B as i32));
     p.insert("channels".into(), ParamValue::Int(2));
-    rt.set_default_backend("null", p);
+    system.set_default_backend("null", p);
 
-    let mut builder = rt.create_builder();
+    let mut builder = system.create_builder();
     def.populate(&mut builder).expect("populate");
     let mut graph = builder.build().expect("graph build");
 

@@ -1,6 +1,6 @@
 //! Microphone recording through standard pipeline.
 //!
-//! 1. `RecordingSink` registered in Runtime via `register_node_fn`
+//! 1. `RecordingSink` registered in ModularSystem via `register_node_fn`
 //! 2. Graph topology defined via `GraphDef`
 //! 3. Backend created by factory name
 //!
@@ -11,13 +11,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, NodeVariant, ParamValue, ParameterId,
     Params, Port, ProcessResult, Sink,
 };
 use rill_adrift::rill_core::Transcendental;
-use rill_adrift::rill_graph::serialization::{ConnectionDef, GraphDef, NodeDef, SignalKind};
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
+use rill_adrift::rill_graph::serialization::{
+    ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
+};
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
@@ -196,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         be_params.insert("buffer_size".into(), BUF.to_string());
         be_params.insert("channels".into(), "2".to_string());
 
-        let rt = Runtime::<BUF>::new(RuntimeConfig {
+        let system = ModularSystem::<BUF>::new(ModularConfig {
             sample_rate: RATE,
             block_size: BUF,
             backend_name: Some(backend_name.clone()),
@@ -206,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Register custom node
         let rec2 = rec.clone();
-        rt.register_node_fn("rill/record_sink", move |id: NodeId, params: &Params| {
+        system.register_node_fn("rill/record_sink", move |id: NodeId, params: &Params| {
             let mut sink = RecordingSink::new(rec2.clone());
             Node::set_id(&mut sink, id);
             Node::init(&mut sink, params.sample_rate);
@@ -220,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             block_size: BUF,
             resources: vec![],
             nodes: vec![
-                NodeDef {
+                NodeDef::Source(SourceDef {
                     id: 0,
                     type_name: "rill/input".into(),
                     name: "mic".into(),
@@ -230,14 +232,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         rill_adrift::rill_core::ParamValue::Float(2.0),
                     )]
                     .into(),
-                },
-                NodeDef {
+                }),
+                NodeDef::Sink(SinkDef {
                     id: 1,
                     type_name: "rill/record_sink".into(),
                     name: "recorder".into(),
                     backend: None,
                     parameters: [].into(),
-                },
+                }),
             ],
             connections: vec![
                 ConnectionDef {
@@ -259,7 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // Build graph
-        let mut builder = rt.create_builder();
+        let mut builder = system.create_builder();
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))
             .ok();
