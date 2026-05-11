@@ -1,27 +1,32 @@
 //! AY-3-8910 Chiptune — Popcorn
 //!
-//! Demonstrates `GraphDef`-based graph construction with `LofiInput` + `Ay38910Backend`.
-//! The sequencer runs externally and sends register writes via the actor mailbox.
+//! Demonstrates ModularSystemDef-based system construction with
+//! SequencerAutomaton + table-based Servo for AY-3-8910 register control.
 //!
 //! Usage:
-//!   cargo run --example chiptune --features "lofi,portaudio" [portaudio]
-//!   cargo run --example chiptune --features "lofi,alsa" [alsa]
+//!   cargo run --example chiptune --features "lofi,portaudio,serialization" [portaudio]
+//!   cargo run --example chiptune --features "lofi,alsa,serialization" [alsa]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::modular::serialization::ModularSystemDef;
 use rill_adrift::modular::{ModularConfig, ModularSystem};
-use rill_adrift::rill_core::queues::{SetParameter, SignalOrigin};
-use rill_adrift::rill_core::time::ClockTick;
-use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::rill_core::traits::ParamValue;
 use rill_adrift::rill_graph::serialization::{
     ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
+};
+use rill_adrift::rill_patchbay::automaton::sequencer::PlayMode;
+use rill_adrift::rill_patchbay::serialization::{
+    AutomatonDef, MappingDef, ModuleDef, PatchbayDef, ServoDef, StepDef,
 };
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
-fn note_to_divider(freq: f32) -> u16 {
+/// Convert a frequency to AY-3-8910 divider value.
+fn freq_to_divider(freq: f32) -> u16 {
     if freq <= 0.0 {
         0
     } else {
@@ -29,202 +34,43 @@ fn note_to_divider(freq: f32) -> u16 {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Note {
-    freq: f32,
-    dur_ms: u64,
-}
-
-const MELODY: &[Note] = &[
-    Note {
-        freq: 392.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 440.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 392.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 329.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 392.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 440.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 392.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 329.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 261.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 329.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 261.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 220.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 261.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 329.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 261.6,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 220.0,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 293.7,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 349.2,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 293.7,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 246.9,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 293.7,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 349.2,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 293.7,
-        dur_ms: 120,
-    },
-    Note {
-        freq: 246.9,
-        dur_ms: 120,
-    },
-];
-
-const BASS: &[Note] = &[
-    Note {
-        freq: 110.0,
-        dur_ms: 480,
-    },
-    Note {
-        freq: 130.8,
-        dur_ms: 480,
-    },
-    Note {
-        freq: 98.0,
-        dur_ms: 480,
-    },
-    Note {
-        freq: 110.0,
-        dur_ms: 480,
-    },
-];
-
-struct Sequencer {
-    regs: [u8; 16],
-    mel_step: usize,
-    mel_ms: f64,
-    bass_step: usize,
-    bass_ms: f64,
-    snare: u64,
-}
-
-impl Sequencer {
-    fn new() -> Self {
-        Self {
-            regs: [0; 16],
-            mel_step: 0,
-            mel_ms: 0.0,
-            bass_step: 0,
-            bass_ms: 0.0,
-            snare: 0,
-        }
-    }
-
-    fn step(&mut self, ms: f64) -> [u8; 16] {
-        self.mel_ms += ms;
-        if self.mel_ms >= MELODY[self.mel_step].dur_ms as f64 {
-            self.mel_ms -= MELODY[self.mel_step].dur_ms as f64;
-            self.mel_step = (self.mel_step + 1) % MELODY.len();
-        }
-        let tp = note_to_divider(MELODY[self.mel_step].freq);
-        self.regs[0] = tp as u8;
-        self.regs[1] = (tp >> 8) as u8;
-        self.regs[8] = if MELODY[self.mel_step].freq > 0.0 {
-            10
-        } else {
-            0
-        };
-
-        self.bass_ms += ms;
-        if self.bass_ms >= BASS[self.bass_step].dur_ms as f64 {
-            self.bass_ms -= BASS[self.bass_step].dur_ms as f64;
-            self.bass_step = (self.bass_step + 1) % BASS.len();
-        }
-        let bp = note_to_divider(BASS[self.bass_step].freq);
-        self.regs[2] = bp as u8;
-        self.regs[3] = (bp >> 8) as u8;
-        self.regs[9] = if BASS[self.bass_step].freq > 0.0 {
-            8
-        } else {
-            0
-        };
-
-        let snare_on = (self.mel_step % 4) == 0 && self.mel_ms < 60.0;
-        if snare_on && self.snare == 0 {
-            self.snare = 4;
-        }
-        if self.snare > 0 {
-            self.regs[6] = 4;
-            self.regs[10] = 12;
-            self.snare -= 1;
-            self.regs[7] = 0b00_00_10_10;
-        } else {
-            self.regs[6] = 0;
-            self.regs[10] = 0;
-            self.regs[7] = 0b11_11_10_10;
-        }
-
-        self.regs
-    }
+/// Build AY-3-8910 register state for channel A with a given frequency.
+fn ay_regs(
+    freq_a: f32,
+    freq_b: f32,
+    freq_c: f32,
+    noise: u8,
+    mixer: u8,
+    vol_a: u8,
+    env: u8,
+) -> [u8; 14] {
+    let da = freq_to_divider(freq_a);
+    let db = freq_to_divider(freq_b);
+    let dc = freq_to_divider(freq_c);
+    [
+        0,     // R0: chan A fine tune
+        0,     // R1: chan A coarse tune
+        0,     // R2: chan B fine tune
+        0,     // R3: chan B coarse tune
+        0,     // R4: chan C fine tune
+        0,     // R5: chan C coarse tune
+        noise, // R6: noise period
+        mixer, // R7: mixer (tone/noise enable)
+        vol_a, // R8: chan A volume
+        0,     // R9: chan B volume
+        0,     // R10: chan C volume
+        0, 0, // R11-R12: envelope period
+        0, // R13: envelope shape
+    ]
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let backend_name = args.get(1).cloned().unwrap_or_else(|| "portaudio".into());
+    let backend_name = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("portaudio")
+        .to_string();
     let backend_display = backend_name.clone();
 
     let running = Arc::new(AtomicBool::new(true));
@@ -236,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         be_params.insert("buffer_size".into(), BUF.to_string());
         be_params.insert("channels".into(), "1".to_string());
 
-        let system = ModularSystem::<BUF>::new(ModularConfig {
+        let mut system = ModularSystem::<BUF>::new(ModularConfig {
             sample_rate: RATE,
             block_size: BUF,
             backend_name: Some(backend_name.clone()),
@@ -244,8 +90,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         });
 
-        let def = GraphDef {
-            format_version: "rill/1".to_string(),
+        // -- Build register table from melody --
+        let melody = [
+            (392.0, 120u64),
+            (440.0, 120),
+            (392.0, 120),
+            (329.6, 120),
+            (392.0, 120),
+            (440.0, 120),
+            (392.0, 120),
+            (329.6, 120),
+            (261.6, 120),
+            (329.6, 120),
+            (261.6, 120),
+            (220.0, 120),
+            (261.6, 120),
+            (329.6, 120),
+            (261.6, 120),
+            (220.0, 120),
+        ];
+
+        let mut register_table: Vec<ParamValue> = Vec::new();
+        let mut step_defs: Vec<StepDef> = Vec::new();
+        for &(freq, dur_ms) in &melody {
+            let regs = ay_regs(freq, 0.0, 0.0, 0, 0x38, 10, 0);
+            register_table.push(ParamValue::Bytes(regs.to_vec()));
+            step_defs.push(StepDef {
+                value: 0.0,
+                duration: dur_ms as f64 / 1000.0,
+                curve: None,
+            });
+        }
+
+        // -- Build ModularSystemDef --
+        let graph = GraphDef {
+            format_version: "rill/1".into(),
             sample_rate: RATE,
             block_size: BUF,
             resources: vec![],
@@ -267,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     type_name: "rill/output".into(),
                     name: "output".into(),
                     backend: None,
-                    parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
+                    parameters: HashMap::new(),
                 }),
             ],
             connections: vec![ConnectionDef {
@@ -277,14 +156,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 to_node: 1,
                 to_port: 0,
             }],
+            description: None,
+        };
+
+        let patchbay = PatchbayDef {
+            automata: vec![AutomatonDef::Sequencer {
+                id: "melody".into(),
+                steps: step_defs,
+                play_mode: PlayMode::Loop,
+                tempo: 120.0,
+            }],
+            modules: vec![ModuleDef::Servo(ServoDef {
+                automaton_id: "melody".into(),
+                target_node: 0,
+                target_param: "io_write".into(),
+                mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
+                min: 0.0,
+                max: 1.0,
+                enabled: true,
+                async_interval_ms: None,
+                control_strategy: None,
+                conflict_strategy: None,
+                table: Some(register_table),
+            })],
+            mappings: vec![],
+            osc_surface: vec![],
+            description: None,
+        };
+
+        let def = ModularSystemDef {
+            format_version: "rill/1".into(),
+            sample_rate: RATE,
+            block_size: BUF,
+            cases: vec![rill_adrift::modular::serialization::CaseDef {
+                name: "chiptune".into(),
+                graph,
+                patchbay: Some(patchbay),
+            }],
             description: Some("AY-3-8910 Chiptune — Popcorn".into()),
         };
 
-        // TODO: replace manual sequencer with Servo + SequencerAutomaton
-        // clock channel will be provided by ModularSystemDef
-        let mut graph = system.build_graph(&def).expect("build graph");
-
-        graph.run(t_run).ok();
+        system.load(def).expect("load system");
+        eprintln!("System loaded.");
     });
 
     let t_run = running.clone();

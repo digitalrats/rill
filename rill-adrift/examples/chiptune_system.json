@@ -1,0 +1,89 @@
+{
+  "format_version": "rill/1",
+  "sample_rate": 44100.0,
+  "block_size": 256,
+  "cases": [
+    {
+      "name": "chiptune",
+      "graph": {
+        "format_version": "rill/1",
+        "sample_rate": 44100.0,
+        "block_size": 256,
+        "resources": [],
+        "nodes": [
+          {
+            "Source": {
+              "id": 0,
+              "type_name": "rill/lofi_input",
+              "name": "ay_chip",
+              "backend": "ay38910",
+              "parameters": {
+                "bit_depth": { "Int": 8 },
+                "nonlinear": { "Bool": false },
+                "noise_floor": { "Float": -48.0 }
+              }
+            }
+          },
+          {
+            "Sink": {
+              "id": 1,
+              "type_name": "rill/output",
+              "name": "output",
+              "parameters": {}
+            }
+          }
+        ],
+        "connections": [
+          { "kind": "Signal", "from_node": 0, "from_port": 0, "to_node": 1, "to_port": 0 }
+        ]
+      },
+      "patchbay": {
+        "automata": [
+          {
+            "Sequencer": {
+              "id": "melody",
+              "steps": [
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 },
+                { "value": 0.0, "duration": 0.12 }
+              ],
+              "play_mode": "Loop",
+              "tempo": 120.0
+            }
+          }
+        ],
+        "modules": [
+          {
+            "Servo": {
+              "automaton_id": "melody",
+              "target_node": 0,
+              "target_param": "io_write",
+              "mapping": "Linear",
+              "min": 0.0,
+              "max": 1.0,
+              "enabled": true,
+              "table": []
+            }
+          }
+        ],
+        "mappings": [],
+        "osc_surface": [],
+        "description": null
+      }
+    }
+  ],
+  "description": "AY-3-8910 Chiptune — Popcorn"
+}
