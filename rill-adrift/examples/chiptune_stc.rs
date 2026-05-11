@@ -446,48 +446,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
         };
 
-        let mut builder = system.create_builder();
-        def.populate(&mut builder).expect("populate graph");
-
-        let (clock_tx, clock_rx) = ActorRef::<ClockTick>::new_pair();
-        builder.set_clock_tx(clock_tx);
-
-        let mut graph = builder.build().expect("graph build");
-        let handle = graph.handle().expect("actor handle");
-
-        // STC player actor
-        struct StcActor {
-            player: StcPlayer,
-            graph_ref: ActorRef<SetParameter>,
-        }
-        impl ActorCell for StcActor {
-            type Msg = ClockTick;
-            fn receive(&mut self, tick: ClockTick) {
-                let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
-                if let Some(regs) = self.player.step_ms(ms) {
-                    self.graph_ref.send(SetParameter::new(
-                        PortId::signal_out(NodeId(0), 0),
-                        ParameterId::new("io_write").unwrap(),
-                        ParamValue::Bytes(regs.to_vec()),
-                        SignalOrigin::Manual,
-                    ));
-                }
-            }
-        }
-
-        let running_seq = t_run.clone();
-        std::thread::spawn(move || {
-            let mut sequencer = StcActor {
-                player: StcPlayer::new(STC_DATA.to_vec()),
-                graph_ref: handle,
-            };
-            while running_seq.load(Ordering::Acquire) {
-                while let Some(tick) = clock_rx.pop() {
-                    sequencer.receive(tick);
-                }
-                std::thread::yield_now();
-            }
-        });
+        // TODO: replace manual player with Servo + automaton
+        // clock channel will be provided by ModularSystemDef
+        let mut graph = system.build_graph(&def).expect("build graph");
 
         graph.run(t_run).ok();
     });

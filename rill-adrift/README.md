@@ -23,13 +23,11 @@ crates for signal processing application development.
 
 ```rust,no_run
 use rill_adrift::modular::{ModularSystem, ModularConfig};
-use rill_adrift::rill_core::traits::Params;
 
 const BUF_SIZE: usize = 256;
 
-let mut system = ModularSystem::<BUF_SIZE>::new(ModularConfig::default());
-let mut builder = system.create_builder();
-builder.add_node("rill/sine", &Params::new(48000.0).with("freq", rill_adrift::rill_core::ParamValue::Float(440.0)));
+let system = ModularSystem::<BUF_SIZE>::new(ModularConfig::default());
+// Graphs are built from ModularSystemDef documents (serialization)
 ```
 
 ## Always-on core (no feature gate)

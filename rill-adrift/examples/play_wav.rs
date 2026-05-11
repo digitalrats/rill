@@ -78,11 +78,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         });
 
-        let mut builder = system.create_builder();
-
-        // TODO: restore when manual construction API is re-added
-        let _builder = builder;
-        eprintln!("manual construction not yet available — use serialization via GraphDef");
+        // TODO: restore when ModularSystemDef is implemented
+        let _ = system;
+        eprintln!("Graph construction via ModularSystemDef only");
     });
 
     let t_run = running.clone();

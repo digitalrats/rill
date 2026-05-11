@@ -18,14 +18,11 @@
 //!     └── Command queue (MpscQueue<SetParameter>)
 //! ```
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use rill_core::queues::{CommandEnum, MpscQueue};
-use rill_core::traits::{Eurorack, ParamValue};
+use rill_core::traits::Eurorack;
 use rill_core_actor::ActorRef;
-use rill_graph::backend_factory::BackendFactory;
-use rill_graph::{GraphBuilder, NodeFactory};
 use rill_patchbay::engine::Patchbay;
 
 /// A single Eurorack processing case.
@@ -50,15 +47,6 @@ pub struct RackCase<const BUF: usize> {
     /// Audio sample rate in Hz.
     sample_rate: f32,
 
-    /// Shared node factory (provided by the system).
-    node_factory: Arc<NodeFactory<f32, BUF>>,
-
-    /// Shared backend factory (provided by the system).
-    backend_factory: Arc<BackendFactory<f32>>,
-
-    /// Default backend configuration.
-    default_backend: Option<(String, HashMap<String, ParamValue>)>,
-
     /// Actor mailbox for **incoming** commands from other cases or external actors.
     mailbox: Arc<MpscQueue<CommandEnum>>,
 
@@ -78,36 +66,15 @@ impl<const BUF: usize> RackCase<BUF> {
     pub(crate) fn new(
         name: String,
         sample_rate: f32,
-        node_factory: Arc<NodeFactory<f32, BUF>>,
-        backend_factory: Arc<BackendFactory<f32>>,
-        default_backend: Option<(String, HashMap<String, ParamValue>)>,
         mailbox: Arc<MpscQueue<CommandEnum>>,
     ) -> Self {
         Self {
             name,
             sample_rate,
-            node_factory,
-            backend_factory,
-            default_backend,
             mailbox,
             outgoing: Vec::new(),
             patchbay: None,
         }
-    }
-
-    /// Create a [`GraphBuilder`] for this case.
-    pub fn create_builder(&self) -> GraphBuilder<f32, BUF> {
-        let mut builder =
-            GraphBuilder::new(self.node_factory.clone(), self.backend_factory.clone());
-        if let Some((ref name, ref params)) = self.default_backend {
-            builder.set_default_backend(name.clone(), params.clone());
-        }
-        builder
-    }
-
-    /// Set the default audio backend.
-    pub fn set_default_backend(&mut self, name: &str, params: HashMap<String, ParamValue>) {
-        self.default_backend = Some((name.to_string(), params));
     }
 
     /// Return the actor handle for sending commands TO this case.
@@ -144,14 +111,9 @@ impl<const BUF: usize> RackCase<BUF> {
         msgs
     }
 
-    /// Access the case's patchbay.
+    /// Access the case's patchbay (read-only).
     pub fn patchbay(&self) -> Option<&Patchbay> {
         self.patchbay.as_ref()
-    }
-
-    /// Access the case's patchbay mutably.
-    pub fn patchbay_mut(&mut self) -> Option<&mut Patchbay> {
-        self.patchbay.as_mut()
     }
 }
 

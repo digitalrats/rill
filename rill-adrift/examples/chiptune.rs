@@ -280,50 +280,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             description: Some("AY-3-8910 Chiptune — Popcorn".into()),
         };
 
-        let mut builder = system.create_builder();
-        def.populate(&mut builder).expect("populate graph");
-
-        // Clock channel: audio thread → sequencer (via ActorCell + ActorRef)
-        use rill_adrift::rill_core_actor::{ActorCell, ActorRef};
-        let (clock_tx, clock_rx) = ActorRef::<ClockTick>::new_pair();
-        builder.set_clock_tx(clock_tx);
-
-        let mut graph = builder.build().expect("graph build");
-
-        let handle = graph.handle().expect("actor handle");
-
-        // Sequencer actor
-        struct SequencerActor {
-            seq: Sequencer,
-            graph_ref: ActorRef<SetParameter>,
-        }
-        impl ActorCell for SequencerActor {
-            type Msg = ClockTick;
-            fn receive(&mut self, tick: ClockTick) {
-                let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
-                let regs = self.seq.step(ms);
-                self.graph_ref.send(SetParameter::new(
-                    PortId::signal_out(NodeId(0), 0),
-                    ParameterId::new("io_write").unwrap(),
-                    ParamValue::Bytes(regs.to_vec()),
-                    SignalOrigin::Manual,
-                ));
-            }
-        }
-
-        let running_seq = t_run.clone();
-        std::thread::spawn(move || {
-            let mut sequencer = SequencerActor {
-                seq: Sequencer::new(),
-                graph_ref: handle,
-            };
-            while running_seq.load(Ordering::Acquire) {
-                while let Some(tick) = clock_rx.pop() {
-                    sequencer.receive(tick);
-                }
-                std::thread::yield_now();
-            }
-        });
+        // TODO: replace manual sequencer with Servo + SequencerAutomaton
+        // clock channel will be provided by ModularSystemDef
+        let mut graph = system.build_graph(&def).expect("build graph");
 
         graph.run(t_run).ok();
     });

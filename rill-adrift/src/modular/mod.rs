@@ -50,7 +50,7 @@ use rill_core_actor::ActorRef;
 #[cfg(feature = "serialization")]
 use rill_core_actor::ActorSystem;
 use rill_graph::backend_factory::BackendFactory;
-use rill_graph::{GraphBuilder, NodeFactory};
+use rill_graph::{Graph, GraphBuilder, NodeFactory};
 #[cfg(feature = "osc")]
 use rill_patchbay::engine::OscSurface;
 use rill_patchbay::engine::Patchbay;
@@ -280,14 +280,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     #[cfg(feature = "serialization")]
     pub fn create_case(&mut self, name: &str, sample_rate: f32) -> &mut RackCase<BUF> {
         let mbox = self.actor_system.register(name);
-        let case = RackCase::new(
-            name.to_string(),
-            sample_rate,
-            Arc::new(self.node_factory.lock().unwrap().clone()),
-            self.backend_factory.clone(),
-            self.default_backend.clone(),
-            mbox,
-        );
+        let case = RackCase::new(name.to_string(), sample_rate, mbox);
         self.cases.insert(name.to_string(), case);
         self.cases.get_mut(name).expect("just inserted")
     }
@@ -374,7 +367,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     /// factories. If a default backend was set via
     /// [`set_default_backend`](Self::set_default_backend), the builder
     /// is pre-configured with it.
-    pub fn create_builder(&self) -> GraphBuilder<f32, BUF> {
+    pub(crate) fn create_builder(&self) -> GraphBuilder<f32, BUF> {
         let mut builder = GraphBuilder::new(
             Arc::new(self.node_factory.lock().unwrap().clone()),
             self.backend_factory.clone(),
@@ -391,13 +384,34 @@ impl<const BUF: usize> ModularSystem<BUF> {
     /// modified) graph document into a runnable graph.  The builder
     /// inherits all node and backend registrations from the runtime.
     #[cfg(feature = "serialization")]
-    pub fn create_builder_from_graphdef(
+    #[allow(dead_code)] // will be used by ModularSystemDef
+    pub(crate) fn create_builder_from_graphdef(
         &self,
         def: &rill_graph::serialization::GraphDef,
     ) -> Result<GraphBuilder<f32, BUF>, SerializationError> {
         let mut builder = self.create_builder();
         def.populate(&mut builder)?;
         Ok(builder)
+    }
+
+    /// Build a graph from a [`GraphDef`] document.
+    ///
+    /// This is the canonical way to construct a signal graph from a
+    /// serialised definition.  The graph is built inside the current
+    /// thread and returned to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns `String` with a human-readable error if the document
+    /// is invalid or a node type is not registered.
+    pub fn build_graph(
+        &self,
+        def: &GraphDef,
+    ) -> Result<Graph<f32, BUF>, Box<dyn std::error::Error>> {
+        let mut builder = self.create_builder();
+        def.populate(&mut builder)
+            .map_err(|e| format!("populate: {e}"))?;
+        builder.build().map_err(|e| format!("build: {e}").into())
     }
 
     // ─── File loading ───────────────────────────────────────────────
@@ -423,7 +437,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     /// The graph is **not** built or started until the graph is started via
     /// `Graph::run` or `Graph::stop`.
     #[cfg(feature = "serialization")]
-    pub fn load_graph(&mut self, doc: GraphDef) {
+    pub(crate) fn load_graph(&mut self, doc: GraphDef) {
         self.graph_doc = Some(doc);
         log::info!(
             "graph document loaded ({} nodes)",
@@ -437,7 +451,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
     /// via [`Graph::handle`](rill_graph::Graph::handle).
     /// Creates/replaces the [`Patchbay`] and updates the OSC surface.
     #[cfg(feature = "serialization")]
-    pub fn load_patchbay(
+    #[allow(dead_code)] // will be used by ModularSystemDef
+    pub(crate) fn load_patchbay(
         &mut self,
         doc: PatchbayDef,
         cmd_queue: ActorRef<SetParameter>,

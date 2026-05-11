@@ -71,9 +71,9 @@ fn test_deserialize_input_biquad_output() {
     p.insert("channels".into(), ParamValue::Int(2));
     system.set_default_backend("null", p);
 
-    let mut builder = system.create_builder();
-    def.populate(&mut builder).expect("populate");
-    let graph = builder.build().expect("graph build should succeed");
+    let graph = system
+        .build_graph(&def)
+        .expect("build graph should succeed");
 
     // Treat Graph as a black box — read metadata only.
     assert_eq!(graph.node_count(), 3, "should have 3 nodes");
@@ -122,9 +122,7 @@ fn test_send_parameter_via_queue() {
     p.insert("channels".into(), ParamValue::Int(2));
     system.set_default_backend("null", p);
 
-    let mut builder = system.create_builder();
-    def.populate(&mut builder).expect("populate");
-    let mut graph = builder.build().expect("graph build");
+    let mut graph = system.build_graph(&def).expect("graph build");
 
     // Send parameter via queue
     graph

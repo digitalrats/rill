@@ -87,10 +87,9 @@ fn build_graph(
         ..Default::default()
     });
 
-    let builder = system
-        .create_builder_from_graphdef(&def)
-        .map_err(|e| format!("create_builder: {e}"))?;
-    let graph = builder.build().map_err(|e| format!("build: {e}"))?;
+    let graph = system
+        .build_graph(&def)
+        .map_err(|e| format!("build: {e}"))?;
     Ok(graph)
 }
 

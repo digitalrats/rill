@@ -261,14 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // Build graph
-        let mut builder = system.create_builder();
-        def.populate(&mut builder)
-            .map_err(|e| format!("populate: {e}"))
-            .ok();
-        let graph = builder
-            .build()
-            .map_err(|e| format!("graph build: {e}"))
-            .ok();
+        let graph = system.build_graph(&def).ok();
         if let Some(mut g) = graph {
             g.run(t_run).ok();
         }
