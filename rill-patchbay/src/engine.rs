@@ -9,14 +9,14 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use rill_core::prelude::*;
-use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
+use rill_core::queues::{AutomatonCommand, CommandEnum, MpscQueue, SetParameter, SignalOrigin};
 use rill_core_actor::{ActorCell, ActorRef};
 
 // crossbeam removed: // crossbeam removed (dead code)
 
 pub use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform, Range};
 use crate::sensor::Sensor;
-use crate::strategy::{ConflictStrategy, ControlStrategy, UiCommand};
+use crate::strategy::{ConflictStrategy, ControlStrategy};
 
 // =============================================================================
 // 1. Event patterns
@@ -448,21 +448,8 @@ pub trait Automaton: Send + Sync + Debug {
 }
 
 // =============================================================================
-// 6. AutomatonMsg + Servo — automaton-to-parameter bridge
+// 6. Servo — automaton-to-parameter bridge
 // =============================================================================
-
-/// Message for automaton actors — clock tick or control command.
-#[derive(Debug, Clone)]
-pub enum AutomatonMsg {
-    /// Clock tick from audio thread.
-    Tick(ClockTick),
-    /// Enable or disable the automaton.
-    SetEnabled(bool),
-    /// Reset to initial state.
-    Reset,
-    /// UI command (from handle_event via patchbay).
-    Ui(UiCommand),
-}
 
 /// Mapping type for a servo's output value.
 #[derive(Clone)]
@@ -515,7 +502,7 @@ pub struct Servo<A: Automaton> {
     internal: A::Internal,
     state: ParamValue,
     enabled: bool,
-    mailbox: Arc<MpscQueue<AutomatonMsg>>,
+    mailbox: Arc<MpscQueue<CommandEnum>>,
     target_node: NodeId,
     target_param: String,
     mapping: ParameterMapping,
@@ -596,7 +583,7 @@ impl<A: Automaton> Servo<A> {
     }
 
     /// Return an [`ActorRef`] for sending control messages.
-    pub fn handle(&self) -> ActorRef<AutomatonMsg> {
+    pub fn handle(&self) -> ActorRef<CommandEnum> {
         ActorRef::new(&self.mailbox)
     }
 
@@ -606,27 +593,33 @@ impl<A: Automaton> Servo<A> {
     pub fn update(&mut self, time: Time) -> Option<SetParameter> {
         while let Some(cmd) = self.mailbox.pop() {
             match cmd {
-                AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
-                AutomatonMsg::Reset => self.internal = self.automaton.reset(),
-                AutomatonMsg::Tick(_) => {}
-                AutomatonMsg::Ui(UiCommand::SetValue(v)) => match self.conflict {
-                    ConflictStrategy::TouchOverride => {
-                        self.base = v;
-                        self.frozen = true;
-                        return Some(self.make_cmd(v));
-                    }
-                    ConflictStrategy::BasePlusModulation => {
-                        self.base = v;
-                    }
-                    ConflictStrategy::LastWriteWins => {
-                        return Some(self.make_cmd(v));
-                    }
-                },
-                AutomatonMsg::Ui(UiCommand::Release) => {
-                    if self.frozen {
-                        self.frozen = false;
+                CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
+                    self.enabled = enabled
+                }
+                CommandEnum::Automaton(AutomatonCommand::Reset { .. }) => {
+                    self.internal = self.automaton.reset()
+                }
+                CommandEnum::Automaton(AutomatonCommand::Wake { .. }) => {}
+                CommandEnum::Automaton(AutomatonCommand::UiValue { value, .. }) => {
+                    match self.conflict {
+                        ConflictStrategy::TouchOverride => {
+                            self.base = value;
+                            self.frozen = true;
+                            return Some(self.make_cmd(value));
+                        }
+                        ConflictStrategy::BasePlusModulation => {
+                            self.base = value;
+                        }
+                        ConflictStrategy::LastWriteWins => {
+                            return Some(self.make_cmd(value));
+                        }
                     }
                 }
+                CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) if self.frozen => {
+                    self.frozen = false;
+                }
+                CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) => {}
+                _ => {}
             }
         }
 
@@ -708,29 +701,25 @@ impl<A: Automaton> Servo<A> {
 // ── Actor pattern: Servo is an actor ───────────────────────────────
 
 impl<A: Automaton + 'static> ActorCell for Servo<A> {
-    type Msg = AutomatonMsg;
+    type Msg = CommandEnum;
 
-    fn receive(&mut self, msg: AutomatonMsg) {
+    fn receive(&mut self, msg: CommandEnum) {
         match msg {
-            AutomatonMsg::Tick(_) => {}
-            AutomatonMsg::SetEnabled(enabled) => self.enabled = enabled,
-            AutomatonMsg::Reset => self.internal = self.automaton.reset(),
-            AutomatonMsg::Ui(_) => {} // handled in update()
+            CommandEnum::Automaton(AutomatonCommand::Wake { .. }) => {}
+            CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
+                self.enabled = enabled
+            }
+            CommandEnum::Automaton(AutomatonCommand::Reset { .. }) => {
+                self.internal = self.automaton.reset()
+            }
+            CommandEnum::Automaton(AutomatonCommand::UiValue { .. }) => {}
+            CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) => {}
+            _ => {}
         }
     }
 }
 
-/// Wrapper: converts a `Sensor` into a `Module` for unified storage.
-struct SensorModule(Box<dyn Sensor>);
-
-impl Module for SensorModule {
-    fn id(&self) -> &str {
-        "sensor"
-    }
-    fn stop(&mut self) {
-        self.0.stop();
-    }
-}
+// ── Module trait: unified interface for servos and sensors ──────────
 
 /// Type-erased rack module (servo or sensor).
 pub type BoxedModule = Box<dyn Module>;
@@ -743,8 +732,8 @@ pub trait Module: Send {
     }
     /// Return the module's unique identifier.
     fn id(&self) -> &str;
-    /// Return an ActorRef for sending control messages (servos only).
-    fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
+    /// Return an ActorRef for sending control messages.
+    fn handle(&self) -> Option<ActorRef<CommandEnum>> {
         None
     }
     /// Enable or disable the module (servos only, no-op for sensors).
@@ -760,7 +749,7 @@ impl<A: Automaton + 'static> Module for Servo<A> {
     fn id(&self) -> &str {
         Servo::id(self)
     }
-    fn handle(&self) -> Option<ActorRef<AutomatonMsg>> {
+    fn handle(&self) -> Option<ActorRef<CommandEnum>> {
         Some(Servo::handle(self))
     }
     fn set_enabled(&mut self, enabled: bool) {
@@ -838,7 +827,7 @@ impl Patchbay {
         &mut self,
         id: String,
         servo: BoxedModule,
-    ) -> Option<ActorRef<AutomatonMsg>> {
+    ) -> Option<ActorRef<CommandEnum>> {
         let handle = servo.handle();
         self.modules.insert(id, servo);
         handle
@@ -901,7 +890,7 @@ impl Patchbay {
 
     /// Add a servo (automaton → parameter bridge).
     /// Returns an [`ActorRef`] for sending control messages.
-    pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) -> ActorRef<AutomatonMsg> {
+    pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) -> ActorRef<CommandEnum> {
         let handle = servo.handle();
         self.modules.insert(servo.id().to_string(), Box::new(servo));
         handle
@@ -973,24 +962,24 @@ impl Patchbay {
     /// The sensor should already be started via `Sensor::start()`.
     /// Use `sensor.attach(self.event_handle())` before `start()`.
     pub fn add_sensor(&mut self, id: &str, sensor: Box<dyn Sensor>) {
-        self.modules
-            .insert(id.to_string(), Box::new(SensorModule(sensor)));
+        self.modules.insert(id.to_string(), sensor);
     }
 
     /// Process an incoming control event (MIDI, OSC, button, etc.).
     ///
     /// If a Servo exists for the target port, the event is routed via
-    /// `AutomatonMsg::Ui` for conflict resolution; otherwise it is pushed
-    /// directly to the command queue.
+    /// `AutomatonCommand::UiValue` for conflict resolution; otherwise it is
+    /// pushed directly to the command queue.
     pub fn handle_event(&mut self, event: ControlEvent) {
         for mapping in &self.mappings {
             if let Some(cmd) = mapping.apply(&event) {
                 let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
                 if let Some(servo) = self.modules.get(&key) {
                     if let Some(ref servo_handle) = servo.handle() {
-                        servo_handle.send(AutomatonMsg::Ui(UiCommand::SetValue(
-                            cmd.value.as_f32().unwrap_or(0.0) as f64,
-                        )));
+                        servo_handle.send(CommandEnum::Automaton(AutomatonCommand::UiValue {
+                            id: servo.id().to_string(),
+                            value: cmd.value.as_f32().unwrap_or(0.0) as f64,
+                        }));
                     }
                 } else {
                     self.command_queue.send(cmd);
@@ -1066,10 +1055,11 @@ impl Patchbay {
     pub fn drain_clock(&mut self) {
         self.drain_events();
         while let Some(clock) = self.clock_mailbox.pop() {
-            let msg = AutomatonMsg::Tick(clock);
             for servo in self.modules.values() {
                 if let Some(ref handle) = servo.handle() {
-                    handle.send(msg.clone());
+                    handle.send(CommandEnum::Automaton(AutomatonCommand::Wake {
+                        id: servo.id().to_string(),
+                    }));
                 }
             }
             let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;

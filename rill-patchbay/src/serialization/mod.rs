@@ -226,7 +226,7 @@ impl SensorDef {
                         return None;
                     }
                 };
-                let hub = crate::midi::MidiHub::new(be);
+                let hub = crate::midi::MidiHub::new(port_name.as_str(), be);
                 Some(Box::new(hub))
             }
         }

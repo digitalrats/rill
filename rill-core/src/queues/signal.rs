@@ -231,6 +231,23 @@ pub enum AutomatonCommand {
         /// Automaton identifier to remove.
         id: String,
     },
+    /// Wake the automaton to process a clock tick (no payload required).
+    Wake {
+        /// Automaton identifier.
+        id: String,
+    },
+    /// Set a value from UI input for conflict resolution.
+    UiValue {
+        /// Automaton identifier.
+        id: String,
+        /// Raw value from UI.
+        value: f64,
+    },
+    /// Release UI control (unfreeze in TouchOverride mode).
+    UiRelease {
+        /// Automaton identifier.
+        id: String,
+    },
 }
 
 impl AutomatonCommand {
@@ -244,6 +261,9 @@ impl AutomatonCommand {
             AutomatonCommand::Disconnect { from, to: _to } => Some(from),
             AutomatonCommand::Create { id, .. } => Some(id),
             AutomatonCommand::Destroy { id } => Some(id),
+            AutomatonCommand::Wake { id } => Some(id),
+            AutomatonCommand::UiValue { id, .. } => Some(id),
+            AutomatonCommand::UiRelease { id } => Some(id),
         }
     }
 }
@@ -277,6 +297,15 @@ impl fmt::Display for AutomatonCommand {
             }
             AutomatonCommand::Destroy { id } => {
                 write!(f, "Automaton destroy {}", id)
+            }
+            AutomatonCommand::Wake { id } => {
+                write!(f, "Automaton[{}] wake(tick)", id)
+            }
+            AutomatonCommand::UiValue { id, value } => {
+                write!(f, "Automaton[{}] ui_value({:.2})", id, value)
+            }
+            AutomatonCommand::UiRelease { id } => {
+                write!(f, "Automaton[{}] ui_release()", id)
             }
         }
     }

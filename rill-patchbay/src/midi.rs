@@ -13,12 +13,13 @@ use rill_core_actor::ActorRef;
 use rill_io::midi_backend::MidiBackend;
 use rill_io::midi_message::MidiMessage;
 
-use crate::engine::{ControlEvent, MidiTransportKind};
+use crate::engine::{ControlEvent, MidiTransportKind, Module};
 use crate::sensor::Sensor;
 
 /// MIDI sensor — polls a [`MidiBackend`] on a dedicated OS thread,
 /// parses raw bytes into [`ControlEvent`]s, and dispatches via [`ActorRef`].
 pub struct MidiHub {
+    id: String,
     thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
     events: Option<ActorRef<ControlEvent>>,
@@ -27,8 +28,9 @@ pub struct MidiHub {
 
 impl MidiHub {
     /// Create a new MIDI sensor with a backend.
-    pub fn new(backend: Box<dyn MidiBackend>) -> Self {
+    pub fn new(id: impl Into<String>, backend: Box<dyn MidiBackend>) -> Self {
         Self {
+            id: id.into(),
             thread: None,
             running: Arc::new(AtomicBool::new(true)),
             events: None,
@@ -37,11 +39,28 @@ impl MidiHub {
     }
 
     /// Convenience: create, attach, and start in one call.
-    pub fn start(backend: Box<dyn MidiBackend>, events: ActorRef<ControlEvent>) -> Self {
-        let mut hub = Self::new(backend);
+    pub fn start(
+        id: impl Into<String>,
+        backend: Box<dyn MidiBackend>,
+        events: ActorRef<ControlEvent>,
+    ) -> Self {
+        let mut hub = Self::new(id, backend);
         hub.attach(events);
         hub.start();
         hub
+    }
+}
+
+impl Module for MidiHub {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn stop(&mut self) {
+        self.running.store(false, Ordering::Release);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -80,13 +99,6 @@ impl Sensor for MidiHub {
                 thread::sleep(Duration::from_millis(1));
             }
         }));
-    }
-
-    fn stop(&mut self) {
-        self.running.store(false, Ordering::Release);
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
     }
 }
 

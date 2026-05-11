@@ -110,7 +110,7 @@ pub use engine::{
     NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
 };
 
-pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
+pub use strategy::{ConflictStrategy, ControlStrategy};
 
 // =============================================================================
 // Prelude for convenient imports

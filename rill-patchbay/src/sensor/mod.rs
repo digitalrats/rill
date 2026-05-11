@@ -15,11 +15,13 @@ pub mod hearing;
 
 use rill_core_actor::ActorRef;
 
-use crate::engine::ControlEvent;
+use crate::engine::{ControlEvent, Module};
 
 /// External input that produces [`ControlEvent`]s and dispatches them
 /// via a shared [`ActorRef`].
-pub trait Sensor: Send + 'static {
+///
+/// `Sensor` extends [`Module`] so every sensor is also a rack module.
+pub trait Sensor: Module {
     /// Attach the sensor to an event sink.
     ///
     /// Called before [`start`](Self::start). The sensor stores the
@@ -28,7 +30,4 @@ pub trait Sensor: Send + 'static {
 
     /// Start the sensor (begin polling, open device, spawn thread, etc.).
     fn start(&mut self);
-
-    /// Stop the sensor and release resources.
-    fn stop(&mut self);
 }
