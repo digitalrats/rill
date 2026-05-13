@@ -8,7 +8,7 @@
 //! | `/sys/graph/stop` | — | Log stop request |
 //! | `/sys/status` | — | Print runtime state |
 //!
-//! **User paths** — registered from `PatchbayDef::osc_surface`.
+//! **User paths** — registered from `RackDef::osc_surface`.
 //! Each entry maps an OSC address to an `EventPattern`; the value is
 //! extracted from the first OSC argument (treated as normalized 0..1).
 
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 use rill_core_actor::ActorRef;
-use rill_patchbay::engine::{ControlEvent, EventPattern, OscSurface, Patchbay};
+use rill_patchbay::engine::{ControlEvent, EventPattern, OscSurface};
 
 use crate::osc::osc::{OscMessage, OscType};
 use crate::osc::server::OscServer;
@@ -34,7 +34,7 @@ impl OscHandle {
     pub async fn start(
         bind: &str,
         queue: ActorRef<CommandEnum>,
-        control: Arc<std::sync::Mutex<Patchbay>>,
+        control: Arc<std::sync::Mutex<Box<Patchbay>>>,
         surface: OscSurface,
     ) -> Result<Self, String> {
         let mut server = OscServer::bind(bind)

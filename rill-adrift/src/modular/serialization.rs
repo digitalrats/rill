@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use rill_graph::serialization::GraphDef;
-use rill_patchbay::serialization::PatchbayDef;
+use rill_patchbay::serialization::RackDef;
 
 /// Top-level document for a complete modular audio processing system.
 ///
@@ -64,7 +64,7 @@ pub struct CaseDef {
     /// Control patchbay configuration (automata, mappings, sensors).
     /// `None` means no control rack — audio passthrough only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub patchbay: Option<PatchbayDef>,
+    pub patchbay: Option<RackDef>,
 }
 
 // --- JSON serialization ---

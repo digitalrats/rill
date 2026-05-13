@@ -39,11 +39,11 @@ pub trait AutomatonConstructor: Send + Sync {
     fn construct(&self, id: &str, params: &Params, target: &ServoTarget) -> BoxedModule;
     fn spawn_async(
         &self,
-        id: &str,
-        params: &Params,
-        target: &ServoTarget,
-        interval_ms: f64,
-        command_queue: ActorRef<CommandEnum>,
+        _id: &str,
+        _params: &Params,
+        _target: &ServoTarget,
+        _interval_ms: f64,
+        _command_queue: ActorRef<CommandEnum>,
     ) -> Option<tokio::task::JoinHandle<()>> {
         None
     }

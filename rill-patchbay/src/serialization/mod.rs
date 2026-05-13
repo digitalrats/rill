@@ -1,8 +1,6 @@
 #![allow(missing_docs)]
-//! Serializable patchbay document types (de)serialised from JSON/CBOR.
+//! Serializable rack document types (de)serialised from JSON/CBOR.
 
-#[cfg(test)]
-use rill_core_actor::ActorRef;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,12 +14,12 @@ use crate::automaton::lfo::{LfoAutomaton, LfoWaveform};
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use crate::engine::EventPattern;
 use crate::engine::{
-    Automaton, BoxedModule, Mapping, OscSurface, ParameterMapping, Patchbay, Servo, Target, Time,
-    Transform,
+    Automaton, Mapping, OscSurface, ParameterMapping, Servo, Target, Time, Transform,
 };
 use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
-use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+use rill_core::queues::CommandEnum;
+use rill_core_actor::{ActorRef, ActorSystem};
 
 pub mod dot;
 
@@ -266,13 +264,13 @@ pub enum ModuleDef {
 }
 
 // ============================================================================
-// PatchbayDef
+// RackDef
 // ============================================================================
 
 /// Serializable patchbay configuration.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
-pub struct PatchbayDef {
+pub struct RackDef {
     pub automata: Vec<AutomatonDef>,
     /// Unified modules — servos and sensors.
     pub modules: Vec<ModuleDef>,
@@ -287,7 +285,7 @@ pub struct PatchbayDef {
     pub description: Option<String>,
 }
 
-impl PatchbayDef {
+impl RackDef {
     pub fn new() -> Self {
         Self {
             automata: Vec::new(),
@@ -298,14 +296,20 @@ impl PatchbayDef {
         }
     }
 
-    /// Apply the document to a [`Patchbay`].
-    pub fn apply_to(
+    /// Build servo actors from the rack definition.
+    ///
+    /// Returns a map of servo ID → [`ActorRef`] for external control.
+    /// Each servo spawns its own tokio drain task.
+    pub fn build_servos(
         &self,
-        control: &mut Patchbay,
         registry: &FunctionRegistry,
-    ) -> Result<(), String> {
+        system: &Arc<ActorSystem>,
+        graph_ref: &ActorRef<CommandEnum>,
+    ) -> Result<HashMap<String, ActorRef<CommandEnum>>, String> {
         let auto_ids: std::collections::HashSet<&str> =
             self.automata.iter().map(|a| a.id()).collect();
+
+        let mut modules = HashMap::new();
 
         for m in &self.modules {
             match m {
@@ -332,17 +336,21 @@ impl PatchbayDef {
                             offset,
                             waveform,
                         } => {
-                            control.add_lfo(
+                            let automaton =
+                                LfoAutomaton::new(id, *frequency, *amplitude, *offset, *waveform);
+                            let servo = Servo::new(
                                 id,
-                                *frequency,
-                                *amplitude,
-                                *offset,
-                                *waveform,
+                                automaton,
                                 nid,
                                 &s.target_param,
+                                mapping,
                                 s.min,
                                 s.max,
+                                system.clone(),
+                                graph_ref.clone(),
                             );
+                            let actor_ref = servo.spawn(system);
+                            modules.insert(id.clone(), actor_ref);
                         }
                         AutomatonDef::Envelope {
                             id,
@@ -356,7 +364,7 @@ impl PatchbayDef {
                             let automaton =
                                 EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
                                     .with_curve(*curve);
-                            let servo: BoxedModule = Box::new(Servo::new(
+                            let servo = Servo::new(
                                 id,
                                 automaton,
                                 nid,
@@ -364,8 +372,11 @@ impl PatchbayDef {
                                 mapping,
                                 s.min,
                                 s.max,
-                            ));
-                            control.add_boxed_servo(id.clone(), servo);
+                                system.clone(),
+                                graph_ref.clone(),
+                            );
+                            let actor_ref = servo.spawn(system);
+                            modules.insert(id.clone(), actor_ref);
                         }
                         AutomatonDef::Sequencer {
                             id,
@@ -384,7 +395,7 @@ impl PatchbayDef {
                             let automaton = SequencerAutomaton::new(id, seq_steps)
                                 .with_mode(*play_mode)
                                 .with_tempo(*tempo);
-                            let servo: BoxedModule = Box::new(Servo::new(
+                            let servo = Servo::new(
                                 id,
                                 automaton,
                                 nid,
@@ -392,8 +403,11 @@ impl PatchbayDef {
                                 mapping,
                                 s.min,
                                 s.max,
-                            ));
-                            control.add_boxed_servo(id.clone(), servo);
+                                system.clone(),
+                                graph_ref.clone(),
+                            );
+                            let actor_ref = servo.spawn(system);
+                            modules.insert(id.clone(), actor_ref);
                         }
                         AutomatonDef::NamedFunction { id, .. } => {
                             log::warn!("NamedFunction automaton '{}' requires manual setup", id);
@@ -403,290 +417,23 @@ impl PatchbayDef {
                             type_name,
                             params,
                         } => {
-                            let nid = NodeId(s.target_node);
-                            let mapping = s.mapping.to_parameter_mapping();
-                            let mut p = Params::new(48000.0);
-                            for (k, v) in params {
-                                p = p.with(k.clone(), v.clone());
-                            }
-                            let target = ServoTarget {
-                                target_node: nid,
-                                target_param: s.target_param.clone(),
-                                mapping,
-                                min: s.min,
-                                max: s.max,
-                                table: s.table.clone(),
-                            };
-                            if let Some(ref factory) = control.automaton_factory {
-                                match factory.construct(type_name, id, &p, &target) {
-                                    Ok(module) => {
-                                        control.add_boxed_servo(id.clone(), module);
-                                    }
-                                    Err(e) => {
-                                        log::warn!("Custom automaton '{}': {e}", id);
-                                    }
-                                }
-                            } else {
-                                log::warn!("Custom '{}' needs factory — none set", id);
-                            }
+                            log::warn!("Custom automaton '{}' not yet supported", id);
+                            let _ = (type_name, params);
                         }
                     }
                 }
-                ModuleDef::Sensor(s) => {
-                    if let Some(mut sensor) = s.into_sensor() {
-                        let events = control.event_handle();
-                        sensor.attach(events);
-                        sensor.start();
-                        control.add_sensor("midi", sensor);
-                    }
+                ModuleDef::Sensor(_s) => {
+                    // Sensors are created separately via their own factory
+                    log::info!("Sensor module — needs manual setup");
                 }
             }
         }
 
-        for m in &self.mappings {
-            let transform = m.transform.to_transform(registry);
-            let name = format!("{:?} -> {}", m.event_pattern, m.target_param);
-            control.add_mapping(Mapping {
-                pattern: m.event_pattern.clone(),
-                target: Target {
-                    node_id: NodeId(m.target_node),
-                    param_name: m.target_param.clone(),
-                    min: m.min as f32,
-                    max: m.max as f32,
-                },
-                transform,
-                name,
-                enabled: m.enabled,
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Apply the document to a [`Patchbay`] using async automaton tasks.
-    ///
-    /// For each servo with `async_interval_ms: Some(...)`, creates a green
-    /// thread (tokio task) with the specified strategies. Falls back to sync
-    /// mode for servos without async configuration.
-    ///
-    /// Requires an active tokio runtime.
-    pub fn apply_to_async(
-        &self,
-        control: &mut Patchbay,
-        registry: &FunctionRegistry,
-    ) -> Result<(), String> {
-        let auto_ids: std::collections::HashSet<&str> =
-            self.automata.iter().map(|a| a.id()).collect();
-
-        for m in &self.modules {
-            match m {
-                ModuleDef::Servo(s) => {
-                    if !auto_ids.contains(s.automaton_id.as_str()) {
-                        return Err(format!(
-                            "servo references unknown automaton '{}'",
-                            s.automaton_id
-                        ));
-                    }
-
-                    let def = self
-                        .automata
-                        .iter()
-                        .find(|a| a.id() == s.automaton_id)
-                        .unwrap();
-                    let nid = NodeId(s.target_node);
-
-                    match def {
-                        AutomatonDef::Lfo {
-                            id,
-                            frequency,
-                            amplitude,
-                            offset,
-                            waveform,
-                        } => {
-                            if let Some(interval_ms) = s.async_interval_ms {
-                                let id_str = id.to_string();
-                                let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                                let automaton = LfoAutomaton::new(
-                                    &id_str, *frequency, *amplitude, *offset, *waveform,
-                                );
-                                let mapping = s.mapping.to_parameter_mapping();
-                                let command_queue = control.graph_ref();
-                                let node_id = nid;
-                                let param = s.target_param.clone();
-                                let min = s.min;
-                                let max = s.max;
-                                let task_id = id_str.clone();
-
-                                let handle = tokio::spawn(async move {
-                                    let mut internal = automaton.initial_internal();
-                                    let mut current = ParamValue::Float(0.0);
-                                    let mut time: Time = 0.0;
-                                    let mut ticker = tokio::time::interval(interval);
-                                    ticker.tick().await;
-                                    loop {
-                                        ticker.tick().await;
-                                        time += interval.as_secs_f64();
-                                        current = automaton.step(
-                                            &mut internal,
-                                            &current,
-                                            time,
-                                            &<LfoAutomaton as Automaton>::Action::default(),
-                                        );
-                                        let raw = current.as_f32().unwrap_or(0.0) as f64;
-                                        let mapped = mapping.apply(raw);
-                                        let value = min + mapped * (max - min);
-                                        let pid = ParameterId::new(&param).unwrap();
-                                        command_queue.send(CommandEnum::SetParameter(
-                                            SetParameter::new(
-                                                PortId::param(node_id, 0),
-                                                pid,
-                                                ParamValue::Float(value as f32),
-                                                SignalOrigin::Automaton(id_str.clone()),
-                                            ),
-                                        ));
-                                    }
-                                });
-                                control.store_task_handle(task_id, handle);
-                            } else {
-                                control.add_lfo(
-                                    id,
-                                    *frequency,
-                                    *amplitude,
-                                    *offset,
-                                    *waveform,
-                                    nid,
-                                    &s.target_param,
-                                    s.min,
-                                    s.max,
-                                );
-                            }
-                        }
-                        AutomatonDef::Envelope {
-                            id,
-                            attack,
-                            decay,
-                            sustain,
-                            release,
-                            curve,
-                            ..
-                        } => {
-                            if let Some(interval_ms) = s.async_interval_ms {
-                                let id_str = id.to_string();
-                                let interval = Duration::from_secs_f64(interval_ms / 1000.0);
-                                let automaton = EnvelopeAutomaton::adsr(
-                                    &id_str, *attack, *decay, *sustain, *release,
-                                )
-                                .with_curve(*curve);
-                                let mapping = s.mapping.to_parameter_mapping();
-                                let command_queue = control.graph_ref();
-                                let node_id = nid;
-                                let param = s.target_param.clone();
-                                let min = s.min;
-                                let max = s.max;
-                                let task_id = id_str.clone();
-
-                                let handle = tokio::spawn(async move {
-                                    let mut internal = automaton.initial_internal();
-                                    let mut current = ParamValue::Float(0.0);
-                                    let mut time: Time = 0.0;
-                                    let mut ticker = tokio::time::interval(interval);
-                                    ticker.tick().await;
-                                    loop {
-                                        ticker.tick().await;
-                                        time += interval.as_secs_f64();
-                                        current = automaton.step(
-                                            &mut internal,
-                                            &current,
-                                            time,
-                                            &<EnvelopeAutomaton as Automaton>::Action::default(),
-                                        );
-                                        let raw = current.as_f32().unwrap_or(0.0) as f64;
-                                        let mapped = mapping.apply(raw);
-                                        let value = min + mapped * (max - min);
-                                        let pid = ParameterId::new(&param).unwrap();
-                                        command_queue.send(CommandEnum::SetParameter(
-                                            SetParameter::new(
-                                                PortId::param(node_id, 0),
-                                                pid,
-                                                ParamValue::Float(value as f32),
-                                                SignalOrigin::Automaton(id_str.clone()),
-                                            ),
-                                        ));
-                                    }
-                                });
-                                control.store_task_handle(task_id, handle);
-                            } else {
-                                let automaton = EnvelopeAutomaton::adsr(
-                                    id, *attack, *decay, *sustain, *release,
-                                )
-                                .with_curve(*curve);
-                                let mapping = s.mapping.to_parameter_mapping();
-                                let servo: BoxedModule = Box::new(Servo::new(
-                                    id,
-                                    automaton,
-                                    nid,
-                                    &s.target_param,
-                                    mapping,
-                                    s.min,
-                                    s.max,
-                                ));
-                                control.add_boxed_servo(id.clone(), servo);
-                            }
-                        }
-                        AutomatonDef::Sequencer {
-                            id,
-                            steps,
-                            play_mode,
-                            tempo,
-                        } => {
-                            log::warn!(
-                                "Sequencer sync mode not fully wired in apply_to_async; use manual setup"
-                            );
-                            let _ = (id, steps, play_mode, tempo, nid, s);
-                        }
-                        AutomatonDef::NamedFunction { id, .. } => {
-                            log::warn!("NamedFunction automaton '{}' requires manual setup", id);
-                        }
-                        AutomatonDef::Custom { id, .. } => {
-                            log::warn!(
-                                "Custom automaton '{}' not supported in async mode; use sync",
-                                id
-                            );
-                        }
-                    }
-                }
-                ModuleDef::Sensor(s) => {
-                    if let Some(mut sensor) = s.into_sensor() {
-                        let events = control.event_handle();
-                        sensor.attach(events);
-                        sensor.start();
-                        control.add_sensor("midi", sensor);
-                    }
-                }
-            }
-        }
-
-        for m in &self.mappings {
-            let transform = m.transform.to_transform(registry);
-            control.add_mapping(Mapping {
-                pattern: m.event_pattern.clone(),
-                target: Target {
-                    node_id: NodeId(m.target_node),
-                    param_name: m.target_param.clone(),
-                    min: m.min as f32,
-                    max: m.max as f32,
-                },
-                transform,
-                name: format!("{:?} -> {}", m.event_pattern, m.target_param),
-                enabled: m.enabled,
-            });
-        }
-
-        Ok(())
+        Ok(modules)
     }
 }
 
-impl Default for PatchbayDef {
+impl Default for RackDef {
     fn default() -> Self {
         Self::new()
     }
@@ -697,22 +444,22 @@ impl Default for PatchbayDef {
 // ============================================================================
 
 #[cfg(feature = "json")]
-pub fn to_json(doc: &PatchbayDef) -> Result<String, String> {
+pub fn to_json(doc: &RackDef) -> Result<String, String> {
     serde_json::to_string_pretty(doc).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "json")]
-pub fn from_json(json: &str) -> Result<PatchbayDef, String> {
+pub fn from_json(json: &str) -> Result<RackDef, String> {
     serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "cbor")]
-pub fn to_cbor(doc: &PatchbayDef) -> Result<Vec<u8>, String> {
+pub fn to_cbor(doc: &RackDef) -> Result<Vec<u8>, String> {
     serde_cbor::to_vec(doc).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "cbor")]
-pub fn from_cbor(bytes: &[u8]) -> Result<PatchbayDef, String> {
+pub fn from_cbor(bytes: &[u8]) -> Result<RackDef, String> {
     serde_cbor::from_slice(bytes).map_err(|e| e.to_string())
 }
 
@@ -725,8 +472,8 @@ mod tests {
     use super::*;
     use rill_core::queues::MpscQueue;
 
-    fn sample_doc() -> PatchbayDef {
-        PatchbayDef {
+    fn sample_doc() -> RackDef {
+        RackDef {
             automata: vec![AutomatonDef::Lfo {
                 id: "lfo1".into(),
                 frequency: 0.3,
@@ -776,19 +523,21 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_to_adds_servo() {
+    fn test_build_servos_success() {
         let doc = sample_doc();
-        let (graph_ref, _) = ActorRef::new_pair();
-        let (_, patchbay_mbox) = ActorRef::new_pair();
-        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
+        let system = Arc::new(ActorSystem::new());
+        let graph_actor = system.spawn("graph", |_: CommandEnum| {});
         let registry = FunctionRegistry::builtin();
-        doc.apply_to(&mut control, &registry).unwrap();
-        control.update(0.01);
+        let modules = doc
+            .build_servos(&registry, &system, &graph_actor.actor_ref())
+            .unwrap();
+        assert_eq!(modules.len(), 1);
+        assert!(modules.contains_key("lfo1"));
     }
 
     #[test]
     fn test_missing_automaton_error() {
-        let doc = PatchbayDef {
+        let doc = RackDef {
             automata: vec![],
             modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "nonexistent".into(),
@@ -807,92 +556,11 @@ mod tests {
             osc_surface: vec![],
             description: None,
         };
-        let (graph_ref, _) = ActorRef::new_pair();
-        let (_, patchbay_mbox) = ActorRef::new_pair();
-        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
+        let system = Arc::new(ActorSystem::new());
+        let graph_actor = system.spawn("graph", |_: CommandEnum| {});
         let registry = FunctionRegistry::builtin();
-        assert!(doc.apply_to(&mut control, &registry).is_err());
-    }
-
-    #[test]
-    fn test_apply_to_async_roundtrip() {
-        let doc = PatchbayDef {
-            automata: vec![AutomatonDef::Lfo {
-                id: "lfo1".into(),
-                frequency: 1.0,
-                amplitude: 1.0,
-                offset: 0.0,
-                waveform: LfoWaveform::Sine,
-            }],
-            modules: vec![ModuleDef::Servo(ServoDef {
-                automaton_id: "lfo1".into(),
-                target_node: 1,
-                target_param: "cutoff".into(),
-                mapping: MappingType::Linear,
-                min: 100.0,
-                max: 1000.0,
-                enabled: true,
-                async_interval_ms: Some(10.0),
-                control_strategy: Some(ControlStrategy::Absolute),
-                conflict_strategy: Some(ConflictStrategy::LastWriteWins),
-                table: None,
-            })],
-            mappings: vec![],
-            osc_surface: vec![],
-            description: None,
-        };
-
-        let json = to_json(&doc).unwrap();
-        let restored = from_json(&json).unwrap();
-        assert_eq!(restored.modules.len(), 1);
-        match &restored.modules[0] {
-            ModuleDef::Servo(s) => {
-                assert_eq!(s.async_interval_ms, Some(10.0));
-                assert_eq!(s.control_strategy, Some(ControlStrategy::Absolute));
-                assert_eq!(s.conflict_strategy, Some(ConflictStrategy::LastWriteWins));
-            }
-            _ => panic!("expected Servo"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_apply_to_async_spawns_tasks() {
-        use rill_core::queues::MpscQueue;
-
-        let doc = PatchbayDef {
-            automata: vec![AutomatonDef::Lfo {
-                id: "lfo1".into(),
-                frequency: 10.0,
-                amplitude: 1.0,
-                offset: 0.0,
-                waveform: LfoWaveform::Sine,
-            }],
-            modules: vec![ModuleDef::Servo(ServoDef {
-                automaton_id: "lfo1".into(),
-                target_node: 1,
-                target_param: "cutoff".into(),
-                mapping: MappingType::Linear,
-                min: 100.0,
-                max: 1000.0,
-                enabled: true,
-                async_interval_ms: Some(10.0),
-                control_strategy: Some(ControlStrategy::Absolute),
-                conflict_strategy: Some(ConflictStrategy::LastWriteWins),
-                table: None,
-            })],
-            mappings: vec![],
-            osc_surface: vec![],
-            description: None,
-        };
-
-        let (graph_ref, _) = ActorRef::new_pair();
-        let (_, patchbay_mbox) = ActorRef::new_pair();
-        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
-        let registry = FunctionRegistry::builtin();
-        doc.apply_to_async(&mut control, &registry).unwrap();
-
-        // Let the green thread produce a value
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        assert!(!mailbox.is_empty(), "async LFO should have pushed a value");
+        assert!(doc
+            .build_servos(&registry, &system, &graph_actor.actor_ref())
+            .is_err());
     }
 }

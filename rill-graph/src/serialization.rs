@@ -764,7 +764,12 @@ mod tests {
         Processor, Source,
     };
     use rill_core::ParamMetadata as PM;
+    use rill_core_actor::ActorSystem;
     use std::sync::Arc;
+
+    fn test_system() -> ActorSystem {
+        ActorSystem::new()
+    }
 
     // ==================================================================
     // Test node — configurable metadata, parameters, feedback ports
@@ -974,7 +979,7 @@ mod tests {
         let src = b.add_node("rill/test", &Params::new(44100.0));
         let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
-        b.build().expect("build")
+        b.build(&test_system()).expect("build")
     }
 
     // ==================================================================
@@ -997,7 +1002,7 @@ mod tests {
         assert_eq!(restored.node_count(), 2);
 
         // Must rebuild without errors
-        restored.build().expect("rebuild");
+        restored.build(&test_system()).expect("rebuild");
     }
 
     #[test]
@@ -1018,7 +1023,7 @@ mod tests {
     fn test_empty_graph_roundtrip() {
         let reg = empty_factory();
         let graph = GraphBuilder::new(empty_factory(), empty_backends())
-            .build()
+            .build(&test_system())
             .expect("graph build");
 
         let json = to_json(&graph).expect("to_json");
@@ -1045,7 +1050,7 @@ mod tests {
                 .with("frequency", PV::Float(220.0))
                 .with("amplitude", PV::Float(0.8)),
         );
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes.len(), 1);
@@ -1066,14 +1071,14 @@ mod tests {
                 .with("frequency", PV::Float(55.0))
                 .with("amplitude", PV::Float(0.25)),
         );
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let json = to_json(&graph).expect("to_json");
         let def = from_json(&json).expect("from_json");
         let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
         def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 1);
-        restored.build().expect("rebuild");
+        restored.build(&test_system()).expect("rebuild");
     }
 
     // ==================================================================
@@ -1088,7 +1093,7 @@ mod tests {
         let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         let sigs: Vec<SignalKind> = doc.connections.iter().map(|c| c.kind).collect();
@@ -1107,7 +1112,7 @@ mod tests {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         b.add_node("rill/param", &Params::new(44100.0));
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes[0].type_name(), "rill/param");
@@ -1137,7 +1142,7 @@ mod tests {
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
 
         b.add_node("rill/fallback", &Params::new(44100.0));
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes[0].type_name(), "TestNode");
@@ -1155,7 +1160,7 @@ mod tests {
         b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100));
         b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200));
         b.connect_signal(0, 0, 1, 0);
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains(r#""id": 100"#));
@@ -1181,7 +1186,7 @@ mod tests {
         b.connect_signal(s0, 0, p1, 0);
         b.connect_signal(p1, 0, p2, 0);
 
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let json = to_json(&graph).expect("to_json");
         let def = from_json(&json).expect("from_json");
@@ -1190,7 +1195,7 @@ mod tests {
         assert_eq!(restored.node_count(), 3);
 
         // Verify connections
-        let rebuilt = restored.build().expect("rebuild");
+        let rebuilt = restored.build(&test_system()).expect("rebuild");
 
         // Topological order: source must be first
         assert_eq!(rebuilt.topo_order().len(), 3);

@@ -19,7 +19,7 @@ use rill_adrift::rill_graph::serialization::{
 };
 use rill_adrift::rill_patchbay::automaton::sequencer::PlayMode;
 use rill_adrift::rill_patchbay::serialization::{
-    AutomatonDef, ModuleDef, PatchbayDef, ServoDef, StepDef,
+    AutomatonDef, ModuleDef, RackDef, ServoDef, StepDef,
 };
 
 const BUF: usize = 256;
@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }],
                 description: None,
             },
-            patchbay: Some(PatchbayDef {
+            patchbay: Some(RackDef {
                 automata: vec![AutomatonDef::Sequencer {
                     id: "melody".into(),
                     steps: step_defs,

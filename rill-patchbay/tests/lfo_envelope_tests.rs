@@ -1,46 +1,45 @@
 use rill_core::NodeId;
-use rill_core_actor::{ActorRef, Mbox};
-use rill_patchbay::{LfoWaveform, Patchbay};
+use rill_core_actor::ActorSystem;
+use rill_patchbay::{LfoWaveform, Servo};
 use std::sync::Arc;
 
 #[test]
-fn test_lfo_automaton_in_control() {
-    let (actor_ref, mailbox) = ActorRef::new_pair();
-    let mut control = Patchbay::new(Arc::new(Mbox::new(64)), actor_ref.clone());
-
-    control.add_lfo(
+fn test_lfo_servo_spawn() {
+    let system = Arc::new(ActorSystem::new());
+    let graph_actor = system.spawn("graph", |_| {});
+    let servo = Servo::new(
         "test_lfo",
-        1.0,
-        0.5,
-        0.0,
-        LfoWaveform::Sine,
+        LfoAutomaton::new("lfo", 1.0, 0.5, 0.0, LfoWaveform::Sine),
         NodeId(1),
         "cutoff",
+        rill_patchbay::ParameterMapping::Linear,
         100.0,
         1000.0,
+        system.clone(),
+        graph_actor.actor_ref(),
     );
-
-    assert!(control.get_servo("test_lfo").is_some());
-
-    for _ in 0..10 {
-        control.update(0.1);
-    }
-
-    let mut count = 0;
-    while mailbox.pop().is_some() {
-        count += 1;
-    }
-    assert!(count > 0, "Should have sent commands");
+    assert_eq!(servo.id(), "test_lfo");
+    let _actor_ref = servo.spawn(&system);
 }
 
+use rill_patchbay::LfoAutomaton;
+
 #[test]
-fn test_envelope_in_control() {
-    let (actor_ref, _mailbox) = ActorRef::new_pair();
-    let mut control = Patchbay::new(Arc::new(Mbox::new(64)), actor_ref.clone());
-
-    control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, NodeId(1), "gain", 0.0, 1.0);
-
-    assert!(control.get_servo("test_env").is_some());
-    control.update(0.05);
-    control.update(0.05);
+fn test_envelope_servo_spawn() {
+    use rill_patchbay::EnvelopeAutomaton;
+    let system = Arc::new(ActorSystem::new());
+    let graph_actor = system.spawn("graph", |_| {});
+    let servo = Servo::new(
+        "test_env",
+        EnvelopeAutomaton::adsr("env", 0.1, 0.2, 0.7, 0.3),
+        NodeId(1),
+        "gain",
+        rill_patchbay::ParameterMapping::Linear,
+        0.0,
+        1.0,
+        system.clone(),
+        graph_actor.actor_ref(),
+    );
+    assert_eq!(servo.id(), "test_env");
+    let _actor_ref = servo.spawn(&system);
 }

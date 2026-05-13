@@ -81,7 +81,7 @@ pub mod automaton_task;
 pub mod serialization;
 
 #[cfg(feature = "serde")]
-pub use serialization::PatchbayDef;
+pub use serialization::RackDef;
 
 /// MIDI hub — raw MIDI → ControlEvent bridge
 #[cfg(feature = "midi")]
@@ -107,7 +107,7 @@ pub use automaton::{
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{
     midi_cc, osc_address, Automaton, BoxedModule, ControlEvent, EventPattern, Mapping, Module,
-    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
+    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target, Transform,
 };
 
 pub use strategy::{ConflictStrategy, ControlStrategy};

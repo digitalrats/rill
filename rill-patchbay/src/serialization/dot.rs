@@ -2,12 +2,12 @@
 //!
 //! # Feature gate
 //!
-//! Requires the `serde` feature (for [`PatchbayDef`] access).
+//! Requires the `serde` feature (for [`RackDef`] access).
 
 use std::fmt::Write;
 
 #[cfg(feature = "serde")]
-use crate::serialization::{ModuleDef, PatchbayDef};
+use crate::serialization::{ModuleDef, RackDef};
 
 /// Configuration for patchbay DOT generation.
 #[derive(Default)]
@@ -18,9 +18,9 @@ pub struct DotConfig {
     pub verbose: bool,
 }
 
-/// Generate DOT from a PatchbayDef.
+/// Generate DOT from a RackDef.
 #[cfg(feature = "serde")]
-pub fn patchbay_to_dot(patchbay: &PatchbayDef, _config: &DotConfig) -> String {
+pub fn rack_to_dot(patchbay: &RackDef, _config: &DotConfig) -> String {
     let mut dot = String::new();
     writeln!(dot, "// Patchbay control graph").ok();
     writeln!(dot, "digraph patchbay {{").ok();

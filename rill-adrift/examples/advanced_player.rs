@@ -6,12 +6,12 @@
 //! thread starts.
 //!
 //! Usage:
-//!   cargo run --example advanced_player --features "cpal,sampler,serialization"
-//!   cargo run --example advanced_player --features "cpal,sampler,serialization" -- [backend] [wav]
-//!   cargo run --example advanced_player --features "cpal,sampler,serialization" -- [wav]
+//!   cargo run --example advanced_player --features "portaudio,sampler,serialization"
+//!   cargo run --example advanced_player --features "portaudio,sampler,serialization" -- [backend] [wav]
+//!   cargo run --example advanced_player --features "portaudio,sampler,serialization" -- [wav]
 //!
 //! Positional arguments (optional):
-//!   backend   Audio backend name (e.g. cpal, alsa, null). Default from config.toml.
+//!   backend   Audio backend name (e.g. portaudio, alsa, null). Default from config.toml.
 //!   wav       Path to a WAV file to play. Sent as a `SetParameter` command
 //!             via the graph's actor mailbox.
 

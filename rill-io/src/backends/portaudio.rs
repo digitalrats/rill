@@ -111,12 +111,13 @@ impl IoBackend<f32> for PortAudioBackend {
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
             let cap = win.capacity().min(frames * nch);
             let dst = win.as_mut_slice();
-            for i in 0..frames {
+            let write_frames = cap / nch;
+            for i in 0..write_frames {
                 for ch in 0..nch {
                     dst[i * nch + ch] = channels[ch][i];
                 }
             }
-            cap / nch
+            write_frames
         } else {
             0
         }

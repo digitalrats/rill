@@ -2,7 +2,61 @@
 
 ## [Unreleased]
 
-### ✨ SIMD acceleration (feature/simd)
+### 🔄 Actor Model Rewrite — `LocalActor`, `Actor::spawn()`, Patchbay Removal
+
+**`rill-core-actor`:**
+- `Actor<M>` — handler: `Send`, для многопоточных акторов (Patchbay через tokio)
+- `LocalActor<M>` — handler: `!Send`, для однопоточных (Graph, RackCase)
+- `ActorSystem::spawn()` / `spawn_local()` — создание акторов с handler-замыканием
+- `ActorRef<M>` — lock-free handle для отправки сообщений, единственный внешний интерфейс
+- Удалены: `ActorCell` trait, `Mbox`, `MessageDispatcher`, `ActorRef::new_pair()`, generic `ActorSystem<M>`
+
+**`rill-graph`:**
+- `GraphBuilder::build(&ActorSystem)` — создаёт актор с handler'ом, захватывающим nodes
+- `Graph::run()` — tick-замыкание владеет actor'ом напрямую (без `*mut Graph`)
+- Nodes хранятся в `Rc<UnsafeCell<Vec<NodeVariant>>>` — interior mutability на одном потоке
+- Удалены: `*mut NodeVariant`, `*mut Graph`, `ActorCell` impl, `mailbox` поле
+- Сигнальные тесты: `test_graph_source_to_sink`, `test_graph_source_proc_sink`
+
+**`rill-patchbay`:**
+- **`Patchbay` struct удалён.** Вместо него — `Servo::spawn(self) → ActorRef<CommandEnum>`
+  - Создаёт актор с полным handler'ом (ClockTick → automaton.step → SetParameter)
+  - Запускает `std::thread` drain loop (1ms interval)
+  - Внешний код получает только `ActorRef` — никакого прямого доступа к состоянию
+- **`Servo` больше не `Module`** — автономный актор, не type-erased box
+- `PatchbayDef` → `RackDef` — `build_servos(&ActorSystem, &graph_ref) → HashMap<String, ActorRef>`
+- `add_lfo`, `add_envelope`, `add_boxed_servo` удалены — сборка в `launch()` напрямую
+- `Module` trait — только для Sensor; убраны `drain()`, `update()`
+- Channel-forwarding (mpsc) между actor'ами удалён — каждый актор самодрейнится
+
+**`rill-adrift`:**
+- **`RackCase`** — минимальный хост: `modules: HashMap<String, ActorRef>`, `tasks: Vec<JoinHandle>`
+  - Удалены: `patchbay`, `incoming`, `outgoing`, `ActorCell` impl, межкейсовый routing
+  - `handle() → ActorRef` — для `parent_ref` в Graph
+  - `stop()` — abort всех tasks, join audio thread
+- **`launch()`**:
+  1. Создаёт актор RackCase (с `Arc<Mutex<HashMap>>` для модулей)
+  2. Запускает drain thread актора (пересылает ВСЕ сообщения всем модулям)
+  3. Строит граф на audio thread
+  4. Получает `graph_ref` через oneshot канал
+  5. `rack_def.build_servos()` — создаёт Servo'ы с drain threads
+  6. Регистрирует servo ActorRef'ы в RackCase модулях
+- Удалены: `create_case()`, `load_patchbay()`, `load_graph()`, `create_patchbay()`, `tick()`,
+  `start_osc()`, OSC, `control`, `control_shared`, `control_arc`, `AutomatonFactory`
+
+**Архитектура ClockTick → Sequencer → Graph:**
+```
+Graph.run() → tick: parent_ref.send(ClockTick)
+  → RackCase actor (drain thread): for ref in modules: ref.send(msg)
+  → Servo actor (drain thread): ClockTick → automaton.step() → graph_ref.send(SetParameter)
+```
+
+### 🔧 Сопутствующие исправления
+- PortAudio: off-by-one в `write()` — `cap / nch` теперь используется как bound цикла (был краш `index out of bounds: 256`)
+- `advanced_player`: комментарий `--features "cpal,…"` → `"portaudio,…"`
+- `play_wav`: пример ручной сборки графа переписан (был заглушкой `let _ = system`)
+
+### SIMD acceleration (feature/simd)
 
 - **Vector infrastructure**:
   - `SimdDetector` — real CPU feature detection via `std::arch` (SSE2/AVX/NEON/SIMD128)

@@ -6,13 +6,11 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rill_core::prelude::*;
 use rill_core::queues::{AutomatonCommand, CommandEnum, SetParameter, SignalOrigin};
-use rill_core_actor::{ActorCell, ActorRef, Mbox};
-
-// crossbeam removed: // crossbeam removed (dead code)
+use rill_core_actor::{ActorRef, ActorSystem};
 
 use crate::automaton::factory::AutomatonFactory;
 pub use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform, Range};
@@ -27,67 +25,38 @@ use crate::strategy::{ConflictStrategy, ControlStrategy};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventPattern {
-    /// Any button.
     AnyButton,
-    /// A button with a specific ID.
     ButtonId(u32),
-
-    /// Any knob.
     AnyKnob,
-    /// A knob with a specific ID.
     KnobId(u32),
-
-    /// Any fader.
     AnyFader,
-    /// A fader with a specific ID.
     FaderId(u32),
-
-    /// Any MIDI message.
     AnyMidi,
-    /// MIDI Control Change.
     MidiControl {
-        /// MIDI channel (None = any channel).
         channel: Option<u8>,
-        /// Controller number.
         controller: u8,
     },
-    /// MIDI Note.
     MidiNote {
-        /// MIDI channel (None = any channel).
         channel: Option<u8>,
-        /// Note number (None = any note).
         note: Option<u8>,
     },
-
-    /// MIDI Clock tick.
     MidiClock,
-
-    /// MIDI Transport message (Start / Stop / Continue).
     MidiTransport {
-        /// Transport kind (None = any transport message).
         kind: Option<MidiTransportKind>,
     },
-
-    /// Exact OSC address.
     OscAddress(String),
-
-    /// OSC address pattern (substring match).
     OscPattern(String),
 }
 
 impl EventPattern {
-    /// Check whether the given event matches this pattern.
     pub fn matches(&self, event: &ControlEvent) -> bool {
         match (self, event) {
             (EventPattern::AnyButton, ControlEvent::Button { .. }) => true,
             (EventPattern::ButtonId(id), ControlEvent::Button { id: eid, .. }) => *id == *eid,
-
             (EventPattern::AnyKnob, ControlEvent::Knob { .. }) => true,
             (EventPattern::KnobId(id), ControlEvent::Knob { id: eid, .. }) => *id == *eid,
-
             (EventPattern::AnyFader, ControlEvent::Fader { .. }) => true,
             (EventPattern::FaderId(id), ControlEvent::Fader { id: eid, .. }) => *id == *eid,
-
             (
                 EventPattern::MidiControl {
                     channel,
@@ -99,7 +68,6 @@ impl EventPattern {
                     ..
                 },
             ) => (channel.is_none() || channel.unwrap() == *ech) && *controller == *ectr,
-
             (
                 EventPattern::MidiNote { channel, note },
                 ControlEvent::MidiNote {
@@ -111,25 +79,19 @@ impl EventPattern {
                 (channel.is_none() || channel.unwrap() == *ech)
                     && (note.is_none() || note.unwrap() == *en)
             }
-
             (EventPattern::AnyMidi, ControlEvent::MidiControl { .. })
             | (EventPattern::AnyMidi, ControlEvent::MidiNote { .. })
             | (EventPattern::AnyMidi, ControlEvent::MidiClock)
             | (EventPattern::AnyMidi, ControlEvent::MidiTransport { .. }) => true,
-
             (EventPattern::MidiClock, ControlEvent::MidiClock) => true,
-
             (
                 EventPattern::MidiTransport { kind },
                 ControlEvent::MidiTransport { kind: ek, .. },
             ) => kind.is_none_or(|k| k == *ek),
-
             (EventPattern::OscAddress(addr), ControlEvent::Osc { address, .. }) => addr == address,
-
             (EventPattern::OscPattern(pat), ControlEvent::Osc { address, .. }) => {
                 address.contains(pat)
             }
-
             _ => false,
         }
     }
@@ -139,94 +101,54 @@ impl EventPattern {
 // 2. Event types
 // =============================================================================
 
-/// A controller event from hardware or protocol input.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlEvent {
-    /// Button press/release.
     Button {
-        /// Button identifier.
         id: u32,
-        /// Whether the button is pressed.
         pressed: bool,
     },
-
-    /// Rotary knob / encoder.
     Knob {
-        /// Knob identifier.
         id: u32,
-        /// Raw value.
         value: f32,
-        /// Normalised value (0.0–1.0).
         normalized: f32,
     },
-
-    /// Linear fader.
     Fader {
-        /// Fader identifier.
         id: u32,
-        /// Raw value.
         value: f32,
-        /// Normalised value (0.0–1.0).
         normalized: f32,
     },
-
-    /// MIDI Control Change.
     MidiControl {
-        /// MIDI channel (0–15).
         channel: u8,
-        /// Controller number (0–127).
         controller: u8,
-        /// Raw controller value (0–127).
         value: u8,
-        /// Normalised value (0.0–1.0).
         normalized: f32,
     },
-
-    /// MIDI Note.
     MidiNote {
-        /// MIDI channel (0–15).
         channel: u8,
-        /// Note number (0–127).
         note: u8,
-        /// Velocity (0–127).
         velocity: u8,
-        /// Whether the note is on (true) or off (false).
         on: bool,
     },
-
-    /// OSC message.
     Osc {
-        /// OSC address pattern (e.g. `/filter/cutoff`).
         address: String,
-        /// Message arguments.
         args: Vec<f32>,
     },
-
-    /// MIDI Clock tick (24 per quarter note).
     MidiClock,
-
-    /// MIDI Transport message.
     MidiTransport {
-        /// Transport command kind.
         kind: MidiTransportKind,
     },
 }
 
-/// MIDI transport commands.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MidiTransportKind {
-    /// Start playback.
     Start,
-    /// Stop playback.
     Stop,
-    /// Continue playback.
     Continue,
 }
 
 impl ControlEvent {
-    /// Return the normalised value (0.0–1.0) if applicable.
     pub fn normalized_value(&self) -> Option<f32> {
         match self {
             ControlEvent::Knob { normalized, .. } => Some(*normalized),
@@ -236,8 +158,6 @@ impl ControlEvent {
             _ => None,
         }
     }
-
-    /// Return the controller element ID, if any.
     pub fn id(&self) -> Option<u32> {
         match self {
             ControlEvent::Button { id, .. } => Some(*id),
@@ -249,24 +169,14 @@ impl ControlEvent {
 }
 
 // =============================================================================
-// 2b. OSC Surface — OSC → EventPattern bridge
+// 2b. OSC Surface
 // =============================================================================
 
-/// Maps an OSC address pattern to an internal [`EventPattern`].
-///
-/// One patchbay configuration can have a single canonical surface.
-/// For alternate MIDI layouts, use separate `mappings` slices with
-/// different `EventPattern::MidiControl` entries.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct OscSurfaceEntry {
-    /// OSC address pattern, e.g. `"/delay/time"`.
     pub osc_path: String,
-
-    /// Abstract controller identifier that `mappings` expect.
     pub event_pattern: EventPattern,
-
-    /// Optional human-readable label (ignored by the engine).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -274,29 +184,18 @@ pub struct OscSurfaceEntry {
     pub label: Option<String>,
 }
 
-/// A list of [`OscSurfaceEntry`] entries.
 pub type OscSurface = Vec<OscSurfaceEntry>;
 
 // =============================================================================
 // 3. Value transforms
 // =============================================================================
 
-/// Type of value transformation.
 #[derive(Clone)]
 pub enum Transform {
-    /// Linear: out = min + value * (max - min).
     Linear,
-
-    /// Exponential: out = min + value² * (max - min).
     Exponential,
-
-    /// Logarithmic: out = min + log₁₀(1 + value * 9) / log₁₀(10) * (max - min).
     Logarithmic,
-
-    /// Inverted: out = max - value * (max - min).
     Inverted,
-
-    /// Custom user-defined function.
     Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>),
 }
 
@@ -313,11 +212,9 @@ impl Debug for Transform {
 }
 
 impl Transform {
-    /// Apply the transform to a normalised value (0–1).
     pub fn apply(&self, value: f32, min: f32, max: f32) -> f32 {
         let range = max - min;
         let normalized = value.clamp(0.0, 1.0);
-
         let mapped = match self {
             Transform::Linear => min + normalized * range,
             Transform::Exponential => min + normalized * normalized * range,
@@ -325,7 +222,6 @@ impl Transform {
             Transform::Inverted => max - normalized * range,
             Transform::Custom(f) => min + f(normalized) * range,
         };
-
         mapped.clamp(min, max)
     }
 }
@@ -334,37 +230,25 @@ impl Transform {
 // 4. Event mapping
 // =============================================================================
 
-/// A target parameter on a graph node.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Target {
-    /// Node ID in the signal graph.
     pub node_id: NodeId,
-    /// Parameter name.
     pub param_name: String,
-    /// Minimum value.
     pub min: f32,
-    /// Maximum value.
     pub max: f32,
 }
 
-/// A mapping from an event pattern to a parameter target.
 #[derive(Debug, Clone)]
 pub struct Mapping {
-    /// Event pattern to match.
     pub pattern: EventPattern,
-    /// Target parameter.
     pub target: Target,
-    /// Value transformation.
     pub transform: Transform,
-    /// Human-readable name (for debugging).
     pub name: String,
-    /// Whether this mapping is active.
     pub enabled: bool,
 }
 
 impl Mapping {
-    /// Create a new mapping.
     pub fn new(pattern: EventPattern, target: Target, transform: Transform) -> Self {
         let name = format!("{:?} -> {}", pattern, target.param_name);
         Self {
@@ -376,17 +260,14 @@ impl Mapping {
         }
     }
 
-    /// Check whether an event matches this mapping's pattern.
     pub fn matches(&self, event: &ControlEvent) -> bool {
         self.enabled && self.pattern.matches(event)
     }
 
-    /// Apply an event and produce a parameter command, if it matches.
     pub fn apply(&self, event: &ControlEvent) -> Option<SetParameter> {
         if !self.matches(event) {
             return None;
         }
-
         event.normalized_value().map(|norm| {
             let value = self.transform.apply(norm, self.target.min, self.target.max);
             let pid = ParameterId::new(&self.target.param_name).unwrap();
@@ -404,30 +285,15 @@ impl Mapping {
 // 5. Automaton core trait
 // =============================================================================
 
-/// Time type used by automata.
 pub type Time = f64;
 
-/// Marker for automata that need no external action.
 #[derive(Debug, Clone, Default)]
 pub struct NoAction;
 
-/// Core trait for all automata.
-///
-/// An automaton is a generator: `(internal, current, time, action) → new_value`.
-/// - `internal` — mutable automaton-specific state (phase, RNG, step counter, ...)
-/// - `current` — current value at the control port (for reference, immutable)
-/// - `time` — wall-clock seconds since start
-/// - `action` — optional action to apply
-///
-/// `&self` is the immutable automaton configuration (frequency, waveform, ...).
 pub trait Automaton: Send + Sync + Debug {
-    /// Internal mutable state type (stored by Servo alongside the control port value).
     type Internal: Clone + Send + Sync + 'static;
-
-    /// Action type (a pure function applied to the state).
     type Action: Debug + Clone + Send + Sync + Default + 'static;
 
-    /// Compute the next control port value.
     fn step(
         &self,
         internal: &mut Self::Internal,
@@ -436,34 +302,25 @@ pub trait Automaton: Send + Sync + Debug {
         action: &Self::Action,
     ) -> ParamValue;
 
-    /// Initial internal state.
     fn initial_internal(&self) -> Self::Internal;
 
-    /// Reset the automaton to its initial internal state.
     fn reset(&self) -> Self::Internal {
         self.initial_internal()
     }
 
-    /// Automaton name.
     fn name(&self) -> &str;
 }
 
 // =============================================================================
-// 6. Servo — automaton-to-parameter bridge
+// 6. Parameter mapping
 // =============================================================================
 
-/// Mapping type for a servo's output value.
 #[derive(Clone)]
 pub enum ParameterMapping {
-    /// Linear: `min + value * (max - min)`.
     Linear,
-    /// Exponential: `min + value^exp * (max - min)`.
     Exponential,
-    /// Logarithmic: `min + log(1 + value * (e - 1)) / log(e) * (max - min)`.
     Logarithmic,
-    /// Inverted linear: `max - value * (max - min)`.
     Inverted,
-    /// Custom mapping function.
     Custom(Arc<dyn Fn(f64) -> f64 + Send + Sync>),
 }
 
@@ -480,7 +337,6 @@ impl std::fmt::Debug for ParameterMapping {
 }
 
 impl ParameterMapping {
-    /// Apply the mapping to a raw automaton value.
     pub fn apply(&self, raw: f64) -> f64 {
         match self {
             ParameterMapping::Linear => raw,
@@ -492,35 +348,41 @@ impl ParameterMapping {
     }
 }
 
-/// A servo bridges an automaton to a graph-node parameter.
-///
-/// Stores the automaton state externally (the automaton itself is a pure
-/// function), provides an [`ActorRef`] for receiving control messages,
-/// and sends output directly to the graph via `ActorRef<SetParameter>`.
+// =============================================================================
+// 7. ServoState
+// =============================================================================
+
+pub(crate) struct ServoState<A: Automaton> {
+    pub(crate) internal: A::Internal,
+    pub(crate) value: ParamValue,
+    pub(crate) time: Time,
+    pub(crate) enabled: bool,
+    pub(crate) base: f64,
+    pub(crate) frozen: bool,
+    pub(crate) last_sent_value: f64,
+    pub(crate) last_sent_index: i64,
+}
+
+// =============================================================================
+// 8. Servo — automaton-to-parameter bridge
+// =============================================================================
+
 pub struct Servo<A: Automaton> {
     id: String,
-    automaton: A,
-    internal: A::Internal,
-    state: ParamValue,
-    enabled: bool,
-    mailbox: Arc<Mbox<CommandEnum>>,
+    automaton: Arc<A>,
+    state: Arc<Mutex<ServoState<A>>>,
+    graph_ref: ActorRef<CommandEnum>,
     target_node: NodeId,
     target_param: String,
     mapping: ParameterMapping,
     min: f64,
     max: f64,
-    last_sent_value: f64,
-    table: Option<Vec<ParamValue>>,
-    last_sent_index: i64,
-    // ── Conflict resolution (ex-PortCombiner) ──
     control: ControlStrategy,
     conflict: ConflictStrategy,
-    frozen: bool,
-    base: f64,
+    table: Option<Vec<ParamValue>>,
 }
 
-impl<A: Automaton> Servo<A> {
-    /// Create a servo.
+impl<A: Automaton + 'static> Servo<A> {
     pub fn new(
         id: impl Into<String>,
         automaton: A,
@@ -529,606 +391,202 @@ impl<A: Automaton> Servo<A> {
         mapping: ParameterMapping,
         min: f64,
         max: f64,
+        system: Arc<ActorSystem>,
+        graph_ref: ActorRef<CommandEnum>,
     ) -> Self {
+        let _ = system;
+        let automaton = Arc::new(automaton);
         let mut internal = automaton.initial_internal();
-        let state = automaton.step(
+        let initial_value = automaton.step(
             &mut internal,
             &ParamValue::Float(0.0),
             0.0,
             &A::Action::default(),
         );
+
         Self {
             id: id.into(),
             automaton,
-            internal,
-            state,
-            enabled: true,
-            mailbox: Arc::new(Mbox::new(16)),
+            state: Arc::new(Mutex::new(ServoState {
+                internal,
+                value: initial_value,
+                time: 0.0,
+                enabled: true,
+                base: (min + max) / 2.0,
+                frozen: false,
+                last_sent_value: f64::NAN,
+                last_sent_index: -1,
+            })),
+            graph_ref,
             target_node,
             target_param: target_param.into(),
             mapping,
             min,
             max,
-            last_sent_value: f64::NAN,
-            table: None,
-            last_sent_index: -1,
             control: ControlStrategy::Absolute,
             conflict: ConflictStrategy::LastWriteWins,
-            frozen: false,
-            base: (min + max) / 2.0,
+            table: None,
         }
     }
 
-    /// Create a servo driven by a sequence table.
-    ///
-    /// The automaton returns `ParamValue::Float(index)` and the servo looks up
-    /// the actual `ParamValue` from the provided table.
-    pub fn with_table(
-        id: impl Into<String>,
-        automaton: A,
-        target_node: NodeId,
-        target_param: impl Into<String>,
-        table: Vec<ParamValue>,
-    ) -> Self {
-        let mut s = Self::new(
+    pub fn spawn(self, system: &ActorSystem) -> ActorRef<CommandEnum> {
+        let Servo {
             id,
             automaton,
+            state,
+            graph_ref,
             target_node,
             target_param,
-            ParameterMapping::Linear,
-            0.0,
-            1.0,
-        );
-        s.table = Some(table);
-        s
-    }
+            mapping,
+            min,
+            max,
+            control,
+            conflict,
+            table,
+        } = self;
 
-    /// Return an [`ActorRef`] for sending control messages.
-    pub fn handle(&self) -> ActorRef<CommandEnum> {
-        self.mailbox.actor_ref()
-    }
+        let a = automaton;
+        let s = state;
+        let gr = graph_ref;
+        let nid = target_node;
+        let param = target_param;
+        let map = mapping;
+        let ctrl = control;
+        let confl = conflict;
+        let tbl = table;
+        let serv_id = id.clone();
 
-    /// Advance the servo and return a parameter command if the value changed.
-    ///
-    /// Drains the command queue before stepping the automaton.
-    pub fn update(&mut self, time: Time) -> Option<SetParameter> {
-        while let Some(cmd) = self.mailbox.pop() {
-            match cmd {
-                CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
-                    self.enabled = enabled
+        let s2 = s.clone();
+        let mut actor = system.spawn(&format!("servo_{id}"), move |msg: CommandEnum| match msg {
+            CommandEnum::ClockTick(clock) => {
+                let mut state = s2.lock().unwrap();
+                if !state.enabled {
+                    return;
                 }
-                CommandEnum::Automaton(AutomatonCommand::Reset { .. }) => {
-                    self.internal = self.automaton.reset()
+                let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
+                state.time += dt;
+                if state.frozen && matches!(confl, ConflictStrategy::TouchOverride) {
+                    return;
                 }
-                CommandEnum::Automaton(AutomatonCommand::Wake { .. }) => {}
-                CommandEnum::Automaton(AutomatonCommand::UiValue { value, .. }) => {
-                    match self.conflict {
-                        ConflictStrategy::TouchOverride => {
-                            self.base = value;
-                            self.frozen = true;
-                            return Some(self.make_cmd(value));
-                        }
-                        ConflictStrategy::BasePlusModulation => {
-                            self.base = value;
-                        }
-                        ConflictStrategy::LastWriteWins => {
-                            return Some(self.make_cmd(value));
-                        }
+                let current_value = state.value.clone();
+                let current_time = state.time;
+                let action = A::Action::default();
+                let new_val = a.step(&mut state.internal, &current_value, current_time, &action);
+                let raw = new_val.as_f32().unwrap_or(0.0) as f64;
+                state.value = new_val;
+
+                if let Some(ref table) = tbl {
+                    let index = raw as usize;
+                    if index >= table.len() {
+                        return;
+                    }
+                    let idx = index as i64;
+                    if idx == state.last_sent_index {
+                        return;
+                    }
+                    state.last_sent_index = idx;
+                    let pid = ParameterId::new(&param).unwrap();
+                    gr.send(CommandEnum::SetParameter(SetParameter::new(
+                        PortId::param(nid, 0),
+                        pid,
+                        table[index].clone(),
+                        SignalOrigin::Automaton(serv_id.clone()),
+                    )));
+                    return;
+                }
+
+                let mapped = map.apply(raw);
+                let base = state.base;
+                let value = match ctrl {
+                    ControlStrategy::Absolute => min + mapped * (max - min),
+                    ControlStrategy::Modulation { depth } => {
+                        (base + mapped * depth * (max - min)).clamp(min, max)
+                    }
+                };
+                if (value - state.last_sent_value).abs() < 1e-6 {
+                    return;
+                }
+                state.last_sent_value = value;
+
+                let pid = ParameterId::new(&param).unwrap();
+                gr.send(CommandEnum::SetParameter(SetParameter::new(
+                    PortId::param(nid, 0),
+                    pid,
+                    ParamValue::Float(value as f32),
+                    SignalOrigin::Automaton(serv_id.clone()),
+                )));
+            }
+            CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
+                s.lock().unwrap().enabled = enabled;
+            }
+            CommandEnum::Automaton(AutomatonCommand::Reset { .. }) => {
+                s.lock().unwrap().internal = a.reset();
+            }
+            CommandEnum::Automaton(AutomatonCommand::UiValue { value, .. }) => {
+                let mut state = s.lock().unwrap();
+                let pid = ParameterId::new(&param).unwrap();
+                let cmd = SetParameter::new(
+                    PortId::param(nid, 0),
+                    pid,
+                    ParamValue::Float(value as f32),
+                    SignalOrigin::Automaton(serv_id.clone()),
+                );
+                match confl {
+                    ConflictStrategy::TouchOverride => {
+                        state.base = value;
+                        state.frozen = true;
+                        gr.send(CommandEnum::SetParameter(cmd));
+                    }
+                    ConflictStrategy::BasePlusModulation => {
+                        state.base = value;
+                    }
+                    ConflictStrategy::LastWriteWins => {
+                        gr.send(CommandEnum::SetParameter(cmd));
                     }
                 }
-                CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) if self.frozen => {
-                    self.frozen = false;
+            }
+            CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) => {
+                let mut state = s.lock().unwrap();
+                if state.frozen {
+                    state.frozen = false;
                 }
-                CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) => {}
-                _ => {}
             }
-        }
+            _ => {}
+        });
 
-        if !self.enabled {
-            return None;
-        }
+        let actor_ref = actor.actor_ref();
+        std::thread::spawn(move || loop {
+            actor.drain();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        });
 
-        if self.frozen && matches!(self.conflict, ConflictStrategy::TouchOverride) {
-            return None;
-        }
-
-        let action = A::Action::default();
-        self.state = self
-            .automaton
-            .step(&mut self.internal, &self.state, time, &action);
-
-        let raw = self.state.as_f32().unwrap_or(0.0) as f64;
-
-        if let Some(ref table) = self.table {
-            let index = raw as usize;
-            if index >= table.len() {
-                return None;
-            }
-            let idx = index as i64;
-            if idx == self.last_sent_index {
-                return None;
-            }
-            self.last_sent_index = idx;
-            return Some(self.make_cmd_from(table[index].clone()));
-        }
-
-        // F64 mode: apply ParameterMapping then ControlStrategy
-        let mapped = self.mapping.apply(raw);
-        let value = match self.control {
-            ControlStrategy::Absolute => self.min + mapped * (self.max - self.min),
-            ControlStrategy::Modulation { depth } => {
-                (self.base + mapped * depth * (self.max - self.min)).clamp(self.min, self.max)
-            }
-        };
-
-        if (value - self.last_sent_value).abs() < 1e-6 {
-            return None;
-        }
-        self.last_sent_value = value;
-        Some(self.make_cmd(value))
+        actor_ref
     }
 
-    fn make_cmd(&self, value: f64) -> SetParameter {
-        let pid = ParameterId::new(&self.target_param).unwrap();
-        SetParameter::new(
-            PortId::param(self.target_node, 0),
-            pid,
-            ParamValue::Float(value as f32),
-            SignalOrigin::Automaton(self.id.clone()),
-        )
-    }
-
-    fn make_cmd_from(&self, value: ParamValue) -> SetParameter {
-        let pid = ParameterId::new(&self.target_param).unwrap();
-        SetParameter::new(
-            PortId::param(self.target_node, 0),
-            pid,
-            value,
-            SignalOrigin::Automaton(self.id.clone()),
-        )
-    }
-
-    /// Enable or disable this servo.
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-    }
-
-    /// Return the servo's unique identifier.
     pub fn id(&self) -> &str {
         &self.id
     }
 }
 
-// ── Actor pattern: Servo is an actor ───────────────────────────────
+// =============================================================================
+// 9. Module trait — unified interface for sensors
+// =============================================================================
 
-impl<A: Automaton + 'static> ActorCell for Servo<A> {
-    type Msg = CommandEnum;
-
-    fn receive(&mut self, msg: CommandEnum) {
-        match msg {
-            CommandEnum::Automaton(AutomatonCommand::Wake { .. }) => {}
-            CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
-                self.enabled = enabled
-            }
-            CommandEnum::Automaton(AutomatonCommand::Reset { .. }) => {
-                self.internal = self.automaton.reset()
-            }
-            CommandEnum::Automaton(AutomatonCommand::UiValue { .. }) => {}
-            CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) => {}
-            _ => {}
-        }
-    }
-}
-
-// ── Module trait: unified interface for servos and sensors ──────────
-
-/// Type-erased rack module (servo or sensor).
 pub type BoxedModule = Box<dyn Module>;
 
-/// Trait for rack modules — unified interface for servos and sensors.
 pub trait Module: Send {
-    /// Update the module and produce a parameter command (servos only).
-    fn update(&mut self, _time: Time) -> Option<SetParameter> {
-        None
-    }
-    /// Return the module's unique identifier.
     fn id(&self) -> &str;
-    /// Return an ActorRef for sending control messages.
     fn handle(&self) -> Option<ActorRef<CommandEnum>> {
         None
     }
-    /// Enable or disable the module (servos only, no-op for sensors).
     fn set_enabled(&mut self, _enabled: bool) {}
-    /// Stop the module (disable, shutdown tasks, release resources).
     fn stop(&mut self);
 }
 
-impl<A: Automaton + 'static> Module for Servo<A> {
-    fn update(&mut self, time: Time) -> Option<SetParameter> {
-        Servo::update(self, time)
-    }
-    fn id(&self) -> &str {
-        Servo::id(self)
-    }
-    fn handle(&self) -> Option<ActorRef<CommandEnum>> {
-        Some(Servo::handle(self))
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.set_enabled(enabled);
-    }
-    fn stop(&mut self) {
-        self.set_enabled(false);
-    }
-}
-
 // =============================================================================
-// 8. Main patchbay controller
+// 10. Helper constructors
 // =============================================================================
 
-/// The central patchbay controller.
-///
-/// Operates on the **control thread** (soft RT) and sends parameter commands
-/// to the audio thread via [`ActorRef<CommandEnum>`](rill_core_actor::ActorRef).
-///
-/// ## Operation modes
-///
-/// - **Sync** (legacy): [`update(dt)`](Self::update) walks all servos sequentially.
-///   Does not require tokio.
-/// - **Async** (recommended): automata run as tokio tasks through
-///   [`add_automaton_task()`](Self::add_automaton_task). Requires an active
-///   tokio runtime.
-pub struct Patchbay {
-    mappings: Vec<Mapping>,
-    modules: HashMap<String, BoxedModule>,
-    automaton_handles: HashMap<String, tokio::task::JoinHandle<()>>,
-    graph_ref: ActorRef<CommandEnum>,
-    mailbox: Arc<Mbox<CommandEnum>>,
-    event_mailbox: Arc<Mbox<ControlEvent>>,
-    time: Time,
-    /// Automaton factory for custom type dispatch during deserialization.
-    pub(crate) automaton_factory: Option<AutomatonFactory>,
-}
-
-impl Patchbay {
-    /// Create a new patchbay controller.
-    ///
-    /// Async methods (green threads, PortCombiner) require an active
-    /// tokio runtime and will panic otherwise. Synchronous methods
-    /// (servo, mapping, update) work without tokio.
-    pub fn new(mailbox: Arc<Mbox<CommandEnum>>, graph_ref: ActorRef<CommandEnum>) -> Self {
-        Self {
-            mappings: Vec::new(),
-            modules: HashMap::new(),
-            automaton_handles: HashMap::new(),
-            graph_ref,
-            mailbox,
-            event_mailbox: Arc::new(Mbox::new(64)),
-            time: 0.0,
-            automaton_factory: None,
-        }
-    }
-
-    /// Return an [`ActorRef`] for this patchbay's mailbox.
-    ///
-    /// Used by RackCase to forward ClockTick from Graph.
-    pub fn mailbox_ref(&self) -> ActorRef<CommandEnum> {
-        self.mailbox.actor_ref()
-    }
-
-    /// Return an [`ActorRef`] for sensors (MIDI, OSC, knobs) to send events to.
-    pub fn event_handle(&self) -> ActorRef<ControlEvent> {
-        self.event_mailbox.actor_ref()
-    }
-
-    /// Add an event mapping.
-    pub fn add_mapping(&mut self, mapping: Mapping) {
-        self.mappings.push(mapping);
-    }
-
-    /// Add a pre-constructed boxed servo.
-    ///
-    /// Useful for automaton types not covered by `add_lfo` / `add_envelope`
-    /// (e.g. sequencers, named functions).
-    pub fn add_boxed_servo(
-        &mut self,
-        id: String,
-        servo: BoxedModule,
-    ) -> Option<ActorRef<CommandEnum>> {
-        let handle = servo.handle();
-        self.modules.insert(id, servo);
-        handle
-    }
-
-    /// Add a mapping from string descriptions (convenient for scripting).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the pattern string is malformed.
-    pub fn add_mapping_str(
-        &mut self,
-        pattern: &str,
-        target_node: NodeId,
-        target_param: &str,
-        min: f32,
-        max: f32,
-        transform: Transform,
-    ) -> Result<(), &'static str> {
-        let pattern = match pattern {
-            p if p.starts_with("button:") => {
-                let id = p[7..].parse().map_err(|_| "Invalid button ID")?;
-                EventPattern::ButtonId(id)
-            }
-            p if p.starts_with("knob:") => {
-                let id = p[5..].parse().map_err(|_| "Invalid knob ID")?;
-                EventPattern::KnobId(id)
-            }
-            p if p.starts_with("fader:") => {
-                let id = p[6..].parse().map_err(|_| "Invalid fader ID")?;
-                EventPattern::FaderId(id)
-            }
-            p if p.starts_with("midi:") => {
-                let parts: Vec<&str> = p[5..].split(':').collect();
-                if parts.len() == 2 {
-                    let channel = parts[0].parse().ok();
-                    let controller = parts[1].parse().map_err(|_| "Invalid controller")?;
-                    EventPattern::MidiControl {
-                        channel,
-                        controller,
-                    }
-                } else {
-                    EventPattern::AnyMidi
-                }
-            }
-            p if p.starts_with("osc:") => EventPattern::OscAddress(p[4..].to_string()),
-            _ => return Err("Unknown pattern"),
-        };
-
-        let target = Target {
-            node_id: target_node,
-            param_name: target_param.to_string(),
-            min,
-            max,
-        };
-
-        self.add_mapping(Mapping::new(pattern, target, transform));
-        Ok(())
-    }
-
-    /// Add a servo (automaton → parameter bridge).
-    /// Returns an [`ActorRef`] for sending control messages.
-    pub fn add_servo<A: Automaton + 'static>(&mut self, servo: Servo<A>) -> ActorRef<CommandEnum> {
-        let handle = servo.handle();
-        self.modules.insert(servo.id().to_string(), Box::new(servo));
-        handle
-    }
-
-    /// Add an LFO as a servo.
-    pub fn add_lfo(
-        &mut self,
-        id: &str,
-        frequency: f64,
-        amplitude: f64,
-        offset: f64,
-        waveform: LfoWaveform,
-        target_node: NodeId,
-        target_param: &str,
-        min: f64,
-        max: f64,
-    ) {
-        let automaton = LfoAutomaton::new(id, frequency, amplitude, offset, waveform);
-        let servo = Servo::new(
-            id,
-            automaton,
-            target_node,
-            target_param,
-            ParameterMapping::Linear,
-            min,
-            max,
-        );
-        self.add_servo(servo);
-    }
-
-    /// Add an envelope ADSR as a servo.
-    pub fn add_envelope(
-        &mut self,
-        id: &str,
-        attack: f64,
-        decay: f64,
-        sustain: f64,
-        release: f64,
-        target_node: NodeId,
-        target_param: &str,
-        min: f64,
-        max: f64,
-    ) {
-        let automaton = EnvelopeAutomaton::adsr(id, attack, decay, sustain, release);
-        let servo = Servo::new(
-            id,
-            automaton,
-            target_node,
-            target_param,
-            ParameterMapping::Linear,
-            min,
-            max,
-        );
-        self.add_servo(servo);
-    }
-
-    /// Stop all modules — servos and sensors.
-    pub fn stop_all(&mut self) {
-        self.automaton_handles.clear();
-        for module in self.modules.values_mut() {
-            module.stop();
-        }
-        self.modules.clear();
-    }
-
-    /// Add a sensor (MIDI, OSC, etc.) to the rack.
-    ///
-    /// The sensor should already be started via `Sensor::start()`.
-    /// Use `sensor.attach(self.event_handle())` before `start()`.
-    pub fn add_sensor(&mut self, id: &str, sensor: Box<dyn Sensor>) {
-        self.modules.insert(id.to_string(), sensor);
-    }
-
-    /// Process an incoming control event (MIDI, OSC, button, etc.).
-    ///
-    /// If a Servo exists for the target port, the event is routed via
-    /// `AutomatonCommand::UiValue` for conflict resolution; otherwise it is
-    /// pushed directly to the command queue.
-    pub fn handle_event(&mut self, event: ControlEvent) {
-        for mapping in &self.mappings {
-            if let Some(cmd) = mapping.apply(&event) {
-                let key = target_key(cmd.port.node_id(), cmd.parameter.as_ref());
-                if let Some(servo) = self.modules.get(&key) {
-                    if let Some(ref servo_handle) = servo.handle() {
-                        servo_handle.send(CommandEnum::Automaton(AutomatonCommand::UiValue {
-                            id: servo.id().to_string(),
-                            value: cmd.value.as_f32().unwrap_or(0.0) as f64,
-                        }));
-                    }
-                } else {
-                    self.graph_ref.send(CommandEnum::SetParameter(cmd));
-                }
-            }
-        }
-    }
-
-    /// Update synchronous servos.
-    ///
-    /// This method is deprecated. For new projects use `add_automaton_task()`
-    /// with green threads.
-    pub fn update(&mut self, dt: f32) {
-        self.time += dt as f64;
-
-        for servo in self.modules.values_mut() {
-            if let Some(cmd) = servo.update(self.time) {
-                self.graph_ref.send(CommandEnum::SetParameter(cmd));
-            }
-        }
-    }
-
-    /// Return a clone of the graph ActorRef for async task spawning.
-    pub fn graph_ref(&self) -> ActorRef<CommandEnum> {
-        self.graph_ref.clone()
-    }
-
-    /// Store a task handle for lifecycle management (async automaton tasks).
-    pub fn store_task_handle(&mut self, id: String, handle: tokio::task::JoinHandle<()>) {
-        self.automaton_handles.insert(id, handle);
-    }
-
-    /// Set the automaton factory for custom type dispatch.
-    pub fn set_automaton_factory(&mut self, factory: AutomatonFactory) {
-        self.automaton_factory = Some(factory);
-    }
-
-    /// Return all mappings.
-    pub fn mappings(&self) -> &[Mapping] {
-        &self.mappings
-    }
-
-    /// Get a servo by ID.
-    pub fn get_servo(&self, id: &str) -> Option<&dyn Module> {
-        self.modules.get(id).map(|b| b.as_ref())
-    }
-
-    /// Get a mutable servo by ID.
-    pub fn get_servo_mut(&mut self, id: &str) -> Option<&mut BoxedModule> {
-        self.modules.get_mut(id)
-    }
-
-    /// Remove a servo by ID.
-    pub fn remove_servo(&mut self, id: &str) -> bool {
-        self.modules.remove(id).is_some()
-    }
-
-    /// Clear all mappings, servos, and async automata.
-    pub fn clear(&mut self) {
-        self.mappings.clear();
-        self.modules.clear();
-        self.stop_all();
-    }
-
-    /// Reset the internal clock to zero.
-    pub fn reset_time(&mut self) {
-        self.time = 0.0;
-    }
-
-    /// Current internal time in seconds.
-    pub fn current_time(&self) -> Time {
-        self.time
-    }
-
-    /// Drain the mailbox through the actor receive loop.
-    ///
-    /// Call this from the main loop (not the audio thread).
-    pub fn drain_mailbox(&mut self) {
-        self.drain_events();
-        while let Some(msg) = self.mailbox.pop() {
-            self.receive(msg);
-        }
-    }
-
-    /// Drain the event mailbox and dispatch to mappings.
-    pub fn drain_events(&mut self) {
-        while let Some(event) = self.event_mailbox.pop() {
-            self.handle_event(event);
-        }
-    }
-
-    /// Spawn a periodic tokio task that drains the mailbox.
-    ///
-    /// Returns a `JoinHandle` for lifecycle management.
-    pub fn spawn_mailbox_loop(
-        patchbay: Arc<std::sync::Mutex<Patchbay>>,
-        interval: std::time::Duration,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                if let Ok(mut pb) = patchbay.lock() {
-                    pb.drain_mailbox();
-                }
-            }
-        })
-    }
-}
-
-// =============================================================================
-// ActorCell implementation
-// =============================================================================
-
-impl ActorCell for Patchbay {
-    type Msg = CommandEnum;
-
-    fn receive(&mut self, msg: CommandEnum) {
-        match msg {
-            CommandEnum::ClockTick(clock) => {
-                let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
-                self.time += dt;
-                for servo in self.modules.values() {
-                    if let Some(ref handle) = servo.handle() {
-                        handle.send(CommandEnum::Automaton(AutomatonCommand::Wake {
-                            id: servo.id().to_string(),
-                        }));
-                    }
-                }
-                self.update(dt as f32);
-            }
-            _ => {}
-        }
-    }
-}
-
-// =============================================================================
-// 9. Helper constructors
-// =============================================================================
-// 9. Helper functions for creating mappings
-// =============================================================================
-
-/// Create a MIDI CC → parameter mapping.
 pub fn midi_cc(
     controller: u8,
     channel: Option<u8>,
@@ -1138,20 +596,21 @@ pub fn midi_cc(
     max: f32,
     transform: Transform,
 ) -> Mapping {
-    let pattern = EventPattern::MidiControl {
-        channel,
-        controller,
-    };
-    let target = Target {
-        node_id: target_node,
-        param_name: target_param.to_string(),
-        min,
-        max,
-    };
-    Mapping::new(pattern, target, transform)
+    Mapping::new(
+        EventPattern::MidiControl {
+            channel,
+            controller,
+        },
+        Target {
+            node_id: target_node,
+            param_name: target_param.to_string(),
+            min,
+            max,
+        },
+        transform,
+    )
 }
 
-/// Create an OSC address → parameter mapping.
 pub fn osc_address(
     address: &str,
     target_node: NodeId,
@@ -1160,26 +619,24 @@ pub fn osc_address(
     max: f32,
     transform: Transform,
 ) -> Mapping {
-    let pattern = EventPattern::OscAddress(address.to_string());
-    let target = Target {
-        node_id: target_node,
-        param_name: target_param.to_string(),
-        min,
-        max,
-    };
-    Mapping::new(pattern, target, transform)
+    Mapping::new(
+        EventPattern::OscAddress(address.to_string()),
+        Target {
+            node_id: target_node,
+            param_name: target_param.to_string(),
+            min,
+            max,
+        },
+        transform,
+    )
 }
-
-// =============================================================================
-// 9b. PortCombiner key helper
-// =============================================================================
 
 fn target_key(node_id: NodeId, param_name: &str) -> String {
     format!("{}:{}", node_id.inner(), param_name)
 }
 
 // =============================================================================
-// 10. Tests
+// 11. Tests
 // =============================================================================
 
 #[cfg(test)]
@@ -1190,60 +647,16 @@ mod tests {
     fn test_midi_mapping() {
         let node = NodeId(1);
         let mapping = midi_cc(7, Some(1), node, "volume", 0.0, 1.0, Transform::Linear);
-
         let event = ControlEvent::MidiControl {
             channel: 1,
             controller: 7,
             value: 64,
             normalized: 0.5,
         };
-
         assert!(mapping.matches(&event));
-
         let cmd = mapping.apply(&event).unwrap();
         assert_eq!(cmd.port.node_id(), node);
         assert_eq!(cmd.parameter.as_ref(), "volume");
         assert!((cmd.value.as_f32().unwrap() - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_lfo_servo() {
-        let node = NodeId(1);
-        let (graph_ref, _mailbox) = ActorRef::new_pair();
-        let (_, patchbay_mbox) = ActorRef::new_pair();
-        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
-
-        control.add_lfo(
-            "test_lfo",
-            1.0,
-            0.5,
-            0.0,
-            LfoWaveform::Sine,
-            node,
-            "cutoff",
-            100.0,
-            1000.0,
-        );
-
-        assert!(control.get_servo("test_lfo").is_some());
-
-        for _i in 0..10 {
-            control.update(0.1);
-        }
-    }
-
-    #[test]
-    fn test_envelope_servo() {
-        let node = NodeId(1);
-        let (graph_ref, _mailbox) = ActorRef::new_pair();
-        let (_, patchbay_mbox) = ActorRef::new_pair();
-        let mut control = Patchbay::new(patchbay_mbox, graph_ref);
-
-        control.add_envelope("test_env", 0.1, 0.2, 0.7, 0.3, node, "gain", 0.0, 1.0);
-
-        if let Some(_servo) = control.get_servo_mut("test_env") {}
-
-        control.update(0.05);
-        control.update(0.05);
     }
 }
