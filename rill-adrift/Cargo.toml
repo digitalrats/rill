@@ -51,6 +51,10 @@ name = "player"
 required-features = ["serialization", "sampler"]
 
 [[example]]
+name = "record_mic"
+required-features = ["io", "serialization", "sampler"]
+
+[[example]]
 name = "chiptune"
 required-features = ["io", "lofi"]
 
