@@ -6,17 +6,16 @@
 use crate::engine::{Automaton, NoAction, Range, Time};
 use rill_core::traits::ParamValue;
 
-/// Sequencer step
+/// Sequencer step — duration of the step in beat fractions.
+///
+/// Values come from the Servo's value table, not from the automaton.
+/// The automaton only tracks step indices; the servo maps them to
+/// parameter values through a table lookup.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Step {
-    /// Value (0.0 - 1.0)
-    pub value: f64,
-    /// Duration in beat fractions
+    /// Duration in beat fractions (1.0 = quarter note at the given tempo).
     pub duration: f64,
-    /// Transition curve to the next step
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub curve: Option<f64>,
 }
 
 /// Sequencer playback mode
@@ -193,16 +192,9 @@ impl Automaton for SequencerAutomaton {
     }
 }
 
-/// Create a simple sequence of equal steps
-pub fn simple_sequence(values: Vec<f64>, duration: f64) -> Vec<Step> {
-    values
-        .into_iter()
-        .map(|v| Step {
-            value: v.clamp(0.0, 1.0),
-            duration,
-            curve: None,
-        })
-        .collect()
+/// Create a sequence of `count` equal-duration steps
+pub fn simple_sequence(count: usize, duration: f64) -> Vec<Step> {
+    (0..count).map(|_| Step { duration }).collect()
 }
 
 #[cfg(test)]
@@ -211,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_sequencer() {
-        let steps = simple_sequence(vec![0.0, 0.5, 1.0, 0.5], 0.25);
+        let steps = simple_sequence(4, 0.25);
         let seq = SequencerAutomaton::new("Test", steps);
         let mut internal = seq.initial_internal();
         let current = ParamValue::Float(0.0);

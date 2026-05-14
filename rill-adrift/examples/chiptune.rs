@@ -2,18 +2,18 @@
 //!
 //! Demonstrates ModularSystemDef-based system construction with
 //! SequencerAutomaton + table-based Servo for AY-3-8910 register control.
+//! Writes a WAV recording of the AY output for analysis.
 //!
 //! Usage:
-//!   cargo run --example chiptune --features "lofi,portaudio,serialization" [portaudio]
-//!   cargo run --example chiptune --features "lofi,alsa,serialization" [alsa]
+//!   cargo run --example chiptune --features "lofi,portaudio,serialization,sampler" [portaudio]
+//!   cargo run --example chiptune --features "lofi,alsa,serialization,sampler" [alsa]
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rill_adrift::modular::serialization::ModularSystemDef;
 use rill_adrift::modular::{ModularConfig, ModularSystem};
-use rill_adrift::rill_core::traits::ParamValue;
+use rill_adrift::rill_core::traits::{Node, NodeVariant, ParamValue};
 use rill_adrift::rill_graph::serialization::{
     ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
 };
@@ -21,6 +21,7 @@ use rill_adrift::rill_patchbay::automaton::sequencer::PlayMode;
 use rill_adrift::rill_patchbay::serialization::{
     AutomatonDef, ModuleDef, RackDef, ServoDef, StepDef,
 };
+use rill_adrift::sampler::recorder::RecordingSink;
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -69,9 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for &(freq, dur_ms) in &melody {
         register_table.push(ParamValue::Bytes(ay_regs(freq)));
         step_defs.push(StepDef {
-            value: 0.0,
             duration: dur_ms as f64 / 1000.0,
-            curve: None,
         });
     }
 
@@ -109,16 +108,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         type_name: "rill/output".into(),
                         name: "output".into(),
                         backend: None,
-                        parameters: HashMap::new(),
+                        parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
+                    }),
+                    NodeDef::Sink(SinkDef {
+                        id: 2,
+                        type_name: "rill/recorder".into(),
+                        name: "recorder".into(),
+                        backend: None,
+                        parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
                     }),
                 ],
-                connections: vec![ConnectionDef {
-                    kind: SignalKind::Signal,
-                    from_node: 0,
-                    from_port: 0,
-                    to_node: 1,
-                    to_port: 0,
-                }],
+                connections: vec![
+                    ConnectionDef {
+                        kind: SignalKind::Signal,
+                        from_node: 0,
+                        from_port: 0,
+                        to_node: 1,
+                        to_port: 0,
+                    },
+                    ConnectionDef {
+                        kind: SignalKind::Signal,
+                        from_node: 0,
+                        from_port: 0,
+                        to_node: 2,
+                        to_port: 0,
+                    },
+                ],
                 description: None,
             },
             patchbay: Some(RackDef {
@@ -158,6 +173,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let system = ModularSystem::<BUF>::new(config);
+
+    // Register a recording sink that captures audio for WAV export
+    let recorded: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let rec_buf = recorded.clone();
+        let mut factory = system.node_factory_mut();
+        factory.register_fn("rill/recorder", move |id, params| {
+            let ch = params.get_f32("channels", 1.0) as usize;
+            let mut n = RecordingSink::<f32, BUF>::new(rec_buf.clone(), ch);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Sink(Box::new(n))
+        });
+    }
+
     let _system = system.launch(&def).expect("launch system");
 
     println!("AY-3-8910 Chiptune — Popcorn");
@@ -172,9 +202,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         t_run.store(false, Ordering::Release);
     });
 
-    // Wait for Ctrl+C
+    // Wait for Enter
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).ok();
+
+    // Write WAV recording
+    let data = recorded.lock().unwrap();
+    if !data.is_empty() {
+        RecordingSink::<f32, BUF>::write_wav("chiptune_out.wav", RATE as u32, 1, &data)
+            .expect("write WAV");
+        println!("Wrote {} samples to chiptune_out.wav", data.len());
+    }
 
     Ok(())
 }

@@ -563,6 +563,11 @@ impl<A: Automaton + 'static> Servo<A> {
         actor_ref
     }
 
+    pub fn with_table(mut self, table: Vec<ParamValue>) -> Self {
+        self.table = Some(table);
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }

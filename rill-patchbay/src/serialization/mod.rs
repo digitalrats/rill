@@ -83,11 +83,8 @@ impl AutomatonDef {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct StepDef {
-    pub value: f64,
+    /// Duration in beat fractions (1.0 = quarter note at the given tempo).
     pub duration: f64,
-    /// Curve for transition to the next step. CBOR-roundtrip safe.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub curve: Option<f64>,
 }
 
 // ============================================================================
@@ -387,15 +384,13 @@ impl RackDef {
                             let seq_steps: Vec<Step> = steps
                                 .iter()
                                 .map(|sd| Step {
-                                    value: sd.value,
                                     duration: sd.duration,
-                                    curve: sd.curve,
                                 })
                                 .collect();
                             let automaton = SequencerAutomaton::new(id, seq_steps)
                                 .with_mode(*play_mode)
                                 .with_tempo(*tempo);
-                            let servo = Servo::new(
+                            let mut servo = Servo::new(
                                 id,
                                 automaton,
                                 nid,
@@ -406,6 +401,9 @@ impl RackDef {
                                 system.clone(),
                                 graph_ref.clone(),
                             );
+                            if let Some(ref t) = s.table {
+                                servo = servo.with_table(t.clone());
+                            }
                             let actor_ref = servo.spawn(system);
                             modules.insert(id.clone(), actor_ref);
                         }

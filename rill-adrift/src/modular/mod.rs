@@ -117,6 +117,11 @@ impl<const BUF: usize> ModularSystem<BUF> {
             .map_err(|e| format!("build: {e}").into())
     }
 
+    /// Access the node factory for registering custom node types before launch.
+    pub fn node_factory_mut(&self) -> std::sync::MutexGuard<'_, NodeFactory<f32, BUF>> {
+        self.node_factory.lock().unwrap()
+    }
+
     /// Launch — build graph, spawn servos, start threads.
     #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
