@@ -271,13 +271,15 @@ pub enum ModuleDef {
 }
 
 // ============================================================================
-// RackDef
+// PatchbayDef
 // ============================================================================
 
-/// Serializable patchbay configuration.
+/// Serializable patchbay configuration — automata + modules without a signal graph.
+/// For full rack configuration (graph + automata + modules), use
+/// [`rill_adrift::modular::serialization::RackDef`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
-pub struct RackDef {
+pub struct PatchbayDef {
     pub automata: Vec<AutomatonDef>,
     /// Unified modules — servos and sensors.
     pub modules: Vec<ModuleDef>,
@@ -292,7 +294,7 @@ pub struct RackDef {
     pub description: Option<String>,
 }
 
-impl RackDef {
+impl PatchbayDef {
     pub fn new() -> Self {
         Self {
             automata: Vec::new(),
@@ -453,7 +455,7 @@ impl RackDef {
     }
 }
 
-impl Default for RackDef {
+impl Default for PatchbayDef {
     fn default() -> Self {
         Self::new()
     }
@@ -464,22 +466,22 @@ impl Default for RackDef {
 // ============================================================================
 
 #[cfg(feature = "json")]
-pub fn to_json(doc: &RackDef) -> Result<String, String> {
+pub fn to_json(doc: &PatchbayDef) -> Result<String, String> {
     serde_json::to_string_pretty(doc).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "json")]
-pub fn from_json(json: &str) -> Result<RackDef, String> {
+pub fn from_json(json: &str) -> Result<PatchbayDef, String> {
     serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "cbor")]
-pub fn to_cbor(doc: &RackDef) -> Result<Vec<u8>, String> {
+pub fn to_cbor(doc: &PatchbayDef) -> Result<Vec<u8>, String> {
     serde_cbor::to_vec(doc).map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "cbor")]
-pub fn from_cbor(bytes: &[u8]) -> Result<RackDef, String> {
+pub fn from_cbor(bytes: &[u8]) -> Result<PatchbayDef, String> {
     serde_cbor::from_slice(bytes).map_err(|e| e.to_string())
 }
 
@@ -492,8 +494,8 @@ mod tests {
     use super::*;
     use rill_core::queues::MpscQueue;
 
-    fn sample_doc() -> RackDef {
-        RackDef {
+    fn sample_doc() -> PatchbayDef {
+        PatchbayDef {
             automata: vec![AutomatonDef::Lfo {
                 id: "lfo1".into(),
                 frequency: 0.3,
@@ -546,6 +548,11 @@ mod tests {
 
     #[test]
     fn test_build_servos_success() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
         let doc = sample_doc();
         let system = Arc::new(ActorSystem::new());
         let graph_actor = system.spawn("graph", |_: CommandEnum| {});
@@ -565,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_missing_automaton_error() {
-        let doc = RackDef {
+        let doc = PatchbayDef {
             automata: vec![],
             modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "nonexistent".into(),

@@ -7,16 +7,14 @@
 //!   cargo run --example chiptune --features "lofi,portaudio,serialization" [portaudio]
 //!   cargo run --example chiptune --features "lofi,alsa,serialization" [alsa]
 
-use rill_adrift::modular::serialization::ModularSystemDef;
+use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::traits::ParamValue;
 use rill_adrift::rill_graph::serialization::{
     ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
 };
 use rill_adrift::rill_patchbay::automaton::sequencer::PlayMode;
-use rill_adrift::rill_patchbay::serialization::{
-    AutomatonDef, ModuleDef, RackDef, ServoDef, StepDef,
-};
+use rill_adrift::rill_patchbay::serialization::{AutomatonDef, ServoDef, StepDef};
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -98,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_version: "rill/1".into(),
         sample_rate: RATE,
         block_size: BUF,
-        cases: vec![rill_adrift::modular::serialization::CaseDef {
+        racks: vec![RackDef {
             name: "chiptune".into(),
             graph: GraphDef {
                 format_version: "rill/1".into(),
@@ -135,30 +133,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }],
                 description: None,
             },
-            patchbay: Some(RackDef {
-                automata: vec![AutomatonDef::Sequencer {
-                    id: "melody".into(),
-                    steps: step_defs,
-                    play_mode: PlayMode::Loop,
-                    tempo: 120.0,
-                }],
-                modules: vec![ModuleDef::Servo(ServoDef {
-                    automaton_id: "melody".into(),
-                    target_node: 0,
-                    target_param: "io_write".into(),
-                    mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
-                    min: 0.0,
-                    max: 1.0,
-                    enabled: true,
-                    async_interval_ms: None,
-                    control_strategy: None,
-                    conflict_strategy: None,
-                    table: Some(register_table),
-                })],
-                mappings: vec![],
-                osc_surface: vec![],
-                description: None,
-            }),
+            automata: vec![AutomatonDef::Sequencer {
+                id: "melody".into(),
+                steps: step_defs,
+                play_mode: PlayMode::Loop,
+                tempo: 120.0,
+            }],
+            modules: vec![ModuleDef::Servo(ServoDef {
+                automaton_id: "melody".into(),
+                target_node: 0,
+                target_param: "io_write".into(),
+                mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
+                min: 0.0,
+                max: 1.0,
+                enabled: true,
+                async_interval_ms: None,
+                control_strategy: None,
+                conflict_strategy: None,
+                table: Some(register_table),
+            })],
+            mappings: vec![],
+            description: None,
         }],
         description: Some("AY-3-8910 Chiptune — Popcorn".into()),
     };

@@ -9,12 +9,12 @@ use serde::Deserialize;
 #[cfg(feature = "serialization")]
 use rill_graph::serialization::GraphDef;
 #[cfg(feature = "serialization")]
-use rill_patchbay::serialization::RackDef;
+use rill_patchbay::serialization::PatchbayDef;
 
 /// Modular system configuration types.
 ///
 /// Separate from `rill_graph::serialization::GraphDef` and
-/// `rill_patchbay::serialization::RackDef` — this module holds
+/// `rill_patchbay::serialization::PatchbayDef` — this module holds
 /// **host-level** parameters: sample rate, default backend config,
 /// OSC bind address, and optional paths to initial preset files.
 ///
@@ -43,7 +43,7 @@ pub struct ModularConfig {
     #[cfg(feature = "serialization")]
     pub graph_path: Option<PathBuf>,
 
-    /// Optional path to a `RackDef` JSON file to load at startup.
+    /// Optional path to a `PatchbayDef` JSON file to load at startup.
     #[cfg(feature = "serialization")]
     pub patchbay_path: Option<PathBuf>,
 
@@ -105,7 +105,7 @@ pub struct LaunchConfig {
 
     /// Control rack configuration (automata, mappings, MIDI).
     /// `None` = no control rack, audio passthrough only.
-    pub rack_def: Option<RackDef>,
+    pub rack_def: Option<PatchbayDef>,
 }
 
 #[cfg(feature = "serialization")]

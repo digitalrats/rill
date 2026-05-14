@@ -84,7 +84,7 @@ pub mod automaton_task;
 pub mod serialization;
 
 #[cfg(feature = "serde")]
-pub use serialization::RackDef;
+pub use serialization::PatchbayDef;
 
 /// MIDI hub — raw MIDI → ControlEvent bridge
 #[cfg(feature = "midi")]

@@ -457,110 +457,109 @@ impl<A: Automaton + 'static> Servo<A> {
         let serv_id = id.clone();
 
         let s2 = s.clone();
-        let mut actor = system.spawn(&format!("servo_{id}"), move |msg: CommandEnum| match msg {
-            CommandEnum::ClockTick(clock) => {
-                let mut state = s2.lock().unwrap();
-                if !state.enabled {
-                    return;
-                }
-                let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
-                state.time += dt;
-                if state.frozen && matches!(confl, ConflictStrategy::TouchOverride) {
-                    return;
-                }
-                let current_value = state.value.clone();
-                let current_time = state.time;
-                let action = A::Action::default();
-                let new_val = a.step(&mut state.internal, &current_value, current_time, &action);
-                let raw = new_val.as_f32().unwrap_or(0.0) as f64;
-                state.value = new_val;
+        system.spawn_detached_tokio(
+            &format!("servo_{id}"),
+            move || {
+                Box::new(move |msg: CommandEnum| match msg {
+                    CommandEnum::ClockTick(clock) => {
+                        let mut state = s2.lock().unwrap();
+                        if !state.enabled {
+                            return;
+                        }
+                        let dt = clock.samples_since_last as f64 / clock.sample_rate as f64;
+                        state.time += dt;
+                        if state.frozen && matches!(confl, ConflictStrategy::TouchOverride) {
+                            return;
+                        }
+                        let current_value = state.value.clone();
+                        let current_time = state.time;
+                        let action = A::Action::default();
+                        let new_val =
+                            a.step(&mut state.internal, &current_value, current_time, &action);
+                        let raw = new_val.as_f32().unwrap_or(0.0) as f64;
+                        state.value = new_val;
 
-                if let Some(ref table) = tbl {
-                    let index = raw as usize;
-                    if index >= table.len() {
-                        return;
-                    }
-                    let idx = index as i64;
-                    if idx == state.last_sent_index {
-                        return;
-                    }
-                    state.last_sent_index = idx;
-                    let pid = ParameterId::new(&param).unwrap();
-                    gr.send(CommandEnum::SetParameter(SetParameter::new(
-                        PortId::param(nid, 0),
-                        pid,
-                        table[index].clone(),
-                        SignalOrigin::Automaton(serv_id.clone()),
-                    )));
-                    return;
-                }
+                        if let Some(ref table) = tbl {
+                            let index = raw as usize;
+                            if index >= table.len() {
+                                return;
+                            }
+                            let idx = index as i64;
+                            if idx == state.last_sent_index {
+                                return;
+                            }
+                            state.last_sent_index = idx;
+                            let pid = ParameterId::new(&param).unwrap();
+                            gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                PortId::param(nid, 0),
+                                pid,
+                                table[index].clone(),
+                                SignalOrigin::Automaton(serv_id.clone()),
+                            )));
+                            return;
+                        }
 
-                let mapped = map.apply(raw);
-                let base = state.base;
-                let value = match ctrl {
-                    ControlStrategy::Absolute => min + mapped * (max - min),
-                    ControlStrategy::Modulation { depth } => {
-                        (base + mapped * depth * (max - min)).clamp(min, max)
-                    }
-                };
-                if (value - state.last_sent_value).abs() < 1e-6 {
-                    return;
-                }
-                state.last_sent_value = value;
+                        let mapped = map.apply(raw);
+                        let base = state.base;
+                        let value = match ctrl {
+                            ControlStrategy::Absolute => min + mapped * (max - min),
+                            ControlStrategy::Modulation { depth } => {
+                                (base + mapped * depth * (max - min)).clamp(min, max)
+                            }
+                        };
+                        if (value - state.last_sent_value).abs() < 1e-6 {
+                            return;
+                        }
+                        state.last_sent_value = value;
 
-                let pid = ParameterId::new(&param).unwrap();
-                gr.send(CommandEnum::SetParameter(SetParameter::new(
-                    PortId::param(nid, 0),
-                    pid,
-                    ParamValue::Float(value as f32),
-                    SignalOrigin::Automaton(serv_id.clone()),
-                )));
-            }
-            CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
-                s.lock().unwrap().enabled = enabled;
-            }
-            CommandEnum::Automaton(AutomatonCommand::Reset { .. }) => {
-                s.lock().unwrap().internal = a.reset();
-            }
-            CommandEnum::Automaton(AutomatonCommand::UiValue { value, .. }) => {
-                let mut state = s.lock().unwrap();
-                let pid = ParameterId::new(&param).unwrap();
-                let cmd = SetParameter::new(
-                    PortId::param(nid, 0),
-                    pid,
-                    ParamValue::Float(value as f32),
-                    SignalOrigin::Automaton(serv_id.clone()),
-                );
-                match confl {
-                    ConflictStrategy::TouchOverride => {
-                        state.base = value;
-                        state.frozen = true;
-                        gr.send(CommandEnum::SetParameter(cmd));
+                        let pid = ParameterId::new(&param).unwrap();
+                        gr.send(CommandEnum::SetParameter(SetParameter::new(
+                            PortId::param(nid, 0),
+                            pid,
+                            ParamValue::Float(value as f32),
+                            SignalOrigin::Automaton(serv_id.clone()),
+                        )));
                     }
-                    ConflictStrategy::BasePlusModulation => {
-                        state.base = value;
+                    CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
+                        s.lock().unwrap().enabled = enabled;
                     }
-                    ConflictStrategy::LastWriteWins => {
-                        gr.send(CommandEnum::SetParameter(cmd));
+                    CommandEnum::Automaton(AutomatonCommand::Reset { .. }) => {
+                        s.lock().unwrap().internal = a.reset();
                     }
-                }
-            }
-            CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) => {
-                let mut state = s.lock().unwrap();
-                if state.frozen {
-                    state.frozen = false;
-                }
-            }
-            _ => {}
-        });
-
-        let actor_ref = actor.actor_ref();
-        std::thread::spawn(move || loop {
-            actor.drain();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        });
-
-        actor_ref
+                    CommandEnum::Automaton(AutomatonCommand::UiValue { value, .. }) => {
+                        let mut state = s.lock().unwrap();
+                        let pid = ParameterId::new(&param).unwrap();
+                        let cmd = SetParameter::new(
+                            PortId::param(nid, 0),
+                            pid,
+                            ParamValue::Float(value as f32),
+                            SignalOrigin::Automaton(serv_id.clone()),
+                        );
+                        match confl {
+                            ConflictStrategy::TouchOverride => {
+                                state.base = value;
+                                state.frozen = true;
+                                gr.send(CommandEnum::SetParameter(cmd));
+                            }
+                            ConflictStrategy::BasePlusModulation => {
+                                state.base = value;
+                            }
+                            ConflictStrategy::LastWriteWins => {
+                                gr.send(CommandEnum::SetParameter(cmd));
+                            }
+                        }
+                    }
+                    CommandEnum::Automaton(AutomatonCommand::UiRelease { .. }) => {
+                        let mut state = s.lock().unwrap();
+                        if state.frozen {
+                            state.frozen = false;
+                        }
+                    }
+                    _ => {}
+                })
+            },
+            1,
+        )
     }
 
     pub fn with_table(mut self, table: Vec<ParamValue>) -> Self {

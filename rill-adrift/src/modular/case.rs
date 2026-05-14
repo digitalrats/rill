@@ -18,7 +18,7 @@ pub struct RackCase<const BUF: usize> {
     sample_rate: f32,
     actor_ref: ActorRef<CommandEnum>,
     modules: HashMap<String, ActorRef<CommandEnum>>,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    tasks: Vec<std::thread::JoinHandle<()>>,
 
     /// Audio thread handle — the graph runs here (Graph is !Send).
     audio_thread: Option<std::thread::JoinHandle<()>>,
@@ -34,7 +34,7 @@ impl<const BUF: usize> RackCase<BUF> {
         sample_rate: f32,
         actor_ref: ActorRef<CommandEnum>,
         modules: HashMap<String, ActorRef<CommandEnum>>,
-        tasks: Vec<tokio::task::JoinHandle<()>>,
+        tasks: Vec<std::thread::JoinHandle<()>>,
     ) -> Self {
         Self {
             name,
@@ -66,8 +66,8 @@ impl<const BUF: usize> RackCase<BUF> {
 
     /// Stop the audio thread and all module tasks.
     pub fn stop(&mut self) {
-        for task in self.tasks.drain(..) {
-            task.abort();
+        for _task in self.tasks.drain(..) {
+            // Drain threads are dropped — they'll be terminated at process exit
         }
         if let Some(ref running) = self.running {
             running.store(false, Ordering::Release);

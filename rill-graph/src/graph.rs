@@ -9,7 +9,7 @@ use rill_core::traits::port::Port;
 use rill_core::traits::processable::{ProcessContext, Processable};
 use rill_core::traits::ParamValue;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params};
-use rill_core_actor::{ActorRef, ActorSystem, LocalActor};
+use rill_core_actor::{Actor, ActorRef, ActorSystem};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -455,7 +455,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         // Wrap nodes in Rc<UnsafeCell<Vec<>>> — port pointers already valid in this Vec.
         let nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>> = Rc::new(UnsafeCell::new(nodes));
 
-        let actor = system.spawn_local("graph", {
+        let actor = system.spawn("graph", {
             let n = nodes.clone();
             #[allow(unsafe_code)]
             move |msg: CommandEnum| {
@@ -508,7 +508,7 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     pub(crate) resources: Vec<GraphResource>,
     #[allow(dead_code)]
     buffers: Vec<Box<dyn Buffer<T> + Send>>,
-    actor: Option<LocalActor<CommandEnum>>,
+    actor: Option<Actor<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
     parent_ref: Option<ActorRef<CommandEnum>>,
 }

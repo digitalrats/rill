@@ -556,6 +556,8 @@ pub enum CommandType {
     Servo,
     /// Audio clock tick.
     ClockTick,
+    /// Stop command — shuts down the actor's I/O loop.
+    Stop,
     /// System command.
     System,
 }
@@ -568,6 +570,7 @@ impl fmt::Display for CommandType {
             CommandType::Sensor => write!(f, "Sensor"),
             CommandType::Servo => write!(f, "Servo"),
             CommandType::ClockTick => write!(f, "ClockTick"),
+            CommandType::Stop => write!(f, "Stop"),
             CommandType::System => write!(f, "System"),
         }
     }
@@ -589,6 +592,8 @@ pub enum CommandEnum {
     Servo(ServoCommand),
     /// Audio clock tick — sent from Graph to Patchbay each processing block.
     ClockTick(ClockTick),
+    /// Stop command — shuts down the actor's I/O loop.
+    Stop,
     /// System-level command with opaque payload.
     System {
         /// System command kind.
@@ -607,6 +612,7 @@ impl CommandEnum {
             CommandEnum::Sensor(_) => CommandType::Sensor,
             CommandEnum::Servo(_) => CommandType::Servo,
             CommandEnum::ClockTick(_) => CommandType::ClockTick,
+            CommandEnum::Stop => CommandType::Stop,
             CommandEnum::System { .. } => CommandType::System,
         }
     }
@@ -678,8 +684,9 @@ impl fmt::Display for CommandEnum {
             CommandEnum::ClockTick(tick) => write!(
                 f,
                 "ClockTick(pos={}, dt={}samp)",
-                tick.sample_pos, tick.samples_since_last
+                tick.sample_pos, tick.samples_since_last,
             ),
+            CommandEnum::Stop => write!(f, "Stop"),
             CommandEnum::System { kind, data } => {
                 write!(f, "System[{}] ({} bytes)", kind, data.len())
             }

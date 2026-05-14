@@ -1,8 +1,126 @@
 # CHANGELOG
 
-## [Unreleased]
+## [0.5.0-beta.5] — In Progress
 
-### 🔄 Actor Model Rewrite — `LocalActor`, `Actor::spawn()`, Patchbay Removal
+### 🎛️ AY-3-8910 Emulator Fixes
+
+**`rill-lofi`:**
+- **Mixer register R7 bit layout** — bits 0–2 = tone A/B/C, 3–5 = noise A/B/C (fixed; was grouping bits 0-1,2-3,4-5 per channel)
+- **Envelope period divider** — `f / (16 × EP)` → `f / (256 × EP)` per AY-3-8910 datasheet
+- **Noise LFSR output bit** — save bit 0 before shift (was reading bit 16 after shift)
+- Test `test_mixer_register_bit_mapping` updated for correct layout
+
+### 🏭 Module Factory
+
+**`rill-patchbay/src/module_factory.rs` (new):**
+- `ModuleConstructor` trait — `construct(id, params, system, graph_ref) → BoxedModule`
+- `ModuleFactory` — `register_fn(type_name, drain, closure)`, `register_fn_send()`
+- `Drain` enum — `OsThread { interval_ms }`, `TokioTask { interval_ms }` (for many actors without OS thread overhead)
+- `GenericModule` — factory-provided `Module` impl, no manual struct needed
+
+**`rill-patchbay/src/serialization/mod.rs`:**
+- `ModuleDef::Custom { type_name, params }` — dispatch through `ModuleFactory` in `build_servos()`
+
+**`rill-adrift/src/modular/mod.rs`:**
+- `ModularSystem.module_factory: ModuleFactory` — `module_factory_mut()` for pre-launch registration
+- Rack actor drain loop: `tokio::spawn` → `std::thread::spawn` (avoids `Send` requirement on handler)
+
+### 🎭 Actor Model Unification
+
+**`rill-core-actor`:**
+- **Removed:** `Actor<M>` (old `Send` variant), `LocalActor<M>`, `ActorCell` trait, `MessageDispatcher`, `build_actor()`
+- **Added:** `spawn_detached(name, make_handler, ms)` — handler created inside spawned thread, `ActorRef` returned immediately
+- **Added:** `spawn_detached_tokio(name, make_handler, ms)` — same but on tokio task (handler: `Send`)
+- `spawn(name, handler)` — remains for inline drain (Graph, Rack)
+- **Actor design rule:** handler is always created on the thread where it is drained; never crosses thread boundary; `Send` bound removed from handler closure
+
+### 🔧 Sequencer & Servo Fixes
+
+**`rill-patchbay/src/automaton/sequencer.rs`:**
+- Removed dead `Step.value` and `Step.curve` fields (`Step` now only has `duration`)
+- Fixed `step_duration()` formula: removed `× 4.0` factor (now `1.0` = quarter note, not whole note)
+
+**`rill-patchbay/src/engine.rs`:**
+- Added `Servo::with_table()` builder — propagates `table` from `ServoDef` to `Servo`
+- `Servo::spawn()` uses `spawn_detached_tokio` — handler created inside tokio task, no actor crossing thread boundary
+
+**`rill-patchbay/src/serialization/mod.rs`:**
+- `build_servos()` now propagates `ServoDef.table` → `Servo::with_table()`
+
+### 🎵 Chiptune Examples
+
+**`rill-adrift/examples/chiptune.rs`:**
+- 3-channel AY melody: Ch A (melody), Ch B (bass), Ch C (snare), 16 steps × 120ms, bass changes every 4 steps
+- Fixed Output `channels=1` (was defaulting to stereo, causing PipeWire panic)
+- Duration: `120ms → 0.24` quarter-note beats (matching fixed `step_duration` formula)
+- Removed unused `HashMap` import
+
+**`rill-adrift/examples/chiptune_stc.rs`:**
+- Rewritten to use `ModularSystemDef` + `ModuleFactory` (`register_fn` with `Drain::OsThread`)
+- STC player registered as `ModuleDef::Custom { type_name: "stc_player" }`
+- Removed: manual `GraphBuilder`, `graph.run()`, `StcModule` struct, `sys.spawn()`, `actor.drain()`, `thread::spawn`
+
+### 🔩 RackCase Fix
+
+**`rill-adrift/src/modular/case.rs`:**
+- `RackCase::stop()` — added `handle.thread().unpark()` before `handle.join()` (was hanging on exit)
+- `tasks` type: `Vec<tokio::task::JoinHandle>` → `Vec<std::thread::JoinHandle>`
+
+### 📝 Documentation
+
+**`docs/src/guides/chip-emulators.md`:**
+- Rewritten: accurate register map, architecture diagram, `io_write` control chain, lofi processing chain
+- **Known Limitations** section — output sampling, anti-aliasing, register change timing, I/O ports, phase delay
+- **Timing accuracy** section — tone/envelope/noise frequency formulas, accuracy bounds
+
+**`docs/src/architecture/actor.md`:**
+- Updated for current API: `Actor<M>`, three `spawn` variants, handler-creation design rule
+
+### 🧹 Cleanup
+
+- **Removed:** dead `Actor<M>` (Send variant), `ActorCell`, `build_actor()`, `Step.value`/`Step.curve`
+- `rill-io/Cargo.toml` — removed unused `base64` dependency
+- `rill-core-actor/Cargo.toml` — added optional `tokio` dependency (feature-gated `spawn_detached_tokio`)
+- PortAudio callback — removed debug `base64` output
+
+### 🏗️ Architecture: RackDef unification + CaseDef removal
+
+**`rill-adrift/src/modular/serialization.rs`:**
+- New `RackDef` with `graph: GraphDef` field — graph lives inside the rack, not in a separate `CaseDef`
+- New `ModuleDef::Graph { graph: GraphDef }` variant — multiple graphs per rack
+- `build_servos()` moved from `rill-patchbay` to `rill-adrift`
+- `ModularSystemDef.racks: Vec<RackDef>` replaces `cases: Vec<CaseDef>`
+- `CaseDef` removed entirely — `patchbay: Option<RackDef>` no longer needed
+
+**`rill-adrift/src/modular/mod.rs`:**
+- `launch()` simplified: single loop over `def.racks`, no `has_rack` check
+- Rack actor drain: `tokio::spawn` → `std::thread::spawn` (avoids `Send` requirement)
+- Graph construction stays in `launch()` (not via factory)
+
+**`rill-patchbay/src/serialization/mod.rs`:**
+- `RackDef` → `PatchbayDef` (backward-compatible rename, without `graph` field)
+- `ModuleDef` (without `Graph` variant) + `build_servos()` remain in rill-patchbay
+
+**`rill-adrift/src/modular/config.rs`:**
+- `LaunchConfig.rack_def` type: `RackDef` → `PatchbayDef`
+
+### 🔌 CommandEnum::Stop + Drain::IoCallback
+
+**`rill-core/src/queues/signal.rs`:**
+- `CommandEnum::Stop` + `CommandType::Stop` — shutdown command for I/O loops
+
+**`rill-patchbay/src/module_factory.rs`:**
+- `Drain::IoCallback` variant — for graph modules with inline drain (not yet used via factory)
+
+### 📝 Documentation
+
+**`docs/src/architecture/actor.md`:**
+- Updated for current API: `Actor<M>`, three `spawn` variants, handler-creation design rule
+
+**`docs/src/guides/chip-emulators.md`:**
+- Rewritten: accurate register map, known limitations, timing accuracy section
+
+### Previous (0.5.0-beta.4)
 
 **`rill-core-actor`:**
 - `Actor<M>` — handler: `Send`, для многопоточных акторов (Patchbay через tokio)

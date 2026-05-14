@@ -18,11 +18,9 @@ use rill_patchbay::function_registry::FunctionRegistry;
 use rill_patchbay::module_factory::ModuleFactory;
 
 #[cfg(feature = "serialization")]
-use crate::modular::serialization::ModularSystemDef;
+use crate::modular::serialization::{ModularSystemDef, RackDef};
 #[cfg(feature = "serialization")]
 use rill_graph::serialization::GraphDef;
-#[cfg(feature = "serialization")]
-use rill_patchbay::serialization::RackDef;
 
 mod case;
 mod config;
@@ -137,52 +135,47 @@ impl<const BUF: usize> ModularSystem<BUF> {
             .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
         let _guard = tokio_rt.enter();
 
-        for cd in &def.cases {
+        for rd in &def.racks {
             let node_factory = self.node_factory.clone();
             let backend_factory = self.backend_factory.clone();
             let default_backend = self.default_backend.clone();
             let sys = self.actor_system.clone();
             let sys_svc = self.actor_system.clone();
-            let gd = cd.graph.clone();
-            let has_rack = cd.patchbay.is_some();
+            let gd = rd.graph.clone();
 
             let (graph_tx, graph_rx) = std::sync::mpsc::channel();
 
             let modules: Arc<Mutex<HashMap<String, ActorRef<CommandEnum>>>> =
                 Arc::new(Mutex::new(HashMap::new()));
-            let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+            let mut tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
-            // 1. Rack actor — forwards to modules (populated later)
-            let case_name = cd.name.clone();
+            // 1. Rack actor — forwards to modules
+            let case_name = rd.name.clone();
             let m = modules.clone();
-            let mut actor = sys.spawn(&format!("case_{case_name}"), move |msg: CommandEnum| {
-                for module_ref in m.lock().unwrap().values() {
-                    module_ref.send(msg.clone());
-                }
-            });
-            let actor_ref = actor.actor_ref();
+            let actor_ref = sys.spawn_detached(
+                &format!("rack_{case_name}"),
+                move || {
+                    Box::new(move |msg: CommandEnum| {
+                        for module_ref in m.lock().unwrap().values() {
+                            module_ref.send(msg.clone());
+                        }
+                    })
+                },
+                1,
+            );
 
-            // 2. Drain task for rack actor
-            tasks.push(tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(1));
-                loop {
-                    interval.tick().await;
-                    actor.drain();
-                }
-            }));
-
-            // 3. Build graph on audio thread
             let parent_ref = actor_ref.clone();
             let case = RackCase::new(
-                cd.name.clone(),
+                rd.name.clone(),
                 def.sample_rate,
                 actor_ref,
                 HashMap::new(),
                 tasks,
             );
-            self.cases.insert(cd.name.clone(), case);
+            self.cases.insert(rd.name.clone(), case);
 
-            if let Some(case) = self.cases.get_mut(&cd.name) {
+            // 2. Build graph on I/O thread
+            if let Some(case) = self.cases.get_mut(&rd.name) {
                 case.start(move |running| {
                     let mut builder = GraphBuilder::new(
                         Arc::new(node_factory.lock().unwrap().clone()),
@@ -206,21 +199,17 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 });
             }
 
-            // 4. Receive graph_ref
+            // 3. Receive graph_ref
             let graph_ref = graph_rx
                 .recv()
                 .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
 
-            // 5. Build servos with graph_ref
-            if has_rack {
-                if let Some(ref rack_def) = cd.patchbay {
-                    let registry = FunctionRegistry::builtin();
-                    let servos = rack_def
-                        .build_servos(&registry, &self.module_factory, &sys_svc, &graph_ref)
-                        .map_err(|e| ModularError::Rack(format!("case '{}': {e}", cd.name)))?;
-                    *modules.lock().unwrap() = servos;
-                }
-            }
+            // 4. Build servos + custom modules
+            let registry = FunctionRegistry::builtin();
+            let servos = rd
+                .build_servos(&registry, &self.module_factory, &sys_svc, &graph_ref)
+                .map_err(|e| ModularError::Rack(format!("rack '{}': {e}", rd.name)))?;
+            *modules.lock().unwrap() = servos;
         }
 
         self.tokio_rt = Some(tokio_rt);

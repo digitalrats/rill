@@ -1,31 +1,31 @@
 //! # Rill Core Actor — actor model infrastructure
 //!
 //! A lightweight, domain-agnostic actor model for lock-free message passing.
+//! Actors are single-threaded: handler is created and drained on the same thread.
 //!
 //! ## Key types
 //!
 //! | Type | Role |
 //! |------|------|
-//! | [`Actor<M>`] | Actor handle — drains the mailbox and exposes an [`ActorRef`] |
+//! | [`Actor<M>`] | Handler + mailbox — drained in-place (no separate thread) |
 //! | [`ActorRef<M>`] | Thread-safe handle to send messages to an actor |
-//! | [`ActorSystem`] | Named actor registry, dead letters, and `spawn()` |
+//! | [`ActorSystem`] | Named actor registry, dead letters, `spawn()`, `spawn_detached()` |
 //!
 //! ## Architecture
 //!
-//! The mailbox is completely hidden from actor implementations.
-//!
 //! ```text
-//! ActorSystem::spawn(name, handler)
-//!   ├── Creates private Mailbox<M>
-//!   ├── Returns Actor<M> (stores mailbox + handler closure)
-//!   │     ├── drain()    → pops and calls handler for each message
-//!   │     └── actor_ref() → ActorRef<M>
-//!   └── Registers name for route/broadcast
+//! // Handler drained inline (Graph, Rack):
+//! system.spawn(name, handler) → Actor<M> → actor.drain() on caller's thread
+//!
+//! // Handler created & drained inside a new thread (Servo, factory modules):
+//! system.spawn_detached(name, make_handler, ms) → ActorRef<M>
+//!   └── thread::spawn: handler = make_handler() → actor.drain() loop
 //! ```
 
 use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rill_core::queues::MpscQueue;
 
@@ -58,47 +58,15 @@ impl<M: Send + 'static> Mailbox<M> {
 }
 
 // ============================================================================
-// Actor
+// Actor — single‑threaded (handler: !Send, drained inline)
 // ============================================================================
 
 pub struct Actor<M: Send + 'static> {
     mailbox: Arc<Mailbox<M>>,
-    handler: Box<dyn FnMut(M) + Send + 'static>,
-}
-
-impl<M: Send + 'static> Actor<M> {
-    pub(crate) fn new(
-        mailbox: Arc<Mailbox<M>>,
-        handler: Box<dyn FnMut(M) + Send + 'static>,
-    ) -> Self {
-        Self { mailbox, handler }
-    }
-
-    pub fn drain(&mut self) {
-        while let Some(msg) = self.mailbox.pop() {
-            (self.handler)(msg);
-        }
-    }
-
-    pub fn actor_ref(&self) -> ActorRef<M> {
-        self.mailbox.actor_ref()
-    }
-}
-
-// ============================================================================
-// LocalActor — single‑threaded actor (handler: !Send)
-// ============================================================================
-
-pub struct LocalActor<M: Send + 'static> {
-    mailbox: Arc<Mailbox<M>>,
     handler: Box<dyn FnMut(M) + 'static>,
 }
 
-impl<M: Send + 'static> LocalActor<M> {
-    pub(crate) fn new(mailbox: Arc<Mailbox<M>>, handler: Box<dyn FnMut(M) + 'static>) -> Self {
-        Self { mailbox, handler }
-    }
-
+impl<M: Send + 'static> Actor<M> {
     pub fn drain(&mut self) {
         while let Some(msg) = self.mailbox.pop() {
             (self.handler)(msg);
@@ -114,9 +82,16 @@ impl<M: Send + 'static> LocalActor<M> {
 // ActorRef
 // ============================================================================
 
-#[derive(Clone)]
 pub struct ActorRef<M: Send + 'static> {
     inner: Arc<Mailbox<M>>,
+}
+
+impl<M: Send + 'static> Clone for ActorRef<M> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<M: Send + 'static> ActorRef<M> {
@@ -144,10 +119,12 @@ impl ActorSystem {
         }
     }
 
+    /// Spawn an actor drained inline by the caller (Graph, Rack).
+    /// Handler does not need `Send` — it lives and dies on the caller's thread.
     pub fn spawn<M: Send + 'static>(
         &self,
         name: &str,
-        handler: impl FnMut(M) + Send + 'static,
+        handler: impl FnMut(M) + 'static,
     ) -> Actor<M> {
         let actor = Actor {
             mailbox: Arc::new(Mailbox::new(64)),
@@ -160,30 +137,60 @@ impl ActorSystem {
         actor
     }
 
-    pub fn spawn_local<M: Send + 'static>(
+    /// Spawn a detached actor — handler is created inside a new OS thread
+    /// and drained in a loop. Returns the [`ActorRef`] immediately.
+    ///
+    /// `make_handler` is called inside the spawned thread, so the returned
+    /// handler closure does not need `Send`.
+    pub fn spawn_detached<M: Send + 'static>(
         &self,
         name: &str,
-        handler: impl FnMut(M) + 'static,
-    ) -> LocalActor<M> {
-        let actor = LocalActor {
-            mailbox: Arc::new(Mailbox::new(64)),
-            handler: Box::new(handler),
-        };
+        make_handler: impl FnOnce() -> Box<dyn FnMut(M) + 'static> + Send + 'static,
+        interval_ms: u64,
+    ) -> ActorRef<M> {
+        let mailbox = Arc::new(Mailbox::new(64));
+        let actor_ref = mailbox.actor_ref();
         self.actors
             .lock()
             .unwrap()
-            .push((name.to_string(), Box::new(actor.actor_ref())));
-        actor
+            .push((name.to_string(), Box::new(actor_ref.clone())));
+        std::thread::spawn(move || {
+            let handler = make_handler();
+            let mut actor = Actor { mailbox, handler };
+            loop {
+                actor.drain();
+                std::thread::sleep(Duration::from_millis(interval_ms));
+            }
+        });
+        actor_ref
     }
 
-    pub(crate) fn build_actor<M: Send + 'static>(
+    /// Spawn a detached actor on a tokio task — handler must be `Send`.
+    /// Useful when many actors are needed (e.g. 24 Servos), avoiding OS thread overhead.
+    #[cfg(feature = "tokio")]
+    pub fn spawn_detached_tokio<M: Send + 'static>(
         &self,
-        handler: impl FnMut(M) + Send + 'static,
-    ) -> Actor<M> {
-        Actor {
-            mailbox: Arc::new(Mailbox::new(64)),
-            handler: Box::new(handler),
-        }
+        name: &str,
+        make_handler: impl FnOnce() -> Box<dyn FnMut(M) + Send + 'static> + Send + 'static,
+        interval_ms: u64,
+    ) -> ActorRef<M> {
+        let mailbox = Arc::new(Mailbox::new(64));
+        let actor_ref = mailbox.actor_ref();
+        self.actors
+            .lock()
+            .unwrap()
+            .push((name.to_string(), Box::new(actor_ref.clone())));
+        tokio::spawn(async move {
+            let mut handler = make_handler();
+            let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
+            loop {
+                interval.tick().await;
+                while let Some(msg) = mailbox.pop() {
+                    handler(msg);
+                }
+            }
+        });
+        actor_ref
     }
 
     pub fn route<M: Send + 'static>(&self, name: &str, msg: M) {
@@ -338,5 +345,21 @@ mod tests {
         actor_b.drain();
         assert_eq!(*log_a.lock().unwrap(), vec!["all".to_string()]);
         assert_eq!(*log_b.lock().unwrap(), vec!["all".to_string()]);
+    }
+
+    #[test]
+    fn test_spawn_detached() {
+        let system = ActorSystem::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv = received.clone();
+        let actor_ref = system.spawn_detached(
+            "detached",
+            move || Box::new(move |msg: String| recv.lock().unwrap().push(msg)),
+            1,
+        );
+        actor_ref.send("hello".into());
+        actor_ref.send("world".into());
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(received.lock().unwrap().len(), 2);
     }
 }

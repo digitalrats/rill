@@ -3,8 +3,17 @@ use rill_core_actor::ActorSystem;
 use rill_patchbay::{LfoWaveform, Servo};
 use std::sync::Arc;
 
+fn tokio_rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+}
+
 #[test]
 fn test_lfo_servo_spawn() {
+    let rt = tokio_rt();
+    let _guard = rt.enter();
     let system = Arc::new(ActorSystem::new());
     let graph_actor = system.spawn("graph", |_| {});
     let servo = Servo::new(
@@ -26,6 +35,8 @@ use rill_patchbay::LfoAutomaton;
 
 #[test]
 fn test_envelope_servo_spawn() {
+    let rt = tokio_rt();
+    let _guard = rt.enter();
     use rill_patchbay::EnvelopeAutomaton;
     let system = Arc::new(ActorSystem::new());
     let graph_actor = system.spawn("graph", |_| {});

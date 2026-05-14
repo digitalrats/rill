@@ -11,16 +11,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rill_adrift::modular::serialization::{CaseDef, ModularSystemDef};
+use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
-use rill_adrift::rill_core_actor::ActorRef;
 use rill_adrift::rill_graph::serialization::{
     ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
 };
-use rill_adrift::rill_patchbay::engine::Module;
-use rill_adrift::rill_patchbay::serialization::{ModuleDef, RackDef};
+use rill_adrift::rill_patchbay::module_factory::Drain;
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -373,26 +371,6 @@ impl StcPlayer {
 }
 
 // ============================================================================
-// StcModule — wraps StcPlayer as a rack Module
-// ============================================================================
-
-struct StcModule {
-    id: String,
-    actor_ref: ActorRef<CommandEnum>,
-}
-
-impl Module for StcModule {
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn handle(&self) -> Option<ActorRef<CommandEnum>> {
-        Some(self.actor_ref.clone())
-    }
-    fn set_enabled(&mut self, _enabled: bool) {}
-    fn stop(&mut self) {}
-}
-
-// ============================================================================
 // Embedded STC data
 // ============================================================================
 
@@ -421,12 +399,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Register the STC player as a custom rack module
-    system
-        .module_factory_mut()
-        .register_fn("stc_player", |id, _params, sys, graph_ref| {
+    system.module_factory_mut().register_fn(
+        "stc_player",
+        Drain::OsThread { interval_ms: 1 },
+        |_id, _params, graph_ref| {
             let player = RefCell::new(StcPlayer::new(STC_DATA.to_vec()));
             let gr = graph_ref.clone();
-            let mut actor = sys.spawn(id, move |msg: CommandEnum| {
+            Box::new(move |msg: CommandEnum| {
                 if let CommandEnum::ClockTick(tick) = msg {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
                     if let Some(regs) = player.borrow_mut().step_ms(ms) {
@@ -439,23 +418,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )));
                     }
                 }
-            });
-            let actor_ref = actor.actor_ref();
-            std::thread::spawn(move || loop {
-                actor.drain();
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            });
-            Box::new(StcModule {
-                id: id.to_string(),
-                actor_ref,
             })
-        });
+        },
+    );
 
     let def = ModularSystemDef {
         format_version: "rill/1".into(),
         sample_rate: RATE,
         block_size: BUF,
-        cases: vec![CaseDef {
+        racks: vec![RackDef {
             name: "chiptune_stc".into(),
             graph: GraphDef {
                 format_version: "rill/1".to_string(),
@@ -492,16 +463,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }],
                 description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
             },
-            patchbay: Some(RackDef {
-                automata: vec![],
-                modules: vec![ModuleDef::Custom {
-                    type_name: "stc_player".into(),
-                    params: HashMap::new(),
-                }],
-                mappings: vec![],
-                osc_surface: vec![],
-                description: None,
-            }),
+            automata: vec![],
+            modules: vec![ModuleDef::Custom {
+                type_name: "stc_player".into(),
+                params: HashMap::new(),
+            }],
+            mappings: vec![],
+            description: None,
         }],
         description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
     };
