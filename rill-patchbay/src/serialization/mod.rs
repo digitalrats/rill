@@ -17,6 +17,7 @@ use crate::engine::{
     Automaton, Mapping, OscSurface, ParameterMapping, Servo, Target, Time, Transform,
 };
 use crate::function_registry::FunctionRegistry;
+use crate::module_factory::ModuleFactory;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 use rill_core::queues::CommandEnum;
 use rill_core_actor::{ActorRef, ActorSystem};
@@ -250,7 +251,8 @@ impl SensorDef {
 // ModuleDef — unified servo and sensor serialization
 // ============================================================================
 
-/// A rack module — either a Servo (automaton → parameter) or a Sensor (external input).
+/// A rack module — either a Servo (automaton → parameter), a Sensor (external input),
+/// or a Custom module dispatched through [`ModuleFactory`](crate::module_factory::ModuleFactory).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub enum ModuleDef {
@@ -258,6 +260,14 @@ pub enum ModuleDef {
     Servo(ServoDef),
     /// Sensor: external input (MIDI, OSC, etc.).
     Sensor(SensorDef),
+    /// Custom module — dispatched through the module factory.
+    Custom {
+        /// Module type name for factory lookup.
+        type_name: String,
+        /// Module-specific parameters.
+        #[serde(default)]
+        params: HashMap<String, ParamValue>,
+    },
 }
 
 // ============================================================================
@@ -300,6 +310,7 @@ impl RackDef {
     pub fn build_servos(
         &self,
         registry: &FunctionRegistry,
+        module_factory: &ModuleFactory,
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
     ) -> Result<HashMap<String, ActorRef<CommandEnum>>, String> {
@@ -424,6 +435,17 @@ impl RackDef {
                     // Sensors are created separately via their own factory
                     log::info!("Sensor module — needs manual setup");
                 }
+                ModuleDef::Custom { type_name, params } => {
+                    match module_factory.construct(type_name, type_name, params, system, graph_ref)
+                    {
+                        Ok(module) => {
+                            if let Some(handle) = module.handle() {
+                                modules.insert(type_name.clone(), handle);
+                            }
+                        }
+                        Err(e) => log::warn!("Custom module '{}' failed: {}", type_name, e),
+                    }
+                }
             }
         }
 
@@ -499,6 +521,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "json")]
     fn test_json_roundtrip() {
         let doc = sample_doc();
         let json = to_json(&doc).unwrap();
@@ -512,6 +535,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cbor")]
     fn test_cbor_roundtrip() {
         let doc = sample_doc();
         let cbor = to_cbor(&doc).unwrap();
@@ -526,8 +550,14 @@ mod tests {
         let system = Arc::new(ActorSystem::new());
         let graph_actor = system.spawn("graph", |_: CommandEnum| {});
         let registry = FunctionRegistry::builtin();
+        let module_factory = ModuleFactory::new();
         let modules = doc
-            .build_servos(&registry, &system, &graph_actor.actor_ref())
+            .build_servos(
+                &registry,
+                &module_factory,
+                &system,
+                &graph_actor.actor_ref(),
+            )
             .unwrap();
         assert_eq!(modules.len(), 1);
         assert!(modules.contains_key("lfo1"));
@@ -557,8 +587,14 @@ mod tests {
         let system = Arc::new(ActorSystem::new());
         let graph_actor = system.spawn("graph", |_: CommandEnum| {});
         let registry = FunctionRegistry::builtin();
+        let module_factory = ModuleFactory::new();
         assert!(doc
-            .build_servos(&registry, &system, &graph_actor.actor_ref())
+            .build_servos(
+                &registry,
+                &module_factory,
+                &system,
+                &graph_actor.actor_ref()
+            )
             .is_err());
     }
 }

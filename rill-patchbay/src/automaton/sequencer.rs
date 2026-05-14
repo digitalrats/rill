@@ -91,9 +91,12 @@ impl SequencerAutomaton {
         self
     }
 
-    /// Get step duration in seconds
+    /// Get step duration in seconds.
+    ///
+    /// `step.duration` is in quarter-note beats (1.0 = one quarter note at the given tempo).
+    /// `duration_scale` allows global scaling (e.g. 0.5 = double tempo).
     fn step_duration(&self, step: &Step) -> f64 {
-        step.duration * 60.0 / self.tempo * 4.0 * self.duration_scale
+        step.duration * 60.0 / self.tempo * self.duration_scale
     }
 
     /// Xorshift PRNG
@@ -203,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_sequencer() {
-        let steps = simple_sequence(4, 0.25);
+        let steps = simple_sequence(4, 1.0);
         let seq = SequencerAutomaton::new("Test", steps);
         let mut internal = seq.initial_internal();
         let current = ParamValue::Float(0.0);

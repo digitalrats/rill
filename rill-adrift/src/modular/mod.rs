@@ -15,6 +15,7 @@ use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{Graph, GraphBuilder, NodeFactory};
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
+use rill_patchbay::module_factory::ModuleFactory;
 
 #[cfg(feature = "serialization")]
 use crate::modular::serialization::ModularSystemDef;
@@ -48,6 +49,7 @@ pub struct ModularSystem<const BUF: usize = 64> {
     node_factory: Arc<Mutex<NodeFactory<f32, BUF>>>,
     backend_factory: Arc<BackendFactory<f32>>,
     actor_system: Arc<ActorSystem>,
+    module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,
     default_backend: Option<(String, HashMap<String, ParamValue>)>,
     #[allow(dead_code)]
@@ -81,6 +83,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
             dead: Arc::new(MpscQueue::new()),
             node_factory: Arc::new(Mutex::new(nf)),
             backend_factory: Arc::new(bf),
+            module_factory: ModuleFactory::new(),
             default_backend,
             actor_system: Arc::new(ActorSystem::new()),
             cases: HashMap::new(),
@@ -115,6 +118,11 @@ impl<const BUF: usize> ModularSystem<BUF> {
         builder
             .build(&self.actor_system)
             .map_err(|e| format!("build: {e}").into())
+    }
+
+    /// Access the module factory for registering custom rack module types before launch.
+    pub fn module_factory_mut(&mut self) -> &mut ModuleFactory {
+        &mut self.module_factory
     }
 
     /// Access the node factory for registering custom node types before launch.
@@ -208,7 +216,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 if let Some(ref rack_def) = cd.patchbay {
                     let registry = FunctionRegistry::builtin();
                     let servos = rack_def
-                        .build_servos(&registry, &sys_svc, &graph_ref)
+                        .build_servos(&registry, &self.module_factory, &sys_svc, &graph_ref)
                         .map_err(|e| ModularError::Rack(format!("case '{}': {e}", cd.name)))?;
                     *modules.lock().unwrap() = servos;
                 }

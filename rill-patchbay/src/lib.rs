@@ -73,6 +73,9 @@ pub mod function_registry;
 /// Automaton control strategies
 pub mod strategy;
 
+/// Custom module factory — type registry for rack module construction
+pub mod module_factory;
+
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 

@@ -2,18 +2,14 @@
 //!
 //! Demonstrates ModularSystemDef-based system construction with
 //! SequencerAutomaton + table-based Servo for AY-3-8910 register control.
-//! Writes a WAV recording of the AY output for analysis.
 //!
 //! Usage:
-//!   cargo run --example chiptune --features "lofi,portaudio,serialization,sampler" [portaudio]
-//!   cargo run --example chiptune --features "lofi,alsa,serialization,sampler" [alsa]
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+//!   cargo run --example chiptune --features "lofi,portaudio,serialization" [portaudio]
+//!   cargo run --example chiptune --features "lofi,alsa,serialization" [alsa]
 
 use rill_adrift::modular::serialization::ModularSystemDef;
 use rill_adrift::modular::{ModularConfig, ModularSystem};
-use rill_adrift::rill_core::traits::{Node, NodeVariant, ParamValue};
+use rill_adrift::rill_core::traits::ParamValue;
 use rill_adrift::rill_graph::serialization::{
     ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
 };
@@ -21,21 +17,53 @@ use rill_adrift::rill_patchbay::automaton::sequencer::PlayMode;
 use rill_adrift::rill_patchbay::serialization::{
     AutomatonDef, ModuleDef, RackDef, ServoDef, StepDef,
 };
-use rill_adrift::sampler::recorder::RecordingSink;
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
-fn ay_regs(freq: f32) -> Vec<u8> {
-    let div = if freq <= 0.0 {
+fn note_divider(freq: f32) -> u16 {
+    if freq <= 0.0 {
         0
     } else {
         (1_750_000.0 / (16.0 * freq)).max(1.0) as u16
-    };
-    let lo = (div & 0xFF) as u8;
-    let hi = (div >> 8) as u8;
-    vec![lo, hi, 0, 0, 0, 0, 0, 0x38, 10, 0, 0, 0, 0, 0]
+    }
 }
+
+fn make_regs(mel_freq: f32, bass_freq: f32, snare_vol: u8) -> [u8; 16] {
+    let mut regs = [0u8; 16];
+    let tp = note_divider(mel_freq);
+    regs[0] = tp as u8;
+    regs[1] = (tp >> 8) as u8;
+    regs[8] = if mel_freq > 0.0 { 10 } else { 0 };
+    let bp = note_divider(bass_freq);
+    regs[2] = bp as u8;
+    regs[3] = (bp >> 8) as u8;
+    regs[9] = if bass_freq > 0.0 { 8 } else { 0 };
+    regs[10] = snare_vol;
+    regs[7] = 0x38;
+    regs
+}
+
+const MELODY: &[(f32, u64)] = &[
+    (392.0, 120),
+    (440.0, 120),
+    (392.0, 120),
+    (329.6, 120),
+    (392.0, 120),
+    (440.0, 120),
+    (392.0, 120),
+    (329.6, 120),
+    (261.6, 120),
+    (329.6, 120),
+    (261.6, 120),
+    (220.0, 120),
+    (261.6, 120),
+    (329.6, 120),
+    (261.6, 120),
+    (220.0, 120),
+];
+
+const BASS: &[(f32, u64)] = &[(110.0, 480), (130.8, 480), (98.0, 480), (110.0, 480)];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -46,31 +74,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
     let backend_display = backend_name.clone();
 
-    let melody = [
-        (392.0, 120),
-        (440.0, 120),
-        (392.0, 120),
-        (329.6, 120),
-        (392.0, 120),
-        (440.0, 120),
-        (392.0, 120),
-        (329.6, 120),
-        (261.6, 120),
-        (329.6, 120),
-        (261.6, 120),
-        (220.0, 120),
-        (261.6, 120),
-        (329.6, 120),
-        (261.6, 120),
-        (220.0, 120),
-    ];
-
     let mut register_table: Vec<ParamValue> = Vec::new();
     let mut step_defs: Vec<StepDef> = Vec::new();
-    for &(freq, dur_ms) in &melody {
-        register_table.push(ParamValue::Bytes(ay_regs(freq)));
+    let mut snare_toggle = false;
+    for (i, &(mel_freq, dur_ms)) in MELODY.iter().enumerate() {
+        let bass_idx = i / 4; // bass changes every 4 melody steps (480ms / 120ms = 4)
+        let bass_freq = BASS[bass_idx].0;
+        let snare_vol = if snare_toggle { 15 } else { 0 };
+        snare_toggle = !snare_toggle;
+        let regs = make_regs(mel_freq, bass_freq, snare_vol);
+        register_table.push(ParamValue::Bytes(regs.to_vec()));
         step_defs.push(StepDef {
-            duration: dur_ms as f64 / 1000.0,
+            duration: dur_ms as f64 / 1000.0 / (60.0 / 120.0), // ms → quarter-note beats at 120 BPM
         });
     }
 
@@ -110,30 +125,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         backend: None,
                         parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
                     }),
-                    NodeDef::Sink(SinkDef {
-                        id: 2,
-                        type_name: "rill/recorder".into(),
-                        name: "recorder".into(),
-                        backend: None,
-                        parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
-                    }),
                 ],
-                connections: vec![
-                    ConnectionDef {
-                        kind: SignalKind::Signal,
-                        from_node: 0,
-                        from_port: 0,
-                        to_node: 1,
-                        to_port: 0,
-                    },
-                    ConnectionDef {
-                        kind: SignalKind::Signal,
-                        from_node: 0,
-                        from_port: 0,
-                        to_node: 2,
-                        to_port: 0,
-                    },
-                ],
+                connections: vec![ConnectionDef {
+                    kind: SignalKind::Signal,
+                    from_node: 0,
+                    from_port: 0,
+                    to_node: 1,
+                    to_port: 0,
+                }],
                 description: None,
             },
             patchbay: Some(RackDef {
@@ -173,46 +172,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let system = ModularSystem::<BUF>::new(config);
-
-    // Register a recording sink that captures audio for WAV export
-    let recorded: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    {
-        let rec_buf = recorded.clone();
-        let mut factory = system.node_factory_mut();
-        factory.register_fn("rill/recorder", move |id, params| {
-            let ch = params.get_f32("channels", 1.0) as usize;
-            let mut n = RecordingSink::<f32, BUF>::new(rec_buf.clone(), ch);
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            NodeVariant::Sink(Box::new(n))
-        });
-    }
-
     let _system = system.launch(&def).expect("launch system");
 
     println!("AY-3-8910 Chiptune — Popcorn");
     println!("   Backend: {}\n", backend_display);
     println!("   Press Enter to stop.\n");
 
-    let running = Arc::new(AtomicBool::new(true));
-    let t_run = running.clone();
-    std::thread::spawn(move || {
-        let mut input = String::new();
-        let _ = std::io::stdin().read_line(&mut input);
-        t_run.store(false, Ordering::Release);
-    });
-
-    // Wait for Enter
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).ok();
-
-    // Write WAV recording
-    let data = recorded.lock().unwrap();
-    if !data.is_empty() {
-        RecordingSink::<f32, BUF>::write_wav("chiptune_out.wav", RATE as u32, 1, &data)
-            .expect("write WAV");
-        println!("Wrote {} samples to chiptune_out.wav", data.len());
-    }
 
     Ok(())
 }

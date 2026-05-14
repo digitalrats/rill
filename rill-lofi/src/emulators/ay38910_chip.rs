@@ -183,9 +183,9 @@ impl Ay38910Chip {
             ((self.registers[5] as u16 & 0x0F) << 8) | (self.registers[4] as u16);
         self.noise.period = self.registers[6] & 0x1F;
         let mixer_reg = self.registers[7];
-        self.mixer.channel_modes[0] = mixer_reg & 0x03;
-        self.mixer.channel_modes[1] = (mixer_reg >> 2) & 0x03;
-        self.mixer.channel_modes[2] = (mixer_reg >> 4) & 0x03;
+        self.mixer.channel_modes[0] = ((mixer_reg >> 3) & 0x01) << 1 | (mixer_reg & 0x01);
+        self.mixer.channel_modes[1] = ((mixer_reg >> 4) & 0x01) << 1 | ((mixer_reg >> 1) & 0x01);
+        self.mixer.channel_modes[2] = ((mixer_reg >> 5) & 0x01) << 1 | ((mixer_reg >> 2) & 0x01);
         self.mixer.io_a_enabled = (mixer_reg & 0x40) == 0;
         self.mixer.io_b_enabled = (mixer_reg & 0x80) == 0;
         for i in 0..3 {
@@ -206,10 +206,11 @@ impl Ay38910Chip {
         self.noise.phase += inc;
         while self.noise.phase >= 1.0 {
             self.noise.phase -= 1.0;
+            let output_bit = (self.noise.shift_register & 1) != 0;
             let feedback =
                 ((self.noise.shift_register >> 16) ^ (self.noise.shift_register >> 13)) & 1;
             self.noise.shift_register = ((self.noise.shift_register << 1) | feedback) & 0x1FFFF;
-            self.noise.output = (self.noise.shift_register >> 16) != 0;
+            self.noise.output = output_bit;
         }
     }
 
@@ -218,7 +219,7 @@ impl Ay38910Chip {
             self.envelope.value = 0;
             return;
         }
-        let env_freq = self.chip_clock / (16.0 * self.envelope.period as f32);
+        let env_freq = self.chip_clock / (256.0 * self.envelope.period as f32);
         let inc = env_freq / sample_rate;
         self.envelope.phase += inc;
         while self.envelope.phase >= 1.0 {
@@ -285,8 +286,8 @@ mod tests {
         chip.write_register(7, 0b11_10_01_00);
         chip.generate_sample(SR);
         assert_eq!(chip.mixer.channel_modes[0], 0b00, "Ch A mode");
-        assert_eq!(chip.mixer.channel_modes[1], 0b01, "Ch B mode");
-        assert_eq!(chip.mixer.channel_modes[2], 0b10, "Ch C mode");
+        assert_eq!(chip.mixer.channel_modes[1], 0b00, "Ch B mode");
+        assert_eq!(chip.mixer.channel_modes[2], 0b11, "Ch C mode");
     }
 
     #[test]
@@ -312,7 +313,7 @@ mod tests {
         let mut chip = Ay38910Chip::new(1_750_000.0);
         chip.write_register(6, 4);
         chip.write_register(10, 15);
-        chip.write_register(7, 0b11_11_11_01);
+        chip.write_register(7, 0b11_11_00_00);
         let mut last = chip.noise.output;
         let mut toggles = 0usize;
         for _ in 0..4096 {

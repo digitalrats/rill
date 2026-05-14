@@ -1,22 +1,34 @@
 //! STC file player — loads a Sound Tracker compiled module and plays it
 //! through the AY-3-8910 emulator via IoControl register writes.
 //!
+//! Demonstrates `ModuleFactory` for registering a custom rack module
+//! (the STC player) that receives ClockTick via the rack actor.
+//!
 //! Usage:
-//!   cargo run --example chiptune_stc --features "lofi,portaudio" -- [backend] [stc_path]
+//!   cargo run --example chiptune_stc --features "lofi,portaudio,serialization" -- [backend]
+//!   cargo run --example chiptune_stc --features "lofi,alsa,serialization" -- alsa
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
+use rill_adrift::modular::serialization::{CaseDef, ModularSystemDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
-use rill_adrift::rill_core::traits::ParamValue;
+use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::rill_core_actor::ActorRef;
 use rill_adrift::rill_graph::serialization::{
     ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
 };
+use rill_adrift::rill_patchbay::engine::Module;
+use rill_adrift::rill_patchbay::serialization::{ModuleDef, RackDef};
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
-/// ST_Table — note to 12-bit tone period (from Sound Tracker source)
+// ============================================================================
+// STC Player — Sound Tracker Compiled format player
+// ============================================================================
+
 const ST_TABLE: [u16; 96] = [
     0x0ef8, 0x0e10, 0x0d60, 0x0c80, 0x0bd8, 0x0b28, 0x0a88, 0x09f0, 0x0960, 0x08e0, 0x0858, 0x07e0,
     0x077c, 0x0708, 0x06b0, 0x0640, 0x05ec, 0x0594, 0x0544, 0x04f8, 0x04b0, 0x0470, 0x042c, 0x03f0,
@@ -36,15 +48,11 @@ struct StcPlayer {
     song_length: u8,
     ornament_ptrs: [Option<usize>; 16],
     sample_ptrs: [Option<usize>; 16],
-    // Player state
     delay_counter: u8,
     position: usize,
     position_height: i8,
-    // Time accumulator for audio-rate stepping
     int_ms: f64,
-    // AY registers (last known state)
     last_regs: [u8; 14],
-    // Per-channel state
     ch_events: [usize; 3],
     ch_current_ornament: [Option<usize>; 3],
     ch_current_sample: [Option<usize>; 3],
@@ -69,7 +77,6 @@ impl StcPlayer {
 
         let song_length = data[pos_ptr];
 
-        // Read samples table starting at offset 0x1B (27)
         let mut sample_ptrs: [Option<usize>; 16] = [None; 16];
         let mut samp_off: usize = 27;
         let mut sample_count: usize = 0;
@@ -81,9 +88,7 @@ impl StcPlayer {
             samp_off += 99;
             sample_count += 1;
         }
-        let _ = sample_count;
 
-        // Read ornaments table
         let mut ornament_ptrs: [Option<usize>; 16] = [None; 16];
         let mut orn_off = orn_ptr;
         let mut orn_count: usize = 0;
@@ -104,7 +109,7 @@ impl StcPlayer {
             song_length,
             ornament_ptrs,
             sample_ptrs,
-            delay_counter: 1, // process immediately on first call
+            delay_counter: 1,
             position: 0,
             position_height: 0,
             int_ms: 0.0,
@@ -120,15 +125,10 @@ impl StcPlayer {
             ch_envelope_state: [ENVELOPE_OFF; 3],
         };
 
-        // Set channel A events to sentinel so first frame triggers position load
         p.ch_events[0] = usize::MAX;
-
-        // Default: set ornaments[0] to the first ornament data
         p.ch_current_ornament = [p.ornament_ptrs[0]; 3];
-        // Default: set samples[1] as current sample (match C code behavior)
         p.ch_current_sample = [p.sample_ptrs[1]; 3];
 
-        // Enable all tone channels, noise off
         p.last_regs[7] = 0x38;
         for i in 8..11 {
             p.last_regs[i] = 15;
@@ -140,13 +140,11 @@ impl StcPlayer {
     fn get_sample_pos(&mut self, ch: usize) -> usize {
         if self.ch_sample_repeat_counter[ch] != -1 {
             self.ch_sample_repeat_counter[ch] -= 1;
-
             let pos = self.ch_sample_position[ch];
             self.ch_sample_position[ch] = (pos + 1) & 0x1F;
-
             if self.ch_sample_repeat_counter[ch] == 0 {
                 if let Some(samp_ptr) = self.ch_current_sample[ch] {
-                    let repeat_info = samp_ptr + 0x60; // 96 bytes of sample data, then repeat_info at +0x60 from data start
+                    let repeat_info = samp_ptr + 0x60;
                     if repeat_info + 1 < self.data.len() {
                         let first = self.data[repeat_info];
                         let replen = self.data[repeat_info + 1];
@@ -195,8 +193,6 @@ impl StcPlayer {
         pitch
     }
 
-    /// Step from audio-rate callback. Accumulates ms and calls step_int()
-    /// at the STC interrupt rate (48.828 Hz = 20.48 ms per interrupt).
     fn step_ms(&mut self, ms: f64) -> Option<[u8; 14]> {
         const INT_MS: f64 = 1000.0 / 48.828125;
         self.int_ms += ms;
@@ -208,7 +204,6 @@ impl StcPlayer {
         }
     }
 
-    /// Step one interrupt. Returns current AY registers per libayemu reference.
     fn step_int(&mut self) -> [u8; 14] {
         let mut regs = [0u8; 14];
         regs.copy_from_slice(&self.last_regs);
@@ -223,7 +218,6 @@ impl StcPlayer {
                 if *row_counter < 0 {
                     *row_counter = self.ch_row_skip[ch];
 
-                    // Position advance: check channel A event stream for end marker
                     if ch == 0 {
                         let ev_ptr = self.ch_events[0];
                         let need_advance = ev_ptr == usize::MAX
@@ -237,7 +231,6 @@ impl StcPlayer {
                             let pos_off = self.pos_ptr + 1 + pos * 2;
                             let pat_num = self.data[pos_off] as usize;
                             self.position_height = self.data[pos_off + 1] as i8;
-                            // Find pattern and set channel event pointers
                             let mut po = self.pat_ptr;
                             loop {
                                 if po + 6 >= self.data.len() || self.data[po] == 0 {
@@ -264,7 +257,6 @@ impl StcPlayer {
                         }
                     }
 
-                    // Read event bytes until finding a note
                     loop {
                         let ev_off = self.ch_events[ch];
                         if ev_off >= self.data.len() {
@@ -313,11 +305,10 @@ impl StcPlayer {
             }
         }
 
-        // Render AY output for current frame (matching libayemu reference)
-        regs[7] = 0; // mixer — rebuilt each frame
+        // Render AY output for current frame
+        regs[7] = 0;
         for ch in 0..3usize {
             let sample_pos = self.get_sample_pos(ch);
-
             let sample_is_active = ch == 0 || self.ch_sample_repeat_counter[ch] != -1;
 
             if sample_is_active {
@@ -355,10 +346,9 @@ impl StcPlayer {
                             regs[(ch * 2) + 1] = (pitch >> 8) as u8;
                             regs[8 + ch] = volume;
                         } else {
-                            regs[8 + ch] = 0; // sample ended, silence
+                            regs[8 + ch] = 0;
                         }
 
-                        // Envelope handling
                         if self.ch_sample_repeat_counter[ch] != 0xFF
                             && self.ch_envelope_state[ch] != ENVELOPE_OFF
                         {
@@ -372,7 +362,6 @@ impl StcPlayer {
                     }
                 }
             } else {
-                // Inactive channel: disable tone + noise, silence
                 regs[7] |= (0x01 | 0x08) << ch;
                 regs[8 + ch] = 0;
             }
@@ -383,87 +372,148 @@ impl StcPlayer {
     }
 }
 
+// ============================================================================
+// StcModule — wraps StcPlayer as a rack Module
+// ============================================================================
+
+struct StcModule {
+    id: String,
+    actor_ref: ActorRef<CommandEnum>,
+}
+
+impl Module for StcModule {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn handle(&self) -> Option<ActorRef<CommandEnum>> {
+        Some(self.actor_ref.clone())
+    }
+    fn set_enabled(&mut self, _enabled: bool) {}
+    fn stop(&mut self) {}
+}
+
+// ============================================================================
+// Embedded STC data
+// ============================================================================
+
 const STC_DATA: &[u8] = include_bytes!("../../../Bonysoft - Popcorn (1993).stc");
+
+// ============================================================================
+// Main
+// ============================================================================
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args.get(1).cloned().unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
 
-    let running = Arc::new(AtomicBool::new(true));
-    let t_run = running.clone();
+    let mut be_params = HashMap::new();
+    be_params.insert("sample_rate".into(), RATE.to_string());
+    be_params.insert("buffer_size".into(), BUF.to_string());
+    be_params.insert("channels".into(), "1".to_string());
 
-    let audio_thread = std::thread::spawn(move || {
-        let mut be_params = std::collections::HashMap::new();
-        be_params.insert("sample_rate".into(), RATE.to_string());
-        be_params.insert("buffer_size".into(), BUF.to_string());
-        be_params.insert("channels".into(), "1".to_string());
+    let mut system = ModularSystem::<BUF>::new(ModularConfig {
+        sample_rate: RATE,
+        block_size: BUF,
+        backend_name: Some(backend_name.clone()),
+        backend_params: be_params,
+        ..Default::default()
+    });
 
-        let system = ModularSystem::<BUF>::new(ModularConfig {
-            sample_rate: RATE,
-            block_size: BUF,
-            backend_name: Some(backend_name.clone()),
-            backend_params: be_params,
-            ..Default::default()
+    // Register the STC player as a custom rack module
+    system
+        .module_factory_mut()
+        .register_fn("stc_player", |id, _params, sys, graph_ref| {
+            let player = RefCell::new(StcPlayer::new(STC_DATA.to_vec()));
+            let gr = graph_ref.clone();
+            let mut actor = sys.spawn(id, move |msg: CommandEnum| {
+                if let CommandEnum::ClockTick(tick) = msg {
+                    let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+                    if let Some(regs) = player.borrow_mut().step_ms(ms) {
+                        let pid = ParameterId::new("io_write").unwrap();
+                        gr.send(CommandEnum::SetParameter(SetParameter::new(
+                            PortId::param(NodeId(0), 0),
+                            pid,
+                            ParamValue::Bytes(regs.to_vec()),
+                            SignalOrigin::Manual,
+                        )));
+                    }
+                }
+            });
+            let actor_ref = actor.actor_ref();
+            std::thread::spawn(move || loop {
+                actor.drain();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            });
+            Box::new(StcModule {
+                id: id.to_string(),
+                actor_ref,
+            })
         });
 
-        let def = GraphDef {
-            format_version: "rill/1".to_string(),
-            sample_rate: RATE,
-            block_size: BUF,
-            resources: vec![],
-            nodes: vec![
-                NodeDef::Source(SourceDef {
-                    id: 0,
-                    type_name: "rill/lofi_input".into(),
-                    name: "ay_chip".into(),
-                    backend: Some("ay38910".into()),
-                    parameters: [
-                        ("bit_depth".into(), ParamValue::Int(8)),
-                        ("nonlinear".into(), ParamValue::Bool(false)),
-                        ("noise_floor".into(), ParamValue::Float(-48.0)),
-                    ]
-                    .into(),
-                }),
-                NodeDef::Sink(SinkDef {
-                    id: 1,
-                    type_name: "rill/output".into(),
-                    name: "output".into(),
-                    backend: None,
-                    parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
-                }),
-            ],
-            connections: vec![ConnectionDef {
-                kind: SignalKind::Signal,
-                from_node: 0,
-                from_port: 0,
-                to_node: 1,
-                to_port: 0,
-            }],
-            description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
-        };
+    let def = ModularSystemDef {
+        format_version: "rill/1".into(),
+        sample_rate: RATE,
+        block_size: BUF,
+        cases: vec![CaseDef {
+            name: "chiptune_stc".into(),
+            graph: GraphDef {
+                format_version: "rill/1".to_string(),
+                sample_rate: RATE,
+                block_size: BUF,
+                resources: vec![],
+                nodes: vec![
+                    NodeDef::Source(SourceDef {
+                        id: 0,
+                        type_name: "rill/lofi_input".into(),
+                        name: "ay_chip".into(),
+                        backend: Some("ay38910".into()),
+                        parameters: [
+                            ("bit_depth".into(), ParamValue::Int(8)),
+                            ("nonlinear".into(), ParamValue::Bool(false)),
+                            ("noise_floor".into(), ParamValue::Float(-48.0)),
+                        ]
+                        .into(),
+                    }),
+                    NodeDef::Sink(SinkDef {
+                        id: 1,
+                        type_name: "rill/output".into(),
+                        name: "output".into(),
+                        backend: None,
+                        parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
+                    }),
+                ],
+                connections: vec![ConnectionDef {
+                    kind: SignalKind::Signal,
+                    from_node: 0,
+                    from_port: 0,
+                    to_node: 1,
+                    to_port: 0,
+                }],
+                description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
+            },
+            patchbay: Some(RackDef {
+                automata: vec![],
+                modules: vec![ModuleDef::Custom {
+                    type_name: "stc_player".into(),
+                    params: HashMap::new(),
+                }],
+                mappings: vec![],
+                osc_surface: vec![],
+                description: None,
+            }),
+        }],
+        description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
+    };
 
-        // TODO: replace manual player with Servo + automaton
-        // clock channel will be provided by ModularSystemDef
-        let mut graph = system.build_graph(&def).expect("build graph");
-
-        graph.run(t_run).ok();
-    });
-
-    let t_run = running.clone();
-    let ah = audio_thread.thread().clone();
-    std::thread::spawn(move || {
-        let mut input = String::new();
-        let _ = std::io::stdin().read_line(&mut input);
-        t_run.store(false, Ordering::Release);
-        ah.unpark();
-    });
+    let _system = system.launch(&def).expect("launch system");
 
     println!("AY-3-8910 Chiptune — Popcorn (STC)");
     println!("   Backend: {}\n", backend_display);
     println!("   Press Enter to stop.\n");
 
-    audio_thread.join().ok();
-    println!("Stopped.");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+
     Ok(())
 }

@@ -73,6 +73,7 @@ impl<const BUF: usize> RackCase<BUF> {
             running.store(false, Ordering::Release);
         }
         if let Some(handle) = self.audio_thread.take() {
+            handle.thread().unpark();
             let _ = handle.join();
         }
     }
