@@ -84,6 +84,8 @@ impl PipewireBackend {
             ));
         }
 
+        let input_channels = config.input_channels;
+        let sample_rate = config.sample_rate;
         Ok(Self {
             input_buffer: Arc::new(IoRingBuffer::new(
                 (config.buffer_size * config.input_channels.max(1) * 32) as usize,
@@ -93,12 +95,12 @@ impl PipewireBackend {
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             output_slot: OutputSlot::new(),
-            negotiated_input_channels: Arc::new(AtomicU32::new(0)),
-            negotiated_input_rate: Arc::new(AtomicU32::new(0)),
+            negotiated_input_channels: Arc::new(AtomicU32::new(input_channels)),
+            negotiated_input_rate: Arc::new(AtomicU32::new(sample_rate)),
         })
     }
 
-    /// Return the negotiated sample rate from PipeWire, or 0 if not yet negotiated.
+    /// Return the negotiated sample rate from PipeWire (falls back to config rate until negotiated).
     pub fn negotiated_rate(&self) -> u32 {
         self.negotiated_input_rate.load(Ordering::Relaxed)
     }
@@ -419,10 +421,18 @@ impl IoBackend<f32> for PipewireBackend {
                         }
                     };
 
-                    let (_chunk_offset, chunk_size) = {
+                    let chunk_offset;
+                    let chunk_size;
+                    {
                         let ck = data.chunk_mut();
-                        (*ck.offset_mut(), *ck.size_mut())
-                    };
+                        let flags = ck.flags();
+                        if flags.contains(spa::buffer::ChunkFlags::CORRUPTED) {
+                            xruns.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                        chunk_offset = ck.offset() as usize;
+                        chunk_size = ck.size() as usize;
+                    }
 
                     if chunk_size == 0 {
                         return;
@@ -432,39 +442,22 @@ impl IoBackend<f32> for PipewireBackend {
                         Some(s) => s,
                         None => return,
                     };
-                    let stride = actual_channels * 4;
-                    let n_samp = (chunk_size as usize / stride) * actual_channels;
-                    let len = n_samp.min(MAX_BLOCK_SAMPLES);
-                    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                    let mut i = 0usize;
-                    while i + 4 <= len {
-                        let off = i * 4;
-                        if off + 16 <= slice.len() {
-                            let mut b0 = [0u8; 4];
-                            let mut b1 = [0u8; 4];
-                            let mut b2 = [0u8; 4];
-                            let mut b3 = [0u8; 4];
-                            b0.copy_from_slice(&slice[off..off + 4]);
-                            b1.copy_from_slice(&slice[off + 4..off + 8]);
-                            b2.copy_from_slice(&slice[off + 8..off + 12]);
-                            b3.copy_from_slice(&slice[off + 12..off + 16]);
-                            temp[i] = f32::from_le_bytes(b0);
-                            temp[i + 1] = f32::from_le_bytes(b1);
-                            temp[i + 2] = f32::from_le_bytes(b2);
-                            temp[i + 3] = f32::from_le_bytes(b3);
-                        }
-                        i += 4;
+
+                    let data_start = chunk_offset.min(slice.len());
+                    let data_end = (chunk_offset + chunk_size).min(slice.len());
+                    let sample_bytes = &slice[data_start..data_end];
+                    let samples: &[f32] = bytemuck::cast_slice(sample_bytes);
+                    let len = samples.len().min(MAX_BLOCK_SAMPLES);
+
+                    let written = ibuf.write(&samples[..len]);
+                    if written < len {
+                        log::warn!(
+                            "PW input: ring buffer overflow, wrote {written}/{} samples",
+                            len
+                        );
                     }
-                    for (j, t) in temp[i..len].iter_mut().enumerate() {
-                        let off = (i + j) * 4;
-                        if off + 4 <= slice.len() {
-                            let mut bytes = [0u8; 4];
-                            bytes.copy_from_slice(&slice[off..off + 4]);
-                            *t = f32::from_le_bytes(bytes);
-                        }
-                    }
+
                     let block_samps = buf_frames * actual_channels;
-                    ibuf.write(&temp[..len]);
                     if out_channels == 0 {
                         while ibuf.len() >= block_samps {
                             unsafe {
@@ -484,7 +477,7 @@ impl IoBackend<f32> for PipewireBackend {
                 None,
                 pw::stream::StreamFlags::AUTOCONNECT
                     | pw::stream::StreamFlags::MAP_BUFFERS
-                    | pw::stream::StreamFlags::DRIVER,
+                    | pw::stream::StreamFlags::RT_PROCESS,
                 &mut in_params,
             ) {
                 log::warn!("PW input connect: disabled — {e}");

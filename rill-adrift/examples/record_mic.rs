@@ -222,7 +222,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut be_params = HashMap::new();
         be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
         be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-        be_params.insert("channels".into(), ParamValue::Int(2));
+        be_params.insert("input_channels".into(), ParamValue::Int(2));
+        be_params.insert("output_channels".into(), ParamValue::Int(0));
 
         builder.set_default_backend(backend_name.clone(), be_params);
 

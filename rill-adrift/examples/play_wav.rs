@@ -78,6 +78,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "buffer_size".into(),
             rill_adrift::rill_core::traits::ParamValue::Int(BUF as i32),
         );
+        be_params.insert(
+            "input_channels".into(),
+            rill_adrift::rill_core::traits::ParamValue::Int(0),
+        );
+        be_params.insert(
+            "output_channels".into(),
+            rill_adrift::rill_core::traits::ParamValue::Int(2),
+        );
 
         builder.set_default_backend(backend.clone(), be_params);
 
