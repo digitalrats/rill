@@ -29,15 +29,21 @@ use rill_patchbay::serialization::{AutomatonDef, MappingDef, SensorDef, ServoDef
 /// or Graph (signal graph with its own I/O loop).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModuleDef {
+    /// Documentation.
     Servo(ServoDef),
+    /// Documentation.
     Sensor(SensorDef),
+    /// Documentation.
     Custom {
+        /// Documentation.
         type_name: String,
+        /// Documentation.
         #[serde(default)]
         params: HashMap<String, ParamValue>,
     },
     /// Signal graph — owns the I/O loop.
     Graph {
+        /// Documentation.
         graph: GraphDef,
     },
 }
@@ -49,18 +55,25 @@ pub enum ModuleDef {
 /// A modular processing rack — one signal graph + its control modules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RackDef {
+    /// Documentation.
     pub name: String,
+    /// Documentation.
     pub graph: GraphDef,
+    /// Documentation.
     #[serde(default)]
     pub automata: Vec<AutomatonDef>,
+    /// Documentation.
     #[serde(default)]
     pub modules: Vec<ModuleDef>,
+    /// Documentation.
     #[serde(default)]
     pub mappings: Vec<MappingDef>,
+    /// Documentation.
     pub description: Option<String>,
 }
 
 impl RackDef {
+    /// Documentation.
     pub fn new(name: impl Into<String>, graph: GraphDef) -> Self {
         Self {
             name: name.into(),
@@ -225,17 +238,24 @@ impl RackDef {
 /// Top-level document describing a full modular processing system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModularSystemDef {
+    /// Documentation.
     pub format_version: String,
+    /// Documentation.
     pub sample_rate: f32,
+    /// Documentation.
     pub block_size: usize,
+    /// Documentation.
     pub racks: Vec<RackDef>,
+    /// Documentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
+/// Documentation.
 
 pub fn to_json(def: &ModularSystemDef) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(def)
 }
+/// Documentation.
 
 pub fn from_json(json: &str) -> Result<ModularSystemDef, serde_json::Error> {
     serde_json::from_str(json)

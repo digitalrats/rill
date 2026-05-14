@@ -22,30 +22,49 @@ use crate::strategy::{ConflictStrategy, ControlStrategy};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventPattern {
+    /// Documentation.
     AnyButton,
+    /// Documentation.
     ButtonId(u32),
+    /// Documentation.
     AnyKnob,
+    /// Documentation.
     KnobId(u32),
+    /// Documentation.
     AnyFader,
+    /// Documentation.
     FaderId(u32),
+    /// Documentation.
     AnyMidi,
+    /// Documentation.
     MidiControl {
+        /// Documentation.
         channel: Option<u8>,
+        /// Documentation.
         controller: u8,
     },
+    /// Documentation.
     MidiNote {
+        /// Documentation.
         channel: Option<u8>,
+        /// Documentation.
         note: Option<u8>,
     },
+    /// Documentation.
     MidiClock,
+    /// Documentation.
     MidiTransport {
+        /// Documentation.
         kind: Option<MidiTransportKind>,
     },
+    /// Documentation.
     OscAddress(String),
+    /// Documentation.
     OscPattern(String),
 }
 
 impl EventPattern {
+    /// Documentation.
     pub fn matches(&self, event: &ControlEvent) -> bool {
         match (self, event) {
             (EventPattern::AnyButton, ControlEvent::Button { .. }) => true,
@@ -93,6 +112,7 @@ impl EventPattern {
         }
     }
 }
+/// Documentation.
 
 // =============================================================================
 // 2. Event types
@@ -101,51 +121,83 @@ impl EventPattern {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlEvent {
+    /// Documentation.
     Button {
+        /// Documentation.
         id: u32,
+        /// Documentation.
         pressed: bool,
     },
+    /// Documentation.
     Knob {
+        /// Documentation.
         id: u32,
+        /// Documentation.
         value: f32,
+        /// Documentation.
         normalized: f32,
     },
+    /// Documentation.
     Fader {
+        /// Documentation.
         id: u32,
+        /// Documentation.
         value: f32,
+        /// Documentation.
         normalized: f32,
     },
+    /// Documentation.
     MidiControl {
+        /// Documentation.
         channel: u8,
+        /// Documentation.
         controller: u8,
+        /// Documentation.
         value: u8,
+        /// Documentation.
         normalized: f32,
     },
+    /// Documentation.
     MidiNote {
+        /// Documentation.
         channel: u8,
+        /// Documentation.
         note: u8,
+        /// Documentation.
         velocity: u8,
+        /// Documentation.
         on: bool,
     },
+    /// Documentation.
     Osc {
+        /// Documentation.
         address: String,
+        /// Documentation.
         args: Vec<f32>,
     },
+    /// Documentation.
     MidiClock,
+    /// Documentation.
     MidiTransport {
+        /// Documentation.
         kind: MidiTransportKind,
     },
 }
+/// Documentation.
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MidiTransportKind {
+    /// Documentation.
     Start,
+    /// Documentation.
     Stop,
+    /// Documentation.
     Continue,
 }
 
 impl ControlEvent {
+    /// Documentation.
     pub fn normalized_value(&self) -> Option<f32> {
         match self {
             ControlEvent::Knob { normalized, .. } => Some(*normalized),
@@ -155,6 +207,7 @@ impl ControlEvent {
             _ => None,
         }
     }
+    /// Documentation.
     pub fn id(&self) -> Option<u32> {
         match self {
             ControlEvent::Button { id, .. } => Some(*id),
@@ -164,6 +217,7 @@ impl ControlEvent {
         }
     }
 }
+/// Documentation.
 
 // =============================================================================
 // 2b. OSC Surface
@@ -172,16 +226,21 @@ impl ControlEvent {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct OscSurfaceEntry {
+    /// Documentation.
     pub osc_path: String,
+    /// Documentation.
     pub event_pattern: EventPattern,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
+    /// Documentation.
     pub label: Option<String>,
 }
+/// Documentation.
 
 pub type OscSurface = Vec<OscSurfaceEntry>;
+/// Documentation.
 
 // =============================================================================
 // 3. Value transforms
@@ -189,10 +248,15 @@ pub type OscSurface = Vec<OscSurfaceEntry>;
 
 #[derive(Clone)]
 pub enum Transform {
+    /// Documentation.
     Linear,
+    /// Documentation.
     Exponential,
+    /// Documentation.
     Logarithmic,
+    /// Documentation.
     Inverted,
+    /// Documentation.
     Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>),
 }
 
@@ -209,6 +273,7 @@ impl Debug for Transform {
 }
 
 impl Transform {
+    /// Documentation.
     pub fn apply(&self, value: f32, min: f32, max: f32) -> f32 {
         let range = max - min;
         let normalized = value.clamp(0.0, 1.0);
@@ -222,6 +287,7 @@ impl Transform {
         mapped.clamp(min, max)
     }
 }
+/// Documentation.
 
 // =============================================================================
 // 4. Event mapping
@@ -230,22 +296,33 @@ impl Transform {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Target {
+    /// Documentation.
     pub node_id: NodeId,
+    /// Documentation.
     pub param_name: String,
+    /// Documentation.
     pub min: f32,
+    /// Documentation.
     pub max: f32,
 }
+/// Documentation.
 
 #[derive(Debug, Clone)]
 pub struct Mapping {
+    /// Documentation.
     pub pattern: EventPattern,
+    /// Documentation.
     pub target: Target,
+    /// Documentation.
     pub transform: Transform,
+    /// Documentation.
     pub name: String,
+    /// Documentation.
     pub enabled: bool,
 }
 
 impl Mapping {
+    /// Documentation.
     pub fn new(pattern: EventPattern, target: Target, transform: Transform) -> Self {
         let name = format!("{:?} -> {}", pattern, target.param_name);
         Self {
@@ -256,10 +333,12 @@ impl Mapping {
             enabled: true,
         }
     }
+    /// Documentation.
 
     pub fn matches(&self, event: &ControlEvent) -> bool {
         self.enabled && self.pattern.matches(event)
     }
+    /// Documentation.
 
     pub fn apply(&self, event: &ControlEvent) -> Option<SetParameter> {
         if !self.matches(event) {
@@ -277,19 +356,25 @@ impl Mapping {
         })
     }
 }
+/// Documentation.
 
 // =============================================================================
 // 5. Automaton core trait
 // =============================================================================
 
 pub type Time = f64;
+/// Documentation.
 
 #[derive(Debug, Clone, Default)]
 pub struct NoAction;
+/// Documentation.
 
 pub trait Automaton: Send + Sync + Debug {
+    /// Documentation.
     type Internal: Clone + Send + Sync + 'static;
+    /// Documentation.
     type Action: Debug + Clone + Send + Sync + Default + 'static;
+    /// Documentation.
 
     fn step(
         &self,
@@ -298,15 +383,19 @@ pub trait Automaton: Send + Sync + Debug {
         time: Time,
         action: &Self::Action,
     ) -> ParamValue;
+    /// Documentation.
 
     fn initial_internal(&self) -> Self::Internal;
+    /// Documentation.
 
     fn reset(&self) -> Self::Internal {
         self.initial_internal()
     }
+    /// Documentation.
 
     fn name(&self) -> &str;
 }
+/// Documentation.
 
 // =============================================================================
 // 6. Parameter mapping
@@ -314,10 +403,15 @@ pub trait Automaton: Send + Sync + Debug {
 
 #[derive(Clone)]
 pub enum ParameterMapping {
+    /// Documentation.
     Linear,
+    /// Documentation.
     Exponential,
+    /// Documentation.
     Logarithmic,
+    /// Documentation.
     Inverted,
+    /// Documentation.
     Custom(Arc<dyn Fn(f64) -> f64 + Send + Sync>),
 }
 
@@ -334,6 +428,7 @@ impl std::fmt::Debug for ParameterMapping {
 }
 
 impl ParameterMapping {
+    /// Documentation.
     pub fn apply(&self, raw: f64) -> f64 {
         match self {
             ParameterMapping::Linear => raw,
@@ -359,6 +454,7 @@ pub(crate) struct ServoState<A: Automaton> {
     pub(crate) last_sent_value: f64,
     pub(crate) last_sent_index: i64,
 }
+/// Documentation.
 
 // =============================================================================
 // 8. Servo — automaton-to-parameter bridge
@@ -380,6 +476,7 @@ pub struct Servo<A: Automaton> {
 }
 
 impl<A: Automaton + 'static> Servo<A> {
+    /// Documentation.
     pub fn new(
         id: impl Into<String>,
         automaton: A,
@@ -425,6 +522,7 @@ impl<A: Automaton + 'static> Servo<A> {
             table: None,
         }
     }
+    /// Documentation.
 
     pub fn spawn(self, system: &ActorSystem) -> ActorRef<CommandEnum> {
         let Servo {
@@ -558,31 +656,40 @@ impl<A: Automaton + 'static> Servo<A> {
             1,
         )
     }
+    /// Documentation.
 
     pub fn with_table(mut self, table: Vec<ParamValue>) -> Self {
         self.table = Some(table);
         self
     }
+    /// Documentation.
 
     pub fn id(&self) -> &str {
         &self.id
     }
 }
+/// Documentation.
 
 // =============================================================================
 // 9. Module trait — unified interface for sensors
 // =============================================================================
 
 pub type BoxedModule = Box<dyn Module>;
+/// Documentation.
 
 pub trait Module: Send {
+    /// Documentation.
     fn id(&self) -> &str;
+    /// Documentation.
     fn handle(&self) -> Option<ActorRef<CommandEnum>> {
         None
     }
+    /// Documentation.
     fn set_enabled(&mut self, _enabled: bool) {}
+    /// Documentation.
     fn stop(&mut self);
 }
+/// Documentation.
 
 // =============================================================================
 // 10. Helper constructors
@@ -611,6 +718,7 @@ pub fn midi_cc(
         transform,
     )
 }
+/// Documentation.
 
 pub fn osc_address(
     address: &str,

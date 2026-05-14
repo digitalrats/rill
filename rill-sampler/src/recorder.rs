@@ -57,6 +57,7 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
         }
     }
 
+    /// Write recorded samples to a 16-bit WAV file.
     #[cfg(feature = "wav")]
     pub fn write_wav(
         path: &str,

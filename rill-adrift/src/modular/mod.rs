@@ -26,6 +26,7 @@ mod config;
 pub mod serialization;
 pub use case::RackCase;
 pub use config::{LaunchConfig, ModularConfig};
+/// Documentation.
 
 // ============================================================================
 // Error type
@@ -33,9 +34,12 @@ pub use config::{LaunchConfig, ModularConfig};
 
 #[derive(Debug)]
 pub enum ModularError {
+    /// Documentation.
     Graph(String),
+    /// Documentation.
     Rack(String),
 }
+/// Documentation.
 
 // ============================================================================
 // ModularSystem struct
@@ -56,6 +60,7 @@ pub struct ModularSystem<const BUF: usize = 64> {
 }
 
 impl<const BUF: usize> ModularSystem<BUF> {
+    /// Documentation.
     pub fn new(config: ModularConfig) -> Self {
         let mut nf = NodeFactory::new();
         crate::registration::register_all_nodes(&mut nf);
@@ -89,6 +94,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
             tokio_rt: None,
         }
     }
+    /// Documentation.
 
     pub fn set_default_backend(&mut self, name: &str, params: HashMap<String, ParamValue>) {
         self.default_backend = Some((name.to_string(), params));
@@ -104,6 +110,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         }
         builder
     }
+    /// Documentation.
 
     pub fn build_graph(
         &self,
@@ -208,6 +215,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         self.tokio_rt = Some(tokio_rt);
         Ok(self)
     }
+    /// Documentation.
 
     pub fn stop(&mut self) {
         for case in self.cases.values_mut() {
@@ -218,6 +226,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
             self.tokio_rt = None;
         }
     }
+    /// Documentation.
 
     pub fn drain_dead_letters(&self) -> Vec<SetParameter> {
         let mut msgs = Vec::new();

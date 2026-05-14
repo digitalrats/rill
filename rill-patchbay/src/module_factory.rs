@@ -21,16 +21,24 @@ use crate::engine::{BoxedModule, Module};
 #[derive(Debug, Clone, Copy)]
 pub enum Drain {
     /// OS thread with periodic drain (handler: !Send).
-    OsThread { interval_ms: u64 },
+    OsThread {
+        /// Drain interval in milliseconds.
+        interval_ms: u64,
+    },
     /// Tokio task with periodic drain (handler: Send).
-    TokioTask { interval_ms: u64 },
+    TokioTask {
+        /// Drain interval in milliseconds.
+        interval_ms: u64,
+    },
     /// I/O callback drain — handler drained inline in the backend callback.
     /// Factory spawns the I/O thread, construction closures run inside it.
     IoCallback,
 }
+/// Documentation.
 
 #[derive(Debug, Clone)]
 pub enum FactoryError {
+    /// Documentation.
     UnknownType(String),
 }
 
@@ -41,9 +49,12 @@ impl fmt::Display for FactoryError {
         }
     }
 }
+/// Documentation.
 
 pub trait ModuleConstructor: Send + Sync {
+    /// Documentation.
     fn type_name(&self) -> &'static str;
+    /// Documentation.
     fn construct(
         &self,
         id: &str,
@@ -51,19 +62,23 @@ pub trait ModuleConstructor: Send + Sync {
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
     ) -> BoxedModule;
+    /// Documentation.
     fn clone_box(&self) -> Box<dyn ModuleConstructor>;
 }
+/// Documentation.
 
 pub struct ModuleFactory {
     entries: HashMap<String, Box<dyn ModuleConstructor>>,
 }
 
 impl ModuleFactory {
+    /// Documentation.
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
         }
     }
+    /// Documentation.
 
     pub fn register(&mut self, ctor: impl ModuleConstructor + 'static) {
         self.entries
@@ -115,6 +130,7 @@ impl ModuleFactory {
             Box::new(ClosureCtor::new_send(drain, make_handler)),
         );
     }
+    /// Documentation.
 
     pub fn construct(
         &self,
@@ -129,14 +145,17 @@ impl ModuleFactory {
             .ok_or_else(|| FactoryError::UnknownType(type_name.to_string()))
             .map(|ctor| ctor.construct(id, params, system, graph_ref))
     }
+    /// Documentation.
 
     pub fn contains(&self, type_name: &str) -> bool {
         self.entries.contains_key(type_name)
     }
+    /// Documentation.
 
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+    /// Documentation.
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
