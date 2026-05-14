@@ -192,8 +192,8 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    ClockError, ClockResult, ConnectionError, ConnectionResult, Node, NodeCategory, NodeId,
-    NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
+    ClockError, ClockResult, ConnectionError, ConnectionResult, Eurorack, Node, NodeCategory,
+    NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
     ParameterError, ParameterId, Params, Port, PortDirection, PortError, PortId, PortResult,
     PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };

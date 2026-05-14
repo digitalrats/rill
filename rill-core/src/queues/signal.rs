@@ -26,6 +26,7 @@
 //! ```
 
 use super::command::Command;
+use crate::time::ClockTick;
 use crate::traits::{ParamValue, ParameterId, PortId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -231,6 +232,23 @@ pub enum AutomatonCommand {
         /// Automaton identifier to remove.
         id: String,
     },
+    /// Wake the automaton to process a clock tick (no payload required).
+    Wake {
+        /// Automaton identifier.
+        id: String,
+    },
+    /// Set a value from UI input for conflict resolution.
+    UiValue {
+        /// Automaton identifier.
+        id: String,
+        /// Raw value from UI.
+        value: f64,
+    },
+    /// Release UI control (unfreeze in TouchOverride mode).
+    UiRelease {
+        /// Automaton identifier.
+        id: String,
+    },
 }
 
 impl AutomatonCommand {
@@ -244,6 +262,9 @@ impl AutomatonCommand {
             AutomatonCommand::Disconnect { from, to: _to } => Some(from),
             AutomatonCommand::Create { id, .. } => Some(id),
             AutomatonCommand::Destroy { id } => Some(id),
+            AutomatonCommand::Wake { id } => Some(id),
+            AutomatonCommand::UiValue { id, .. } => Some(id),
+            AutomatonCommand::UiRelease { id } => Some(id),
         }
     }
 }
@@ -277,6 +298,15 @@ impl fmt::Display for AutomatonCommand {
             }
             AutomatonCommand::Destroy { id } => {
                 write!(f, "Automaton destroy {}", id)
+            }
+            AutomatonCommand::Wake { id } => {
+                write!(f, "Automaton[{}] wake(tick)", id)
+            }
+            AutomatonCommand::UiValue { id, value } => {
+                write!(f, "Automaton[{}] ui_value({:.2})", id, value)
+            }
+            AutomatonCommand::UiRelease { id } => {
+                write!(f, "Automaton[{}] ui_release()", id)
             }
         }
     }
@@ -524,6 +554,10 @@ pub enum CommandType {
     Sensor,
     /// Servo control command.
     Servo,
+    /// Audio clock tick.
+    ClockTick,
+    /// Stop command — shuts down the actor's I/O loop.
+    Stop,
     /// System command.
     System,
 }
@@ -535,6 +569,8 @@ impl fmt::Display for CommandType {
             CommandType::Automaton => write!(f, "Automaton"),
             CommandType::Sensor => write!(f, "Sensor"),
             CommandType::Servo => write!(f, "Servo"),
+            CommandType::ClockTick => write!(f, "ClockTick"),
+            CommandType::Stop => write!(f, "Stop"),
             CommandType::System => write!(f, "System"),
         }
     }
@@ -554,6 +590,10 @@ pub enum CommandEnum {
     Sensor(SensorCommand),
     /// Servo control command.
     Servo(ServoCommand),
+    /// Audio clock tick — sent from Graph to Patchbay each processing block.
+    ClockTick(ClockTick),
+    /// Stop command — shuts down the actor's I/O loop.
+    Stop,
     /// System-level command with opaque payload.
     System {
         /// System command kind.
@@ -571,6 +611,8 @@ impl CommandEnum {
             CommandEnum::Automaton(_) => CommandType::Automaton,
             CommandEnum::Sensor(_) => CommandType::Sensor,
             CommandEnum::Servo(_) => CommandType::Servo,
+            CommandEnum::ClockTick(_) => CommandType::ClockTick,
+            CommandEnum::Stop => CommandType::Stop,
             CommandEnum::System { .. } => CommandType::System,
         }
     }
@@ -622,6 +664,14 @@ impl CommandEnum {
             _ => None,
         }
     }
+
+    /// Try to downcast to `ClockTick`.
+    pub fn as_clock_tick(&self) -> Option<&ClockTick> {
+        match self {
+            CommandEnum::ClockTick(tick) => Some(tick),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for CommandEnum {
@@ -631,6 +681,12 @@ impl fmt::Display for CommandEnum {
             CommandEnum::Automaton(cmd) => write!(f, "{}", cmd),
             CommandEnum::Sensor(cmd) => write!(f, "{}", cmd),
             CommandEnum::Servo(cmd) => write!(f, "{}", cmd),
+            CommandEnum::ClockTick(tick) => write!(
+                f,
+                "ClockTick(pos={}, dt={}samp)",
+                tick.sample_pos, tick.samples_since_last,
+            ),
+            CommandEnum::Stop => write!(f, "Stop"),
             CommandEnum::System { kind, data } => {
                 write!(f, "System[{}] ({} bytes)", kind, data.len())
             }

@@ -6,12 +6,12 @@
 //! thread starts.
 //!
 //! Usage:
-//!   cargo run --example advanced_player --features "cpal,sampler,serialization"
-//!   cargo run --example advanced_player --features "cpal,sampler,serialization" -- [backend] [wav]
-//!   cargo run --example advanced_player --features "cpal,sampler,serialization" -- [wav]
+//!   cargo run --example advanced_player --features "portaudio,sampler,serialization"
+//!   cargo run --example advanced_player --features "portaudio,sampler,serialization" -- [backend] [wav]
+//!   cargo run --example advanced_player --features "portaudio,sampler,serialization" -- [wav]
 //!
 //! Positional arguments (optional):
-//!   backend   Audio backend name (e.g. cpal, alsa, null). Default from config.toml.
+//!   backend   Audio backend name (e.g. portaudio, alsa, null). Default from config.toml.
 //!   wav       Path to a WAV file to play. Sent as a `SetParameter` command
 //!             via the graph's actor mailbox.
 
@@ -19,12 +19,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::registration;
 use rill_adrift::rill_core::{
-    queues::{SetParameter, SignalOrigin},
+    queues::{CommandEnum, SetParameter, SignalOrigin},
     NodeId, ParamValue, ParameterId, PortId,
 };
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
 use serde::Deserialize;
 
 const BUF: usize = 256;
@@ -76,7 +76,7 @@ fn build_graph(
     let json = std::fs::read_to_string(&graph_path)?;
     let def = registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
 
-    let rt = Runtime::<BUF>::new(RuntimeConfig {
+    let system = ModularSystem::<BUF>::new(ModularConfig {
         sample_rate: cfg.sample_rate,
         block_size: cfg.block_size,
         backend_name: Some(backend_name.to_string()),
@@ -88,10 +88,9 @@ fn build_graph(
         ..Default::default()
     });
 
-    let builder = rt
-        .create_builder_from_graphdef(&def)
-        .map_err(|e| format!("create_builder: {e}"))?;
-    let graph = builder.build().map_err(|e| format!("build: {e}"))?;
+    let graph = system
+        .build_graph(&def)
+        .map_err(|e| format!("build: {e}"))?;
     Ok(graph)
 }
 
@@ -142,24 +141,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
 
             // Send parameter changes via the actor mailbox
-            if let Some(handle) = graph.handle() {
-                if let Some(ref path) = wav_path {
-                    handle.send(SetParameter::new(
-                        PortId::signal_out(NodeId(0), 0),
-                        ParameterId::new("file").unwrap(),
-                        ParamValue::String(path.clone()),
-                        SignalOrigin::Manual,
-                    ));
-                }
-
-                // Example: set filter cutoff
-                handle.send(SetParameter::new(
-                    PortId::signal_in(NodeId(1), 0),
-                    ParameterId::new("cutoff").unwrap(),
-                    ParamValue::Float(800.0),
+            let handle = graph.handle();
+            if let Some(ref path) = wav_path {
+                handle.send(CommandEnum::SetParameter(SetParameter::new(
+                    PortId::signal_out(NodeId(0), 0),
+                    ParameterId::new("file").unwrap(),
+                    ParamValue::String(path.clone()),
                     SignalOrigin::Manual,
-                ));
+                )));
             }
+
+            // Example: set filter cutoff
+            handle.send(CommandEnum::SetParameter(SetParameter::new(
+                PortId::signal_in(NodeId(1), 0),
+                ParameterId::new("cutoff").unwrap(),
+                ParamValue::Float(800.0),
+                SignalOrigin::Manual,
+            )));
 
             graph.run(running).ok();
         })

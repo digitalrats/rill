@@ -223,18 +223,8 @@ impl OperationGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core_actor::{ActorCell, ActorRef};
-
-    #[allow(dead_code)]
-    struct CollectActor {
-        events: Vec<Telemetry>,
-    }
-    impl ActorCell for CollectActor {
-        type Msg = Telemetry;
-        fn receive(&mut self, msg: Telemetry) {
-            self.events.push(msg);
-        }
-    }
+    use rill_core_actor::ActorSystem;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_observer_creation() {
@@ -245,15 +235,22 @@ mod tests {
 
     #[test]
     fn test_observer_record_violation() {
-        let (tx, rx) = ActorRef::<Telemetry>::new_pair();
-        let observer = MicroControlObserver::with_actor(tx);
+        let system = ActorSystem::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv = received.clone();
+        let mut actor = system.spawn("telemetry", move |msg: Telemetry| {
+            recv.lock().unwrap().push(msg);
+        });
+        let observer = MicroControlObserver::with_actor(actor.actor_ref());
         observer.record_violation("test_comp", 100, 250, Some(0.5));
         let stats = observer.sandbox_summary();
         assert_eq!(stats.total_violations, 1);
         let violations = observer.violations();
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].component, "test_comp");
-        while let Some(evt) = rx.pop() {
+        actor.drain();
+        let events = received.lock().unwrap();
+        for evt in events.iter() {
             if let Telemetry::Violation { component, .. } = evt {
                 assert_eq!(component, "test_comp");
             }
@@ -262,15 +259,22 @@ mod tests {
 
     #[test]
     fn test_observer_operation_guard() {
-        let (tx, rx) = ActorRef::<Telemetry>::new_pair();
-        let observer = MicroControlObserver::with_actor(tx);
+        let system = ActorSystem::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv = received.clone();
+        let mut actor = system.spawn("telemetry", move |msg: Telemetry| {
+            recv.lock().unwrap().push(msg);
+        });
+        let observer = MicroControlObserver::with_actor(actor.actor_ref());
         {
             let _guard = observer.observe_start("test_op");
             std::thread::sleep(std::time::Duration::from_micros(10));
         }
         let stats = observer.sandbox_summary();
         assert_eq!(stats.total_operations, 1);
-        while let Some(evt) = rx.pop() {
+        actor.drain();
+        let events = received.lock().unwrap();
+        for evt in events.iter() {
             if let Telemetry::Event { kind, .. } = evt {
                 assert_eq!(kind, "micro_complete");
             }

@@ -398,7 +398,7 @@ fn register_router<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
 /// Deserialise a JSON graph string into a
 /// [rill_graph::serialization::GraphDef].
 ///
-/// Use [`Runtime::create_builder`](crate::runtime::Runtime::create_builder)
+/// Use [`ModularSystem::create_builder`](crate::modular::ModularSystem::create_builder)
 /// to build a graph from the definition.
 #[cfg(feature = "serialization")]
 pub fn load_graph_json(

@@ -7,6 +7,7 @@
 
 pub mod cellular;
 pub mod envelope;
+pub mod factory;
 pub mod function;
 pub mod lfo;
 pub mod random;
@@ -14,6 +15,7 @@ pub mod sequencer;
 
 pub use cellular::*;
 pub use envelope::*;
+pub use factory::*;
 pub use function::*;
 pub use lfo::*;
 pub use random::*;

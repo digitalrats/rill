@@ -8,17 +8,17 @@
 //! | `/sys/graph/stop` | — | Log stop request |
 //! | `/sys/status` | — | Print runtime state |
 //!
-//! **User paths** — registered from `PatchbayDef::osc_surface`.
+//! **User paths** — registered from `RackDef::osc_surface`.
 //! Each entry maps an OSC address to an `EventPattern`; the value is
 //! extracted from the first OSC argument (treated as normalized 0..1).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rill_core::queues::{SetParameter, SignalOrigin};
+use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 use rill_core_actor::ActorRef;
-use rill_patchbay::engine::{ControlEvent, EventPattern, OscSurface, Patchbay};
+use rill_patchbay::engine::{ControlEvent, EventPattern, OscSurface};
 
 use crate::osc::osc::{OscMessage, OscType};
 use crate::osc::server::OscServer;
@@ -33,8 +33,8 @@ impl OscHandle {
     /// Bind an OSC server, register system + surface handlers, spawn recv loop.
     pub async fn start(
         bind: &str,
-        queue: ActorRef<SetParameter>,
-        control: Arc<std::sync::Mutex<Patchbay>>,
+        queue: ActorRef<CommandEnum>,
+        control: Arc<std::sync::Mutex<Box<Patchbay>>>,
         surface: OscSurface,
     ) -> Result<Self, String> {
         let mut server = OscServer::bind(bind)
@@ -63,12 +63,12 @@ impl OscHandle {
                 _ => return,
             };
             if let Ok(pid) = ParameterId::new(&param) {
-                q.send(SetParameter::new(
+                q.send(CommandEnum::SetParameter(SetParameter::new(
                     PortId::param(node, 0),
                     pid,
                     ParamValue::Float(value),
                     SignalOrigin::External("osc".into()),
-                ));
+                )));
             }
         });
 
@@ -105,12 +105,12 @@ impl OscHandle {
                     log::warn!("OSC surface: control lock failed");
                     if let Some(normalized) = event.normalized_value() {
                         if let Ok(pid) = ParameterId::new(&path) {
-                            q.send(SetParameter::new(
+                            q.send(CommandEnum::SetParameter(SetParameter::new(
                                 PortId::param(NodeId(0), 0),
                                 pid,
                                 ParamValue::Float(normalized),
                                 SignalOrigin::External("osc".into()),
-                            ));
+                            )));
                         }
                     }
                 }

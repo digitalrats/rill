@@ -22,16 +22,12 @@ crates for signal processing application development.
 ## Usage
 
 ```rust,no_run
-use rill_adrift::rill_oscillators::audio::SineOsc;
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
+use rill_adrift::modular::{ModularSystem, ModularConfig};
 
 const BUF_SIZE: usize = 256;
 
-let mut rt = Runtime::<BUF_SIZE>::new(RuntimeConfig::default());
-let mut builder = rt.create_builder();
-let osc = builder.add_source(
-    Box::new(SineOsc::<f32, BUF_SIZE>::new().with_frequency(440.0))
-);
+let system = ModularSystem::<BUF_SIZE>::new(ModularConfig::default());
+// Graphs are built from ModularSystemDef documents (serialization)
 ```
 
 ## Always-on core (no feature gate)

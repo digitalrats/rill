@@ -73,6 +73,9 @@ pub mod function_registry;
 /// Automaton control strategies
 pub mod strategy;
 
+/// Custom module factory — type registry for rack module construction
+pub mod module_factory;
+
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
@@ -107,10 +110,10 @@ pub use automaton::{
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{
     midi_cc, osc_address, Automaton, BoxedModule, ControlEvent, EventPattern, Mapping, Module,
-    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Patchbay, Servo, Target, Transform,
+    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target, Transform,
 };
 
-pub use strategy::{ConflictStrategy, ControlStrategy, UiCommand};
+pub use strategy::{ConflictStrategy, ControlStrategy};
 
 // =============================================================================
 // Prelude for convenient imports

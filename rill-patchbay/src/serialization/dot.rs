@@ -20,7 +20,7 @@ pub struct DotConfig {
 
 /// Generate DOT from a PatchbayDef.
 #[cfg(feature = "serde")]
-pub fn patchbay_to_dot(patchbay: &PatchbayDef, _config: &DotConfig) -> String {
+pub fn rack_to_dot(patchbay: &PatchbayDef, _config: &DotConfig) -> String {
     let mut dot = String::new();
     writeln!(dot, "// Patchbay control graph").ok();
     writeln!(dot, "digraph patchbay {{").ok();
@@ -64,6 +64,10 @@ pub fn patchbay_to_dot(patchbay: &PatchbayDef, _config: &DotConfig) -> String {
             crate::serialization::AutomatonDef::NamedFunction { function_name, .. } => {
                 let l = format!("Fn\\n{function_name}");
                 (l, "#cfc")
+            }
+            crate::serialization::AutomatonDef::Custom { type_name, .. } => {
+                let l = format!("Custom\\n{type_name}");
+                (l, "#fcf")
             }
         };
         let escaped = label.replace('\"', "\\\"");

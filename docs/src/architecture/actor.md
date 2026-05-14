@@ -1,119 +1,70 @@
 # Actor Model (rill-core-actor)
 
 Rill implements a lightweight actor model for lock-free message passing
-between threads.
+between threads. The actor API is minimal: `Actor<M>`, `ActorRef<M>`, `ActorSystem`,
+and three spawn strategies.
 
-The actor model is **domain-agnostic** — `ActorRef<M>`, `ActorCell`,
-`MessageDispatcher<M>`, and `ActorSystem<M>` are generic over
-`M: Send + 'static`. They have no dependency on audio or signal types.
+## Core types
 
-## RT boundary
+### `Actor<M>`
 
-The mailbox marks the **exact boundary** between soft-RT and hard-RT:
-
-```
-Soft-RT (any thread)                         Hard-RT (actor's thread)
-┌──────────────────────────┐                 ┌────────────────────────┐
-│ PortCombiner (tokio)     │    send()       │ Graph::receive()      │
-│ OSC dispatch             │  ────────────→  │   nodes[idx].set()    │
-│ Sequencer                │    mailbox      │   (no alloc, no lock) │
-│ ANY producer             │                 │                        │
-└──────────────────────────┘                 └────────────────────────┘
-         ▲ soft-RT allowed                          ▲ hard-RT only
-         │ heap, locks, IO                          │ alloc-free, lock-free
-```
-
-### Bidirectional pattern
-
-Actors communicate through **two unidirectional channels**:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Audio thread                         │
-│                                                          │
-│   Graph (ActorCell<SetParameter>)                        │
-│   ├── mailbox → incoming SetParameter commands          │
-│   └── clock_tx: ActorRef<ClockTick> → outgoing ticks    │
-│                                                          │
-└──────────────┬──────────────────────┬───────────────────┘
-               │ send(SetParameter)    │ send(ClockTick)
-               ▼                       ▼
-┌──────────────────────┐  ┌────────────────────────────────┐
-│  Control actors      │  │  SequencerActor                │
-│  (PortCombiner, OSC) │  │  (ActorCell<ClockTick>)        │
-│   hold graph.handle()│  │  receives ticks,               │
-│   send parameters    │  │  sends SetParameter back       │
-└──────────────────────┘  └────────────────────────────────┘
-```
-
-| Direction | Message type | Mailbox owner | Sender |
-|-----------|-------------|---------------|--------|
-| Control → Audio | `SetParameter` | `Graph` (audio thread) | Control actors via `graph.handle()` |
-| Audio → Control | `ClockTick` | Sequencer (control thread) | Graph via `graph.clock_tx` |
-
-### Who guarantees RT safety?
-
-**The actor implementation, not the framework.** `rill-core-actor` provides:
-
-| Method | RT-safe? | Notes |
-|--------|----------|-------|
-| `ActorRef::send()` | ✅ Hard RT | Lock-free, bounded queue (cap 64) |
-| `ActorCell::receive()` | ⚠️ Depends on actor's thread | Called by the consumer — shares its RT profile |
-| `ActorSystem::route()` | ❌ Soft RT only | Heap iteration |
-| `ActorSystem::broadcast()` | ❌ Soft RT only | Heap iteration + clone |
-
-## Core concepts
-
-### `ActorCell`
-
-Trait for types that own a mailbox and process messages from it.
+Handler closure + mailbox. Drained in-place by the caller — **no separate thread**.
 
 ```rust
-pub trait ActorCell: 'static {
-    type Msg: Send + 'static;
-    fn receive(&mut self, msg: Self::Msg);
-}
+use rill_core_actor::{ActorSystem, ActorRef};
+
+let system = ActorSystem::new();
+let mut actor = system.spawn("echo", |msg: String| {
+    println!("got: {msg}");
+});
+let ref_a = actor.actor_ref();
+ref_a.send("hello".into());
+actor.drain(); // processes "hello"
 ```
 
-Implementations:
-- [`Graph`](https://docs.rs/rill-graph) (`Msg = SetParameter`) — processes parameter
-  commands by writing to the target node
-- Sequencer actors (`Msg = ClockTick`) — receive clock ticks, compute patterns,
-  send control commands back to the graph
+- Handler is `Box<dyn FnMut(M)>` — created and drained on the same thread, no `Send` requirement.
+- Used by **Graph** (handler captures `Rc<UnsafeCell<...>>` → `!Send`, drained inline in audio callback).
+- Used by **Rack actor** — drained in a dedicated OS thread.
 
 ### `ActorRef<M>`
 
-Thread-safe handle for sending messages to an actor. Holds a strong reference
-(`Arc`) to the actor's mailbox.
+Thread-safe send-only handle (`Arc<Mailbox<M>>`). Lock-free `send()`, bounded queue (capacity 64).
+Silently drops messages when queue is full.
 
-```rust
-let (actor_ref, mailbox) = ActorRef::<ClockTick>::new_pair();
-actor_ref.send(ClockTick::new(0, 64, 44100.0));
-while let Some(msg) = mailbox.pop() {
-    actor.receive(msg);
-}
-```
+### `ActorSystem`
 
-Key properties:
-- **Strong reference** — `Arc<MpscQueue<M>>`, not `Weak`
-- **Bounded queue** — capacity 64. Full queue silently drops messages
-- **Lock-free** — `send()` safe from any thread including RT callbacks
+Registry of named actors. Three spawn methods:
 
-## Relation to Akka/Pekko
+| Method | Handler location | Drain | Returns | Use case |
+|--------|-----------------|-------|---------|----------|
+| `spawn(name, handler)` | Caller's thread | Caller (`actor.drain()`) | `Actor<M>` | Graph, inline drain |
+| `spawn_detached(name, make_handler, ms)` | Inside new OS thread | Auto (`std::thread::spawn` + sleep) | `ActorRef<M>` | Rack, Servo (handler `!Send`) |
+| `spawn_detached_tokio(name, make_handler, ms)` | Inside new tokio task | Auto (`tokio::spawn` + interval) | `ActorRef<M>` | Servo (handler `Send`, many actors) |
 
-| Akka | Rill | RT-safe? |
-|------|------|----------|
-| `ActorCell` | `ActorCell` trait | ⚠️ depends on consumer |
-| `ActorRef` | `ActorRef<M>` | ✅ `send()` hard-RT |
-| `ActorSystem` | `MessageDispatcher<M>` / `ActorSystem<M>` | ❌ soft-RT only |
-| `Mailbox` | `MpscQueue<M>` | ✅ lock-free, bounded |
+**Key design rule:** The handler closure is **always created on the thread where it will be drained**.
+For `spawn`, the caller creates the handler and drains it. For `spawn_detached*`, `make_handler()`
+is called inside the spawned thread/task → handler never crosses thread boundary → `Send` not required.
 
-## Crate structure
+## RT boundary
 
 ```
-rill-core-actor           (depends on rill-core)
-├── ActorCell trait       (what processes messages)
-├── ActorRef<M>           (handle to send messages)
-├── MessageDispatcher<M>  (dispatcher with dead letters)
-└── ActorSystem<M>        (named mailbox registry)
+Soft-RT (control thread)                    Hard-RT (audio thread)
+┌──────────────────────────┐               ┌──────────────────────────┐
+│ PortCombiner (tokio)     │   send()      │ Graph actor              │
+│ OSC dispatch             │  ──────────►  │   drain() in callback    │
+│ Sequencer automaton      │   mailbox     │   → set_parameter()      │
+│                          │               │   → generate()           │
+└──────────────────────────┘               └──────────────────────────┘
 ```
+
+| Direction | Message | Mailbox owner | Sender |
+|-----------|---------|---------------|--------|
+| Control → Audio | `SetParameter` | Graph actor | Servo actors via `graph.handle()` |
+| Audio → Control | `ClockTick` | Rack actor | Graph via `parent_ref.send()` |
+
+| Method | RT-safe? | Notes |
+|--------|----------|-------|
+| `ActorRef::send()` | ✅ Hard RT | Lock-free, bounded queue |
+| `Actor::drain()` | ⚠️ Depends on caller's thread | In audio callback = hard RT, in control = soft RT |
+| `ActorSystem::route()` | ❌ Soft RT only | Heap iteration |
+| `ActorSystem::broadcast()` | ❌ Soft RT only | Heap iteration + clone |

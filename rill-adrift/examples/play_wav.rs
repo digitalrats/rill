@@ -1,22 +1,26 @@
-//! Play a WAV file through the rill audio graph with optional low-pass filter.
+//! Play a WAV file — simplest possible rill graph example.
+//!
+//! Builds the graph manually: sampler source → audio output sink.
+//! No config files, no ModularSystemDef — just a hand-built graph.
 //!
 //! Usage:
-//!   cargo run --example play_wav -- [backend] [wav_path]
+//!   cargo run --example play_wav --features "io,sampler,portaudio"
+//!   cargo run --example play_wav --features "io,sampler,portaudio" -- [backend] [wav_path]
+//!   cargo run --example play_wav --features "io,sampler,alsa" -- alsa myfile.wav
 //!
-//! Backend: "portaudio" (default), "alsa", "pipewire", "jack", "null"
+//! Positional arguments:
+//!   backend   Audio backend (portaudio/alsa/pipewire/jack/null). Default: portaudio.
+//!   wav_path  Path to a WAV file. Default: built-in demo sample.
 
-//! Usage:
-//!   cargo run --example play_wav -- [backend] [wav_path]
-//!   cargo run --example play_wav -- [wav_path]
-
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rill_adrift::io::output::Output;
-use rill_adrift::rill_digital_filters::BiquadProcessor;
-use rill_adrift::runtime::{Runtime, RuntimeConfig};
-use rill_adrift::sampler::player::SamplePlayerNode;
-use rill_adrift::sampler::wav::load_wav;
+use rill_adrift::registration;
+use rill_adrift::rill_core::traits::Params;
+use rill_adrift::rill_core_actor::ActorSystem;
+use rill_adrift::rill_graph::backend_factory::BackendFactory;
+use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -29,98 +33,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .skip(1)
         .filter(|a| !a.starts_with("--"))
         .collect();
+
+    let default_wav = crate_dir
+        .join("ESW Aura Inst - LoFi Steel - C.wav")
+        .to_string_lossy()
+        .to_string();
+
     let (backend_name, wav_path): (String, String) = match positional.len() {
-        0 => (
-            "portaudio".into(),
-            crate_dir
-                .join("ESW Aura Inst - LoFi Steel - C.wav")
-                .to_string_lossy()
-                .to_string(),
-        ),
+        0 => ("portaudio".into(), default_wav),
         1 => {
             let v = positional[0].as_str();
             if v.ends_with(".wav") || std::path::Path::new(v).is_file() {
                 ("portaudio".into(), v.to_string())
             } else {
-                (
-                    v.to_string(),
-                    crate_dir
-                        .join("ESW Aura Inst - LoFi Steel - C.wav")
-                        .to_string_lossy()
-                        .to_string(),
-                )
+                (v.to_string(), default_wav)
             }
         }
         _ => (positional[0].clone(), positional[1].clone()),
     };
-    let backend_display = backend_name.clone();
 
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
+    let backend = backend_name.clone();
+
+    let wav_display = wav_path.clone();
 
     let audio_thread = std::thread::spawn(move || {
-        let sample = load_wav(&wav_path).expect("load_wav");
-        eprintln!(
-            "Loaded: {} ({} ch, {} Hz, {} samples)",
-            sample.name,
-            sample.channels,
-            sample.sample_rate,
-            sample.len()
+        // ── Register node types and backends ──────────────────
+        let mut factory = NodeFactory::<f32, BUF>::new();
+        registration::register_all_nodes::<BUF>(&mut factory);
+
+        let mut backends = BackendFactory::new();
+        registration::register_backends(&mut backends);
+
+        // ── Build graph ──────────────────────────────────────────
+        let mut builder = GraphBuilder::new(Arc::new(factory), Arc::new(backends));
+
+        let mut be_params = HashMap::new();
+        be_params.insert(
+            "sample_rate".into(),
+            rill_adrift::rill_core::traits::ParamValue::Float(RATE),
+        );
+        be_params.insert(
+            "buffer_size".into(),
+            rill_adrift::rill_core::traits::ParamValue::Int(BUF as i32),
         );
 
-        let mut be_params = std::collections::HashMap::new();
-        be_params.insert("sample_rate".into(), RATE.to_string());
-        be_params.insert("buffer_size".into(), BUF.to_string());
-        be_params.insert("channels".into(), "2".to_string());
+        builder.set_default_backend(backend.clone(), be_params);
 
-        let rt = Runtime::<BUF>::new(RuntimeConfig {
-            sample_rate: RATE,
-            block_size: BUF,
-            backend_name: Some(backend_name.clone()),
-            backend_params: be_params,
-            ..Default::default()
-        });
+        let mut sampler_params = Params::new(RATE);
+        sampler_params.insert(
+            "file",
+            rill_adrift::rill_core::traits::ParamValue::String(wav_path.clone()),
+        );
 
-        let mut builder = rt.create_builder();
+        let sampler = builder.add_node("rill/sampler", &sampler_params);
+        let output = builder.add_node("rill/output", &Params::new(RATE));
+        builder.connect_signal(sampler, 0, output, 0);
+        builder.connect_signal(sampler, 1, output, 1);
 
-        let mut player = SamplePlayerNode::<f32, BUF>::new();
-        player.load(sample);
-        player.play();
-        let src = builder.add_source(Box::new(player));
-
-        let mut filter = BiquadProcessor::<f32, BUF>::new(RATE);
-        filter.set_cutoff(600.0);
-        filter.set_q(1.5);
-        let fx = builder.add_processor(Box::new(filter));
-
-        let snk = builder.add_sink(Box::new(Output::<f32, BUF>::new()));
-
-        builder.connect_signal(src, 0, fx, 0);
-        builder.connect_signal(fx, 0, snk, 0);
-        builder.connect_signal(src, 1, snk, 1);
-
-        let mut graph = builder.build().expect("graph build");
-
-        graph.run(t_run).ok();
+        // ── Build and run ────────────────────────────────────────
+        let system = ActorSystem::new();
+        match builder.build(&system) {
+            Ok(mut graph) => {
+                eprintln!("Graph built ({}) nodes. Playing...", graph.node_count());
+                graph.run(t_run).ok();
+            }
+            Err(e) => eprintln!("Build error: {e:?}"),
+        }
     });
 
-    let t_run = running.clone();
-    let audio_handle = audio_thread.thread().clone();
+    let r = running.clone();
+    let handle = audio_thread.thread().clone();
     let signal_thread = std::thread::spawn(move || {
         let mut input = String::new();
         let _ = std::io::stdin().read_line(&mut input);
-        t_run.store(false, Ordering::Release);
-        audio_handle.unpark();
+        r.store(false, Ordering::Release);
+        handle.unpark();
     });
 
     println!(
-        "▶ Playing through {} backend (low-pass 600 Hz). Press Enter to stop.",
-        backend_display
+        "▶ Playing {} through {} backend. Press Enter to stop.",
+        wav_display, backend_name
     );
 
     signal_thread.join().ok();
     audio_thread.join().ok();
-
     println!("⏹ Stopped.");
     Ok(())
 }

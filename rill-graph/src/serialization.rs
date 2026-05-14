@@ -75,29 +75,30 @@ pub struct GraphDef {
 
 /// A single node in the serialised graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeDef {
-    /// Unique node identifier (must match what `rill-patchbay` uses).
+pub enum NodeDef {
+    /// Signal source — generates audio (oscillator, input, sampler).
+    Source(SourceDef),
+    /// DSP processor — transforms audio (filter, effect, gain).
+    Processor(ProcessorDef),
+    /// Signal router — N×M dynamic routing (mixer, splitter).
+    Router(RouterDef),
+    /// Signal sink — consumes audio (output, recorder).
+    Sink(SinkDef),
+}
+
+/// Definition of a source node (generates audio signal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceDef {
+    /// Unique node identifier.
     pub id: u32,
-
-    /// Canonical type name for factory lookup (e.g. `"rill/sine_osc"`).
+    /// Canonical type name for factory lookup.
     pub type_name: String,
-
     /// Human-readable instance name.
     pub name: String,
-
-    /// Optional backend name for I/O nodes (e.g. `"ay38910"`, `"portaudio"`).
-    ///
-    /// When set, [`GraphBuilder::build`] creates a named backend via
-    /// [`BackendFactory`](crate::BackendFactory) and calls
-    /// [`Node::resolve_backend`](rill_core::Node::resolve_backend) on this node.
-    /// Nodes without a backend (Processors, Routers) leave this empty.
+    /// Optional backend name for I/O nodes (e.g. `"portaudio"`, `"ay38910"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
-
-    /// Runtime parameters (frequency, gain, …).
-    ///
-    /// Accepts both plain values (`"delay_time": 0.5`) and tagged format
-    /// (`"delay_time": {"Float": 0.5}`). Always serialises as plain values.
+    /// Runtime parameters.
     #[serde(
         deserialize_with = "deserialize_params",
         serialize_with = "serialize_params"
@@ -105,9 +106,149 @@ pub struct NodeDef {
     pub parameters: HashMap<String, ParamValue>,
 }
 
+/// Definition of a processor node (transforms audio signal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessorDef {
+    /// Unique node identifier.
+    pub id: u32,
+    /// Canonical type name for factory lookup.
+    pub type_name: String,
+    /// Human-readable instance name.
+    pub name: String,
+    /// Runtime parameters.
+    #[serde(
+        deserialize_with = "deserialize_params",
+        serialize_with = "serialize_params"
+    )]
+    pub parameters: HashMap<String, ParamValue>,
+}
+
+/// Definition of a router node (N×M signal routing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouterDef {
+    /// Unique node identifier.
+    pub id: u32,
+    /// Canonical type name for factory lookup.
+    pub type_name: String,
+    /// Human-readable instance name.
+    pub name: String,
+    /// Runtime parameters.
+    #[serde(
+        deserialize_with = "deserialize_params",
+        serialize_with = "serialize_params"
+    )]
+    pub parameters: HashMap<String, ParamValue>,
+    /// Pre-configured routing matrix entries (from_input, to_output, gain).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routing_matrix: Vec<RoutingEntry>,
+}
+
+/// A single entry in a router's N×M routing matrix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingEntry {
+    /// Input port index.
+    pub from: usize,
+    /// Output port index.
+    pub to: usize,
+    /// Gain coefficient.
+    pub gain: f32,
+}
+
+/// Definition of a sink node (consumes audio signal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SinkDef {
+    /// Unique node identifier.
+    pub id: u32,
+    /// Canonical type name for factory lookup.
+    pub type_name: String,
+    /// Human-readable instance name.
+    pub name: String,
+    /// Optional backend name for I/O nodes (e.g. `"portaudio"`, `"ay38910"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// Runtime parameters.
+    #[serde(
+        deserialize_with = "deserialize_params",
+        serialize_with = "serialize_params"
+    )]
+    pub parameters: HashMap<String, ParamValue>,
+}
+
+impl NodeDef {
+    /// Return the node's unique identifier.
+    pub fn id(&self) -> u32 {
+        match self {
+            NodeDef::Source(s) => s.id,
+            NodeDef::Processor(p) => p.id,
+            NodeDef::Router(r) => r.id,
+            NodeDef::Sink(s) => s.id,
+        }
+    }
+
+    /// Return the node's canonical type name.
+    pub fn type_name(&self) -> &str {
+        match self {
+            NodeDef::Source(s) => &s.type_name,
+            NodeDef::Processor(p) => &p.type_name,
+            NodeDef::Router(r) => &r.type_name,
+            NodeDef::Sink(s) => &s.type_name,
+        }
+    }
+
+    /// Return the node's human-readable name.
+    pub fn name(&self) -> &str {
+        match self {
+            NodeDef::Source(s) => &s.name,
+            NodeDef::Processor(p) => &p.name,
+            NodeDef::Router(r) => &r.name,
+            NodeDef::Sink(s) => &s.name,
+        }
+    }
+
+    /// Return the node's runtime parameters.
+    pub fn parameters(&self) -> &HashMap<String, ParamValue> {
+        match self {
+            NodeDef::Source(s) => &s.parameters,
+            NodeDef::Processor(p) => &p.parameters,
+            NodeDef::Router(r) => &r.parameters,
+            NodeDef::Sink(s) => &s.parameters,
+        }
+    }
+
+    /// Return a mutable reference to the node's runtime parameters.
+    pub fn parameters_mut(&mut self) -> &mut HashMap<String, ParamValue> {
+        match self {
+            NodeDef::Source(s) => &mut s.parameters,
+            NodeDef::Processor(p) => &mut p.parameters,
+            NodeDef::Router(r) => &mut r.parameters,
+            NodeDef::Sink(s) => &mut s.parameters,
+        }
+    }
+
+    /// Return the node's backend name (only meaningful for Source and Sink).
+    pub fn backend(&self) -> Option<&str> {
+        match self {
+            NodeDef::Source(s) => s.backend.as_deref(),
+            NodeDef::Processor(_) => None,
+            NodeDef::Router(_) => None,
+            NodeDef::Sink(s) => s.backend.as_deref(),
+        }
+    }
+
+    /// Return the archetype kind as a static string.
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            NodeDef::Source(_) => "Source",
+            NodeDef::Processor(_) => "Processor",
+            NodeDef::Router(_) => "Router",
+            NodeDef::Sink(_) => "Sink",
+        }
+    }
+}
+
 /// A connection between two ports.
 ///
-/// Nodes are identified by their [`NodeDef::id`] (not by position in the
+/// Nodes are identified by their [`NodeDef::id`](NodeDef::id) (not by position in the
 /// `nodes` array).  The importer resolves IDs to indices internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionDef {
@@ -196,10 +337,11 @@ impl GraphDef {
 
     /// Append a node definition.
     ///
-    /// Returns an error if the [`NodeDef::id`] duplicates an existing one.
+    /// Returns an error if the node's id duplicates an existing one.
     pub fn add_node(&mut self, def: NodeDef) -> Result<(), SerializationError> {
-        if self.nodes.iter().any(|n| n.id == def.id) {
-            return Err(SerializationError::DuplicateNodeId(def.id));
+        let id = def.id();
+        if self.nodes.iter().any(|n| n.id() == id) {
+            return Err(SerializationError::DuplicateNodeId(id));
         }
         self.nodes.push(def);
         Ok(())
@@ -212,10 +354,10 @@ impl GraphDef {
         self.connections.push(conn);
     }
 
-    /// Set a parameter value on an existing node (identified by [`NodeDef::id`]).
+    /// Set a parameter value on an existing node (identified by its id).
     pub fn set_node_param(&mut self, node_id: u32, key: &str, value: ParamValue) {
-        if let Some(nd) = self.nodes.iter_mut().find(|n| n.id == node_id) {
-            nd.parameters.insert(key.to_string(), value);
+        if let Some(nd) = self.nodes.iter_mut().find(|n| n.id() == node_id) {
+            nd.parameters_mut().insert(key.to_string(), value);
         }
     }
 
@@ -267,6 +409,8 @@ impl GraphDef {
 fn node_to_def<T: Transcendental, const B: usize>(variant: &NodeVariant<T, B>) -> NodeDef {
     let meta = variant.metadata();
     let type_name = meta.type_name.clone().unwrap_or_else(|| meta.name.clone());
+    let id = variant.id().inner();
+    let name = meta.name.clone();
 
     let mut parameters = HashMap::new();
     for pm in &meta.parameters {
@@ -279,12 +423,48 @@ fn node_to_def<T: Transcendental, const B: usize>(variant: &NodeVariant<T, B>) -
         }
     }
 
-    NodeDef {
-        id: variant.id().inner(),
-        type_name,
-        name: meta.name.clone(),
-        backend: None,
-        parameters,
+    match variant {
+        NodeVariant::Source(_) => NodeDef::Source(SourceDef {
+            id,
+            type_name,
+            name,
+            backend: None,
+            parameters,
+        }),
+        NodeVariant::Processor(_) => NodeDef::Processor(ProcessorDef {
+            id,
+            type_name,
+            name,
+            parameters,
+        }),
+        NodeVariant::Router(router) => {
+            let routing_matrix = router
+                .routing_matrix()
+                .into_iter()
+                .enumerate()
+                .flat_map(|(to, entries)| {
+                    entries.into_iter().map(move |(from, gain)| RoutingEntry {
+                        from,
+                        to,
+                        gain: gain.to_f32(),
+                    })
+                })
+                .collect();
+            NodeDef::Router(RouterDef {
+                id,
+                type_name,
+                name,
+                parameters,
+                routing_matrix,
+            })
+        }
+        NodeVariant::Sink(_) => NodeDef::Sink(SinkDef {
+            id,
+            type_name,
+            name,
+            backend: None,
+            parameters,
+        }),
     }
 }
 
@@ -352,8 +532,8 @@ impl GraphDef {
         // ── validate IDs ──
         let mut seen = HashSet::new();
         for nd in &self.nodes {
-            if !seen.insert(nd.id) {
-                return Err(SerializationError::DuplicateNodeId(nd.id));
+            if !seen.insert(nd.id()) {
+                return Err(SerializationError::DuplicateNodeId(nd.id()));
             }
         }
 
@@ -374,18 +554,26 @@ impl GraphDef {
             });
         }
 
-        // ── construct nodes (uses builder's internal registry) ──
+        // ── construct nodes ──
         for nd in &self.nodes {
             let mut p = Params::new(self.sample_rate);
-            for (k, v) in &nd.parameters {
+            for (k, v) in nd.parameters() {
                 p = p.with(k.clone(), v.clone());
             }
-            let idx = builder.add_node_with_id(&nd.type_name, &p, NodeId(nd.id))?;
-            // Resolve backend name: explicit > default > none
-            if let Some(ref name) = nd.backend {
+            let idx = builder.add_node_with_id(nd.type_name(), &p, NodeId(nd.id()));
+
+            // Resolve backend name (only Source/Sink)
+            if let Some(name) = nd.backend() {
                 builder.set_node_backend(idx, name.to_string());
             } else if let Some(ref name) = builder.default_backend_name() {
                 builder.set_node_backend(idx, name.to_string());
+            }
+
+            // Apply pre-configured routing matrix (Router only)
+            if let NodeDef::Router(ref r) = nd {
+                for entry in &r.routing_matrix {
+                    builder.add_routing_entry(idx, entry.from, entry.to, entry.gain);
+                }
             }
         }
 
@@ -394,7 +582,7 @@ impl GraphDef {
             .nodes
             .iter()
             .enumerate()
-            .map(|(i, n)| (n.id, i))
+            .map(|(i, n)| (n.id(), i))
             .collect();
 
         // ── wire connections ──
@@ -433,7 +621,7 @@ impl GraphDef {
 }
 
 // ============================================================================
-// Custom serde for NodeDef.parameters — accepts both plain and tagged formats
+// Custom serde for parameters — accepts both plain and tagged formats
 // ============================================================================
 
 fn deserialize_params<'de, D>(deserializer: D) -> Result<HashMap<String, ParamValue>, D::Error>
@@ -576,7 +764,12 @@ mod tests {
         Processor, Source,
     };
     use rill_core::ParamMetadata as PM;
+    use rill_core_actor::ActorSystem;
     use std::sync::Arc;
+
+    fn test_system() -> ActorSystem {
+        ActorSystem::new()
+    }
 
     // ==================================================================
     // Test node — configurable metadata, parameters, feedback ports
@@ -783,10 +976,10 @@ mod tests {
 
     fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
         let mut b = GraphBuilder::new(Arc::new(factory.clone()), empty_backends());
-        let src = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
-        let proc = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
+        let src = b.add_node("rill/test", &Params::new(44100.0));
+        let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
-        b.build().expect("build")
+        b.build(&test_system()).expect("build")
     }
 
     // ==================================================================
@@ -809,7 +1002,7 @@ mod tests {
         assert_eq!(restored.node_count(), 2);
 
         // Must rebuild without errors
-        restored.build().expect("rebuild");
+        restored.build(&test_system()).expect("rebuild");
     }
 
     #[test]
@@ -830,7 +1023,7 @@ mod tests {
     fn test_empty_graph_roundtrip() {
         let reg = empty_factory();
         let graph = GraphBuilder::new(empty_factory(), empty_backends())
-            .build()
+            .build(&test_system())
             .expect("graph build");
 
         let json = to_json(&graph).expect("to_json");
@@ -856,17 +1049,16 @@ mod tests {
             &Params::new(44100.0)
                 .with("frequency", PV::Float(220.0))
                 .with("amplitude", PV::Float(0.8)),
-        )
-        .unwrap();
-        let graph = b.build().expect("build");
+        );
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         assert_eq!(doc.nodes.len(), 1);
 
         let nd = &doc.nodes[0];
-        assert_eq!(nd.type_name, "rill/param");
-        assert_eq!(nd.parameters.get("frequency"), Some(&PV::Float(220.0)));
-        assert_eq!(nd.parameters.get("amplitude"), Some(&PV::Float(0.8)));
+        assert_eq!(nd.type_name(), "rill/param");
+        assert_eq!(nd.parameters().get("frequency"), Some(&PV::Float(220.0)));
+        assert_eq!(nd.parameters().get("amplitude"), Some(&PV::Float(0.8)));
     }
 
     #[test]
@@ -878,16 +1070,15 @@ mod tests {
             &Params::new(48000.0)
                 .with("frequency", PV::Float(55.0))
                 .with("amplitude", PV::Float(0.25)),
-        )
-        .unwrap();
-        let graph = b.build().expect("build");
+        );
+        let graph = b.build(&test_system()).expect("build");
 
         let json = to_json(&graph).expect("to_json");
         let def = from_json(&json).expect("from_json");
         let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
         def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 1);
-        restored.build().expect("rebuild");
+        restored.build(&test_system()).expect("rebuild");
     }
 
     // ==================================================================
@@ -898,11 +1089,11 @@ mod tests {
     fn test_export_feedback_connection() {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        let src = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
-        let proc = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
+        let src = b.add_node("rill/test", &Params::new(44100.0));
+        let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
         b.connect_feedback(proc, 0, src, 0);
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
         let sigs: Vec<SignalKind> = doc.connections.iter().map(|c| c.kind).collect();
@@ -920,11 +1111,11 @@ mod tests {
         // ParamCtor declares type_name = Some("rill/param")
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        b.add_node("rill/param", &Params::new(44100.0)).unwrap();
-        let graph = b.build().expect("build");
+        b.add_node("rill/param", &Params::new(44100.0));
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
-        assert_eq!(doc.nodes[0].type_name, "rill/param");
+        assert_eq!(doc.nodes[0].type_name(), "rill/param");
     }
 
     #[test]
@@ -950,11 +1141,11 @@ mod tests {
         let reg = Arc::new(reg);
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
 
-        b.add_node("rill/fallback", &Params::new(44100.0)).unwrap();
-        let graph = b.build().expect("build");
+        b.add_node("rill/fallback", &Params::new(44100.0));
+        let graph = b.build(&test_system()).expect("build");
 
         let doc = GraphDef::from_graph(&graph);
-        assert_eq!(doc.nodes[0].type_name, "TestNode");
+        assert_eq!(doc.nodes[0].type_name(), "TestNode");
     }
 
     // ==================================================================
@@ -966,12 +1157,10 @@ mod tests {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
         // Explicit IDs via add_node_with_id
-        b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100))
-            .unwrap();
-        b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200))
-            .unwrap();
+        b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100));
+        b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200));
         b.connect_signal(0, 0, 1, 0);
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains(r#""id": 100"#));
@@ -991,13 +1180,13 @@ mod tests {
     fn test_roundtrip_complex_topology() {
         let reg = empty_factory();
         let mut b = GraphBuilder::new(reg.clone(), empty_backends());
-        let s0 = b.add_node("rill/test", &Params::new(44100.0)).unwrap();
-        let p1 = b.add_node("rill/param", &Params::new(44100.0)).unwrap();
-        let p2 = b.add_node("rill/param", &Params::new(44100.0)).unwrap();
+        let s0 = b.add_node("rill/test", &Params::new(44100.0));
+        let p1 = b.add_node("rill/param", &Params::new(44100.0));
+        let p2 = b.add_node("rill/param", &Params::new(44100.0));
         b.connect_signal(s0, 0, p1, 0);
         b.connect_signal(p1, 0, p2, 0);
 
-        let graph = b.build().expect("build");
+        let graph = b.build(&test_system()).expect("build");
 
         let json = to_json(&graph).expect("to_json");
         let def = from_json(&json).expect("from_json");
@@ -1006,7 +1195,7 @@ mod tests {
         assert_eq!(restored.node_count(), 3);
 
         // Verify connections
-        let rebuilt = restored.build().expect("rebuild");
+        let rebuilt = restored.build(&test_system()).expect("rebuild");
 
         // Topological order: source must be first
         assert_eq!(rebuilt.topo_order().len(), 3);
@@ -1025,20 +1214,18 @@ mod tests {
             block_size: 64,
             resources: vec![],
             nodes: vec![
-                NodeDef {
+                NodeDef::Processor(ProcessorDef {
                     id: 0,
                     type_name: "rill/nonexistent".to_string(),
                     name: "x".to_string(),
                     parameters: HashMap::new(),
-                    backend: None,
-                },
-                NodeDef {
+                }),
+                NodeDef::Processor(ProcessorDef {
                     id: 0,
                     type_name: "rill/test".to_string(),
                     name: "b".to_string(),
                     parameters: HashMap::new(),
-                    backend: None,
-                },
+                }),
             ],
             connections: vec![],
             description: None,

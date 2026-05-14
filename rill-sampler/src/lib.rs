@@ -13,6 +13,8 @@
 pub mod buffer;
 /// Stereo sample-playback source node with loop modes.
 pub mod player;
+/// Recording sink node — captures audio for offline analysis and WAV export.
+pub mod recorder;
 /// Unevenly-sampled time series reader and source node.
 pub mod timeseries;
 

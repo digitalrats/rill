@@ -352,6 +352,13 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Set by `GraphBuilder::build()` for feedback edges.
     /// `snapshot_feedback()` copies its buffer into each target.
     pub feedback_ptrs: Vec<*mut Option<FixedBuffer<T, BUF_SIZE>>>,
+
+    /// Whether this input port has received new data in the current graph cycle.
+    ///
+    /// Set by `propagate` when a downstream input port receives a buffer copy.
+    /// Consumer nodes (esp. Sinks) check this flag to decide whether all
+    /// input channels are fresh before producing output.
+    pub data_received: bool,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
@@ -385,6 +392,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -405,6 +413,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -425,6 +434,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -450,6 +460,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -470,6 +481,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -584,6 +596,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
                     (*ptr).buffer.copy_from(buffer.as_array());
                 }
                 (*ptr).run_action(Some(buffer.as_array()), ctx)?;
+                (*ptr).data_received = true;
             }
         }
         let mut proc_ctx = crate::traits::processable::ProcessContext { clock: ctx.tick };

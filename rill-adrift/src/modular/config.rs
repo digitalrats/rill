@@ -11,19 +11,19 @@ use rill_graph::serialization::GraphDef;
 #[cfg(feature = "serialization")]
 use rill_patchbay::serialization::PatchbayDef;
 
-/// Host-level configuration for a [`Runtime`](super::Runtime).
+/// Modular system configuration types.
 ///
 /// Separate from `rill_graph::serialization::GraphDef` and
-/// `rill_patchbay::serialization::PatchbayDef` — this struct holds
+/// `rill_patchbay::serialization::PatchbayDef` — this module holds
 /// **host-level** parameters: sample rate, default backend config,
 /// OSC bind address, and optional paths to initial preset files.
 ///
 /// The `backend_name` + `backend_params` pair sets the default audio
-/// backend via [`Runtime::set_default_backend`](super::Runtime::set_default_backend)
+/// backend via [`ModularSystem::set_default_backend`](super::ModularSystem::set_default_backend)
 /// at construction time. All values in `backend_params` are strings —
 /// each backend constructor is responsible for parsing them.
 #[cfg_attr(feature = "serialization", derive(Deserialize))]
-pub struct RuntimeConfig {
+pub struct ModularConfig {
     /// Audio sample rate (default 48000.0).
     pub sample_rate: f32,
 
@@ -35,7 +35,7 @@ pub struct RuntimeConfig {
     pub backend_name: Option<String>,
 
     /// Raw string-keyed parameters for the default backend.
-    /// Converted to `HashMap<String, ParamValue>` at Runtime creation.
+    /// Converted to `HashMap<String, ParamValue>` at modular system creation.
     /// Typical keys: `"sample_rate"`, `"buffer_size"`, `"channels"`.
     pub backend_params: HashMap<String, String>,
 
@@ -53,8 +53,8 @@ pub struct RuntimeConfig {
     pub osc_bind: Option<String>,
 }
 
-impl RuntimeConfig {
-    /// Create a default runtime configuration.
+impl ModularConfig {
+    /// Create a default modular system configuration.
     pub fn new() -> Self {
         Self {
             sample_rate: 48000.0,
@@ -71,7 +71,7 @@ impl RuntimeConfig {
     }
 }
 
-impl Default for RuntimeConfig {
+impl Default for ModularConfig {
     fn default() -> Self {
         Self::new()
     }
@@ -81,7 +81,7 @@ impl Default for RuntimeConfig {
 // LaunchConfig — all-in-one construction for Runtime::launch()
 // ============================================================================
 
-/// Configuration for [`Runtime::launch`](super::Runtime::launch).
+/// Configuration for [`ModularSystem::launch`](super::ModularSystem::launch).
 ///
 /// Bundles everything needed to build and start both racks
 /// (signal graph + control patchbay) in one call.
@@ -105,7 +105,7 @@ pub struct LaunchConfig {
 
     /// Control rack configuration (automata, mappings, MIDI).
     /// `None` = no control rack, audio passthrough only.
-    pub patchbay_def: Option<PatchbayDef>,
+    pub rack_def: Option<PatchbayDef>,
 }
 
 #[cfg(feature = "serialization")]
@@ -118,7 +118,7 @@ impl LaunchConfig {
             backend_name: None,
             backend_params: HashMap::new(),
             graph_def,
-            patchbay_def: None,
+            rack_def: None,
         }
     }
 }

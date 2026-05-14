@@ -16,6 +16,8 @@ pub mod param;
 pub mod port;
 /// Processing traits (`Processable`, `Processor`, `Source`, `Sink`).
 pub mod processable;
+/// Rack archetype — modular processing unit (Eurorack case).
+pub mod rack;
 /// Router trait for signal fan‑out / fan‑in.
 pub mod router;
 
@@ -27,6 +29,7 @@ pub use node::*;
 pub use param::*;
 pub use port::*;
 pub use processable::*;
+pub use rack::*;
 pub use router::*;
 
 // ============================================================================
@@ -55,6 +58,7 @@ pub mod prelude {
     pub use super::{
         // Core traits
         ActiveNode,
+        Eurorack,
         IoNode,
         Node,
         NodeCategory,
