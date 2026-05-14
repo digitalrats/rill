@@ -16,10 +16,10 @@ use rill_graph::serialization::GraphDef;
 use rill_patchbay::automaton::envelope::EnvelopeAutomaton;
 use rill_patchbay::automaton::lfo::LfoAutomaton;
 use rill_patchbay::automaton::sequencer::{SequencerAutomaton, Step};
-use rill_patchbay::engine::{ParameterMapping, Servo};
+use rill_patchbay::engine::Servo;
 use rill_patchbay::function_registry::FunctionRegistry;
 use rill_patchbay::module_factory::ModuleFactory;
-use rill_patchbay::serialization::{AutomatonDef, MappingDef, MappingType, SensorDef, ServoDef};
+use rill_patchbay::serialization::{AutomatonDef, MappingDef, SensorDef, ServoDef};
 
 // ============================================================================
 // ModuleDef
@@ -76,7 +76,7 @@ impl RackDef {
     /// Graph modules are skipped — handled by the caller.
     pub fn build_servos(
         &self,
-        registry: &FunctionRegistry,
+        _registry: &FunctionRegistry,
         module_factory: &ModuleFactory,
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,

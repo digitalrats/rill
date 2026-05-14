@@ -4,7 +4,6 @@
 //! modulation (LFO, envelopes), and a two-thread model with lock-free
 //! queues for control → audio communication.
 
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -12,9 +11,7 @@ use rill_core::prelude::*;
 use rill_core::queues::{AutomatonCommand, CommandEnum, SetParameter, SignalOrigin};
 use rill_core_actor::{ActorRef, ActorSystem};
 
-use crate::automaton::factory::AutomatonFactory;
 pub use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform, Range};
-use crate::sensor::Sensor;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 
 // =============================================================================
@@ -633,10 +630,6 @@ pub fn osc_address(
         },
         transform,
     )
-}
-
-fn target_key(node_id: NodeId, param_name: &str) -> String {
-    format!("{}:{}", node_id.inner(), param_name)
 }
 
 // =============================================================================

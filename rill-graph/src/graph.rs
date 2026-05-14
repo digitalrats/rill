@@ -627,7 +627,7 @@ mod tests {
     use rill_core::time::ClockTick;
     use rill_core::traits::{
         Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-        PortDirection, PortId, ProcessResult, Processor, Sink, Source,
+        ProcessResult, Processor, Sink, Source,
     };
     use rill_core_actor::ActorSystem;
     use std::sync::Arc;
@@ -685,7 +685,7 @@ mod tests {
 
     impl<T: Transcendental, const B: usize> ConstantSource<T, B> {
         pub fn new(id: NodeId, value: T, sample_rate: f32) -> Self {
-            let mut state = NodeState::new(sample_rate);
+            let state = NodeState::new(sample_rate);
             let mut output = Port::output(id, 0, "out");
             output.buffer = FixedBuffer::new();
             Self {
@@ -785,7 +785,7 @@ mod tests {
 
     impl<T: Transcendental, const B: usize> GainProcessor<T, B> {
         pub fn new(id: NodeId, sample_rate: f32, gain: T) -> Self {
-            let mut state = NodeState::new(sample_rate);
+            let state = NodeState::new(sample_rate);
             let input = Port::input(id, 0, "in");
             let output = Port::output(id, 0, "out");
             Self {
@@ -906,13 +906,9 @@ mod tests {
 
     impl<T: Transcendental, const B: usize> CaptureSink<T, B> {
         pub fn new(id: NodeId, sample_rate: f32) -> Self {
-            let mut state = NodeState::new(sample_rate);
+            let state = NodeState::new(sample_rate);
             let input = Port::input(id, 0, "in");
             Self { id, state, input }
-        }
-
-        pub fn read_input(&self) -> T {
-            self.input.buffer.as_array()[0]
         }
     }
 
@@ -1143,12 +1139,10 @@ mod tests {
                     snk_in.buffer.as_array()[0]
                 );
                 if let Some(up) = snk_in.upstream_buffer {
-                    unsafe {
-                        eprintln!(
-                            "AFTER propagate - snk input via upstream ptr: {}",
-                            (*up).as_array()[0]
-                        );
-                    }
+                    eprintln!(
+                        "AFTER propagate - snk input via upstream ptr: {}",
+                        (*up).as_array()[0]
+                    );
                 }
             }
 

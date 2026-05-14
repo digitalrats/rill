@@ -282,24 +282,16 @@ impl ModuleConstructor for ClosureCtor {
                 })
             }
             (ClosureCtorKind::Send { f }, Drain::TokioTask { interval_ms }) => {
-                #[cfg(feature = "tokio")]
-                {
-                    let f = f.clone();
-                    let actor_ref = system.spawn_detached_tokio(
-                        &name,
-                        move || f(&id_owned, &params, &graph_ref),
-                        interval_ms,
-                    );
-                    Box::new(GenericModule {
-                        id: id_for_mod,
-                        actor_ref,
-                    })
-                }
-                #[cfg(not(feature = "tokio"))]
-                {
-                    let _ = (id_for_mod, name, id_owned, graph_ref, params);
-                    panic!("TokioTask drain requires the 'tokio' feature on rill-patchbay")
-                }
+                let f = f.clone();
+                let actor_ref = system.spawn_detached_tokio(
+                    &name,
+                    move || f(&id_owned, &params, &graph_ref),
+                    interval_ms,
+                );
+                Box::new(GenericModule {
+                    id: id_for_mod,
+                    actor_ref,
+                })
             }
             (ClosureCtorKind::Erased { .. }, Drain::TokioTask { .. }) => {
                 panic!("TokioTask drain requires a Send handler; use register_fn_send()")

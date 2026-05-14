@@ -4,12 +4,11 @@
 //! * RackDef — control system (LFO, envelope, sequencer)
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use rill_core::queues::{CommandEnum, MpscQueue, SetParameter};
-use rill_core::traits::{NodeId, NodeVariant, ParamValue, Params};
+use rill_core::traits::ParamValue;
 use rill_core_actor::{ActorRef, ActorSystem};
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{Graph, GraphBuilder, NodeFactory};
@@ -18,7 +17,7 @@ use rill_patchbay::function_registry::FunctionRegistry;
 use rill_patchbay::module_factory::ModuleFactory;
 
 #[cfg(feature = "serialization")]
-use crate::modular::serialization::{ModularSystemDef, RackDef};
+use crate::modular::serialization::ModularSystemDef;
 #[cfg(feature = "serialization")]
 use rill_graph::serialization::GraphDef;
 
@@ -147,7 +146,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
             let modules: Arc<Mutex<HashMap<String, ActorRef<CommandEnum>>>> =
                 Arc::new(Mutex::new(HashMap::new()));
-            let mut tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
+            let tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
             // 1. Rack actor — forwards to modules
             let case_name = rd.name.clone();
@@ -165,13 +164,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
             );
 
             let parent_ref = actor_ref.clone();
-            let case = RackCase::new(
-                rd.name.clone(),
-                def.sample_rate,
-                actor_ref,
-                HashMap::new(),
-                tasks,
-            );
+            let case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, tasks);
             self.cases.insert(rd.name.clone(), case);
 
             // 2. Build graph on I/O thread

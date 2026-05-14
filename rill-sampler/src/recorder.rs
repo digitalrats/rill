@@ -9,8 +9,8 @@ use rill_core::{
     math::Transcendental,
     time::ClockTick,
     traits::{
-        Node, NodeCategory, NodeMetadata, NodeState, ParamValue, ParameterId, Port, PortDirection,
-        PortId, PortType, ProcessError, ProcessResult, Sink,
+        Node, NodeCategory, NodeMetadata, NodeState, ParamValue, ParameterId, Port, PortId,
+        ProcessError, ProcessResult, Sink,
     },
     NodeId,
 };

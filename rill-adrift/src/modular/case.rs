@@ -4,7 +4,6 @@
 //! modules (audio nodes + control modules) with a shared backplane.
 //! Each case holds its own signal graph and a map of control modules.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -17,7 +16,6 @@ pub struct RackCase<const BUF: usize> {
     name: String,
     sample_rate: f32,
     actor_ref: ActorRef<CommandEnum>,
-    modules: HashMap<String, ActorRef<CommandEnum>>,
     tasks: Vec<std::thread::JoinHandle<()>>,
 
     /// Audio thread handle — the graph runs here (Graph is !Send).
@@ -33,14 +31,12 @@ impl<const BUF: usize> RackCase<BUF> {
         name: String,
         sample_rate: f32,
         actor_ref: ActorRef<CommandEnum>,
-        modules: HashMap<String, ActorRef<CommandEnum>>,
         tasks: Vec<std::thread::JoinHandle<()>>,
     ) -> Self {
         Self {
             name,
             sample_rate,
             actor_ref,
-            modules,
             tasks,
             audio_thread: None,
             running: None,

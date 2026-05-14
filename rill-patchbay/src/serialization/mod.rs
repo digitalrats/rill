@@ -3,19 +3,15 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use rill_core::traits::{ParamValue, ParameterId, Params, PortId};
+use rill_core::traits::ParamValue;
 use rill_core::NodeId;
 
 use crate::automaton::envelope::{EnvelopeAutomaton, EnvelopeType};
-use crate::automaton::factory::{AutomatonFactory, ServoTarget};
 use crate::automaton::lfo::{LfoAutomaton, LfoWaveform};
 use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use crate::engine::EventPattern;
-use crate::engine::{
-    Automaton, Mapping, OscSurface, ParameterMapping, Servo, Target, Time, Transform,
-};
+use crate::engine::{OscSurface, ParameterMapping, Servo, Transform};
 use crate::function_registry::FunctionRegistry;
 use crate::module_factory::ModuleFactory;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
@@ -311,7 +307,7 @@ impl PatchbayDef {
     /// Each servo spawns its own tokio drain task.
     pub fn build_servos(
         &self,
-        registry: &FunctionRegistry,
+        _registry: &FunctionRegistry,
         module_factory: &ModuleFactory,
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
@@ -492,7 +488,6 @@ pub fn from_cbor(bytes: &[u8]) -> Result<PatchbayDef, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::queues::MpscQueue;
 
     fn sample_doc() -> PatchbayDef {
         PatchbayDef {
