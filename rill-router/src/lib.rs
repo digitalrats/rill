@@ -1,4 +1,4 @@
-//! Audio routing, mixing, and equalization for Rill
+//! Signal routing, mixing, and equalization for Rill
 //!
 //! This crate provides:
 //! - Equalizers (graphic, parametric) that work with any filter implementation
@@ -11,7 +11,7 @@
 pub mod dry_wet;
 /// Equalizer modules (graphic and parametric).
 pub mod eq;
-/// Multi-channel audio mixer with aux sends.
+/// Multi-channel signal mixer with aux sends.
 pub mod mixer;
 
 // Re-export common types

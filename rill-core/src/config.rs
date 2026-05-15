@@ -24,15 +24,15 @@ pub enum ThreadPriority {
     Normal,
     /// High
     High,
-    /// Maximum (for audio thread)
+    /// Maximum (for RT thread)
     Realtime,
     /// Custom
     Custom(i32),
 }
 
-/// Audio configuration
+/// I/O configuration
 #[derive(Debug, Clone)]
-pub struct AudioConfig {
+pub struct IoConfig {
     /// Sample rate
     pub sample_rate: u32,
     /// Buffer size
@@ -47,7 +47,7 @@ pub struct AudioConfig {
     pub device_name: Option<String>,
 }
 
-impl Default for AudioConfig {
+impl Default for IoConfig {
     fn default() -> Self {
         Self {
             sample_rate: 48000,
@@ -60,7 +60,7 @@ impl Default for AudioConfig {
     }
 }
 
-impl AudioConfig {
+impl IoConfig {
     /// Create a new configuration
     pub fn new(sample_rate: u32, buffer_size: usize) -> Self {
         Self {

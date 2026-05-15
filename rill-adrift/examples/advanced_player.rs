@@ -2,7 +2,7 @@
 //!
 //! Demonstrates runtime parameter control via the actor mailbox:
 //! the graph is built as-is from `graph.json`, then parameter
-//! changes are sent through `Graph::handle()` before the audio
+//! changes are sent through `Graph::handle()` before the signal
 //! thread starts.
 //!
 //! Usage:
@@ -11,7 +11,7 @@
 //!   cargo run --example advanced_player --features "portaudio,sampler,serialization" -- [wav]
 //!
 //! Positional arguments (optional):
-//!   backend   Audio backend name (e.g. portaudio, alsa, null). Default from config.toml.
+//!   backend   I/O backend name (e.g. portaudio, alsa, null). Default from config.toml.
 //!   wav       Path to a WAV file to play. Sent as a `SetParameter` command
 //!             via the graph's actor mailbox.
 

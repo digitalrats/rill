@@ -218,7 +218,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         &self.backend_factory
     }
 
-    /// Connect signal ports (audio data).
+    /// Connect signal ports.
     pub fn connect_signal(
         &mut self,
         from_node: usize,
@@ -293,7 +293,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let num_nodes = node_entries.len();
 
-        // --- Phase 2: Resolve audio backends for I/O nodes ---
+        // --- Phase 2: Resolve I/O backends for I/O nodes ---
         let sr = self.sample_rate.unwrap_or(44100.0);
         for (idx, recipe) in self.recipes.iter().enumerate() {
             let name = match recipe.backend.as_ref() {
@@ -319,7 +319,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        // --- Phase 3: adjacency for Kahn (audio edges only) ---
+        // --- Phase 3: adjacency for Kahn (signal edges only) ---
         let mut in_degree = vec![0usize; num_nodes];
         let mut out_edges: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); num_nodes];
 

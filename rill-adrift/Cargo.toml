@@ -2,7 +2,7 @@
 name = "rill-adrift"
 version = "0.5.0-beta.4"
 edition = "2021"
-description = "Umbrella crate re-exporting all rill crates for audio application development"
+description = "Umbrella crate re-exporting all rill crates for signal processing application development"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -77,7 +77,7 @@ serialization = [
 ]
 dot = ["rill-graph/dot"]
 
-# Audio backend passthrough
+# I/O backend passthrough
 alsa = ["rill-io/alsa"]
 portaudio = ["rill-io/portaudio"]
 jack = ["rill-io/jack"]

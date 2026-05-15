@@ -76,17 +76,17 @@ pub struct GraphDef {
 /// A single node in the serialised graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeDef {
-    /// Signal source — generates audio (oscillator, input, sampler).
+    /// Signal source — generates signal (oscillator, input, sampler).
     Source(SourceDef),
-    /// DSP processor — transforms audio (filter, effect, gain).
+    /// DSP processor — transforms signal (filter, effect, gain).
     Processor(ProcessorDef),
     /// Signal router — N×M dynamic routing (mixer, splitter).
     Router(RouterDef),
-    /// Signal sink — consumes audio (output, recorder).
+    /// Signal sink — consumes signal (output, recorder).
     Sink(SinkDef),
 }
 
-/// Definition of a source node (generates audio signal).
+/// Definition of a source node (generates signal).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDef {
     /// Unique node identifier.
@@ -106,7 +106,7 @@ pub struct SourceDef {
     pub parameters: HashMap<String, ParamValue>,
 }
 
-/// Definition of a processor node (transforms audio signal).
+/// Definition of a processor node (transforms signal).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessorDef {
     /// Unique node identifier.
@@ -154,7 +154,7 @@ pub struct RoutingEntry {
     pub gain: f32,
 }
 
-/// Definition of a sink node (consumes audio signal).
+/// Definition of a sink node (consumes signal).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SinkDef {
     /// Unique node identifier.
@@ -271,7 +271,7 @@ pub struct ConnectionDef {
 /// Kind of signal carried by a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalKind {
-    /// Audio-rate signal data.
+    /// Sample-rate signal data.
     Signal,
     /// Low-frequency control signal (one value per block).
     Control,

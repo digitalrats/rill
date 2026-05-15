@@ -11,7 +11,7 @@ use crate::math::Transcendental;
 /// # Thread safety
 ///
 /// `TapeLoop` is **not** thread-safe. It uses plain `T`, not `AtomicCell`,
-/// because it is only accessed from the single audio thread.
+/// because it is only accessed from the single signal thread.
 ///
 /// # Example
 ///

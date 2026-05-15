@@ -3,7 +3,7 @@ use crate::math::Transcendental;
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
 
-/// Delay line for audio effects — single-threaded circular buffer.
+/// Delay line for signal effects — single-threaded circular buffer.
 ///
 /// Provides a circular buffer for implementing delay, reverb,
 /// and other time-based effects.
@@ -11,7 +11,7 @@ use core::ops::{Index, IndexMut};
 /// # Thread safety
 ///
 /// `DelayLine` is **not** thread-safe. It is designed for single-threaded
-/// use inside the audio graph. Use [`PipeBuffer`](super::PipeBuffer) or
+/// use inside the signal graph. Use [`PipeBuffer`](super::PipeBuffer) or
 /// [`RingBuffer`](super::RingBuffer) for cross-thread communication.
 #[repr(align(64))]
 pub struct DelayLine<T: Transcendental, const MAX_DELAY: usize> {

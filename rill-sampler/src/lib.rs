@@ -9,11 +9,13 @@
 
 #![warn(missing_docs)]
 
-/// Sample buffer container for mono/stereo audio data.
+/// Sample buffer container for mono/stereo sample data.
 pub mod buffer;
-/// Stereo sample-playback source node with loop modes.
+
+/// Sample playback source node with loop modes.
 pub mod player;
-/// Recording sink node — captures audio for offline analysis and WAV export.
+
+/// Recording sink node — captures signal for offline analysis and WAV export.
 pub mod recorder;
 /// Unevenly-sampled time series reader and source node.
 pub mod timeseries;

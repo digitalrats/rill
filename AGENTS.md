@@ -16,7 +16,7 @@ Cargo workspace — 18 active crates:
 | `rill-router` | Active — EQ + mixer + routing |
 | `rill-patchbay` | Active — automation (LFO, envelopes, sensors, servos) |
 | `rill-lofi` | Active — lo-fi emulation |
-| `rill-io` | Active — audio I/O backends (PortAudio, ALSA, PipeWire, JACK) |
+| `rill-io` | Active — I/O backends (PortAudio, ALSA, PipeWire, JACK) |
 | `rill-telemetry` | Active — probes, collectors |
 | `rill-core-wdf` | Active — WDF elements, adapters, analysis |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
@@ -29,7 +29,7 @@ Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
 - **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `Graph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
-- **`rill-io`** — audio I/O backends only (`IoBackend` trait + PortAudio/ALSA/PipeWire/JACK). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
+- **`rill-io`** — I/O backends only (`IoBackend` trait + PortAudio/ALSA/PipeWire/JACK). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
@@ -143,7 +143,7 @@ Any code reached from the process callback — `generate()`, `process()`,
 
 *(All originally identified RT-safety issues have been fixed — ALSA uses
 `snd_pcm_wait`, PortAudio drives processing from its stream callback, and
-no backend uses `thread::sleep` in the audio path.)*
+no backend uses `thread::sleep` in the signal path.)*
 
 **Testing:** any new RT path code must be verified with `cargo test --release`
 under `pw‑loopback` or similar virtual device to detect xruns.
@@ -211,7 +211,7 @@ chmod +x .git/hooks/pre-commit
 
 ## Threading model
 
-### Audio I/O thread (where the process callback runs)
+### I/O callback thread (where the process callback runs)
 
 The `AudioIo::start()` callback fires on the backend's own thread. The nature
 of this thread depends on the backend:
@@ -249,7 +249,7 @@ through an `mpsc::Sender<f64>` to its paired PortCombiner. Each automaton has it
 own cancel channel (`watch::Receiver<bool>`).
 
 **PortCombiner** — spawned via `tokio::spawn`. Sits between the automaton and the
-audio thread. Uses `tokio::select!` to listen on three channels:
+signal thread. Uses `tokio::select!` to listen on three channels:
 - `mpsc::Receiver<f64>` — values from the automaton
 - `mpsc::UnboundedReceiver<UiCommand>` — UI/MIDI/OSC events from `handle_event()`
 - `watch::Receiver<bool>` — cancellation signal
@@ -262,20 +262,20 @@ between automaton and UI. Output: `ActorRef<SetParameter>`.
 
 ```
                                tokio / mpsc                ActorRef
-Automaton ──── mpsc<f64> ───→ PortCombiner ── SetParameter ──→ Audio
-UI/MIDI/OSC ── mpsc<UiCmd> ─→ PortCombiner ── SetParameter ──→ Audio
+Automaton ──── mpsc<f64> ───→ PortCombiner ── SetParameter ──→ Signal
+UI/MIDI/OSC ── mpsc<UiCmd> ─→ PortCombiner ── SetParameter ──→ Signal
 MIDI/Sensor ── ActorRef<ControlEvent> ──→ Patchbay::event_mailbox
                                                │
                                           drain_events()
                                                │
                                          handle_event()
                                                │
-                                    Mapping → SetParameter ──→ Audio
+                                    Mapping → SetParameter ──→ Signal
 ```
 
-All control → audio paths converge on `rill_core::queues::MpscQueue<ParameterCommand>`
+All control → signal paths converge on `rill_core::queues::MpscQueue<ParameterCommand>`
 — a lock-free SPSC queue designed for safe cross-thread communication without
-blocking the real-time audio thread.
+blocking the real-time signal thread.
 
 ### Sharded cancellation
 
@@ -291,7 +291,7 @@ joins the polling thread and releases the backend.
 
 If data crosses threads, use `rill_core::queues::MpscQueue<ParameterCommand>`.
 Everything else is single-threaded within the signal graph running inside the
-I/O callback (see "Audio I/O thread" above). No external engine loop —
+I/O callback (see "I/O callback thread" above). No external engine loop —
 `Port::propagate` replaces `Port::propagate::process_block()`.
 
 ## Known pitfalls
@@ -301,7 +301,7 @@ I/O callback (see "Audio I/O thread" above). No external engine loop —
 - No CI workflows or pre-commit hooks exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: the audio I/O thread (see "Audio I/O thread"
+- **Two-thread architecture**: the I/O callback thread (see "I/O callback thread"
   above) runs `AudioInput`'s callback which drives the entire signal graph.
   The control thread (soft RT) runs `rill-patchbay::Patchbay`.
   Communication via `MpscQueue<ParameterCommand>`. Source/Sink nodes own

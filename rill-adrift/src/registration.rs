@@ -194,7 +194,7 @@ fn register_analog<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
 // ============================================================================
 
 fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    use rill_oscillators::audio::{NoiseOsc, NoiseType, SawOsc, SineOsc};
+    use rill_oscillators::signal::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
     node_ctor!(factory, "rill/sine", |id: NodeId, params: &Params| {
         let mut n = SineOsc::<f32, BUF_SIZE>::new()

@@ -23,7 +23,7 @@ actor.drain(); // processes "hello"
 ```
 
 - Handler is `Box<dyn FnMut(M)>` — created and drained on the same thread, no `Send` requirement.
-- Used by **Graph** (handler captures `Rc<UnsafeCell<...>>` → `!Send`, drained inline in audio callback).
+- Used by **Graph** (handler captures `Rc<UnsafeCell<...>>` → `!Send`, drained inline in I/O callback).
 - Used by **Rack actor** — drained in a dedicated OS thread.
 
 ### `ActorRef<M>`
@@ -48,7 +48,7 @@ is called inside the spawned thread/task → handler never crosses thread bounda
 ## RT boundary
 
 ```
-Soft-RT (control thread)                    Hard-RT (audio thread)
+Soft-RT (control thread)                    Hard-RT (signal thread)
 ┌──────────────────────────┐               ┌──────────────────────────┐
 │ PortCombiner (tokio)     │   send()      │ Graph actor              │
 │ OSC dispatch             │  ──────────►  │   drain() in callback    │
@@ -59,12 +59,12 @@ Soft-RT (control thread)                    Hard-RT (audio thread)
 
 | Direction | Message | Mailbox owner | Sender |
 |-----------|---------|---------------|--------|
-| Control → Audio | `SetParameter` | Graph actor | Servo actors via `graph.handle()` |
-| Audio → Control | `ClockTick` | Rack actor | Graph via `parent_ref.send()` |
+| Control → Signal | `SetParameter` | Graph actor | Servo actors via `graph.handle()` |
+| Signal → Control | `ClockTick` | Rack actor | Graph via `parent_ref.send()` |
 
 | Method | RT-safe? | Notes |
 |--------|----------|-------|
 | `ActorRef::send()` | ✅ Hard RT | Lock-free, bounded queue |
-| `Actor::drain()` | ⚠️ Depends on caller's thread | In audio callback = hard RT, in control = soft RT |
+| `Actor::drain()` | ⚠️ Depends on caller's thread | In I/O callback = hard RT, in control = soft RT |
 | `ActorSystem::route()` | ❌ Soft RT only | Heap iteration |
 | `ActorSystem::broadcast()` | ❌ Soft RT only | Heap iteration + clone |

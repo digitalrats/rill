@@ -2,7 +2,7 @@
 //!
 //! Provides event mapping (MIDI/OSC → parameters), automaton-based
 //! modulation (LFO, envelopes), and a two-thread model with lock-free
-//! queues for control → audio communication.
+//! queues for control → signal communication.
 
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};

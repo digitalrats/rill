@@ -101,7 +101,7 @@ Enable optional features as needed (see table below).
 
 ```rust,no_run
 use rill_adrift::rill_graph::GraphBuilder;
-use rill_adrift::rill_oscillators::audio::SineOsc;
+use rill_adrift::rill_oscillators::signal::SineOsc;
 
 const BUF_SIZE: usize = 256;
 
@@ -190,14 +190,14 @@ topology definition.
 
 | Feature | Enables | Default |
 |---------|---------|---------|
-| `io` | `rill-io` (audio backends) | yes |
+| `io` | `rill-io` (I/O backends) | yes |
 | `lofi` | `rill-lofi` | yes |
 | `telemetry` | `rill-telemetry` | yes |
 | `osc` | `rill-osc` (tokio) | yes |
 | `sampler` | `rill-sampler` | yes |
 | `analog` | WDF + analog filters + effects | no |
 | `serialization` | Graph/patchbay JSON/CBOR | no |
-| `alsa` / `portaudio` / `jack` / `pipewire` | Audio backends (implies `io`) | no |
+| `alsa` / `portaudio` / `jack` / `pipewire` | I/O backends (implies `io`) | no |
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
 `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,

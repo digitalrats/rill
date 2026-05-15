@@ -7,7 +7,7 @@
 //!   cargo run --example player --features "dot,sampler,serialization" -- --dot
 //!
 //! Positional arguments (optional):
-//!   backend   Audio backend name (e.g. portaudio, alsa, null). Default from config.toml.
+//!   backend   I/O backend name (e.g. portaudio, alsa, null). Default from config.toml.
 //!   wav       Path to a WAV file to play. Overrides the file in graph.json.
 //!
 //! --dot: export graph to DOT format and exit

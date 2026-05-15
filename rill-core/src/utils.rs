@@ -4,15 +4,15 @@
 
 use std::time::{Duration, Instant};
 
-/// Timer for measuring time in the audio thread
+/// Timer for measuring time in the signal thread
 #[derive(Debug, Clone)]
-pub struct AudioTimer {
+pub struct SignalTimer {
     start: Instant,
     samples: u64,
     sample_rate: f32,
 }
 
-impl AudioTimer {
+impl SignalTimer {
     /// Create a new timer
     pub fn new(sample_rate: f32) -> Self {
         Self {

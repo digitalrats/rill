@@ -50,8 +50,8 @@ let sample = chip.generate_sample(44100.0);
 ### 2. Backend (`Ay38910Backend`) — IoBackend + IoControl
 
 Wraps the chip as an `IoBackend<f32>`. `read()` loads register values from atomics
-and generates audio sample-by-sample. Register writes go through `IoControl::write_data()`
-using atomic stores for cross-thread safety (control thread → audio thread).
+and generates signal sample-by-sample. Register writes go through `IoControl::write_data()`
+using atomic stores for cross-thread safety (control thread → signal thread).
 
 ```rust
 use rill_adrift::lofi::Ay38910Backend;

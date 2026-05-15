@@ -34,9 +34,9 @@ impl<'a> ActionContext<'a> {
 pub enum AlgorithmCategory {
     /// Signal generator (oscillator, noise, etc.).
     Generator,
-    /// Audio filter (biquad, SVF, etc.).
+    /// Signal filter (biquad, SVF, etc.).
     Filter,
-    /// Audio effect (delay, distortion, etc.).
+    /// Signal effect (delay, distortion, etc.).
     Effect,
     /// Signal analyzer (meter, scope, etc.).
     Analyzer,
@@ -107,10 +107,10 @@ impl AlgorithmMetadata {
 ///   path (called between samples by the graph driver).
 /// - `metadata()` — return descriptive info (defaults to empty).
 pub trait Algorithm<T: Transcendental>: Send + Sync {
-    /// Process one block of audio.
+    /// Process one block of signal.
     ///
     /// # Arguments
-    /// * `input`  — Audio data from upstream (empty when the port is
+    /// * `input`  — Signal data from upstream (empty when the port is
     ///   unconnected, or `None` for source ports / control output ports).
     /// * `output` — Buffer to fill with processed data.
     /// * `ctx`    — Processing context (clock tick, block position, etc.).

@@ -554,7 +554,7 @@ pub enum CommandType {
     Sensor,
     /// Servo control command.
     Servo,
-    /// Audio clock tick.
+    /// Clock tick.
     ClockTick,
     /// Stop command — shuts down the actor's I/O loop.
     Stop,
@@ -590,7 +590,7 @@ pub enum CommandEnum {
     Sensor(SensorCommand),
     /// Servo control command.
     Servo(ServoCommand),
-    /// Audio clock tick — sent from Graph to Patchbay each processing block.
+    /// Clock tick — sent from Graph to Patchbay each processing block.
     ClockTick(ClockTick),
     /// Stop command — shuts down the actor's I/O loop.
     Stop,

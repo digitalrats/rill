@@ -244,7 +244,7 @@ impl<T: crate::math::Transcendental, const BUF_SIZE: usize> NodeState<T, BUF_SIZ
 // Node Trait (Base for all nodes)
 // ============================================================================
 
-/// Base trait for all audio nodes
+/// Base trait for all signal nodes
 ///
 /// This trait provides the fundamental operations that every node must implement:
 /// - Port counting
@@ -413,13 +413,13 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
 // IoNode Trait
 // ============================================================================
 
-/// A node that owns an audio I/O backend.
+/// A node that owns an I/O backend.
 ///
-/// Implemented by nodes that read from or write to an audio device
+/// Implemented by nodes that read from or write to a hardware device
 /// (`Input`, `Output`, `LofiInput`). The backend is injected during graph
 /// assembly via [`resolve_backend`](IoNode::resolve_backend).
 pub trait IoNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
-    /// Take ownership of an audio I/O backend.
+    /// Take ownership of an I/O backend.
     fn resolve_backend(&mut self, backend: Box<dyn crate::io::IoBackend<T>>);
 }
 
@@ -427,9 +427,9 @@ pub trait IoNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
 // ActiveNode Trait
 // ============================================================================
 
-/// A node that drives graph processing through its audio backend.
+/// A node that drives graph processing through its I/O backend.
 ///
-/// The active node is the single node in a graph that hosts the audio
+/// The active node is the single node in a graph that hosts the
 /// callback loop. It receives a tick closure from [`Graph`] and registers
 /// it as the process callback on its backend.
 ///
@@ -438,9 +438,9 @@ pub trait IoNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
 pub trait ActiveNode<T: crate::math::Transcendental, const BUF_SIZE: usize>:
     IoNode<T, BUF_SIZE>
 {
-    /// Run graph processing through this node's audio backend.
+    /// Run graph processing through this node's I/O backend.
     ///
-    /// The `tick` closure is called once per audio block with
+    /// The `tick` closure is called once per signal block with
     /// `(sample_pos, sample_rate)`. The implementation must register it
     /// as a process callback on the backend and block until `running`
     /// becomes `false`.
@@ -457,10 +457,10 @@ pub trait ActiveNode<T: crate::math::Transcendental, const BUF_SIZE: usize>:
 
 /// Active source of signals
 ///
-/// Sources generate audio from internal state. They have no audio inputs,
+/// Sources generate signal from internal state. They have no signal inputs,
 /// but may have control and clock inputs for modulation.
 pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
-    /// Generate the next block of audio
+    /// Generate the next block of signal
     ///
     /// # Arguments
     /// * `clock` - Current clock tick
@@ -476,7 +476,7 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
         clock_inputs: &[ClockTick],
     ) -> ProcessResult<()>;
 
-    /// Number of audio outputs (default 1)
+    /// Number of signal outputs (default 1)
     fn num_signal_outputs(&self) -> usize {
         1
     }
@@ -499,15 +499,15 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
 /// Passive processor of signals
 ///
 /// Processors transform input signals into output signals.
-/// They have audio inputs and outputs, and may have control and clock ports.
+/// They have signal inputs and outputs, and may have control and clock ports.
 pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
     Node<T, BUF_SIZE>
 {
-    /// Process a block of audio
+    /// Process a block of signal
     ///
     /// # Arguments
     /// * `clock` - Current clock tick
-    /// * `signal_inputs` - Audio input buffers (one per audio input)
+    /// * `signal_inputs` - Signal input buffers (one per signal input)
     /// * `control_inputs` - Control signal values (one per control input)
     /// * `clock_inputs` - Clock signal values (one per clock input)
     /// * `feedback_inputs` - Feedback values from previous blocks (one per feedback port)
@@ -535,14 +535,14 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
 
 /// Active sink of signals
 ///
-/// Sinks consume audio and send it to external destinations.
-/// They have no audio outputs, but may have control and clock ports.
+/// Sinks consume signal and send it to external destinations.
+/// They have no signal outputs, but may have control and clock ports.
 pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
-    /// Consume a block of audio
+    /// Consume a block of signal
     ///
     /// # Arguments
     /// * `clock` - Current clock tick
-    /// * `signal_inputs` - Audio input buffers (one per audio input)
+    /// * `signal_inputs` - Signal input buffers (one per signal input)
     /// * `control_inputs` - Control signal values (one per control input)
     /// * `clock_inputs` - Clock signal values (one per clock input)
     /// * `feedback_inputs` - Feedback values from previous blocks

@@ -1,17 +1,17 @@
-//! # Hearing — audio analysis for acoustic sensors
+//! # Hearing — signal analysis for acoustic sensors
 //!
-//! Algorithms that analyse audio buffers and produce scalar features
+//! Algorithms that analyse signal buffers and produce scalar features
 //! (pitch, envelope, zero-crossing rate). Used by [`AcousticSensor`]
-//! to turn audio signals into control parameters.
+//! to turn signal data into control parameters.
 //!
 //! Future: wire these into graph telemetry so `AcousticSensor` receives
 //! `Telemetry::SignalData` from a specific graph node.
 
 use std::collections::VecDeque;
 
-/// Trait for audio analysis algorithms.
+/// Trait for signal analysis algorithms.
 pub trait Hearing: Send + 'static {
-    /// Process a block of audio data and return a scalar value.
+    /// Process a block of signal data and return a scalar value.
     fn process(&mut self, audio: &[f32]) -> f32;
 
     /// Name of the algorithm.
