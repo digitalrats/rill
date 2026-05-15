@@ -2,6 +2,23 @@
 
 ## [0.5.0-beta.5] — In Progress
 
+### 📝 Terminology: «audio» → «signal» / «I/O»
+
+**Public API (breaking):**
+- `rill_oscillators::audio` → `rill_oscillators::signal` — module rename
+- `PortType::is_audio_rate()` → `is_signal_rate()` in `rill-core`
+- `AudioTimer` → `SignalTimer` in `rill-core`
+- `AudioConfig` → `IoConfig` in `rill-core`
+- `RackCase::audio_thread` → `signal_thread` in `rill-adrift`
+
+**Cargo.toml descriptions** — «audio» → «signal» / «I/O» in 7 crates: `rill-graph`, `rill-sampler`, `rill-telemetry`, `rill-router`, `rill-osc`, `rill-digital-effects`, `rill-adrift`.
+
+**Documentation** — «audio thread» → «signal thread», «audio data» → «signal data», «audio backends» → «I/O backends», «audio path» → «signal path», etc. (~120 occurrences across .rs doc comments, architecture docs, AGENTS.md, README.md).
+
+`IoBackend` in `rill-core` formally positioned as a **generic I/O archetype** — applicable to any discrete data stream, not just audio.
+
+**Preserved:** `rill-io` and `rill-lofi` keep «audio» terminology (genuinely audio-specific — hardware I/O, emulators).
+
 ### 🎛️ AY-3-8910 Emulator Fixes
 
 **`rill-lofi`:**
