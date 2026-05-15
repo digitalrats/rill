@@ -107,6 +107,33 @@ mdbook serve docs/                # dev server at localhost:3000
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
 
+## Terminology: «audio» vs «signal» vs «I/O»
+
+Rill is a **universal signal processing platform**, not exclusively audio. The term «audio» must only appear where hardware emitting or consuming sound is genuinely involved.
+
+| Term | Use in | Rationale |
+|---|---|---|
+| **`audio`** | `rill-io`, `rill-lofi` | These crates deal with genuine audio hardware I/O (PortAudio/ALSA/PipeWire/JACK) and audio device emulation (NES, AY-3-8910). |
+| **`signal`** | All other crates | Signal is the generic term for any discrete data stream — processing graph nodes, port connections, sample buffers, generators, filters, effects. |
+| **`I/O`** (or `backend`) | When referring to `IoBackend` | `IoBackend` in `rill-core` is an **archetype** — «I do (some kind of) I/O». It applies to any discrete data stream (audio, sensor, telemetry, network), not just audio. The factory that constructs backends is the *I/O backend factory*, not *audio backend factory*. |
+| **`signal thread`** (or `RT thread`) | Threading model descriptions | The processing thread runs the generic signal callback, not audio-specific logic. |
+
+**Specific replacements:**
+
+| ❌ Avoid | ✅ Use | Scope |
+|---|---|---|
+| `audio thread` | `signal thread` / `RT thread` / `I/O callback` | All non-`rill-io`/`rill-lofi` crates |
+| `audio data` / `audio signal` / `audio block` | `signal data` / `signal` / `signal block` | All non-`rill-io`/`rill-lofi` crates |
+| `audio port` / `audio buffer` / `audio connection` | `signal port` / `signal buffer` / `signal connection` | All non-`rill-io`/`rill-lofi` crates |
+| `audio backend` (when meaning `IoBackend`) | `I/O backend` | `rill-core`, `rill-graph`, `rill-adrift` |
+| `audio I/O thread` | `I/O callback thread` | Architecture docs |
+| `Audio sample rate` (on generic types) | `Sample rate` | `rill-core` traits |
+| `is_audio_rate()` | `is_signal_rate()` | `rill_core::PortType` |
+
+**Concrete type names** (`AudioInput`, `AudioOutput`, `AudioConfig` in `rill-io`, `PortAudio`) are **exempt** — they are code identifiers, not prose. Renaming them requires a separate API-breaking change.
+
+**«Hearing» / acoustic sensors** — the `hearing` module name and «acoustic» are domain-level concepts. Doc comments describing signal analysis algorithms should use «signal» (not «audio») for the generic processing path.
+
 ## Real-time safety
 
 ### Two backend models
