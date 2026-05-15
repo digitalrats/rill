@@ -7,7 +7,7 @@ Cargo workspace — 18 active crates:
 | Crate | Status |
 |---|---|
 | `rill-core` | Active — base traits, math, buffers, queues, time, macros, executor, interpolation |
-| `rill-core-actor` | Active — actor model (ActorRef, ActorCell, ActorSystem) for lock-free message passing |
+| `rill-core-actor` | Active — actor model (ActorRef, Actor, ActorSystem) for lock-free message passing |
 | `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops, sample player |
 | `rill-graph` | Active — signal graph (DAG) with topological sort |
 | `rill-oscillators` | Active — oscillators, LFO, envelopes, wavetable oscillator node |
@@ -49,7 +49,7 @@ cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
 
 # publish order (leaf to root):
-./scripts/publish.sh              # all 17 crates to crates.io
+./scripts/publish.sh              # all 18 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
 ## crates.io publication rules
@@ -324,8 +324,7 @@ I/O callback (see "I/O callback thread" above). No external engine loop —
 ## Known pitfalls
 
 - Root `examples/` were **stale** and have been removed. Use per-crate `examples/` for canonical usage.
-- README prose about "Мир автоматов" (patchbay) describes an active subsystem, but code examples may be aspirational.
-- No CI workflows or pre-commit hooks exist.
+- No CI workflows exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
 - **Two-thread architecture**: the I/O callback thread (see "I/O callback thread"
