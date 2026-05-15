@@ -303,7 +303,7 @@ and drained inline inside the callback tick. No separate queue types are needed.
 | Component | Spawn mechanism | Trigger | Output |
 |---|---|---|---|
 | **Servo\<A: Automaton\>** | `system.spawn_detached_tokio()` | Receives `CommandEnum::ClockTick` via actor mailbox | Sends `CommandEnum::SetParameter` to `graph_ref` |
-| **LFO / Envelope (green thread)** | `tokio::spawn` (via `automaton_task.rs`) | `tokio::time::interval` | `mpsc::Sender<f64>` (to not-yet-implemented PortCombiner) |
+| **LFO / Envelope (green thread)** | `tokio::spawn` (via `automaton_task.rs`) | `tokio::time::interval` | `mpsc::Sender<f64>` |
 | **MIDI / Sensors** | OS thread (`MidiHub`) | `MidiBackend::poll()` | `ActorRef<ControlEvent>` → Patchbay::event_mailbox |
 
 **Servo** (`rill-patchbay/src/engine.rs:463`) — the primary automaton-to-parameter bridge.
@@ -320,8 +320,7 @@ or `UiRelease{..}` — no separate `UiCommand` channel exists.
 **Automaton task** (`rill-patchbay/src/automaton_task.rs`) — an opt-in green thread
 for running an automaton independently of the graph clock, using
 `tokio::sync::mpsc::Sender<f64>` and `tokio::sync::watch` for cancellation.
-Values flow to a `PortCombiner` that was never implemented — this module is
-aspirational infrastructure.
+(`PortCombiner` was removed — it duplicated `CommandEnum`'s role.)
 
 ### Communication channels
 
@@ -367,8 +366,9 @@ recursively through direct port pointers.
   driving `generate()` / `process()` / `consume()` / `propagate()`. The control thread
   (soft RT) runs `rill-patchbay` actors (Servos, Sensors). Communication via
   `ActorRef<CommandEnum>`.
-- `automaton_task.rs` references a `PortCombiner` that was never implemented —
-  the module works standalone (proven by tests) but is not integrated into the Servo path.
+- `automaton_task.rs` originally referenced `PortCombiner` which was removed
+  (duplicated `CommandEnum` functionality). The module works standalone
+  (proven by tests) and can send values through any `mpsc::Sender<f64>`.
 
 ## Licensing
 
