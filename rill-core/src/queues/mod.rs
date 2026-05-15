@@ -1,7 +1,7 @@
 //! # Non-blocking queues for the dual-thread architecture
 //!
 //! This module provides queues for safe data exchange between the
-//! control thread (soft RT) and the audio signal thread (hard RT).
+//! control thread (soft RT) and the signal processing thread (hard RT).
 //!
 //! ## Components
 //!

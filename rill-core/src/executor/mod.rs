@@ -43,7 +43,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphExecutor<T, BUF_SIZE> {
         }
     }
 
-    /// Process one block of audio.
+    /// Process one block of signal.
     ///
     /// This advances the clock, obtains topological order, processes each node
     /// by pulling inputs, calling appropriate processing method, and pushing outputs.

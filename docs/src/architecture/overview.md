@@ -39,11 +39,11 @@ a source node and cascades through the DAG.
 
 ### Two-thread architecture
 
-- **Audio thread** (hard or soft RT) — runs the process callback:
+- **Signal thread** (hard or soft RT) — runs the process callback:
   `generate()` → `propagate()` → `consume()`. No heap allocs, no locks,
   no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay` with
-  automata (LFO, envelopes, sequencers). Communicates with the audio
+  automata (LFO, envelopes, sequencers). Communicates with the signal
   thread via lock-free `MpscQueue<ParameterCommand>`.
 
 See [Signal graph (rill-graph)](../architecture/graph.md) for details.
@@ -80,6 +80,6 @@ See [The World of Automatons](../guides/world-of-automatons.md) for details.
    outside audio (embedded, IoT, robotics)
 2. **Minimal dependencies** — each crate depends only on what it uses
 3. **Zero-cost abstractions** — static dispatch, const generics, SIMD-ready vectors
-4. **Real-time safety** — no allocation, no locks, no syscalls on the audio path
+4. **Real-time safety** — no allocation, no locks, no syscalls on the signal path
 5. **Single-threaded DAG** — the signal graph is a single-owner tree,
    no atomics or mutexes in the hot path

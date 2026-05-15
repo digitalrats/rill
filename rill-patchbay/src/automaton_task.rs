@@ -1,8 +1,8 @@
 //! # Automaton Task — wrapping the Automaton trait in a green thread
 //!
 //! Allows running any `Automaton` as an independent tokio task
-//! with its own tick interval. Values are sent to `PortCombiner`
-//! via an mpsc channel.
+//! with its own tick interval. Values are sent via an mpsc channel.
+//! (`PortCombiner` was removed — it duplicated `CommandEnum`.)
 
 use std::time::Duration;
 
@@ -18,8 +18,8 @@ use rill_core::traits::ParamValue;
 ///
 /// * `automaton` — implementation of the `Automaton` trait
 /// * `interval` — update frequency (e.g. 10 ms for 100 Hz)
-/// * `value_tx` — channel for sending values to PortCombiner
-/// * `cancel_rx` — cancellation signal (from PortCombinerHandle::cancel_rx)
+/// * `value_tx` — channel for sending computed values
+/// * `cancel_rx` — cancellation signal
 ///
 /// Returns a `JoinHandle`. Dropping the handle does not stop the
 /// task. Use the cancellation signal to stop it.
@@ -57,7 +57,7 @@ async fn automaton_loop<A>(
                 current = automaton.step(&mut internal, &current, time, &A::Action::default());
                 let value = current.as_f32().unwrap_or(0.0) as f64;
                 if value_tx.send(value).await.is_err() {
-                    // Channel closed — PortCombiner stopped
+                    // Channel closed — receiver dropped
                     break;
                 }
             }

@@ -10,7 +10,7 @@ use crate::traits::NodeId;
 pub struct TelemetryBlock<T: Transcendental, const BUF_SIZE: usize> {
     /// Source node identifier
     pub node_id: NodeId,
-    /// Audio channel index
+    /// Signal channel index
     pub channel: u32,
     /// Timestamp (microseconds since UNIX epoch)
     pub timestamp: u64,

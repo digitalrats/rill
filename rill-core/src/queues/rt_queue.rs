@@ -1,7 +1,7 @@
 //! # Main RT-safe queue for dual-thread architecture
 //!
 //! [`RtQueue`] — the main queue for communication between
-//! the control thread and the audio thread. Combines the functionality
+//! the control thread and the signal thread. Combines the functionality
 //! of SPSC and MPSC queues with a convenient API.
 
 use super::spsc::SpscQueue;
@@ -28,7 +28,7 @@ pub enum QueueType {
 /// // Control thread (soft RT)
 /// queue.push(42).unwrap();
 ///
-/// // Audio thread (hard RT)
+/// // Signal thread (hard RT)
 /// if let Some(cmd) = queue.pop() {
 ///     println!("Got command: {}", cmd);
 /// }
@@ -80,7 +80,7 @@ impl<T: Copy + Default + Send + 'static> RtQueue<T> {
         }
     }
 
-    /// Pop an element (from the audio thread)
+    /// Pop an element (from the signal thread)
     pub fn pop(&self) -> Option<T> {
         match &self.inner {
             RtQueueInner::Spsc(q) => q.pop(),

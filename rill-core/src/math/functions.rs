@@ -1,4 +1,4 @@
-//! Common mathematical functions for audio processing
+//! Common mathematical functions for signal processing
 
 use super::num::Transcendental;
 use super::vector::scalar::ScalarVector4;

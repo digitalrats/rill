@@ -47,7 +47,7 @@ pub enum ConflictStrategy {
     LastWriteWins,
 }
 
-/// Command from UI to PortCombiner
+/// UI command (sent via actor mailbox, can be forwarded to an automaton)
 #[derive(Debug, Clone)]
 pub enum UiCommand {
     /// Set the base value

@@ -1,4 +1,4 @@
-//! Audio-rate oscillators (20Hz - 20kHz) with Transcendental support
+//! Signal-rate oscillators (20Hz - 20kHz) with Transcendental support
 
 mod saw;
 mod sine;

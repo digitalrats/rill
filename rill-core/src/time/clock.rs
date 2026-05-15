@@ -8,7 +8,7 @@ use super::tick;
 /// Provides sample-accurate timing for signal processing.
 /// Uses atomic operations for thread safety without locks.
 pub struct SystemClock {
-    /// Sample rate of the audio system (Hz).
+    /// Sample rate of the signal processing system (Hz).
     pub sample_rate: f32,
     /// Global sample position (atomically updated).
     position: AtomicU64,

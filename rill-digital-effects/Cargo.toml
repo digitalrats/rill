@@ -2,7 +2,7 @@
 name = "rill-digital-effects"
 version = "0.5.0-beta.4"
 edition = "2021"
-description = "Digital audio effects for Rill - Delay, Distortion, Chorus, Reverb, etc."
+description = "Digital signal effects for Rill - Delay, Distortion, Chorus, Reverb, etc."
 license.workspace = true
 authors.workspace = true
 repository.workspace = true

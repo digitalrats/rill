@@ -1,4 +1,4 @@
-//! Parameter handling for audio nodes
+//! Parameter handling for signal nodes
 //!
 //! Defines the fundamental building blocks of the signal graph:
 //! - `Node`: Base trait for all nodes

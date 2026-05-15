@@ -1,6 +1,6 @@
 //! Play a WAV file — simplest possible rill graph example.
 //!
-//! Builds the graph manually: sampler source → audio output sink.
+//! Builds the graph manually: sampler source → signal output sink.
 //! No config files, no ModularSystemDef — just a hand-built graph.
 //!
 //! Usage:
@@ -9,7 +9,7 @@
 //!   cargo run --example play_wav --features "io,sampler,alsa" -- alsa myfile.wav
 //!
 //! Positional arguments:
-//!   backend   Audio backend (portaudio/alsa/pipewire/jack/null). Default: portaudio.
+//!   backend   I/O backend (portaudio/alsa/pipewire/jack/null). Default: portaudio.
 //!   wav_path  Path to a WAV file. Default: built-in demo sample.
 
 use std::collections::HashMap;

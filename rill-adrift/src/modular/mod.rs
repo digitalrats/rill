@@ -1,4 +1,4 @@
-//! # ModularSystem — modular audio processing host
+//! # ModularSystem — modular signal processing host
 //!
 //! * GraphDef — signal topology
 //! * RackDef — control system (LFO, envelope, sequencer)

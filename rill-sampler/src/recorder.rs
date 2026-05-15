@@ -1,6 +1,6 @@
-//! Recording sink — captures audio into a Vec<f32> for offline analysis.
+//! Recording sink — captures signal into a Vec<f32> for offline analysis.
 //!
-//! RT-safe: the Mutex is only used during `consume()` (audio thread, single writer)
+//! RT-safe: the Mutex is only used during `consume()` (signal thread, single writer)
 //! and for post-processing (read after graph stops). No contention.
 
 use std::sync::{Arc, Mutex};
@@ -15,7 +15,7 @@ use rill_core::{
     NodeId,
 };
 
-/// Sink node that records stereo audio into a shared buffer.
+/// Sink node that records stereo signal into a shared buffer.
 ///
 /// # Usage
 ///

@@ -7,7 +7,7 @@ Cargo workspace — 18 active crates:
 | Crate | Status |
 |---|---|
 | `rill-core` | Active — base traits, math, buffers, queues, time, macros, executor, interpolation |
-| `rill-core-actor` | Active — actor model (ActorRef, ActorCell, ActorSystem) for lock-free message passing |
+| `rill-core-actor` | Active — actor model (ActorRef, Actor, ActorSystem) for lock-free message passing |
 | `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops, sample player |
 | `rill-graph` | Active — signal graph (DAG) with topological sort |
 | `rill-oscillators` | Active — oscillators, LFO, envelopes, wavetable oscillator node |
@@ -16,7 +16,7 @@ Cargo workspace — 18 active crates:
 | `rill-router` | Active — EQ + mixer + routing |
 | `rill-patchbay` | Active — automation (LFO, envelopes, sensors, servos) |
 | `rill-lofi` | Active — lo-fi emulation |
-| `rill-io` | Active — audio I/O backends (PortAudio, ALSA, PipeWire, JACK) |
+| `rill-io` | Active — I/O backends (PortAudio, ALSA, PipeWire, JACK) |
 | `rill-telemetry` | Active — probes, collectors |
 | `rill-core-wdf` | Active — WDF elements, adapters, analysis |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
@@ -29,7 +29,7 @@ Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
 - **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `Graph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
-- **`rill-io`** — audio I/O backends only (`IoBackend` trait + PortAudio/ALSA/PipeWire/JACK). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
+- **`rill-io`** — I/O backends only (`IoBackend` trait + PortAudio/ALSA/PipeWire/JACK). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
@@ -40,6 +40,27 @@ Dependency tree:
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
 - **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`
 
+## History
+
+> **«kama» → «rill» rename (0.3.0).** `kama-*` is the pre‑0.3.0 name of the framework. Every reference to `kama-*` should be read as `rill-*`. Crates `kama-automation` and `kama-control` were merged into `rill-patchbay`.
+>
+> Crate lineage:
+> | Old name | New name |
+> |---|---|
+> | `kama-core` | `rill-core` |
+> | `kama-graph` | `rill-graph` |
+> | `kama-oscillators` | `rill-oscillators` |
+> | `kama-digital-filters` | `rill-digital-filters` |
+> | `kama-digital-effects` | `rill-digital-effects` |
+> | `kama-eq` | merged into `rill-router::eq` |
+> | `kama-mixer` | merged into `rill-router::mixer` |
+> | `kama-automation` | merged into `rill-patchbay` |
+> | `kama-control` | merged into `rill-patchbay` |
+> | `kama-lofi` | `rill-lofi` |
+> | `kama-io` | `rill-io` |
+
+**`drift`** is a downstream live-coding effects server — demo application / proof-of-concept for `rill`. Depends on `rill-adrift`, uses `[patch.crates-io]` for dev mode.
+
 ## Commands
 
 ```bash
@@ -49,7 +70,7 @@ cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
 
 # publish order (leaf to root):
-./scripts/publish.sh              # all 17 crates to crates.io
+./scripts/publish.sh              # all 18 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
 ## crates.io publication rules
@@ -107,6 +128,33 @@ mdbook serve docs/                # dev server at localhost:3000
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
 
+## Terminology: «audio» vs «signal» vs «I/O»
+
+Rill is a **universal signal processing platform**, not exclusively audio. The term «audio» must only appear where hardware emitting or consuming sound is genuinely involved.
+
+| Term | Use in | Rationale |
+|---|---|---|
+| **`audio`** | `rill-io`, `rill-lofi` | These crates deal with genuine audio hardware I/O (PortAudio/ALSA/PipeWire/JACK) and audio device emulation (NES, AY-3-8910). |
+| **`signal`** | All other crates | Signal is the generic term for any discrete data stream — processing graph nodes, port connections, sample buffers, generators, filters, effects. |
+| **`I/O`** (or `backend`) | When referring to `IoBackend` | `IoBackend` in `rill-core` is an **archetype** — «I do (some kind of) I/O». It applies to any discrete data stream (audio, sensor, telemetry, network), not just audio. The factory that constructs backends is the *I/O backend factory*, not *audio backend factory*. |
+| **`signal thread`** (or `RT thread`) | Threading model descriptions | The processing thread runs the generic signal callback, not audio-specific logic. |
+
+**Specific replacements:**
+
+| ❌ Avoid | ✅ Use | Scope |
+|---|---|---|
+| `audio thread` | `signal thread` / `RT thread` / `I/O callback` | All non-`rill-io`/`rill-lofi` crates |
+| `audio data` / `audio signal` / `audio block` | `signal data` / `signal` / `signal block` | All non-`rill-io`/`rill-lofi` crates |
+| `audio port` / `audio buffer` / `audio connection` | `signal port` / `signal buffer` / `signal connection` | All non-`rill-io`/`rill-lofi` crates |
+| `audio backend` (when meaning `IoBackend`) | `I/O backend` | `rill-core`, `rill-graph`, `rill-adrift` |
+| `audio I/O thread` | `I/O callback thread` | Architecture docs |
+| `Audio sample rate` (on generic types) | `Sample rate` | `rill-core` traits |
+| `is_audio_rate()` | `is_signal_rate()` | `rill_core::PortType` |
+
+**Concrete type names** (`AudioInput`, `AudioOutput`, `AudioConfig` in `rill-io`, `PortAudio`) are **exempt** — they are code identifiers, not prose. Renaming them requires a separate API-breaking change.
+
+**«Hearing» / acoustic sensors** — the `hearing` module name and «acoustic» are domain-level concepts. Doc comments describing signal analysis algorithms should use «signal» (not «audio») for the generic processing path.
+
 ## Real-time safety
 
 ### Two backend models
@@ -143,7 +191,7 @@ Any code reached from the process callback — `generate()`, `process()`,
 
 *(All originally identified RT-safety issues have been fixed — ALSA uses
 `snd_pcm_wait`, PortAudio drives processing from its stream callback, and
-no backend uses `thread::sleep` in the audio path.)*
+no backend uses `thread::sleep` in the signal path.)*
 
 **Testing:** any new RT path code must be verified with `cargo test --release`
 under `pw‑loopback` or similar virtual device to detect xruns.
@@ -211,102 +259,116 @@ chmod +x .git/hooks/pre-commit
 
 ## Threading model
 
-### Audio I/O thread (where the process callback runs)
+### I/O callback — where the signal graph runs
 
-The `AudioIo::start()` callback fires on the backend's own thread. The nature
-of this thread depends on the backend:
+The I/O backend (`IoBackend`) drives processing through an `ActiveNode` (typically
+`Input<T,BUF_SIZE>`). The lifecycle is defined by the `IoBackend` trait
+(`rill_core/src/io.rs:26`):
 
-- **PipeWire / JACK / PortAudio** — the callback fires on the audio device's real‑time
-  thread (SCHED_FIFO). This is **hard RT**.
-- **ALSA** — the callback fires on a dedicated polling thread managed
-  by the backend. This is **soft RT**; `thread::sleep()` is **not** an
-  acceptable wait primitive (see "Real-time safety" above).
+1. `set_process_callback()` — registers the graph tick closure
+2. `run(running: Arc<AtomicBool>)` — enters the I/O loop; blocks for poll-driven
+   backends (ALSA), returns immediately for callback-driven ones (PortAudio/JACK/PipeWire)
+3. `stop()` — tears down
 
-In all cases the callback runs:
+The nature of the callback thread depends on the backend:
 
-1. Drain `MpscQueue<ParameterCommand>` (parameter changes from control thread)
-2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
-3. `Port::propagate()` — recursive DAG traversal through direct port pointers.
+| Model | Backends | RT guarantee |
+|---|---|---|
+| **Callback‑driven** | PipeWire, JACK, PortAudio | Hard RT — callback fires on the audio device's real‑time thread (SCHED_FIFO). No syscalls, no allocation, no locks. |
+| **Poll‑driven** | ALSA | Soft RT — the backend's own thread loops polling the audio device. Use `poll()`/`epoll()` on audio FDs, never `thread::sleep()`. |
+
+Inside the I/O callback tick (`rill-graph/src/graph.rs:556-588`):
+
+1. `actor.drain()` — applies queued `CommandEnum::SetParameter` commands from the actor mailbox
+2. `Source::generate()` / `Processor::process()` / `Sink::consume()` via `process_block()`
+3. `Port::propagate()` — recursive DAG traversal through direct port pointers
+4. Sends `CommandEnum::ClockTick` to the parent Patchbay actor
 
 All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
 `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside
 this path. No atomics, no locks — the graph is a single-threaded static DAG.
 
-### Control thread (soft RT) — green threads
+> **Backward compat:** `AudioIo` (`rill-io/src/audio_io.rs`) is a type alias
+> for `dyn IoBackend<f32>`, kept for legacy code. `AudioInput`/`AudioOutput`
+> are aliases for `Input`/`Output`. The `ActiveNode` trait is the real driver.
 
-`rill-patchbay` runs four kinds of green threads (tokio tasks) for automation:
+### Control path (soft RT)
 
-| Type | Spawn | Source | Output |
+Communication between the control thread and the I/O callback uses the
+**actor mailbox** — messages are `CommandEnum` variants, sent via `ActorRef<CommandEnum>`
+and drained inline inside the callback tick. No separate queue types are needed.
+
+`rill-patchbay` runs control actors:
+
+| Component | Spawn mechanism | Trigger | Output |
 |---|---|---|---|
-| **LFO / Envelope** | `tokio::spawn` | `tokio::time::interval` | `mpsc::Sender<f64>` → PortCombiner |
-| **PortCombiner** | `tokio::spawn` | `mpsc::Receiver<f64>` + `mpsc::UnboundedReceiver<UiCommand>` | `ActorRef<SetParameter>` |
-| **Sync Servos** | (no thread, called inline) | `control.update(dt)` | `ActorRef<SetParameter>` |
+| **Servo\<A: Automaton\>** | `system.spawn_detached_tokio()` | Receives `CommandEnum::ClockTick` via actor mailbox | Sends `CommandEnum::SetParameter` to `graph_ref` |
+| **LFO / Envelope (green thread)** | `tokio::spawn` (via `automaton_task.rs`) | `tokio::time::interval` | `mpsc::Sender<f64>` |
 | **MIDI / Sensors** | OS thread (`MidiHub`) | `MidiBackend::poll()` | `ActorRef<ControlEvent>` → Patchbay::event_mailbox |
 
-**LFO/Envelope Automaton** — spawned via `tokio::spawn`. On each `tokio::time::interval`
-tick it calls `automaton.step(time, action, state)` and sends the resulting value
-through an `mpsc::Sender<f64>` to its paired PortCombiner. Each automaton has its
-own cancel channel (`watch::Receiver<bool>`).
+**Servo** (`rill-patchbay/src/engine.rs:463`) — the primary automaton-to-parameter bridge.
+On each `CommandEnum::ClockTick` received from the graph:
+1. Advances time: `state.time += dt`
+2. Calls `automaton.step(&mut internal, &current_value, current_time, &action)` — signature is `(internal, current, time, action)`
+3. Applies `ControlStrategy` (Absolute / Modulation) and `ConflictStrategy` (TouchOverride / BasePlusModulation / LastWriteWins) — defined in `rill-patchbay/src/strategy.rs`
+4. Sends `CommandEnum::SetParameter` to the graph's `ActorRef<CommandEnum>`
+5. The `SetParameter` lands in the graph's actor mailbox; next I/O callback tick, `actor.drain()` applies it
 
-**PortCombiner** — spawned via `tokio::spawn`. Sits between the automaton and the
-audio thread. Uses `tokio::select!` to listen on three channels:
-- `mpsc::Receiver<f64>` — values from the automaton
-- `mpsc::UnboundedReceiver<UiCommand>` — UI/MIDI/OSC events from `handle_event()`
-- `watch::Receiver<bool>` — cancellation signal
+UI events reach the Servo as `CommandEnum::Automaton(AutomatonCommand::UiValue{..})`
+or `UiRelease{..}` — no separate `UiCommand` channel exists.
 
-Applies `ControlStrategy` (Absolute / Modulation) and `ConflictStrategy`
-(TouchOverride / BasePlusModulation / LastWriteWins) to resolve conflicts
-between automaton and UI. Output: `ActorRef<SetParameter>`.
+**Automaton task** (`rill-patchbay/src/automaton_task.rs`) — an opt-in green thread
+for running an automaton independently of the graph clock, using
+`tokio::sync::mpsc::Sender<f64>` and `tokio::sync::watch` for cancellation.
+(`PortCombiner` was removed — it duplicated `CommandEnum`'s role.)
 
 ### Communication channels
 
 ```
-                               tokio / mpsc                ActorRef
-Automaton ──── mpsc<f64> ───→ PortCombiner ── SetParameter ──→ Audio
-UI/MIDI/OSC ── mpsc<UiCmd> ─→ PortCombiner ── SetParameter ──→ Audio
-MIDI/Sensor ── ActorRef<ControlEvent> ──→ Patchbay::event_mailbox
-                                               │
-                                          drain_events()
-                                               │
-                                         handle_event()
-                                               │
-                                    Mapping → SetParameter ──→ Audio
+I/O callback tick:                     Actor mailbox (CommandEnum):
+  actor.drain()  ◄──────────  SetParameter (servo → graph)
+  generate() / process() / consume()
+  port.propagate()                    Control path:
+  ── ClockTick ──→ Servo ──→ automaton.step()
+                             ── SetParameter ──→ graph_ref (next tick drain)
 ```
 
-All control → audio paths converge on `rill_core::queues::MpscQueue<ParameterCommand>`
-— a lock-free SPSC queue designed for safe cross-thread communication without
-blocking the real-time audio thread.
+All control → signal communication uses `ActorRef<CommandEnum>` and the actor
+mailbox (lock-free SPSC) — no blocking of the real-time signal thread.
 
-### Sharded cancellation
+### Cancellation
 
-Each PortCombiner + automaton pair has an isolated `watch::Sender<bool>` /
-`watch::Receiver<bool>` pair. `stop_all()` sends `true` on each sender, which
-causes both the automaton loop and the combiner loop to exit. This per-port
-cancellation domain means stopping one LFO doesn't affect others.
+**Main Servo path:** `ServoState` (`Mutex<ServoState>`) has an `enabled: bool` field,
+toggled via `CommandEnum::Automaton(AutomatonCommand::SetEnabled{..})`. When `false`,
+the Servo skips processing on ClockTick. The tokio task exits when the actor system
+drops — no explicit `watch` cancellation needed.
+
+**Automaton task path** (`automaton_task.rs`): uses `tokio::sync::watch::Receiver<bool>`
+for per-task cancellation — sending `true` causes the automaton loop to exit.
 
 Sensors (MIDI, OSC) are stopped via their `Sensor::stop()` method, which
 joins the polling thread and releases the backend.
 
 ### Rule of thumb
 
-If data crosses threads, use `rill_core::queues::MpscQueue<ParameterCommand>`.
+If data crosses threads, send `CommandEnum` variants through `ActorRef<CommandEnum>`.
 Everything else is single-threaded within the signal graph running inside the
-I/O callback (see "Audio I/O thread" above). No external engine loop —
-`Port::propagate` replaces `Port::propagate::process_block()`.
+I/O callback. No external engine loop — `Port::propagate` traverses the DAG
+recursively through direct port pointers.
 
 ## Known pitfalls
 
 - Root `examples/` were **stale** and have been removed. Use per-crate `examples/` for canonical usage.
-- README prose about "Мир автоматов" (patchbay) describes an active subsystem, but code examples may be aspirational.
-- No CI workflows or pre-commit hooks exist.
+- No CI workflows exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: the audio I/O thread (see "Audio I/O thread"
-  above) runs `AudioInput`'s callback which drives the entire signal graph.
-  The control thread (soft RT) runs `rill-patchbay::Patchbay`.
-  Communication via `MpscQueue<ParameterCommand>`. Source/Sink nodes own
-  I/O buffers — no external engine loop, `Port::propagate` replaces
-  `Port::propagate::process_block`.
+- **Two-thread architecture**: the I/O callback runs the graph via `ActiveNode::run()`,
+  driving `generate()` / `process()` / `consume()` / `propagate()`. The control thread
+  (soft RT) runs `rill-patchbay` actors (Servos, Sensors). Communication via
+  `ActorRef<CommandEnum>`.
+- `automaton_task.rs` originally referenced `PortCombiner` which was removed
+  (duplicated `CommandEnum` functionality). The module works standalone
+  (proven by tests) and can send values through any `mpsc::Sender<f64>`.
 
 ## Licensing
 

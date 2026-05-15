@@ -28,7 +28,7 @@
 //! - **Node**: Base trait for all nodes in the signal graph
 //! - **Source**: Active generators (oscillators, file readers)
 //! - **Processor**: Passive processors (filters, effects)
-//! - **Sink**: Active outputs (sound cards, file writers)
+//! - **Sink**: Active outputs (I/O devices, file writers)
 //! - **PipeBuffer**: Zero-copy connections between nodes
 //! - **CommandQueue**: Real-time safe parameter automation
 //! - **ClockTick**: Sample-accurate timing for synchronization

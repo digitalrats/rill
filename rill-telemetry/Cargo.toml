@@ -2,7 +2,7 @@
 name = "rill-telemetry"
 version = "0.5.0-beta.4"
 edition = "2021"
-description = "Real-time telemetry probe and collector for Rill audio graph"
+description = "Real-time telemetry probe and collector for Rill signal graph"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true

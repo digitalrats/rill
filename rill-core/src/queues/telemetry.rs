@@ -1,4 +1,4 @@
-//! Telemetry types — event data from the audio world.
+//! Telemetry types — event data from the signal processing world.
 
 use crate::traits::{NodeId, ParameterId, PortId};
 use std::fmt;
@@ -14,7 +14,7 @@ pub const CLOCK_TEMPO: &str = "clock_tempo";
 pub enum TelemetryKind {
     /// Parameter value telemetry.
     Parameter,
-    /// Signal data (audio, sensor readings).
+    /// Signal data (signal processing, sensor readings).
     Signal,
     /// Peak value telemetry.
     Peak,
@@ -50,7 +50,7 @@ pub enum Telemetry {
         /// Unix timestamp (microseconds).
         timestamp: u64,
     },
-    /// Audio or sensor signal data.
+    /// Signal or sensor signal data.
     SignalData {
         /// Source node ID.
         node_id: NodeId,

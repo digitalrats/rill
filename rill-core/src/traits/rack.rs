@@ -1,11 +1,11 @@
 //! # Eurorack — modular processing case archetype
 //!
 //! An `Eurorack` is a single processing unit (case) in a modular
-//! audio system — equivalent to one row or enclosure in a Eurorack
+//! signal processing system — equivalent to one row or enclosure in a Eurorack
 //! modular synthesizer.
 //!
 //! Each case holds:
-//! - **Audio processing modules** — signal generation, transformation, routing, consumption
+//! - **Signal processing modules** — signal generation, transformation, routing, consumption
 //! - **Control modules** — automata (LFO, envelope), sensors (MIDI, OSC)
 //! - **Signal routing** — port-to-port connections between modules
 //!
@@ -26,7 +26,7 @@
 //!     └── Patchbay (modules: Servo, Sensor)
 //! ```
 
-/// A single Eurorack processing case — holds audio and control modules,
+/// A single Eurorack processing case — holds signal and control modules,
 /// provides the backplane (sample rate, clock, command routing).
 ///
 /// This is the archetype for any Eurorack-compatible processing unit.
@@ -54,7 +54,7 @@ pub trait Eurorack {
     /// Case identifier (unique within a [`ModularSystem`]).
     fn name(&self) -> &str;
 
-    /// Audio sample rate in Hz.
+    /// Sample rate in Hz.
     fn sample_rate(&self) -> f32;
 
     /// Processing block size in samples.

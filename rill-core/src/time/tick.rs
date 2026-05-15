@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-/// A tick of the audio clock
+/// A tick of the system clock
 ///
 /// Sent to nodes on every signal block to provide timing information
 /// and synchronize processing. This is the fundamental timing primitive

@@ -1,12 +1,15 @@
 //! # Sensor — external input bridge
 //!
-//! A `Sensor` converts external data (MIDI, OSC, hardware knobs, audio analysis)
-//! into [`ControlEvent`]s and sends them to the Patchbay via [`ActorRef`].
+//! A `Sensor` converts external data (MIDI, OSC, hardware knobs, signal analysis)
+//! into [`ControlEvent`](crate::sensor::ControlEvent)s that can be mapped through
+//! [`ParameterMapping`](crate::sensor::ParameterMapping) to graph parameters.
 //!
-//! ## Submodules
+//! ## Available sensor types
 //!
-//! - [`hearing`] — audio analysis algorithms (pitch, envelope, zero-crossing)
-//!   for acoustic sensors that react to graph audio output.
+//! - [`midi`] — MIDI controller and note sensors
+//! - [`osc`] — OSC address-based sensors
+//! - [`hearing`] — signal analysis algorithms (pitch, envelope, zero-crossing)
+//!   for acoustic sensors that react to graph signal output.
 //!
 //! Multiple sensors can run independently — all events share a single
 //! mailbox drained by [`Patchbay::drain_events`].

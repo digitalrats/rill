@@ -18,20 +18,20 @@ use rill_patchbay::serialization::PatchbayDef;
 /// **host-level** parameters: sample rate, default backend config,
 /// OSC bind address, and optional paths to initial preset files.
 ///
-/// The `backend_name` + `backend_params` pair sets the default audio
+/// The `backend_name` + `backend_params` pair sets the default I/O
 /// backend via [`ModularSystem::set_default_backend`](super::ModularSystem::set_default_backend)
 /// at construction time. All values in `backend_params` are strings —
 /// each backend constructor is responsible for parsing them.
 #[cfg_attr(feature = "serialization", derive(Deserialize))]
 pub struct ModularConfig {
-    /// Audio sample rate (default 48000.0).
+    /// Sample rate (default 48000.0).
     pub sample_rate: f32,
 
     /// Block / buffer size (default 256).
     pub block_size: usize,
 
-    /// Default audio backend name (e.g. `"pipewire"`, `"alsa"`, `"null"`).
-    /// `None` = no default backend (graph built without audio I/O).
+    /// Default I/O backend name (e.g. `"pipewire"`, `"alsa"`, `"null"`).
+    /// `None` = no default backend (graph built without I/O).
     pub backend_name: Option<String>,
 
     /// Raw string-keyed parameters for the default backend.
@@ -87,13 +87,13 @@ impl Default for ModularConfig {
 /// (signal graph + control patchbay) in one call.
 #[cfg(feature = "serialization")]
 pub struct LaunchConfig {
-    /// Audio sample rate (e.g. 48000.0).
+    /// Sample rate (e.g. 48000.0).
     pub sample_rate: f32,
 
     /// Block / buffer size (e.g. 256).
     pub block_size: usize,
 
-    /// Audio backend name (`"pipewire"`, `"alsa"`, `"null"`).
+    /// I/O backend name (`"pipewire"`, `"alsa"`, `"null"`).
     pub backend_name: Option<String>,
 
     /// Raw string-keyed backend parameters
@@ -104,7 +104,7 @@ pub struct LaunchConfig {
     pub graph_def: GraphDef,
 
     /// Control rack configuration (automata, mappings, MIDI).
-    /// `None` = no control rack, audio passthrough only.
+    /// `None` = no control rack, signal passthrough only.
     pub rack_def: Option<PatchbayDef>,
 }
 

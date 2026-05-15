@@ -123,9 +123,9 @@ pub enum ErrorCode {
     PortAlreadyConnected = 205,
 
     // ── I/O errors (300-399) ────────────────────────────────────
-    /// Audio device not found.
+    /// I/O device not found.
     DeviceNotFound = 300,
-    /// Audio device is busy.
+    /// I/O device is busy.
     DeviceBusy = 301,
     /// ALSA-specific error.
     AlsaError = 310,

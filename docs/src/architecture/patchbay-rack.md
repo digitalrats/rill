@@ -44,7 +44,7 @@ and configured through a single document (`PatchbayDef`):
 |--------|------|---------------|
 | **Automata** | Modulation generators (LFO, envelope) | `automata` + `servos` |
 | **MidiInput** | External MIDI event source | `midi` |
-| **Sequencer** | Step sequencer driven by audio clock | `attach_sequencer()` |
+| **Sequencer** | Step sequencer driven by signal clock | `attach_sequencer()` |
 | **OscSurface** | OSC → EventPattern bridge | `osc_surface` |
 
 All modules produce `ControlEvent`s that flow through **mappings** →
@@ -193,13 +193,13 @@ pub fn launch(config: LaunchConfig) -> Result<Runtime, Error> {
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
-    let audio_thread = std::thread::spawn(move || {
+    let signal_thread = std::thread::spawn(move || {
         graph.run(r).ok();
     });
 
     Ok(Runtime {
         control: Arc::new(Mutex::new(control)),
-        audio_thread,
+        signal_thread,
         running,
         _tokio: tokio_rt,
     })
@@ -217,7 +217,7 @@ pub fn stop(&mut self) {
         pb.stop_all();
     }
 
-    // Audio thread exits when graph.run() sees running=false.
+    // Signal thread exits when graph.run() sees running=false.
     // Drop tokio runtime → remaining tasks cancelled.
 }
 ```

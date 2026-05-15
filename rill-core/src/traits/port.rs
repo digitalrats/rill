@@ -24,7 +24,7 @@ use std::fmt;
 /// Type of a port - what kind of signal it carries
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortType {
-    /// Signal port - carries signal blocks (audio, sensor, etc.)
+    /// Signal port - carries signal blocks (signal data, sensor data, etc.)
     Signal,
 
     /// Control signal port - carries modulation/automation
@@ -52,8 +52,8 @@ impl PortType {
         }
     }
 
-    /// Check if this port carries audio-rate signals
-    pub const fn is_audio_rate(&self) -> bool {
+    /// Check if this port carries signal-rate signals
+    pub const fn is_signal_rate(&self) -> bool {
         matches!(self, Self::Signal)
     }
 
@@ -246,7 +246,7 @@ impl PortId {
         self.direction.is_output()
     }
 
-    /// Check if this is an audio port
+    /// Check if this is a signal port
     pub const fn is_signal(&self) -> bool {
         matches!(self.port_type, PortType::Signal)
     }
@@ -300,7 +300,7 @@ impl fmt::Display for PortId {
 ///   previous block's output, snapshotted after DSP via `snapshot_feedback()`.
 /// - On an input port in a feedback edge, `feedback_buffer` holds the delayed
 ///   feedback value that gets mixed into `buffer` by `pre_process()`.
-/// - `downstream` lists audio connections from this output port to input ports
+/// - `downstream` lists signal connections from this output port to input ports
 ///   of other nodes, populated at build time by the graph builder.
 /// - `upstream_buffer` on input ports: direct pointer to the upstream output
 ///   port's buffer for zero-copy routing. `None` for fan-in/feedback ports.
@@ -321,11 +321,11 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     pub action: Option<Box<dyn Algorithm<T>>>,
     /// Pending command value from the control path
     pub pending_command: Option<T>,
-    /// Owned audio buffer (for output ports and input ports without upstream)
+    /// Owned signal buffer (for output ports and input ports without upstream)
     pub buffer: FixedBuffer<T, BUF_SIZE>,
     /// Delayed feedback state (None if not on a feedback edge)
     pub feedback_buffer: Option<FixedBuffer<T, BUF_SIZE>>,
-    /// Downstream audio connections: (target_node_index, target_port_index).
+    /// Downstream signal connections: (target_node_index, target_port_index).
     /// Used for serialization and by `GraphBuilder::build()`.
     pub downstream: Vec<(usize, usize)>,
     /// Direct pointers to downstream input ports. Filled by
@@ -740,9 +740,9 @@ mod tests {
     fn test_port_id_creation() {
         let node = NodeId(42);
 
-        let audio_in = PortId::signal_in(node, 0);
-        assert_eq!(audio_in.port_type(), PortType::Signal);
-        assert!(audio_in.is_input());
+        let signal_in = PortId::signal_in(node, 0);
+        assert_eq!(signal_in.port_type(), PortType::Signal);
+        assert!(signal_in.is_input());
 
         let clock_out = PortId::clock_out(node, 0);
         assert_eq!(clock_out.port_type(), PortType::Clock);

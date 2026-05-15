@@ -1,7 +1,7 @@
 //! # RackCase — Eurorack case implementation
 //!
 //! A `RackCase` is a single Eurorack processing case — one row of
-//! modules (audio nodes + control modules) with a shared backplane.
+//! modules (signal nodes + control modules) with a shared backplane.
 //! Each case holds its own signal graph and a map of control modules.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,10 +18,10 @@ pub struct RackCase<const BUF: usize> {
     actor_ref: ActorRef<CommandEnum>,
     tasks: Vec<std::thread::JoinHandle<()>>,
 
-    /// Audio thread handle — the graph runs here (Graph is !Send).
-    audio_thread: Option<std::thread::JoinHandle<()>>,
+    /// Signal thread handle — the graph runs here (Graph is !Send).
+    signal_thread: Option<std::thread::JoinHandle<()>>,
 
-    /// Stop flag for the audio thread's run loop.
+    /// Stop flag for the signal thread's run loop.
     running: Option<Arc<AtomicBool>>,
 }
 
@@ -38,7 +38,7 @@ impl<const BUF: usize> RackCase<BUF> {
             sample_rate,
             actor_ref,
             tasks,
-            audio_thread: None,
+            signal_thread: None,
             running: None,
         }
     }
@@ -48,7 +48,7 @@ impl<const BUF: usize> RackCase<BUF> {
         self.actor_ref.clone()
     }
 
-    /// Start the audio thread for this case.
+    /// Start the signal thread for this case.
     pub(crate) fn start<F>(&mut self, build: F)
     where
         F: FnOnce(Arc<AtomicBool>) + Send + 'static,
@@ -57,10 +57,10 @@ impl<const BUF: usize> RackCase<BUF> {
         let r = running.clone();
         let handle = std::thread::spawn(move || build(r));
         self.running = Some(running);
-        self.audio_thread = Some(handle);
+        self.signal_thread = Some(handle);
     }
 
-    /// Stop the audio thread and all module tasks.
+    /// Stop the signal thread and all module tasks.
     pub fn stop(&mut self) {
         for _task in self.tasks.drain(..) {
             // Drain threads are dropped — they'll be terminated at process exit
@@ -68,7 +68,7 @@ impl<const BUF: usize> RackCase<BUF> {
         if let Some(ref running) = self.running {
             running.store(false, Ordering::Release);
         }
-        if let Some(handle) = self.audio_thread.take() {
+        if let Some(handle) = self.signal_thread.take() {
             handle.thread().unpark();
             let _ = handle.join();
         }
