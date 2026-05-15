@@ -40,6 +40,27 @@ Dependency tree:
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
 - **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`
 
+## History
+
+> **«kama» → «rill» rename (0.3.0).** `kama-*` is the pre‑0.3.0 name of the framework. Every reference to `kama-*` should be read as `rill-*`. Crates `kama-automation` and `kama-control` were merged into `rill-patchbay`.
+>
+> Crate lineage:
+> | Old name | New name |
+> |---|---|
+> | `kama-core` | `rill-core` |
+> | `kama-graph` | `rill-graph` |
+> | `kama-oscillators` | `rill-oscillators` |
+> | `kama-digital-filters` | `rill-digital-filters` |
+> | `kama-digital-effects` | `rill-digital-effects` |
+> | `kama-eq` | merged into `rill-router::eq` |
+> | `kama-mixer` | merged into `rill-router::mixer` |
+> | `kama-automation` | merged into `rill-patchbay` |
+> | `kama-control` | merged into `rill-patchbay` |
+> | `kama-lofi` | `rill-lofi` |
+> | `kama-io` | `rill-io` |
+
+**`drift`** is a downstream live-coding effects server — demo application / proof-of-concept for `rill`. Depends on `rill-adrift`, uses `[patch.crates-io]` for dev mode.
+
 ## Commands
 
 ```bash
