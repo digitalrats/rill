@@ -29,21 +29,21 @@ use rill_patchbay::serialization::{AutomatonDef, MappingDef, SensorDef, ServoDef
 /// or Graph (signal graph with its own I/O loop).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModuleDef {
-    /// Documentation.
+    /// Servo — bridges an automaton (LFO, envelope, etc.) to a graph parameter.
     Servo(ServoDef),
-    /// Documentation.
+    /// Sensor — external input source (MIDI, OSC, etc.).
     Sensor(SensorDef),
-    /// Documentation.
+    /// Custom module constructed via the module factory.
     Custom {
-        /// Documentation.
+        /// Factory constructor key.
         type_name: String,
-        /// Documentation.
+        /// Constructor parameters.
         #[serde(default)]
         params: HashMap<String, ParamValue>,
     },
     /// Signal graph — owns the I/O loop.
     Graph {
-        /// Documentation.
+        /// The embedded signal graph definition.
         graph: GraphDef,
     },
 }
@@ -55,25 +55,25 @@ pub enum ModuleDef {
 /// A modular processing rack — one signal graph + its control modules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RackDef {
-    /// Documentation.
+    /// Human-readable rack identifier.
     pub name: String,
-    /// Documentation.
+    /// Signal graph topology.
     pub graph: GraphDef,
-    /// Documentation.
+    /// Control automata (LFO, envelope, sequencer) powering servos.
     #[serde(default)]
     pub automata: Vec<AutomatonDef>,
-    /// Documentation.
+    /// Rack modules — servos, sensors, and custom modules.
     #[serde(default)]
     pub modules: Vec<ModuleDef>,
-    /// Documentation.
+    /// Parameter-to-UI/controller mappings.
     #[serde(default)]
     pub mappings: Vec<MappingDef>,
-    /// Documentation.
+    /// Optional human-readable description of the rack.
     pub description: Option<String>,
 }
 
 impl RackDef {
-    /// Documentation.
+    /// Create a new rack definition with the given name and signal graph.
     pub fn new(name: impl Into<String>, graph: GraphDef) -> Self {
         Self {
             name: name.into(),
@@ -238,25 +238,25 @@ impl RackDef {
 /// Top-level document describing a full modular processing system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModularSystemDef {
-    /// Documentation.
+    /// Format version string (e.g. `"1.0"`).
     pub format_version: String,
-    /// Documentation.
+    /// Global sample rate in Hz.
     pub sample_rate: f32,
-    /// Documentation.
+    /// Signal block size in samples.
     pub block_size: usize,
-    /// Documentation.
+    /// Processing racks, each with its own signal graph and control modules.
     pub racks: Vec<RackDef>,
-    /// Documentation.
+    /// Optional human-readable description of the system.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
-/// Documentation.
 
+/// Serialize a `ModularSystemDef` to pretty-printed JSON.
 pub fn to_json(def: &ModularSystemDef) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(def)
 }
-/// Documentation.
 
+/// Deserialize a `ModularSystemDef` from a JSON string.
 pub fn from_json(json: &str) -> Result<ModularSystemDef, serde_json::Error> {
     serde_json::from_str(json)
 }

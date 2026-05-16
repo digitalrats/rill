@@ -7,11 +7,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use rill_core::queues::{CommandEnum, MpscQueue, SetParameter};
+#[cfg(feature = "serialization")]
+use rill_core::queues::CommandEnum;
+use rill_core::queues::{MpscQueue, SetParameter};
 use rill_core::traits::ParamValue;
-use rill_core_actor::{ActorRef, ActorSystem};
+#[cfg(feature = "serialization")]
+use rill_core_actor::ActorRef;
+use rill_core_actor::ActorSystem;
 use rill_graph::backend_factory::BackendFactory;
-use rill_graph::{Graph, GraphBuilder, NodeFactory};
+#[cfg(feature = "serialization")]
+use rill_graph::Graph;
+use rill_graph::{GraphBuilder, NodeFactory};
 #[cfg(feature = "serialization")]
 use rill_patchbay::function_registry::FunctionRegistry;
 use rill_patchbay::module_factory::ModuleFactory;
@@ -23,28 +29,36 @@ use rill_graph::serialization::GraphDef;
 
 mod case;
 mod config;
+#[cfg(feature = "serialization")]
 pub mod serialization;
 pub use case::RackCase;
-pub use config::{LaunchConfig, ModularConfig};
-/// Documentation.
+#[cfg(feature = "serialization")]
+pub use config::LaunchConfig;
+pub use config::ModularConfig;
+// Re-exports.
 
 // ============================================================================
 // Error type
 // ============================================================================
 
 #[derive(Debug)]
+/// Errors that can occur during modular system setup and operation.
 pub enum ModularError {
-    /// Documentation.
+    /// Error during signal graph construction or processing.
     Graph(String),
-    /// Documentation.
+    /// Error during rack initialization or operation.
     Rack(String),
 }
-/// Documentation.
 
 // ============================================================================
 // ModularSystem struct
 // ============================================================================
 
+/// A modular signal processing host that manages one or more [`RackCase`] instances.
+///
+/// Each rack has its own signal graph and control modules (automata, servos, sensors).
+/// The system provides shared infrastructure: actor system, node factory, backend factory,
+/// and a module factory for custom rack modules.
 pub struct ModularSystem<const BUF: usize = 64> {
     dead: Arc<MpscQueue<SetParameter>>,
     node_factory: Arc<Mutex<NodeFactory<f32, BUF>>>,
@@ -60,7 +74,7 @@ pub struct ModularSystem<const BUF: usize = 64> {
 }
 
 impl<const BUF: usize> ModularSystem<BUF> {
-    /// Documentation.
+    /// Create a new `ModularSystem` with the given configuration.
     pub fn new(config: ModularConfig) -> Self {
         let mut nf = NodeFactory::new();
         crate::registration::register_all_nodes(&mut nf);
@@ -94,8 +108,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
             tokio_rt: None,
         }
     }
-    /// Documentation.
 
+    /// Set the default I/O backend name and parameters for all graphs.
     pub fn set_default_backend(&mut self, name: &str, params: HashMap<String, ParamValue>) {
         self.default_backend = Some((name.to_string(), params));
     }
@@ -110,8 +124,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
         }
         builder
     }
-    /// Documentation.
-
+    /// Build a signal graph from a GraphDef.
+    #[cfg(feature = "serialization")]
     pub fn build_graph(
         &self,
         def: &GraphDef,
@@ -215,8 +229,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         self.tokio_rt = Some(tokio_rt);
         Ok(self)
     }
-    /// Documentation.
-
+    /// Stop all processing — terminates signal loops and drops the tokio runtime.
     pub fn stop(&mut self) {
         for case in self.cases.values_mut() {
             case.stop();
@@ -226,8 +239,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
             self.tokio_rt = None;
         }
     }
-    /// Documentation.
-
+    /// Drain undelivered `SetParameter` messages from the dead letter queue.
     pub fn drain_dead_letters(&self) -> Vec<SetParameter> {
         let mut msgs = Vec::new();
         while let Some(msg) = self.dead.pop() {

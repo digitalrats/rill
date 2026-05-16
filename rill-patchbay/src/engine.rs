@@ -22,49 +22,49 @@ use crate::strategy::{ConflictStrategy, ControlStrategy};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventPattern {
-    /// Documentation.
+    /// Matches any button event regardless of ID.
     AnyButton,
-    /// Documentation.
+    /// Matches a button event with a specific hardware ID.
     ButtonId(u32),
-    /// Documentation.
+    /// Matches any knob event regardless of ID.
     AnyKnob,
-    /// Documentation.
+    /// Matches a knob event with a specific hardware ID.
     KnobId(u32),
-    /// Documentation.
+    /// Matches any fader event regardless of ID.
     AnyFader,
-    /// Documentation.
+    /// Matches a fader event with a specific hardware ID.
     FaderId(u32),
-    /// Documentation.
+    /// Matches any MIDI event (control change, note, clock, or transport).
     AnyMidi,
-    /// Documentation.
+    /// Matches a MIDI control change event by controller number and optional channel.
     MidiControl {
-        /// Documentation.
+        /// Optional MIDI channel filter; `None` matches any channel.
         channel: Option<u8>,
-        /// Documentation.
+        /// MIDI controller number (CC index).
         controller: u8,
     },
-    /// Documentation.
+    /// Matches a MIDI note-on or note-off event.
     MidiNote {
-        /// Documentation.
+        /// Optional MIDI channel filter; `None` matches any channel.
         channel: Option<u8>,
-        /// Documentation.
+        /// Optional note number filter; `None` matches any note.
         note: Option<u8>,
     },
-    /// Documentation.
+    /// Matches a MIDI clock tick event.
     MidiClock,
-    /// Documentation.
+    /// Matches a MIDI transport event (start, stop, or continue).
     MidiTransport {
-        /// Documentation.
+        /// Optional transport kind filter; `None` matches any transport event.
         kind: Option<MidiTransportKind>,
     },
-    /// Documentation.
+    /// Matches an OSC message by exact address string.
     OscAddress(String),
-    /// Documentation.
+    /// Matches an OSC message whose address contains the given substring.
     OscPattern(String),
 }
 
 impl EventPattern {
-    /// Documentation.
+    /// Checks whether this pattern matches a given control event.
     pub fn matches(&self, event: &ControlEvent) -> bool {
         match (self, event) {
             (EventPattern::AnyButton, ControlEvent::Button { .. }) => true,
@@ -112,7 +112,6 @@ impl EventPattern {
         }
     }
 }
-/// Documentation.
 
 // =============================================================================
 // 2. Event types
@@ -120,84 +119,85 @@ impl EventPattern {
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+/// Hardware control event from a physical interface (knob, button, fader, etc.).
 pub enum ControlEvent {
-    /// Documentation.
+    /// A physical button press or release.
     Button {
-        /// Documentation.
+        /// Hardware control identifier.
         id: u32,
-        /// Documentation.
+        /// `true` if the button is currently held down.
         pressed: bool,
     },
-    /// Documentation.
+    /// A physical knob (rotary encoder or potentiometer) event.
     Knob {
-        /// Documentation.
+        /// Hardware control identifier.
         id: u32,
-        /// Documentation.
+        /// Raw value in hardware-native units.
         value: f32,
-        /// Documentation.
+        /// Value mapped to the [0.0, 1.0] range.
         normalized: f32,
     },
-    /// Documentation.
+    /// A physical fader (linear slider) event.
     Fader {
-        /// Documentation.
+        /// Hardware control identifier.
         id: u32,
-        /// Documentation.
+        /// Raw value in hardware-native units.
         value: f32,
-        /// Documentation.
+        /// Value mapped to the [0.0, 1.0] range.
         normalized: f32,
     },
-    /// Documentation.
+    /// A MIDI control change message.
     MidiControl {
-        /// Documentation.
+        /// MIDI channel (0-indexed).
         channel: u8,
-        /// Documentation.
+        /// MIDI controller number.
         controller: u8,
-        /// Documentation.
+        /// Raw 7-bit MIDI value.
         value: u8,
-        /// Documentation.
+        /// Value normalized to [0.0, 1.0].
         normalized: f32,
     },
-    /// Documentation.
+    /// A MIDI note-on or note-off message.
     MidiNote {
-        /// Documentation.
+        /// MIDI channel (0-indexed).
         channel: u8,
-        /// Documentation.
+        /// MIDI note number.
         note: u8,
-        /// Documentation.
+        /// MIDI velocity value (0-127).
         velocity: u8,
-        /// Documentation.
+        /// `true` for note-on, `false` for note-off.
         on: bool,
     },
-    /// Documentation.
+    /// An OSC message event.
     Osc {
-        /// Documentation.
+        /// OSC address path.
         address: String,
-        /// Documentation.
+        /// OSC argument list as float values.
         args: Vec<f32>,
     },
-    /// Documentation.
+    /// A MIDI clock tick event.
     MidiClock,
-    /// Documentation.
+    /// A MIDI transport state change.
     MidiTransport {
-        /// Documentation.
+        /// The type of transport event (start, stop, or continue).
         kind: MidiTransportKind,
     },
 }
-/// Documentation.
 
+/// MIDI transport state.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MidiTransportKind {
-    /// Documentation.
+    /// Transport started.
     Start,
-    /// Documentation.
+    /// Transport stopped.
     Stop,
-    /// Documentation.
+    /// Transport resumed from current position.
     Continue,
 }
 
 impl ControlEvent {
-    /// Documentation.
+    /// Returns the normalized value (0.0–1.0) of this event, if it carries one.
     pub fn normalized_value(&self) -> Option<f32> {
         match self {
             ControlEvent::Knob { normalized, .. } => Some(*normalized),
@@ -207,7 +207,7 @@ impl ControlEvent {
             _ => None,
         }
     }
-    /// Documentation.
+    /// Returns the hardware control ID attached to this event, if any.
     pub fn id(&self) -> Option<u32> {
         match self {
             ControlEvent::Button { id, .. } => Some(*id),
@@ -217,46 +217,46 @@ impl ControlEvent {
         }
     }
 }
-/// Documentation.
 
 // =============================================================================
 // 2b. OSC Surface
 // =============================================================================
 
+/// A single entry in an OSC control surface, binding an OSC path to an event pattern.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct OscSurfaceEntry {
-    /// Documentation.
+    /// The OSC address path this entry listens to.
     pub osc_path: String,
-    /// Documentation.
+    /// The event pattern that triggered actions should match.
     pub event_pattern: EventPattern,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    /// Documentation.
+    /// Optional human-readable label for UI display.
     pub label: Option<String>,
 }
-/// Documentation.
 
+/// A list of OSC address → event mappings forming a control surface layout.
 pub type OscSurface = Vec<OscSurfaceEntry>;
-/// Documentation.
 
 // =============================================================================
 // 3. Value transforms
 // =============================================================================
 
+/// Transfer function applied to a normalized [0,1] value before scaling to parameter range.
 #[derive(Clone)]
 pub enum Transform {
-    /// Documentation.
+    /// Identity: value passes through unchanged.
     Linear,
-    /// Documentation.
+    /// Square mapping: finer control near zero, coarser near one.
     Exponential,
-    /// Documentation.
+    /// Logarithmic mapping: finer control near maximum.
     Logarithmic,
-    /// Documentation.
+    /// Reversed mapping: 1.0 becomes min, 0.0 becomes max.
     Inverted,
-    /// Documentation.
+    /// User-defined custom transfer function.
     Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>),
 }
 
@@ -273,7 +273,7 @@ impl Debug for Transform {
 }
 
 impl Transform {
-    /// Documentation.
+    /// Applies the transform to a normalized value, mapping it into the [min, max] range.
     pub fn apply(&self, value: f32, min: f32, max: f32) -> f32 {
         let range = max - min;
         let normalized = value.clamp(0.0, 1.0);
@@ -287,42 +287,42 @@ impl Transform {
         mapped.clamp(min, max)
     }
 }
-/// Documentation.
 
 // =============================================================================
 // 4. Event mapping
 // =============================================================================
 
+/// The destination of an event mapping: a specific parameter on a specific graph node.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Target {
-    /// Documentation.
+    /// Graph node that owns the target parameter.
     pub node_id: NodeId,
-    /// Documentation.
+    /// Name of the parameter to control.
     pub param_name: String,
-    /// Documentation.
+    /// Lower bound of the parameter value range.
     pub min: f32,
-    /// Documentation.
+    /// Upper bound of the parameter value range.
     pub max: f32,
 }
-/// Documentation.
 
+/// A complete mapping from an input event to a target parameter, with a value transform.
 #[derive(Debug, Clone)]
 pub struct Mapping {
-    /// Documentation.
+    /// Event pattern that triggers this mapping.
     pub pattern: EventPattern,
-    /// Documentation.
+    /// Target parameter to set when the pattern matches.
     pub target: Target,
-    /// Documentation.
+    /// Transform applied to the normalized event value before scaling.
     pub transform: Transform,
-    /// Documentation.
+    /// Human-readable name for debugging and UI.
     pub name: String,
-    /// Documentation.
+    /// Whether this mapping is currently active.
     pub enabled: bool,
 }
 
 impl Mapping {
-    /// Documentation.
+    /// Creates a new mapping with an auto-generated name.
     pub fn new(pattern: EventPattern, target: Target, transform: Transform) -> Self {
         let name = format!("{:?} -> {}", pattern, target.param_name);
         Self {
@@ -333,13 +333,13 @@ impl Mapping {
             enabled: true,
         }
     }
-    /// Documentation.
 
+    /// Returns `true` if this mapping is enabled and matches the given event.
     pub fn matches(&self, event: &ControlEvent) -> bool {
         self.enabled && self.pattern.matches(event)
     }
-    /// Documentation.
 
+    /// Produces a parameter-set command if the event matches this mapping.
     pub fn apply(&self, event: &ControlEvent) -> Option<SetParameter> {
         if !self.matches(event) {
             return None;
@@ -356,26 +356,29 @@ impl Mapping {
         })
     }
 }
-/// Documentation.
 
 // =============================================================================
 // 5. Automaton core trait
 // =============================================================================
 
+/// Time in seconds, used for automaton clocks and timekeeping.
 pub type Time = f64;
-/// Documentation.
 
+/// A unit action for automatons that need no external action per step.
 #[derive(Debug, Clone, Default)]
 pub struct NoAction;
-/// Documentation.
 
+/// Core trait for automatons — stateful signal generators that advance per step.
 pub trait Automaton: Send + Sync + Debug {
-    /// Documentation.
+    /// The automaton's internal state, carried across step invocations.
     type Internal: Clone + Send + Sync + 'static;
-    /// Documentation.
+    /// An optional action type driving state transitions on each step.
     type Action: Debug + Clone + Send + Sync + Default + 'static;
-    /// Documentation.
 
+    /// Advances the automaton by one step, producing a new output value.
+    ///
+    /// `internal` holds mutable state, `current` is the last output value,
+    /// `time` is the elapsed time in seconds, and `action` is an optional trigger.
     fn step(
         &self,
         internal: &mut Self::Internal,
@@ -383,35 +386,35 @@ pub trait Automaton: Send + Sync + Debug {
         time: Time,
         action: &Self::Action,
     ) -> ParamValue;
-    /// Documentation.
 
+    /// Returns the automaton's initial internal state (at time zero).
     fn initial_internal(&self) -> Self::Internal;
-    /// Documentation.
 
+    /// Resets the automaton to its initial internal state.
     fn reset(&self) -> Self::Internal {
         self.initial_internal()
     }
-    /// Documentation.
 
+    /// Returns the human-readable name of this automaton.
     fn name(&self) -> &str;
 }
-/// Documentation.
 
 // =============================================================================
 // 6. Parameter mapping
 // =============================================================================
 
+/// Transfer function for mapping raw automaton output [0,1] to parameter space.
 #[derive(Clone)]
 pub enum ParameterMapping {
-    /// Documentation.
+    /// Identity: output equals input.
     Linear,
-    /// Documentation.
+    /// Square mapping: finer control near zero.
     Exponential,
-    /// Documentation.
+    /// Logarithmic mapping: finer control near maximum.
     Logarithmic,
-    /// Documentation.
+    /// Inverted: 1.0 maps to 0.0 and vice versa.
     Inverted,
-    /// Documentation.
+    /// User-defined custom mapping function.
     Custom(Arc<dyn Fn(f64) -> f64 + Send + Sync>),
 }
 
@@ -428,7 +431,7 @@ impl std::fmt::Debug for ParameterMapping {
 }
 
 impl ParameterMapping {
-    /// Documentation.
+    /// Applies this mapping to a raw value in the [0, 1] range.
     pub fn apply(&self, raw: f64) -> f64 {
         match self {
             ParameterMapping::Linear => raw,
@@ -444,22 +447,32 @@ impl ParameterMapping {
 // 7. ServoState
 // =============================================================================
 
+/// Internal runtime state of a Servo, shared between the control actor and automation logic.
 pub(crate) struct ServoState<A: Automaton> {
+    /// Current automaton internal state.
     pub(crate) internal: A::Internal,
+    /// Most recent output value produced by the automaton.
     pub(crate) value: ParamValue,
+    /// Elapsed time in seconds since the automaton started.
     pub(crate) time: Time,
+    /// Whether the servo is actively stepping the automaton.
     pub(crate) enabled: bool,
+    /// Base value for modulation strategies (offset added to modulation output).
     pub(crate) base: f64,
+    /// When `true`, the servo is frozen from UI touch (used with TouchOverride).
     pub(crate) frozen: bool,
+    /// Last value sent to the graph, used for change detection.
     pub(crate) last_sent_value: f64,
+    /// Last table index sent (only used with value tables).
     pub(crate) last_sent_index: i64,
 }
-/// Documentation.
 
 // =============================================================================
 // 8. Servo — automaton-to-parameter bridge
 // =============================================================================
 
+/// Bridges an automaton to a graph parameter, stepping on every clock tick and
+/// sending control commands to the signal graph.
 pub struct Servo<A: Automaton> {
     id: String,
     automaton: Arc<A>,
@@ -476,7 +489,7 @@ pub struct Servo<A: Automaton> {
 }
 
 impl<A: Automaton + 'static> Servo<A> {
-    /// Documentation.
+    /// Creates a new Servo linking an automaton to a target parameter.
     pub fn new(
         id: impl Into<String>,
         automaton: A,
@@ -522,8 +535,11 @@ impl<A: Automaton + 'static> Servo<A> {
             table: None,
         }
     }
-    /// Documentation.
 
+    /// Spawns this servo as a detached tokio actor, returning its address.
+    ///
+    /// The actor listens for `ClockTick` to step the automaton, and for
+    /// `AutomatonCommand` variants to handle enable/reset/UI value events.
     pub fn spawn(self, system: &ActorSystem) -> ActorRef<CommandEnum> {
         let Servo {
             id,
@@ -656,45 +672,45 @@ impl<A: Automaton + 'static> Servo<A> {
             1,
         )
     }
-    /// Documentation.
 
+    /// Attaches a preset value table; raw automaton output selects table entries by index.
     pub fn with_table(mut self, table: Vec<ParamValue>) -> Self {
         self.table = Some(table);
         self
     }
-    /// Documentation.
 
+    /// Returns this servo's unique identifier.
     pub fn id(&self) -> &str {
         &self.id
     }
 }
-/// Documentation.
 
 // =============================================================================
 // 9. Module trait — unified interface for sensors
 // =============================================================================
 
+/// Type-erased, heap-allocated reference to any module.
 pub type BoxedModule = Box<dyn Module>;
-/// Documentation.
 
+/// Unified interface for sensor and control modules (MIDI hubs, OSC servers, etc.).
 pub trait Module: Send {
-    /// Documentation.
+    /// Returns this module's unique identifier.
     fn id(&self) -> &str;
-    /// Documentation.
+    /// Returns the actor handle if this module has a control actor, `None` otherwise.
     fn handle(&self) -> Option<ActorRef<CommandEnum>> {
         None
     }
-    /// Documentation.
+    /// Enables or disables the module.
     fn set_enabled(&mut self, _enabled: bool) {}
-    /// Documentation.
+    /// Stops the module, joining any background threads.
     fn stop(&mut self);
 }
-/// Documentation.
 
 // =============================================================================
 // 10. Helper constructors
 // =============================================================================
 
+/// Convenience constructor for a MIDI control change mapping.
 pub fn midi_cc(
     controller: u8,
     channel: Option<u8>,
@@ -718,8 +734,8 @@ pub fn midi_cc(
         transform,
     )
 }
-/// Documentation.
 
+/// Convenience constructor for an OSC address mapping.
 pub fn osc_address(
     address: &str,
     target_node: NodeId,

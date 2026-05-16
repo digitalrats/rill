@@ -34,11 +34,10 @@ pub enum Drain {
     /// Factory spawns the I/O thread, construction closures run inside it.
     IoCallback,
 }
-/// Documentation.
-
+/// Errors returned by module construction via the type-registry.
 #[derive(Debug, Clone)]
 pub enum FactoryError {
-    /// Documentation.
+    /// The requested module type name was not registered.
     UnknownType(String),
 }
 
@@ -49,12 +48,11 @@ impl fmt::Display for FactoryError {
         }
     }
 }
-/// Documentation.
-
+/// Constructs generic rack modules from type name, params, actor system, and graph handle.
 pub trait ModuleConstructor: Send + Sync {
-    /// Documentation.
+    /// Returns the string key used to register this module constructor.
     fn type_name(&self) -> &'static str;
-    /// Documentation.
+    /// Builds a boxed module, spawning its actor via the provided ActorSystem.
     fn construct(
         &self,
         id: &str,
@@ -62,24 +60,22 @@ pub trait ModuleConstructor: Send + Sync {
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
     ) -> BoxedModule;
-    /// Documentation.
+    /// Returns a heap-allocated clone of this constructor.
     fn clone_box(&self) -> Box<dyn ModuleConstructor>;
 }
-/// Documentation.
-
+/// Registry that maps module type names to constructors.
 pub struct ModuleFactory {
     entries: HashMap<String, Box<dyn ModuleConstructor>>,
 }
 
 impl ModuleFactory {
-    /// Documentation.
+    /// Creates an empty module factory.
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
         }
     }
-    /// Documentation.
-
+    /// Adds a typed constructor to the registry, keyed by its type name.
     pub fn register(&mut self, ctor: impl ModuleConstructor + 'static) {
         self.entries
             .insert(ctor.type_name().to_string(), Box::new(ctor));
@@ -130,8 +126,7 @@ impl ModuleFactory {
             Box::new(ClosureCtor::new_send(drain, make_handler)),
         );
     }
-    /// Documentation.
-
+    /// Looks up a type name and constructs the corresponding module.
     pub fn construct(
         &self,
         type_name: &str,
@@ -145,18 +140,15 @@ impl ModuleFactory {
             .ok_or_else(|| FactoryError::UnknownType(type_name.to_string()))
             .map(|ctor| ctor.construct(id, params, system, graph_ref))
     }
-    /// Documentation.
-
+    /// Checks whether a type name is registered.
     pub fn contains(&self, type_name: &str) -> bool {
         self.entries.contains_key(type_name)
     }
-    /// Documentation.
-
+    /// Returns the number of registered module types.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    /// Documentation.
-
+    /// Returns true if no module types are registered.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -192,29 +184,29 @@ impl Module for GenericModule {
 // ClosureCtor
 // ============================================================================
 
+type ErasedCtorFn = Arc<
+    dyn Fn(
+            &str,
+            &HashMap<String, ParamValue>,
+            &ActorRef<CommandEnum>,
+        ) -> Box<dyn FnMut(CommandEnum) + 'static>
+        + Send
+        + Sync,
+>;
+
+type SendCtorFn = Arc<
+    dyn Fn(
+            &str,
+            &HashMap<String, ParamValue>,
+            &ActorRef<CommandEnum>,
+        ) -> Box<dyn FnMut(CommandEnum) + Send + 'static>
+        + Send
+        + Sync,
+>;
+
 enum ClosureCtorKind {
-    Erased {
-        f: Arc<
-            dyn Fn(
-                    &str,
-                    &HashMap<String, ParamValue>,
-                    &ActorRef<CommandEnum>,
-                ) -> Box<dyn FnMut(CommandEnum) + 'static>
-                + Send
-                + Sync,
-        >,
-    },
-    Send {
-        f: Arc<
-            dyn Fn(
-                    &str,
-                    &HashMap<String, ParamValue>,
-                    &ActorRef<CommandEnum>,
-                ) -> Box<dyn FnMut(CommandEnum) + Send + 'static>
-                + Send
-                + Sync,
-        >,
-    },
+    Erased { f: ErasedCtorFn },
+    Send { f: SendCtorFn },
 }
 
 struct ClosureCtor {

@@ -39,7 +39,7 @@ pub struct RecordingSink<T: Transcendental, const B: usize> {
 impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
     /// Create a stereo RecordingSink.
     pub fn new(recorded: Arc<Mutex<Vec<f32>>>, channels: usize) -> Self {
-        let ch = channels.max(1).min(2);
+        let ch = channels.clamp(1, 2);
         let inputs: Vec<_> = if ch == 1 {
             vec![Port::input(NodeId(0), 0, "mono")]
         } else {
@@ -165,7 +165,7 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
         let mut dst = self.recorded.lock().unwrap();
         for i in 0..B {
             dst.push(ch0[i].to_f32());
-            if let Some(ref c1) = ch1 {
+            if let Some(c1) = ch1 {
                 dst.push(c1[i].to_f32());
             }
         }

@@ -9,11 +9,10 @@ use rill_core::traits::{NodeId, ParamValue, Params};
 use rill_core_actor::ActorRef;
 
 use crate::engine::{BoxedModule, ParameterMapping};
-/// Documentation.
-
+/// Errors returned by automaton construction via the type-registry.
 #[derive(Debug, Clone)]
 pub enum FactoryError {
-    /// Documentation.
+    /// The requested automaton type name was not registered.
     UnknownType(String),
 }
 
@@ -24,31 +23,29 @@ impl fmt::Display for FactoryError {
         }
     }
 }
-/// Documentation.
-
+/// Destination descriptor for a servo-driven parameter automation.
 #[derive(Debug, Clone)]
 pub struct ServoTarget {
-    /// Documentation.
+    /// The graph node that receives the parameter value.
     pub target_node: NodeId,
-    /// Documentation.
+    /// The parameter name on the target node to update.
     pub target_param: String,
-    /// Documentation.
+    /// How the automaton output maps to the parameter.
     pub mapping: ParameterMapping,
-    /// Documentation.
+    /// Minimum output clamp value.
     pub min: f64,
-    /// Documentation.
+    /// Maximum output clamp value.
     pub max: f64,
     /// Optional value table for index-based automata.
     pub table: Option<Vec<ParamValue>>,
 }
-/// Documentation.
-
+/// Constructs automaton modules from type name, params, and target.
 pub trait AutomatonConstructor: Send + Sync {
-    /// Documentation.
+    /// Returns the string key used to register this constructor.
     fn type_name(&self) -> &'static str;
-    /// Documentation.
+    /// Builds a boxed module from the given id, params, and servo target.
     fn construct(&self, id: &str, params: &Params, target: &ServoTarget) -> BoxedModule;
-    /// Documentation.
+    /// Optionally spawns an async green-thread for automata that run independently of the graph clock.
     fn spawn_async(
         &self,
         _id: &str,
@@ -59,27 +56,26 @@ pub trait AutomatonConstructor: Send + Sync {
     ) -> Option<tokio::task::JoinHandle<()>> {
         None
     }
-    /// Documentation.
+    /// Returns a heap-allocated clone of this constructor.
     fn clone_box(&self) -> Box<dyn AutomatonConstructor>;
 }
-/// Documentation.
-
+/// Registry that maps automaton type names to constructors.
 pub struct AutomatonFactory {
     entries: HashMap<&'static str, Box<dyn AutomatonConstructor>>,
 }
 
 impl AutomatonFactory {
-    /// Documentation.
+    /// Creates an empty automaton factory.
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
         }
     }
-    /// Documentation.
+    /// Adds a typed constructor to the registry, keyed by its type name.
     pub fn register(&mut self, ctor: impl AutomatonConstructor + 'static) {
         self.entries.insert(ctor.type_name(), Box::new(ctor));
     }
-    /// Documentation.
+    /// Registers a closure-based constructor under the given type name.
     pub fn register_fn(
         &mut self,
         type_name: &'static str,
@@ -88,7 +84,7 @@ impl AutomatonFactory {
         self.entries
             .insert(type_name, Box::new(ClosureCtor::new(type_name, f)));
     }
-    /// Documentation.
+    /// Looks up a type name and constructs the corresponding automaton module.
     pub fn construct(
         &self,
         type_name: &str,
@@ -101,7 +97,7 @@ impl AutomatonFactory {
             .ok_or_else(|| FactoryError::UnknownType(type_name.to_string()))
             .map(|ctor| ctor.construct(id, params, target))
     }
-    /// Documentation.
+    /// Looks up a type name and spawns its async green-thread if supported.
     pub fn spawn_async(
         &self,
         type_name: &str,
@@ -116,19 +112,19 @@ impl AutomatonFactory {
             .ok_or_else(|| FactoryError::UnknownType(type_name.to_string()))
             .map(|ctor| ctor.spawn_async(id, params, target, interval_ms, command_queue))
     }
-    /// Documentation.
+    /// Checks whether a type name is registered.
     pub fn contains(&self, type_name: &str) -> bool {
         self.entries.contains_key(type_name)
     }
-    /// Documentation.
+    /// Lists all registered automaton type names.
     pub fn list_types(&self) -> Vec<&'static str> {
         self.entries.keys().copied().collect()
     }
-    /// Documentation.
+    /// Returns the number of registered automaton types.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    /// Documentation.
+    /// Returns true if no automaton types are registered.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -140,9 +136,11 @@ impl Default for AutomatonFactory {
     }
 }
 
+type ClosureCtorFn = Arc<dyn Fn(&str, &Params, &ServoTarget) -> BoxedModule + Send + Sync>;
+
 struct ClosureCtor {
     type_name: &'static str,
-    f: Arc<dyn Fn(&str, &Params, &ServoTarget) -> BoxedModule + Send + Sync>,
+    f: ClosureCtorFn,
 }
 
 impl ClosureCtor {
