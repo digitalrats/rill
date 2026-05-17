@@ -8,8 +8,8 @@ use rill_core::traits::ParamValue;
 use rill_core::NodeId;
 
 use crate::automaton::envelope::EnvelopeAutomaton;
-use crate::automaton::lfo::LfoAutomaton;
-use crate::automaton::sequencer::{SequencerAutomaton, Step};
+use crate::automaton::lfo::{LfoAutomaton, LfoWaveform};
+use crate::automaton::sequencer::{PlayMode, SequencerAutomaton, Step};
 pub use crate::engine::EventPattern;
 use crate::engine::{OscSurface, ParameterMapping, Servo, Transform};
 use crate::function_registry::FunctionRegistry;
