@@ -102,7 +102,7 @@ mdbook serve docs/                # dev server at localhost:3000
     - All crate-level docs (`README.md`, module doc comments, API docs) must be in **English**.
     - Code comments (inline `//`) should also be in English.
     - The only exception is `docs/src/guides/world-of-automatons.md` — a full-fledged published article intentionally written in Russian as a deliberate stylistic choice.
-    - The term **Automaton** is canonical in the codebase (`Automaton` trait, `AutomatonDef`, etc.). Do not use the alternative form "Automata" in code identifiers, documentation, or commit messages. In prose, prefer "automaton" (singular) / "automatons" (plural).
+    - The term **Automaton** is canonical in the codebase (`Automaton` trait, `AutomatonDef`, etc.). Do not use "Automata" in code identifiers, documentation, or commit messages. In prose, prefer "automaton" (singular) / "automatons" (plural).
     - Rationale: English is the lingua franca of open-source. One Russian-language article is an exception, not a precedent — do not add more without explicit discussion.
 
 - **Zero-copy data flow:**
@@ -150,10 +150,14 @@ Rill is a **universal signal processing platform**, not exclusively audio. The t
 | `audio I/O thread` | `I/O callback thread` | Architecture docs |
 | `Audio sample rate` (on generic types) | `Sample rate` | `rill-core` traits |
 | `is_audio_rate()` | `is_signal_rate()` | `rill_core::PortType` |
+| `automata` (plural) | `automatons` | All crates — code identifiers, field names, variable names, docs |
+| `Automata` (type/generic) | `Automaton` | Trait names, type parameters, enum variants |
 
 **Concrete type names** (`AudioInput`, `AudioOutput`, `AudioConfig` in `rill-io`, `PortAudio`) are **exempt** — they are code identifiers, not prose. Renaming them requires a separate API-breaking change.
 
 **«Hearing» / acoustic sensors** — the `hearing` module name and «acoustic» are domain-level concepts. Doc comments describing signal analysis algorithms should use «signal» (not «audio») for the generic processing path.
+
+**«Automaton» vs «automata»** — the singular "automaton" and plural **"automatons"** are the only acceptable forms. The incorrect plural "automata" exists in legacy public API (`RackDef.automata`, `PatchbayDef.automata`) and is a known issue pending an API-breaking rename. All **new** code identifiers, variable names, and documentation MUST use `automatons`.
 
 ## Real-time safety
 
