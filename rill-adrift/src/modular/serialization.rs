@@ -94,6 +94,7 @@ impl RackDef {
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
     ) -> Result<HashMap<String, ActorRef<CommandEnum>>, String> {
+        let automaton_defs = &self.automata;
         let auto_ids: std::collections::HashSet<&str> =
             self.automata.iter().map(|a| a.id()).collect();
         let mut modules = HashMap::new();
@@ -210,42 +211,34 @@ impl RackDef {
                         }
                     }
                 }
-                ModuleDef::Sensor(sensor_def) => match sensor_def {
-                    rill_patchbay::serialization::SensorDef::Midi { backend, port_name } => {
-                        let mut params = HashMap::new();
-                        params.insert(
-                            "backend".to_string(),
-                            rill_core::traits::ParamValue::String(backend.clone()),
-                        );
-                        params.insert(
-                            "port_name".to_string(),
-                            rill_core::traits::ParamValue::String(port_name.clone()),
-                        );
-                        match module_factory.construct(
-                            "midi",
-                            &format!("midi_{port_name}"),
-                            &params,
-                            system,
-                            graph_ref,
-                        ) {
-                            Ok(module) => {
-                                if let Some(h) = module.handle() {
-                                    modules.insert(format!("midi_{port_name}"), h);
+                ModuleDef::Sensor(sensor_def) => {
+                    let module =
+                        rill_patchbay::serialization::ModuleDef::Sensor(sensor_def.clone());
+                    match module_factory.construct(&module, automaton_defs, system, graph_ref) {
+                        Ok(actor_ref) => {
+                            let name = match sensor_def {
+                                rill_patchbay::serialization::SensorDef::Midi {
+                                    port_name, ..
+                                } => {
+                                    format!("midi_{port_name}")
                                 }
-                            }
-                            Err(e) => {
-                                log::warn!("MIDI sensor '{}' failed: {}", port_name, e);
-                            }
+                            };
+                            modules.insert(name, actor_ref);
                         }
+                        Err(e) => log::warn!("MIDI sensor failed: {}", e),
                     }
-                },
-                ModuleDef::Custom { type_name, params } => {
-                    match module_factory.construct(type_name, type_name, params, system, graph_ref)
-                    {
-                        Ok(module) => {
-                            if let Some(h) = module.handle() {
-                                modules.insert(type_name.clone(), h);
-                            }
+                }
+                ModuleDef::Custom {
+                    type_name,
+                    ref params,
+                } => {
+                    let module = rill_patchbay::serialization::ModuleDef::Custom {
+                        type_name: type_name.clone(),
+                        params: params.clone(),
+                    };
+                    match module_factory.construct(&module, automaton_defs, system, graph_ref) {
+                        Ok(actor_ref) => {
+                            modules.insert(type_name.clone(), actor_ref);
                         }
                         Err(e) => log::warn!("Custom module '{}' failed: {}", type_name, e),
                     }

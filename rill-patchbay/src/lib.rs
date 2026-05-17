@@ -73,6 +73,9 @@ pub mod function_registry;
 /// Automaton control strategies
 pub mod strategy;
 
+/// Rack module type definitions (always compiled)
+pub mod module_def;
+
 /// Custom module factory — type registry for rack module construction
 pub mod module_factory;
 
