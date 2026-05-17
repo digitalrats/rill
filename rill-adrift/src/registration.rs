@@ -432,7 +432,7 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             &self,
             module: &ModuleDef,
             _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
-            _system: &std::sync::Arc<rill_core_actor::ActorSystem>,
+            system: &std::sync::Arc<rill_core_actor::ActorSystem>,
             graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
         ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
             let SensorDef::Midi { backend, port_name } = match module {
@@ -461,55 +461,15 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
                 }
             };
 
-            let enabled = Arc::new(AtomicBool::new(true));
-            let e = enabled.clone();
-            let gr = graph_ref.clone();
-            let mid = port_name.clone();
-
-            // Polling thread
-            thread::spawn(move || {
-                let mut backend = be;
-                loop {
-                    thread::sleep(Duration::from_millis(5));
-                    if !enabled.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    match backend.poll() {
-                        Ok(msgs) => {
-                            for msg in msgs {
-                                if let Some(event) = parse_midi(&msg) {
-                                    gr.send(CommandEnum::SetParameter(
-                                        rill_core::queues::SetParameter::new(
-                                            rill_core::traits::PortId::param(
-                                                rill_core::traits::NodeId(0),
-                                                0,
-                                            ),
-                                            rill_core::traits::ParameterId::new("midi").unwrap(),
-                                            rill_core::traits::ParamValue::Float(
-                                                event.normalized_value().unwrap_or(0.0),
-                                            ),
-                                            rill_core::queues::SignalOrigin::External(
-                                                "midi".into(),
-                                            ),
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            log::warn!("midi sensor '{mid}' poll error: {err}");
-                            thread::sleep(Duration::from_millis(50));
-                        }
-                    }
-                }
-            });
-
-            // We need a control actor too. The MidiConstructor doesn't have
-            // access to ActorSystem here. For now, return an error; proper
-            // actor integration is the next step.
-            Err(ModuleError::ConstructionFailed(
-                "MidiConstructor: control actor not yet implemented via ModuleConstructor".into(),
-            ))
+            use rill_patchbay::engine::Mapping;
+            let actor_ref = rill_patchbay::midi::spawn_midi_sensor(
+                port_name,
+                be,
+                vec![],
+                system,
+                graph_ref.clone(),
+            );
+            Ok(actor_ref)
         }
 
         fn clone_box(&self) -> Box<dyn ModuleConstructor> {
