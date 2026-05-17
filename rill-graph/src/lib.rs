@@ -32,6 +32,10 @@ pub mod active;
 #[cfg(feature = "serialization")]
 pub mod serialization;
 
+/// Graph constructor — builds and runs graphs from [`serialization::GraphDef`].
+#[cfg(feature = "serialization")]
+pub mod graph_constructor;
+
 /// DOT graph visualization (Graphviz). Feature-gated behind `dot`.
 #[cfg(feature = "dot")]
 pub mod dot;

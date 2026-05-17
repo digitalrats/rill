@@ -18,12 +18,12 @@ use rill_graph::backend_factory::BackendFactory;
 #[cfg(feature = "serialization")]
 use rill_graph::Graph;
 use rill_graph::{GraphBuilder, NodeFactory};
-#[cfg(feature = "serialization")]
-use rill_patchbay::function_registry::FunctionRegistry;
 use rill_patchbay::module_factory::ModuleFactory;
 
 #[cfg(feature = "serialization")]
 use crate::modular::serialization::ModularSystemDef;
+#[cfg(feature = "serialization")]
+use crate::modular::serialization::ModuleDef;
 #[cfg(feature = "serialization")]
 use rill_graph::serialization::GraphDef;
 
@@ -220,11 +220,37 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 .recv()
                 .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
 
-            // 4. Build servos + custom modules
-            let registry = FunctionRegistry::builtin();
-            let servos = rd
-                .build_servos(&registry, &self.module_factory, &sys_svc, &graph_ref)
-                .map_err(|e| ModularError::Rack(format!("rack '{}': {e}", rd.name)))?;
+            // 4. Build modules via ModuleFactory
+            let automaton_defs = &rd.automata;
+            let mut servos = HashMap::new();
+            for module_def in &rd.modules {
+                match module_def {
+                    ModuleDef::Graph { .. } => continue,
+                    _ => {
+                        use rill_patchbay::module_def::{
+                            AutomatonDef as PbAutomatonDef, ModuleDef as PbModuleDef, SensorDef,
+                        };
+
+                        let pb_module = to_pb_module(module_def);
+                        let automaton_defs_slice: Vec<PbAutomatonDef> =
+                            automaton_defs.iter().map(|a| a.clone()).collect();
+                        let actor_ref = self
+                            .module_factory
+                            .construct(&pb_module, &automaton_defs_slice, &sys_svc, &graph_ref)
+                            .map_err(|e| ModularError::Rack(e.to_string()))?;
+                        let id = match &pb_module {
+                            PbModuleDef::Servo(s) => s.automaton_id.clone(),
+                            PbModuleDef::Sensor(s) => match s {
+                                SensorDef::Midi { port_name, .. } => {
+                                    format!("midi_{port_name}")
+                                }
+                            },
+                            PbModuleDef::Custom { type_name, .. } => type_name.clone(),
+                        };
+                        servos.insert(id, actor_ref);
+                    }
+                }
+            }
             *modules.lock().unwrap() = servos;
         }
 
@@ -248,6 +274,20 @@ impl<const BUF: usize> ModularSystem<BUF> {
             msgs.push(msg);
         }
         msgs
+    }
+}
+
+/// Convert the adrift [`ModuleDef`] (which includes `Graph`) to the
+/// patchbay [`ModuleDef`] (which does not). Panics on `Graph` variant.
+fn to_pb_module(m: &ModuleDef) -> rill_patchbay::module_def::ModuleDef {
+    match m {
+        ModuleDef::Servo(s) => rill_patchbay::module_def::ModuleDef::Servo(s.clone()),
+        ModuleDef::Sensor(s) => rill_patchbay::module_def::ModuleDef::Sensor(s.clone()),
+        ModuleDef::Custom { type_name, params } => rill_patchbay::module_def::ModuleDef::Custom {
+            type_name: type_name.clone(),
+            params: params.clone(),
+        },
+        ModuleDef::Graph { .. } => panic!("Graph modules are not handled by ModuleFactory"),
     }
 }
 
