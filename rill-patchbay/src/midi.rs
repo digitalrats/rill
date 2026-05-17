@@ -192,7 +192,7 @@ pub fn spawn_midi_sensor(
 }
 
 /// Parse a raw [`MidiMessage`] into a [`ControlEvent`].
-fn parse_midi(msg: &MidiMessage) -> Option<ControlEvent> {
+pub fn parse_midi(msg: &MidiMessage) -> Option<ControlEvent> {
     let status = msg.status();
     match msg.message_type() {
         // Note Off

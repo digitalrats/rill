@@ -210,9 +210,35 @@ impl RackDef {
                         }
                     }
                 }
-                ModuleDef::Sensor(_) => {
-                    log::info!("Sensor module — needs manual setup");
-                }
+                ModuleDef::Sensor(sensor_def) => match sensor_def {
+                    rill_patchbay::serialization::SensorDef::Midi { backend, port_name } => {
+                        let mut params = HashMap::new();
+                        params.insert(
+                            "backend".to_string(),
+                            rill_core::traits::ParamValue::String(backend.clone()),
+                        );
+                        params.insert(
+                            "port_name".to_string(),
+                            rill_core::traits::ParamValue::String(port_name.clone()),
+                        );
+                        match module_factory.construct(
+                            "midi",
+                            &format!("midi_{port_name}"),
+                            &params,
+                            system,
+                            graph_ref,
+                        ) {
+                            Ok(module) => {
+                                if let Some(h) = module.handle() {
+                                    modules.insert(format!("midi_{port_name}"), h);
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("MIDI sensor '{}' failed: {}", port_name, e);
+                            }
+                        }
+                    }
+                },
                 ModuleDef::Custom { type_name, params } => {
                     match module_factory.construct(type_name, type_name, params, system, graph_ref)
                     {

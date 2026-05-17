@@ -87,6 +87,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
             crate::registration::register_lofi_backends(&mut bf);
             bf
         };
+        let mut module_factory = ModuleFactory::new();
+        crate::registration::register_modules(&mut module_factory);
         let default_backend = config.backend_name.clone().map(|n| {
             let params = config
                 .backend_params
@@ -99,7 +101,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
             dead: Arc::new(MpscQueue::new()),
             node_factory: Arc::new(Mutex::new(nf)),
             backend_factory: Arc::new(bf),
-            module_factory: ModuleFactory::new(),
+            module_factory,
             default_backend,
             actor_system: Arc::new(ActorSystem::new()),
             cases: HashMap::new(),

@@ -395,6 +395,109 @@ fn register_router<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
     });
 } // end register_router
 
+// ============================================================================
+// Module registration — custom rack modules (MIDI, OSC, etc.)
+// ============================================================================
+
+/// Register all built-in module constructors into a [`ModuleFactory`].
+///
+/// Called once at application startup. Modules are constructed on-demand
+/// when a [`RackDef`] or [`PatchbayDef`] is processed.
+#[allow(unused_variables)]
+pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    #[cfg(feature = "midi")]
+    register_midi_module(factory);
+}
+
+#[cfg(feature = "midi")]
+fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::{CommandEnum, SensorCommand};
+    use rill_io::midi_backend::MidiBackend;
+    use rill_patchbay::midi::parse_midi;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    factory.register_fn(
+        "midi",
+        rill_patchbay::module_factory::Drain::OsThread { interval_ms: 10 },
+        move |_id, params, graph_ref| {
+            let backend_name = params
+                .get("backend")
+                .and_then(|v| v.as_str())
+                .unwrap_or("midir");
+            let port_name = params
+                .get("port_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("rill-midi");
+
+            let be: Box<dyn MidiBackend> = match backend_name {
+                "midir" => Box::new(
+                    rill_io::backends::MidirBackend::new(port_name)
+                        .expect("failed to open MIDI port"),
+                ),
+                #[cfg(feature = "alsa")]
+                "alsa_seq" => Box::new(
+                    rill_io::backends::AlsaSeqBackend::new(port_name)
+                        .expect("failed to open ALSA seq port"),
+                ),
+                _ => panic!("unknown MIDI backend '{backend_name}'"),
+            };
+
+            let enabled = Arc::new(AtomicBool::new(true));
+            let e = enabled.clone();
+            let gr = graph_ref.clone();
+            let mid = port_name.to_string();
+
+            // Polling thread — external trigger, analogous to Graph's I/O callback
+            thread::spawn(move || {
+                let mut backend = be;
+                loop {
+                    thread::sleep(Duration::from_millis(5));
+                    if !enabled.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    match backend.poll() {
+                        Ok(msgs) => {
+                            for msg in msgs {
+                                if let Some(event) = parse_midi(&msg) {
+                                    gr.send(CommandEnum::SetParameter(
+                                        rill_core::queues::SetParameter::new(
+                                            rill_core::traits::PortId::param(
+                                                rill_core::traits::NodeId(0),
+                                                0,
+                                            ),
+                                            rill_core::traits::ParameterId::new("midi").unwrap(),
+                                            rill_core::traits::ParamValue::Float(
+                                                event.normalized_value().unwrap_or(0.0),
+                                            ),
+                                            rill_core::queues::SignalOrigin::External(
+                                                "midi".into(),
+                                            ),
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("midi sensor '{mid}' poll error: {e}");
+                            thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+            });
+
+            // Control handler — receives SetEnabled via RackActor fan-out
+            Box::new(move |msg: CommandEnum| {
+                if let CommandEnum::Sensor(SensorCommand::SetEnabled { enabled: en, .. }) = msg {
+                    e.store(en, Ordering::Release);
+                }
+            })
+        },
+    );
+}
+
 /// Deserialise a JSON graph string into a
 /// [rill_graph::serialization::GraphDef].
 ///
