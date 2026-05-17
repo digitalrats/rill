@@ -1,19 +1,23 @@
 //! MIDI sensor — receives raw MIDI messages from a backend,
 //! parses them into [`ControlEvent`]s, and sends them via [`ActorRef`].
 //!
-//! Uses a dedicated OS thread for polling. Multiple sensors can run
-//! independently — events from all sources arrive via a shared mailbox.
+//! Two implementations:
+//! - [`MidiHub`] — standalone sensor with its own `ActorRef<ControlEvent>` (legacy)
+//! - [`spawn_midi_sensor`] — integrates with the actor model: control through
+//!   `ActorRef<CommandEnum>`, polling in a dedicated OS thread (like Graph's
+//!   I/O callback that calls `actor.drain()`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rill_core_actor::ActorRef;
+use rill_core::queues::{CommandEnum, SensorCommand};
+use rill_core_actor::{ActorRef, ActorSystem};
 use rill_io::midi_backend::MidiBackend;
 use rill_io::midi_message::MidiMessage;
 
-use crate::engine::{ControlEvent, MidiTransportKind, Module};
+use crate::engine::{ControlEvent, Mapping, MidiTransportKind, Module};
 use crate::sensor::Sensor;
 
 /// MIDI sensor — polls a [`MidiBackend`] on a dedicated OS thread,
@@ -106,6 +110,85 @@ impl Drop for MidiHub {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+// =============================================================================
+// MidiSensor — actor-model MIDI sensor
+// =============================================================================
+
+/// Spawns a MIDI sensor that integrates with the actor model.
+///
+/// Control messages ([`CommandEnum::Sensor`]) are received through the returned
+/// [`ActorRef<CommandEnum>`] which should be registered in the rack's module map.
+/// The polling loop runs in a dedicated OS thread.
+///
+/// # Arguments
+/// * `id` — unique sensor identifier
+/// * `backend` — MIDI I/O backend (e.g. [`MidirBackend`], [`AlsaSeqBackend`])
+/// * `mappings` — event-to-parameter mappings; each mapping's pattern is
+///   matched against parsed MIDI events and, on match, a
+///   `SetParameter` is sent to `graph_ref`
+/// * `system` — actor system for spawning the control actor
+/// * `graph_ref` — target graph for parameter changes
+pub fn spawn_midi_sensor(
+    id: &str,
+    backend: Box<dyn MidiBackend>,
+    mappings: Vec<Mapping>,
+    system: &ActorSystem,
+    graph_ref: ActorRef<CommandEnum>,
+) -> ActorRef<CommandEnum> {
+    let enabled = Arc::new(AtomicBool::new(true));
+    let gr = graph_ref.clone();
+    let mid = id.to_string();
+
+    // Control actor — receives messages from RackActor fan-out (SetEnabled, etc.).
+    // Uses spawn_detached so the handler (!Send) stays inside its own thread.
+    let actor_ref = system.spawn_detached(
+        &format!("midi_{id}"),
+        {
+            let e2 = enabled.clone();
+            move || {
+                Box::new(move |msg: CommandEnum| {
+                    if let CommandEnum::Sensor(SensorCommand::SetEnabled { enabled: en, .. }) = msg
+                    {
+                        e2.store(en, Ordering::Release);
+                    }
+                })
+            }
+        },
+        10,
+    );
+
+    // Polling thread — external trigger, analogous to Graph's I/O callback.
+    thread::spawn(move || {
+        let mut backend = backend;
+        loop {
+            thread::sleep(Duration::from_millis(5));
+
+            if !enabled.load(Ordering::Acquire) {
+                continue;
+            }
+            match backend.poll() {
+                Ok(msgs) => {
+                    for msg in msgs {
+                        if let Some(event) = parse_midi(&msg) {
+                            for mapping in &mappings {
+                                if let Some(sp) = mapping.apply(&event) {
+                                    gr.send(CommandEnum::SetParameter(sp));
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("midi sensor '{mid}' poll error: {e}");
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    });
+
+    actor_ref
 }
 
 /// Parse a raw [`MidiMessage`] into a [`ControlEvent`].

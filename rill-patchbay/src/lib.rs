@@ -94,6 +94,8 @@ pub mod midi;
 pub mod observer;
 
 #[cfg(feature = "midi")]
+pub use midi::spawn_midi_sensor;
+#[cfg(feature = "midi")]
 pub use midi::MidiHub;
 pub use sensor::Sensor;
 
