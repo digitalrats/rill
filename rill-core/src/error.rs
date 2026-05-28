@@ -37,7 +37,7 @@ pub enum ErrorCategory {
     Graph,
     /// I/O errors (ALSA, JACK, PipeWire).
     Io,
-    /// Control errors (MIDI, OSC, automation).
+    /// Control errors (OSC, automation).
     Control,
     /// Configuration errors.
     Config,
