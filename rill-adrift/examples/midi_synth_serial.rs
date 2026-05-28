@@ -7,8 +7,8 @@
 //!
 //! | Control | Target | Range |
 //! |---------|--------|-------|
-//! | CC#14 (mod wheel) | frequency | 20 Hz – 20 kHz (Exponential) |
-//! | CC#15 (volume) | amplitude | 0.0 – 1.0 (Linear) |
+//! | CC#128 (pitch bend) | frequency | 100 Hz – 4 kHz (Exponential) |
+//! | CC#1 (mod wheel) | amplitude | 0.0 – 1.0 (Linear) |
 //! | Note On | frequency + amplitude | `midi_to_freq(note)`, `velocity / 127` |
 //! | Note Off | amplitude = 0 | oscillator silenced |
 //!
@@ -109,11 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     backend: "midir".into(),
                     port_name: "rill-midi-synth".into(),
                     mappings: vec![
-                        // CC#14 → frequency (Exponential)
+                        // CC#128 (pitch bend) → frequency (Exponential)
                         MappingDef {
                             event_pattern: EventPattern::MidiControl {
                                 channel: None,
-                                controller: 14,
+                                controller: 128,
                             },
                             target_node: 0,
                             target_param: "frequency".into(),
@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         MappingDef {
                             event_pattern: EventPattern::MidiControl {
                                 channel: None,
-                                controller: 15,
+                                controller: 1,
                             },
                             target_node: 0,
                             target_param: "amplitude".into(),
@@ -186,8 +186,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("MIDI-controlled sine synth (ModularSystem)");
     println!("  Backend: {}", backend_display);
-    println!("  CC#14 (mod wheel) → frequency (20 Hz – 20 kHz)");
-    println!("  CC#15 (volume)   → amplitude (0.0 – 1.0)");
+    println!("  CC#128 (pitch bend)  → frequency (100 Hz – 4 kHz)");
+    println!("  CC#1 (mod wheel)     → amplitude (0.0 – 1.0)");
     println!("  Note On/Off      → frequency + amplitude");
     println!();
     println!("Press Enter to stop.");
