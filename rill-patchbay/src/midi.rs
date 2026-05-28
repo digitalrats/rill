@@ -175,19 +175,16 @@ pub fn spawn_midi_sensor(
                             let mut matched = false;
                             for mapping in &mappings {
                                 if let Some(sp) = mapping.apply(&event) {
-                                    log::info!(
-                                        "midi '{}': {:?} -> param '{}' ({:?})",
-                                        mid,
-                                        mapping.pattern,
-                                        mapping.target.param_name,
-                                        sp.value
+                                    eprintln!(
+                                        "midi '{0}': {:?} -> param '{1}' ({2:?})",
+                                        mid, mapping.pattern, mapping.target.param_name, sp.value
                                     );
                                     gr.send(CommandEnum::SetParameter(sp));
                                     matched = true;
                                 }
                             }
                             if !matched {
-                                log::debug!("midi '{}': unmatched event {:?}", mid, event);
+                                eprintln!("midi '{}': unmatched event {:?}", mid, event);
                             }
                         } else {
                             log::trace!("midi '{}': raw {:?}", mid, msg);

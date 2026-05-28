@@ -35,8 +35,6 @@ const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
     // ── 1. Register node types and backends ────────────────────────
     let mut nf = NodeFactory::<f32, BUF>::new();
     registration::register_all_nodes::<BUF>(&mut nf);
