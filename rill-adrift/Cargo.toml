@@ -62,6 +62,10 @@ required-features = ["io", "lofi"]
 name = "midi_synth"
 required-features = ["midi", "io"]
 
+[[example]]
+name = "midi_synth_serial"
+required-features = ["midi", "io", "serialization"]
+
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "portaudio", "serialization"]
 
