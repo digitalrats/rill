@@ -361,40 +361,43 @@ impl Mapping {
             return None;
         }
 
-        let norm = match (&self.pattern, event) {
-            // MidiNote with kind: extract value from note event, bypassing
-            // the standard normalized_value() pipeline.
-            (
-                EventPattern::MidiNote { kind, .. },
-                ControlEvent::MidiNote {
-                    note, velocity, on, ..
-                },
-            ) => match kind {
+        // MidiNote with kind: extract value from note event, bypassing
+        // the standard normalized_value() pipeline.
+        if let (
+            EventPattern::MidiNote { kind, .. },
+            ControlEvent::MidiNote {
+                note, velocity, on, ..
+            },
+        ) = (&self.pattern, event)
+        {
+            let value = match kind {
                 MidiNoteKind::Frequency => {
-                    if !on {
+                    if !*on {
                         return None;
                     }
-                    rill_core_dsp::math::midi_to_freq::<f32>(*note) as f32
+                    // midi_to_freq produces absolute Hz — bypass Transform
+                    rill_core_dsp::math::midi_to_freq::<f32>(*note)
                 }
                 MidiNoteKind::Amplitude => {
-                    if *on {
-                        *velocity as f32 / 127.0
-                    } else {
-                        0.0
-                    }
+                    let raw = if *on { *velocity as f32 / 127.0 } else { 0.0 };
+                    self.transform.apply(raw, self.target.min, self.target.max)
                 }
                 MidiNoteKind::Gate => {
-                    if *on {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    let raw = if *on { 1.0 } else { 0.0 };
+                    self.transform.apply(raw, self.target.min, self.target.max)
                 }
-            },
-            // All other patterns: use the standard normalized_value().
-            _ => event.normalized_value()?,
-        };
+            };
+            let pid = ParameterId::new(&self.target.param_name).unwrap();
+            return Some(SetParameter::new(
+                PortId::param(self.target.node_id, 0),
+                pid,
+                ParamValue::Float(value),
+                SignalOrigin::External(self.name.clone()),
+            ));
+        }
 
+        // All other patterns: use the standard normalized_value() pipeline.
+        let norm = event.normalized_value()?;
         let value = self.transform.apply(norm, self.target.min, self.target.max);
         let pid = ParameterId::new(&self.target.param_name).unwrap();
         Some(SetParameter::new(
