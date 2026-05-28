@@ -270,19 +270,6 @@ pub mod utils {
         samples as f32 / sample_rate
     }
 
-    /// Convert MIDI note to frequency
-    #[inline(always)]
-    pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
-        let exp = (note as f32 - 69.0) / 12.0;
-        T::from_f32(440.0 * 2.0_f32.powf(exp))
-    }
-
-    /// Convert frequency to MIDI note
-    #[inline(always)]
-    pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
-        69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
-    }
-
     /// Convert dB to linear gain
     #[inline(always)]
     pub fn db_to_linear<T: Transcendental>(db: T) -> T {
@@ -367,12 +354,6 @@ mod tests {
     fn test_utils() {
         assert_eq!(utils::seconds_to_samples(1.0, 44100.0), 44100);
         assert!((utils::samples_to_seconds(44100, 44100.0) - 1.0).abs() < 1e-6);
-
-        let freq: f32 = utils::midi_to_freq(69);
-        assert!((freq - 440.0).abs() < 1e-6);
-
-        let midi = utils::freq_to_midi(440.0f32);
-        assert!((midi - 69.0).abs() < 1e-6);
 
         let linear = utils::db_to_linear(0.0f32);
         assert!((linear - 1.0).abs() < 1e-6);
