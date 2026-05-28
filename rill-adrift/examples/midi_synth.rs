@@ -4,8 +4,8 @@
 //!
 //! | Control | Target | Range |
 //! |---------|--------|-------|
-//! | CC#1 (mod wheel) | frequency | 20 Hz – 20 kHz (Exponential) |
-//! | CC#7 (volume) | amplitude | 0.0 – 1.0 (Linear) |
+//! | CC#14 (mod wheel) | frequency | 20 Hz – 20 kHz (Exponential) |
+//! | CC#15 (volume) | amplitude | 0.0 – 1.0 (Linear) |
 //! | Note On | frequency + amplitude | `midi_to_freq(note)`, `velocity / 127` |
 //! | Note Off | amplitude = 0 | oscillator silenced |
 //!
@@ -35,6 +35,8 @@ const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     // ── 1. Register node types and backends ────────────────────────
     let mut nf = NodeFactory::<f32, BUF>::new();
     registration::register_all_nodes::<BUF>(&mut nf);
@@ -119,8 +121,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 6. Keep alive until Enter ────────────────────────────────────
     println!("MIDI synth active:");
-    println!("  CC#1 (mod wheel) → frequency (20 Hz – 20 kHz)");
-    println!("  CC#7 (volume)    → amplitude (0.0 – 1.0)");
+    println!("  CC#14 (mod wheel) → frequency (20 Hz – 20 kHz)");
+    println!("  CC#15 (volume)   → amplitude (0.0 – 1.0)");
     println!("  Note On/Off      → frequency + amplitude");
     println!();
     println!("Press Enter to stop.");

@@ -7,8 +7,8 @@
 //!
 //! | Control | Target | Range |
 //! |---------|--------|-------|
-//! | CC#1 (mod wheel) | frequency | 20 Hz – 20 kHz (Exponential) |
-//! | CC#7 (volume) | amplitude | 0.0 – 1.0 (Linear) |
+//! | CC#14 (mod wheel) | frequency | 20 Hz – 20 kHz (Exponential) |
+//! | CC#15 (volume) | amplitude | 0.0 – 1.0 (Linear) |
 //! | Note On | frequency + amplitude | `midi_to_freq(note)`, `velocity / 127` |
 //! | Note Off | amplitude = 0 | oscillator silenced |
 //!
@@ -35,6 +35,7 @@ const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args
         .get(1)
@@ -108,11 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     backend: "midir".into(),
                     port_name: "rill-midi-synth".into(),
                     mappings: vec![
-                        // CC#1 → frequency (Exponential)
+                        // CC#14 → frequency (Exponential)
                         MappingDef {
                             event_pattern: EventPattern::MidiControl {
                                 channel: None,
-                                controller: 1,
+                                controller: 14,
                             },
                             target_node: 0,
                             target_param: "freq".into(),
@@ -121,11 +122,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             max: 20000.0,
                             enabled: true,
                         },
-                        // CC#7 → amplitude (Linear)
+                        // CC#15 → amplitude (Linear)
                         MappingDef {
                             event_pattern: EventPattern::MidiControl {
                                 channel: None,
-                                controller: 7,
+                                controller: 15,
                             },
                             target_node: 0,
                             target_param: "amp".into(),
@@ -185,8 +186,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("MIDI-controlled sine synth (ModularSystem)");
     println!("  Backend: {}", backend_display);
-    println!("  CC#1 (mod wheel) → frequency (20 Hz – 20 kHz)");
-    println!("  CC#7 (volume)    → amplitude (0.0 – 1.0)");
+    println!("  CC#14 (mod wheel) → frequency (20 Hz – 20 kHz)");
+    println!("  CC#15 (volume)   → amplitude (0.0 – 1.0)");
     println!("  Note On/Off      → frequency + amplitude");
     println!();
     println!("Press Enter to stop.");
