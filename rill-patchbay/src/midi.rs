@@ -176,7 +176,7 @@ pub fn spawn_midi_sensor(
                             for mapping in &mappings {
                                 if let Some(sp) = mapping.apply(&event) {
                                     eprintln!(
-                                        "midi '{0}': {:?} -> param '{1}' ({2:?})",
+                                        "midi '{0}': {1:?} -> param '{2}' ({3:?})",
                                         mid, mapping.pattern, mapping.target.param_name, sp.value
                                     );
                                     gr.send(CommandEnum::SetParameter(sp));
