@@ -449,7 +449,7 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
 
             let be: Box<dyn MidiBackend> = match backend.as_str() {
                 "midir" => Box::new(
-                    rill_io::backends::MidirBackend::new(port_name)
+                    rill_io::backends::MidirBackend::new_by_name("rill-midi", port_name)
                         .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?,
                 ),
                 #[cfg(feature = "alsa")]

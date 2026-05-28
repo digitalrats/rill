@@ -31,6 +31,19 @@ pub struct MidirBackend {
 }
 
 impl MidirBackend {
+    /// List available input ports to stderr (for diagnostics).
+    pub fn list_ports(client_name: &str) -> IoResult<()> {
+        let mi =
+            midir::MidiInput::new(client_name).map_err(|e| IoError::Init(format!("midir: {e}")))?;
+        let ports = mi.ports();
+        for (i, p) in ports.iter().enumerate() {
+            let name = mi.port_name(p).unwrap_or_else(|_| "?".into());
+            eprintln!("  MIDI port #{i}: {name}");
+        }
+        eprintln!("  ({} ports total)", ports.len());
+        Ok(())
+    }
+
     /// Create a new MIDI input, connect to the first available port.
     ///
     /// `name` — visible client name (e.g. `"rill-midi"`).
@@ -42,8 +55,49 @@ impl MidirBackend {
     ///
     /// `port_index` — 0-based index into the list of available input ports.
     pub fn new_by_port(name: &str, port_index: usize) -> IoResult<Self> {
+        Self::connect(name, |midi_in, ports| {
+            if port_index >= ports.len() {
+                return Err(IoError::DeviceNotFound(format!(
+                    "port index {} out of range ({} total)",
+                    port_index,
+                    ports.len()
+                )));
+            }
+            Ok((
+                port_index,
+                midi_in
+                    .port_name(&ports[port_index])
+                    .unwrap_or_else(|_| "?".into()),
+            ))
+        })
+    }
+
+    /// Create a new MIDI input, connect to a port whose name contains `port_name`.
+    ///
+    /// `port_name` — substring to search for in the port names (case-sensitive).
+    /// Matches the first port whose name contains this string.
+    pub fn new_by_name(name: &str, port_name: &str) -> IoResult<Self> {
+        Self::connect(name, |midi_in, ports| {
+            for (i, p) in ports.iter().enumerate() {
+                let pname = midi_in.port_name(p).unwrap_or_else(|_| "?".into());
+                if pname.contains(port_name) {
+                    return Ok((i, pname));
+                }
+            }
+            Err(IoError::DeviceNotFound(format!(
+                "no MIDI port matching '{}' ({} ports available)",
+                port_name,
+                ports.len()
+            )))
+        })
+    }
+
+    fn connect(
+        name: &str,
+        find: impl FnOnce(&midir::MidiInput, &[midir::MidiInputPort]) -> IoResult<(usize, String)>,
+    ) -> IoResult<Self> {
         let midi_in =
-            midir::MidiInput::new(name).map_err(|e| IoError::Init(format!("midir new: {e}")))?;
+            midir::MidiInput::new(name).map_err(|e| IoError::Init(format!("midir: {e}")))?;
 
         let ports = midi_in.ports();
         if ports.is_empty() {
@@ -52,19 +106,10 @@ impl MidirBackend {
             ));
         }
 
-        if port_index >= ports.len() {
-            return Err(IoError::DeviceNotFound(format!(
-                "MIDI port index {} out of range ({} ports available)",
-                port_index,
-                ports.len()
-            )));
-        }
+        let (port_idx, port_name) = find(&midi_in, &ports)?;
+        let port = &ports[port_idx];
 
         let (tx, rx): (Sender<MidiMessage>, Receiver<MidiMessage>) = channel();
-
-        let port = &ports[port_index];
-        let port_name = midi_in.port_name(port).unwrap_or_else(|_| "unknown".into());
-
         let conn = midi_in
             .connect(
                 port,
@@ -78,7 +123,7 @@ impl MidirBackend {
             .map_err(|e| IoError::Init(format!("midir connect: {e}")))?;
 
         log::info!(
-            "midir: connected to port #{port_index} '{port_name}' ({} total)",
+            "midir: connected to port #{port_idx} '{port_name}' ({} total)",
             ports.len()
         );
 
