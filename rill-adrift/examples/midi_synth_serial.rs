@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args
         .get(1)
+        .filter(|s| !s.starts_with('-'))
         .map(|s| s.as_str())
         .unwrap_or("portaudio")
         .to_string();
