@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 3. Build signal topology: sine oscillator → stereo output ──
     let mut osc_params = Params::new(RATE);
     osc_params.insert("freq", ParamValue::Float(220.0));
-    osc_params.insert("amp", ParamValue::Float(0.0));
+    osc_params.insert("amp", ParamValue::Float(0.3));
     let osc = builder.add_node("rill/sine", &osc_params);
     let out = builder.add_node("rill/output", &Params::new(RATE));
     builder.connect_signal(osc, 0, out, 0);
