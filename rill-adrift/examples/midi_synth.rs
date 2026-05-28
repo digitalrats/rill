@@ -35,6 +35,16 @@ const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // ── CLI: optional MIDI port index ─────────────────────────────
+    let args: Vec<String> = std::env::args().collect();
+    let midi_port: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    if args.len() > 1 && args[1] == "--list-ports" {
+        eprintln!("Run without --list-ports and try different indices (0, 1, 2, ...)");
+        eprintln!("Check stderr for 'connected to port #N' messages.");
+        return Ok(());
+    }
+    eprintln!("Using MIDI port index: {}", midi_port);
+
     // ── 1. Register node types and backends ────────────────────────
     let mut nf = NodeFactory::<f32, BUF>::new();
     registration::register_all_nodes::<BUF>(&mut nf);
@@ -79,7 +89,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (system, graph_ref) = graph_rx.recv()?;
 
     // ── 5. MIDI sensor with declarative mappings ────────────────────
-    let midi_backend = Box::new(MidirBackend::new("rill-midi-synth").map_err(|e| e.to_string())?);
+    let midi_backend = Box::new(
+        MidirBackend::new_by_port("rill-midi-synth", midi_port).map_err(|e| e.to_string())?,
+    );
     let osc_node = rill_core::traits::NodeId(osc as u32);
 
     let mappings = vec![
