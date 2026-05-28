@@ -448,10 +448,12 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             };
 
             let be: Box<dyn MidiBackend> = match backend.as_str() {
-                "midir" => Box::new(
-                    rill_io::backends::MidirBackend::new_by_name("rill-midi", port_name)
-                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?,
-                ),
+                "midir" => {
+                    let b = rill_io::backends::MidirBackend::new_by_name("rill-midi", port_name)
+                        .or_else(|_| rill_io::backends::MidirBackend::new("rill-midi"))
+                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?;
+                    Box::new(b)
+                }
                 #[cfg(feature = "alsa")]
                 "alsa_seq" => Box::new(
                     rill_io::backends::AlsaSeqBackend::new(port_name)
