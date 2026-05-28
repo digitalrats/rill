@@ -37,7 +37,11 @@ const RATE: f32 = 44100.0;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── CLI: optional MIDI port spec ────────────────────────────────
     let args: Vec<String> = std::env::args().collect();
-    let midi_spec = args.get(1).map(|s| s.as_str()).unwrap_or("0");
+    let midi_spec = args
+        .get(1)
+        .filter(|s| !s.starts_with('-'))
+        .map(|s| s.as_str())
+        .unwrap_or("0");
 
     // Show available ports
     eprintln!("Available MIDI ports:");
