@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 3. Build signal topology: sine oscillator → stereo output ──
     let mut osc_params = Params::new(RATE);
     osc_params.insert("freq", ParamValue::Float(220.0));
-    osc_params.insert("amp", ParamValue::Float(0.3));
+    osc_params.insert("amp", ParamValue::Float(0.0));
     let osc = builder.add_node("rill/sine", &osc_params);
     let out = builder.add_node("rill/output", &Params::new(RATE));
     builder.connect_signal(osc, 0, out, 0);
@@ -148,8 +148,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 6. Keep alive until Enter ────────────────────────────────────
     println!("MIDI synth active (backend: {audio_backend}):");
-    println!("  CC#14 (mod wheel) → frequency (20 Hz – 20 kHz)");
-    println!("  CC#15 (volume)   → amplitude (0.0 – 1.0)");
+    println!("  CC#14 (encoder)  → frequency (20 Hz – 20 kHz)");
+    println!("  CC#15 (encoder)  → amplitude (0.0 – 1.0)");
     println!("  Note On/Off      → frequency + amplitude");
     println!();
     println!("Press Enter to stop.");
