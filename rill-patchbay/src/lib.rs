@@ -117,8 +117,9 @@ pub use automaton::{
 };
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{
-    midi_cc, osc_address, Automaton, BoxedModule, ControlEvent, EventPattern, Mapping, Module,
-    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target, Transform,
+    midi_cc, midi_note, osc_address, Automaton, BoxedModule, ControlEvent, EventPattern, Mapping,
+    MidiNoteKind, Module, NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target,
+    Transform,
 };
 
 pub use strategy::{ConflictStrategy, ControlStrategy};

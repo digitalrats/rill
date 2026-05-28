@@ -411,6 +411,7 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
 
 #[cfg(feature = "midi")]
 fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::CommandEnum;
     use rill_io::midi_backend::MidiBackend;
     use rill_patchbay::module_def::{ModuleDef, SensorDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};

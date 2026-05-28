@@ -784,6 +784,38 @@ pub fn midi_cc(
     )
 }
 
+/// Convenience constructor for a MIDI note mapping.
+///
+/// Use [`MidiNoteKind`] to select which aspect of the note event to extract:
+/// - `Frequency` — `midi_to_freq(note)`, Note Off produces no value
+/// - `Amplitude` — `velocity / 127` (On) or `0.0` (Off)
+/// - `Gate` — `1.0` (On) or `0.0` (Off)
+pub fn midi_note(
+    kind: MidiNoteKind,
+    note: Option<u8>,
+    channel: Option<u8>,
+    target_node: NodeId,
+    target_param: &str,
+    min: f32,
+    max: f32,
+    transform: Transform,
+) -> Mapping {
+    Mapping::new(
+        EventPattern::MidiNote {
+            channel,
+            note,
+            kind,
+        },
+        Target {
+            node_id: target_node,
+            param_name: target_param.to_string(),
+            min,
+            max,
+        },
+        transform,
+    )
+}
+
 /// Convenience constructor for an OSC address mapping.
 pub fn osc_address(
     address: &str,
