@@ -176,15 +176,15 @@ pub fn spawn_midi_sensor(
                             for mapping in &mappings {
                                 if let Some(sp) = mapping.apply(&event) {
                                     eprintln!(
-                                        "midi '{0}': {1:?} -> param '{2}' ({3:?})",
-                                        mid, mapping.pattern, mapping.target.param_name, sp.value
+                                        "midi '{}': event {:?} -> param '{}' ({:?})",
+                                        mid, event, mapping.target.param_name, sp.value
                                     );
                                     gr.send(CommandEnum::SetParameter(sp));
                                     matched = true;
                                 }
                             }
                             if !matched {
-                                eprintln!("midi '{}': unmatched event {:?}", mid, event);
+                                eprintln!("midi '{}': unmatched {:?}", mid, event);
                             }
                         } else {
                             log::trace!("midi '{}': raw {:?}", mid, msg);
