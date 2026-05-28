@@ -1,0 +1,153 @@
+//! Simple monophonic MIDI synth — sine oscillator controlled via MIDI.
+//!
+//! # MIDI Mappings
+//!
+//! | Control | Target | Range |
+//! |---------|--------|-------|
+//! | CC#1 (mod wheel) | frequency | 20 Hz – 20 kHz (Exponential) |
+//! | CC#7 (volume) | amplitude | 0.0 – 1.0 (Linear) |
+//! | Note On | frequency + amplitude | `midi_to_freq(note)`, `velocity / 127` |
+//! | Note Off | amplitude = 0 | oscillator silenced |
+//!
+//! # Usage
+//!
+//! ```bash
+//! cargo run --example midi_synth --features "midi,io,portaudio"
+//! # or with ALSA backend:
+//! cargo run --example midi_synth --features "midi,io,alsa"
+//! ```
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use rill_core::traits::{ParamValue, Params};
+use rill_core_actor::ActorSystem;
+use rill_graph::backend_factory::BackendFactory;
+use rill_graph::{GraphBuilder, NodeFactory};
+use rill_io::backends::MidirBackend;
+use rill_patchbay::engine::{midi_cc, EventPattern, Mapping, MidiNoteKind, Target, Transform};
+use rill_patchbay::midi::spawn_midi_sensor;
+
+use rill_adrift::registration;
+
+const BUF: usize = 256;
+const RATE: f32 = 44100.0;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // ── 1. Register node types and backends ────────────────────────
+    let mut nf = NodeFactory::<f32, BUF>::new();
+    registration::register_all_nodes::<BUF>(&mut nf);
+    let mut bf = BackendFactory::new();
+    registration::register_backends(&mut bf);
+
+    // ── 2. Build signal graph: sine oscillator → stereo output ─────
+    let system = ActorSystem::new();
+    let mut builder = GraphBuilder::new(Arc::new(nf), Arc::new(bf));
+
+    let mut be_params = HashMap::new();
+    be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+    be_params.insert("output_channels".into(), ParamValue::Int(2));
+    be_params.insert("input_channels".into(), ParamValue::Int(0));
+    builder.set_default_backend("portaudio".into(), be_params);
+
+    let mut osc_params = Params::new(RATE);
+    osc_params.insert("freq", ParamValue::Float(220.0));
+    osc_params.insert("amp", ParamValue::Float(0.0));
+    let osc = builder.add_node("rill/sine", &osc_params);
+    let out = builder.add_node("rill/output", &Params::new(RATE));
+    builder.connect_signal(osc, 0, out, 0);
+    builder.connect_signal(osc, 0, out, 1);
+
+    // ── 3. Run graph on dedicated I/O thread (Graph is !Send) ──────
+    let running = Arc::new(AtomicBool::new(true));
+    let (graph_tx, graph_rx) = std::sync::mpsc::channel();
+    let r_sig = running.clone();
+
+    std::thread::spawn(move || {
+        // Rebuild graph inside the thread
+        let g = match builder.build(&system) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("graph build: {:?}", e);
+                return;
+            }
+        };
+        let _ = graph_tx.send(g.handle());
+        g.run(r_sig).ok();
+    });
+
+    let graph_ref = graph_rx.recv()?;
+
+    // ── 4. MIDI sensor with declarative mappings ────────────────────
+    let midi_backend = Box::new(MidirBackend::new("rill-midi-synth").map_err(|e| e.to_string())?);
+    let osc_node = rill_core::traits::NodeId(osc as u32);
+
+    let mappings = vec![
+        midi_cc(
+            1,
+            None,
+            osc_node,
+            "freq",
+            20.0,
+            20000.0,
+            Transform::Exponential,
+        ),
+        midi_cc(7, None, osc_node, "amp", 0.0, 1.0, Transform::Linear),
+        // Note On → frequency
+        Mapping::new(
+            EventPattern::MidiNote {
+                channel: None,
+                note: None,
+                kind: MidiNoteKind::Frequency,
+            },
+            Target {
+                node_id: osc_node,
+                param_name: "freq".into(),
+                min: 0.0,
+                max: 1.0,
+            },
+            Transform::Linear,
+        ),
+        // Note On/Off → amplitude
+        Mapping::new(
+            EventPattern::MidiNote {
+                channel: None,
+                note: None,
+                kind: MidiNoteKind::Amplitude,
+            },
+            Target {
+                node_id: osc_node,
+                param_name: "amp".into(),
+                min: 0.0,
+                max: 1.0,
+            },
+            Transform::Linear,
+        ),
+    ];
+
+    spawn_midi_sensor("midi", midi_backend, mappings, &system, graph_ref);
+
+    // ── 5. Keep alive until Enter ──────────────────────────────────
+    println!("MIDI synth active:");
+    println!("  CC#1 (mod wheel) → frequency (20 Hz – 20 kHz)");
+    println!("  CC#7 (volume)    → amplitude (0.0 – 1.0)");
+    println!("  Note On/Off      → frequency + amplitude");
+    println!();
+    println!("Press Enter to stop.");
+
+    let r = running.clone();
+    std::thread::spawn(move || {
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        r.store(false, Ordering::Release);
+    });
+
+    while running.load(Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    println!("Shutting down.");
+    Ok(())
+}

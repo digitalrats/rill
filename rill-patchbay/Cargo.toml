@@ -11,6 +11,7 @@ documentation = "https://docs.rs/rill-patchbay"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-actor = { workspace = true, features = ["tokio"] }
+rill-core-dsp = { workspace = true }
 rill-io = { workspace = true, optional = true }
 parking_lot = "0.12"
 thiserror = "1.0"

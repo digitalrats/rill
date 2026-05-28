@@ -58,6 +58,10 @@ required-features = ["io", "serialization", "sampler"]
 name = "chiptune"
 required-features = ["io", "lofi"]
 
+[[example]]
+name = "midi_synth"
+required-features = ["midi", "io"]
+
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "portaudio", "serialization"]
 

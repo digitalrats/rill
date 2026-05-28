@@ -411,9 +411,7 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
 
 #[cfg(feature = "midi")]
 fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
-    use rill_core::queues::{CommandEnum, SensorCommand};
     use rill_io::midi_backend::MidiBackend;
-    use rill_patchbay::midi::parse_midi;
     use rill_patchbay::module_def::{ModuleDef, SensorDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -435,7 +433,11 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             system: &std::sync::Arc<rill_core_actor::ActorSystem>,
             graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
         ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
-            let SensorDef::Midi { backend, port_name } = match module {
+            let SensorDef::Midi {
+                backend,
+                port_name,
+                mappings,
+            } = match module {
                 ModuleDef::Sensor(s) => s,
                 _ => {
                     return Err(ModuleError::ConstructionFailed(
@@ -461,11 +463,10 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
                 }
             };
 
-            use rill_patchbay::engine::Mapping;
             let actor_ref = rill_patchbay::midi::spawn_midi_sensor(
                 port_name,
                 be,
-                vec![],
+                mappings.iter().map(|m| m.to_mapping()).collect(),
                 system,
                 graph_ref.clone(),
             );

@@ -6,7 +6,6 @@
 #![allow(missing_docs)]
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use rill_core::traits::ParamValue;
 
@@ -14,7 +13,6 @@ use crate::automaton::envelope::EnvelopeType;
 use crate::automaton::lfo::LfoWaveform;
 use crate::automaton::sequencer::PlayMode;
 use crate::engine::{ParameterMapping, Transform};
-use crate::function_registry::FunctionRegistry;
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 
 // ============================================================================
@@ -146,7 +144,7 @@ pub struct ServoDef {
 // MappingDef
 // ============================================================================
 
-/// Serializable transform (without closure variant).
+/// Serializable transform — Linear, Exponential, Logarithmic, or Inverted.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub enum TransformDef {
@@ -154,10 +152,17 @@ pub enum TransformDef {
     Exponential,
     Logarithmic,
     Inverted,
-    NamedFunction {
-        name: String,
-        params: HashMap<String, f64>,
-    },
+}
+
+impl TransformDef {
+    pub fn to_transform(&self) -> Transform {
+        match self {
+            TransformDef::Linear => Transform::Linear,
+            TransformDef::Exponential => Transform::Exponential,
+            TransformDef::Logarithmic => Transform::Logarithmic,
+            TransformDef::Inverted => Transform::Inverted,
+        }
+    }
 }
 
 /// Describes a mapping from an external event to a node parameter.
@@ -173,22 +178,19 @@ pub struct MappingDef {
     pub enabled: bool,
 }
 
-impl TransformDef {
-    pub fn to_transform(&self, registry: &FunctionRegistry) -> Transform {
-        match self {
-            TransformDef::Linear => Transform::Linear,
-            TransformDef::Exponential => Transform::Exponential,
-            TransformDef::Logarithmic => Transform::Logarithmic,
-            TransformDef::Inverted => Transform::Inverted,
-            TransformDef::NamedFunction { name, params } => {
-                let name = name.clone();
-                let params = params.clone();
-                let reg = registry.clone();
-                Transform::Custom(Arc::new(move |x| {
-                    reg.apply(&name, x as f64, &params).unwrap_or(x as f64) as f32
-                }))
-            }
-        }
+impl MappingDef {
+    pub fn to_mapping(&self) -> crate::engine::Mapping {
+        use crate::engine::Target;
+        crate::engine::Mapping::new(
+            self.event_pattern.clone(),
+            Target {
+                node_id: rill_core::traits::NodeId(self.target_node),
+                param_name: self.target_param.clone(),
+                min: self.min as f32,
+                max: self.max as f32,
+            },
+            self.transform.to_transform(),
+        )
     }
 }
 
@@ -206,14 +208,28 @@ pub enum SensorDef {
         backend: String,
         /// Port name for the backend.
         port_name: String,
+        /// Event-to-parameter mappings (CC → param, Note → param, etc.).
+        #[cfg_attr(feature = "serde", serde(default))]
+        mappings: Vec<MappingDef>,
     },
 }
 
 impl SensorDef {
+    /// Returns the event-to-parameter mappings, if any.
+    pub fn get_mappings(&self) -> Vec<crate::engine::Mapping> {
+        match self {
+            SensorDef::Midi { mappings, .. } => mappings.iter().map(|m| m.to_mapping()).collect(),
+        }
+    }
+
     #[cfg(feature = "midi")]
     pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
         match self {
-            SensorDef::Midi { backend, port_name } => {
+            SensorDef::Midi {
+                backend,
+                port_name,
+                mappings: _,
+            } => {
                 use rill_io::midi_backend::MidiBackend;
                 let be: Box<dyn MidiBackend> = match backend.as_str() {
                     "midir" => Box::new(rill_io::backends::MidirBackend::new(port_name).ok()?),
