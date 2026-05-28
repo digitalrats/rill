@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get(1)
         .filter(|s| !s.starts_with('-'))
         .map(|s| s.as_str())
-        .unwrap_or("0");
+        .unwrap_or("KOMPLETE");
     let audio_backend = args
         .get(2)
         .filter(|s| !s.starts_with('-'))
