@@ -4,7 +4,7 @@
 //!
 //! | Control | Target | Range |
 //! |---------|--------|-------|
-//! | CC#128 (pitch bend) | frequency | 20 Hz – 20 kHz (Exponential) |
+//! | CC#128 (pitch bend) | frequency | 100 Hz – 4 kHz (Exponential) |
 //! | CC#1 (mod wheel) | amplitude | 0.0 – 1.0 (Linear) |
 //! | Note On | frequency + amplitude | `midi_to_freq(note)`, `velocity / 127` |
 //! | Note Off | amplitude = 0 | oscillator silenced |
@@ -117,8 +117,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None,
             osc_node,
             "frequency",
-            20.0,
-            20000.0,
+            100.0,
+            4000.0,
             Transform::Exponential,
         ),
         midi_cc(1, None, osc_node, "amplitude", 0.0, 1.0, Transform::Linear),
@@ -148,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 6. Keep alive until Enter ────────────────────────────────────
     println!("MIDI synth active (backend: {audio_backend}):");
-    println!("  CC#128 (touch strip) → frequency (20 Hz – 20 kHz)");
+    println!("  CC#128 (pitch bend)  → frequency (100 Hz – 4 kHz)");
     println!("  CC#1 (mod wheel)     → amplitude (0.0 – 1.0)");
     println!("  Note On/Off      → frequency + amplitude");
     println!();
