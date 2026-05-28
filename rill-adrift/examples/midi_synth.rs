@@ -13,8 +13,8 @@
 //!
 //! ```bash
 //! cargo run --example midi_synth --features "midi,io,portaudio"
-//! # or with ALSA backend:
-//! cargo run --example midi_synth --features "midi,io,alsa"
+//! cargo run --example midi_synth --features "midi,io,alsa" -- 1 alsa
+//! cargo run --example midi_synth --features "midi,io,portaudio" -- KOMPLETE portaudio
 //! ```
 
 use std::collections::HashMap;
@@ -35,13 +35,19 @@ const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── CLI: optional MIDI port spec ────────────────────────────────
+    // ── CLI: [midi_port] [audio_backend] ────────────────────────────
     let args: Vec<String> = std::env::args().collect();
     let midi_spec = args
         .get(1)
         .filter(|s| !s.starts_with('-'))
         .map(|s| s.as_str())
         .unwrap_or("0");
+    let audio_backend = args
+        .get(2)
+        .filter(|s| !s.starts_with('-'))
+        .map(|s| s.as_str())
+        .unwrap_or("portaudio")
+        .to_string();
 
     // Show available ports
     eprintln!("Available MIDI ports:");
@@ -61,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
     be_params.insert("output_channels".into(), ParamValue::Int(2));
     be_params.insert("input_channels".into(), ParamValue::Int(0));
-    builder.set_default_backend("portaudio".into(), be_params);
+    builder.set_default_backend(audio_backend.clone(), be_params);
 
     // ── 3. Build signal topology: sine oscillator → stereo output ──
     let mut osc_params = Params::new(RATE);
@@ -82,7 +88,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match builder.build(&sys) {
             Ok(mut graph) => {
                 let _ = graph_tx.send((sys, graph.handle()));
-                graph.run(r_graph).ok();
+                if let Err(e) = graph.run(r_graph) {
+                    eprintln!("audio backend error: {e}");
+                }
             }
             Err(e) => eprintln!("graph build: {:?}", e),
         }
@@ -139,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_midi_sensor("midi", midi_backend, mappings, &system, graph_ref);
 
     // ── 6. Keep alive until Enter ────────────────────────────────────
-    println!("MIDI synth active:");
+    println!("MIDI synth active (backend: {audio_backend}):");
     println!("  CC#14 (mod wheel) → frequency (20 Hz – 20 kHz)");
     println!("  CC#15 (volume)   → amplitude (0.0 – 1.0)");
     println!("  Note On/Off      → frequency + amplitude");
