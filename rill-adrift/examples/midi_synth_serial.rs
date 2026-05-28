@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // MIDI sensor with declarative mappings
                 ModuleDef::Sensor(SensorDef::Midi {
                     backend: "midir".into(),
-                    port_name: "KOMPLETE".into(),
+                    port_name: "rill-midi-synth".into(),
                     mappings: vec![
                         // CC#14 → frequency (Exponential)
                         MappingDef {

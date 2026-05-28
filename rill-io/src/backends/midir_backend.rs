@@ -46,9 +46,46 @@ impl MidirBackend {
 
     /// Create a new MIDI input, connect to the first available port.
     ///
+    /// Skips virtual ports (`"Through"`, `"Loop"`, `"RTMidi"`) and
+    /// selects the first real hardware port. Falls back to port 0 if
+    /// no real ports are found.
+    ///
     /// `name` — visible client name (e.g. `"rill-midi"`).
     pub fn new(name: &str) -> IoResult<Self> {
-        Self::new_by_port(name, 0)
+        let mi = midir::MidiInput::new(name).map_err(|e| IoError::Init(format!("midir: {e}")))?;
+
+        let ports = mi.ports();
+        if ports.is_empty() {
+            return Err(IoError::DeviceNotFound(
+                "no MIDI input ports available".into(),
+            ));
+        }
+
+        let find_real = |pname: &str| -> bool {
+            let lower = pname.to_lowercase();
+            !lower.contains("through") && !lower.contains("loop") && !lower.contains("rtmidi")
+        };
+
+        let mut chosen = 0usize;
+        let mut chosen_name = String::new();
+        for (i, p) in ports.iter().enumerate() {
+            let pname = mi.port_name(p).unwrap_or_else(|_| "?".into());
+            if i == 0 {
+                chosen_name = pname.clone();
+            }
+            if find_real(&pname) {
+                chosen = i;
+                chosen_name = pname;
+                break;
+            }
+        }
+
+        Self::connect(name, |midi_in, all_ports| {
+            let pname = midi_in
+                .port_name(&all_ports[chosen])
+                .unwrap_or_else(|_| "?".into());
+            Ok((chosen, pname))
+        })
     }
 
     /// Create a new MIDI input, connect to the port at the given index.

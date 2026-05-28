@@ -12,9 +12,10 @@
 //! # Usage
 //!
 //! ```bash
+//! # Auto-selects first non-virtual MIDI port, portaudio backend:
 //! cargo run --example midi_synth --features "midi,io,portaudio"
+//! # Specify port by index (1) or name (KOMPLETE), alsa backend:
 //! cargo run --example midi_synth --features "midi,io,alsa" -- 1 alsa
-//! cargo run --example midi_synth --features "midi,io,portaudio" -- KOMPLETE portaudio
 //! ```
 
 use std::collections::HashMap;
@@ -41,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get(1)
         .filter(|s| !s.starts_with('-'))
         .map(|s| s.as_str())
-        .unwrap_or("KOMPLETE");
+        .unwrap_or("0");
     let audio_backend = args
         .get(2)
         .filter(|s| !s.starts_with('-'))
