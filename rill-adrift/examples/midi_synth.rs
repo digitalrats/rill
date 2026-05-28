@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mappings = vec![
         midi_cc(
-            1,
+            14,
             None,
             osc_node,
             "freq",
@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             20000.0,
             Transform::Exponential,
         ),
-        midi_cc(7, None, osc_node, "amp", 0.0, 1.0, Transform::Linear),
+        midi_cc(15, None, osc_node, "amp", 0.0, 1.0, Transform::Linear),
         midi_note(
             MidiNoteKind::Frequency,
             None,
