@@ -2,7 +2,7 @@
 
 Rill is open for contributions. Areas where help is especially valued:
 
-- **Audio backends**: ALSA, CoreAudio, WASAPI, JACK, PipeWire
+- **Audio backends**: PortAudio, ALSA, CoreAudio, WASAPI, JACK, PipeWire
 - **DSP algorithms**: new effects, optimization of existing ones
 - **Documentation**: examples, tutorials, translations
 - **Testing**: on different platforms and hardware

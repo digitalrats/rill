@@ -42,6 +42,10 @@ pub trait Scalar:
     fn max(self, other: Self) -> Self;
     /// Constrain a value to the inclusive range `[min, max]`.
     fn clamp(self, min: Self, max: Self) -> Self;
+
+    /// Create a value from a `usize`. For floats, this is `n as f32`/`n as f64`.
+    /// For integers, this is `n as $ty`.
+    fn from_usize(n: usize) -> Self;
 }
 
 /// Transcendental operations (sin, cos, sqrt, exp, ln).
@@ -121,6 +125,11 @@ impl Scalar for f32 {
     #[inline(always)]
     fn clamp(self, min: f32, max: f32) -> f32 {
         self.clamp(min, max)
+    }
+
+    #[inline(always)]
+    fn from_usize(n: usize) -> f32 {
+        n as f32
     }
 }
 
@@ -216,6 +225,11 @@ impl Scalar for f64 {
     #[inline(always)]
     fn clamp(self, min: f64, max: f64) -> f64 {
         self.clamp(min, max)
+    }
+
+    #[inline(always)]
+    fn from_usize(n: usize) -> f64 {
+        n as f64
     }
 }
 
@@ -317,6 +331,11 @@ macro_rules! impl_scalar_int {
             #[inline(always)]
             fn clamp(self, lo: $ty, hi: $ty) -> $ty {
                 core::cmp::Ord::clamp(self, lo, hi)
+            }
+
+            #[inline(always)]
+            fn from_usize(n: usize) -> $ty {
+                n as $ty
             }
         }
     };

@@ -6,6 +6,8 @@
 //! that receive data from upstream output ports.
 
 use crate::buffer::{Buffer, FixedBuffer};
+use crate::math::vector::scalar::ScalarVector4;
+use crate::math::vector::traits::Vector as VecTrait;
 use crate::math::Transcendental;
 use crate::time::ClockTick;
 use crate::traits::algorithm::Algorithm;
@@ -22,7 +24,7 @@ use std::fmt;
 /// Type of a port - what kind of signal it carries
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortType {
-    /// Signal port - carries signal blocks (audio, sensor, etc.)
+    /// Signal port - carries signal blocks (signal data, sensor data, etc.)
     Signal,
 
     /// Control signal port - carries modulation/automation
@@ -50,8 +52,8 @@ impl PortType {
         }
     }
 
-    /// Check if this port carries audio-rate signals
-    pub const fn is_audio_rate(&self) -> bool {
+    /// Check if this port carries signal-rate signals
+    pub const fn is_signal_rate(&self) -> bool {
         matches!(self, Self::Signal)
     }
 
@@ -244,7 +246,7 @@ impl PortId {
         self.direction.is_output()
     }
 
-    /// Check if this is an audio port
+    /// Check if this is a signal port
     pub const fn is_signal(&self) -> bool {
         matches!(self.port_type, PortType::Signal)
     }
@@ -298,7 +300,7 @@ impl fmt::Display for PortId {
 ///   previous block's output, snapshotted after DSP via `snapshot_feedback()`.
 /// - On an input port in a feedback edge, `feedback_buffer` holds the delayed
 ///   feedback value that gets mixed into `buffer` by `pre_process()`.
-/// - `downstream` lists audio connections from this output port to input ports
+/// - `downstream` lists signal connections from this output port to input ports
 ///   of other nodes, populated at build time by the graph builder.
 /// - `upstream_buffer` on input ports: direct pointer to the upstream output
 ///   port's buffer for zero-copy routing. `None` for fan-in/feedback ports.
@@ -319,11 +321,11 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     pub action: Option<Box<dyn Algorithm<T>>>,
     /// Pending command value from the control path
     pub pending_command: Option<T>,
-    /// Owned audio buffer (for output ports and input ports without upstream)
+    /// Owned signal buffer (for output ports and input ports without upstream)
     pub buffer: FixedBuffer<T, BUF_SIZE>,
     /// Delayed feedback state (None if not on a feedback edge)
     pub feedback_buffer: Option<FixedBuffer<T, BUF_SIZE>>,
-    /// Downstream audio connections: (target_node_index, target_port_index).
+    /// Downstream signal connections: (target_node_index, target_port_index).
     /// Used for serialization and by `GraphBuilder::build()`.
     pub downstream: Vec<(usize, usize)>,
     /// Direct pointers to downstream input ports. Filled by
@@ -350,6 +352,13 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Set by `GraphBuilder::build()` for feedback edges.
     /// `snapshot_feedback()` copies its buffer into each target.
     pub feedback_ptrs: Vec<*mut Option<FixedBuffer<T, BUF_SIZE>>>,
+
+    /// Whether this input port has received new data in the current graph cycle.
+    ///
+    /// Set by `propagate` when a downstream input port receives a buffer copy.
+    /// Consumer nodes (esp. Sinks) check this flag to decide whether all
+    /// input channels are fresh before producing output.
+    pub data_received: bool,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
@@ -383,6 +392,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -403,6 +413,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -423,6 +434,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -448,6 +460,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -468,6 +481,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            data_received: false,
         }
     }
 
@@ -517,16 +531,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     ///
     /// For input ports on a feedback edge, mixes the delayed feedback
     /// (from `feedback_buffer`) into the current `buffer`.
-    /// No-op when `feedback_buffer` is `None`.
-    ///
-    /// `tick` is the current clock tick, available for future
-    /// sample-accurate or time-varying port-level processing.
     pub fn pre_process(&mut self, _tick: &ClockTick) {
         if let Some(ref fb) = self.feedback_buffer {
             let arr = self.buffer.as_mut_array();
             let fb_arr = fb.as_array();
-            for (v, &s) in arr.iter_mut().zip(fb_arr.iter()) {
-                *v += s;
+            let chunks = BUF_SIZE / 4;
+
+            for chunk in 0..chunks {
+                let o = chunk * 4;
+                let a = ScalarVector4::load(&arr[o..o + 4]);
+                let b = ScalarVector4::load(&fb_arr[o..o + 4]);
+                a.add(&b).store(&mut arr[o..o + 4]);
+            }
+
+            for i in chunks * 4..BUF_SIZE {
+                arr[i] += fb_arr[i];
             }
         }
     }
@@ -577,6 +596,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
                     (*ptr).buffer.copy_from(buffer.as_array());
                 }
                 (*ptr).run_action(Some(buffer.as_array()), ctx)?;
+                (*ptr).data_received = true;
             }
         }
         let mut proc_ctx = crate::traits::processable::ProcessContext { clock: ctx.tick };
@@ -720,9 +740,9 @@ mod tests {
     fn test_port_id_creation() {
         let node = NodeId(42);
 
-        let audio_in = PortId::signal_in(node, 0);
-        assert_eq!(audio_in.port_type(), PortType::Signal);
-        assert!(audio_in.is_input());
+        let signal_in = PortId::signal_in(node, 0);
+        assert_eq!(signal_in.port_type(), PortType::Signal);
+        assert!(signal_in.is_input());
 
         let clock_out = PortId::clock_out(node, 0);
         assert_eq!(clock_out.port_type(), PortType::Clock);

@@ -1,8 +1,8 @@
 [package]
 name = "rill-adrift"
-version = "0.5.0-beta.4"
+version = "0.5.0-beta.5"
 edition = "2021"
-description = "Umbrella crate re-exporting all rill crates for audio application development"
+description = "Umbrella crate re-exporting all rill crates for signal processing application development"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -25,7 +25,6 @@ rill-patchbay = { workspace = true }
 
 # Dependencies for Runtime (always needed)
 log = "0.4"
-crossbeam-channel = "0.5"
 
 # Optional (feature-gated)
 rill-io = { workspace = true, optional = true }
@@ -38,7 +37,7 @@ rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
-tokio = { workspace = true, optional = true, features = ["signal"] }
+tokio = { workspace = true, optional = true, features = ["signal", "rt", "rt-multi-thread", "macros"] }
 serde = { workspace = true, optional = true }
 serde_json = { version = "1.0", optional = true }
 toml = { version = "0.8", optional = true }
@@ -59,6 +58,14 @@ required-features = ["io", "serialization", "sampler"]
 name = "chiptune"
 required-features = ["io", "lofi"]
 
+[[example]]
+name = "midi_synth"
+required-features = ["midi", "io"]
+
+[[example]]
+name = "midi_synth_serial"
+required-features = ["midi", "io", "serialization"]
+
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "portaudio", "serialization"]
 
@@ -74,12 +81,16 @@ serialization = [
     "dep:serde",
     "dep:serde_json",
     "dep:toml",
+    "dep:tokio",
 ]
 dot = ["rill-graph/dot"]
 
-# Audio backend passthrough
+# I/O backend passthrough
 alsa = ["rill-io/alsa"]
 portaudio = ["rill-io/portaudio"]
 jack = ["rill-io/jack"]
 pipewire = ["rill-io/pipewire"]
+
+# MIDI
+midi = ["rill-patchbay/midi", "rill-io/midir", "io"]
 

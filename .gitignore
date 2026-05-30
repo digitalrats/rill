@@ -41,5 +41,8 @@ Thumbs.db
 
 # Other files
 *.patch
-test.wav
+*.wav
 graph.png
+
+# Stale doc mirror
+docs/src/src/

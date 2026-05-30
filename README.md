@@ -1,7 +1,7 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests|68](https://img.shields.io/badge/tests-559-green)](https://github.com/DigitalRats/rill)
+[![tests|68](https://img.shields.io/badge/tests-544-green)](https://github.com/DigitalRats/rill)
 [![version|130](https://img.shields.io/badge/version-0.5.0--beta.4-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
@@ -31,18 +31,69 @@ tied to audio hardware. The core (`Scalar`, `Vector`, lock-free queues,
 `Interpolate` trait) works in embedded, IoT, robotics, and any signal
 processing context.
 
+## High Performance
+
+Rill is designed for speed — two-thread architecture, zero-copy everywhere,
+lock-free queues, and SIMD-optimised block processing. Benchmarks on
+**AMD Ryzen 7 7735HS** (Zen 3+, AVX2+FMA), release build, 256-sample blocks:
+
+### Oscillators
+
+| Waveform | Time per block | Per sample | Voices at 44.1 kHz† |
+|---|---|---|---|
+| Sine | 795 ns | 3.1 ns | 322 000 |
+| Saw (BLEP) | 181 ns | 0.71 ns | 1 400 000 |
+| Square | 94 ns | 0.37 ns | 2 700 000 |
+| Triangle | 101 ns | 0.39 ns | 2 500 000 |
+| Pulse | 90 ns | 0.35 ns | 2 800 000 |
+
+### Filters (Biquad)
+
+| Type | Time per block | Per sample |
+|---|---|---|
+| LowPass | 244 ns | 0.95 ns |
+| HighPass | 247 ns | 0.96 ns |
+| Peak | 249 ns | 0.97 ns |
+
+### Noise generators
+
+| Type | Time per block | Per sample |
+|---|---|---|
+| White | 361 ns | 1.41 ns |
+| Brown | 380 ns | 1.48 ns |
+| Blue | 360 ns | 1.41 ns |
+| Violet | 350 ns | 1.37 ns |
+
+### Interpolated reader
+
+| Operation | Time per block | Per sample |
+|---|---|---|
+| Linear read | 707 ns | 2.76 ns |
+| Cubic read | 1.06 µs | 4.16 ns |
+| Resampler 44.1→48k | 1.11 µs | 4.32 ns |
+
+†Theoretical maximum single-core voice count. Full block bench results and
+hardware SIMD comparison in
+[docs/superpowers/specs/2026-05-10-simd-benchmark-results.md](docs/superpowers/specs/2026-05-10-simd-benchmark-results.md).
+
+Key performance drivers:
+- **Block processing** (BUF_SIZE=256) — eliminates per-sample call overhead
+- **ScalarVector4** — LLVM auto-vectorises `[f32; 4]` into SSE/AVX2 on x86_64
+- **VectorMask::select** — branchless SIMD (3.9× speedup on clamp)
+- **Block state-space** — biquad 4×4 matrix multiply replaces sequential feedback
+
 ## Quick start
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.2"
+rill-adrift = "0.5.0-beta.4"
 ```
 
 Enable optional features as needed (see table below).
 
 ```rust,no_run
 use rill_adrift::rill_graph::GraphBuilder;
-use rill_adrift::rill_oscillators::audio::SineOsc;
+use rill_adrift::rill_oscillators::signal::SineOsc;
 
 const BUF_SIZE: usize = 256;
 
@@ -85,10 +136,10 @@ Same as `player` but sends `SetParameter` commands through the graph's actor
 mailbox before starting playback — demonstrates filter cutoff control and WAV
 path override at runtime.
 
-### AY-3-8910 chiptune (Popcorn)
+### AY-3-8910 chiptune_stc (Popcorn)
 
 ```bash
-cargo run -p rill-adrift --example chiptune --features "lofi,portaudio" -- [backend]
+cargo run -p rill-adrift --example chiptune_stc --features "lofi,portaudio" -- [backend]
 ```
 
 Plays the Popcorn melody on an emulated AY-3-8910 sound chip. The sequencer
@@ -131,14 +182,14 @@ topology definition.
 
 | Feature | Enables | Default |
 |---------|---------|---------|
-| `io` | `rill-io` (audio backends) | yes |
+| `io` | `rill-io` (I/O backends) | yes |
 | `lofi` | `rill-lofi` | yes |
 | `telemetry` | `rill-telemetry` | yes |
 | `osc` | `rill-osc` (tokio) | yes |
 | `sampler` | `rill-sampler` | yes |
 | `analog` | WDF + analog filters + effects | no |
 | `serialization` | Graph/patchbay JSON/CBOR | no |
-| `alsa` / `portaudio` / `jack` / `pipewire` | Audio backends (implies `io`) | no |
+| `alsa` / `portaudio` / `jack` / `pipewire` | I/O backends (implies `io`) | no |
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
 `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,
@@ -176,7 +227,7 @@ graph TD
 ## Testing
 
 ```bash
-cargo test --workspace    # 487 tests, all passing
+cargo test --workspace    # 544 tests, all passing
 cargo clippy --workspace  # lint
 cargo fmt                 # format (max_width=100)
 ```

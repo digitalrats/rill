@@ -14,32 +14,19 @@
 //!
 //! ## Example
 //!
-//! ```rust
+//! ```no_run
 //! use rill_core::queues::*;
 //! use rill_core::traits::*;
-//! #
-//! // Create a command queue
-//! let queue: CommandQueue<CommandEnum> = CommandQueue::new("signal-control", 1024);
 //!
-//! // Create identifiers
 //! let node = NodeId(1);
 //! let port = PortId::control_in(node, 0);
 //! let param = ParameterId::new("gain").unwrap();
-//!
-//! // Somewhere in the world of automatons
 //! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalOrigin::Automaton("lfo".into()));
-//! queue.send(CommandEnum::SetParameter(cmd)).unwrap();
-//!
-//! // Somewhere in the sound world
-//! while let Ok(cmd_enum) = queue.try_recv() {
-//!     if let CommandEnum::SetParameter(cmd) = cmd_enum {
-//!         // apply_parameter(cmd); // function must be defined
-//!     }
-//! }
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! // Send via ActorRef<SetParameter> or MpscQueue<SetParameter>
 //! ```
 
 use super::command::Command;
+use crate::time::ClockTick;
 use crate::traits::{ParamValue, ParameterId, PortId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -60,7 +47,7 @@ pub enum SignalOrigin {
     Sensor(String),
     /// Command from a servo (physical output device).
     Servo(String),
-    /// Command from an external source (OSC, MIDI, etc.).
+    /// Command from an external source (OSC, etc.).
     External(String),
     /// Manual user interaction (UI slider, button, etc.).
     Manual,
@@ -245,6 +232,23 @@ pub enum AutomatonCommand {
         /// Automaton identifier to remove.
         id: String,
     },
+    /// Wake the automaton to process a clock tick (no payload required).
+    Wake {
+        /// Automaton identifier.
+        id: String,
+    },
+    /// Set a value from UI input for conflict resolution.
+    UiValue {
+        /// Automaton identifier.
+        id: String,
+        /// Raw value from UI.
+        value: f64,
+    },
+    /// Release UI control (unfreeze in TouchOverride mode).
+    UiRelease {
+        /// Automaton identifier.
+        id: String,
+    },
 }
 
 impl AutomatonCommand {
@@ -258,6 +262,9 @@ impl AutomatonCommand {
             AutomatonCommand::Disconnect { from, to: _to } => Some(from),
             AutomatonCommand::Create { id, .. } => Some(id),
             AutomatonCommand::Destroy { id } => Some(id),
+            AutomatonCommand::Wake { id } => Some(id),
+            AutomatonCommand::UiValue { id, .. } => Some(id),
+            AutomatonCommand::UiRelease { id } => Some(id),
         }
     }
 }
@@ -291,6 +298,15 @@ impl fmt::Display for AutomatonCommand {
             }
             AutomatonCommand::Destroy { id } => {
                 write!(f, "Automaton destroy {}", id)
+            }
+            AutomatonCommand::Wake { id } => {
+                write!(f, "Automaton[{}] wake(tick)", id)
+            }
+            AutomatonCommand::UiValue { id, value } => {
+                write!(f, "Automaton[{}] ui_value({:.2})", id, value)
+            }
+            AutomatonCommand::UiRelease { id } => {
+                write!(f, "Automaton[{}] ui_release()", id)
             }
         }
     }
@@ -538,6 +554,10 @@ pub enum CommandType {
     Sensor,
     /// Servo control command.
     Servo,
+    /// Clock tick.
+    ClockTick,
+    /// Stop command — shuts down the actor's I/O loop.
+    Stop,
     /// System command.
     System,
 }
@@ -549,6 +569,8 @@ impl fmt::Display for CommandType {
             CommandType::Automaton => write!(f, "Automaton"),
             CommandType::Sensor => write!(f, "Sensor"),
             CommandType::Servo => write!(f, "Servo"),
+            CommandType::ClockTick => write!(f, "ClockTick"),
+            CommandType::Stop => write!(f, "Stop"),
             CommandType::System => write!(f, "System"),
         }
     }
@@ -568,6 +590,10 @@ pub enum CommandEnum {
     Sensor(SensorCommand),
     /// Servo control command.
     Servo(ServoCommand),
+    /// Clock tick — sent from Graph to Patchbay each processing block.
+    ClockTick(ClockTick),
+    /// Stop command — shuts down the actor's I/O loop.
+    Stop,
     /// System-level command with opaque payload.
     System {
         /// System command kind.
@@ -585,6 +611,8 @@ impl CommandEnum {
             CommandEnum::Automaton(_) => CommandType::Automaton,
             CommandEnum::Sensor(_) => CommandType::Sensor,
             CommandEnum::Servo(_) => CommandType::Servo,
+            CommandEnum::ClockTick(_) => CommandType::ClockTick,
+            CommandEnum::Stop => CommandType::Stop,
             CommandEnum::System { .. } => CommandType::System,
         }
     }
@@ -636,6 +664,14 @@ impl CommandEnum {
             _ => None,
         }
     }
+
+    /// Try to downcast to `ClockTick`.
+    pub fn as_clock_tick(&self) -> Option<&ClockTick> {
+        match self {
+            CommandEnum::ClockTick(tick) => Some(tick),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for CommandEnum {
@@ -645,6 +681,12 @@ impl fmt::Display for CommandEnum {
             CommandEnum::Automaton(cmd) => write!(f, "{}", cmd),
             CommandEnum::Sensor(cmd) => write!(f, "{}", cmd),
             CommandEnum::Servo(cmd) => write!(f, "{}", cmd),
+            CommandEnum::ClockTick(tick) => write!(
+                f,
+                "ClockTick(pos={}, dt={}samp)",
+                tick.sample_pos, tick.samples_since_last,
+            ),
+            CommandEnum::Stop => write!(f, "Stop"),
             CommandEnum::System { kind, data } => {
                 write!(f, "System[{}] ({} bytes)", kind, data.len())
             }
@@ -652,7 +694,7 @@ impl fmt::Display for CommandEnum {
     }
 }
 
-// Implement the Command trait for CommandEnum so it can be used in CommandQueue
+// Implement the Command trait for CommandEnum (used via actor mailboxes).
 impl Command for CommandEnum {}
 
 // ===== Conversions =====

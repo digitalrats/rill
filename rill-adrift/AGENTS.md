@@ -6,13 +6,13 @@ Umbrella crate re-exporting all rill crates for signal processing application de
 
 - **Always-on core** (no feature gate): `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-patchbay`
 - **Feature-gated**: `io`, `lofi`, `telemetry`, `osc`, `sampler` (all in default), `analog` (opt-in)
-- **Audio backend passthrough**: `alsa`, `portaudio`, `jack`, `pipewire` forward to `rill-io`
+- **I/O backend passthrough**: `alsa`, `portaudio`, `jack`, `pipewire` forward to `rill-io`
 
 ## Usage
 
 ```rust
 use rill_adrift::prelude::*;
-use rill_adrift::rill_oscillators::audio::SineOsc;
+use rill_adrift::rill_oscillators::signal::SineOsc;
 ```
 
 ## Commands

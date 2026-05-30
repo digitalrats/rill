@@ -143,14 +143,13 @@ impl<T: Transcendental> WdfElement<T> for ParallelAdapter<T> {
             .fold(T::ZERO, |a, b| a + b);
 
         let two = T::from_f32(2.0);
-        let alpha: Vec<T> = self
-            .elements
-            .iter()
-            .map(|e| {
-                let g_i = T::ONE / e.read().port_resistance();
-                two * g_i / total_g
-            })
-            .collect();
+        // Stack-allocated alpha array (max 8 elements for practical WDF circuits)
+        let mut alpha = [T::ZERO; 8];
+
+        for (i, e) in self.elements.iter().enumerate() {
+            let g_i = T::ONE / e.read().port_resistance();
+            alpha[i] = two * g_i / total_g;
+        }
 
         let mut sum_alpha_b = T::ZERO;
         for (i, element) in self.elements.iter().enumerate() {

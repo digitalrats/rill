@@ -5,38 +5,46 @@
     "resources": [],
     "nodes": [
         {
-            "id": 0,
-            "type_name": "rill/sampler",
-            "name": "player",
-            "parameters": {
-                "file": "../test.wav"
+            "Source": {
+                "id": 0,
+                "type_name": "rill/sampler",
+                "name": "player",
+                "parameters": {
+                    "file": "../test.wav"
+                }
             }
         },
         {
-            "id": 1,
-            "type_name": "rill/biquad",
-            "name": "filter_l",
-            "parameters": {
-                "cutoff": 600.0,
-                "q": 1.5,
-                "filter": 1.0
+            "Processor": {
+                "id": 1,
+                "type_name": "rill/biquad",
+                "name": "filter_l",
+                "parameters": {
+                    "cutoff": 600.0,
+                    "q": 1.5,
+                    "filter": 1.0
+                }
             }
         },
         {
-            "id": 2,
-            "type_name": "rill/biquad",
-            "name": "filter_r",
-            "parameters": {
-                "cutoff": 600.0,
-                "q": 1.5,
-                "filter": 1.0
+            "Processor": {
+                "id": 2,
+                "type_name": "rill/biquad",
+                "name": "filter_r",
+                "parameters": {
+                    "cutoff": 600.0,
+                    "q": 1.5,
+                    "filter": 1.0
+                }
             }
         },
         {
-            "id": 3,
-            "type_name": "rill/output",
-            "name": "output",
-            "parameters": {}
+            "Sink": {
+                "id": 3,
+                "type_name": "rill/output",
+                "name": "output",
+                "parameters": {}
+            }
         }
     ],
     "connections": [

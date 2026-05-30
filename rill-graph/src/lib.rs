@@ -19,7 +19,7 @@
 
 mod graph;
 
-/// Backend factory for constructing audio I/O backends by name.
+/// Backend factory for constructing I/O backends by name.
 pub mod backend_factory;
 
 /// Node factory and registry for constructing nodes by type name.
@@ -31,6 +31,10 @@ pub mod active;
 /// Graph serialization (JSON / CBOR). Feature-gated behind `serialization`.
 #[cfg(feature = "serialization")]
 pub mod serialization;
+
+/// Graph constructor — builds and runs graphs from [`serialization::GraphDef`].
+#[cfg(feature = "serialization")]
+pub mod graph_constructor;
 
 /// DOT graph visualization (Graphviz). Feature-gated behind `dot`.
 #[cfg(feature = "dot")]

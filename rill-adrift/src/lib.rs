@@ -38,7 +38,7 @@ pub use rill_sampler as sampler;
 /// Centralised node type registration for the Rill ecosystem.
 pub mod registration;
 
-pub mod runtime;
+pub mod modular;
 
 /// Common re-exports for typical Rill application development.
 pub mod prelude {

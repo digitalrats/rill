@@ -13,6 +13,7 @@
 //! ├── buffer/           # Lock-free signal buffers with AtomicCell safety
 //! ├── queues/           # Real-time safe command queues
 //! ├── time/             # Time and clock abstractions (ClockTick, SystemClock)
+//! ├── io/               # Generic I/O backend trait (IoBackend)
 //! ├── macros/           # Node creation macros (source_node!, processor_node!, etc.)
 //! ├── prelude           # Convenience prelude for common imports
 //! ├── interpolate       # Fractional-index interpolation trait
@@ -27,7 +28,7 @@
 //! - **Node**: Base trait for all nodes in the signal graph
 //! - **Source**: Active generators (oscillators, file readers)
 //! - **Processor**: Passive processors (filters, effects)
-//! - **Sink**: Active outputs (sound cards, file writers)
+//! - **Sink**: Active outputs (I/O devices, file writers)
 //! - **PipeBuffer**: Zero-copy connections between nodes
 //! - **CommandQueue**: Real-time safe parameter automation
 //! - **ClockTick**: Sample-accurate timing for synchronization
@@ -191,8 +192,8 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    ClockError, ClockResult, ConnectionError, ConnectionResult, Node, NodeCategory, NodeId,
-    NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
+    ClockError, ClockResult, ConnectionError, ConnectionResult, Eurorack, Node, NodeCategory,
+    NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
     ParameterError, ParameterId, Params, Port, PortDirection, PortError, PortId, PortResult,
     PortType, ProcessError, ProcessResult, Processor, Sink, Source,
 };
@@ -267,19 +268,6 @@ pub mod utils {
     #[inline(always)]
     pub fn samples_to_seconds(samples: usize, sample_rate: f32) -> f32 {
         samples as f32 / sample_rate
-    }
-
-    /// Convert MIDI note to frequency
-    #[inline(always)]
-    pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
-        let exp = (note as f32 - 69.0) / 12.0;
-        T::from_f32(440.0 * 2.0_f32.powf(exp))
-    }
-
-    /// Convert frequency to MIDI note
-    #[inline(always)]
-    pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
-        69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
     }
 
     /// Convert dB to linear gain
@@ -366,12 +354,6 @@ mod tests {
     fn test_utils() {
         assert_eq!(utils::seconds_to_samples(1.0, 44100.0), 44100);
         assert!((utils::samples_to_seconds(44100, 44100.0) - 1.0).abs() < 1e-6);
-
-        let freq: f32 = utils::midi_to_freq(69);
-        assert!((freq - 440.0).abs() < 1e-6);
-
-        let midi = utils::freq_to_midi(440.0f32);
-        assert!((midi - 69.0).abs() < 1e-6);
 
         let linear = utils::db_to_linear(0.0f32);
         assert!((linear - 1.0).abs() < 1e-6);

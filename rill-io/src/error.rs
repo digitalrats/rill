@@ -40,6 +40,10 @@ pub enum IoError {
     /// Channel communication error
     #[error("Channel error")]
     Channel,
+
+    /// MIDI protocol or device error
+    #[error("MIDI error: {0}")]
+    Midi(String),
 }
 
 /// Result of I/O operations

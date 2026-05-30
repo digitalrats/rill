@@ -4,19 +4,9 @@
 //! Allow implementing any mathematical relationship.
 
 use crate::engine::{Automaton, NoAction, Range, Time};
+use rill_core::traits::ParamValue;
 use std::fmt;
 use std::sync::Arc;
-
-/// Functional automaton state
-#[derive(Debug, Clone)]
-pub struct FunctionState {
-    /// Last computed value
-    pub value: f64,
-    /// Time of last update
-    pub last_time: Time,
-    /// User-defined state (for stateful functions)
-    pub user_state: Arc<dyn std::any::Any + Send + Sync>,
-}
 
 /// Functional automaton (stateless)
 #[derive(Clone)]
@@ -59,31 +49,25 @@ impl FunctionAutomaton {
 }
 
 impl Automaton for FunctionAutomaton {
-    type State = f64;
+    type Internal = ();
     type Action = NoAction;
 
     fn step(
         &self,
+        _internal: &mut Self::Internal,
+        _current: &ParamValue,
         time: Time,
         _action: &Self::Action,
-        _state: &Self::State,
-    ) -> (Self::State, Option<f64>) {
+    ) -> ParamValue {
         let value = (self.generator)(time);
         let clamped = self.range.clamp(value);
-
-        (clamped, Some(clamped))
+        ParamValue::Float(clamped as f32)
     }
 
-    fn initial_state(&self) -> Self::State {
-        0.0
-    }
+    fn initial_internal(&self) -> Self::Internal {}
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        *state
     }
 }
 
@@ -133,34 +117,27 @@ impl<S: Send + Sync + Clone + 'static> StatefulFunctionAutomaton<S> {
 }
 
 impl<S: fmt::Debug + Send + Sync + Clone + 'static> Automaton for StatefulFunctionAutomaton<S> {
-    type State = (f64, S);
+    type Internal = S;
     type Action = NoAction;
 
     fn step(
         &self,
+        internal: &mut Self::Internal,
+        _current: &ParamValue,
         time: Time,
         _action: &Self::Action,
-        state: &Self::State,
-    ) -> (Self::State, Option<f64>) {
-        let mut user_state = state.1.clone();
-        let value = (self.generator)(time, &mut user_state);
+    ) -> ParamValue {
+        let value = (self.generator)(time, internal);
         let clamped = self.range.clamp(value);
-
-        ((clamped, user_state), Some(clamped))
+        ParamValue::Float(clamped as f32)
     }
 
-    fn initial_state(&self) -> Self::State {
-        let mut init = self.initial_state.clone();
-        let value = (self.generator)(0.0, &mut init);
-        (self.range.clamp(value), init)
+    fn initial_internal(&self) -> Self::Internal {
+        self.initial_state.clone()
     }
 
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn extract_value(&self, state: &Self::State) -> f64 {
-        state.0
     }
 }
 
@@ -190,10 +167,11 @@ mod tests {
     #[test]
     fn test_function_automaton() {
         let automaton = FunctionAutomaton::new("Test", |t| (t * 2.0).sin());
-        let state = automaton.initial_state();
+        let mut internal = automaton.initial_internal();
+        let current = ParamValue::Float(0.0);
 
-        let (_state, value) = automaton.step(1.0, &NoAction, &state);
-        assert!(value.is_some());
+        let value = automaton.step(&mut internal, &current, 1.0, &NoAction);
+        assert!(value.as_f32().is_some());
     }
 
     #[test]
@@ -208,10 +186,13 @@ mod tests {
         )
         .with_range(Range::new(0.0, 100.0));
 
-        let state = automaton.initial_state();
-        assert_eq!(state.0, 1.0);
+        let mut internal = automaton.initial_internal();
+        let current = ParamValue::Float(0.0);
 
-        let (new_state, _) = automaton.step(1.0, &NoAction, &state);
-        assert_eq!(new_state.0, 2.0);
+        let value = automaton.step(&mut internal, &current, 1.0, &NoAction);
+        assert_eq!(value.as_f32().unwrap(), 1.0);
+
+        let value = automaton.step(&mut internal, &current, 1.0, &NoAction);
+        assert_eq!(value.as_f32().unwrap(), 2.0);
     }
 }

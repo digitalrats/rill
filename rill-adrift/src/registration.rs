@@ -194,7 +194,7 @@ fn register_analog<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
 // ============================================================================
 
 fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    use rill_oscillators::audio::{NoiseOsc, NoiseType, SawOsc, SineOsc};
+    use rill_oscillators::signal::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
     node_ctor!(factory, "rill/sine", |id: NodeId, params: &Params| {
         let mut n = SineOsc::<f32, BUF_SIZE>::new()
@@ -395,10 +395,95 @@ fn register_router<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
     });
 } // end register_router
 
+// ============================================================================
+// Module registration — custom rack modules (MIDI, OSC, etc.)
+// ============================================================================
+
+/// Register all built-in module constructors into a [`ModuleFactory`].
+///
+/// Called once at application startup. Modules are constructed on-demand
+/// when a [`RackDef`] or [`PatchbayDef`] is processed.
+pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    factory.register(rill_patchbay::servo_constructor::ServoConstructor);
+    #[cfg(feature = "midi")]
+    register_midi_module(factory);
+}
+
+#[cfg(feature = "midi")]
+fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::CommandEnum;
+    use rill_io::midi_backend::MidiBackend;
+    use rill_patchbay::module_def::{ModuleDef, SensorDef};
+    use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
+
+    struct MidiConstructor;
+
+    impl ModuleConstructor for MidiConstructor {
+        fn type_name(&self) -> &'static str {
+            "midi"
+        }
+
+        fn construct(
+            &self,
+            module: &ModuleDef,
+            _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
+            system: &std::sync::Arc<rill_core_actor::ActorSystem>,
+            graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
+        ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
+            let SensorDef::Midi {
+                backend,
+                port_name,
+                mappings,
+            } = match module {
+                ModuleDef::Sensor(s) => s,
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(
+                        "MidiConstructor requires ModuleDef::Sensor".into(),
+                    ))
+                }
+            };
+
+            let be: Box<dyn MidiBackend> = match backend.as_str() {
+                "midir" => {
+                    let b = rill_io::backends::MidirBackend::new_by_name("rill-midi", port_name)
+                        .or_else(|_| rill_io::backends::MidirBackend::new("rill-midi"))
+                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?;
+                    Box::new(b)
+                }
+                #[cfg(feature = "alsa")]
+                "alsa_seq" => Box::new(
+                    rill_io::backends::AlsaSeqBackend::new(port_name)
+                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?,
+                ),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(format!(
+                        "unknown MIDI backend '{backend}'"
+                    )))
+                }
+            };
+
+            let actor_ref = rill_patchbay::midi::spawn_midi_sensor(
+                port_name,
+                be,
+                mappings.iter().map(|m| m.to_mapping()).collect(),
+                system,
+                graph_ref.clone(),
+            );
+            Ok(actor_ref)
+        }
+
+        fn clone_box(&self) -> Box<dyn ModuleConstructor> {
+            Box::new(MidiConstructor)
+        }
+    }
+
+    factory.register(MidiConstructor);
+}
+
 /// Deserialise a JSON graph string into a
 /// [rill_graph::serialization::GraphDef].
 ///
-/// Use [`Runtime::create_builder`](crate::runtime::Runtime::create_builder)
+/// Use [`ModularSystem::create_builder`](crate::modular::ModularSystem::create_builder)
 /// to build a graph from the definition.
 #[cfg(feature = "serialization")]
 pub fn load_graph_json(
@@ -469,8 +554,17 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
         .unwrap_or(44100) as u32;
     let bs = p.get("buffer_size").and_then(|v| v.as_i32()).unwrap_or(256) as u32;
     let ch = p.get("channels").and_then(|v| v.as_i32()).unwrap_or(2) as u32;
+    let in_ch = p
+        .get("input_channels")
+        .and_then(|v| v.as_i32())
+        .unwrap_or(ch as i32) as u32;
+    let out_ch = p
+        .get("output_channels")
+        .and_then(|v| v.as_i32())
+        .unwrap_or(ch as i32) as u32;
     crate::io::AudioConfig::new()
         .with_sample_rate(sr)
         .with_buffer_size(bs)
-        .with_channels(ch)
+        .with_input_channels(in_ch)
+        .with_output_channels(out_ch)
 }

@@ -1,6 +1,8 @@
 //! Distortion effect with waveshaping
 
 use rill_core::{
+    math::vector::scalar::ScalarVector4,
+    math::vector::traits::Vector,
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
@@ -295,12 +297,102 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distor
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let input_buf = *self.inputs[0].buffer.as_array();
-        let mut temp = [T::ZERO; BUF_SIZE];
-        for i in 0..BUF_SIZE {
-            temp[i] = self.process_sample(input_buf[i]);
+        let inp = self.inputs[0].buffer.as_array();
+        let out = self.outputs[0].buffer.as_mut_array();
+        let drive_t = T::from_f32(self.drive);
+        let gain_t = T::from_f32(self.output_gain);
+        let chunks = BUF_SIZE / 4;
+
+        match self.distortion_type {
+            DistortionType::HardClip => {
+                let min = ScalarVector4::splat(T::MIN);
+                let max = ScalarVector4::splat(T::MAX);
+                for chunk in 0..chunks {
+                    let o = chunk * 4;
+                    let x = ScalarVector4::load(&inp[o..o + 4]);
+                    let d = x.mul(&ScalarVector4::splat(drive_t));
+                    let r = d.clamp(&min, &max);
+                    r.mul(&ScalarVector4::splat(gain_t))
+                        .store(&mut out[o..o + 4]);
+                }
+            }
+            DistortionType::SoftClip => {
+                for chunk in 0..chunks {
+                    let o = chunk * 4;
+                    let vals: [T; 4] = std::array::from_fn(|k| {
+                        let d = inp[o + k].mul(drive_t);
+                        let s = T::from_f32(d.to_f32().tanh());
+                        s.mul(gain_t)
+                    });
+                    out[o..o + 4].copy_from_slice(&vals);
+                }
+            }
+            DistortionType::Tube => {
+                for chunk in 0..chunks {
+                    let o = chunk * 4;
+                    let d_v = ScalarVector4::load(&[
+                        inp[o].mul(drive_t),
+                        inp[o + 1].mul(drive_t),
+                        inp[o + 2].mul(drive_t),
+                        inp[o + 3].mul(drive_t),
+                    ]);
+                    let vals = ScalarVector4::from_fn(|i| {
+                        let d = d_v.extract(i);
+                        if d > T::ZERO {
+                            T::ONE - (-d).exp()
+                        } else {
+                            -T::ONE + d.exp()
+                        }
+                    });
+                    vals.mul(&ScalarVector4::splat(gain_t))
+                        .store(&mut out[o..o + 4]);
+                }
+            }
+            DistortionType::Fuzz => {
+                for chunk in 0..chunks {
+                    let o = chunk * 4;
+                    let out_arr: [T; 4] = std::array::from_fn(|k| {
+                        let d = inp[o + k].mul(drive_t);
+                        let f = if d > T::ZERO {
+                            T::ONE - T::ONE.div(T::ONE + d)
+                        } else {
+                            d
+                        };
+                        f.mul(gain_t)
+                    });
+                    out[o..o + 4].copy_from_slice(&out_arr);
+                }
+            }
         }
-        *self.outputs[0].buffer.as_mut_array() = temp;
+
+        // Remainder (only when BUF_SIZE % 4 != 0)
+        let dt = self.distortion_type;
+        let dr = self.drive;
+        let og = self.output_gain;
+        for i in chunks * 4..BUF_SIZE {
+            let driven = inp[i].mul(T::from_f32(dr));
+            out[i] = match dt {
+                DistortionType::HardClip => driven.clamp(T::MIN, T::MAX),
+                DistortionType::SoftClip => T::from_f32(driven.to_f32().tanh()),
+                DistortionType::Tube => {
+                    if driven > T::ZERO {
+                        T::ONE - (-driven).exp()
+                    } else {
+                        -T::ONE + driven.exp()
+                    }
+                }
+                DistortionType::Fuzz => {
+                    if driven > T::ZERO {
+                        T::ONE - T::ONE.div(T::ONE + driven)
+                    } else {
+                        driven
+                    }
+                }
+            }
+            .mul(T::from_f32(og));
+        }
+
+        self.state.advance();
         Ok(())
     }
 

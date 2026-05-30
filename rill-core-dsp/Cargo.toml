@@ -1,6 +1,6 @@
 [package]
 name = "rill-core-dsp"
-version = "0.5.0-beta.4"
+version = "0.5.0-beta.5"
 edition = "2021"
 description = "Core DSP abstractions and algorithms for Rill"
 license.workspace = true
@@ -16,6 +16,27 @@ thiserror = "1.0"
 
 [dev-dependencies]
 float-cmp = "0.9"
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "oscillator_bench"
+harness = false
+path = "benches/oscillator_bench.rs"
+
+[[bench]]
+name = "filter_bench"
+harness = false
+path = "benches/filter_bench.rs"
+
+[[bench]]
+name = "noise_bench"
+harness = false
+path = "benches/noise_bench.rs"
+
+[[bench]]
+name = "reader_bench"
+harness = false
+path = "benches/reader_bench.rs"
 
 [features]
 default = []

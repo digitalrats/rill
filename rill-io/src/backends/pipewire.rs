@@ -8,6 +8,7 @@
 //! enters mainloop iterate loop. Exits when `running` becomes false.
 //! No `std::thread`, `std::sync`.
 
+use rill_core::math::functions::{deinterleave_stereo, interleave_stereo};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -83,6 +84,8 @@ impl PipewireBackend {
             ));
         }
 
+        let input_channels = config.input_channels;
+        let sample_rate = config.sample_rate;
         Ok(Self {
             input_buffer: Arc::new(IoRingBuffer::new(
                 (config.buffer_size * config.input_channels.max(1) * 32) as usize,
@@ -92,12 +95,12 @@ impl PipewireBackend {
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             output_slot: OutputSlot::new(),
-            negotiated_input_channels: Arc::new(AtomicU32::new(0)),
-            negotiated_input_rate: Arc::new(AtomicU32::new(0)),
+            negotiated_input_channels: Arc::new(AtomicU32::new(input_channels)),
+            negotiated_input_rate: Arc::new(AtomicU32::new(sample_rate)),
         })
     }
 
-    /// Return the negotiated sample rate from PipeWire, or 0 if not yet negotiated.
+    /// Return the negotiated sample rate from PipeWire (falls back to config rate until negotiated).
     pub fn negotiated_rate(&self) -> u32 {
         self.negotiated_input_rate.load(Ordering::Relaxed)
     }
@@ -145,15 +148,11 @@ impl IoBackend<f32> for PipewireBackend {
         let n_read = self.input_buffer.read(&mut temp[..max_s]);
         let frames_out = n_read / out_ch;
         let out = frames_out.min(frames);
-        if out_ch >= 2 {
-            for i in 0..out {
-                if let Some(c) = channels.get_mut(0) {
-                    c[i] = temp[i * out_ch];
-                }
-                if let Some(c) = channels.get_mut(1) {
-                    c[i] = temp[i * out_ch + 1];
-                }
-            }
+        if out_ch >= 2 && channels.len() >= 2 {
+            let (ch0, rest) = channels.split_at_mut(1);
+            let (ch1, _) = rest.split_at_mut(1);
+            let (c0, c1) = (&mut ch0[0][..out], &mut ch1[0][..out]);
+            deinterleave_stereo(&temp[..out * 2], c0, c1);
         } else {
             for i in 0..out {
                 if let Some(c) = channels.get_mut(0) {
@@ -176,10 +175,10 @@ impl IoBackend<f32> for PipewireBackend {
         if let Some(win) = unsafe { self.output_slot.as_mut() } {
             let cap = win.capacity().min(frames * nch);
             let dst = win.as_mut_slice();
-            for i in 0..frames {
-                for ch in 0..nch {
-                    dst[i * nch + ch] = channels[ch][i];
-                }
+            if nch >= 2 {
+                interleave_stereo(channels[0], channels[1], &mut dst[..frames * 2]);
+            } else {
+                dst[..frames].copy_from_slice(&channels[0][..frames]);
             }
             cap / nch
         } else {
@@ -331,149 +330,167 @@ impl IoBackend<f32> for PipewireBackend {
         self.running.store(true, Ordering::Release);
 
         // ── Input stream ────────────────────────────────────────────────────
-        let in_node = in_device.as_deref().unwrap_or("rill-input");
-        let in_desc = format!("Rill Audio Input ({in_node})");
-        let mut in_props = properties! {
-            *pw::keys::MEDIA_TYPE => "Audio",
-            *pw::keys::MEDIA_ROLE => "Music",
-            *pw::keys::MEDIA_CATEGORY => "Capture",
-            *pw::keys::NODE_NAME => in_node,
-            *pw::keys::NODE_DESCRIPTION => in_desc.as_str(),
-        };
-        in_props.insert("audio.channels", in_channels.to_string());
-        in_props.insert(
-            *pw::keys::NODE_LATENCY,
-            format!("{}/{}", self.config.buffer_size, sample_rate),
-        );
+        let in_stream: Option<pw::stream::StreamBox>;
+        let _in_listener: Option<_>;
 
-        let in_stream =
-            match pw::stream::StreamBox::new(&core, &format!("{in_node}-input"), in_props) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    log::warn!("PW StreamBox input: {e} — capture disabled");
-                    None
-                }
+        if in_channels > 0 {
+            let in_node = in_device.as_deref().unwrap_or("rill-input");
+            let in_desc = format!("Rill Audio Input ({in_node})");
+            let mut in_props = properties! {
+                *pw::keys::MEDIA_TYPE => "Audio",
+                *pw::keys::MEDIA_ROLE => "Music",
+                *pw::keys::MEDIA_CATEGORY => "Capture",
+                *pw::keys::NODE_NAME => in_node,
+                *pw::keys::NODE_DESCRIPTION => in_desc.as_str(),
             };
+            in_props.insert("audio.channels", in_channels.to_string());
+            in_props.insert(
+                *pw::keys::NODE_LATENCY,
+                format!("{}/{}", self.config.buffer_size, sample_rate),
+            );
 
-        // Input listener — MUST live until end of run() or PW stops calling it.
-        let _in_listener;
+            in_stream =
+                match pw::stream::StreamBox::new(&core, &format!("{in_node}-input"), in_props) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        log::warn!("PW StreamBox input: {e} — capture disabled");
+                        None
+                    }
+                };
 
-        if let Some(ref in_st) = in_stream {
-            let mut in_ai = spa::param::audio::AudioInfoRaw::new();
-            in_ai.set_format(spa::param::audio::AudioFormat::F32LE);
-            // Don't set rate/channels — let PW negotiate.
+            // Input listener — MUST live until end of run() or PW stops calling it.
+            if let Some(ref in_st) = in_stream {
+                let mut in_ai = spa::param::audio::AudioInfoRaw::new();
+                in_ai.set_format(spa::param::audio::AudioFormat::F32LE);
+                // Don't set rate/channels — let PW negotiate.
 
-            let in_params_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
-                std::io::Cursor::new(Vec::new()),
-                &spa::pod::Value::Object(spa::pod::Object {
-                    type_: spa_sys::SPA_TYPE_OBJECT_Format,
-                    id: spa_sys::SPA_PARAM_EnumFormat,
-                    properties: in_ai.into(),
-                }),
-            )
-            .unwrap()
-            .0
-            .into_inner();
-            let mut in_params = [spa::pod::Pod::from_bytes(&in_params_bytes).unwrap()];
+                let in_params_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+                    std::io::Cursor::new(Vec::new()),
+                    &spa::pod::Value::Object(spa::pod::Object {
+                        type_: spa_sys::SPA_TYPE_OBJECT_Format,
+                        id: spa_sys::SPA_PARAM_EnumFormat,
+                        properties: in_ai.into(),
+                    }),
+                )
+                .unwrap()
+                .0
+                .into_inner();
+                let mut in_params = [spa::pod::Pod::from_bytes(&in_params_bytes).unwrap()];
 
-            let buf_frames = self.config.buffer_size as usize;
-            let nch_fmt = self.negotiated_input_channels.clone();
-            let nrate_fmt = self.negotiated_input_rate.clone();
-            let nch_proc = self.negotiated_input_channels.clone();
-            let nrate_proc = self.negotiated_input_rate.clone();
+                let buf_frames = self.config.buffer_size as usize;
+                let nch_fmt = self.negotiated_input_channels.clone();
+                let nrate_fmt = self.negotiated_input_rate.clone();
+                let nch_proc = self.negotiated_input_channels.clone();
+                let nrate_proc = self.negotiated_input_rate.clone();
 
-            let listener = in_st
-                .add_local_listener_with_user_data(())
-                .param_changed(move |_stream, _data, id, param| {
-                    if id == spa_sys::SPA_PARAM_Format {
-                        if let Some(param) = param {
-                            let mut ai = spa::param::audio::AudioInfoRaw::new();
-                            if ai.parse(param).is_ok() {
-                                nch_fmt.store(ai.channels(), std::sync::atomic::Ordering::Relaxed);
-                                nrate_fmt.store(ai.rate(), std::sync::atomic::Ordering::Relaxed);
+                let listener = in_st
+                    .add_local_listener_with_user_data(())
+                    .param_changed(move |_stream, _data, id, param| {
+                        if id == spa_sys::SPA_PARAM_Format {
+                            if let Some(param) = param {
+                                let mut ai = spa::param::audio::AudioInfoRaw::new();
+                                if ai.parse(param).is_ok() {
+                                    nch_fmt
+                                        .store(ai.channels(), std::sync::atomic::Ordering::Relaxed);
+                                    nrate_fmt
+                                        .store(ai.rate(), std::sync::atomic::Ordering::Relaxed);
+                                }
                             }
                         }
-                    }
-                })
-                .process(move |stream, _| {
-                    if !running2.load(Ordering::Acquire) {
-                        ml2.quit();
-                        return;
-                    }
-                    let mut buf = match stream.dequeue_buffer() {
-                        Some(b) => b,
-                        None => {
-                            xruns.fetch_add(1, Ordering::Relaxed);
+                    })
+                    .process(move |stream, _| {
+                        if !running2.load(Ordering::Acquire) {
+                            ml2.quit();
                             return;
                         }
-                    };
-                    let datas = buf.datas_mut();
-                    if datas.is_empty() {
-                        return;
-                    }
-                    let data = &mut datas[0];
-
-                    let actual_channels = {
-                        let c = nch_proc.load(std::sync::atomic::Ordering::Relaxed);
-                        if c > 0 {
-                            c as usize
-                        } else {
-                            in_channels as usize
+                        let mut buf = match stream.dequeue_buffer() {
+                            Some(b) => b,
+                            None => {
+                                xruns.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
+                        };
+                        let datas = buf.datas_mut();
+                        if datas.is_empty() {
+                            return;
                         }
-                    };
+                        let data = &mut datas[0];
 
-                    let (_chunk_offset, chunk_size) = {
-                        let ck = data.chunk_mut();
-                        (*ck.offset_mut(), *ck.size_mut())
-                    };
+                        let actual_channels = {
+                            let c = nch_proc.load(std::sync::atomic::Ordering::Relaxed);
+                            if c > 0 {
+                                c as usize
+                            } else {
+                                in_channels as usize
+                            }
+                        };
 
-                    if chunk_size == 0 {
-                        return;
-                    }
-
-                    let slice = match data.data() {
-                        Some(s) => s,
-                        None => return,
-                    };
-                    let stride = actual_channels * 4;
-                    let n_samp = (chunk_size as usize / stride) * actual_channels;
-                    let len = n_samp.min(MAX_BLOCK_SAMPLES);
-                    let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                    for (i, item) in temp.iter_mut().enumerate().take(len) {
-                        let off = i * 4;
-                        if off + 4 <= slice.len() {
-                            let mut bytes = [0u8; 4];
-                            bytes.copy_from_slice(&slice[off..off + 4]);
-                            *item = f32::from_le_bytes(bytes);
+                        let chunk_offset;
+                        let chunk_size;
+                        {
+                            let ck = data.chunk_mut();
+                            let flags = ck.flags();
+                            if flags.contains(spa::buffer::ChunkFlags::CORRUPTED) {
+                                xruns.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
+                            chunk_offset = ck.offset() as usize;
+                            chunk_size = ck.size() as usize;
                         }
-                    }
-                    let block_samps = buf_frames * actual_channels;
-                    ibuf.write(&temp[..len]);
-                    if out_channels == 0 {
-                        while ibuf.len() >= block_samps {
-                            unsafe {
-                                let sr =
-                                    nrate_proc.load(std::sync::atomic::Ordering::Relaxed) as f32;
-                                process_cb.call(if sr > 0.0 { sr } else { sample_rate as f32 });
+
+                        if chunk_size == 0 {
+                            return;
+                        }
+
+                        let slice = match data.data() {
+                            Some(s) => s,
+                            None => return,
+                        };
+
+                        let data_start = chunk_offset.min(slice.len());
+                        let data_end = (chunk_offset + chunk_size).min(slice.len());
+                        let sample_bytes = &slice[data_start..data_end];
+                        let samples: &[f32] = bytemuck::cast_slice(sample_bytes);
+                        let len = samples.len().min(MAX_BLOCK_SAMPLES);
+
+                        let written = ibuf.write(&samples[..len]);
+                        if written < len {
+                            log::warn!(
+                                "PW input: ring buffer overflow, wrote {written}/{} samples",
+                                len
+                            );
+                        }
+
+                        let block_samps = buf_frames * actual_channels;
+                        if out_channels == 0 {
+                            while ibuf.len() >= block_samps {
+                                unsafe {
+                                    let sr = nrate_proc.load(std::sync::atomic::Ordering::Relaxed)
+                                        as f32;
+                                    process_cb.call(if sr > 0.0 { sr } else { sample_rate as f32 });
+                                }
                             }
                         }
-                    }
-                })
-                .register()
-                .map_err(|e| format!("PW input listener: {e}"))?;
-            _in_listener = Some(listener);
+                    })
+                    .register()
+                    .map_err(|e| format!("PW input listener: {e}"))?;
+                _in_listener = Some(listener);
 
-            if let Err(e) = in_st.connect(
-                spa::utils::Direction::Input,
-                None,
-                pw::stream::StreamFlags::AUTOCONNECT
-                    | pw::stream::StreamFlags::MAP_BUFFERS
-                    | pw::stream::StreamFlags::DRIVER,
-                &mut in_params,
-            ) {
-                log::warn!("PW input connect: disabled — {e}");
+                if let Err(e) = in_st.connect(
+                    spa::utils::Direction::Input,
+                    None,
+                    pw::stream::StreamFlags::AUTOCONNECT
+                        | pw::stream::StreamFlags::MAP_BUFFERS
+                        | pw::stream::StreamFlags::RT_PROCESS,
+                    &mut in_params,
+                ) {
+                    log::warn!("PW input connect: disabled — {e}");
+                }
+            } else {
+                _in_listener = None;
             }
         } else {
+            in_stream = None;
             _in_listener = None;
         }
 

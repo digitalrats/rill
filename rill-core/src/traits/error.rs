@@ -48,7 +48,7 @@ pub enum ProcessError {
     #[error("Connection error: {0}")]
     Connection(String),
 
-    /// Type mismatch (e.g., trying to connect audio to control)
+    /// Type mismatch (e.g., trying to connect signal to control)
     #[error("Type mismatch: expected {expected}, got {got}")]
     TypeMismatch {
         /// Expected type
@@ -329,7 +329,7 @@ pub enum PortError {
         got: crate::traits::PortDirection,
     },
 
-    /// Port type mismatch (e.g., trying to connect audio to control)
+    /// Port type mismatch (e.g., trying to connect signal to control)
     #[error("Port type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch {
         /// Expected port type

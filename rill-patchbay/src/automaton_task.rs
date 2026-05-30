@@ -1,8 +1,8 @@
 //! # Automaton Task — wrapping the Automaton trait in a green thread
 //!
 //! Allows running any `Automaton` as an independent tokio task
-//! with its own tick interval. Values are sent to `PortCombiner`
-//! via an mpsc channel.
+//! with its own tick interval. Values are sent via an mpsc channel.
+//! (`PortCombiner` was removed — it duplicated `CommandEnum`.)
 
 use std::time::Duration;
 
@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use crate::engine::{Automaton, Time};
+use rill_core::traits::ParamValue;
 
 /// Run an automaton as a green thread (tokio task)
 ///
@@ -17,8 +18,8 @@ use crate::engine::{Automaton, Time};
 ///
 /// * `automaton` — implementation of the `Automaton` trait
 /// * `interval` — update frequency (e.g. 10 ms for 100 Hz)
-/// * `value_tx` — channel for sending values to PortCombiner
-/// * `cancel_rx` — cancellation signal (from PortCombinerHandle::cancel_rx)
+/// * `value_tx` — channel for sending computed values
+/// * `cancel_rx` — cancellation signal
 ///
 /// Returns a `JoinHandle`. Dropping the handle does not stop the
 /// task. Use the cancellation signal to stop it.
@@ -42,7 +43,8 @@ async fn automaton_loop<A>(
 ) where
     A: Automaton,
 {
-    let mut state = automaton.initial_state();
+    let mut internal = automaton.initial_internal();
+    let mut current = ParamValue::Float(0.0);
     let mut time: Time = 0.0;
     let mut ticker = tokio::time::interval(interval);
     // Skip the first tick (immediate)
@@ -52,14 +54,12 @@ async fn automaton_loop<A>(
         tokio::select! {
             _ = ticker.tick() => {
                 time += interval.as_secs_f64();
-                let (new_state, value_opt) = automaton.step(time, &A::Action::default(), &state);
-                if let Some(value) = value_opt {
-                    if value_tx.send(value).await.is_err() {
-                        // Channel closed — PortCombiner stopped
-                        break;
-                    }
+                current = automaton.step(&mut internal, &current, time, &A::Action::default());
+                let value = current.as_f32().unwrap_or(0.0) as f64;
+                if value_tx.send(value).await.is_err() {
+                    // Channel closed — receiver dropped
+                    break;
                 }
-                state = new_state;
             }
 
             _ = cancel_rx.changed() => {

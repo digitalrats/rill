@@ -447,12 +447,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limite
         _clock_inputs: &[ClockTick],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let input_buf = *self.inputs[0].buffer.as_array();
-        let mut temp = [T::ZERO; BUF_SIZE];
         for i in 0..BUF_SIZE {
-            temp[i] = self.process_sample(input_buf[i]);
+            let sample = self.inputs[0].buffer.as_array()[i];
+            self.outputs[0].buffer.as_mut_array()[i] = self.process_sample(sample);
         }
-        *self.outputs[0].buffer.as_mut_array() = temp;
+        self.state.advance();
         Ok(())
     }
 

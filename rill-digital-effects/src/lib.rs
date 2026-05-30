@@ -1,4 +1,4 @@
-//! Digital audio effects for Rill
+//! Digital signal effects for Rill
 //!
 //! This crate provides common digital effects:
 //! - Delay with feedback

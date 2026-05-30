@@ -57,7 +57,10 @@ pub trait Buffer<T: Scalar> {
 // ============================================================================
 
 /// Fixed-size buffer on the stack — default per-port buffer.
+///
+/// 16-byte aligned for direct SIMD loads/stores via `_mm_load_ps` / `_mm256_load_ps`.
 #[derive(Debug, Clone)]
+#[repr(align(16))]
 pub struct FixedBuffer<T, const SIZE: usize> {
     data: [T; SIZE],
 }

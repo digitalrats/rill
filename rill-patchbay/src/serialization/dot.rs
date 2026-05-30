@@ -1,22 +1,13 @@
-//! DOT graph visualization for patchbay (automation, mappings, sequencer).
-//!
-//! Generates `digraph` DOT format showing:
-//! - Automation sources (LFO, Envelope, old SequencerAutomaton)
-//! - Parameter-lock snapshot sequencer with step table
-//! - Servo mappings (automaton → parameter)
-//! - MIDI/OSC event mappings
-//! - Connections to signal graph node parameters
+//! DOT graph visualization for patchbay (automation, mappings).
 //!
 //! # Feature gate
 //!
-//! Requires the `serde` feature (for [`PatchbayDef`] and [`SequencerDef`] access).
+//! Requires the `serde` feature (for [`PatchbayDef`] access).
 
 use std::fmt::Write;
 
 #[cfg(feature = "serde")]
-use crate::serialization::PatchbayDef;
-#[cfg(feature = "serde")]
-use crate::serialization::SequencerDef;
+use crate::serialization::{ModuleDef, PatchbayDef};
 
 /// Configuration for patchbay DOT generation.
 #[derive(Default)]
@@ -27,13 +18,9 @@ pub struct DotConfig {
     pub verbose: bool,
 }
 
-/// Generate DOT from a PatchbayDef and optional SequencerDef.
+/// Generate DOT from a PatchbayDef.
 #[cfg(feature = "serde")]
-pub fn patchbay_to_dot(
-    patchbay: &PatchbayDef,
-    sequencer: Option<&SequencerDef>,
-    _config: &DotConfig,
-) -> String {
+pub fn rack_to_dot(patchbay: &PatchbayDef, _config: &DotConfig) -> String {
     let mut dot = String::new();
     writeln!(dot, "// Patchbay control graph").ok();
     writeln!(dot, "digraph patchbay {{").ok();
@@ -78,6 +65,10 @@ pub fn patchbay_to_dot(
                 let l = format!("Fn\\n{function_name}");
                 (l, "#cfc")
             }
+            crate::serialization::AutomatonDef::Custom { type_name, .. } => {
+                let l = format!("Custom\\n{type_name}");
+                (l, "#fcf")
+            }
         };
         let escaped = label.replace('\"', "\\\"");
         writeln!(
@@ -90,14 +81,16 @@ pub fn patchbay_to_dot(
     writeln!(dot, "    }}").ok();
 
     // ── Servo edges (automaton → target) ──────────────────────────
-    for srv in &patchbay.servos {
-        let auto_id = &srv.automaton_id;
-        let target = format!("node_{}:{}", srv.target_node, srv.target_param);
-        let label = format!("{:?} [{:.3}, {:.3}]", srv.mapping, srv.min, srv.max);
-        writeln!(
+    for m in &patchbay.modules {
+        if let ModuleDef::Servo(srv) = m {
+            let auto_id = &srv.automaton_id;
+            let target = format!("node_{}:{}", srv.target_node, srv.target_param);
+            let label = format!("{:?} [{:.3}, {:.3}]", srv.mapping, srv.min, srv.max);
+            writeln!(
             dot,
             "    auto_{auto_id} -> param_{target} [label=\"{label}\", style=dashed, color=\"#44a\"];"
         ).ok();
+        }
     }
 
     // ── Mappings ──────────────────────────────────────────────────
@@ -116,54 +109,6 @@ pub fn patchbay_to_dot(
         .ok();
     }
 
-    // ── SequencerDef overlay ─────────────────────────────────
-    if let Some(seq) = sequencer {
-        writeln!(dot, "    subgraph cluster_sequencer {{").ok();
-        writeln!(dot, "        label=\"Snapshot Sequencer\";").ok();
-        writeln!(dot, "        style=filled;").ok();
-        writeln!(dot, "        fillcolor=\"#fff0f0\";").ok();
-        writeln!(dot, "        fontcolor=\"#f44\";").ok();
-
-        for pat in &seq.patterns {
-            // Build an HTML-like table for the pattern
-            let pat_id = format!("seq_{}", pat.id);
-            writeln!(dot, "        {pat_id} [label=<").ok();
-            writeln!(
-                dot,
-                "            <table border=\"0\" cellborder=\"1\" cellspacing=\"0\">"
-            )
-            .ok();
-            writeln!(
-                dot,
-                "            <tr><td colspan=\"2\"><b>{}</b></td></tr>",
-                pat.id
-            )
-            .ok();
-            writeln!(dot, "            <tr><td>Step</td><td>P-Locks</td></tr>").ok();
-            for (si, step) in pat.steps.iter().enumerate() {
-                let locks: Vec<String> = step
-                    .parameters
-                    .iter()
-                    .map(|p| format!("{}:{:.2}", p.param_name, p.value))
-                    .collect();
-                let lock_str = locks.join(" ");
-                writeln!(dot, "            <tr><td>{si}</td><td>{lock_str}</td></tr>").ok();
-            }
-            writeln!(dot, "            </table>").ok();
-            writeln!(dot, "        >, shape=plaintext];").ok();
-        }
-
-        writeln!(dot, "    }}").ok();
-    }
-
     writeln!(dot, "}}").ok();
     dot
-}
-
-/// Generate DOT for sequencer alone.
-#[cfg(feature = "serde")]
-pub fn sequencer_to_dot(seq: &SequencerDef) -> String {
-    let cfg = DotConfig::default();
-    let empty = PatchbayDef::new();
-    patchbay_to_dot(&empty, Some(seq), &cfg)
 }

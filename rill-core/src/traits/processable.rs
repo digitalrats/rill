@@ -1,7 +1,6 @@
 //! Processable trait and NodeVariant.
 
 use crate::math::Transcendental;
-use crate::queues::telemetry::TelemetryTx;
 use crate::time::ClockTick;
 use crate::traits::port::Port;
 use crate::traits::Node;
@@ -21,13 +20,13 @@ pub struct ProcessContext<'a> {
 // Processable Trait
 // ============================================================================
 
-/// A node or component that can process a block of audio.
+/// A node or component that can process a block of signal data.
 ///
 /// This is the main execution trait for the signal graph. Each node type
 /// (Source, Processor, Router, Sink) implements this via blanket impls
 /// that delegate to their respective `generate`/`process`/`route`/`consume`.
 pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
-    /// Process one block of audio samples.
+    /// Process one block of signal samples.
     ///
     /// # Errors
     /// Returns a [`ProcessError`](crate::traits::ProcessError) if processing fails.
@@ -44,6 +43,14 @@ where
     T: Transcendental,
 {
     fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
+        // Compile-time guard: BUF_SIZE must be SIMD-aligned (multiple of 4).
+        // Fires at monomorphization time when a concrete BUF_SIZE is used.
+        const {
+            assert!(
+                BUF_SIZE.is_multiple_of(4),
+                "BUF_SIZE must be a multiple of 4 for SIMD"
+            )
+        }
         self.as_mut().generate(ctx.clock, &[], &[])
     }
 }
@@ -86,13 +93,13 @@ where
 ///
 /// Dispatches `process_block` and `Node` methods to the inner node.
 pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
-    /// Signal source node (generates audio).
+    /// Signal source node (generates signal).
     Source(Box<dyn crate::traits::Source<T, BUF_SIZE>>),
-    /// Signal processor node (processes audio in-place).
+    /// Signal processor node (processes signal in-place).
     Processor(Box<dyn crate::traits::Processor<T, BUF_SIZE>>),
     /// Signal router node (routes signals between ports).
     Router(Box<dyn crate::traits::Router<T, BUF_SIZE>>),
-    /// Signal sink node (consumes audio).
+    /// Signal sink node (consumes signal).
     Sink(Box<dyn crate::traits::Sink<T, BUF_SIZE>>),
 }
 
@@ -109,18 +116,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> NodeVariant<T, BUF_SIZE> {
-    /// Set the telemetry sender for the wrapped node.
-    pub fn set_telemetry_tx(&mut self, tx: TelemetryTx) {
-        match self {
-            NodeVariant::Source(src) => Node::set_telemetry_tx(src.as_mut(), tx),
-            NodeVariant::Processor(proc) => Node::set_telemetry_tx(proc.as_mut(), tx),
-            NodeVariant::Router(rt) => Node::set_telemetry_tx(rt.as_mut(), tx),
-            NodeVariant::Sink(sink) => Node::set_telemetry_tx(sink.as_mut(), tx),
-        }
-    }
-}
-
+// ============================================================================
+// Node for NodeVariant
 // ============================================================================
 // Node for NodeVariant
 // ============================================================================

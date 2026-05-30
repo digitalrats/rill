@@ -502,9 +502,9 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
             }
         }
 
-        // Prepare temporary output accumulators for master
-        let mut master_left = vec![0.0; buffer_size];
-        let mut master_right = vec![0.0; buffer_size];
+        // Prepare temporary output accumulators for master (stack-allocated)
+        let mut master_left = [0.0f32; BUF_SIZE];
+        let mut master_right = [0.0f32; BUF_SIZE];
 
         // Process each channel
         for (ch_idx, channel) in self.channels.iter_mut().enumerate() {

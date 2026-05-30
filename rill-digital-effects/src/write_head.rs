@@ -1,5 +1,7 @@
 use rill_core::{
     buffer::{BufferRegistry, TapeLoop},
+    math::vector::scalar::ScalarVector4,
+    math::vector::traits::Vector as VecTrait,
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
@@ -113,19 +115,33 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteH
         debug_assert!(!self.tape.is_null(), "WriteHead: tape not set");
         let tape = unsafe { &mut *self.tape };
 
-        let input_buf = *self.inputs[0].buffer.as_array();
+        let input_buf = self.inputs[0].buffer.as_array();
         let fb_gain = T::from_f32(self.feedback);
         let zero_buf = [T::ZERO; BUF_SIZE];
         let fb_buf = feedback_inputs.first().copied().unwrap_or(&zero_buf);
+        let chunks = BUF_SIZE / 4;
+        let fg = ScalarVector4::splat(fb_gain);
 
-        for i in 0..BUF_SIZE {
+        for chunk in 0..chunks {
+            let o = chunk * 4;
+            let i_v = ScalarVector4::load(&input_buf[o..o + 4]);
+            let f_v = ScalarVector4::load(&fb_buf[o..o + 4]);
+            let w = i_v.add(&f_v.mul(&fg));
+
+            for k in 0..4 {
+                tape.write(w.extract(k));
+            }
+        }
+
+        // Remainder
+        for i in chunks * 4..BUF_SIZE {
             tape.write(input_buf[i] + fb_buf[i] * fb_gain);
         }
 
         self.outputs[0]
             .buffer
             .as_mut_array()
-            .copy_from_slice(&input_buf);
+            .copy_from_slice(input_buf);
         self.state.advance();
         Ok(())
     }

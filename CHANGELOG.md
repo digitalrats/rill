@@ -1,5 +1,312 @@
 # CHANGELOG
 
+## [0.5.0-beta.5] — In Progress
+
+### 📝 Terminology: «audio» → «signal» / «I/O»
+
+**Public API (breaking):**
+- `rill_oscillators::audio` → `rill_oscillators::signal` — module rename
+- `PortType::is_audio_rate()` → `is_signal_rate()` in `rill-core`
+- `AudioTimer` → `SignalTimer` in `rill-core`
+- `AudioConfig` → `IoConfig` in `rill-core`
+- `RackCase::audio_thread` → `signal_thread` in `rill-adrift`
+
+**Cargo.toml descriptions** — «audio» → «signal» / «I/O» in 7 crates: `rill-graph`, `rill-sampler`, `rill-telemetry`, `rill-router`, `rill-osc`, `rill-digital-effects`, `rill-adrift`.
+
+**Documentation** — «audio thread» → «signal thread», «audio data» → «signal data», «audio backends» → «I/O backends», «audio path» → «signal path», etc. (~120 occurrences across .rs doc comments, architecture docs, AGENTS.md, README.md).
+
+`IoBackend` in `rill-core` formally positioned as a **generic I/O archetype** — applicable to any discrete data stream, not just audio.
+
+**Preserved:** `rill-io` and `rill-lofi` keep «audio» terminology (genuinely audio-specific — hardware I/O, emulators).
+
+### 🎛️ AY-3-8910 Emulator Fixes
+
+**`rill-lofi`:**
+- **Mixer register R7 bit layout** — bits 0–2 = tone A/B/C, 3–5 = noise A/B/C (fixed; was grouping bits 0-1,2-3,4-5 per channel)
+- **Envelope period divider** — `f / (16 × EP)` → `f / (256 × EP)` per AY-3-8910 datasheet
+- **Noise LFSR output bit** — save bit 0 before shift (was reading bit 16 after shift)
+- Test `test_mixer_register_bit_mapping` updated for correct layout
+
+### 🏭 Module Factory
+
+**`rill-patchbay/src/module_factory.rs` (new):**
+- `ModuleConstructor` trait — `construct(id, params, system, graph_ref) → BoxedModule`
+- `ModuleFactory` — `register_fn(type_name, drain, closure)`, `register_fn_send()`
+- `Drain` enum — `OsThread { interval_ms }`, `TokioTask { interval_ms }` (for many actors without OS thread overhead)
+- `GenericModule` — factory-provided `Module` impl, no manual struct needed
+
+**`rill-patchbay/src/serialization/mod.rs`:**
+- `ModuleDef::Custom { type_name, params }` — dispatch through `ModuleFactory` in `build_servos()`
+
+**`rill-adrift/src/modular/mod.rs`:**
+- `ModularSystem.module_factory: ModuleFactory` — `module_factory_mut()` for pre-launch registration
+- Rack actor drain loop: `tokio::spawn` → `std::thread::spawn` (avoids `Send` requirement on handler)
+
+### 🎭 Actor Model Unification
+
+**`rill-core-actor`:**
+- **Removed:** `Actor<M>` (old `Send` variant), `LocalActor<M>`, `ActorCell` trait, `MessageDispatcher`, `build_actor()`
+- **Added:** `spawn_detached(name, make_handler, ms)` — handler created inside spawned thread, `ActorRef` returned immediately
+- **Added:** `spawn_detached_tokio(name, make_handler, ms)` — same but on tokio task (handler: `Send`)
+- `spawn(name, handler)` — remains for inline drain (Graph, Rack)
+- **Actor design rule:** handler is always created on the thread where it is drained; never crosses thread boundary; `Send` bound removed from handler closure
+
+### 🔧 Sequencer & Servo Fixes
+
+**`rill-patchbay/src/automaton/sequencer.rs`:**
+- Removed dead `Step.value` and `Step.curve` fields (`Step` now only has `duration`)
+- Fixed `step_duration()` formula: removed `× 4.0` factor (now `1.0` = quarter note, not whole note)
+
+**`rill-patchbay/src/engine.rs`:**
+- Added `Servo::with_table()` builder — propagates `table` from `ServoDef` to `Servo`
+- `Servo::spawn()` uses `spawn_detached_tokio` — handler created inside tokio task, no actor crossing thread boundary
+
+**`rill-patchbay/src/serialization/mod.rs`:**
+- `build_servos()` now propagates `ServoDef.table` → `Servo::with_table()`
+
+### 🎵 Chiptune Examples
+
+**`rill-adrift/examples/chiptune.rs`:**
+- 3-channel AY melody: Ch A (melody), Ch B (bass), Ch C (snare), 16 steps × 120ms, bass changes every 4 steps
+- Fixed Output `channels=1` (was defaulting to stereo, causing PipeWire panic)
+- Duration: `120ms → 0.24` quarter-note beats (matching fixed `step_duration` formula)
+- Removed unused `HashMap` import
+
+**`rill-adrift/examples/chiptune_stc.rs`:**
+- Rewritten to use `ModularSystemDef` + `ModuleFactory` (`register_fn` with `Drain::OsThread`)
+- STC player registered as `ModuleDef::Custom { type_name: "stc_player" }`
+- Removed: manual `GraphBuilder`, `graph.run()`, `StcModule` struct, `sys.spawn()`, `actor.drain()`, `thread::spawn`
+
+### 🔩 RackCase Fix
+
+**`rill-adrift/src/modular/case.rs`:**
+- `RackCase::stop()` — added `handle.thread().unpark()` before `handle.join()` (was hanging on exit)
+- `tasks` type: `Vec<tokio::task::JoinHandle>` → `Vec<std::thread::JoinHandle>`
+
+### 📝 Documentation
+
+**`docs/src/guides/chip-emulators.md`:**
+- Rewritten: accurate register map, architecture diagram, `io_write` control chain, lofi processing chain
+- **Known Limitations** section — output sampling, anti-aliasing, register change timing, I/O ports, phase delay
+- **Timing accuracy** section — tone/envelope/noise frequency formulas, accuracy bounds
+
+**`docs/src/architecture/actor.md`:**
+- Updated for current API: `Actor<M>`, three `spawn` variants, handler-creation design rule
+
+### 🧹 Cleanup
+
+- **Removed:** dead `Actor<M>` (Send variant), `ActorCell`, `build_actor()`, `Step.value`/`Step.curve`
+- `rill-io/Cargo.toml` — removed unused `base64` dependency
+- `rill-core-actor/Cargo.toml` — added optional `tokio` dependency (feature-gated `spawn_detached_tokio`)
+- PortAudio callback — removed debug `base64` output
+
+### 🏗️ Architecture: RackDef unification + CaseDef removal
+
+**`rill-adrift/src/modular/serialization.rs`:**
+- New `RackDef` with `graph: GraphDef` field — graph lives inside the rack, not in a separate `CaseDef`
+- New `ModuleDef::Graph { graph: GraphDef }` variant — multiple graphs per rack
+- `build_servos()` moved from `rill-patchbay` to `rill-adrift`
+- `ModularSystemDef.racks: Vec<RackDef>` replaces `cases: Vec<CaseDef>`
+- `CaseDef` removed entirely — `patchbay: Option<RackDef>` no longer needed
+
+**`rill-adrift/src/modular/mod.rs`:**
+- `launch()` simplified: single loop over `def.racks`, no `has_rack` check
+- Rack actor drain: `tokio::spawn` → `std::thread::spawn` (avoids `Send` requirement)
+- Graph construction stays in `launch()` (not via factory)
+
+**`rill-patchbay/src/serialization/mod.rs`:**
+- `RackDef` → `PatchbayDef` (backward-compatible rename, without `graph` field)
+- `ModuleDef` (without `Graph` variant) + `build_servos()` remain in rill-patchbay
+
+**`rill-adrift/src/modular/config.rs`:**
+- `LaunchConfig.rack_def` type: `RackDef` → `PatchbayDef`
+
+### 🔌 CommandEnum::Stop + Drain::IoCallback
+
+**`rill-core/src/queues/signal.rs`:**
+- `CommandEnum::Stop` + `CommandType::Stop` — shutdown command for I/O loops
+
+**`rill-patchbay/src/module_factory.rs`:**
+- `Drain::IoCallback` variant — for graph modules with inline drain (not yet used via factory)
+
+### 📝 Documentation
+
+**`docs/src/architecture/actor.md`:**
+- Updated for current API: `Actor<M>`, three `spawn` variants, handler-creation design rule
+
+**`docs/src/guides/chip-emulators.md`:**
+- Rewritten: accurate register map, known limitations, timing accuracy section
+
+### Previous (0.5.0-beta.4)
+
+**`rill-core-actor`:**
+- `Actor<M>` — handler: `Send`, для многопоточных акторов (Patchbay через tokio)
+- `LocalActor<M>` — handler: `!Send`, для однопоточных (Graph, RackCase)
+- `ActorSystem::spawn()` / `spawn_local()` — создание акторов с handler-замыканием
+- `ActorRef<M>` — lock-free handle для отправки сообщений, единственный внешний интерфейс
+- Удалены: `ActorCell` trait, `Mbox`, `MessageDispatcher`, `ActorRef::new_pair()`, generic `ActorSystem<M>`
+
+**`rill-graph`:**
+- `GraphBuilder::build(&ActorSystem)` — создаёт актор с handler'ом, захватывающим nodes
+- `Graph::run()` — tick-замыкание владеет actor'ом напрямую (без `*mut Graph`)
+- Nodes хранятся в `Rc<UnsafeCell<Vec<NodeVariant>>>` — interior mutability на одном потоке
+- Удалены: `*mut NodeVariant`, `*mut Graph`, `ActorCell` impl, `mailbox` поле
+- Сигнальные тесты: `test_graph_source_to_sink`, `test_graph_source_proc_sink`
+
+**`rill-patchbay`:**
+- **`Patchbay` struct удалён.** Вместо него — `Servo::spawn(self) → ActorRef<CommandEnum>`
+  - Создаёт актор с полным handler'ом (ClockTick → automaton.step → SetParameter)
+  - Запускает `std::thread` drain loop (1ms interval)
+  - Внешний код получает только `ActorRef` — никакого прямого доступа к состоянию
+- **`Servo` больше не `Module`** — автономный актор, не type-erased box
+- `PatchbayDef` → `RackDef` — `build_servos(&ActorSystem, &graph_ref) → HashMap<String, ActorRef>`
+- `add_lfo`, `add_envelope`, `add_boxed_servo` удалены — сборка в `launch()` напрямую
+- `Module` trait — только для Sensor; убраны `drain()`, `update()`
+- Channel-forwarding (mpsc) между actor'ами удалён — каждый актор самодрейнится
+
+**`rill-adrift`:**
+- **`RackCase`** — минимальный хост: `modules: HashMap<String, ActorRef>`, `tasks: Vec<JoinHandle>`
+  - Удалены: `patchbay`, `incoming`, `outgoing`, `ActorCell` impl, межкейсовый routing
+  - `handle() → ActorRef` — для `parent_ref` в Graph
+  - `stop()` — abort всех tasks, join audio thread
+- **`launch()`**:
+  1. Создаёт актор RackCase (с `Arc<Mutex<HashMap>>` для модулей)
+  2. Запускает drain thread актора (пересылает ВСЕ сообщения всем модулям)
+  3. Строит граф на audio thread
+  4. Получает `graph_ref` через oneshot канал
+  5. `rack_def.build_servos()` — создаёт Servo'ы с drain threads
+  6. Регистрирует servo ActorRef'ы в RackCase модулях
+- Удалены: `create_case()`, `load_patchbay()`, `load_graph()`, `create_patchbay()`, `tick()`,
+  `start_osc()`, OSC, `control`, `control_shared`, `control_arc`, `AutomatonFactory`
+
+**Архитектура ClockTick → Sequencer → Graph:**
+```
+Graph.run() → tick: parent_ref.send(ClockTick)
+  → RackCase actor (drain thread): for ref in modules: ref.send(msg)
+  → Servo actor (drain thread): ClockTick → automaton.step() → graph_ref.send(SetParameter)
+```
+
+### 🔧 Сопутствующие исправления
+- PortAudio: off-by-one в `write()` — `cap / nch` теперь используется как bound цикла (был краш `index out of bounds: 256`)
+- `advanced_player`: комментарий `--features "cpal,…"` → `"portaudio,…"`
+- `play_wav`: пример ручной сборки графа переписан (был заглушкой `let _ = system`)
+
+### SIMD acceleration (feature/simd)
+
+- **Vector infrastructure**:
+  - `SimdDetector` — real CPU feature detection via `std::arch` (SSE2/AVX/NEON/SIMD128)
+  - `VectorMask<T, N>` completed for `F32x4`, `F32x8`, `F64x2`, `ScalarVector4`
+  - `VectorReduce`, `VectorScalarOps` traits with blanket impls
+  - `Scalar::from_usize()` added to core math trait
+  - Dead `expr` module + `vec_expr!`/`vec_eval!` stubs removed
+
+- **Algorithm SIMD (rill-core-dsp)**:
+  - `BasicOscillator` — 6 waveforms via `ScalarVector4` block processing (4 samples/iter)
+  - Saw BLEP — `VectorMask::select` replaces per-lane scalar conditional (2.5× speedup)
+  - `InterpolatedReader` — 4-wide lerp math for linear/cubic interpolation
+  - `CombFilter` — batched 4-sample read/write when `delay_samples >= 4`
+  - `NoiseGenerator` — White (batched xorshift), Brown (unrolled integrator), Blue/Violet (4-wide diff)
+  - `Biquad` — block state-space 4×4 feedforward matrix via `BiquadBlock` precomputation
+  - `Resampler<T>` — sample-rate converter on `InterpolatedReader` (44.1k→48k etc.)
+
+- **Node-level SIMD**:
+  - `Distortion` — HardClip/Tube 4-wide SIMD; zero-copy port output
+  - `DryWetMix` — 4-wide multiply-add, stereo in one pass
+  - `WriteHead` — batched 4-sample math per tape write
+  - `pre_process()` — feedback mix via 4-wide add (all feedback nodes accelerated)
+  - 8 nodes: direct port buffer write eliminates 2 `[T; BUF_SIZE]` copies per block per node
+
+- **WDF SIMD (rill-core-wdf)**:
+  - `process_incident_vector` on `Resistor`, `Capacitor`, `Inductor`, `Diode` via `ScalarVector4`
+  - Diode Newton-Raphson vectorized with `VectorMask::all()` early exit
+  - `process_batch_simd` free function for batch processing
+  - `simd.rs` deleted (378 LOC) — no more parallel SIMD type hierarchy
+
+- **I/O SIMD**:
+  - Generic `f32_to_i16_chunk` / `i16_to_f32_chunk` in `rill-core::math::functions` (reusable for ALSA, rill-lofi)
+  - ALSA backend uses SIMD f32↔i16 conversion
+  - PipeWire byte→f32 batched 4-sample conversion
+  - Deinterleave/interleave SIMD in PipeWire backend
+
+- **Infrastructure**:
+  - `FixedBuffer` now `#[repr(align(16))]` (hardware SIMD-ready)
+  - `const { assert!(BUF_SIZE % 4 == 0) }` in `processable.rs` (monomorphization-time check)
+  - Criterion benchmarks: vector ops, 6 oscillators, 3 filters, 4 noise types, reader/resampler
+  - Benchmark results at `docs/superpowers/specs/2026-05-10-simd-benchmark-results.md`
+  - **Key finding:** `ScalarVector4` + LLVM auto-vectorization matches/exceeds explicit `wide` crate on x86_64. Rill outperforms JUCE (C++) by 10-160× on key DSP primitives.
+
+### ✨ Patchbay architecture refactor (feature/refactor/midi-hub, feature/refactor/sensor-midi)
+
+- **Automaton trait redesigned**:
+  - `(config, &mut internal, &current, time, action) → ParamValue`
+  - `type Internal: Clone` — mutable automaton-specific state (phase, RNG, step counter)
+  - `initial_internal()`, `reset()` with default impls
+  - All state moved inside structs; old `State`/`Output` associated types removed
+  - All 6 automata (LFO, envelope, sequencer, function, random, cellular) updated
+  - LFO: now uses `self.waveform` — all 8 waveform types functional (was hardcoded to Sine)
+  - Random: `update_rate` field drives throttling via `last_update_time` in Internal
+
+- **Servo as actor**:
+  - `Servo<A: Automaton>` implements `ActorCell<Msg = AutomatonMsg>`
+  - `AutomatonMsg { Tick(ClockTick), SetEnabled(bool), Reset }` — unified queue for clock + commands
+  - `Servo::update()` drains mailbox before stepping (same pattern as `Graph::run`)
+  - `Servo::handle()` returns `ActorRef<AutomatonMsg>` for external control
+  - `Servo::with_table(Vec<ParamValue>)` — table-based step-to-value mapping for sequencers
+  - `SequencerAutomaton` returns `ParamValue::Int(step_index)` → Servo looks up in table
+
+- **Sensor trait** — unified external input bridge:
+  - `trait Sensor { attach(), start(), stop() }` — MIDI, OSC, knobs, acoustic analysis
+  - `MidiHub` implements `Sensor` — no more `Arc<Mutex<Patchbay>>`
+  - `Patchbay::event_mailbox` — single `MpscQueue<ControlEvent>` for ALL sensors
+  - `event_handle() → ActorRef<ControlEvent>`, `drain_events()` called from `drain_clock()`
+  - Multiple sensors can run independently, all events via one lock-free mailbox
+
+- **Hearing module** for future acoustic sensors:
+  - `PitchDetector`, `EnvelopeFollower`, `ZeroCrossing` — audio analysis algorithms
+  - Ready for wiring into graph telemetry (audio feedback → control signals)
+
+### 🗑️ Removed
+
+- **crossbeam-channel** — removed from all crates (rill-core, rill-patchbay, rill-adrift)
+  - `CommandQueue` (crossbeam-based) deleted; `Command` trait kept in `rill-core::queues`
+  - `TelemetryTx` (crossbeam wrapper) deleted; `Telemetry` types kept for future use
+  - `Observer` moved to `rill-patchbay`, now uses `ActorRef<Telemetry>`
+  - `SequencerHandle` (crossbeam command channel) deleted
+  - `attach_sequencer()` (crossbeam `Receiver<Telemetry>` parameter) deleted
+
+- **Manager** (806 LOC) — deprecated sync rack, zero external callers
+- **SnapshotSequencer** + sequencer types (728 LOC in `sequencer/`)
+- **SequencerDef** serialization (170 LOC)
+- **sensor/physical.rs** (dead code referencing non-existent types)
+- **automaton/mapping/** (156+183+155 LOC dead code)
+- `MidiActor` renamed to `MidiHub`; `midi_actor.rs` → `midi.rs`
+- `Graph::receive()` now drains via `ActorCell` (was manual `set_parameter` loop)
+
+### 🔧 Fixes
+
+- **RT safety**: MixerNode `vec![]` → `[f32; BUF_SIZE]` stack allocation
+- **RT safety**: PortAudio `vec![]` temp buffer → `[f32; 8192]` stack
+- **RT safety**: ParallelAdapter `Vec<T>` → `[T; 8]` stack allocation
+- `Graph::receive()` — `debug_assert!` for SetParameter misconfiguration
+- LFO: all 8 waveform types functional in `step()` (was hardcoded to Sine)
+- Random: `update_rate` field drives throttling
+- Documentation synced with code (12 discrepancies fixed)
+- Zero compiler warnings with `--all-features`
+
+### ✨ STC chiptune player (feature/feat/stc-player)
+
+- **`rill-adrift/examples/chiptune_stc.rs`** — full Sound Tracker Compiled (STC) player
+  - Plays ZX Spectrum chiptune files through the `Ay38910Backend` AY-3-8910 emulator
+  - Loads the STC file (`Bonysoft - Popcorn (1993).stc`) via `include_bytes!`
+  - Implements the libayemu-compatible event-driven architecture:
+    - Per-channel byte-stream event reading with delay/interrupt timing
+    - Per-frame pitch computation: `ST_TABLE[note + ornament[pos] + transposition] ± sample_delta`
+    - 32-step sample (instrument) rendering with volume, tone/noise mixer masks, and pitch deltas
+    - Synchronized 32-step ornament (pitch modulation) and sample position advancement
+    - Sample repeat/loop logic, envelope triggering, position advancement on channel A end marker
+  - Timing at 48.828 Hz Pentagon INT rate via `step_ms()` time accumulation from audio callbacks
+  - Uses the same graph/clock architecture as `chiptune.rs` — validates the engine timing
+
 ## [0.5.0-beta.4] — 2026-05-08
 
 ### ✨ New

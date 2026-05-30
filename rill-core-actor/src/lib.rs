@@ -1,342 +1,104 @@
 //! # Rill Core Actor — actor model infrastructure
 //!
 //! A lightweight, domain-agnostic actor model for lock-free message passing.
-//! Generic over the message type `M: Send + 'static` — no coupling to audio,
-//! signal processing, or any specific domain.
+//! Actors are single-threaded: handler is created and drained on the same thread.
 //!
 //! ## Key types
 //!
-//! | Type | Role | Analogy (Akka/Pekko) |
-//! |------|------|----------------------|
-//! | [`ActorCell`] | Trait: "I can receive and process messages" | `ActorCell` |
-//! | [`ActorRef<M>`] | Thread-safe handle to send messages to an actor | `ActorRef` |
-//! | [`MessageDispatcher<M>`] | ActorRef + dead letters queue | — |
-//! | [`ActorSystem<M>`] | Named mailbox registry with routing and dead letters | `ActorSystem` |
-//!
-//! ## RT boundary
-//!
-//! The mailbox is the **hard boundary** between soft-RT and hard-RT code:
-//!
-//! ```text
-//! Soft-RT (any thread, tokio, OS calls)      Hard-RT (actor's thread)
-//! ┌────────────────────────────┐             ┌────────────────────────┐
-//! │ Engine::handle_event()     │             │ Graph::receive()      │
-//! │ OSC dispatcher             │   send()    │   nodes[idx].set()    │
-//! │ PortCombiner (tokio task)  │ ──────────→ │   Port::propagate()   │
-//! │ Sequencer (spawn_blocking) │   mailbox   │   (no alloc, no lock) │
-//! └────────────────────────────┘             └────────────────────────┘
-//! ```
-//!
-//! - **`send()`** — lock-free, safe from any thread including RT. Bounded
-//!   queue (capacity 64) prevents RT thread overload.
-//! - **`receive()`** — runs on the **actor's thread**. The actor
-//!   implementation determines the RT guarantees. If called from an audio
-//!   callback, it must obey the callback's RT constraints (no alloc, no
-//!   syscalls, no locks). The actor framework itself does not enforce this
-//!   — it is the actor's responsibility.
-//! - **`route()` / `broadcast()`** — soft-RT (may use heap iteration).
-//!   Call from non-RT threads only.
+//! | Type | Role |
+//! |------|------|
+//! | [`Actor<M>`] | Handler + mailbox — drained in-place (no separate thread) |
+//! | [`ActorRef<M>`] | Thread-safe handle to send messages to an actor |
+//! | [`ActorSystem`] | Named actor registry, dead letters, `spawn()`, `spawn_detached()` |
 //!
 //! ## Architecture
 //!
-//! The actor owns its mailbox (`Arc<MpscQueue<M>>`). `ActorRef` holds a
-//! strong reference to that same `Arc` — it is a borrowed handle, not the
-//! owner. Multiple `ActorRef`s can share the same mailbox.
-//!
 //! ```text
-//! Actor (owns the mailbox Arc)
-//!   │
-//!   ├── drains via mailbox.pop() in its processing loop
-//!   │
-//!   └── Graph::handle() → ActorRef<SetParameter>  (shared handle)
-//!                              │
-//!                              ├── cloned for Engine
-//!                              ├── cloned for PortCombiner
-//!                              └── cloned for OSC dispatcher
+//! // Handler drained inline (Graph, Rack):
+//! system.spawn(name, handler) → Actor<M> → actor.drain() on caller's thread
+//!
+//! // Handler created & drained inside a new thread (Servo, factory modules):
+//! system.spawn_detached(name, make_handler, ms) → ActorRef<M>
+//!   └── thread::spawn: handler = make_handler() → actor.drain() loop
 //! ```
-//!
-//! ## Domain independence
-//!
-//! This crate has no concept of audio, signal processing, or `SetParameter`.
-//! `ActorRef<M>` works with any `M: Send + 'static`:
-//!
-//! ```rust
-//! use rill_core_actor::ActorRef;
-//! use rill_core::queues::MpscQueue;
-//! use std::sync::Arc;
-//!
-//! // String messages
-//! let (ar, mbox) = ActorRef::<String>::new_pair();
-//! ar.send("hello".into());
-//! assert_eq!(mbox.pop(), Some("hello".into()));
-//!
-//! // Integer messages
-//! let (ar, mbox) = ActorRef::<i32>::new_pair();
-//! ar.send(42);
-//! assert_eq!(mbox.pop(), Some(42));
-//! ```
-//!
-//! The concrete message type (`SetParameter`) and its consumer (`Graph`)
-//! belong to higher-level crates (`rill-patchbay`, `rill-graph`).
 
-use std::sync::Arc;
+use std::any::Any;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rill_core::queues::MpscQueue;
 
 // ============================================================================
-// ActorCell
+// Mailbox — private, never visible outside this crate
 // ============================================================================
 
-/// Trait for types that own a mailbox and process messages from it.
-///
-/// Analogous to Akka/Pekko's `ActorCell` — the internal environment that
-/// makes a component an actor. Implement this trait on types that hold an
-/// [`Arc<MpscQueue<Self::Msg>>`](rill_core::queues::MpscQueue) and process
-/// messages by draining it in their processing loop.
-///
-/// # Example
-///
-/// ```rust
-/// use rill_core_actor::ActorCell;
-/// use rill_core::queues::MpscQueue;
-/// use std::sync::Arc;
-///
-/// struct MyActor {
-///     mailbox: Arc<MpscQueue<String>>,
-///     log: Vec<String>,
-/// }
-///
-/// impl ActorCell for MyActor {
-///     type Msg = String;
-///     fn receive(&mut self, msg: String) {
-///         self.log.push(msg);
-///     }
-/// }
-/// ```
-pub trait ActorCell: 'static {
-    /// The message type this actor can process.
-    type Msg: Send + 'static;
+pub(crate) struct Mailbox<M: Send + 'static> {
+    pub(crate) queue: MpscQueue<M>,
+    alive: AtomicBool,
+}
 
-    /// Process a single message.
-    ///
-    /// Called when the actor drains its mailbox. Runs on the actor's own
-    /// thread or processing loop — the actor implementation determines its
-    /// own real-time guarantees.
-    ///
-    /// # RT safety
-    ///
-    /// `rill-core-actor` itself does not enforce RT constraints. The caller
-    /// (the actor's consumer, e.g. an audio callback) decides the RT profile:
-    ///
-    /// - **Hard RT** (audio callback): `receive()` must not allocate, block,
-    ///   or make syscalls. The mailbox is lock-free and bounded, so `send()`
-    ///   is safe from any thread, but the actor's `receive()` shares the
-    ///   callback's RT constraints.
-    /// - **Soft RT** (tokio task, dedicated thread): `receive()` may use
-    ///   heap, locks, or I/O as appropriate for its thread.
-    ///
-    /// The actor framework provides the mailbox; the actor implementation
-    /// provides the discipline.
-    fn receive(&mut self, msg: Self::Msg);
+impl<M: Send + 'static> Mailbox<M> {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            queue: MpscQueue::with_capacity(capacity),
+            alive: AtomicBool::new(true),
+        }
+    }
+
+    pub fn pop(&self) -> Option<M> {
+        self.queue.pop()
+    }
+
+    pub fn actor_ref(self: &Arc<Self>) -> ActorRef<M> {
+        ActorRef {
+            inner: self.clone(),
+        }
+    }
+}
+
+// ============================================================================
+// Actor — single‑threaded (handler: !Send, drained inline)
+// ============================================================================
+
+pub struct Actor<M: Send + 'static> {
+    mailbox: Arc<Mailbox<M>>,
+    handler: Box<dyn FnMut(M) + 'static>,
+}
+
+impl<M: Send + 'static> Actor<M> {
+    pub fn drain(&mut self) {
+        while let Some(msg) = self.mailbox.pop() {
+            (self.handler)(msg);
+        }
+    }
+
+    pub fn actor_ref(&self) -> ActorRef<M> {
+        self.mailbox.actor_ref()
+    }
 }
 
 // ============================================================================
 // ActorRef
 // ============================================================================
 
-/// Thread-safe handle for sending messages to an actor.
-///
-/// Holds a **strong** reference (`Arc`) to the actor's mailbox. The mailbox
-/// lives as long as the actor or any `ActorRef` keeps it alive.
-///
-/// # Lifecycle
-///
-/// The actor's mailbox is **owned by the actor** (e.g. a `Graph` struct).
-/// `ActorRef` is a borrowed handle — it does not create or own queues.
-/// Obtain one via the actor's public API (e.g. `Graph::handle()`).
-///
-/// ```rust
-/// use rill_core_actor::ActorRef;
-/// use rill_core::queues::MpscQueue;
-/// use std::sync::Arc;
-///
-/// // The actor owns the mailbox:
-/// let mailbox = Arc::new(MpscQueue::<String>::with_capacity(64));
-///
-/// // ActorRef is a handle — many can share the same mailbox:
-/// let ref_a = ActorRef::new(&mailbox);
-/// let ref_b = ActorRef::new(&mailbox);
-///
-/// ref_a.send("msg1".into());
-/// ref_b.send("msg2".into());
-///
-/// // The actor drains its own Arc:
-/// assert_eq!(mailbox.pop(), Some("msg1".into()));
-/// assert_eq!(mailbox.pop(), Some("msg2".into()));
-/// ```
-///
-/// # Thread safety
-///
-/// `ActorRef` is `Send + Sync` — safe to share across threads.
-/// `send()` is lock-free and can be called from any thread (including
-/// real-time audio callbacks).
-#[derive(Clone)]
 pub struct ActorRef<M: Send + 'static> {
-    mailbox: Arc<MpscQueue<M>>,
+    inner: Arc<Mailbox<M>>,
+}
+
+impl<M: Send + 'static> Clone for ActorRef<M> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<M: Send + 'static> ActorRef<M> {
-    /// Create a new `ActorRef` from the actor's mailbox.
-    ///
-    /// The caller (the actor) owns the `Arc<MpscQueue<M>>`. The returned
-    /// `ActorRef` shares the same `Arc` — the actor must keep its `Arc`
-    /// alive for the `ActorRef` to function.
-    pub fn new(mailbox: &Arc<MpscQueue<M>>) -> Self {
-        Self {
-            mailbox: mailbox.clone(),
-        }
-    }
-
-    /// Create a new `(ActorRef, Arc<MpscQueue>)` pair with a fresh mailbox.
-    ///
-    /// This is a convenience constructor for simple setups where the actor
-    /// does not pre-own a mailbox. The caller should typically store the
-    /// `Arc<MpscQueue<M>>` (the mailbox) in the actor and keep the
-    /// `ActorRef` for external communication.
-    ///
-    /// The mailbox has capacity **64** (bounded). If the queue is full,
-    /// [`send`](Self::send) silently drops the message.
-    pub fn new_pair() -> (Self, Arc<MpscQueue<M>>) {
-        let mbox = Arc::new(MpscQueue::with_capacity(64));
-        let this = Self::new(&mbox);
-        (this, mbox)
-    }
-
-    /// Send a message to the actor.
-    ///
-    /// Pushes the message into the actor's lock-free MPSC queue. If the
-    /// queue is full the message is silently dropped (bounded queue —
-    /// capacity 64 prevents RT thread overload).
-    ///
-    /// # RT safety
-    ///
-    /// Lock-free, no allocation on the hot path. Safe to call from **any
-    /// thread** including real-time audio callbacks. This is the only
-    /// actor infrastructure method that is RT-safe — the actor's
-    /// [`receive`](ActorCell::receive) runs on the consumer's thread
-    /// and must obey that thread's RT constraints.
     pub fn send(&self, msg: M) {
-        let _ = self.mailbox.push(msg);
-    }
-}
-
-// ============================================================================
-// MessageDispatcher
-// ============================================================================
-
-/// Dispatcher that routes messages to an actor with a dead letters fallback.
-///
-/// Combines an [`ActorRef`] for normal delivery with a separate dead letters
-/// queue (`Arc<MpscQueue<M>>`) for messages that cannot be delivered
-/// (e.g. when the actor has been stopped and detected stale).
-///
-/// This is the application-level "actor system" — it does not create or
-/// own the underlying queues. Those belong to the actor and the Runtime
-/// respectively.
-///
-/// # Dead letters
-///
-/// Dead letters are messages that could not be delivered. This can happen
-/// when:
-/// - The actor's mailbox is full (bounded queue reached capacity)
-/// - The actor has been stopped and the application layer detected staleness
-///
-/// Unlike [`ActorRef::send`], `MessageDispatcher` provides an explicit
-/// [`send_dead`](Self::send_dead) method for routing messages directly to
-/// dead letters without attempting delivery to the actor.
-///
-/// # Example
-///
-/// ```rust
-/// use rill_core_actor::{ActorRef, MessageDispatcher};
-/// use rill_core::queues::MpscQueue;
-/// use std::sync::Arc;
-///
-/// let mailbox = Arc::new(MpscQueue::with_capacity(64));
-/// let dead = Arc::new(MpscQueue::new());  // unbounded
-///
-/// let dispatcher = MessageDispatcher::new(
-///     ActorRef::new(&mailbox),
-///     dead,
-/// );
-///
-/// // Normal delivery
-/// dispatcher.send("normal".to_string());
-/// assert_eq!(mailbox.pop(), Some("normal".to_string()));
-///
-/// // Undeliverable — route to dead letters
-/// dispatcher.send_dead("orphaned".to_string());
-/// assert_eq!(dispatcher.drain_dead(), vec!["orphaned".to_string()]);
-/// ```
-#[derive(Clone)]
-pub struct MessageDispatcher<M: Send + 'static> {
-    actor_ref: ActorRef<M>,
-    dead: Arc<MpscQueue<M>>,
-}
-
-impl<M: Send + 'static> MessageDispatcher<M> {
-    /// Create a new dispatcher.
-    ///
-    /// # Parameters
-    ///
-    /// * `actor_ref` — reference to the actor's mailbox (obtain via
-    ///   `Graph::handle()` or similar).
-    /// * `dead` — unbounded dead letters queue, owned by the Runtime
-    ///   or other top-level coordinator.
-    pub fn new(actor_ref: ActorRef<M>, dead: Arc<MpscQueue<M>>) -> Self {
-        Self { actor_ref, dead }
-    }
-
-    /// Send a message to the actor.
-    ///
-    /// Delegates to [`ActorRef::send`]. If the actor's mailbox is full
-    /// the message is silently dropped (bounded queue — the underlying
-    /// `MpscQueue` does not return the value on overflow).
-    pub fn send(&self, msg: M) {
-        self.actor_ref.send(msg);
-    }
-
-    /// Send a message directly to dead letters without attempting delivery.
-    ///
-    /// Use this when the actor is known to be stale (detected by the
-    /// application layer, e.g. Runtime health check).
-    pub fn send_dead(&self, msg: M) {
-        let _ = self.dead.push(msg);
-    }
-
-    /// Drain the dead letters queue and return all undelivered messages.
-    ///
-    /// This is an O(n) operation that removes all messages from the
-    /// dead letters queue. Use for inspection, logging, or replay.
-    pub fn drain_dead(&self) -> Vec<M> {
-        let mut msgs = Vec::new();
-        while let Some(msg) = self.dead.pop() {
-            msgs.push(msg);
+        if self.inner.alive.load(Ordering::Acquire) {
+            let _ = self.inner.queue.push(msg);
         }
-        msgs
-    }
-
-    /// Check whether there are any undelivered messages in dead letters.
-    pub fn has_dead(&self) -> bool {
-        !self.dead.is_empty()
-    }
-
-    /// Borrow the inner [`ActorRef`].
-    ///
-    /// Useful when the caller needs to pass the `ActorRef` to code that
-    /// does not need dead letters support (e.g. `PortCombiner`).
-    pub fn actor_ref(&self) -> &ActorRef<M> {
-        &self.actor_ref
     }
 }
 
@@ -344,127 +106,118 @@ impl<M: Send + 'static> MessageDispatcher<M> {
 // ActorSystem
 // ============================================================================
 
-/// Central registry of named mailboxes with dead letters support.
-///
-/// Routes messages to registered actors by name. If a target does not
-/// exist, the message is forwarded to dead letters instead of being
-/// silently dropped.
-///
-/// All actors in a system share the same message type `M`. For systems
-/// that need different message types, create separate `ActorSystem`
-/// instances (one per message type).
-///
-/// # Multiple consumers
-///
-/// Each registered mailbox is an [`Arc<MpscQueue<M>>`] that can be
-/// drained by a dedicated consumer (e.g. audio callback, tokio task,
-/// dedicated thread). This enables multiple actors processing different
-/// streams of the same message type:
-///
-/// ```text
-/// ActorSystem<SetParameter>
-///   │
-///   ├── "graph"   → audio thread consumer (hard RT)
-///   ├── "midi"    → tokio task consumer  (soft RT, future)
-///   └── "monitor" → tokio task consumer  (soft RT, future)
-/// ```
-///
-/// # Dead letters
-///
-/// When [`route`](Self::route) is called with a name that is not
-/// registered, the message goes to the system's dead letters queue.
-/// Use [`drain_dead`](Self::drain_dead) to inspect undelivered messages.
-///
-/// # Example
-///
-/// ```rust
-/// use rill_core_actor::ActorSystem;
-/// use rill_core::queues::MpscQueue;
-/// use std::sync::Arc;
-///
-/// let mut system = ActorSystem::<String>::new();
-///
-/// // Register two actors
-/// let graph_mbox = system.register("graph");
-/// let midi_mbox = system.register("midi");
-///
-/// // Route a message to a specific actor
-/// system.route("graph", "hello graph".to_string());
-/// assert_eq!(graph_mbox.pop(), Some("hello graph".to_string()));
-///
-/// // Unknown actor → dead letters
-/// system.route("unknown", "lost".to_string());
-/// assert_eq!(system.drain_dead(), vec!["lost".to_string()]);
-///
-/// // Broadcast to all registered actors
-/// system.broadcast("to all".to_string());
-/// assert_eq!(graph_mbox.pop(), Some("to all".to_string()));
-/// assert_eq!(midi_mbox.pop(), Some("to all".to_string()));
-/// ```
-pub struct ActorSystem<M: Send + 'static> {
-    actors: Vec<(String, Arc<MpscQueue<M>>)>,
-    dead: Arc<MpscQueue<M>>,
+pub struct ActorSystem {
+    actors: Mutex<Vec<(String, Box<dyn Any + Send>)>>,
+    dead: Arc<MpscQueue<Box<dyn Any + Send>>>,
 }
 
-impl<M: Send + 'static> ActorSystem<M> {
-    /// Create an empty system.
+impl ActorSystem {
     pub fn new() -> Self {
         Self {
-            actors: Vec::new(),
+            actors: Mutex::new(Vec::new()),
             dead: Arc::new(MpscQueue::new()),
         }
     }
 
-    /// Register a new named mailbox and return it.
-    ///
-    /// The caller is responsible for creating a consumer that drains
-    /// the returned `Arc<MpscQueue<M>>`.
-    pub fn register(&mut self, name: &str) -> Arc<MpscQueue<M>> {
-        let mbox = Arc::new(MpscQueue::with_capacity(64));
-        self.actors.push((name.to_string(), mbox.clone()));
-        mbox
+    /// Spawn an actor drained inline by the caller (Graph, Rack).
+    /// Handler does not need `Send` — it lives and dies on the caller's thread.
+    pub fn spawn<M: Send + 'static>(
+        &self,
+        name: &str,
+        handler: impl FnMut(M) + 'static,
+    ) -> Actor<M> {
+        let actor = Actor {
+            mailbox: Arc::new(Mailbox::new(64)),
+            handler: Box::new(handler),
+        };
+        self.actors
+            .lock()
+            .unwrap()
+            .push((name.to_string(), Box::new(actor.actor_ref())));
+        actor
     }
 
-    /// Route a message to a named actor.
+    /// Spawn a detached actor — handler is created inside a new OS thread
+    /// and drained in a loop. Returns the [`ActorRef`] immediately.
     ///
-    /// If the name is registered, the message is pushed to that actor's
-    /// mailbox. Otherwise it is forwarded to dead letters.
-    ///
-    /// # RT safety
-    ///
-    /// **Soft-RT only.** Iterates the actor list (heap access).
-    /// Must not be called from hard-RT threads (audio callbacks).
-    pub fn route(&self, name: &str, msg: M) {
-        for (n, mbox) in &self.actors {
-            if n == name {
-                let _ = mbox.push(msg);
-                return;
+    /// `make_handler` is called inside the spawned thread, so the returned
+    /// handler closure does not need `Send`.
+    pub fn spawn_detached<M: Send + 'static>(
+        &self,
+        name: &str,
+        make_handler: impl FnOnce() -> Box<dyn FnMut(M) + 'static> + Send + 'static,
+        interval_ms: u64,
+    ) -> ActorRef<M> {
+        let mailbox = Arc::new(Mailbox::new(64));
+        let actor_ref = mailbox.actor_ref();
+        self.actors
+            .lock()
+            .unwrap()
+            .push((name.to_string(), Box::new(actor_ref.clone())));
+        std::thread::spawn(move || {
+            let handler = make_handler();
+            let mut actor = Actor { mailbox, handler };
+            loop {
+                actor.drain();
+                std::thread::sleep(Duration::from_millis(interval_ms));
+            }
+        });
+        actor_ref
+    }
+
+    /// Spawn a detached actor on a tokio task — handler must be `Send`.
+    /// Useful when many actors are needed (e.g. 24 Servos), avoiding OS thread overhead.
+    #[cfg(feature = "tokio")]
+    pub fn spawn_detached_tokio<M: Send + 'static>(
+        &self,
+        name: &str,
+        make_handler: impl FnOnce() -> Box<dyn FnMut(M) + Send + 'static> + Send + 'static,
+        interval_ms: u64,
+    ) -> ActorRef<M> {
+        let mailbox = Arc::new(Mailbox::new(64));
+        let actor_ref = mailbox.actor_ref();
+        self.actors
+            .lock()
+            .unwrap()
+            .push((name.to_string(), Box::new(actor_ref.clone())));
+        tokio::spawn(async move {
+            let mut handler = make_handler();
+            let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
+            loop {
+                interval.tick().await;
+                while let Some(msg) = mailbox.pop() {
+                    handler(msg);
+                }
+            }
+        });
+        actor_ref
+    }
+
+    pub fn route<M: Send + 'static>(&self, name: &str, msg: M) {
+        if let Ok(actors) = self.actors.lock() {
+            for (n, actor_ref) in actors.iter() {
+                if n == name {
+                    if let Some(ar) = actor_ref.downcast_ref::<ActorRef<M>>() {
+                        ar.send(msg);
+                        return;
+                    }
+                }
             }
         }
-        let _ = self.dead.push(msg);
+        let _ = self.dead.push(Box::new(msg));
     }
 
-    /// Broadcast a message to all registered actors.
-    ///
-    /// Each actor receives a copy (the message is cloned).
-    /// Messages that cannot be delivered (full mailbox) are silently
-    /// dropped per-actor.
-    ///
-    /// # RT safety
-    ///
-    /// **Soft-RT only.** May clone the message (allocation) and iterate
-    /// the actor list. Must not be called from hard-RT threads.
-    pub fn broadcast(&self, msg: M)
-    where
-        M: Clone,
-    {
-        for (_, mbox) in &self.actors {
-            let _ = mbox.push(msg.clone());
+    pub fn broadcast<M: Send + Clone + 'static>(&self, msg: M) {
+        if let Ok(actors) = self.actors.lock() {
+            for (_, actor_ref) in actors.iter() {
+                if let Some(ar) = actor_ref.downcast_ref::<ActorRef<M>>() {
+                    ar.send(msg.clone());
+                }
+            }
         }
     }
 
-    /// Drain the dead letters queue for inspection.
-    pub fn drain_dead(&self) -> Vec<M> {
+    pub fn drain_dead(&self) -> Vec<Box<dyn Any + Send>> {
         let mut msgs = Vec::new();
         while let Some(msg) = self.dead.pop() {
             msgs.push(msg);
@@ -472,23 +225,12 @@ impl<M: Send + 'static> ActorSystem<M> {
         msgs
     }
 
-    /// Check whether there are any undelivered messages.
-    pub fn has_dead(&self) -> bool {
-        !self.dead.is_empty()
-    }
-
-    /// Number of registered actors.
     pub fn actor_count(&self) -> usize {
-        self.actors.len()
-    }
-
-    /// Access the dead letters queue directly.
-    pub fn dead_letters(&self) -> &MpscQueue<M> {
-        &self.dead
+        self.actors.lock().map(|a| a.len()).unwrap_or(0)
     }
 }
 
-impl<M: Send + 'static> Default for ActorSystem<M> {
+impl Default for ActorSystem {
     fn default() -> Self {
         Self::new()
     }
@@ -502,124 +244,122 @@ impl<M: Send + 'static> Default for ActorSystem<M> {
 mod tests {
     use super::*;
 
-    struct TestActor {
-        mailbox: Arc<MpscQueue<String>>,
-        received: Vec<String>,
-    }
-
-    impl TestActor {
-        fn new(mailbox: Arc<MpscQueue<String>>) -> Self {
-            Self {
-                mailbox,
-                received: Vec::new(),
-            }
-        }
-        fn drain(&mut self) {
-            while let Some(msg) = self.mailbox.pop() {
-                self.receive(msg);
-            }
-        }
-    }
-
-    impl ActorCell for TestActor {
-        type Msg = String;
-        fn receive(&mut self, msg: String) {
-            self.received.push(msg);
-        }
-    }
-
     #[test]
-    fn test_actor_ref_send_and_drain() {
-        let mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let actor_ref = ActorRef::new(&mailbox);
+    fn test_spawn_and_drain() {
+        let system = ActorSystem::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv = received.clone();
+        let mut actor = system.spawn("test", move |msg: String| {
+            recv.lock().unwrap().push(msg);
+        });
+        assert_eq!(system.actor_count(), 1);
 
-        actor_ref.send("hello".to_string());
-        actor_ref.send("world".to_string());
+        let ref_a = actor.actor_ref();
+        ref_a.send("hello".into());
+        ref_a.send("world".into());
 
-        let mut actor = TestActor::new(mailbox);
         actor.drain();
-
-        assert_eq!(actor.received.len(), 2);
-        assert_eq!(actor.received[0], "hello");
-        assert_eq!(actor.received[1], "world");
+        assert_eq!(received.lock().unwrap().len(), 2);
     }
 
     #[test]
     fn test_multiple_refs_share_mailbox() {
-        let mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let ref_a = ActorRef::new(&mailbox);
-        let ref_b = ActorRef::new(&mailbox);
+        let system = ActorSystem::new();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let l = log.clone();
+        let mut actor = system.spawn("multi", move |msg: String| {
+            l.lock().unwrap().push(msg);
+        });
 
-        ref_a.send("alpha".to_string());
-        ref_b.send("beta".to_string());
+        let ref_a = actor.actor_ref();
+        let ref_b = actor.actor_ref();
+        ref_a.send("alpha".into());
+        ref_b.send("beta".into());
 
-        let mut count = 0;
-        while mailbox.pop().is_some() {
-            count += 1;
-        }
-        assert_eq!(count, 2);
+        actor.drain();
+        let drained = log.lock().unwrap();
+        assert_eq!(drained.len(), 2);
     }
 
     #[test]
     fn test_queue_overflow_drops() {
-        // capacity 2 — third message is silently dropped
-        let mailbox = Arc::new(MpscQueue::with_capacity(2));
-        let actor_ref = ActorRef::new(&mailbox);
+        let system = ActorSystem::new();
+        let sum = Arc::new(Mutex::new(0));
+        let s = sum.clone();
+        let mut actor = system.spawn("drop", move |msg: i32| {
+            *s.lock().unwrap() += msg;
+        });
 
-        actor_ref.send(1);
-        actor_ref.send(2);
-        actor_ref.send(3); // dropped
-
-        assert_eq!(mailbox.pop(), Some(1));
-        assert_eq!(mailbox.pop(), Some(2));
-        assert!(mailbox.pop().is_none());
-    }
-
-    #[test]
-    fn test_new_pair_returns_connected_pair() {
-        let (actor_ref, mailbox) = ActorRef::<String>::new_pair();
-        actor_ref.send("via_ref".to_string());
-        assert_eq!(mailbox.pop(), Some("via_ref".to_string()));
-    }
-
-    #[test]
-    fn test_dispatcher_forwards_to_mailbox() {
-        let mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let dead = Arc::new(MpscQueue::new());
-        let actor_ref = ActorRef::new(&mailbox);
-        let dispatcher = MessageDispatcher::new(actor_ref, dead);
-
-        dispatcher.send("normal".to_string());
-
-        let mut actor = TestActor::new(mailbox);
+        let ref_a = actor.actor_ref();
+        for i in 0..200 {
+            ref_a.send(i);
+        }
         actor.drain();
-        assert_eq!(actor.received, vec!["normal"]);
+        let total = *sum.lock().unwrap();
+        assert!(total > 0);
+        assert!(total < (0..200).sum::<i32>());
     }
 
     #[test]
-    fn test_dispatcher_dead_letters() {
-        let mailbox = Arc::new(MpscQueue::with_capacity(64));
-        let dead = Arc::new(MpscQueue::new());
-        let actor_ref = ActorRef::new(&mailbox);
-        let dispatcher = MessageDispatcher::new(actor_ref, dead.clone());
+    fn test_route() {
+        let system = ActorSystem::new();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let l = log.clone();
+        let mut actor = system.spawn("echo", move |msg: String| {
+            l.lock().unwrap().push(msg);
+        });
 
-        dispatcher.send_dead("orphaned".to_string());
-
-        let drained = dispatcher.drain_dead();
-        assert_eq!(drained, vec!["orphaned"]);
-        assert!(dead.is_empty()); // drained via dispatcher
+        system.route("echo", "routed".to_string());
+        actor.drain();
+        assert_eq!(*log.lock().unwrap(), vec!["routed".to_string()]);
     }
 
     #[test]
-    fn test_different_message_types() {
-        // String messages
-        let (ar, mbox) = ActorRef::<String>::new_pair();
-        ar.send("hello".into());
-        assert_eq!(mbox.pop(), Some("hello".into()));
+    fn test_route_unknown_goes_to_dead() {
+        let system = ActorSystem::new();
+        system.route("unknown", "lost".to_string());
+        let dead: Vec<String> = system
+            .drain_dead()
+            .into_iter()
+            .filter_map(|b| b.downcast::<String>().ok().map(|b| *b))
+            .collect();
+        assert_eq!(dead, vec!["lost".to_string()]);
+    }
 
-        // Integer messages
-        let (ar, mbox) = ActorRef::<i32>::new_pair();
-        ar.send(42);
-        assert_eq!(mbox.pop(), Some(42));
+    #[test]
+    fn test_broadcast() {
+        let system = ActorSystem::new();
+        let log_a = Arc::new(Mutex::new(Vec::new()));
+        let log_b = Arc::new(Mutex::new(Vec::new()));
+        let la = log_a.clone();
+        let lb = log_b.clone();
+        let mut actor_a = system.spawn("a", move |msg: String| {
+            la.lock().unwrap().push(msg);
+        });
+        let mut actor_b = system.spawn("b", move |msg: String| {
+            lb.lock().unwrap().push(msg);
+        });
+
+        system.broadcast("all".to_string());
+        actor_a.drain();
+        actor_b.drain();
+        assert_eq!(*log_a.lock().unwrap(), vec!["all".to_string()]);
+        assert_eq!(*log_b.lock().unwrap(), vec!["all".to_string()]);
+    }
+
+    #[test]
+    fn test_spawn_detached() {
+        let system = ActorSystem::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv = received.clone();
+        let actor_ref = system.spawn_detached(
+            "detached",
+            move || Box::new(move |msg: String| recv.lock().unwrap().push(msg)),
+            1,
+        );
+        actor_ref.send("hello".into());
+        actor_ref.send("world".into());
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(received.lock().unwrap().len(), 2);
     }
 }
