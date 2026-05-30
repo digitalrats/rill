@@ -38,12 +38,12 @@ CRATES=(
     rill-graph
     rill-telemetry
     rill-lofi
-    rill-patchbay
+    rill-io
     rill-oscillators
     rill-digital-filters
     rill-digital-effects
     rill-router
-    rill-io
+    rill-patchbay
     rill-analog-filters
     rill-analog-effects
     rill-osc
