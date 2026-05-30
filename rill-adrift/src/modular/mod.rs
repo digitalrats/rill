@@ -232,8 +232,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         };
 
                         let pb_module = to_pb_module(module_def);
-                        let automaton_defs_slice: Vec<PbAutomatonDef> =
-                            automaton_defs.iter().map(|a| a.clone()).collect();
+                        let automaton_defs_slice: Vec<PbAutomatonDef> = automaton_defs.to_vec();
                         let actor_ref = self
                             .module_factory
                             .construct(&pb_module, &automaton_defs_slice, &sys_svc, &graph_ref)

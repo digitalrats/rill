@@ -67,15 +67,10 @@ impl MidirBackend {
         };
 
         let mut chosen = 0usize;
-        let mut chosen_name = String::new();
         for (i, p) in ports.iter().enumerate() {
             let pname = mi.port_name(p).unwrap_or_else(|_| "?".into());
-            if i == 0 {
-                chosen_name = pname.clone();
-            }
             if find_real(&pname) {
                 chosen = i;
-                chosen_name = pname;
                 break;
             }
         }

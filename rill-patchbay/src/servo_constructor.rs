@@ -10,7 +10,7 @@ use crate::automaton::envelope::EnvelopeAutomaton;
 use crate::automaton::lfo::LfoAutomaton;
 use crate::automaton::sequencer::{SequencerAutomaton, Step};
 use crate::engine::Servo;
-use crate::module_def::{AutomatonDef, ModuleDef, ServoDef};
+use crate::module_def::{AutomatonDef, ModuleDef};
 use crate::module_factory::{ModuleConstructor, ModuleError};
 
 /// Module constructor for the `"servo"` type — bridges an automaton to a graph parameter.
@@ -133,11 +133,7 @@ impl ModuleConstructor for ServoConstructor {
                     id
                 )));
             }
-            AutomatonDef::Custom {
-                id,
-                type_name,
-                params,
-            } => {
+            AutomatonDef::Custom { id, type_name, .. } => {
                 return Err(ModuleError::ConstructionFailed(format!(
                     "Custom automaton '{}' (type '{}') not yet supported via ServoConstructor",
                     id, type_name,

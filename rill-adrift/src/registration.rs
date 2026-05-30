@@ -415,10 +415,6 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
     use rill_io::midi_backend::MidiBackend;
     use rill_patchbay::module_def::{ModuleDef, SensorDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Duration;
 
     struct MidiConstructor;
 

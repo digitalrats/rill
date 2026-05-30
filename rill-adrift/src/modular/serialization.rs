@@ -5,7 +5,6 @@
 //! self-contained JSON document.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
