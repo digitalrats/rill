@@ -37,7 +37,7 @@ pub enum ErrorCategory {
     Graph,
     /// I/O errors (ALSA, JACK, PipeWire).
     Io,
-    /// Control errors (MIDI, OSC, automation).
+    /// Control errors (OSC, automation).
     Control,
     /// Configuration errors.
     Config,
@@ -137,8 +137,6 @@ pub enum ErrorCode {
     XRun = 320,
 
     // ── Control errors (400-499) ────────────────────────────────
-    /// MIDI protocol error.
-    MidiError = 400,
     /// OSC protocol error.
     OscError = 401,
     /// Control mapping not found.
@@ -201,8 +199,7 @@ impl ErrorCode {
             | ErrorCode::PipeWireError
             | ErrorCode::XRun => ErrorCategory::Io,
 
-            ErrorCode::MidiError
-            | ErrorCode::OscError
+            ErrorCode::OscError
             | ErrorCode::MappingNotFound
             | ErrorCode::AutomatonNotFound
             | ErrorCode::InvalidParameterValue => ErrorCategory::Control,
@@ -253,7 +250,6 @@ impl ErrorCode {
             ErrorCode::PipeWireError => "PipeWire error",
             ErrorCode::XRun => "Buffer underrun/overrun detected",
 
-            ErrorCode::MidiError => "MIDI error",
             ErrorCode::OscError => "OSC error",
             ErrorCode::MappingNotFound => "Mapping not found",
             ErrorCode::AutomatonNotFound => "Automaton not found",
@@ -501,14 +497,9 @@ pub mod io {
     }
 }
 
-/// Control error constructors (MIDI, OSC, automation).
+/// Control error constructors (OSC, automation).
 pub mod control {
     use super::*;
-
-    /// Create a `MidiError` with a description.
-    pub fn midi_error(desc: &str) -> Error {
-        error!(ErrorCode::MidiError, "MIDI error: {}", desc)
-    }
 
     /// Create an `OscError` with a description.
     pub fn osc_error(desc: &str) -> Error {
@@ -637,7 +628,7 @@ mod tests {
         assert_eq!(ErrorCode::BufferFull.category(), ErrorCategory::Core);
         assert_eq!(ErrorCode::NodeNotFound.category(), ErrorCategory::Graph);
         assert_eq!(ErrorCode::AlsaError.category(), ErrorCategory::Io);
-        assert_eq!(ErrorCode::MidiError.category(), ErrorCategory::Control);
+        assert_eq!(ErrorCode::OscError.category(), ErrorCategory::Control);
         assert_eq!(ErrorCode::ConfigNotFound.category(), ErrorCategory::Config);
         assert_eq!(
             ErrorCode::RealtimeViolation.category(),

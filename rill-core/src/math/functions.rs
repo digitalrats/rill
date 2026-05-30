@@ -21,20 +21,6 @@ pub fn db_to_linear<T: Transcendental>(db: T) -> T {
 pub fn linear_to_db<T: Transcendental>(linear: T) -> T {
     T::from_f32(20.0 * linear.to_f32().log10())
 }
-
-/// Convert a MIDI note to frequency
-#[inline(always)]
-pub fn midi_to_freq<T: Transcendental>(note: u8) -> T {
-    let exp = (note as f32 - 69.0) / 12.0;
-    T::from_f32(440.0 * 2.0_f32.powf(exp))
-}
-
-/// Convert frequency to a MIDI note
-#[inline(always)]
-pub fn freq_to_midi<T: Transcendental>(freq: T) -> f32 {
-    69.0 + 12.0 * (freq.to_f32() / 440.0).log2()
-}
-
 /// Convert seconds to samples
 #[inline(always)]
 pub fn seconds_to_samples(seconds: f32, sample_rate: f32) -> usize {

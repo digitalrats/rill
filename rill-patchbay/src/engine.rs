@@ -18,6 +18,19 @@ use crate::strategy::{ConflictStrategy, ControlStrategy};
 // 1. Event patterns
 // =============================================================================
 
+/// What aspect of a MIDI note event to extract for mapping.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MidiNoteKind {
+    /// Extracts frequency: `midi_to_freq(note)`. Note Off produces no value.
+    Frequency,
+    /// Extracts amplitude: `velocity / 127` (On) or `0.0` (Off).
+    #[default]
+    Amplitude,
+    /// Extracts gate: `1.0` (On) or `0.0` (Off).
+    Gate,
+}
+
 /// A pattern for matching controller events.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -43,12 +56,15 @@ pub enum EventPattern {
         /// MIDI controller number (CC index).
         controller: u8,
     },
-    /// Matches a MIDI note-on or note-off event.
+    /// Matches a MIDI note-on or note-off event and extracts a mapped value.
     MidiNote {
         /// Optional MIDI channel filter; `None` matches any channel.
         channel: Option<u8>,
         /// Optional note number filter; `None` matches any note.
         note: Option<u8>,
+        /// Which aspect of the note event to use as the mapping value.
+        #[cfg_attr(feature = "serde", serde(default))]
+        kind: MidiNoteKind,
     },
     /// Matches a MIDI clock tick event.
     MidiClock,
@@ -85,7 +101,7 @@ impl EventPattern {
                 },
             ) => (channel.is_none() || channel.unwrap() == *ech) && *controller == *ectr,
             (
-                EventPattern::MidiNote { channel, note },
+                EventPattern::MidiNote { channel, note, .. },
                 ControlEvent::MidiNote {
                     channel: ech,
                     note: en,
@@ -344,16 +360,52 @@ impl Mapping {
         if !self.matches(event) {
             return None;
         }
-        event.normalized_value().map(|norm| {
-            let value = self.transform.apply(norm, self.target.min, self.target.max);
+
+        // MidiNote with kind: extract value from note event, bypassing
+        // the standard normalized_value() pipeline.
+        if let (
+            EventPattern::MidiNote { kind, .. },
+            ControlEvent::MidiNote {
+                note, velocity, on, ..
+            },
+        ) = (&self.pattern, event)
+        {
+            let value = match kind {
+                MidiNoteKind::Frequency => {
+                    if !*on {
+                        return None;
+                    }
+                    // midi_to_freq produces absolute Hz — bypass Transform
+                    rill_core_dsp::math::midi_to_freq::<f32>(*note)
+                }
+                MidiNoteKind::Amplitude => {
+                    let raw = if *on { *velocity as f32 / 127.0 } else { 0.0 };
+                    self.transform.apply(raw, self.target.min, self.target.max)
+                }
+                MidiNoteKind::Gate => {
+                    let raw = if *on { 1.0 } else { 0.0 };
+                    self.transform.apply(raw, self.target.min, self.target.max)
+                }
+            };
             let pid = ParameterId::new(&self.target.param_name).unwrap();
-            SetParameter::new(
+            return Some(SetParameter::new(
                 PortId::param(self.target.node_id, 0),
                 pid,
                 ParamValue::Float(value),
                 SignalOrigin::External(self.name.clone()),
-            )
-        })
+            ));
+        }
+
+        // All other patterns: use the standard normalized_value() pipeline.
+        let norm = event.normalized_value()?;
+        let value = self.transform.apply(norm, self.target.min, self.target.max);
+        let pid = ParameterId::new(&self.target.param_name).unwrap();
+        Some(SetParameter::new(
+            PortId::param(self.target.node_id, 0),
+            pid,
+            ParamValue::Float(value),
+            SignalOrigin::External(self.name.clone()),
+        ))
     }
 }
 
@@ -724,6 +776,38 @@ pub fn midi_cc(
         EventPattern::MidiControl {
             channel,
             controller,
+        },
+        Target {
+            node_id: target_node,
+            param_name: target_param.to_string(),
+            min,
+            max,
+        },
+        transform,
+    )
+}
+
+/// Convenience constructor for a MIDI note mapping.
+///
+/// Use [`MidiNoteKind`] to select which aspect of the note event to extract:
+/// - `Frequency` — `midi_to_freq(note)`, Note Off produces no value
+/// - `Amplitude` — `velocity / 127` (On) or `0.0` (Off)
+/// - `Gate` — `1.0` (On) or `0.0` (Off)
+pub fn midi_note(
+    kind: MidiNoteKind,
+    note: Option<u8>,
+    channel: Option<u8>,
+    target_node: NodeId,
+    target_param: &str,
+    min: f32,
+    max: f32,
+    transform: Transform,
+) -> Mapping {
+    Mapping::new(
+        EventPattern::MidiNote {
+            channel,
+            note,
+            kind,
         },
         Target {
             node_id: target_node,

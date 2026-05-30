@@ -72,14 +72,6 @@ lock-free queues, and SIMD-optimised block processing. Benchmarks on
 | Cubic read | 1.06 µs | 4.16 ns |
 | Resampler 44.1→48k | 1.11 µs | 4.32 ns |
 
-### Comparison with known solutions
-
-| Benchmark | Rill | JUCE (C++) | fundsp (Rust) |
-|---|---|---|---|
-| Sine osc | **3.1 ns** | 8–12 ns | 500 ns |
-| Biquad | **0.95 ns** | 10–15 ns | 20–30 ns |
-| Square/Pulse | **0.35 ns** | 3–5 ns | 50–100 ns |
-
 †Theoretical maximum single-core voice count. Full block bench results and
 hardware SIMD comparison in
 [docs/superpowers/specs/2026-05-10-simd-benchmark-results.md](docs/superpowers/specs/2026-05-10-simd-benchmark-results.md).
@@ -144,10 +136,10 @@ Same as `player` but sends `SetParameter` commands through the graph's actor
 mailbox before starting playback — demonstrates filter cutoff control and WAV
 path override at runtime.
 
-### AY-3-8910 chiptune (Popcorn)
+### AY-3-8910 chiptune_stc (Popcorn)
 
 ```bash
-cargo run -p rill-adrift --example chiptune --features "lofi,portaudio" -- [backend]
+cargo run -p rill-adrift --example chiptune_stc --features "lofi,portaudio" -- [backend]
 ```
 
 Plays the Popcorn melody on an emulated AY-3-8910 sound chip. The sequencer

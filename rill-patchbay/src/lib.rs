@@ -73,8 +73,14 @@ pub mod function_registry;
 /// Automaton control strategies
 pub mod strategy;
 
+/// Rack module type definitions (always compiled)
+pub mod module_def;
+
 /// Custom module factory — type registry for rack module construction
 pub mod module_factory;
+
+/// Servo constructor — creates servo actors from ModuleDef descriptors
+pub mod servo_constructor;
 
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
@@ -94,6 +100,8 @@ pub mod midi;
 pub mod observer;
 
 #[cfg(feature = "midi")]
+pub use midi::spawn_midi_sensor;
+#[cfg(feature = "midi")]
 pub use midi::MidiHub;
 pub use sensor::Sensor;
 
@@ -109,8 +117,9 @@ pub use automaton::{
 };
 pub use automaton_task::spawn_automaton_task;
 pub use engine::{
-    midi_cc, osc_address, Automaton, BoxedModule, ControlEvent, EventPattern, Mapping, Module,
-    NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target, Transform,
+    midi_cc, midi_note, osc_address, Automaton, BoxedModule, ControlEvent, EventPattern, Mapping,
+    MidiNoteKind, Module, NoAction, OscSurface, OscSurfaceEntry, ParameterMapping, Servo, Target,
+    Transform,
 };
 
 pub use strategy::{ConflictStrategy, ControlStrategy};

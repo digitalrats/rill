@@ -395,6 +395,95 @@ fn register_router<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
     });
 } // end register_router
 
+// ============================================================================
+// Module registration — custom rack modules (MIDI, OSC, etc.)
+// ============================================================================
+
+/// Register all built-in module constructors into a [`ModuleFactory`].
+///
+/// Called once at application startup. Modules are constructed on-demand
+/// when a [`RackDef`] or [`PatchbayDef`] is processed.
+pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    factory.register(rill_patchbay::servo_constructor::ServoConstructor);
+    #[cfg(feature = "midi")]
+    register_midi_module(factory);
+}
+
+#[cfg(feature = "midi")]
+fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::CommandEnum;
+    use rill_io::midi_backend::MidiBackend;
+    use rill_patchbay::module_def::{ModuleDef, SensorDef};
+    use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    struct MidiConstructor;
+
+    impl ModuleConstructor for MidiConstructor {
+        fn type_name(&self) -> &'static str {
+            "midi"
+        }
+
+        fn construct(
+            &self,
+            module: &ModuleDef,
+            _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
+            system: &std::sync::Arc<rill_core_actor::ActorSystem>,
+            graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
+        ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
+            let SensorDef::Midi {
+                backend,
+                port_name,
+                mappings,
+            } = match module {
+                ModuleDef::Sensor(s) => s,
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(
+                        "MidiConstructor requires ModuleDef::Sensor".into(),
+                    ))
+                }
+            };
+
+            let be: Box<dyn MidiBackend> = match backend.as_str() {
+                "midir" => {
+                    let b = rill_io::backends::MidirBackend::new_by_name("rill-midi", port_name)
+                        .or_else(|_| rill_io::backends::MidirBackend::new("rill-midi"))
+                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?;
+                    Box::new(b)
+                }
+                #[cfg(feature = "alsa")]
+                "alsa_seq" => Box::new(
+                    rill_io::backends::AlsaSeqBackend::new(port_name)
+                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?,
+                ),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(format!(
+                        "unknown MIDI backend '{backend}'"
+                    )))
+                }
+            };
+
+            let actor_ref = rill_patchbay::midi::spawn_midi_sensor(
+                port_name,
+                be,
+                mappings.iter().map(|m| m.to_mapping()).collect(),
+                system,
+                graph_ref.clone(),
+            );
+            Ok(actor_ref)
+        }
+
+        fn clone_box(&self) -> Box<dyn ModuleConstructor> {
+            Box::new(MidiConstructor)
+        }
+    }
+
+    factory.register(MidiConstructor);
+}
+
 /// Deserialise a JSON graph string into a
 /// [rill_graph::serialization::GraphDef].
 ///

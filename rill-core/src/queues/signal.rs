@@ -47,7 +47,7 @@ pub enum SignalOrigin {
     Sensor(String),
     /// Command from a servo (physical output device).
     Servo(String),
-    /// Command from an external source (OSC, MIDI, etc.).
+    /// Command from an external source (OSC, etc.).
     External(String),
     /// Manual user interaction (UI slider, button, etc.).
     Manual,

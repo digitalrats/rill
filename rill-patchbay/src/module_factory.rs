@@ -1,11 +1,9 @@
-//! Module factory — type-registry for custom rack module construction.
+//! Module factory — type-registry for modular rack module construction.
 //!
-//! Unlike [`crate::automaton::factory::AutomatonFactory`] which is tied to
-//! the Servo+Automaton pattern, `ModuleFactory` lets applications register
-//! arbitrary modules that receive `ClockTick` via the rack actor.
-//!
-//! The factory takes care of actor creation, drain loop, and thread spawning
-//! via [`rill_core_actor::ActorSystem::spawn_detached`].
+//! `ModuleFactory` is the single creation point for all rack modules:
+//! Servo, Sensor, Graph, and Custom. Each archetype registers a
+//! [`ModuleConstructor`] that receives a [`ModuleDef`] descriptor
+//! and returns an [`ActorRef<CommandEnum>`] for the rack actor fan-out.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -15,7 +13,51 @@ use rill_core::queues::CommandEnum;
 use rill_core::traits::ParamValue;
 use rill_core_actor::{ActorRef, ActorSystem};
 
-use crate::engine::{BoxedModule, Module};
+use crate::module_def::{AutomatonDef, ModuleDef};
+
+/// Errors returned by module construction via the type-registry.
+#[derive(Debug, Clone)]
+pub enum ModuleError {
+    /// The requested module type name was not registered.
+    UnknownType(String),
+    /// Construction failed with a user-readable reason.
+    ConstructionFailed(String),
+}
+
+impl fmt::Display for ModuleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownType(t) => write!(f, "unknown module type: {t}"),
+            Self::ConstructionFailed(e) => write!(f, "module construction failed: {e}"),
+        }
+    }
+}
+
+/// Constructs rack modules from a [`ModuleDef`] descriptor.
+///
+/// Each constructor receives the full module descriptor plus the list of
+/// automaton definitions needed by `Servo` modules. Custom and registered
+/// constructors return an [`ActorRef<CommandEnum>`] that the rack actor
+/// uses for fan-out.
+pub trait ModuleConstructor: Send + Sync {
+    /// Returns the string key used to register this constructor.
+    fn type_name(&self) -> &'static str;
+
+    /// Build the module and return its actor handle.
+    ///
+    /// `automaton_defs` provides the automaton definitions referenced
+    /// by `ModuleDef::Servo`. Other module types ignore this parameter.
+    fn construct(
+        &self,
+        module: &ModuleDef,
+        automaton_defs: &[AutomatonDef],
+        system: &Arc<ActorSystem>,
+        graph_ref: &ActorRef<CommandEnum>,
+    ) -> Result<ActorRef<CommandEnum>, ModuleError>;
+
+    /// Returns a heap-allocated clone of this constructor.
+    fn clone_box(&self) -> Box<dyn ModuleConstructor>;
+}
 
 /// How the actor's drain loop is spawned.
 #[derive(Debug, Clone, Copy)]
@@ -33,35 +75,6 @@ pub enum Drain {
     /// I/O callback drain — handler drained inline in the backend callback.
     /// Factory spawns the I/O thread, construction closures run inside it.
     IoCallback,
-}
-/// Errors returned by module construction via the type-registry.
-#[derive(Debug, Clone)]
-pub enum FactoryError {
-    /// The requested module type name was not registered.
-    UnknownType(String),
-}
-
-impl fmt::Display for FactoryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownType(t) => write!(f, "unknown module type: {t}"),
-        }
-    }
-}
-/// Constructs generic rack modules from type name, params, actor system, and graph handle.
-pub trait ModuleConstructor: Send + Sync {
-    /// Returns the string key used to register this module constructor.
-    fn type_name(&self) -> &'static str;
-    /// Builds a boxed module, spawning its actor via the provided ActorSystem.
-    fn construct(
-        &self,
-        id: &str,
-        params: &HashMap<String, ParamValue>,
-        system: &Arc<ActorSystem>,
-        graph_ref: &ActorRef<CommandEnum>,
-    ) -> BoxedModule;
-    /// Returns a heap-allocated clone of this constructor.
-    fn clone_box(&self) -> Box<dyn ModuleConstructor>;
 }
 /// Registry that maps module type names to constructors.
 pub struct ModuleFactory {
@@ -86,6 +99,7 @@ impl ModuleFactory {
     /// `make_handler` receives module params and the graph handle, and returns
     /// the message handler closure. The factory calls it **inside the drain thread**,
     /// so the handler does not need `Send`.
+    #[allow(dead_code)]
     pub fn register_fn(
         &mut self,
         type_name: impl Into<String>,
@@ -108,6 +122,7 @@ impl ModuleFactory {
     /// Register a closure-based constructor (handler: `Send`, for [`Drain::TokioTask`]).
     ///
     /// The returned handler must be `Send` so it can be stored in a tokio future.
+    #[allow(dead_code)]
     pub fn register_fn_send(
         &mut self,
         type_name: impl Into<String>,
@@ -126,20 +141,22 @@ impl ModuleFactory {
             Box::new(ClosureCtor::new_send(drain, make_handler)),
         );
     }
-    /// Looks up a type name and constructs the corresponding module.
+
+    /// Looks up a type name and constructs the corresponding module actor.
     pub fn construct(
         &self,
-        type_name: &str,
-        id: &str,
-        params: &HashMap<String, ParamValue>,
+        module: &ModuleDef,
+        automaton_defs: &[AutomatonDef],
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
-    ) -> Result<BoxedModule, FactoryError> {
+    ) -> Result<ActorRef<CommandEnum>, ModuleError> {
+        let type_name = module.type_name();
         self.entries
             .get(type_name)
-            .ok_or_else(|| FactoryError::UnknownType(type_name.to_string()))
-            .map(|ctor| ctor.construct(id, params, system, graph_ref))
+            .ok_or_else(|| ModuleError::UnknownType(type_name.to_string()))
+            .and_then(|ctor| ctor.construct(module, automaton_defs, system, graph_ref))
     }
+
     /// Checks whether a type name is registered.
     pub fn contains(&self, type_name: &str) -> bool {
         self.entries.contains_key(type_name)
@@ -158,26 +175,6 @@ impl Default for ModuleFactory {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ============================================================================
-// GenericModule — returned by factory for custom modules
-// ============================================================================
-
-struct GenericModule {
-    id: String,
-    actor_ref: ActorRef<CommandEnum>,
-}
-
-impl Module for GenericModule {
-    fn id(&self) -> &str {
-        &self.id
-    }
-    fn handle(&self) -> Option<ActorRef<CommandEnum>> {
-        Some(self.actor_ref.clone())
-    }
-    fn set_enabled(&mut self, _enabled: bool) {}
-    fn stop(&mut self) {}
 }
 
 // ============================================================================
@@ -256,14 +253,23 @@ impl ModuleConstructor for ClosureCtor {
     }
     fn construct(
         &self,
-        id: &str,
-        params: &HashMap<String, ParamValue>,
+        module: &ModuleDef,
+        _automaton_defs: &[AutomatonDef],
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
-    ) -> BoxedModule {
-        let id_owned = id.to_string();
-        let id_for_mod = id_owned.clone();
-        let name = id_owned.clone();
+    ) -> Result<ActorRef<CommandEnum>, ModuleError> {
+        let ModuleDef::Custom {
+            type_name: _,
+            params,
+        } = module
+        else {
+            return Err(ModuleError::ConstructionFailed(
+                "ClosureCtor only supports Custom modules".into(),
+            ));
+        };
+
+        let id_owned = String::new(); // Custom modules use type_name as id
+        let name = "custom".to_string();
         let graph_ref = graph_ref.clone();
         let params = params.clone();
 
@@ -275,10 +281,7 @@ impl ModuleConstructor for ClosureCtor {
                     move || f(&id_owned, &params, &graph_ref),
                     interval_ms,
                 );
-                Box::new(GenericModule {
-                    id: id_for_mod,
-                    actor_ref,
-                })
+                Ok(actor_ref)
             }
             (ClosureCtorKind::Send { f }, Drain::OsThread { interval_ms }) => {
                 let f = f.clone();
@@ -287,10 +290,7 @@ impl ModuleConstructor for ClosureCtor {
                     move || f(&id_owned, &params, &graph_ref),
                     interval_ms,
                 );
-                Box::new(GenericModule {
-                    id: id_for_mod,
-                    actor_ref,
-                })
+                Ok(actor_ref)
             }
             (ClosureCtorKind::Send { f }, Drain::TokioTask { interval_ms }) => {
                 let f = f.clone();
@@ -299,19 +299,22 @@ impl ModuleConstructor for ClosureCtor {
                     move || f(&id_owned, &params, &graph_ref),
                     interval_ms,
                 );
-                Box::new(GenericModule {
-                    id: id_for_mod,
-                    actor_ref,
-                })
+                Ok(actor_ref)
             }
             (ClosureCtorKind::Erased { .. }, Drain::TokioTask { .. }) => {
-                panic!("TokioTask drain requires a Send handler; use register_fn_send()")
+                Err(ModuleError::ConstructionFailed(
+                    "TokioTask drain requires a Send handler; use register_fn_send()".into(),
+                ))
             }
             (ClosureCtorKind::Erased { .. }, Drain::IoCallback) => {
-                panic!("IoCallback drain not supported via register_fn(); use Graph constructor directly")
+                Err(ModuleError::ConstructionFailed(
+                    "IoCallback drain not supported via register_fn(); use Graph constructor directly".into(),
+                ))
             }
             (ClosureCtorKind::Send { .. }, Drain::IoCallback) => {
-                panic!("IoCallback drain not supported via register_fn_send(); use Graph constructor directly")
+                Err(ModuleError::ConstructionFailed(
+                    "IoCallback drain not supported via register_fn_send(); use Graph constructor directly".into(),
+                ))
             }
         }
     }
