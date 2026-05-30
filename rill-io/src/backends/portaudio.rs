@@ -130,20 +130,41 @@ impl IoBackend<f32> for PortAudioBackend {
         let _xruns = self.xruns.clone();
         let sample_rate = self.config.sample_rate;
         let out_channels = self.config.output_channels;
-        let in_channels = self.config.input_channels;
+        // PortAudio's ALSA backend cannot start output-only streams on
+        // virtual devices (PipeWire/JACK) — it negotiates buffer parameters
+        // that the virtual device accepts but silently hangs on. Opening a
+        // minimal input stream alongside the output enters duplex mode,
+        // which uses a different parameter negotiation path that works.
+        let in_channels = if out_channels > 0 {
+            self.config.input_channels.max(1)
+        } else {
+            self.config.input_channels
+        };
         let buf_frames = self.config.buffer_size as usize;
 
         let pa = pa::PortAudio::new().map_err(|e| format!("PortAudio init: {e}"))?;
 
         // Output stream
         if out_channels > 0 {
-            let settings = pa
-                .default_output_stream_settings(
-                    out_channels as i32,
-                    sample_rate as f64,
-                    buf_frames as u32,
-                )
-                .map_err(|e| format!("PortAudio output settings: {e}"))?;
+            let dev = pa
+                .default_output_device()
+                .map_err(|e| format!("PortAudio output device: {e}"))?;
+            let info = pa
+                .device_info(dev)
+                .map_err(|e| format!("PA device info: {e}"))?;
+            let params = pa::StreamParameters::new(
+                dev,
+                out_channels as i32,
+                true,
+                info.default_low_output_latency,
+            );
+            let flags = pa::StreamFlags::CLIP_OFF | pa::StreamFlags::DITHER_OFF;
+            let settings = pa::OutputStreamSettings::with_flags(
+                params,
+                sample_rate as f64,
+                buf_frames as u32,
+                flags,
+            );
             let mut stream = pa
                 .open_non_blocking_stream(settings, {
                     let oslot = oslot.clone();
@@ -155,7 +176,6 @@ impl IoBackend<f32> for PortAudioBackend {
                         let buffer = args.buffer;
                         let total = buffer.len();
                         let block = buf_frames * out_channels as usize;
-                        // Stack-allocated temp buffer (max sane PA block size)
                         let mut temp_buf = [0.0f32; 8192];
                         let mut off = 0usize;
                         while off + block <= total {
@@ -212,7 +232,6 @@ impl IoBackend<f32> for PortAudioBackend {
             }
         }
 
-        self.running.store(true, Ordering::Release);
         Ok(())
     }
 

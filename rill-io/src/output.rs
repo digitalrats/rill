@@ -200,16 +200,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         if let Some(ref backend) = self.backend {
             let nch = self.inputs.len();
             if nch > 0 {
-                let mut channels: Vec<&[T]> = Vec::with_capacity(nch);
-                for i in 0..nch {
-                    if let Some(port) = self.inputs.get(i) {
-                        channels.push(port.buffer.as_array());
+                let all_received = self.inputs.iter().all(|p| p.data_received);
+                if all_received {
+                    let mut channels: Vec<&[T]> = Vec::with_capacity(nch);
+                    for i in 0..nch {
+                        if let Some(port) = self.inputs.get(i) {
+                            channels.push(port.buffer.as_array());
+                        }
                     }
+                    backend.write(&channels);
+                    for p in &mut self.inputs {
+                        p.data_received = false;
+                    }
+                    self.state.advance();
                 }
-                backend.write(&channels);
             }
         }
-        self.state.advance();
         Ok(())
     }
 }
