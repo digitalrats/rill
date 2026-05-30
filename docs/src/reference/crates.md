@@ -15,7 +15,7 @@ The Rill workspace consists of 17 crates, all versioned synchronously.
 | **rill-router** | 0.5.0-beta.2 | EQ (graphic, parametric) + mixer (channels, sends, master) | [docs.rs](https://docs.rs/rill-router) |
 | **rill-patchbay** | 0.5.0-beta.2 | Automation — LFO, envelopes, sensors, servos, mappings | [docs.rs](https://docs.rs/rill-patchbay) |
 | **rill-lofi** | 0.5.0-beta.2 | Lo-fi emulation — NES, AY-3-8910, Akai S900 | [docs.rs](https://docs.rs/rill-lofi) |
-| **rill-io** | 0.5.0-beta.2 | Audio I/O — ALSA, CPAL, PipeWire, JACK backends | [docs.rs](https://docs.rs/rill-io) |
+| **rill-io** | 0.5.0-beta.2 | Audio I/O — PortAudio, ALSA, PipeWire, JACK backends | [docs.rs](https://docs.rs/rill-io) |
 | **rill-telemetry** | 0.5.0-beta.2 | Probes, collectors, real-time monitoring | [docs.rs](https://docs.rs/rill-telemetry) |
 | **rill-analog-filters** | 0.5.0-beta.2 | WDF-based analog filters — WdfMoogLadder | [docs.rs](https://docs.rs/rill-analog-filters) |
 | **rill-analog-effects** | 0.5.0-beta.2 | Analog circuit models — op-amp, tape deck, preamps | [docs.rs](https://docs.rs/rill-analog-effects) |

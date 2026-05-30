@@ -7,8 +7,8 @@ constraints depend on the backend model.
 
 | Model | Backends | RT guarantee |
 |---|---|---|
-| **Callback-driven** | PipeWire, JACK | Hard RT — callback fires on the audio device's real-time thread. No syscalls, no allocation, no locks. |
-| **Poll-driven** | ALSA, CPAL | Soft RT — the backend's own thread loops polling the audio device. Must not use `thread::sleep()` to pace iterations. Use `poll()` / `epoll()` on audio FDs instead. |
+| **Callback-driven** | PipeWire, JACK, PortAudio | Hard RT — callback fires on the audio device's real-time thread. No syscalls, no allocation, no locks. |
+| **Poll-driven** | ALSA | Soft RT — the backend's own thread loops polling the audio device. Must not use `thread::sleep()` to pace iterations. Use `poll()` / `epoll()` on audio FDs instead. |
 
 ## Rules for the RT path (applies to both models)
 
