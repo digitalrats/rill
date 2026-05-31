@@ -86,7 +86,7 @@ Key performance drivers:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.4"
+rill-adrift = "0.5.0-beta.5"
 ```
 
 Enable optional features as needed (see table below).
