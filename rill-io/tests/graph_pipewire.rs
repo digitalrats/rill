@@ -61,7 +61,7 @@ mod graph_pipewire_it {
             input.generate(&ctx, &[], &[]).unwrap();
             let l = input.output_port(0).unwrap().buffer.as_array();
             let r = input.output_port(1).unwrap().buffer.as_array();
-        let _ = output.consume(&ctx, &[l, r], &[], &[], &[]);
+            let _ = output.consume(&ctx, &[l, r], &[], &[], &[]);
         }
     }
 }

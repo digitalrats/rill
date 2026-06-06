@@ -518,9 +518,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Small settle: allow backend to register ports before printing prompt
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    println!(
-        "AY-3-8910 Chiptune — Popcorn (STC) [{backend_display}]\n"
-    );
+    println!("AY-3-8910 Chiptune — Popcorn (STC) [{backend_display}]\n");
     println!("Backend ports are live — connect your recording app now.\n");
     println!("Press Enter to start playback...");
     println!("  (Future: MIDI Start 0xFA will also trigger playback)\n");

@@ -188,13 +188,9 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
                 ParamMetadata::new("dc_offset", ParamType::Float, ParamValue::Float(0.0))
                     .with_description("DC offset correction (subtracted after gain)")
                     .with_range(-1.0, 1.0, 0.01),
-                ParamMetadata::new(
-                    "output_ceiling",
-                    ParamType::Float,
-                    ParamValue::Float(1.0),
-                )
-                .with_description("Hard clamp ceiling (±value)")
-                .with_range(0.0, 1.0, 0.01),
+                ParamMetadata::new("output_ceiling", ParamType::Float, ParamValue::Float(1.0))
+                    .with_description("Hard clamp ceiling (±value)")
+                    .with_range(0.0, 1.0, 0.01),
                 ParamMetadata::new("enable_bitcrush", ParamType::Bool, ParamValue::Bool(true))
                     .with_description("Enable bitcrushing"),
                 ParamMetadata::new(
@@ -674,7 +670,11 @@ mod tests {
         // (exact value depends on DAC emulation, which always runs)
         let s = processor.process_sample(1.0);
         // Without offset: ~0.77 (dac * delay * gain). With offset 0.5: ~0.27
-        assert!(s < 0.5, "offset should reduce output below 0.5, got {:.3}", s);
+        assert!(
+            s < 0.5,
+            "offset should reduce output below 0.5, got {:.3}",
+            s
+        );
         assert!(
             s > 0.0,
             "positive input should stay positive after offset, got {:.3}",
