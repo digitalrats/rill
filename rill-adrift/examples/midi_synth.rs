@@ -22,13 +22,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rill_core::traits::{ParamValue, Params};
+use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+use rill_core::traits::{NodeId, ParamValue, ParameterId, Params, PortId};
 use rill_core_actor::ActorSystem;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};
 use rill_io::backends::MidirBackend;
-use rill_patchbay::engine::{midi_cc, midi_note, MidiNoteKind, Transform};
+use rill_patchbay::engine::{midi_cc, NoAction, ParameterMapping, Transform};
 use rill_patchbay::midi::spawn_midi_sensor;
+use rill_patchbay::Servo;
 
 use rill_adrift::registration;
 
@@ -98,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let (system, graph_ref) = graph_rx.recv()?;
+    let system = Arc::new(system);
 
     // ── 5. MIDI sensor with declarative mappings ────────────────────
     // Connect: by name substring or numeric index
@@ -112,53 +115,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let osc_node = rill_core::traits::NodeId(osc as u32);
 
-    let mappings = vec![
-        midi_cc(
-            128,
-            None,
-            osc_node,
-            "frequency",
-            100.0,
-            4000.0,
-            Transform::Exponential,
-        ),
-        midi_cc(1, None, osc_node, "amplitude", 0.0, 1.0, Transform::Linear),
-        midi_note(
-            MidiNoteKind::Frequency,
-            None,
-            None,
-            osc_node,
-            "frequency",
-            0.0,
-            1.0,
-            Transform::Linear,
-        ),
-        midi_note(
-            MidiNoteKind::Amplitude,
-            None,
-            None,
-            osc_node,
-            "amplitude",
-            0.0,
-            1.0,
-            Transform::Linear,
-        ),
-    ];
+    // Additional CC mappings (non-stateful controllers)
+    let mappings = vec![midi_cc(
+        7,
+        None,
+        osc_node,
+        "amplitude",
+        0.0,
+        1.0,
+        Transform::Linear,
+    )];
 
-    spawn_midi_sensor("midi", midi_backend, mappings, &system, graph_ref);
+    // Create a servo with stateful pitch bend / mod wheel + generic mappings
+    let servo_ref = Servo::new(
+        "midi_servo",
+        NoAction,
+        osc_node,
+        "", // target_param overridden per-event
+        ParameterMapping::Linear,
+        0.0,
+        1.0,
+        system.clone(),
+        graph_ref.clone(),
+    )
+    .with_pitch_bend(128, 2.0) // CC#128 = pitch bend, ±2 semitones
+    .with_mod_wheel(1) // CC#1 = mod wheel
+    .with_mappings(mappings) // fallback: generic CC mappings
+    .spawn(&system);
+
+    // Spawn the MIDI sensor, pointing raw events to the servo
+    spawn_midi_sensor("midi", midi_backend, &system, servo_ref);
 
     // ── 6. Keep alive until Enter ────────────────────────────────────
     println!("MIDI synth active (backend: {audio_backend}):");
-    println!("  CC#128 (pitch bend)  → frequency (100 Hz – 4 kHz)");
-    println!("  CC#1 (mod wheel)     → amplitude (0.0 – 1.0)");
-    println!("  Note On/Off      → frequency + amplitude");
+    println!("  Pitch bend (CC#128) → ±2 semitones (stateful)");
+    println!("  Mod wheel (CC#1)    → amplitude (stateful)");
+    println!("  CC#7 (volume)       → amplitude (0.0 – 1.0)");
+    println!("  Note On              → freq = midi_to_freq * 2^(pitch_bend/12)");
+    println!("  Note Off             → amplitude = 0");
     println!();
     println!("Press Enter to stop.");
 
     let r = running.clone();
+    let shutdown_gr = graph_ref.clone();
     std::thread::spawn(move || {
         let mut input = String::new();
         let _ = std::io::stdin().read_line(&mut input);
+
+        // Fade out, then let the audio stream run in silence before stopping
+        let pid = rill_core::traits::ParameterId::new("amplitude").unwrap();
+        shutdown_gr.send(CommandEnum::SetParameter(SetParameter::new(
+            PortId::param(NodeId(osc as u32), 0),
+            pid,
+            ParamValue::Float(0.0),
+            SignalOrigin::Manual,
+        )));
+        // Let smoothing + zero-crossing detection complete, then let
+        // the backend run a bit more in silence before cutting power
+        std::thread::sleep(std::time::Duration::from_secs(1));
         r.store(false, Ordering::Release);
     });
 
