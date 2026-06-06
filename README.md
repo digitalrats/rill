@@ -16,7 +16,7 @@ modelling.
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)  │
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                     │
-│  rill-core-wdf  │  rill-analog-filters  │  rill-analog      │
+│  rill-core-model  │  rill-analog-filters  │  rill-analog      │
 │  -effects                                                  │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
@@ -159,7 +159,7 @@ topology definition.
 | **rill-core** | Foundation: traits, math, buffers, queues, time, macros |
 | **rill-core-actor** | Actor model: ActorRef, ActorCell, ActorSystem for lock-free message passing |
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
-| **rill-core-wdf** | Wave Digital Filter elements and adapters |
+| **rill-core-model** | Wave Digital Filter elements and adapters |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
 | **rill-oscillators** | Sine, saw, noise, LFO, envelope graph nodes |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
@@ -207,7 +207,7 @@ graph TD
     CORE --> IO[rill-io]
     CORE --> LOFI[rill-lofi]
     CORE --> TELEMETRY[rill-telemetry]
-    CORE --> CORE_WDF[rill-core-wdf]
+    CORE --> CORE_WDF[rill-core-model]
     CORE_WDF --> ANALOG_FILTERS[rill-analog-filters]
     CORE_WDF --> ANALOG_EFFECTS[rill-analog-effects]
     CORE --> SAMPLER[rill-sampler]

@@ -25,7 +25,7 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 | **Graph** | `rill-graph` — static DAG audio graph, `Port::propagate` (process_tick, process_block, spawn) |
 | **Effects** | `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router` |
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
-| **Analog** | `rill-core-wdf`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |
+| **Analog** | `rill-core-model`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |
 | **I/O** | `rill-io` — ALSA, CPAL, PipeWire, JACK backends (pure I/O, no engine) |
 | **Network** | `rill-osc` — OSC server and networking |
 | **Monitoring** | `rill-telemetry` — probes, collectors |

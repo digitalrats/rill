@@ -13,7 +13,7 @@ independently.
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)  │
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                     │
-│  rill-core-wdf  │  rill-analog-filters  │  rill-analog      │
+│  rill-core-model  │  rill-analog-filters  │  rill-analog      │
 │  -effects                                                  │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (ALSA / CPAL / PipeWire / JACK)                    │

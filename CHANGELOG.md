@@ -216,7 +216,7 @@ Graph.run() → tick: parent_ref.send(ClockTick)
   - `pre_process()` — feedback mix via 4-wide add (all feedback nodes accelerated)
   - 8 nodes: direct port buffer write eliminates 2 `[T; BUF_SIZE]` copies per block per node
 
-- **WDF SIMD (rill-core-wdf)**:
+- **WDF SIMD (rill-core-model)**:
   - `process_incident_vector` on `Resistor`, `Capacitor`, `Inductor`, `Diode` via `ScalarVector4`
   - Diode Newton-Raphson vectorized with `VectorMask::all()` early exit
   - `process_batch_simd` free function for batch processing
@@ -329,10 +329,10 @@ Graph.run() → tick: parent_ref.send(ClockTick)
   - `IoControl` trait in `rill-core::io` — uniform register write interface
   - `LofiInput<T, BUF_SIZE>` — `Source` node wrapping any `IoBackend` with lofi processing
 
-- **WDF tape module** in `rill-core-wdf`:
+- **WDF tape module** in `rill-core-model`:
   - `RecordHead<T>`, `PlaybackHead<T>` — analog tape physics, `Algorithm<T>`
   - `OpAmp<T>` — operational amplifier as `WdfElement<T>`
-  - `CassetteDeck` in `rill-analog-effects` refactored to use heads from `rill-core-wdf`
+  - `CassetteDeck` in `rill-analog-effects` refactored to use heads from `rill-core-model`
 
 - **`Transcendental` trait extended**: `tanh()`, `signum()`, `random()` — enables
   stochastic modeling in generic WDF/dsp code
@@ -370,7 +370,7 @@ Graph.run() → tick: parent_ref.send(ClockTick)
 
 - **`rill-io/cpal`** — replaced by `rill-io/portaudio` (cross-platform, cleaner API)
 - `Ay38910Emulator`, `NesEmulator` — replaced by `Chip` + `Backend` + `LofiInput`
-- `rill-analog-effects::OperationalAmplifier` — replaced by `rill_core_wdf::OpAmp`
+- `rill-analog-effects::OperationalAmplifier` — replaced by `rill_core_model::OpAmp`
 
 ### 📖 Documentation
 
@@ -672,7 +672,7 @@ All 17 crates published on crates.io at `0.5.0-beta.1`.
 
 #### Аналоговое моделирование
 
-- **`rill-core-wdf`** — WDF-ядро: элементы (R, C, L, диод), адаптеры (последовательный,
+- **`rill-core-model`** — WDF-ядро: элементы (R, C, L, диод), адаптеры (последовательный,
   параллельный), анализ, MoogLadder
 - **`rill-analog-filters`** — аналоговые фильтры на WDF (WdfMoogLadder, WdfRcPole)
 - **`rill-analog-effects`** — аналоговые эффекты (операционный усилитель, кассетный
@@ -706,7 +706,7 @@ All 17 crates published on crates.io at `0.5.0-beta.1`.
 |-------|----------|
 | `rill-core` | Единое ядро (трейты, очереди, математика, макросы) |
 | `rill-core-dsp` | DSP-алгоритмы (фильтры, генераторы, векторные операции) |
-| `rill-core-wdf` | WDF-ядро (элементы, адаптеры, анализ) |
+| `rill-core-model` | WDF-ядро (элементы, адаптеры, анализ) |
 | `rill-patchbay` | Автоматы, сенсоры, серво |
 | `rill-router` | EQ + микшер |
 | `rill-telemetry` | Пробники и коллекторы |

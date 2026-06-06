@@ -10,7 +10,7 @@ documentation = "https://docs.rs/rill-analog-filters"
 
 [dependencies]
 rill-core = { workspace = true }
-rill-core-wdf = { workspace = true }
+rill-core-model = { workspace = true }
 
 [features]
 default = []

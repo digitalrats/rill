@@ -1,4 +1,4 @@
-# rill-core-wdf
+# rill-core-model
 
 Wave Digital Filter (WDF) core — elements, adapters, and analysis for analog circuit modeling.
 
@@ -18,4 +18,4 @@ Wave Digital Filter (WDF) core — elements, adapters, and analysis for analog c
 ## Links
 
 - Repository: <https://github.com/DigitalRats/rill>
-- Documentation: <https://docs.rs/rill-core-wdf>
+- Documentation: <https://docs.rs/rill-core-model>

@@ -31,7 +31,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              Analog Modeling                          │   │
 │  │  ┌──────────────┐ ┌───────────────┐ ┌──────────────┐ │   │
-│  │  │rill-core-wdf │ │rill-analog-   │ │rill-analog-  │ │   │
+│  │  │rill-core-model │ │rill-analog-   │ │rill-analog-  │ │   │
 │  │  │(WDF core)    │ │filters        │ │effects       │ │   │
 │  │  │ active       │ │(WdfMoogLadder)│ │(op-amp, tape)│ │   │
 │  │  └──────────────┘ └───────────────┘ └──────────────┘ │   │
@@ -394,12 +394,12 @@ let mut akai = LofiProcessor::new(akai_config);
 ### `rill-telemetry` (0.5.0-beta.2, ✅ active)
 Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
 
-### `rill-core-wdf` (0.5.0-beta.2, ✅ active)
+### `rill-core-model` (0.5.0-beta.2, ✅ active)
 Wave Digital Filter (WDF) core — elements (Resistor, Capacitor, Inductor, Diode), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion) and WDF filters (WdfMoogLadder). Generic over `rill_core::AudioNum` — supports `f32` and `f64`. Optional `simd` feature enables SIMD vectorization via `rill_core::vector::F64x4` (backed by `wide`).
 
 ```rust
-use rill_core_wdf::{Resistor, Capacitor, WdfElement, WaveVariables};
-use rill_core_wdf::filters::MoogLadder;
+use rill_core_model::{Resistor, Capacitor, WdfElement, WaveVariables};
+use rill_core_model::filters::MoogLadder;
 use rill_core::traits::Algorithm;
 
 let mut cap: Capacitor<f64> = Capacitor::new(0.1e-6, 44100.0);
@@ -412,7 +412,7 @@ let y = ladder.process_sample(0.5);
 ```
 
 ### `rill-analog-filters` (0.5.0-beta.2, ✅ active)
-WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_wdf::filters::MoogLadder<f64>`. Provides graph nodes for the processor.
+WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::filters::MoogLadder<f64>`. Provides graph nodes for the processor.
 
 ```rust
 use rill_analog_filters::WdfMoogLadderProcessor;
@@ -422,7 +422,7 @@ processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(
 ```
 
 ### `rill-analog-effects` (0.5.0-beta.2, ✅ active)
-Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-wdf`.
+Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-model`.
 
 ```rust
 use rill_analog_effects::OperationalAmplifier;
@@ -501,7 +501,7 @@ graph TD
     CORE --> TELEMETRY[rill-telemetry]
     CORE --> ANALOG_FILTERS[rill-analog-filters]
     CORE --> ANALOG_EFFECTS[rill-analog-effects]
-    CORE --> CORE_WDF[rill-core-wdf]
+    CORE --> CORE_WDF[rill-core-model]
     CORE_WDF --> ANALOG_FILTERS
     CORE_WDF --> ANALOG_EFFECTS
     

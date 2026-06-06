@@ -7,7 +7,7 @@ The Rill workspace consists of 17 crates, all versioned synchronously.
 | **rill-adrift** | 0.5.0-beta.2 | Umbrella crate — re-exports all workspace crates | [docs.rs](https://docs.rs/rill-adrift) |
 | **rill-core** | 0.5.0-beta.2 | Core traits, math, buffers, queues, time, macros, interpolation | [docs.rs](https://docs.rs/rill-core) |
 | **rill-core-dsp** | 0.5.0-beta.2 | DSP algorithms, vector ops, filters, generators, sample player | [docs.rs](https://docs.rs/rill-core-dsp) |
-| **rill-core-wdf** | 0.5.0-beta.2 | Wave Digital Filter core — elements, adapters, analysis | [docs.rs](https://docs.rs/rill-core-wdf) |
+| **rill-core-model** | 0.5.0-beta.2 | Wave Digital Filter core — elements, adapters, analysis | [docs.rs](https://docs.rs/rill-core-model) |
 | **rill-graph** | 0.5.0-beta.2 | Static DAG signal graph with topological sort | [docs.rs](https://docs.rs/rill-graph) |
 | **rill-oscillators** | 0.5.0-beta.2 | Sine, saw, noise, LFO, envelope, wavetable nodes | [docs.rs](https://docs.rs/rill-oscillators) |
 | **rill-digital-filters** | 0.5.0-beta.2 | Biquad, SVF, Comb, MoogLadder filter nodes | [docs.rs](https://docs.rs/rill-digital-filters) |
@@ -28,7 +28,7 @@ The Rill workspace consists of 17 crates, all versioned synchronously.
 |-------|----------|
 | `rill-core` | `serde`, `simd`                                                                               |
 | `rill-core-dsp` | `simd`, `f64`, `fast_math`, `unstable`                                                        |
-| `rill-core-wdf` | `simd`                                                                                        |
+| `rill-core-model` | `simd`                                                                                        |
 | `rill-digital-effects` | `modulation` (enables `rill-oscillators`)                                                     |
 | `rill-graph` | `serialization`                                                                               |
 | `rill-patchbay` | `serde`, `json`, `cbor`, `serialization`                                                      |

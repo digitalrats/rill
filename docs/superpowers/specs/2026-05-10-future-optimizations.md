@@ -151,7 +151,7 @@ let mut master_right = vec![0.0f32; BUF_SIZE];
 
 #### D2. ParallelAdapter Vec allocation
 
-**Crate:** `rill-core-wdf`
+**Crate:** `rill-core-model`
 **File:** `src/adapters.rs:146`
 
 ```rust

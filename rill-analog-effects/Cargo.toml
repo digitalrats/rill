@@ -10,7 +10,7 @@ documentation = "https://docs.rs/rill-analog-effects"
 
 [dependencies]
 rill-core = { workspace = true }
-rill-core-wdf = { workspace = true }
+rill-core-model = { workspace = true }
 rand = { workspace = true }
 
 [features]

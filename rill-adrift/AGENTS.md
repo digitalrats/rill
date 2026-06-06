@@ -24,5 +24,5 @@ cargo clippy -p rill-adrift
 
 ## Known issues
 
-- Feature `analog` enables three crates at once: `rill-core-wdf`, `rill-analog-filters`, `rill-analog-effects`.
+- Feature `analog` enables three crates at once: `rill-core-model`, `rill-analog-filters`, `rill-analog-effects`.
 - Backend features (`alsa`, `portaudio`, etc.) only work when `io` feature is also enabled.

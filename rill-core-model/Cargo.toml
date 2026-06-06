@@ -1,12 +1,12 @@
 [package]
-name = "rill-core-wdf"
+name = "rill-core-model"
 version = "0.5.0-beta.5"
 edition = "2021"
 description = "Wave Digital Filter core — elements, adapters, and analysis for analog circuit modeling"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/rill-core-wdf"
+documentation = "https://docs.rs/rill-core-model"
 
 [dependencies]
 rill-core = { workspace = true }

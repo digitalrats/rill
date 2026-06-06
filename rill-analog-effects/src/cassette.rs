@@ -1,5 +1,5 @@
-use rill_core_wdf::tape::{PlaybackHead, RecordHead};
-use rill_core_wdf::OpAmp;
+use rill_core_model::tape::{PlaybackHead, RecordHead};
+use rill_core_model::OpAmp;
 
 /// Cassette deck model (Sony TC-260 style).
 ///
