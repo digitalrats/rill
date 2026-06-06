@@ -2,6 +2,75 @@
 
 ## [0.5.0-beta.5] — In Progress
 
+### 🕐 Unified RenderContext (Breaking)
+
+**`rill-core` (`time/render.rs`):**
+- `RenderContext` — single stack-allocated context per processing block:
+  `sample_pos`, `samples_since_last`, `sample_rate`, `transport: TransportState`,
+  `speed_ratio` (hardware clock correction, default 1.0).
+- `TransportState` — `is_playing`, `bpm`, `frame_pos`, `time_sig_num/den`,
+  `bar_start_frame`. Replaces `ClockTick::tempo: Option<f32>`.
+- Musical methods moved from `ClockTick` to `RenderContext`:
+  `beat_position()`, `musical_position()`, `is_new_bar()`, `is_new_beat()` —
+  now use configurable `time_sig_num/den` (no longer hardcoded 4/4).
+- `ProcessContext` and `ActionContext` removed — replaced by `&RenderContext`
+  throughout the trait system.
+
+**Trait signatures (breaking):**
+- `Algorithm::process(input, output)` — `ctx` parameter removed (97.4% of impls
+  ignored it; 2 tape heads now use `init()` for sample rate).
+- `Source::generate(&RenderContext, …)`, `Processor::process(&RenderContext, …)`,
+  `Sink::consume(&RenderContext, …)`, `Router::route(&RenderContext, …)` —
+  all use `&RenderContext` instead of `&ClockTick`.
+- `Port::propagate()` — context parameter removed; single `&RenderContext` flows
+  through the DAG without re-wrapping.
+- `Port::run_action()` — context parameter removed.
+- `Port::pre_process()` — `_tick` parameter removed.
+
+**Graph:**
+- `Graph::run()` I/O callback creates one `RenderContext` per block and passes it
+  to both `process_block()` and `propagate()` — no more `ProcessContext` +
+  `ActionContext` duplication.
+- `Graph.system_clock: Option<Arc<SystemClock>>` — when set, creates
+  `RenderContext::with_tempo()` with BPM from the shared clock.
+
+### 🎛️ MIDI Clock Sync
+
+**`rill-patchbay` (`midi_clock.rs`):**
+- `MidiClockTracker` — counts 24ppqn clock pulses (0xF8), derives BPM via
+  running average, writes atomically into `Arc<SystemClock>`.
+- `MidiClockStrategy` trait with three built-in strategies:
+  `FreeRunning` (BPM only), `ResetOnStart` (position reset on Start),
+  `SongPosition` (position reset + `is_playing()` flag).
+- `is_playing: Arc<AtomicBool>` — shared flag, set on MIDI Start/Continue,
+  cleared on Stop. Sequencers and automations check this before producing output.
+- Integrated into `MidiHub` — optional via `MidiHub::with_clock_tracker()`.
+  The tracker's `SystemClock` feeds BPM to `Graph.system_clock`.
+
+### 🔌 JACK MIDI + Transport
+
+**`rill-io`:**
+- `JackMidiBackend` — JACK MIDI input backend. Registers a `MidiIn` port,
+  bridges JACK process callback to `MidiBackend::poll()` via mpsc channel
+  (same pattern as `MidirBackend`).
+- `JackBackend::set_system_clock()` — JACK transport sync: reads BPM from
+  `TransportBBT` in process callback, writes atomically to `SystemClock`.
+
+### 🔈 Lofi: DC Offset + Output Ceiling
+
+**`rill-lofi` (`config.rs`, `lofi_processor.rs`):**
+- `LofiConfig.dc_offset` — subtracted from signal after dry/wet (before gain).
+  Default 0.0. Use 0.5 for AY-3-8910 to centre [0, 1] around zero.
+- `LofiConfig.output_ceiling` — hard clamp `[-ceiling, +ceiling]` (default 1.0).
+- Formula order: `(dry_wet_mix - offset) * gain, clamp to ±ceiling`.
+- New parameters exposed as `"dc_offset"` and `"output_ceiling"` in
+  `LofiProcessor` metadata → available through `SourceDef.parameters`.
+- 3 new tests: offset removal, ceiling clamp, combined behaviour.
+
+**Registration (`rill-adrift/src/registration.rs`):**
+- `rill/lofi_input` constructor now reads `dc_offset`, `output_gain`,
+  `output_ceiling` from `Params`.
+
 ### 🧱 Physical Modeling in `rill-core-model`
 
 **Four new resonant model modules** (`rill-core-model`):

@@ -107,7 +107,8 @@ rill-core/
 │   │   ├── mod.rs             # Time and clock signals
 │   │   ├── clock.rs           # Clock and ClockSource traits
 │   │   ├── source.rs          # Time source implementations
-│   │   ├── tick.rs            # ClockTick
+│   │   ├── tick.rs            # ClockTick (legacy)
+│   │   ├── render.rs          # RenderContext + TransportState
 │   │   └── error.rs           # Time errors
 │   ├── macros/
 │   │   ├── mod.rs             # Macros
@@ -175,7 +176,9 @@ queue.send(CommandEnum::SetParameter(SetParameter {
 
 #### time
 
-Time and tempo abstractions: `Clock` and `ClockSource` traits, `SystemClock`, `ClockTick` structures. Allow nodes to synchronize with system time or external tempo.
+Time, tempo, and transport abstractions: `RenderContext` (unified per-block context — sample clock, `TransportState` with BPM/playing flag/time signature, `speed_ratio` for hardware clock correction), `SystemClock` (atomic BPM + position), `ClockTick` (legacy), `ClockSource` trait. `RenderContext` is built by the I/O backend once per block, passed through the entire DAG via `process_block(&ctx)`. Transport state flows from JACK/PipeWire transport or MIDI clock sync into `SystemClock`, which feeds BPM into the context.
+
+File: `rill-core/src/time/render.rs`.
 
 ```rust
 use rill_core::time::{Clock, SystemClock};
