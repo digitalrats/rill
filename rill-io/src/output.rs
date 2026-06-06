@@ -205,7 +205,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
                     let mut channels: Vec<&[T]> = Vec::with_capacity(nch);
                     for i in 0..nch {
                         if let Some(port) = self.inputs.get(i) {
-                            channels.push(port.buffer.as_array());
+                            channels.push(port.signal_buffer().as_array());
                         }
                     }
                     backend.write(&channels);

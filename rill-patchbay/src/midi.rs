@@ -17,7 +17,7 @@ use rill_core_actor::{ActorRef, ActorSystem};
 use rill_io::midi_backend::MidiBackend;
 use rill_io::midi_message::MidiMessage;
 
-use crate::engine::{ControlEvent, Mapping, MidiTransportKind, Module};
+use crate::engine::{ControlEvent, MidiTransportKind, Module};
 use crate::midi_clock::MidiClockTracker;
 use crate::sensor::Sensor;
 
@@ -154,31 +154,28 @@ impl Drop for MidiHub {
 
 /// Spawns a MIDI sensor that integrates with the actor model.
 ///
-/// Control messages ([`CommandEnum::Sensor`]) are received through the returned
-/// [`ActorRef<CommandEnum>`] which should be registered in the rack's module map.
-/// The polling loop runs in a dedicated OS thread.
+/// The polling loop runs in a dedicated OS thread. Raw MIDI bytes are
+/// decoded into [`ControlEvent`]s and sent to the **servo** via
+/// `CommandEnum::Control`. The servo applies mappings and sends
+/// `SetParameter` to the graph — the sensor never maps or writes
+/// parameters directly.
 ///
 /// # Arguments
 /// * `id` — unique sensor identifier
 /// * `backend` — MIDI I/O backend (e.g. [`MidirBackend`], [`AlsaSeqBackend`])
-/// * `mappings` — event-to-parameter mappings; each mapping's pattern is
-///   matched against parsed MIDI events and, on match, a
-///   `SetParameter` is sent to `graph_ref`
 /// * `system` — actor system for spawning the control actor
-/// * `graph_ref` — target graph for parameter changes
+/// * `servo_ref` — target servo's actor reference for delivering events
 pub fn spawn_midi_sensor(
     id: &str,
     backend: Box<dyn MidiBackend>,
-    mappings: Vec<Mapping>,
     system: &ActorSystem,
-    graph_ref: ActorRef<CommandEnum>,
+    servo_ref: ActorRef<CommandEnum>,
 ) -> ActorRef<CommandEnum> {
     let enabled = Arc::new(AtomicBool::new(true));
-    let gr = graph_ref.clone();
+    let sr = servo_ref.clone();
     let mid = id.to_string();
 
     // Control actor — receives messages from RackActor fan-out (SetEnabled, etc.).
-    // Uses spawn_detached so the handler (!Send) stays inside its own thread.
     let actor_ref = system.spawn_detached(
         &format!("midi_{id}"),
         {
@@ -195,7 +192,7 @@ pub fn spawn_midi_sensor(
         10,
     );
 
-    // Polling thread — external trigger, analogous to Graph's I/O callback.
+    // Polling thread — decodes MIDI, sends raw events to the servo
     thread::spawn(move || {
         let mut backend = backend;
         loop {
@@ -208,11 +205,7 @@ pub fn spawn_midi_sensor(
                 Ok(msgs) => {
                     for msg in &msgs {
                         if let Some(event) = parse_midi(msg) {
-                            for mapping in &mappings {
-                                if let Some(sp) = mapping.apply(&event) {
-                                    gr.send(CommandEnum::SetParameter(sp));
-                                }
-                            }
+                            sr.send(CommandEnum::Control(event));
                         }
                     }
                 }

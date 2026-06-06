@@ -205,7 +205,7 @@ fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BU
     node_ctor!(factory, "rill/sine", |id: NodeId, params: &Params| {
         let mut n = SineOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
-            .with_amplitude(params.get_f32("amp", 0.5));
+            .with_amplitude(params.get_f32("amp", 0.0));
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -214,7 +214,7 @@ fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BU
     node_ctor!(factory, "rill/saw", |id: NodeId, params: &Params| {
         let mut n = SawOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
-            .with_amplitude(params.get_f32("amp", 0.5));
+            .with_amplitude(params.get_f32("amp", 0.0));
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -468,14 +468,32 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
                 }
             };
 
-            let actor_ref = rill_patchbay::midi::spawn_midi_sensor(
+            let mappings: Vec<rill_patchbay::engine::Mapping> =
+                mappings.iter().map(|m| m.to_mapping()).collect();
+
+            // Create a servo to apply mappings — the sensor only decodes MIDI
+            let servo_ref = rill_patchbay::Servo::new(
+                format!("midi_servo_{port_name}"),
+                rill_patchbay::engine::NoAction, // no automaton — mapping-only servo
+                NodeId(0),
+                "",
+                rill_patchbay::engine::ParameterMapping::Linear,
+                0.0,
+                1.0,
+                system.clone(),
+                graph_ref.clone(),
+            )
+            .with_mappings(mappings)
+            .spawn(system);
+
+            // Spawn the sensor, pointing raw events to the servo
+            let _sensor_ref = rill_patchbay::midi::spawn_midi_sensor(
                 port_name,
                 be,
-                mappings.iter().map(|m| m.to_mapping()).collect(),
                 system,
-                graph_ref.clone(),
+                servo_ref.clone(),
             );
-            Ok(actor_ref)
+            Ok(servo_ref)
         }
 
         fn clone_box(&self) -> Box<dyn ModuleConstructor> {

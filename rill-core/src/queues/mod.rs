@@ -29,6 +29,7 @@ pub mod ring;
 /// Base real-time queue implementation.
 pub mod rt_queue;
 /// Signal and command types for automation.
+pub mod control_event;
 pub mod signal;
 /// Lock-free single-producer single-consumer queue.
 pub mod spsc;
