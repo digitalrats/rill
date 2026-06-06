@@ -85,7 +85,7 @@ pub mod servo_constructor;
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
-/// Serialization — documents, DOT, formats
+/// Serialization — documents, JSON, CBOR
 #[cfg(feature = "serde")]
 pub mod serialization;
 

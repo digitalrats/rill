@@ -24,14 +24,14 @@ The Rill workspace consists of 17 crates, all versioned synchronously.
 
 ## Feature flags
 
-| Crate | Features |
+| Crate | Features                                                                                      |
 |-------|----------|
-| `rill-core` | `serde`, `simd` |
-| `rill-core-dsp` | `simd`, `f64`, `fast_math`, `unstable` |
-| `rill-core-wdf` | `simd` |
-| `rill-digital-effects` | `modulation` (enables `rill-oscillators`) |
-| `rill-graph` | `serialization`, `dot` |
-| `rill-patchbay` | `serde`, `json`, `cbor`, `serialization` |
-| `rill-io` | `portaudio` (default), `alsa`, `pipewire`, `jack`, `all-backends` |
-| `rill-sampler` | `wav` (default, enables `hound`) |
+| `rill-core` | `serde`, `simd`                                                                               |
+| `rill-core-dsp` | `simd`, `f64`, `fast_math`, `unstable`                                                        |
+| `rill-core-wdf` | `simd`                                                                                        |
+| `rill-digital-effects` | `modulation` (enables `rill-oscillators`)                                                     |
+| `rill-graph` | `serialization`                                                                               |
+| `rill-patchbay` | `serde`, `json`, `cbor`, `serialization`                                                      |
+| `rill-io` | `portaudio` (default), `alsa`, `pipewire`, `jack`, `all-backends`                             |
+| `rill-sampler` | `wav` (default, enables `hound`)                                                              |
 | `rill-adrift` | `io`, `lofi`, `telemetry`, `osc`, `sampler` (default); `analog` (opt-in); backend passthrough |

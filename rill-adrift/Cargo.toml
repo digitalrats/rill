@@ -83,7 +83,7 @@ serialization = [
     "dep:toml",
     "dep:tokio",
 ]
-dot = ["rill-graph/dot"]
+
 
 # I/O backend passthrough
 alsa = ["rill-io/alsa"]

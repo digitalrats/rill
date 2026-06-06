@@ -123,9 +123,6 @@ Plays a WAV file through a biquad low-pass filter (600 Hz). Defaults to built-in
 cargo run -p rill-adrift --example player --features "cpal,sampler,serialization" -- [backend] [wav]
 ```
 
-Deserialises a signal graph from `graph.json`, configures it from `config.toml`,
-builds and plays. Optionally export to DOT (`--dot` flag, needs `dot` feature).
-
 ### Runtime parameter control via actor mailbox
 
 ```bash

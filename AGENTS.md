@@ -208,7 +208,7 @@ under `pw‑loopback` or similar virtual device to detect xruns.
 - `rill-core-wdf`: (no non-default features)
 - `rill-io`: `portaudio` (default), `midir` (default), `alsa`, `pipewire`, `jack`, `all-backends` (includes `midir`)
 - `rill-sampler`: `wav` (default, enables `hound`)
-- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler`, `serialization`, `portaudio` (default); `analog`, `midi`, `dot` (opt-in); `alsa`, `portaudio`, `jack`, `pipewire` (backends, forward to `rill-io`)
+- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler`, `serialization`, `portaudio` (default); `analog`, `midi`, `alsa`, `portaudio`, `jack`, `pipewire` (backends, forward to `rill-io`)
 
 ## Branching
 

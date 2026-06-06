@@ -4,13 +4,9 @@
 //!   cargo run --example player --features "portaudio,sampler,serialization"
 //!   cargo run --example player --features "portaudio,sampler,serialization" -- [backend] [wav]
 //!   cargo run --example player --features "portaudio,sampler,serialization" -- [wav]
-//!   cargo run --example player --features "dot,sampler,serialization" -- --dot
-//!
 //! Positional arguments (optional):
 //!   backend   I/O backend name (e.g. portaudio, alsa, null). Default from config.toml.
 //!   wav       Path to a WAV file to play. Overrides the file in graph.json.
-//!
-//! --dot: export graph to DOT format and exit
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -120,22 +116,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => (Some(positional[0].as_str()), Some(positional[1].as_str())),
     };
-
-    if args.iter().any(|a| a == "--dot") {
-        #[cfg(feature = "dot")]
-        {
-            let graph = build_graph(&cfg, &crate_dir, "null", None)?;
-            let dot = rill_adrift::rill_graph::dot::to_dot(
-                &graph,
-                &rill_adrift::rill_graph::dot::DotConfig::default(),
-            );
-            println!("{dot}");
-        }
-        #[cfg(not(feature = "dot"))]
-        eprintln!("Enable --features dot for DOT export.");
-        return Ok(());
-    }
-
     let backend_name = backend_arg
         .map(|s| s.to_string())
         .or_else(|| cfg.backend.as_ref().map(|b| b.name.clone()))
