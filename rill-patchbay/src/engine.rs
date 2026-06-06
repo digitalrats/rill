@@ -590,7 +590,9 @@ impl<A: Automaton + 'static> Servo<A> {
                         match &event {
                             // ── Pitch bend: update context, recalc if note active ──
                             ControlEvent::MidiControl {
-                                controller, normalized, ..
+                                controller,
+                                normalized,
+                                ..
                             } if Some(*controller) == pitch_cc => {
                                 let mut state = s.lock().unwrap();
                                 let semis = (*normalized as f64 - 0.5) * 2.0 * pitch_semis;
@@ -598,10 +600,9 @@ impl<A: Automaton + 'static> Servo<A> {
                                 drop(state);
 
                                 let s3 = s.lock().unwrap();
-                                if let (Some(note), Some(_vel)) = (
-                                    s3.control_ctx.active_note,
-                                    s3.control_ctx.active_velocity,
-                                ) {
+                                if let (Some(note), Some(_vel)) =
+                                    (s3.control_ctx.active_note, s3.control_ctx.active_velocity)
+                                {
                                     let freq = midi_note_to_freq(note)
                                         * 2.0f64.powf(s3.control_ctx.pitch_bend_semitones / 12.0);
                                     let pid = ParameterId::new("frequency").unwrap();
@@ -616,17 +617,18 @@ impl<A: Automaton + 'static> Servo<A> {
                             }
                             // ── Mod wheel: update context, recalc if note active ──
                             ControlEvent::MidiControl {
-                                controller, normalized, ..
+                                controller,
+                                normalized,
+                                ..
                             } if Some(*controller) == mod_cc => {
                                 let mut state = s.lock().unwrap();
                                 state.control_ctx.mod_wheel = *normalized as f64;
                                 drop(state);
 
                                 let s3 = s.lock().unwrap();
-                                if let (Some(_note), Some(vel)) = (
-                                    s3.control_ctx.active_note,
-                                    s3.control_ctx.active_velocity,
-                                ) {
+                                if let (Some(_note), Some(vel)) =
+                                    (s3.control_ctx.active_note, s3.control_ctx.active_velocity)
+                                {
                                     let amp = vel as f64 * s3.control_ctx.mod_wheel;
                                     let pid = ParameterId::new("amplitude").unwrap();
                                     gr.send(CommandEnum::SetParameter(SetParameter::new(

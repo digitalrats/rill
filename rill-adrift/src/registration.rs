@@ -487,12 +487,8 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             .spawn(system);
 
             // Spawn the sensor, pointing raw events to the servo
-            let _sensor_ref = rill_patchbay::midi::spawn_midi_sensor(
-                port_name,
-                be,
-                system,
-                servo_ref.clone(),
-            );
+            let _sensor_ref =
+                rill_patchbay::midi::spawn_midi_sensor(port_name, be, system, servo_ref.clone());
             Ok(servo_ref)
         }
 

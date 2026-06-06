@@ -116,9 +116,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let osc_node = rill_core::traits::NodeId(osc as u32);
 
     // Additional CC mappings (non-stateful controllers)
-    let mappings = vec![
-        midi_cc(7, None, osc_node, "amplitude", 0.0, 1.0, Transform::Linear),
-    ];
+    let mappings = vec![midi_cc(
+        7,
+        None,
+        osc_node,
+        "amplitude",
+        0.0,
+        1.0,
+        Transform::Linear,
+    )];
 
     // Create a servo with stateful pitch bend / mod wheel + generic mappings
     let servo_ref = Servo::new(
@@ -132,9 +138,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         system.clone(),
         graph_ref.clone(),
     )
-    .with_pitch_bend(128, 2.0)  // CC#128 = pitch bend, ±2 semitones
-    .with_mod_wheel(1)          // CC#1 = mod wheel
-    .with_mappings(mappings)    // fallback: generic CC mappings
+    .with_pitch_bend(128, 2.0) // CC#128 = pitch bend, ±2 semitones
+    .with_mod_wheel(1) // CC#1 = mod wheel
+    .with_mappings(mappings) // fallback: generic CC mappings
     .spawn(&system);
 
     // Spawn the MIDI sensor, pointing raw events to the servo

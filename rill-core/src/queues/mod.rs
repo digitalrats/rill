@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Command trait for actor message types.
 pub mod command;
+/// Signal and command types for automation.
+pub mod control_event;
 /// Queue error types.
 pub mod error;
 /// Multi-producer single-consumer queue for automation.
@@ -28,8 +30,6 @@ pub mod mpsc;
 pub mod ring;
 /// Base real-time queue implementation.
 pub mod rt_queue;
-/// Signal and command types for automation.
-pub mod control_event;
 pub mod signal;
 /// Lock-free single-producer single-consumer queue.
 pub mod spsc;
