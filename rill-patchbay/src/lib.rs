@@ -95,6 +95,9 @@ pub use serialization::PatchbayDef;
 /// MIDI hub — raw MIDI → ControlEvent bridge
 #[cfg(feature = "midi")]
 pub mod midi;
+/// MIDI clock tracker — 24ppqn → BPM derivation
+#[cfg(feature = "midi")]
+pub mod midi_clock;
 
 /// Micro-control observer for RT safety monitoring
 pub mod observer;
@@ -103,6 +106,10 @@ pub mod observer;
 pub use midi::spawn_midi_sensor;
 #[cfg(feature = "midi")]
 pub use midi::MidiHub;
+#[cfg(feature = "midi")]
+pub use midi_clock::{
+    FreeRunning, MidiClockStrategy, MidiClockTracker, ResetOnStart, SongPosition,
+};
 pub use sensor::Sensor;
 
 // =============================================================================

@@ -10,7 +10,7 @@ use rill_core::{
     io::IoBackend,
     math::Transcendental,
     traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Sink},
-    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
+    NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
 /// Signal output sink. Writes to backend in `consume()`.
@@ -191,10 +191,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Outpu
 impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, BUF_SIZE> {
     fn consume(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         if let Some(ref backend) = self.backend {
@@ -247,8 +247,8 @@ mod tests {
     #[test]
     fn test_audio_output_consume() {
         let mut out = Output::<f32, 64>::new();
-        let clock = ClockTick::new(0, 64, 48000.0);
+        let ctx = RenderContext::new(0, 64, 48000.0);
         let signal_inputs: &[&[f32; 64]] = &[];
-        assert!(out.consume(&clock, signal_inputs, &[], &[], &[]).is_ok());
+        assert!(out.consume(&ctx, signal_inputs, &[], &[], &[]).is_ok());
     }
 }

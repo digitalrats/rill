@@ -8,7 +8,7 @@ mod graph_jack_it {
     use std::time::Duration;
 
     use rill_core::traits::{Node, Sink, Source};
-    use rill_core::ClockTick;
+    use rill_core::RenderContext;
     use rill_io::{AudioConfig, AudioInput, AudioOutput, JackBackend};
 
     fn has_jack() -> bool {
@@ -46,12 +46,12 @@ mod graph_jack_it {
         let mut output = AudioOutput::<f32, BUF_SZ>::new();
         output.resolve_backend(backend);
 
-        let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
-        input.generate(&tick, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
+        input.generate(&ctx, &[], &[]).unwrap();
 
         let l = input.output_port(0).unwrap().buffer.as_array();
         let r = input.output_port(1).unwrap().buffer.as_array();
-        let _ = output.consume(&tick, &[l, r], &[], &[], &[]);
+        let _ = output.consume(&ctx, &[l, r], &[], &[], &[]);
     }
 
     #[test]
@@ -77,11 +77,11 @@ mod graph_jack_it {
         {
             let mut output = AudioOutput::<f32, BUF_SZ>::new();
             output.resolve_backend(backend);
-            let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
-            input.generate(&tick, &[], &[]).unwrap();
+            let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
+            input.generate(&ctx, &[], &[]).unwrap();
             let l = input.output_port(0).unwrap().buffer.as_array();
             let r = input.output_port(1).unwrap().buffer.as_array();
-            let _ = output.consume(&tick, &[l, r], &[], &[], &[]);
+            let _ = output.consume(&ctx, &[l, r], &[], &[], &[]);
         }
     }
 }

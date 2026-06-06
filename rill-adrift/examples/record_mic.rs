@@ -116,10 +116,10 @@ impl<T: Transcendental, const B: usize> Node<T, B> for RecordingSink<T, B> {
 impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
     fn consume(
         &mut self,
-        _clock: &rill_adrift::rill_core::time::ClockTick,
+        _ctx: &rill_adrift::rill_core::time::RenderContext,
         _signal_inputs: &[&[T; B]],
         _control_inputs: &[T],
-        _clock_inputs: &[rill_adrift::rill_core::time::ClockTick],
+        _clock_inputs: &[rill_adrift::rill_core::time::RenderContext],
         _feedback_inputs: &[&[T; B]],
     ) -> ProcessResult<()> {
         let all_received = self.inputs.iter().all(|p| p.data_received);

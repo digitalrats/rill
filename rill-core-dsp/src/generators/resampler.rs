@@ -16,9 +16,7 @@
 //! performs only reads and math — no allocation, no locking.
 
 use crate::generators::InterpolatedReader;
-use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
-};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
@@ -30,8 +28,7 @@ use rill_core::Transcendental;
 /// # Examples
 ///
 /// ```
-/// use rill_core::time::ClockTick;
-/// use rill_core::traits::{ActionContext, Algorithm};
+/// use rill_core::traits::Algorithm;
 /// use rill_core_dsp::generators::Resampler;
 ///
 /// let source_rate = 44100.0;
@@ -39,9 +36,7 @@ use rill_core::Transcendental;
 /// let mut rs = Resampler::new(samples, source_rate);
 /// rs.init(48000.0);
 /// let mut out = vec![0.0f32; 512];
-/// let tick = ClockTick::new(0, 0, 48000.0);
-/// let ctx = ActionContext::new(&tick);
-/// rs.process(None, &mut out, &ctx).unwrap();
+/// rs.process(None, &mut out).unwrap();
 /// assert!((rs.position() - 512.0 * 44100.0 / 48000.0).abs() < 1.0);
 /// ```
 pub struct Resampler<T: Transcendental> {
@@ -184,12 +179,7 @@ impl<T: Transcendental> Algorithm<T> for Resampler<T> {
         self.reader.set_position(0.0);
     }
 
-    fn process(
-        &mut self,
-        _input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         self.reader.render_block(output);
         Ok(())
     }
@@ -208,11 +198,9 @@ impl<T: Transcendental> Algorithm<T> for Resampler<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::time::ClockTick;
 
     fn process(rs: &mut Resampler<f64>, out: &mut [f64]) {
-        let tick = ClockTick::new(0, 0, 44100.0);
-        rs.process(None, out, &ActionContext::new(&tick)).unwrap();
+        rs.process(None, out).unwrap();
     }
 
     #[test]

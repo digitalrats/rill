@@ -1,20 +1,10 @@
 //! Processable trait and NodeVariant.
 
 use crate::math::Transcendental;
-use crate::time::ClockTick;
+use crate::time::RenderContext;
 use crate::traits::port::Port;
 use crate::traits::Node;
 use crate::traits::ProcessResult;
-
-// ============================================================================
-// ProcessContext
-// ============================================================================
-
-/// Processing context provided during signal graph execution.
-pub struct ProcessContext<'a> {
-    /// Current clock tick with sample-accurate timing information.
-    pub clock: &'a ClockTick,
-}
 
 // ============================================================================
 // Processable Trait
@@ -28,9 +18,14 @@ pub struct ProcessContext<'a> {
 pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
     /// Process one block of signal samples.
     ///
+    /// # Arguments
+    ///
+    /// * `ctx` — [`RenderContext`] with sample clock, transport state, and
+    ///   hardware clock correction.
+    ///
     /// # Errors
     /// Returns a [`ProcessError`](crate::traits::ProcessError) if processing fails.
-    fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()>;
+    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()>;
 }
 
 // ============================================================================
@@ -42,7 +37,7 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
+    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
         // Compile-time guard: BUF_SIZE must be SIMD-aligned (multiple of 4).
         // Fires at monomorphization time when a concrete BUF_SIZE is used.
         const {
@@ -51,7 +46,7 @@ where
                 "BUF_SIZE must be a multiple of 4 for SIMD"
             )
         }
-        self.as_mut().generate(ctx.clock, &[], &[])
+        self.as_mut().generate(ctx, &[], &[])
     }
 }
 
@@ -60,8 +55,8 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
-        self.as_mut().process(ctx.clock, &[], &[], &[], &[])
+    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
+        self.as_mut().process(ctx, &[], &[], &[], &[])
     }
 }
 
@@ -70,8 +65,8 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
-        self.as_mut().consume(ctx.clock, &[], &[], &[], &[])
+    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
+        self.as_mut().consume(ctx, &[], &[], &[], &[])
     }
 }
 
@@ -80,8 +75,8 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
-        (**self).route(ctx.clock, &[])
+    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
+        (**self).route(ctx, &[])
     }
 }
 
@@ -106,7 +101,7 @@ pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for NodeVariant<T, BUF_SIZE>
 {
-    fn process_block(&mut self, ctx: &mut ProcessContext) -> ProcessResult<()> {
+    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
         match self {
             NodeVariant::Source(src) => src.process_block(ctx),
             NodeVariant::Processor(proc) => proc.process_block(ctx),

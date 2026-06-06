@@ -1,6 +1,6 @@
 use rill_core::{
     math::Transcendental,
-    traits::algorithm::{ActionContext, Algorithm, AlgorithmMetadata},
+    traits::algorithm::{Algorithm, AlgorithmMetadata},
     ProcessError, ProcessResult,
 };
 
@@ -73,15 +73,9 @@ impl<T: Transcendental> RecordHead<T> {
 }
 
 impl<T: Transcendental> Algorithm<T> for RecordHead<T> {
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let src = input.ok_or_else(|| ProcessError::processing("RecordHead requires input"))?;
         let n = src.len().min(output.len());
-        self.sample_rate = T::from_f32(_ctx.tick.sample_rate);
         for i in 0..n {
             output[i] = self.process_sample(src[i]);
         }
@@ -220,15 +214,9 @@ impl<T: Transcendental> PlaybackHead<T> {
 }
 
 impl<T: Transcendental> Algorithm<T> for PlaybackHead<T> {
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let src = input.ok_or_else(|| ProcessError::processing("PlaybackHead requires input"))?;
         let n = src.len().min(output.len());
-        self.sample_rate = T::from_f32(_ctx.tick.sample_rate);
         for i in 0..n {
             output[i] = self.process_sample(src[i]);
         }

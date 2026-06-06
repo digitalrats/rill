@@ -10,7 +10,7 @@ mod params;
 pub use params::PlateParams;
 
 use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
+    Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
 };
 use rill_core::traits::ParamValue;
 use rill_core::Transcendental;
@@ -117,7 +117,6 @@ impl<T: Transcendental> Algorithm<T> for PlateModel<T> {
         &mut self,
         input: Option<&[T]>,
         output: &mut [T],
-        _ctx: &ActionContext,
     ) -> rill_core::traits::ProcessResult<()> {
         for (i, out) in output.iter_mut().enumerate() {
             let inp = input
@@ -213,9 +212,7 @@ mod tests {
         let mut model = PlateModel::<f64>::new(params);
         model.strike(1.0.into());
         let mut output = [0.0f64; 64];
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-        model.process(None, &mut output, &ctx).unwrap();
+        model.process(None, &mut output).unwrap();
         let max_abs = output.iter().map(|x| x.abs()).fold(0.0, f64::max);
         assert!(max_abs > 0.0);
     }
@@ -231,14 +228,12 @@ mod tests {
         params.excitation_y = 0.5.into();
         let mut model = PlateModel::<f64>::new(params);
         model.strike(1.0.into());
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         for _ in 0..200 {
             let mut out = [0.0f64; 1];
-            model.process(None, &mut out, &ctx).unwrap();
+            model.process(None, &mut out).unwrap();
         }
         let mut out = [0.0f64; 1];
-        model.process(None, &mut out, &ctx).unwrap();
+        model.process(None, &mut out).unwrap();
         assert!(out[0].abs() < 0.01, "expected near-zero, got {}", out[0]);
     }
 
@@ -261,10 +256,8 @@ mod tests {
         let mut model = PlateModel::<f64>::new(params);
         model.strike(1.0.into());
         model.reset();
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         let mut out = [0.0f64; 1];
-        model.process(None, &mut out, &ctx).unwrap();
+        model.process(None, &mut out).unwrap();
         assert!((out[0].abs() - 0.0).abs() < 1e-15);
     }
 }

@@ -2,8 +2,8 @@ use rill_core::{
     io::IoBackend,
     math::Transcendental,
     traits::{IoNode, Node, Source},
-    ClockTick, NodeCategory, NodeId, NodeMetadata, NodeState, ParamMetadata, ParamType, ParamValue,
-    ParameterId, Port, ProcessResult,
+    NodeCategory, NodeId, NodeMetadata, NodeState, ParamMetadata, ParamType, ParamValue,
+    ParameterId, Port, ProcessResult, RenderContext,
 };
 
 use crate::config::LofiConfig;
@@ -175,9 +175,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for LofiInput
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for LofiInput<T, BUF_SIZE> {
     fn generate(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         if let Some(ref io) = self.backend {
             let nch = self.outputs.len();

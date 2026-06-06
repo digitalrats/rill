@@ -138,12 +138,18 @@ fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         let bit_depth = params.get_i32("bit_depth", 8) as u8;
         let nonlinear = params.get_bool("nonlinear", false);
         let noise_floor = params.get_f32("noise_floor", -48.0);
-        let config = LofiConfig::for_system(ClassicSystem::Custom {
+        let dc_offset = params.get_f32("dc_offset", 0.0);
+        let output_gain = params.get_f32("output_gain", 1.0);
+        let output_ceiling = params.get_f32("output_ceiling", 1.0);
+        let mut config = LofiConfig::for_system(ClassicSystem::Custom {
             bit_depth,
             sample_rate: params.sample_rate,
             nonlinear,
             noise_floor,
         });
+        config.dc_offset = dc_offset;
+        config.output_gain = output_gain;
+        config.output_ceiling = output_ceiling;
         let mut n = LofiInput::<f32, BUF_SIZE>::new(config);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);

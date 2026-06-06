@@ -1,4 +1,4 @@
-use rill_core::time::ClockTick;
+use rill_core::time::RenderContext;
 use rill_core::traits::{
     Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     Source,
@@ -384,18 +384,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 {
     fn generate(
         &mut self,
-        clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         let amp = self.amplitude;
 
         let left_out = self.outputs[0].buffer.as_mut_array();
-        self.left.process(
-            None,
-            &mut left_out[..],
-            &rill_core::traits::ActionContext::new(clock),
-        )?;
+        self.left.process(None, &mut left_out[..])?;
         if amp != T::from_f32(1.0) {
             for s in left_out.iter_mut() {
                 *s *= amp;
@@ -405,11 +401,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
         if let Some(ref mut right_player) = self.right {
             if self.outputs.len() > 1 {
                 let right_out = self.outputs[1].buffer.as_mut_array();
-                right_player.process(
-                    None,
-                    &mut right_out[..],
-                    &rill_core::traits::ActionContext::new(clock),
-                )?;
+                right_player.process(None, &mut right_out[..])?;
                 if amp != T::from_f32(1.0) {
                     for s in right_out.iter_mut() {
                         *s *= amp;

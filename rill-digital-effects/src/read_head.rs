@@ -2,7 +2,7 @@ use rill_core::{
     buffer::{BufferRegistry, TapeLoop},
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Source},
-    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
+    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
 };
 
 /// Read head — pure tape reader. Reads from the shared [`TapeLoop`] at a
@@ -85,9 +85,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ReadHead<
     #[allow(clippy::needless_range_loop)]
     fn generate(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         debug_assert!(!self.tape.is_null(), "ReadHead: tape not set");
         let tape = unsafe { &*self.tape };

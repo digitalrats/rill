@@ -2,8 +2,7 @@
 //!
 //! Run with: cargo run --example basic_filter
 
-use rill_core::time::ClockTick;
-use rill_core::traits::{ActionContext, Algorithm};
+use rill_core::traits::Algorithm;
 use rill_core_dsp::filters::FilterParams;
 use rill_digital_filters::{BiquadExt, BiquadFilter, FilterType};
 
@@ -37,12 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         input_2000.push((2.0 * std::f32::consts::PI * 2000.0 * t).sin());
     }
 
-    let tick = ClockTick::default();
-    let ctx = ActionContext::new(&tick);
-
     // Process 440 Hz (should pass through)
     let mut output_440 = vec![0.0; num_samples];
-    filter.process(Some(&input_440), &mut output_440, &ctx)?;
+    filter.process(Some(&input_440), &mut output_440)?;
 
     let max_440: f32 = output_440
         .iter()
@@ -55,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Process 2000 Hz (should be attenuated)
     let mut output_2000 = vec![0.0; num_samples];
-    filter.process(Some(&input_2000), &mut output_2000, &ctx)?;
+    filter.process(Some(&input_2000), &mut output_2000)?;
 
     let max_2000: f32 = output_2000
         .iter()

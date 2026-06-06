@@ -281,12 +281,13 @@ The nature of the callback thread depends on the backend:
 | **Callback‑driven** | PipeWire, JACK, PortAudio | Hard RT — callback fires on the audio device's real‑time thread (SCHED_FIFO). No syscalls, no allocation, no locks. |
 | **Poll‑driven** | ALSA | Soft RT — the backend's own thread loops polling the audio device. Use `poll()`/`epoll()` on audio FDs, never `thread::sleep()`. |
 
-Inside the I/O callback tick (`rill-graph/src/graph.rs:556-588`):
+Inside the I/O callback tick (`rill-graph/src/graph.rs:556-602`):
 
 1. `actor.drain()` — applies queued `CommandEnum::SetParameter` commands from the actor mailbox
-2. `Source::generate()` / `Processor::process()` / `Sink::consume()` via `process_block()`
-3. `Port::propagate()` — recursive DAG traversal through direct port pointers
-4. Sends `CommandEnum::ClockTick` to the parent Patchbay actor
+2. Builds a `RenderContext` with sample clock, transport state (BPM, playing flag, time signature), and hardware clock correction (`speed_ratio`)
+3. `Source::generate()` / `Processor::process()` / `Sink::consume()` via `process_block(&ctx)`
+4. `Port::propagate()` — recursive DAG traversal through direct port pointers (no context needed — port-level `Algorithm::process()` is buffer-only)
+5. Sends `CommandEnum::ClockTick` to the parent Patchbay actor
 
 All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
 `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside

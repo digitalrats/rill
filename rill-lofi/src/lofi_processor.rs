@@ -102,7 +102,11 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
         let wet = sample * self.config.dry_wet;
         let dry = input * (1.0 - self.config.dry_wet);
 
-        (wet + dry) * self.config.output_gain
+        let mut out = wet + dry;
+        out -= self.config.dc_offset;
+        out *= self.config.output_gain;
+        out = out.clamp(-self.config.output_ceiling, self.config.output_ceiling);
+        out
     }
 
     /// Resets the internal delay buffer to silence.
@@ -181,6 +185,12 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
                 ParamMetadata::new("output_gain", ParamType::Float, ParamValue::Float(1.0))
                     .with_description("Output gain")
                     .with_range(0.0, 4.0, 0.1),
+                ParamMetadata::new("dc_offset", ParamType::Float, ParamValue::Float(0.0))
+                    .with_description("DC offset correction (subtracted after gain)")
+                    .with_range(-1.0, 1.0, 0.01),
+                ParamMetadata::new("output_ceiling", ParamType::Float, ParamValue::Float(1.0))
+                    .with_description("Hard clamp ceiling (±value)")
+                    .with_range(0.0, 1.0, 0.01),
                 ParamMetadata::new("enable_bitcrush", ParamType::Bool, ParamValue::Bool(true))
                     .with_description("Enable bitcrushing"),
                 ParamMetadata::new(
@@ -239,6 +249,8 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
             "sample_rate" => Some(ParamValue::Float(self.config.system.get_sample_rate())),
             "dry_wet" => Some(ParamValue::Float(self.config.dry_wet)),
             "output_gain" => Some(ParamValue::Float(self.config.output_gain)),
+            "dc_offset" => Some(ParamValue::Float(self.config.dc_offset)),
+            "output_ceiling" => Some(ParamValue::Float(self.config.output_ceiling)),
             "enable_bitcrush" => Some(ParamValue::Bool(self.config.enable_bitcrush)),
             "enable_sr_reduction" => Some(ParamValue::Bool(self.config.enable_sr_reduction)),
             "enable_noise" => Some(ParamValue::Bool(self.config.enable_noise)),
@@ -301,6 +313,20 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
                     return Ok(());
                 }
                 Err(ProcessError::parameter("output_gain must be a float"))
+            }
+            "dc_offset" => {
+                if let ParamValue::Float(v) = value {
+                    self.config.dc_offset = v.clamp(-1.0, 1.0);
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("dc_offset must be a float"))
+            }
+            "output_ceiling" => {
+                if let ParamValue::Float(v) = value {
+                    self.config.output_ceiling = v.clamp(0.0, 1.0);
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("output_ceiling must be a float"))
             }
             "enable_bitcrush" => {
                 if let ParamValue::Bool(v) = value {
@@ -384,10 +410,10 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
 impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
     fn process(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         signal_inputs: &[&[f32; BUF_SIZE]],
         _control_inputs: &[f32],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[f32; BUF_SIZE]],
     ) -> ProcessResult<()> {
         if signal_inputs.is_empty() {
@@ -448,8 +474,8 @@ mod tests {
             input[i] = (i as f32 / 64.0 * std::f32::consts::TAU).sin() * 0.5;
         }
 
-        let clock = ClockTick::new(0, 64, 44100.0);
-        processor.process(&clock, &[&input], &[], &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
 
         let output = *processor.outputs[0].buffer.as_array();
         for i in 0..64 {
@@ -488,8 +514,8 @@ mod tests {
         processor.init(44100.0);
 
         let input = [0.5f32; 64];
-        let clock = ClockTick::new(0, 64, 44100.0);
-        processor.process(&clock, &[&input], &[], &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
 
         let output = *processor.outputs[0].buffer.as_array();
         for &sample in output.iter() {
@@ -523,8 +549,8 @@ mod tests {
 
         let input_val = 0.75f32;
         let input = [input_val; 64];
-        let clock = ClockTick::new(0, 64, 44100.0);
-        processor.process(&clock, &[&input], &[], &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
 
         let output = *processor.outputs[0].buffer.as_array();
         assert!(
@@ -550,8 +576,8 @@ mod tests {
             .unwrap();
         processor.clear_delay_buffer();
         let input = [0.0f32; 64];
-        let clock = ClockTick::new(0, 64, 44100.0);
-        processor.process(&clock, &[&input], &[], &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
         let output = *processor.outputs[0].buffer.as_array();
         for &sample in output.iter() {
             assert!(approx_eq(sample, 0.0, 0.001));
@@ -561,8 +587,8 @@ mod tests {
     #[test]
     fn test_lofi_processor_empty_input() {
         let mut processor = LofiProcessor::<64>::new(LofiConfig::default());
-        let clock = ClockTick::new(0, 64, 44100.0);
-        let result = processor.process(&clock, &[], &[], &[], &[]);
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        let result = processor.process(&ctx, &[], &[], &[], &[]);
         assert!(result.is_ok());
     }
 
@@ -621,11 +647,75 @@ mod tests {
         assert!(approx_eq(processor.state.sample_rate, 48000.0, 0.001));
 
         let input = [0.5f32; 64];
-        let clock = ClockTick::new(0, 64, 44100.0);
-        processor.process(&clock, &[&input], &[], &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
 
         processor.reset();
         assert_eq!(processor.state.sample_pos, 0);
         assert_eq!(processor.state.blocks_processed, 0);
+    }
+
+    #[test]
+    fn test_dc_offset_removal() {
+        let mut config = LofiConfig::default();
+        config.enable_bitcrush = false;
+        config.enable_sr_reduction = false;
+        config.enable_noise = false;
+        config.dc_offset = 0.5;
+        config.dry_wet = 1.0;
+        config.output_gain = 1.0;
+        let mut processor = LofiProcessor::<1>::new(config);
+
+        // Feed constant 1.0 — with offset 0.5 applied, output should be reduced by ~0.5
+        // (exact value depends on DAC emulation, which always runs)
+        let s = processor.process_sample(1.0);
+        // Without offset: ~0.77 (dac * delay * gain). With offset 0.5: ~0.27
+        assert!(
+            s < 0.5,
+            "offset should reduce output below 0.5, got {:.3}",
+            s
+        );
+        assert!(
+            s > 0.0,
+            "positive input should stay positive after offset, got {:.3}",
+            s
+        );
+    }
+
+    #[test]
+    fn test_output_ceiling_clamp() {
+        let mut config = LofiConfig::default();
+        config.enable_bitcrush = false;
+        config.enable_sr_reduction = false;
+        config.enable_noise = false;
+        config.output_ceiling = 0.8;
+        config.dry_wet = 1.0;
+        config.output_gain = 2.0; // 1.0 * 2.0 = 2.0 → clamp to 0.8
+        let mut processor = LofiProcessor::<1>::new(config);
+
+        let sample = processor.process_sample(1.0);
+        assert!(sample <= 0.8, "should be ≤ 0.8, got {:.3}", sample);
+        assert!(sample >= -0.8, "should be ≥ -0.8, got {:.3}", sample);
+    }
+
+    #[test]
+    fn test_dc_offset_and_ceiling_combined() {
+        let mut config = LofiConfig::default();
+        config.enable_bitcrush = false;
+        config.enable_sr_reduction = false;
+        config.enable_noise = false;
+        config.dc_offset = 0.5;
+        config.output_gain = 2.0;
+        config.output_ceiling = 0.5;
+        config.dry_wet = 1.0;
+        let mut processor = LofiProcessor::<1>::new(config);
+
+        // Input 1.0 → max gain 2.0 + offset 0.5 should exceed ceiling 0.5 → clamped
+        let sample = processor.process_sample(1.0);
+        assert!(
+            sample.abs() <= 0.5,
+            "ceiling should clamp to ±0.5, got {:.3}",
+            sample
+        );
     }
 }

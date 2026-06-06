@@ -1,7 +1,7 @@
 //! Noise generators
 
 use rand::Rng;
-use rill_core::time::ClockTick;
+use rill_core::time::RenderContext;
 use rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
 };
@@ -297,9 +297,9 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
 impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     fn generate(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[f32],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         let mut temp = [0.0f32; BUF_SIZE];
         self.generate_block(&mut temp);
@@ -327,9 +327,9 @@ mod tests {
         let mut noise = NoiseOsc::<64>::new();
         noise.init(44100.0);
 
-        let clock = ClockTick::new(0, 64, 44100.0);
+        let ctx = RenderContext::new(0, 64, 44100.0);
 
-        noise.generate(&clock, &[], &[]).unwrap();
+        noise.generate(&ctx, &[], &[]).unwrap();
     }
 
     #[test]
@@ -341,9 +341,9 @@ mod tests {
 
             noise.init(44100.0);
 
-            let clock = ClockTick::new(0, 64, 44100.0);
+            let ctx = RenderContext::new(0, 64, 44100.0);
 
-            noise.generate(&clock, &[], &[]).unwrap();
+            noise.generate(&ctx, &[], &[]).unwrap();
 
             let output = noise.outputs[0].buffer.as_array();
 

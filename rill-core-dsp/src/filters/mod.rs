@@ -33,7 +33,7 @@
 //!     let mut output = [T::ZERO];
 //!     let tick = ClockTick::default();
 //!     let ctx = ActionContext::new(&tick);
-//!     filter.process(Some(&[input]), &mut output, &ctx).unwrap();
+//!     filter.process(Some(&[input]), &mut output).unwrap();
 //!     output[0]
 //! }
 //! ```
@@ -58,7 +58,7 @@
 //! let mut output = [0.0_f32];
 //! let tick = ClockTick::default();
 //! let ctx = ActionContext::new(&tick);
-//! lowpass.process(Some(&[0.5]), &mut output, &ctx).unwrap();
+//! lowpass.process(Some(&[0.5]), &mut output).unwrap();
 //! let output = output[0];
 //! ```
 //!
@@ -312,7 +312,7 @@ impl FilterType {
 ///     let mut output = [T::ZERO];
 ///     let tick = ClockTick::default();
 ///     let ctx = ActionContext::new(&tick);
-///     filter.process(Some(&[input]), &mut output, &ctx).unwrap();
+///     filter.process(Some(&[input]), &mut output).unwrap();
 ///     output[0]
 /// }
 /// ```
@@ -463,7 +463,7 @@ mod examples {
     /// let mut smoothed = 0.0;
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
-    ///     smooth.process(Some(&[1.0]), &mut out, &ctx).unwrap();
+    ///     smooth.process(Some(&[1.0]), &mut out).unwrap();
     ///     smoothed = out[0];
     /// }
     /// // After 1000 iterations, value should be close to 1.0
@@ -481,7 +481,7 @@ mod examples {
     /// // Warm up the filter
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
-    ///     peq.process(Some(&[0.0]), &mut out, &ctx).unwrap();
+    ///     peq.process(Some(&[0.0]), &mut out).unwrap();
     /// }
     ///
     /// // Generate sine wave at filter frequency
@@ -495,7 +495,7 @@ mod examples {
     /// for _ in 0..1000 {
     ///     let input = amplitude * phase.sin();
     ///     let mut out = [0.0_f32];
-    ///     peq.process(Some(&[input]), &mut out, &ctx).unwrap();
+    ///     peq.process(Some(&[input]), &mut out).unwrap();
     ///     let output = out[0];
     ///     max_output = max_output.max(output.abs());
     ///     phase += phase_inc;
@@ -523,7 +523,7 @@ mod examples {
     ///
     /// let input = 0.5;
     /// let mut out = [0.0_f32];
-    /// svf.process(Some(&[input]), &mut out, &ctx).unwrap();
+    /// svf.process(Some(&[input]), &mut out).unwrap();
     /// let lp = out[0];
     /// let hp = svf.highpass();
     /// let bp = svf.bandpass();

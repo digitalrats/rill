@@ -4,7 +4,7 @@
 
 use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
-use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 
 /// One-pole exponential smoother that implements `Algorithm<T>`.
 ///
@@ -24,7 +24,7 @@ use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMe
 ///
 /// smoother.apply_command(1.0);
 /// let mut output = [0.0f32; 4];
-/// smoother.process(None, &mut output, &ctx).unwrap();
+/// smoother.process(None, &mut output).unwrap();
 /// // output approaches 1.0 via exponential smoothing
 /// ```
 #[derive(Debug, Clone)]
@@ -81,12 +81,7 @@ impl<T: Transcendental> ParamSmoother<T> {
 }
 
 impl<T: Transcendental> Algorithm<T> for ParamSmoother<T> {
-    fn process(
-        &mut self,
-        _input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         for sample in output.iter_mut() {
             *sample = self.next();
         }
@@ -118,17 +113,14 @@ impl<T: Transcendental> Algorithm<T> for ParamSmoother<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::time::ClockTick;
 
     #[test]
     fn test_smoother_basic() {
         let mut s = ParamSmoother::new(0.5f32);
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
 
         s.apply_command(1.0);
         let mut buf = [0.0f32; 4];
-        s.process(None, &mut buf, &ctx).unwrap();
+        s.process(None, &mut buf).unwrap();
         // 0 + (1-0)*0.5 = 0.5
         assert!((buf[0] - 0.5).abs() < 1e-6);
         // 0.5 + (1-0.5)*0.5 = 0.75
@@ -146,9 +138,7 @@ mod tests {
     #[test]
     fn test_smoother_empty_block() {
         let mut s = ParamSmoother::new(0.1f32);
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         let buf: &mut [f32] = &mut [];
-        assert!(s.process(None, buf, &ctx).is_ok());
+        assert!(s.process(None, buf).is_ok());
     }
 }

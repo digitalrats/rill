@@ -1,6 +1,6 @@
 use float_cmp::approx_eq;
 use rill_core::traits::{Node, Router};
-use rill_core::ClockTick;
+use rill_core::RenderContext;
 
 #[test]
 fn test_mixer_creation() {
@@ -30,9 +30,9 @@ fn test_mixer_basic_processing() {
         .as_mut_array()
         .copy_from_slice(&input2);
 
-    let clock = ClockTick::default();
+    let ctx = RenderContext::new(0, 64, 44100.0);
 
-    mixer.route(&clock, &[]).unwrap();
+    mixer.route(&ctx, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -73,9 +73,9 @@ fn test_mixer_pan() {
         .as_mut_array()
         .copy_from_slice(&input);
 
-    let clock = ClockTick::default();
+    let ctx = RenderContext::new(0, 64, 44100.0);
 
-    mixer.route(&clock, &[]).unwrap();
+    mixer.route(&ctx, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -103,9 +103,9 @@ fn test_mixer_mute() {
         .as_mut_array()
         .copy_from_slice(&input);
 
-    let clock = ClockTick::default();
+    let ctx = RenderContext::new(0, 64, 44100.0);
 
-    mixer.route(&clock, &[]).unwrap();
+    mixer.route(&ctx, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();
@@ -160,9 +160,9 @@ fn test_mixer_sends() {
         .as_mut_array()
         .copy_from_slice(&input);
 
-    let clock = ClockTick::default();
+    let ctx = RenderContext::new(0, 64, 44100.0);
 
-    mixer.route(&clock, &[]).unwrap();
+    mixer.route(&ctx, &[]).unwrap();
 
     let output_left = mixer.output_port(0).unwrap().buffer.as_array();
     let output_right = mixer.output_port(1).unwrap().buffer.as_array();

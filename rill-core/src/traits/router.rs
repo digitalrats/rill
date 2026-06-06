@@ -16,7 +16,7 @@
 //! | Visualization | Rectangle (P-scheme) | Diamond (P-scheme, condition) |
 
 use crate::math::Transcendental;
-use crate::time::ClockTick;
+use crate::time::RenderContext;
 use crate::traits::node::Node;
 use crate::traits::ProcessResult;
 
@@ -33,7 +33,7 @@ pub trait Router<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
     ///
     /// The implementation must read signals from `inputs` and write
     /// the results to its output ports (via `self.output_port_mut(i)`).
-    fn route(&mut self, clock: &ClockTick, inputs: &[&[T; BUF_SIZE]]) -> ProcessResult<()>;
+    fn route(&mut self, ctx: &RenderContext, inputs: &[&[T; BUF_SIZE]]) -> ProcessResult<()>;
 
     /// Number of input ports for routing.
     fn num_route_inputs(&self) -> usize;

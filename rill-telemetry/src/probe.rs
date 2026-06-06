@@ -8,7 +8,7 @@ use rill_core::prelude::{
 };
 use rill_core::queues::spsc::SpscQueue;
 use rill_core::queues::TelemetryBlock;
-use rill_core::time::ClockTick;
+use rill_core::time::RenderContext;
 use rill_core::traits::Processor;
 
 /// Passive telemetry probe that passes audio through while periodically
@@ -185,10 +185,10 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> Processor
 {
     fn process(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         // ── Passthrough: copy input[0] → output[0] ──────────────────────

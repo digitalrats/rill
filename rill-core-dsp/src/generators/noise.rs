@@ -5,9 +5,7 @@ use crate::filters::{FilterParams, FilterType, OnePole};
 use crate::vector::prelude::*;
 use rill_core::math::vector::scalar::ScalarVector4;
 use rill_core::math::vector::traits::Vector as VecTrait;
-use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
-};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
@@ -322,12 +320,7 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenerator<T> {
         }
     }
 
-    fn process(
-        &mut self,
-        _input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         match self.noise_type {
             NoiseType::White => self.generate_white_block(output),
             NoiseType::Brown => self.generate_brown_block(output),

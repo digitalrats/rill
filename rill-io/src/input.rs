@@ -10,7 +10,7 @@ use rill_core::{
     io::IoBackend,
     math::Transcendental,
     traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Source},
-    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessResult,
+    NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
 /// Signal input source. Reads from a backend in `generate()`, fills output ports.
@@ -186,9 +186,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Input
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, BUF_SIZE> {
     fn generate(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         if let Some(ref io) = self.backend {
             let nch = self.outputs.len();
@@ -282,8 +282,8 @@ mod tests {
     #[test]
     fn test_audio_input_generate_without_backend() {
         let mut inp = Input::<f32, 64>::new();
-        let clock = ClockTick::new(0, 64, 48000.0);
-        assert!(inp.generate(&clock, &[], &[]).is_ok());
+        let ctx = RenderContext::new(0, 64, 48000.0);
+        assert!(inp.generate(&ctx, &[], &[]).is_ok());
     }
 
     #[test]
@@ -307,8 +307,8 @@ mod tests {
         }
         input_ring.write(&test_block);
 
-        let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
-        input.generate(&tick, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
+        input.generate(&ctx, &[], &[]).unwrap();
 
         let l = input.output_port(0).unwrap().buffer.as_array();
         let r = input.output_port(1).unwrap().buffer.as_array();

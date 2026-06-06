@@ -7,7 +7,6 @@
 //! - `Sink`: Active consumer (has no outputs)
 
 use crate::queues::signal::SetParameter;
-use crate::time::ClockTick;
 use crate::traits::param::{ParamMetadata, ParamValue, ParameterId};
 use crate::traits::ProcessResult;
 use std::any::TypeId;
@@ -471,9 +470,9 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
     /// accessible via `self.output_port_mut(index)`.
     fn generate(
         &mut self,
-        clock: &ClockTick,
+        ctx: &crate::time::RenderContext,
         control_inputs: &[T],
-        clock_inputs: &[ClockTick],
+        clock_inputs: &[crate::time::RenderContext],
     ) -> ProcessResult<()>;
 
     /// Number of signal outputs (default 1)
@@ -516,10 +515,10 @@ pub trait Processor<T: crate::math::Transcendental, const BUF_SIZE: usize>:
     /// accessible via `self.output_port_mut(index)`.
     fn process(
         &mut self,
-        clock: &ClockTick,
+        ctx: &crate::time::RenderContext,
         signal_inputs: &[&[T; BUF_SIZE]],
         control_inputs: &[T],
-        clock_inputs: &[ClockTick],
+        clock_inputs: &[crate::time::RenderContext],
         feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()>;
 
@@ -548,10 +547,10 @@ pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, B
     /// * `feedback_inputs` - Feedback values from previous blocks
     fn consume(
         &mut self,
-        clock: &ClockTick,
+        ctx: &crate::time::RenderContext,
         signal_inputs: &[&[T; BUF_SIZE]],
         control_inputs: &[T],
-        clock_inputs: &[ClockTick],
+        clock_inputs: &[crate::time::RenderContext],
         feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()>;
 }

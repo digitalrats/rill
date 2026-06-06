@@ -114,13 +114,7 @@ pub trait Algorithm<T: Transcendental>: Send + Sync {
     /// * `input`  — Signal data from upstream (empty when the port is
     ///   unconnected, or `None` for source ports / control output ports).
     /// * `output` — Buffer to fill with processed data.
-    /// * `ctx`    — Processing context (clock tick, block position, etc.).
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        ctx: &ActionContext,
-    ) -> ProcessResult<()>;
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()>;
 
     /// Receive a real-time command value from the control path.
     ///

@@ -104,7 +104,7 @@ impl<T: Transcendental> Algorithm<T> for PulseOscillator<T> {
         self.phase = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 

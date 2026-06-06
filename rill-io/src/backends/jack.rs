@@ -18,6 +18,7 @@ use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
+use rill_core::time::SystemClock;
 
 /// Callback slot.
 #[derive(Copy, Clone)]
@@ -52,6 +53,10 @@ pub struct JackBackend {
     /// Stores the active JACK client handle.
     /// Set once in `run()` (audio thread), taken once in `stop()` (control thread).
     active_client: UnsafeCell<Option<jack::AsyncClient<(), JackProcessHandler>>>,
+    /// Optional shared system clock for JACK transport sync.
+    /// When set, the process callback queries JACK transport state and
+    /// updates BPM atomically.
+    sys_clock: Option<Arc<SystemClock>>,
 }
 
 impl fmt::Debug for JackBackend {
@@ -83,7 +88,19 @@ impl JackBackend {
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             active_client: UnsafeCell::new(None),
+            sys_clock: None,
         })
+    }
+
+    /// Attach a shared [`SystemClock`] for JACK transport sync.
+    ///
+    /// When set, the JACK process callback queries `client.transport().query()`
+    /// on every block and updates the clock's BPM atomically if the transport
+    /// is rolling and BBT data is valid.
+    ///
+    /// Call this **before** `run()` so the process handler receives the clock.
+    pub fn set_system_clock(&mut self, clock: Arc<SystemClock>) {
+        self.sys_clock = Some(clock);
     }
 
     /// Common setup: create JACK client, register ports, activate.
@@ -138,6 +155,7 @@ impl JackBackend {
             output_slot: self.output_slot.clone(),
             input_ring: self.input_ring.clone(),
             sample_rate,
+            sys_clock: self.sys_clock.clone(),
         };
 
         let active_client = client
@@ -177,10 +195,22 @@ struct JackProcessHandler {
     output_slot: OutputSlot,
     input_ring: Arc<IoRingBuffer>,
     sample_rate: f32,
+    sys_clock: Option<Arc<SystemClock>>,
 }
 
 impl ProcessHandler for JackProcessHandler {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
+        // JACK Transport sync — update BPM from transport master
+        if let Some(ref clock) = self.sys_clock {
+            if let Ok(state) = _client.transport().query() {
+                if state.pos.valid_bbt() {
+                    if let Some(bbt) = state.pos.bbt() {
+                        clock.set_bpm(bbt.bpm);
+                    }
+                }
+            }
+        }
+
         let nframes = ps.n_frames() as usize;
 
         // Capture: read input ports → ring buffer (interleaved)

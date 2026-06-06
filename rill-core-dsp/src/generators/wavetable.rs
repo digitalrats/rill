@@ -1,8 +1,6 @@
 use crate::generators::{Generator, InterpolatedReader};
 use crate::vector::prelude::*;
-use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
-};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
@@ -84,12 +82,7 @@ impl<T: Transcendental, const SIZE: usize> Algorithm<T> for WavetableOscillator<
         self.reader.set_position(0.0);
     }
 
-    fn process(
-        &mut self,
-        _input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let amp = self.amplitude.extract(0);
         self.reader.render_block(output);
         if amp != T::from_f32(1.0) {

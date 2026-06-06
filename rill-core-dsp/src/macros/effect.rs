@@ -128,7 +128,6 @@ macro_rules! effect_algorithm {
                 &mut self,
                 input: Option<&[T]>,
                 output: &mut [T],
-                _ctx: &rill_core::traits::algorithm::ActionContext,
             ) -> rill_core::traits::ProcessResult<()> {
                 let input = input.unwrap_or(&[]);
                 let len = input.len().min(output.len());

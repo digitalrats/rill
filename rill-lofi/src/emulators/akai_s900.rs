@@ -208,9 +208,9 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
 impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
     fn generate(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[f32],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         for i in 0..BUF_SIZE {
             self.outputs[0].buffer.as_mut_array()[i] = self.generate_sample();
