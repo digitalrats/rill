@@ -5,10 +5,12 @@
 //! and other effects.
 
 use super::basic::{BasicOscillator, Waveform};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, SyncableGenerator};
 use crate::vector::prelude::*;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// LFO (Low Frequency Oscillator)
@@ -26,7 +28,7 @@ use rill_core::Transcendental;
 /// use rill_core::time::ClockTick;
 /// use rill_core::traits::ActionContext;
 /// use rill_core_dsp::generators::*;
-/// use rill_core_dsp::Algorithm;
+/// use rill_core::traits::algorithm::Algorithm;
 ///
 /// let tick = ClockTick::default();
 /// let ctx = ActionContext::new(&tick);

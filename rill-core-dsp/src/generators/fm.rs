@@ -7,10 +7,12 @@
 //! - Flexible modulation routing
 
 use super::basic::{BasicOscillator, Waveform};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, ModulatableGenerator};
 use crate::vector::prelude::*;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 // =============================================================================
@@ -30,7 +32,7 @@ use rill_core::Transcendental;
 /// use rill_core::time::ClockTick;
 /// use rill_core::traits::ActionContext;
 /// use rill_core_dsp::generators::*;
-/// use rill_core_dsp::Algorithm;
+/// use rill_core::traits::algorithm::Algorithm;
 ///
 /// let tick = ClockTick::default();
 /// let ctx = ActionContext::new(&tick);
@@ -236,7 +238,7 @@ impl<T: Transcendental> ModulatableGenerator<T> for SimpleFmSynth<T> {
 /// # Example
 /// ```
 /// use rill_core_dsp::generators::*;
-/// use rill_core_dsp::Algorithm;
+/// use rill_core::traits::algorithm::Algorithm;
 ///
 /// // 6-operator FM (like DX7)
 /// let frequencies = [440.0, 880.0, 1320.0, 1760.0, 2200.0, 2640.0];

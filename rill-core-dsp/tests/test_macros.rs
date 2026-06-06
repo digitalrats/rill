@@ -5,8 +5,8 @@
 
 use rill_core::math::Transcendental;
 use rill_core::time::ClockTick;
+use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::ActionContext;
-use rill_core_dsp::algorithm::Algorithm;
 
 // Macros available directly from crate root via #[macro_export]
 use rill_core_dsp::{

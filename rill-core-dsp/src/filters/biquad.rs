@@ -1,9 +1,12 @@
 //! Biquad filter
 
 use super::{FilterParams, FilterType};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use crate::vector::{ScalarVector1, ScalarVector4, Vector};
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 use std::f32::consts::PI;
 

@@ -395,24 +395,25 @@ let mut akai = LofiProcessor::new(akai_config);
 Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
 
 ### `rill-core-model` (0.5.0-beta.2, ✅ active)
-Wave Digital Filter (WDF) core — elements (Resistor, Capacitor, Inductor, Diode), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion) and WDF filters (WdfMoogLadder). Generic over `rill_core::AudioNum` — supports `f32` and `f64`. Optional `simd` feature enables SIMD vectorization via `rill_core::vector::F64x4` (backed by `wide`).
+WDF core + physical modeling — elements (Resistor, Capacitor, Inductor, Diode, OpAmp), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion), WDF filters (MoogLadder, DiodeClipper), tape models (RecordHead, PlaybackHead), and resonant physical models (StringModel — 1D waveguide, PlateModel — 2D FDTD mesh, ModalModel — parallel filter bank, HelmholtzCavity + CavityArray). Generic over `rill_core::Transcendental` — supports `f32` and `f64`.
 
 ```rust
 use rill_core_model::{Resistor, Capacitor, WdfElement, WaveVariables};
-use rill_core_model::filters::MoogLadder;
+use rill_core_model::wdf::{MoogLadder, RcPole};
 use rill_core::traits::Algorithm;
 
 let mut cap: Capacitor<f64> = Capacitor::new(0.1e-6, 44100.0);
 let a = cap.port_resistance();
 
-let mut ladder: MoogLadder<f64> = MoogLadder::new(44100.0);
-ladder.set_cutoff(5000.0);
-ladder.set_resonance(0.7);
-let y = ladder.process_sample(0.5);
+let pole = RcPole::new(0.0.into());
+let mut ladder: MoogLadder<f64> = MoogLadder::new(pole, 1000.0.into(), 0.0.into(), 44100.0.into());
+ladder.set_cutoff(5000.0.into());
+ladder.set_resonance(0.7.into());
+let y = ladder.process_sample(0.5.into());
 ```
 
 ### `rill-analog-filters` (0.5.0-beta.2, ✅ active)
-WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::filters::MoogLadder<f64>`. Provides graph nodes for the processor.
+WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::wdf::MoogLadder<f64>`. Provides graph nodes for the processor.
 
 ```rust
 use rill_analog_filters::WdfMoogLadderProcessor;

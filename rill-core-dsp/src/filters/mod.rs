@@ -45,7 +45,7 @@
 //! use rill_core::time::ClockTick;
 //! use rill_core::traits::ActionContext;
 //! use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
-//! use rill_core_dsp::Algorithm;
+//! use rill_core::traits::algorithm::Algorithm;
 //!
 //! let mut lowpass = Biquad::<f32>::new(FilterParams {
 //!     filter_type: FilterType::LowPass,
@@ -65,7 +65,7 @@
 //! ### Creating a parametric equalizer
 //! ```
 //! use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
-//! use rill_core_dsp::Algorithm;
+//! use rill_core::traits::algorithm::Algorithm;
 //!
 //! let mut peak = Biquad::<f32>::new(FilterParams {
 //!     filter_type: FilterType::Peak,
@@ -79,7 +79,7 @@
 //! ### High-order Butterworth filter
 //! ```
 //! use rill_core_dsp::filters::{Butterworth, FilterParams, FilterType};
-//! use rill_core_dsp::Algorithm;
+//! use rill_core::traits::algorithm::Algorithm;
 //!
 //! let mut butter = Butterworth::<f32, 4>::lowpass(1000.0, 4);
 //! butter.init(44100.0);
@@ -444,7 +444,7 @@ mod examples {
     /// use rill_core::traits::ActionContext;
     /// use rill_core_dsp::filters::*;
     /// use rill_core::Transcendental;
-    /// use rill_core_dsp::Algorithm;
+    /// use rill_core::traits::algorithm::Algorithm;
     /// use std::f32::consts::PI;
     ///
     /// let tick = ClockTick::default();
@@ -532,7 +532,7 @@ mod examples {
     /// ```rust
     /// // 4. Steep crossover filter (Chebyshev)
     /// use rill_core_dsp::filters::*;
-    /// use rill_core_dsp::Algorithm;
+    /// use rill_core::traits::algorithm::Algorithm;
     ///
     /// let mut xover = ChebyshevI::<f32, 4>::new(
     ///     FilterParams {

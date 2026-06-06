@@ -37,7 +37,7 @@ pub mod vector;
 pub mod macros;
 
 // Re-exports
-pub use algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+pub use algorithm::ParameterizedAlgorithm;
 pub use context::DspContext;
 pub use filters::{Filter, FilterParams, FilterType};
 pub use generators::{
@@ -47,9 +47,7 @@ pub use generators::{
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use crate::algorithm::{
-        Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
-    };
+    pub use crate::algorithm::ParameterizedAlgorithm;
     pub use crate::context::DspContext;
     pub use crate::filters::{Filter, FilterParams, FilterType};
     pub use crate::generators::{

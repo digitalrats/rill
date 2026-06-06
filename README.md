@@ -159,7 +159,7 @@ topology definition.
 | **rill-core** | Foundation: traits, math, buffers, queues, time, macros |
 | **rill-core-actor** | Actor model: ActorRef, ActorCell, ActorSystem for lock-free message passing |
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
-| **rill-core-model** | Wave Digital Filter elements and adapters |
+| **rill-core-model** | WDF elements, adapters, physical modeling (string, plate, modal, cavity) |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
 | **rill-oscillators** | Sine, saw, noise, LFO, envelope graph nodes |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |

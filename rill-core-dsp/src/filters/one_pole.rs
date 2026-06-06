@@ -6,10 +6,13 @@
 //! - Envelope followers
 
 use super::{FilterParams, FilterType};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use crate::vector::{ScalarVector1, Vector};
 use core::f32::consts::PI;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// One-pole filter

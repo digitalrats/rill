@@ -18,7 +18,7 @@ Cargo workspace — 18 active crates:
 | `rill-lofi` | Active — lo-fi emulation |
 | `rill-io` | Active — I/O backends (PortAudio, ALSA, PipeWire, JACK) |
 | `rill-telemetry` | Active — probes, collectors |
-| `rill-core-model` | Active — WDF elements, adapters, analysis |
+| `rill-core-model` | Active — WDF elements, adapters, analysis, physical modeling (string, plate, modal, cavity) |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
@@ -34,7 +34,7 @@ Dependency tree:
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
   `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`
-- **`rill-core-model`** — WDF core, depends on `rill-core`
+- **`rill-core-model`** — WDF + physical modeling, depends on `rill-core`
 - **`rill-analog-filters`** — depends on `rill-core` + `rill-core-model`
 - **`rill-analog-effects`** — depends on `rill-core` + `rill-core-model`
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`

@@ -5,12 +5,15 @@
 //! - "Metallic" sound effects
 //! - Physical string modeling
 use super::FilterParams;
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::buffer::DelayLine;
 use rill_core::math::vector::scalar::ScalarVector4;
 use rill_core::math::Transcendental;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 
 /// Comb filter
 pub struct CombFilter<T: Transcendental, const MAX_DELAY: usize> {

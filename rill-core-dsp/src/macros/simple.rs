@@ -96,7 +96,7 @@ macro_rules! simple_algorithm {
             }
         }
 
-        impl<$($generic: $bound),+> $crate::algorithm::Algorithm<T> for $name<$($generic),+>
+        impl<$($generic: $bound),+> rill_core::traits::algorithm::Algorithm<T> for $name<$($generic),+>
         where
             T: rill_core::math::Transcendental,
         {
@@ -112,8 +112,8 @@ macro_rules! simple_algorithm {
                 &mut self,
                 input: Option<&[T]>,
                 output: &mut [T],
-                _ctx: &$crate::algorithm::ActionContext,
-            ) -> $crate::algorithm::ProcessResult<()> {
+                _ctx: &rill_core::traits::algorithm::ActionContext,
+            ) -> rill_core::traits::ProcessResult<()> {
                 let input = input.unwrap_or(&[]);
                 let len = input.len().min(output.len());
                 let process_fn: fn(&mut Self, T) -> T = $process;
@@ -123,10 +123,10 @@ macro_rules! simple_algorithm {
                 Ok(())
             }
 
-            fn metadata(&self) -> $crate::algorithm::AlgorithmMetadata {
-                $crate::algorithm::AlgorithmMetadata {
+            fn metadata(&self) -> rill_core::traits::algorithm::AlgorithmMetadata {
+                rill_core::traits::algorithm::AlgorithmMetadata {
                     name: stringify!($name),
-                    category: $crate::algorithm::AlgorithmCategory::Utility,
+                    category: rill_core::traits::algorithm::AlgorithmCategory::Utility,
                     description: stringify!($name),
                     author: "Rill",
                     version: env!("CARGO_PKG_VERSION"),

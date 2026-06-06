@@ -4,9 +4,11 @@
 //! rate, interpolation, and configurable looping (one-shot, forward,
 //! ping-pong).
 
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, InterpolatedReader};
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// Loop behaviour for [`SamplePlayer`].

@@ -6,6 +6,7 @@
 
 use crate::math::Transcendental;
 use crate::time::ClockTick;
+use crate::traits::ParamValue;
 use crate::traits::ProcessResult;
 
 // ============================================================================
@@ -147,5 +148,40 @@ pub trait Algorithm<T: Transcendental>: Send + Sync {
     /// Descriptive metadata (defaults to empty).
     fn metadata(&self) -> AlgorithmMetadata {
         AlgorithmMetadata::empty()
+    }
+}
+
+// ============================================================================
+// ParameterizedAlgorithm Trait
+// ============================================================================
+
+/// An `Algorithm` with typed, settable parameters.
+///
+/// Extends the base [`Algorithm`] trait with the ability to get and set
+/// a typed parameter struct (`Params`) and to update individual parameters
+/// by name (for automation integration).
+///
+/// # Type parameter
+///
+/// `Params` — the concrete parameter type. Must be `Clone + Send + Sync`.
+/// Different algorithm families use different structs (e.g. `FilterParams`
+/// for DSP filters, `StringParams` for string models).
+pub trait ParameterizedAlgorithm<T: Transcendental>: Algorithm<T> {
+    /// The concrete parameter type for this algorithm.
+    type Params: Clone + Send + Sync;
+
+    /// Get a reference to the current parameters.
+    fn params(&self) -> &Self::Params;
+
+    /// Replace all parameters atomically.
+    ///
+    /// The implementation should recompute any derived coefficients.
+    fn set_params(&mut self, params: Self::Params);
+
+    /// Set a single parameter by name (for automation / scripting).
+    ///
+    /// Default: returns an error for any unrecognised name.
+    fn set_parameter(&mut self, _name: &str, _value: ParamValue) -> Result<(), &'static str> {
+        Err(format!("Parameter '{}' not supported", _name).leak())
     }
 }

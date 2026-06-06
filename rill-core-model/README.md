@@ -1,19 +1,22 @@
 # rill-core-model
 
-Wave Digital Filter (WDF) core — elements, adapters, and analysis for analog circuit modeling.
+Wave Digital Filter (WDF) core and physical modeling — elements, adapters,
+analysis, and resonant models for analog circuit and acoustic simulation.
 
 ## Key components
 
-- **Elements** — `Resistor`, `Capacitor`, `Inductor`, `Diode`
-- **Adapters** — `SeriesAdapter`, `ParallelAdapter`
+- **WDF Elements** — `Resistor`, `Capacitor`, `Inductor`, `Diode`, `OpAmp`
+- **WDF Adapters** — `SeriesAdapter`, `ParallelAdapter`
+- **WDF Filters** — `MoogLadder` (4-pole ladder), `DiodeClipper`, `RcPole`
 - **Analysis** — frequency response, distortion analysis
-- **Filters** — `MoogLadder` (WDF-based 4-pole ladder filter)
-- **Traits** — `WdfElement`, `WaveVariables` — generic over `rill_core::AudioNum` (f32/f64)
-- **SIMD** — optional `simd` feature enables vectorization via `rill_core::vector`
+- **Traits** — `WdfElement`, `WaveVariables` — generic over `rill_core::Transcendental` (f32/f64)
+- **Physical models** — `StringModel` (1D waveguide), `PlateModel` (2D FDTD mesh),
+  `ModalModel` (parallel resonant filter bank), `HelmholtzCavity` (Helmholtz resonator
+  with reed excitation), `CavityArray` (coupled cavity chain)
 
 ## Dependencies
 
-- `rill-core` — `AudioNum`, vector abstractions
+- `rill-core` — `Transcendental`, `Algorithm`, `ParameterizedAlgorithm`, vector abstractions
 
 ## Links
 

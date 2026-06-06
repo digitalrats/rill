@@ -5,8 +5,10 @@
 //! runaway oscillation.
 
 use super::{Filter, FilterParams, OnePole};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// Moog ladder 4-pole lowpass filter

@@ -1,5 +1,5 @@
-//! Wave Digital Filter (WDF) core — elements, adapters, and analysis
-//! for analog circuit modeling.
+//! Wave Digital Filter (WDF) core and physical modeling — elements, adapters,
+//! analysis, and resonant models for analog circuit and acoustic simulation.
 //!
 //! All types are generic over [`rill_core::Transcendental`], supporting both `f32`
 //! and `f64`. SIMD-accelerated batch processing is available via
@@ -11,7 +11,11 @@
 //! - `macros` — WDF eDSL macros for defining elements and filters
 //! - `analysis` — frequency response and distortion analysis
 //! - `constants` — physical constants and tolerances
-//! - `filters` — WDF-based filter models
+//! - `wdf` — WDF-based filter models
+//! - `string` — 1D waveguide string models with stiffness and damping
+//! - `plate` — 2D FDTD waveguide mesh for plates and membranes
+//! - `modal` — modal synthesis via parallel resonant filter banks
+//! - `cavity` — Helmholtz cavity resonators and coupled cavity arrays
 //!
 //! # Design
 //!
@@ -44,10 +48,23 @@ mod elements;
 pub mod tape;
 
 /// WDF-based filter models
-pub mod filters;
+pub mod wdf;
+
+/// Helmholtz cavity resonators and coupled cavity arrays
+pub mod cavity;
+/// Modal synthesis via parallel resonant filter banks
+pub mod modal;
+/// 2D FDTD waveguide mesh for plates and membranes
+pub mod plate;
+/// 1D waveguide string models with stiffness and damping
+pub mod string;
 
 pub use adapters::{ParallelAdapter, SeriesAdapter};
+pub use cavity::{CavityArray, HelmholtzCavity};
 pub use elements::{Capacitor, Diode, Inductor, OpAmp, Resistor};
+pub use modal::ModalModel;
+pub use plate::PlateModel;
+pub use string::StringModel;
 
 /// Base WDF element trait.
 ///

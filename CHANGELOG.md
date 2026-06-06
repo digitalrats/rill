@@ -2,6 +2,48 @@
 
 ## [0.5.0-beta.5] — In Progress
 
+### 🧱 Physical Modeling in `rill-core-model`
+
+**Four new resonant model modules** (`rill-core-model`):
+
+- **`string`** — 1D digital waveguide with fractional-delay allpass interpolation,
+  stiffness dispersion, and frequency-dependent damping. Implements
+  `Algorithm<T>` + `ParameterizedAlgorithm<T, Params = StringParams<T>>`.
+- **`plate`** — 2D FDTD waveguide mesh on rectangular grid with clamped/free
+  boundary conditions. Impulse excitation at configurable position.
+- **`modal`** — parallel bank of 2-pole resonant filters for modal synthesis.
+  Pre-built presets: `bell_modes()` (5 modes, inharmonic bell ratios) and
+  `marimba_modes()` (3 modes, harmonic bar ratios).
+- **`cavity`** — `HelmholtzCavity` (single Helmholtz resonator with optional
+  reed excitation for wind instrument modeling) and `CavityArray` (1D chain
+  of coupled cavities for wave propagation experiments / acoustic metamaterials).
+
+All four types implement `Algorithm<T>` + `ParameterizedAlgorithm<T>`.
+24 new tests.
+
+### ♻️ `ParameterizedAlgorithm` → `rill-core`
+
+**`rill-core` (`traits/algorithm.rs`):**
+- `ParameterizedAlgorithm<T>` trait added — typed parameter access for any
+  `Algorithm` (`params()`, `set_params()`, `set_parameter()`). Generic over
+  `type Params: Clone + Send + Sync`. Previously lived in `rill-core-dsp`.
+
+**`rill-core-dsp`:**
+- `rll-core-dsp/src/algorithm.rs` — now re-exports `ParameterizedAlgorithm`
+  from `rill-core`; definition removed.
+- `Algorithm`, `AlgorithmCategory`, `AlgorithmMetadata`, `ActionContext`,
+  `ProcessResult` no longer re-exported from `rill-core-dsp` — all consumers
+  import directly from `rill_core::traits`.
+- 7 filter `ParameterizedAlgorithm` impls unchanged.
+
+### 📦 `rill-core-wdf` → `rill-core-model`
+
+- Crate renamed: `rill-core-wdf` → `rill-core-model`
+- Internal module `filters` → `wdf` (path: `rill_core_model::wdf::*`)
+- All imports across workspace updated (4 crates, 14 docs, 3 scripts)
+- Current module listing: `macros`, `analysis`, `constants`, `wdf`, `tape`,
+  `string`, `plate`, `modal`, `cavity`
+
 ### 📝 Terminology: «audio» → «signal» / «I/O»
 
 **Public API (breaking):**

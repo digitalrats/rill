@@ -1,10 +1,12 @@
 //! Envelope generators (ADSR, AR, ASR)
 
 use super::Generator;
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::math::Smoother;
 use crate::vector::prelude::*;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{
+    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
+};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// Current stage of an envelope generator.

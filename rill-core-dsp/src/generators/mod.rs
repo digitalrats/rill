@@ -11,7 +11,7 @@
 //! by the `T: Transcendental` type (f32 or f64).
 
 // Import necessary types and traits
-use crate::algorithm::Algorithm;
+use rill_core::traits::algorithm::Algorithm;
 use rill_core::Transcendental;
 
 // Declare submodules
