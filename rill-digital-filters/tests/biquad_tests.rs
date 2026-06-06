@@ -1,7 +1,6 @@
 //! Integration tests for BiquadFilter
 
-use rill_core::time::ClockTick;
-use rill_core::traits::{ActionContext, Algorithm};
+use rill_core::traits::Algorithm;
 use rill_core_dsp::filters::{Filter, FilterParams};
 use rill_digital_filters::{BiquadFilter, FilterType};
 
@@ -77,15 +76,11 @@ fn test_biquad_stereo() {
     let mut left_output = vec![0.0; num_samples];
     let mut right_output = vec![0.0; num_samples];
 
-    let tick = ClockTick::default();
-    let ctx = ActionContext::new(&tick);
-
     // Process left channel
-    left.process(Some(&left_input), &mut left_output, &ctx)
-        .unwrap();
+    left.process(Some(&left_input), &mut left_output).unwrap();
     // Process right channel
     right
-        .process(Some(&right_input), &mut right_output, &ctx)
+        .process(Some(&right_input), &mut right_output)
         .unwrap();
 
     // Verify both channels processed correctly

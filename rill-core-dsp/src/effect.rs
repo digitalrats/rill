@@ -1,8 +1,6 @@
 //! Traits for effects
 
 use crate::algorithm::ParameterizedAlgorithm;
-use rill_core::time::ClockTick;
-use rill_core::traits::ActionContext;
 use rill_core::Transcendental;
 
 /// Base trait for effects
@@ -21,17 +19,13 @@ pub trait Effect<T: Transcendental>: ParameterizedAlgorithm<T> {
     fn process_stereo(&mut self, left: T, right: T) -> (T, T) {
         let input = [left, right];
         let mut output = [T::ZERO, T::ZERO];
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-        let _ = self.process(Some(&input), &mut output, &ctx);
+        let _ = self.process(Some(&input), &mut output);
         (output[0], output[1])
     }
 
     /// Process block using vector eDSL (optional)
     fn process_block_vector(&mut self, input: &[T], output: &mut [T]) {
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-        let _ = self.process(Some(input), output, &ctx);
+        let _ = self.process(Some(input), output);
     }
 }
 
@@ -49,9 +43,7 @@ pub trait Bypassable<T: Transcendental>: Effect<T> {
             input
         } else {
             let mut output = [T::ZERO];
-            let tick = ClockTick::default();
-            let ctx = ActionContext::new(&tick);
-            let _ = self.process(Some(&[input]), &mut output, &ctx);
+            let _ = self.process(Some(&[input]), &mut output);
             output[0]
         }
     }
@@ -68,9 +60,7 @@ pub trait DryWet<T: Transcendental>: Effect<T> {
     /// Process with dry/wet consideration
     fn process_with_dry_wet(&mut self, input: T, dry: T) -> T {
         let mut wet = [T::ZERO];
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-        let _ = self.process(Some(&[input]), &mut wet, &ctx);
+        let _ = self.process(Some(&[input]), &mut wet);
         let mix = T::from_f32(self.dry_wet());
         let one_minus_mix = T::from_f32(1.0 - self.dry_wet());
 

@@ -12,7 +12,7 @@ mod params;
 pub use params::{CavityArrayParams, HelmholtzParams};
 
 use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
+    Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
 };
 use rill_core::traits::ParamValue;
 use rill_core::Transcendental;
@@ -118,7 +118,6 @@ impl<T: Transcendental> Algorithm<T> for HelmholtzCavity<T> {
         &mut self,
         input: Option<&[T]>,
         output: &mut [T],
-        _ctx: &ActionContext,
     ) -> rill_core::traits::ProcessResult<()> {
         for (i, out) in output.iter_mut().enumerate() {
             let inp = input
@@ -269,7 +268,6 @@ impl<T: Transcendental, const MAX_CAVITIES: usize> Algorithm<T> for CavityArray<
         &mut self,
         input: Option<&[T]>,
         output: &mut [T],
-        _ctx: &ActionContext,
     ) -> rill_core::traits::ProcessResult<()> {
         for (i, out) in output.iter_mut().enumerate() {
             let inp = input
@@ -371,12 +369,10 @@ mod tests {
         let mut cavity = HelmholtzCavity::<f64>::new(params.clone(), 44100.0);
         let f_res = cavity.resonant_frequency().to_f64();
         let mut output = [0.0f64; 128];
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         let input: Vec<f64> = (0..128)
             .map(|i| (2.0 * std::f64::consts::PI * f_res * i as f64 / 44100.0).sin() * 0.5)
             .collect();
-        cavity.process(Some(&input), &mut output, &ctx).unwrap();
+        cavity.process(Some(&input), &mut output).unwrap();
         let rms = (output.iter().map(|x| x * x).sum::<f64>() / 128.0).sqrt();
         assert!(
             rms > 0.01,
@@ -395,9 +391,7 @@ mod tests {
         };
         let mut cavity = HelmholtzCavity::<f64>::new(params, 44100.0);
         let mut output = [0.0f64; 128];
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-        cavity.process(None, &mut output, &ctx).unwrap();
+        cavity.process(None, &mut output).unwrap();
         let max_abs = output.iter().map(|x| x.abs()).fold(0.0, f64::max);
         assert!(max_abs > 0.0, "Reed excitation should produce output");
     }
@@ -435,12 +429,10 @@ mod tests {
         };
         let mut array = CavityArray::<f64, 8>::new(params, 44100.0);
         let mut output = [0.0f64; 256];
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         let input: Vec<f64> = (0..256)
             .map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 44100.0).sin() * 0.5)
             .collect();
-        array.process(Some(&input), &mut output, &ctx).unwrap();
+        array.process(Some(&input), &mut output).unwrap();
         let rms = (output.iter().map(|x| x * x).sum::<f64>() / 256.0).sqrt();
         assert!(
             rms > 0.001,
@@ -460,12 +452,10 @@ mod tests {
         };
         let mut array = CavityArray::<f64, 8>::new(params, 44100.0);
         let mut output = [0.0f64; 256];
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         let input: Vec<f64> = (0..256)
             .map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 44100.0).sin() * 0.5)
             .collect();
-        array.process(Some(&input), &mut output, &ctx).unwrap();
+        array.process(Some(&input), &mut output).unwrap();
         let rms = (output.iter().map(|x| x * x).sum::<f64>() / 256.0).sqrt();
         assert!(rms < 0.01, "Zero coupling should block propagation");
     }

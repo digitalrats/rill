@@ -6,7 +6,7 @@ use rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange,
     ParamType, ParamValue, ParameterId, Port,
 };
-use rill_core::ClockTick;
+use rill_core::RenderContext;
 use rill_core::{ProcessError, ProcessResult};
 use std::collections::HashMap;
 
@@ -485,13 +485,13 @@ impl<const BUF_SIZE: usize> rill_core::traits::Node<f32, BUF_SIZE> for MixerNode
 
 // ── Router trait — N→M configurable routing ────────────────
 impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNode<BUF_SIZE> {
-    fn route(&mut self, clock: &ClockTick, _inputs: &[&[f32; BUF_SIZE]]) -> ProcessResult<()> {
+    fn route(&mut self, ctx: &RenderContext, _inputs: &[&[f32; BUF_SIZE]]) -> ProcessResult<()> {
         let _num_buses = self.buses.len();
         let buffer_size = BUF_SIZE;
 
-        // Update state with clock
-        self.state.sample_pos = clock.sample_pos;
-        self.state.blocks_processed = clock.sample_pos / buffer_size as u64;
+        // Update state with ctx
+        self.state.sample_pos = ctx.sample_pos;
+        self.state.blocks_processed = ctx.sample_pos / buffer_size as u64;
 
         // Ensure bus buffers are sized correctly and zeroed
         for bus in &mut self.buses {

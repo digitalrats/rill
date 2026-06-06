@@ -167,10 +167,10 @@ macro_rules! processor_node {
         {
             fn process(
                 &mut self,
-                _clock: &$crate::ClockTick,
+                _ctx: &$crate::RenderContext,
                 _signal_inputs: &[&[$T; $BUF]],
                 _control_inputs: &[$T],
-                _clock_inputs: &[$crate::ClockTick],
+                _clock_inputs: &[$crate::RenderContext],
                 _feedback_inputs: &[&[$T; $BUF]],
             ) -> $crate::ProcessResult<()> {
                 ($process)(self)?;

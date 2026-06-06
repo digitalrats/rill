@@ -241,7 +241,7 @@ macro_rules! node_ctor {
 mod tests {
     use super::*;
 
-    use rill_core::time::ClockTick;
+    use rill_core::time::RenderContext;
     use rill_core::traits::node::NodeState;
     use rill_core::traits::port::Port;
     use rill_core::traits::NodeCategory;
@@ -338,7 +338,12 @@ mod tests {
     }
 
     impl<T: Transcendental, const B: usize> Source<T, B> for TestSource<T, B> {
-        fn generate(&mut self, _: &ClockTick, _: &[T], _: &[ClockTick]) -> ProcessResult<()> {
+        fn generate(
+            &mut self,
+            _: &RenderContext,
+            _: &[T],
+            _: &[RenderContext],
+        ) -> ProcessResult<()> {
             Ok(())
         }
     }
@@ -346,10 +351,10 @@ mod tests {
     impl<T: Transcendental, const B: usize> Processor<T, B> for TestSource<T, B> {
         fn process(
             &mut self,
-            _: &ClockTick,
+            _: &RenderContext,
             _: &[&[T; B]],
             _: &[T],
-            _: &[ClockTick],
+            _: &[RenderContext],
             _: &[&[T; B]],
         ) -> ProcessResult<()> {
             Ok(())

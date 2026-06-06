@@ -1,8 +1,6 @@
 //! Equalizer band implementation
 
 use crate::{Filter, FilterType};
-use rill_core::time::ClockTick;
-use rill_core::traits::ActionContext;
 use rill_core_dsp::filters::FilterParams;
 
 /// Type of EQ band
@@ -106,11 +104,7 @@ impl<F: Filter<f32>> EqBand<F> {
         let mut output = [0.0];
 
         self.filter
-            .process(
-                Some(&input_slice[..]),
-                &mut output,
-                &ActionContext::new(&ClockTick::default()),
-            )
+            .process(Some(&input_slice[..]), &mut output)
             .unwrap();
         output[0]
     }

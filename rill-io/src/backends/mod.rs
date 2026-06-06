@@ -12,6 +12,8 @@ mod pipewire;
 
 #[cfg(feature = "jack")]
 mod jack;
+#[cfg(feature = "jack")]
+mod jack_midi;
 
 #[cfg(feature = "portaudio")]
 mod portaudio;
@@ -31,6 +33,8 @@ pub use pipewire::PipewireBackend;
 
 #[cfg(feature = "jack")]
 pub use jack::JackBackend;
+#[cfg(feature = "jack")]
+pub use jack_midi::JackMidiBackend;
 
 #[cfg(feature = "portaudio")]
 pub use portaudio::PortAudioBackend;

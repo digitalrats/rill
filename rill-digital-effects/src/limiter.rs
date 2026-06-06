@@ -5,7 +5,7 @@ use rill_core::{
     buffer::DelayLine,
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
-    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
+    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
 };
 
 /// Maximum lookahead time in seconds (10 ms)
@@ -441,10 +441,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Limiter<T, 
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
     fn process(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         for i in 0..BUF_SIZE {

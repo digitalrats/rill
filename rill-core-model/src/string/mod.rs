@@ -9,7 +9,7 @@ mod params;
 pub use params::StringParams;
 
 use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
+    Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
 };
 use rill_core::traits::ParamValue;
 use rill_core::Transcendental;
@@ -111,7 +111,6 @@ impl<T: Transcendental> Algorithm<T> for StringModel<T> {
         &mut self,
         input: Option<&[T]>,
         output: &mut [T],
-        _ctx: &ActionContext,
     ) -> rill_core::traits::ProcessResult<()> {
         for (i, out) in output.iter_mut().enumerate() {
             let inp = input
@@ -216,9 +215,7 @@ mod tests {
         let mut model = StringModel::<f64>::new(params, 44100.0, 4096);
         model.pluck(0.5.into());
         let mut output = [0.0f64; 64];
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-        model.process(None, &mut output, &ctx).unwrap();
+        model.process(None, &mut output).unwrap();
         let max_abs = output.iter().map(|x| x.abs()).fold(0.0, f64::max);
         assert!(max_abs > 0.0);
     }
@@ -232,11 +229,9 @@ mod tests {
         let mut model = StringModel::<f64>::new(params, 44100.0, 4096);
         model.pluck(1.0.into());
         let mut blocks = Vec::new();
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         for _ in 0..20 {
             let mut out = [0.0f64; 64];
-            model.process(None, &mut out, &ctx).unwrap();
+            model.process(None, &mut out).unwrap();
             blocks.push(out.iter().map(|x| x.abs()).fold(0.0, f64::max));
         }
         // Signal should decay over time

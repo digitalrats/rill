@@ -114,7 +114,6 @@ macro_rules! generator_algorithm {
                 &mut self,
                 _input: Option<&[T]>,
                 output: &mut [T],
-                _ctx: &rill_core::traits::algorithm::ActionContext,
             ) -> rill_core::traits::ProcessResult<()> {
                 let generate_fn: fn(&mut Self) -> T = $generate;
                 for out in output.iter_mut() {

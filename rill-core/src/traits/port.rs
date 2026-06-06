@@ -9,7 +9,7 @@ use crate::buffer::{Buffer, FixedBuffer};
 use crate::math::vector::scalar::ScalarVector4;
 use crate::math::vector::traits::Vector as VecTrait;
 use crate::math::Transcendental;
-use crate::time::ClockTick;
+use crate::time::RenderContext;
 use crate::traits::algorithm::Algorithm;
 use crate::traits::node::NodeId;
 use crate::traits::processable::Processable;
@@ -531,7 +531,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     ///
     /// For input ports on a feedback edge, mixes the delayed feedback
     /// (from `feedback_buffer`) into the current `buffer`.
-    pub fn pre_process(&mut self, _tick: &ClockTick) {
+    pub fn pre_process(&mut self) {
         if let Some(ref fb) = self.feedback_buffer {
             let arr = self.buffer.as_mut_array();
             let fb_arr = fb.as_array();
@@ -577,8 +577,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// input port's buffer. The caller must ensure no aliasing between
     /// this port's node and any target node (guaranteed by DAG topology).
     ///
-    /// `tick` is the current clock tick, available for future
-    /// sample-accurate or time-varying port-level propagation.
     /// Copy `buffer` into every downstream input port (unless zero-copy),
     /// run each port's algorithm, then process the downstream node and
     /// recurse through its output ports.
@@ -588,28 +586,26 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     pub fn propagate(
         &self,
         buffer: &FixedBuffer<T, BUF_SIZE>,
-        ctx: &crate::traits::algorithm::ActionContext,
+        ctx: &RenderContext,
     ) -> ProcessResult<()> {
         for &ptr in &self.downstream_input_ptrs {
             unsafe {
                 if (*ptr).upstream_buffer.is_none() {
                     (*ptr).buffer.copy_from(buffer.as_array());
                 }
-                (*ptr).run_action(Some(buffer.as_array()), ctx)?;
+                (*ptr).run_action(Some(buffer.as_array()))?;
                 (*ptr).data_received = true;
             }
         }
-        let mut proc_ctx = crate::traits::processable::ProcessContext { clock: ctx.tick };
         for &parent in &self.downstream_nodes {
             unsafe {
                 let nv = &mut *parent;
-                // Pre-process input ports (feedback mix from previous block)
                 for pi in 0..nv.num_signal_inputs() {
                     if let Some(p) = nv.input_port_mut(pi) {
-                        p.pre_process(ctx.tick);
+                        p.pre_process();
                     }
                 }
-                nv.process_block(&mut proc_ctx)?;
+                nv.process_block(ctx)?;
                 for po in 0..nv.num_signal_outputs() {
                     if let Some(p) = nv.output_port_mut(po) {
                         p.snapshot_feedback();
@@ -635,7 +631,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     pub fn run_action(
         &mut self,
         input: Option<&[T; BUF_SIZE]>,
-        ctx: &crate::traits::algorithm::ActionContext,
     ) -> crate::traits::ProcessResult<()> {
         match &mut self.action {
             Some(action) => {
@@ -644,7 +639,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
                     action.apply_command(cmd);
                 }
                 let input_slice = input.map(|arr| arr.as_slice());
-                action.process(input_slice, self.buffer.as_mut_slice(), ctx)
+                action.process(input_slice, self.buffer.as_mut_slice())
             }
             None => {
                 // No algorithm — use pending command value if set,
@@ -687,7 +682,7 @@ pub trait ActivePort<T: Transcendental, const BUF_SIZE: usize> {
     fn is_connected(&self) -> bool;
 
     /// Called on each clock tick (optional).
-    fn on_tick(&mut self, _tick: &ClockTick) {}
+    fn on_tick(&mut self, _ctx: &RenderContext) {}
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<T, BUF_SIZE> {
@@ -716,7 +711,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<
     }
 
     #[inline]
-    fn on_tick(&mut self, _tick: &ClockTick) {}
+    fn on_tick(&mut self, _ctx: &RenderContext) {}
 }
 
 // SAFETY: `upstream_buffer` is a raw pointer to a buffer owned by another

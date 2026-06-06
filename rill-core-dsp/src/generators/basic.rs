@@ -4,9 +4,7 @@ use crate::generators::{Generator, ModulatableGenerator, SyncableGenerator};
 use crate::vector::prelude::*;
 use rill_core::math::vector::scalar::ScalarVector4;
 use rill_core::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
-use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
-};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 use std::f32::consts::PI;
@@ -387,12 +385,7 @@ impl<T: Transcendental> Algorithm<T> for BasicOscillator<T> {
         self.fm_amount = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process(
-        &mut self,
-        _input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         self.generate_block_simd(output);
         Ok(())
     }
@@ -497,14 +490,12 @@ mod tests {
 
         // First sample should be 0
         let mut output = [0.0f32; 1];
-        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
-        let ctx = rill_core::traits::ActionContext::new(&tick);
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample1 = output[0];
         assert!(approx_eq!(f32, sample1, 0.0, epsilon = 1e-6));
 
         // Second sample should not be 0
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample2 = output[0];
         assert!(sample2 != 0.0);
         assert!(sample2 >= -0.5 && sample2 <= 0.5);
@@ -516,9 +507,7 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
-        let ctx = rill_core::traits::ActionContext::new(&tick);
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample = output[0];
         assert!(sample >= -0.5 && sample <= 0.5);
     }
@@ -529,9 +518,7 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
-        let ctx = rill_core::traits::ActionContext::new(&tick);
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample = output[0];
         assert!(sample == 0.5 || sample == -0.5);
     }
@@ -542,9 +529,7 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
-        let ctx = rill_core::traits::ActionContext::new(&tick);
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample = output[0];
         assert!(sample >= -0.5 && sample <= 0.5);
     }
@@ -555,9 +540,7 @@ mod tests {
         osc.init(44100.0);
 
         let mut output = [0.0f32; 1];
-        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
-        let ctx = rill_core::traits::ActionContext::new(&tick);
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample = output[0];
         assert!(sample == 0.5); // At phase 0 should be positive pulse
     }
@@ -591,9 +574,7 @@ mod tests {
 
         osc.set_phase(0.25); // π/2
         let mut output = [0.0f32; 1];
-        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
-        let ctx = rill_core::traits::ActionContext::new(&tick);
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample = output[0];
         assert!(approx_eq!(f32, sample, 1.0, epsilon = 1e-4)); // sin(π/2) = 1
     }
@@ -608,9 +589,7 @@ mod tests {
 
         // Verify modulation is applied
         let mut output = [0.0f32; 1];
-        let tick = rill_core::time::ClockTick::new(0, 1, 44100.0);
-        let ctx = rill_core::traits::ActionContext::new(&tick);
-        osc.process(None, &mut output, &ctx).unwrap();
+        osc.process(None, &mut output).unwrap();
         let sample = output[0];
         assert!(sample >= -1.0 && sample <= 1.0);
     }

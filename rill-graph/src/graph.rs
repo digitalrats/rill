@@ -3,10 +3,9 @@ use crate::factory::NodeFactory;
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
-use rill_core::time::ClockTick;
-use rill_core::traits::algorithm::ActionContext;
+use rill_core::time::{ClockTick, RenderContext, SystemClock};
 use rill_core::traits::port::Port;
-use rill_core::traits::processable::{ProcessContext, Processable};
+use rill_core::traits::processable::Processable;
 use rill_core::traits::ParamValue;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params};
 use rill_core_actor::{Actor, ActorRef, ActorSystem};
@@ -484,6 +483,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             actor: Some(actor),
             actor_ref,
             parent_ref: self.parent_ref.clone(),
+            system_clock: None,
         })
     }
 }
@@ -511,6 +511,9 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     actor: Option<Actor<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
     parent_ref: Option<ActorRef<CommandEnum>>,
+    /// Optional shared system clock, updated by external sync sources (MIDI, JACK transport).
+    /// When set, the I/O callback reads BPM from it and creates `ClockTick::with_tempo`.
+    pub system_clock: Option<Arc<SystemClock>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
@@ -559,18 +562,27 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         let parent = self.parent_ref.clone();
         let nodes = self.nodes.clone();
         let idx = self.active_node_idx;
+        let sys_clock = self.system_clock.clone();
 
         let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
             actor.drain();
-            let tick = ClockTick::new(sample_pos, BUF_SIZE as u32, sample_rate);
-            let mut ctx = ProcessContext { clock: &tick };
+            let ctx = if let Some(ref clock) = sys_clock {
+                RenderContext::with_tempo(
+                    sample_pos,
+                    BUF_SIZE as u32,
+                    sample_rate,
+                    clock.bpm() as f32,
+                )
+            } else {
+                RenderContext::new(sample_pos, BUF_SIZE as u32, sample_rate)
+            };
+            let tick = ClockTick::with_tempo(sample_pos, BUF_SIZE as u32, sample_rate, ctx.bpm());
             unsafe {
                 let nv = &mut *nodes.get();
-                let _ = nv[source].process_block(&mut ctx);
-                let action_ctx = ActionContext::new(&tick);
+                let _ = nv[source].process_block(&ctx);
                 for po in 0..nv[source].num_signal_outputs() {
                     if let Some(port) = nv[source].output_port(po) {
-                        let _ = port.propagate(port.buffer(), &action_ctx);
+                        let _ = port.propagate(port.buffer(), &ctx);
                     }
                 }
             }
@@ -613,6 +625,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             actor,
             actor_ref: _,
             parent_ref: _,
+            system_clock: _,
         } = self;
         drop(actor);
         let nodes = Rc::try_unwrap(nodes).unwrap().into_inner();
@@ -624,7 +637,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 mod tests {
     use super::*;
     use rill_core::math::Transcendental;
-    use rill_core::time::ClockTick;
+    use rill_core::time::RenderContext;
     use rill_core::traits::{
         Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
         ProcessResult, Processor, Sink, Source,
@@ -765,7 +778,12 @@ mod tests {
     }
 
     impl<T: Transcendental, const B: usize> Source<T, B> for ConstantSource<T, B> {
-        fn generate(&mut self, _: &ClockTick, _: &[T], _: &[ClockTick]) -> ProcessResult<()> {
+        fn generate(
+            &mut self,
+            _: &RenderContext,
+            _: &[T],
+            _: &[RenderContext],
+        ) -> ProcessResult<()> {
             self.output.buffer.as_mut_array().fill(self.value);
             Ok(())
         }
@@ -879,10 +897,10 @@ mod tests {
     impl<T: Transcendental, const B: usize> Processor<T, B> for GainProcessor<T, B> {
         fn process(
             &mut self,
-            _: &ClockTick,
+            _: &RenderContext,
             _: &[&[T; B]],
             _: &[T],
-            _: &[ClockTick],
+            _: &[RenderContext],
             _: &[&[T; B]],
         ) -> ProcessResult<()> {
             let src = self.input.buffer.as_array();
@@ -982,10 +1000,10 @@ mod tests {
     impl<T: Transcendental, const B: usize> Sink<T, B> for CaptureSink<T, B> {
         fn consume(
             &mut self,
-            _: &ClockTick,
+            _: &RenderContext,
             _: &[&[T; B]],
             _: &[T],
-            _: &[ClockTick],
+            _: &[RenderContext],
             _: &[&[T; B]],
         ) -> ProcessResult<()> {
             Ok(())
@@ -1012,15 +1030,13 @@ mod tests {
         let graph = builder.build(&system).unwrap();
         let source_idx = graph.source_idx;
 
-        let tick = ClockTick::new(0, BUF as u32, 44100.0);
-        let mut ctx = ProcessContext { clock: &tick };
+        let ctx = RenderContext::new(0, BUF as u32, 44100.0);
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();
-            nv[source_idx].process_block(&mut ctx).unwrap();
-            let action_ctx = ActionContext::new(&tick);
+            nv[source_idx].process_block(&ctx).unwrap();
             if let Some(port) = nv[source_idx].output_port(0) {
-                port.propagate(port.buffer(), &action_ctx).unwrap();
+                port.propagate(port.buffer(), &ctx).unwrap();
             }
         }
         unsafe {
@@ -1056,8 +1072,7 @@ mod tests {
         eprintln!("topo: {:?}", graph.topo_order);
         eprintln!("source_idx: {source_idx}, src_idx: {src_idx}, proc_idx: {proc_idx}, snk_idx: {snk_idx}");
 
-        let tick = ClockTick::new(0, BUF as u32, 44100.0);
-        let mut ctx = ProcessContext { clock: &tick };
+        let ctx = RenderContext::new(0, BUF as u32, 44100.0);
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();
@@ -1068,11 +1083,10 @@ mod tests {
                 std::mem::discriminant(&nv[2]),
             );
 
-            let _ = nv[source_idx].process_block(&mut ctx);
+            let _ = nv[source_idx].process_block(&ctx);
             let src_val = nv[source_idx].output_port(0).unwrap().buffer.as_array()[0];
             eprintln!("source output: {src_val}");
 
-            let action_ctx = ActionContext::new(&tick);
             let out_port = nv[source_idx].output_port(0).unwrap();
             eprintln!(
                 "source output port downstream_nodes: {}",
@@ -1128,7 +1142,7 @@ mod tests {
             );
             // --- END DEBUG ---
 
-            out_port.propagate(out_port.buffer(), &action_ctx).unwrap();
+            out_port.propagate(out_port.buffer(), &ctx).unwrap();
 
             // --- AFTER PROPAGATE: debug buffer values ---
             {

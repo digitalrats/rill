@@ -1,9 +1,9 @@
 //! Sine wave oscillator using rill-core-dsp with Transcendental
 
-use rill_core::time::ClockTick;
+use rill_core::time::RenderContext;
 use rill_core::traits::{
-    ActionContext, Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Source,
+    Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -293,14 +293,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SineOsc<T, 
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn generate(
         &mut self,
-        clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         let out = self.outputs[0].buffer.as_mut_array();
         self.osc.set_frequency(self.frequency.to_f32());
-        self.osc
-            .process(None, &mut out[..], &ActionContext::new(clock))?;
+        self.osc.process(None, &mut out[..])?;
         for o in out.iter_mut() {
             *o *= self.amplitude;
         }
@@ -346,8 +345,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        let clock = ClockTick::new(0, 64, 44100.0);
-        osc.generate(&clock, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        osc.generate(&ctx, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -368,8 +367,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        let clock = ClockTick::new(0, 64, 44100.0);
-        osc.generate(&clock, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        osc.generate(&ctx, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -388,8 +387,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        let clock = ClockTick::new(0, 64, 44100.0);
-        osc.generate(&clock, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        osc.generate(&ctx, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 

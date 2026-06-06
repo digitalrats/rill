@@ -1,4 +1,4 @@
-use rill_core::traits::{ActionContext, Algorithm};
+use rill_core::traits::Algorithm;
 use rill_core::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     ProcessError, ProcessResult, Processor, Transcendental,
@@ -174,16 +174,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
 {
     fn process(
         &mut self,
-        _clock: &rill_core::ClockTick,
+        _ctx: &rill_core::RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
-        _clock_inputs: &[rill_core::ClockTick],
+        _clock_inputs: &[rill_core::RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let inp = self.inputs[0].buffer.as_array();
         let out = self.outputs[0].buffer.as_mut_array();
-        let ctx = ActionContext::new(_clock);
-        self.algorithm.process(Some(&inp[..]), &mut out[..], &ctx)?;
+        self.algorithm.process(Some(&inp[..]), &mut out[..])?;
         self.state.advance();
         Ok(())
     }

@@ -25,11 +25,13 @@
 
 mod clock;
 mod error;
+mod render;
 mod source;
 mod tick;
 
 pub use clock::SystemClock;
 pub use error::TimeError;
+pub use render::{RenderContext, TransportState};
 pub use source::ClockSource;
 pub use tick::ClockTick;
 
@@ -38,7 +40,9 @@ pub type TimeResult<T> = Result<T, TimeError>;
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use super::{ClockSource, ClockTick, SystemClock, TimeError, TimeResult};
+    pub use super::{
+        ClockSource, ClockTick, RenderContext, SystemClock, TimeError, TimeResult, TransportState,
+    };
 }
 
 #[cfg(test)]

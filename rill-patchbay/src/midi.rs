@@ -18,16 +18,22 @@ use rill_io::midi_backend::MidiBackend;
 use rill_io::midi_message::MidiMessage;
 
 use crate::engine::{ControlEvent, Mapping, MidiTransportKind, Module};
+use crate::midi_clock::MidiClockTracker;
 use crate::sensor::Sensor;
 
 /// MIDI sensor — polls a [`MidiBackend`] on a dedicated OS thread,
 /// parses raw bytes into [`ControlEvent`]s, and dispatches via [`ActorRef`].
+///
+/// Optionally integrates a [`MidiClockTracker`] for MIDI clock sync:
+/// when present, each raw status byte is fed to the tracker before
+/// normal parsing, enabling BPM derivation from clock pulses.
 pub struct MidiHub {
     id: String,
     thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
     events: Option<ActorRef<ControlEvent>>,
     backend: Option<Box<dyn MidiBackend>>,
+    tracker: Option<MidiClockTracker>,
 }
 
 impl MidiHub {
@@ -39,6 +45,27 @@ impl MidiHub {
             running: Arc::new(AtomicBool::new(true)),
             events: None,
             backend: Some(backend),
+            tracker: None,
+        }
+    }
+
+    /// Create a MIDI sensor with an integrated [`MidiClockTracker`].
+    ///
+    /// The tracker receives raw status bytes from every incoming message.
+    /// Use [`MidiHub::shared_clock`] to obtain the `Arc<SystemClock>` for
+    /// wiring into the signal graph.
+    pub fn with_clock_tracker(
+        id: impl Into<String>,
+        backend: Box<dyn MidiBackend>,
+        tracker: MidiClockTracker,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            thread: None,
+            running: Arc::new(AtomicBool::new(true)),
+            events: None,
+            backend: Some(backend),
+            tracker: Some(tracker),
         }
     }
 
@@ -52,6 +79,11 @@ impl MidiHub {
         hub.attach(events);
         hub.start();
         hub
+    }
+
+    /// Return a clone of the shared `SystemClock` if a clock tracker is active.
+    pub fn shared_clock(&self) -> Option<Arc<rill_core::time::SystemClock>> {
+        self.tracker.as_ref().map(|t| t.shared_clock())
     }
 }
 
@@ -82,6 +114,7 @@ impl Sensor for MidiHub {
             .backend
             .take()
             .expect("MidiHub: already started or no backend");
+        let mut tracker = self.tracker.take();
         let r = self.running.clone();
 
         self.thread = Some(thread::spawn(move || {
@@ -90,6 +123,9 @@ impl Sensor for MidiHub {
                 match backend.poll() {
                     Ok(msgs) => {
                         for msg in msgs {
+                            if let Some(ref mut t) = tracker {
+                                t.process_status(msg.status());
+                            }
                             if let Some(event) = parse_midi(&msg) {
                                 events.send(event);
                             }

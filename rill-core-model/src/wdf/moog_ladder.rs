@@ -1,7 +1,5 @@
 use rill_core::math::vector::traits::Vector as VecTrait;
-use rill_core::traits::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult,
-};
+use rill_core::traits::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ProcessResult};
 use rill_core::Transcendental;
 
 // First-order WDF lowpass section.
@@ -93,12 +91,7 @@ impl<T: Transcendental> Algorithm<T> for MoogLadder<T> {
         self.reset();
     }
 
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {
@@ -121,11 +114,6 @@ impl<T: Transcendental> Algorithm<T> for MoogLadder<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::prelude::ClockTick;
-
-    fn make_context(tick: &ClockTick) -> ActionContext<'_> {
-        ActionContext::new(tick)
-    }
 
     fn make_filter(sample_rate: f64) -> MoogLadder<f64> {
         let pole = RcPole::new(0.0);
@@ -178,12 +166,10 @@ mod tests {
     fn test_moog_ladder_algorithm_process() {
         let mut filter = make_filter(44100.0);
         filter.set_cutoff(100.0);
-        let tick = ClockTick::new(0, 64, 44100.0);
         let input = vec![1.0f64; 64];
         let mut output = vec![0.0f64; 64];
-        let ctx = make_context(&tick);
         for _ in 0..500 {
-            filter.process(Some(&input), &mut output, &ctx).unwrap();
+            filter.process(Some(&input), &mut output).unwrap();
         }
         for &o in &output {
             assert!(o.is_finite());
@@ -193,14 +179,12 @@ mod tests {
 
     #[test]
     fn test_moog_ladder_algorithm_reset() {
-        let tick = ClockTick::new(0, 64, 44100.0);
         let mut filter = make_filter(44100.0);
         let input = vec![1.0f64; 64];
         let mut output = vec![0.0f64; 64];
-        let ctx = make_context(&tick);
-        filter.process(Some(&input), &mut output, &ctx).unwrap();
+        filter.process(Some(&input), &mut output).unwrap();
         filter.reset();
-        filter.process(Some(&input), &mut output, &ctx).unwrap();
+        filter.process(Some(&input), &mut output).unwrap();
         assert!(output[0] >= 0.0);
     }
 }

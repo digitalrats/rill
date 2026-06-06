@@ -180,6 +180,16 @@ pub struct LofiConfig {
     pub enable_noise: bool,
     /// Output gain (1.0 = unity).
     pub output_gain: f32,
+    /// DC offset correction — subtracted from each sample after gain.
+    ///
+    /// Use `0.5` for AY-3-8910 (which produces [0.0, 1.0] — all positive).
+    /// Default: `0.0` (no correction).
+    pub dc_offset: f32,
+    /// Hard clamp ceiling applied after offset correction.
+    ///
+    /// Values are clamped to `[-ceiling, +ceiling]`. Default: `1.0` (no clamping).
+    /// Set to `0.8` for conservative headroom into downstream processors.
+    pub output_ceiling: f32,
     /// Dry/wet mix (1.0 = fully wet).
     pub dry_wet: f32,
 }
@@ -198,6 +208,8 @@ impl Default for LofiConfig {
             enable_sr_reduction: true,
             enable_noise: true,
             output_gain: 1.0,
+            dc_offset: 0.0,
+            output_ceiling: 1.0,
             dry_wet: 1.0,
         }
     }

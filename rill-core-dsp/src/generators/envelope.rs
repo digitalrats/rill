@@ -3,9 +3,7 @@
 use super::Generator;
 use crate::math::Smoother;
 use crate::vector::prelude::*;
-use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata,
-};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
@@ -183,12 +181,7 @@ impl<T: Transcendental> Algorithm<T> for EnvelopeGenerator<T> {
         self.smoother.set_current(T::ZERO);
     }
 
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {

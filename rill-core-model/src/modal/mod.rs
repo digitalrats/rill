@@ -10,7 +10,7 @@ mod params;
 pub use params::{bell_modes, marimba_modes, ModalParams, ModeParams};
 
 use rill_core::traits::algorithm::{
-    ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
+    Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm,
 };
 use rill_core::traits::ParamValue;
 use rill_core::Transcendental;
@@ -115,7 +115,6 @@ impl<T: Transcendental, const MAX_MODES: usize> Algorithm<T> for ModalModel<T, M
         &mut self,
         input: Option<&[T]>,
         output: &mut [T],
-        _ctx: &ActionContext,
     ) -> rill_core::traits::ProcessResult<()> {
         for (i, out) in output.iter_mut().enumerate() {
             let inp = input
@@ -198,9 +197,7 @@ mod tests {
         let mut model = ModalModel::<f64, 8>::new(params, 44100.0);
         model.strike(1.0.into());
         let mut output = [0.0f64; 64];
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-        model.process(None, &mut output, &ctx).unwrap();
+        model.process(None, &mut output).unwrap();
         let max_abs = output.iter().map(|x| x.abs()).fold(0.0, f64::max);
         assert!(max_abs > 0.0);
     }
@@ -222,12 +219,10 @@ mod tests {
         };
         let mut model = ModalModel::<f64, 8>::new(params, 44100.0);
         model.strike(1.0.into());
-        let tick = rill_core::time::ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         let mut blocks = Vec::new();
         for _ in 0..10 {
             let mut out = [0.0f64; 64];
-            model.process(None, &mut out, &ctx).unwrap();
+            model.process(None, &mut out).unwrap();
             blocks.push(out.iter().map(|x| x.abs()).fold(0.0, f64::max));
         }
         assert!(blocks[9] < blocks[0] * 0.1);
