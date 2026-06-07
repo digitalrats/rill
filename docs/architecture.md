@@ -634,17 +634,45 @@ let mode = PhysicalSensor::switch("filter_mode")
     .with_positions(vec!["LPF", "BPF", "HPF"]);
 ```
 
-#### MIDI/CV sensors (see the outside world)
+#### MIDI/CV/OSC sensors (see the outside world)
 
-> **API in development.** MIDI and CV sensors are not yet implemented — in the current version, external events are handled via `Engine::handle_event()` and `Mapping`.
+External protocol sensors decode hardware input into `ControlEvent`s and
+dispatch them to servos for parameter mapping.
+
+**MIDI sensors** (feature `midi`):
 
 ```rust
-// Planned API:
-// let midi_note = MidiSensor::note("keyboard")
-//     .with_channel(1);
-// 
-// let cv_in = CvSensor::new("expression")
-//     .with_range(0.0, 5.0);
+use rill_patchbay::{spawn_midi_sensor, MidiHub};
+use rill_core_actor::{ActorSystem, ActorRef};
+use rill_core::queues::CommandEnum;
+
+// Actor-model: spawns polling thread, sends events to servo
+let sensor_ref = spawn_midi_sensor(
+    "keyboard",
+    Box::new(MidirBackend::new("rill-midi")?),
+    &system,
+    servo_ref,
+);
+```
+
+**OSC sensors** (feature `osc`):
+
+```rust
+use rill_patchbay::{spawn_osc_sensor, OscSensor};
+use std::net::SocketAddr;
+
+// Actor-model: binds UDP socket, decodes OSC → ControlEvent::Osc
+let sensor_ref = spawn_osc_sensor(
+    "touchosc",
+    SocketAddr::from(([0, 0, 0, 0], 9000)),
+    &system,
+    servo_ref,
+);
+
+// Legacy Sensor trait path
+let osc = OscSensor::new("touchosc", "0.0.0.0:9000".parse().unwrap());
+osc.attach(events_ref);
+osc.start();
 ```
 
 ### 🎯 Servo — hands
@@ -727,7 +755,7 @@ manager.start()?;  // Automata begin their own life
 ## Plans for future versions
 
 - 🔌 **rill-core-dsp development** — adding new algorithms, optimizing vector operations, SIMD
-- 🌐 **rill-osc** — OSC server for remote control (in development)
+- 🌐 **rill-osc** — OSC server for remote control and UDP-based sensor input
 - 🧩 **Analog modeling** — expanding the WDF element library and analog models
 - 🚦 **rill-router development** — adding matrix routing, expanding the `mixer` module, integration with audio graph
 - 🧪 **Integration tests** — cross-crate tests in per-crate `tests/` (example: patchbay + graph)

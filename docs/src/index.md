@@ -27,7 +27,7 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
 | **Analog** | `rill-core-model`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |
 | **I/O** | `rill-io` — ALSA, CPAL, PipeWire, JACK backends (pure I/O, no engine) |
-| **Network** | `rill-osc` — OSC server and networking |
+| **Network** | `rill-osc` — OSC server and networking; powers `rill-patchbay` OSC sensors for graph control |
 | **Monitoring** | `rill-telemetry` — probes, collectors |
 | **Lo-Fi** | `rill-lofi` — bitcrush, downsampling, console emulation |
 

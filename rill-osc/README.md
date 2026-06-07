@@ -2,6 +2,10 @@
 
 OSC (Open Sound Control) server and networking for remote control of Rill audio graphs.
 
+For graph-integrated OSC sensors, see `rill-patchbay::osc::OscSensor` and
+`spawn_osc_sensor` — these use this crate's parsing to feed OSC events into
+the rill actor system for parameter mapping.
+
 ## Key components
 
 - **`OscServer`** — async UDP server with address-pattern dispatching

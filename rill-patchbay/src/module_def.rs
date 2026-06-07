@@ -231,9 +231,10 @@ impl SensorDef {
         }
     }
 
-    #[cfg(feature = "midi")]
+    #[cfg(any(feature = "midi", feature = "osc"))]
     pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
         match self {
+            #[cfg(feature = "midi")]
             SensorDef::Midi {
                 backend,
                 port_name,
@@ -265,14 +266,17 @@ impl SensorDef {
                 let hub = crate::midi::MidiHub::new(port_name.as_str(), be);
                 Some(Box::new(hub))
             }
+            #[cfg(feature = "osc")]
             SensorDef::Osc { port, mappings: _ } => {
                 let addr = std::net::SocketAddr::from(([0, 0, 0, 0], *port));
                 let sensor = crate::osc::OscSensor::new(format!("osc_{port}"), addr);
                 Some(Box::new(sensor))
             }
+            #[allow(unreachable_patterns)]
+            _ => None,
         }
     }
-    #[cfg(not(feature = "midi"))]
+    #[cfg(not(any(feature = "midi", feature = "osc")))]
     pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
         None
     }

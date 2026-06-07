@@ -27,7 +27,7 @@ Control thread (tokio):
 - **Servos** — apply automaton signals to graph node parameters via
   `ParameterMapping` (Linear, Exponential, Logarithmic, Inverted, Custom).
 - **Sensors** — acoustic (pitch, envelope follower), physical (knobs,
-  buttons), MIDI, CV.
+  buttons), MIDI, OSC (UDP-based address/argument sensors).
 - **Event mapping** — MIDI CC → parameter, OSC address → parameter,
   with transforms.
 - **`Engine`** — centralised API for adding automata, servos, mappings,
@@ -65,6 +65,8 @@ engine.update(1.0 / 60.0);
 | `json` | `serde` + JSON serialization |
 | `cbor` | `serde` + CBOR serialization |
 | `serialization` | `json` + `cbor` |
+| `midi` | MIDI input via `rill-io` backends |
+| `osc` | OSC input via `rill-osc` |
 
 ## Dependencies
 

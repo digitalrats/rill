@@ -68,7 +68,9 @@ downstream connections, and feedback state. Processing flow:
 ### Automation (The World of Automatons)
 
 `rill-patchbay` provides generative control signals through **automatons** —
-LFOs, envelopes, sequencers that run on the control thread. Automatons
+LFOs, envelopes, sequencers that run on the control thread. **Sensors**
+(MIDI, OSC) decode external input into `ControlEvent`s and feed them
+into the automaton world through mapping-only servos. Automatons
 connect to graph node parameters through **servos** with configurable
 mapping strategies (linear, exponential, logarithmic).
 

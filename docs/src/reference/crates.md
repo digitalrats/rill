@@ -1,6 +1,6 @@
 # Crates
 
-The Rill workspace consists of 17 crates, all versioned synchronously.
+The Rill workspace consists of 18 crates, all versioned synchronously.
 
 | Crate | Version | Description | Docs |
 |-------|---------|-------------|------|
@@ -19,7 +19,7 @@ The Rill workspace consists of 17 crates, all versioned synchronously.
 | **rill-telemetry** | 0.5.0-beta.2 | Probes, collectors, real-time monitoring | [docs.rs](https://docs.rs/rill-telemetry) |
 | **rill-analog-filters** | 0.5.0-beta.2 | WDF-based analog filters — WdfMoogLadder | [docs.rs](https://docs.rs/rill-analog-filters) |
 | **rill-analog-effects** | 0.5.0-beta.2 | Analog circuit models — op-amp, tape deck, preamps | [docs.rs](https://docs.rs/rill-analog-effects) |
-| **rill-osc** | 0.5.0-beta.2 | OSC server — UDP, encode/decode, pattern dispatch | [docs.rs](https://docs.rs/rill-osc) |
+| **rill-osc** | 0.5.0-beta.2 | OSC — UDP server, encode/decode, pattern dispatch; parsing backend for `rill-patchbay::osc::OscSensor` | [docs.rs](https://docs.rs/rill-osc) |
 | **rill-sampler** | 0.5.0-beta.2 | Sample playback + time-series reader + WAV loading | [docs.rs](https://docs.rs/rill-sampler) |
 
 ## Feature flags
@@ -31,7 +31,7 @@ The Rill workspace consists of 17 crates, all versioned synchronously.
 | `rill-core-model` | (no non-default features)                                                                     |
 | `rill-digital-effects` | `modulation` (enables `rill-oscillators`)                                                     |
 | `rill-graph` | `serialization`                                                                               |
-| `rill-patchbay` | `serde`, `json`, `cbor`, `serialization`                                                      |
+| `rill-patchbay` | `serde`, `json`, `cbor`, `serialization`, `midi` (MIDI input), `osc` (OSC input) |
 | `rill-io` | `portaudio` (default), `alsa`, `pipewire`, `jack`, `all-backends`                             |
 | `rill-sampler` | `wav` (default, enables `hound`)                                                              |
 | `rill-adrift` | `io`, `lofi`, `telemetry`, `osc`, `sampler` (default); `analog` (opt-in); backend passthrough |

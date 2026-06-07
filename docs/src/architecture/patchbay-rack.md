@@ -43,7 +43,8 @@ and configured through a single document (`PatchbayDef`):
 | Module | Role | Configured via |
 |--------|------|---------------|
 | **Automata** | Modulation generators (LFO, envelope) | `automata` + `servos` |
-| **MidiInput** | External MIDI event source | `midi` |
+| **MidiInput** | External MIDI event source | `SensorDef::Midi` |
+| **OscSensor** | External OSC event source (UDP) | `SensorDef::Osc` |
 | **Sequencer** | Step sequencer driven by signal clock | `attach_sequencer()` |
 | **OscSurface** | OSC → EventPattern bridge | `osc_surface` |
 
@@ -60,21 +61,52 @@ pub struct PatchbayDef {
     /// Generator → graph parameter wiring
     pub servos: Vec<ServoDef>,
 
-    /// Event → graph parameter wiring (MIDI CC, KnobId, etc.)
+    /// Event → graph parameter wiring (MIDI CC, OSC address, etc.)
     pub mappings: Vec<MappingDef>,
 
     /// OSC address → EventPattern bridge
     pub osc_surface: OscSurface,
 
-    /// MIDI input module (proposed, see below)
-    pub midi: Option<MidiInputDef>,
+    /// Unified modules — servos and sensors
+    pub modules: Vec<ModuleDef>,
 
     /// Human‑readable description
     pub description: Option<String>,
 }
 ```
 
-### Proposed: `MidiInputDef`
+Sensors are configured through `ModuleDef::Sensor`:
+
+```rust
+// MIDI sensor
+ModuleDef::Sensor(SensorDef::Midi {
+    backend: "midir".into(),
+    port_name: "rill-midi".into(),
+    mappings: vec![...],
+})
+
+// OSC sensor
+ModuleDef::Sensor(SensorDef::Osc {
+    port: 9000,
+    mappings: vec![
+        MappingDef {
+            event_pattern: EventPattern::OscAddress("/fader/1".into()),
+            target_node: 1,
+            target_param: "gain".into(),
+            transform: TransformDef::Linear,
+            min: 0.0,
+            max: 1.0,
+            enabled: true,
+        },
+    ],
+})
+```
+
+**Behaviour:** `ModularSystem::launch()` dispatches each `ModuleDef::Sensor` to
+the appropriate constructor (`MidiConstructor` or `OscConstructor`), which spawns
+a sensor + mapping-only servo pair.
+
+### MidiInputDef (legacy, superseded by SensorDef)
 
 Currently, `MidiHub` is created programmatically — `PatchbayDef` has no
 `midi` field. Adding it makes the MidiHub a **first‑class rack module**,

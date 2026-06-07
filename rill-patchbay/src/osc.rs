@@ -126,7 +126,7 @@ impl Drop for OscSensor {
 }
 
 // =============================================================================
-// OscSensor — actor-model OSC sensor
+// spawn_osc_sensor — actor-model OSC sensor
 // =============================================================================
 
 /// Spawns an OSC sensor that integrates with the actor model.
