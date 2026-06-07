@@ -1,6 +1,18 @@
 # CHANGELOG
 
-## [0.5.0-beta.5] — In Progress
+## [0.5.0-beta.6] — In Progress
+
+### 📦 Version bump and cleanup
+
+- All 18 crates bumped to `0.5.0-beta.6`.
+- Documentation updated: `SensorDef::Osc` described in architecture docs,
+  `rill-osc` README cross-references `OscSensor`, patchbay README covers
+  `midi`/`osc` feature flags, stale `0.5.0-beta.2` references fixed
+  throughout docs.
+
+---
+
+## [0.5.0-beta.5]
 
 ### 🕐 Unified RenderContext (Breaking)
 
@@ -46,6 +58,28 @@
   cleared on Stop. Sequencers and automations check this before producing output.
 - Integrated into `MidiHub` — optional via `MidiHub::with_clock_tracker()`.
   The tracker's `SystemClock` feeds BPM to `Graph.system_clock`.
+
+### 🌐 OSC Sensor (`rill-patchbay`)
+
+- **`OscSensor`** (`osc.rs`) — OSC input sensor modelled after `MidiHub`/`spawn_midi_sensor`.
+  Binds a UDP socket in a dedicated OS thread, decodes incoming OSC packets
+  via `rill-osc`, produces `ControlEvent::Osc { address, args }` events.
+  Bundles unwound recursively. Implements `Module` + `Sensor` traits.
+- **`spawn_osc_sensor()`** — actor-model variant: spawns a control actor for
+  `SetEnabled` commands + UDP recv loop in OS thread. Sends
+  `CommandEnum::Control(event)` to the servo for mapping.
+- **`parse_osc()`** — converts `OscMessage` → `ControlEvent::Osc`.
+  Numeric args (`Int`, `Float`) collected; strings and blobs silently dropped.
+- **`SensorDef::Osc { port, mappings }`** — serializable descriptor variant
+  in `module_def.rs`. `into_sensor()` gated on `any(feature = "midi", feature = "osc")`.
+- **`OscConstructor`** — registered in `ModuleFactory` via `rill-adrift`:
+  creates mapping-only servo + `spawn_osc_sensor()` pair. Activated by
+  `ModuleDef::Sensor(SensorDef::Osc { ... })`.
+- **Feature gate:** `osc = ["dep:rill-osc"]` in `rill-patchbay`;
+  `rill-adrift/osc` enables `rill-patchbay/osc` passthrough.
+- Existing `EventPattern::OscAddress` / `OscPattern` matching in servo works
+  out-of-the-box — sensor produces `ControlEvent::Osc`, servo matches via
+  `EventPattern::matches()`.
 
 ### 🔌 JACK MIDI + Transport
 

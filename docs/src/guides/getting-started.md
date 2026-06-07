@@ -4,14 +4,14 @@ Add `rill-adrift` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.2"
+rill-adrift = "0.5.0-beta.6"
 ```
 
 For individual crates (if you don't need the full ecosystem):
 
 ```toml
 [dependencies]
-rill-core-dsp = "0.5.0-beta.2"
+rill-core-dsp = "0.5.0-beta.6"
 ```
 
 ## Example: Audio graph with sine oscillator
@@ -81,7 +81,7 @@ delay.process_block(&input, &mut output)?;
 Enable the `io` feature on `rill-adrift` (default):
 
 ```toml
-rill-adrift = { version = "0.5.0-beta.2", features = ["io", "alsa"] }
+rill-adrift = { version = "0.5.0-beta.6", features = ["io", "alsa"] }
 ```
 
 Available backends: `portaudio` (default), `alsa`, `pipewire`, `jack`.
