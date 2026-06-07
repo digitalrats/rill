@@ -99,6 +99,10 @@ pub mod midi;
 #[cfg(feature = "midi")]
 pub mod midi_clock;
 
+/// OSC sensor — OSC → ControlEvent bridge
+#[cfg(feature = "osc")]
+pub mod osc;
+
 /// Micro-control observer for RT safety monitoring
 pub mod observer;
 
@@ -110,6 +114,10 @@ pub use midi::MidiHub;
 pub use midi_clock::{
     FreeRunning, MidiClockStrategy, MidiClockTracker, ResetOnStart, SongPosition,
 };
+#[cfg(feature = "osc")]
+pub use osc::spawn_osc_sensor;
+#[cfg(feature = "osc")]
+pub use osc::OscSensor;
 pub use sensor::Sensor;
 
 // =============================================================================

@@ -413,6 +413,8 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
     factory.register(rill_patchbay::servo_constructor::ServoConstructor);
     #[cfg(feature = "midi")]
     register_midi_module(factory);
+    #[cfg(feature = "osc")]
+    register_osc_module(factory);
 }
 
 #[cfg(feature = "midi")]
@@ -436,16 +438,16 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             system: &std::sync::Arc<rill_core_actor::ActorSystem>,
             graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
         ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
-            let SensorDef::Midi {
-                backend,
-                port_name,
-                mappings,
-            } = match module {
-                ModuleDef::Sensor(s) => s,
+            let (backend, port_name, mappings) = match module {
+                ModuleDef::Sensor(SensorDef::Midi {
+                    backend,
+                    port_name,
+                    mappings,
+                }) => (backend, port_name, mappings),
                 _ => {
                     return Err(ModuleError::ConstructionFailed(
-                        "MidiConstructor requires ModuleDef::Sensor".into(),
-                    ))
+                        "MidiConstructor requires ModuleDef::Sensor(SensorDef::Midi)".into(),
+                    ));
                 }
             };
 
@@ -498,6 +500,73 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
     }
 
     factory.register(MidiConstructor);
+}
+
+#[cfg(feature = "osc")]
+fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::CommandEnum;
+    use rill_patchbay::module_def::{ModuleDef, SensorDef};
+    use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
+    use std::net::SocketAddr;
+
+    struct OscConstructor;
+
+    impl ModuleConstructor for OscConstructor {
+        fn type_name(&self) -> &'static str {
+            "osc"
+        }
+
+        fn construct(
+            &self,
+            module: &ModuleDef,
+            _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
+            system: &std::sync::Arc<rill_core_actor::ActorSystem>,
+            graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
+        ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
+            let (port, mappings) = match module {
+                ModuleDef::Sensor(SensorDef::Osc { port, mappings }) => (port, mappings),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(
+                        "OscConstructor requires ModuleDef::Sensor(SensorDef::Osc)".into(),
+                    ));
+                }
+            };
+
+            let bind_addr = SocketAddr::from(([0, 0, 0, 0], *port));
+            let mappings: Vec<rill_patchbay::engine::Mapping> =
+                mappings.iter().map(|m| m.to_mapping()).collect();
+
+            // Create a servo to apply mappings — the sensor only decodes OSC
+            let servo_ref = rill_patchbay::Servo::new(
+                format!("osc_servo_{port}"),
+                rill_patchbay::engine::NoAction, // no automaton — mapping-only servo
+                NodeId(0),
+                "",
+                rill_patchbay::engine::ParameterMapping::Linear,
+                0.0,
+                1.0,
+                system.clone(),
+                graph_ref.clone(),
+            )
+            .with_mappings(mappings)
+            .spawn(system);
+
+            // Spawn the sensor, pointing raw events to the servo
+            let _sensor_ref = rill_patchbay::osc::spawn_osc_sensor(
+                &format!("osc_{port}"),
+                bind_addr,
+                system,
+                servo_ref.clone(),
+            );
+            Ok(servo_ref)
+        }
+
+        fn clone_box(&self) -> Box<dyn ModuleConstructor> {
+            Box::new(OscConstructor)
+        }
+    }
+
+    factory.register(OscConstructor);
 }
 
 /// Deserialise a JSON graph string into a

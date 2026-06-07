@@ -212,6 +212,14 @@ pub enum SensorDef {
         #[cfg_attr(feature = "serde", serde(default))]
         mappings: Vec<MappingDef>,
     },
+    /// OSC input over UDP.
+    Osc {
+        /// UDP port to listen on.
+        port: u16,
+        /// Event-to-parameter mappings (OSC address → param).
+        #[cfg_attr(feature = "serde", serde(default))]
+        mappings: Vec<MappingDef>,
+    },
 }
 
 impl SensorDef {
@@ -219,6 +227,7 @@ impl SensorDef {
     pub fn get_mappings(&self) -> Vec<crate::engine::Mapping> {
         match self {
             SensorDef::Midi { mappings, .. } => mappings.iter().map(|m| m.to_mapping()).collect(),
+            SensorDef::Osc { mappings, .. } => mappings.iter().map(|m| m.to_mapping()).collect(),
         }
     }
 
@@ -256,6 +265,11 @@ impl SensorDef {
                 let hub = crate::midi::MidiHub::new(port_name.as_str(), be);
                 Some(Box::new(hub))
             }
+            SensorDef::Osc { port, mappings: _ } => {
+                let addr = std::net::SocketAddr::from(([0, 0, 0, 0], *port));
+                let sensor = crate::osc::OscSensor::new(format!("osc_{port}"), addr);
+                Some(Box::new(sensor))
+            }
         }
     }
     #[cfg(not(feature = "midi"))]
@@ -292,7 +306,8 @@ impl ModuleDef {
     pub fn type_name(&self) -> &str {
         match self {
             ModuleDef::Servo(_) => "servo",
-            ModuleDef::Sensor(_) => "midi",
+            ModuleDef::Sensor(SensorDef::Midi { .. }) => "midi",
+            ModuleDef::Sensor(SensorDef::Osc { .. }) => "osc",
             ModuleDef::Custom { type_name, .. } => type_name,
         }
     }
