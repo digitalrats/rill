@@ -30,8 +30,8 @@ pub enum ControlStrategy {
 pub enum ConflictStrategy {
     /// UI touch freezes the automaton for this port.
     ///
-    /// On `SetBase`, the automaton stops affecting the parameter.
-    /// On `Release`, the automaton resumes control.
+    /// On `UiValue`, the automaton stops affecting the parameter.
+    /// On `UiRelease`, the automaton resumes control.
     TouchOverride,
 
     /// UI sets the base value, the automaton modulates around it.
@@ -45,14 +45,4 @@ pub enum ConflictStrategy {
     /// UI and automaton write to the queue independently. The order of
     /// application is determined by the message order in the MpscQueue.
     LastWriteWins,
-}
-
-/// UI command (sent via actor mailbox, can be forwarded to an automaton)
-#[derive(Debug, Clone)]
-pub enum UiCommand {
-    /// Set the base value
-    SetValue(f64),
-
-    /// Release control (TouchOverride only)
-    Release,
 }

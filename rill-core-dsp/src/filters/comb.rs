@@ -5,12 +5,13 @@
 //! - "Metallic" sound effects
 //! - Physical string modeling
 use super::FilterParams;
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use crate::vector::{ScalarVector1, Vector};
 use rill_core::buffer::DelayLine;
 use rill_core::math::vector::scalar::ScalarVector4;
 use rill_core::math::Transcendental;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 
 /// Comb filter
 pub struct CombFilter<T: Transcendental, const MAX_DELAY: usize> {
@@ -57,12 +58,7 @@ impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, M
         self.delay.clear();
     }
 
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         let fb = self.feedback.extract(0);

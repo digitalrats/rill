@@ -30,11 +30,11 @@
 //!     source: &mut dyn Source<T, BUF_SIZE>,
 //!     processor: &mut dyn Processor<T, BUF_SIZE>,
 //!     sink: &mut dyn Sink<T, BUF_SIZE>,
-//!     clock: &ClockTick,
+//!     ctx: &RenderContext,
 //! ) -> ProcessResult<()> {
-//!     source.generate(clock, &[], &[])?;
-//!     processor.process(clock, &[], &[], &[], &[])?;
-//!     sink.consume(clock, &[], &[], &[], &[])?;
+//!     source.generate(ctx, &[], &[])?;
+//!     processor.process(ctx, &[], &[], &[], &[])?;
+//!     sink.consume(ctx, &[], &[], &[], &[])?;
 //!     Ok(())
 //! }
 //! ```
@@ -96,7 +96,7 @@ pub use crate::traits::{
 // Time and Clock
 // ============================================================================
 
-pub use crate::time::{ClockSource, ClockTick, SystemClock, TimeError, TimeResult};
+pub use crate::time::{ClockSource, ClockTick, RenderContext, SystemClock, TimeError, TimeResult};
 
 // ============================================================================
 // Math Abstractions
@@ -280,7 +280,9 @@ pub mod f64_prelude {
 
 /// Prelude for working with time
 pub mod time_prelude {
-    pub use crate::time::{ClockSource, ClockTick, SystemClock, TimeError, TimeResult};
+    pub use crate::time::{
+        ClockSource, ClockTick, RenderContext, SystemClock, TimeError, TimeResult,
+    };
 }
 
 /// Prelude for working with buffers

@@ -9,8 +9,6 @@ pub use crate::module_def::{
     AutomatonDef, MappingDef, MappingType, ModuleDef, SensorDef, ServoDef, StepDef, TransformDef,
 };
 
-pub mod dot;
-
 // ============================================================================
 // PatchbayDef
 // ============================================================================

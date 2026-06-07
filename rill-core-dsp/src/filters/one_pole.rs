@@ -6,10 +6,11 @@
 //! - Envelope followers
 
 use super::{FilterParams, FilterType};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use crate::vector::{ScalarVector1, Vector};
 use core::f32::consts::PI;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// One-pole filter
@@ -79,12 +80,7 @@ impl<T: Transcendental> Algorithm<T> for OnePole<T> {
         self.y1 = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         let one = ScalarVector1::splat(T::from_f32(1.0));

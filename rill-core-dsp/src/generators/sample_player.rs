@@ -4,9 +4,9 @@
 //! rate, interpolation, and configurable looping (one-shot, forward,
 //! ping-pong).
 
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, InterpolatedReader};
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// Loop behaviour for [`SamplePlayer`].
@@ -190,12 +190,7 @@ impl<T: Transcendental> Algorithm<T> for SamplePlayer<T> {
         self.reader.set_position(self.loop_start);
     }
 
-    fn process(
-        &mut self,
-        _input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         if !self.gate || self.state == PlayState::Stopped || self.is_empty() {
             for s in output.iter_mut() {
                 *s = T::ZERO;
@@ -304,14 +299,8 @@ impl<T: Transcendental + Copy> Generator<T> for SamplePlayer<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::time::ClockTick;
-    use rill_core::traits::ActionContext;
-
     fn process(player: &mut SamplePlayer<f64>, out: &mut [f64]) {
-        let tick = ClockTick::new(0, 0, 44100.0);
-        player
-            .process(None, out, &ActionContext::new(&tick))
-            .unwrap();
+        player.process(None, out).unwrap();
     }
 
     #[test]

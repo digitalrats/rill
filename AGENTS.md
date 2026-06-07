@@ -18,7 +18,7 @@ Cargo workspace — 18 active crates:
 | `rill-lofi` | Active — lo-fi emulation |
 | `rill-io` | Active — I/O backends (PortAudio, ALSA, PipeWire, JACK) |
 | `rill-telemetry` | Active — probes, collectors |
-| `rill-core-wdf` | Active — WDF elements, adapters, analysis |
+| `rill-core-model` | Active — WDF elements, adapters, analysis, physical modeling (string, plate, modal, cavity) |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
@@ -34,9 +34,9 @@ Dependency tree:
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
   `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`
-- **`rill-core-wdf`** — WDF core, depends on `rill-core`
-- **`rill-analog-filters`** — depends on `rill-core` + `rill-core-wdf`
-- **`rill-analog-effects`** — depends on `rill-core` + `rill-core-wdf`
+- **`rill-core-model`** — WDF + physical modeling, depends on `rill-core`
+- **`rill-analog-filters`** — depends on `rill-core` + `rill-core-model`
+- **`rill-analog-effects`** — depends on `rill-core` + `rill-core-model`
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
 - **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`
 
@@ -93,7 +93,7 @@ mdbook serve docs/                # dev server at localhost:3000
 ## Code conventions
 
 - **Safety & Unsafe Policy:**
-    - `#![deny(unsafe_code)]` set in 7 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-wdf`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`.
+    - `#![deny(unsafe_code)]` set in 7 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`.
     - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.
@@ -205,10 +205,10 @@ under `pw‑loopback` or similar virtual device to detect xruns.
 - `rill-core-dsp`: `simd`, `f64`, `fast_math`
 - `rill-digital-effects`: `modulation` (enables `rill-oscillators`)
 - `rill-core`: `serde`, `simd` (enables `wide` crate)
-- `rill-core-wdf`: (no non-default features)
+- `rill-core-model`: (no non-default features)
 - `rill-io`: `portaudio` (default), `midir` (default), `alsa`, `pipewire`, `jack`, `all-backends` (includes `midir`)
 - `rill-sampler`: `wav` (default, enables `hound`)
-- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler`, `serialization`, `portaudio` (default); `analog`, `midi`, `dot` (opt-in); `alsa`, `portaudio`, `jack`, `pipewire` (backends, forward to `rill-io`)
+- `rill-adrift`: `io`, `lofi`, `telemetry`, `osc`, `sampler`, `serialization`, `portaudio` (default); `analog`, `midi`, `alsa`, `portaudio`, `jack`, `pipewire` (backends, forward to `rill-io`)
 
 ## Branching
 
@@ -281,12 +281,13 @@ The nature of the callback thread depends on the backend:
 | **Callback‑driven** | PipeWire, JACK, PortAudio | Hard RT — callback fires on the audio device's real‑time thread (SCHED_FIFO). No syscalls, no allocation, no locks. |
 | **Poll‑driven** | ALSA | Soft RT — the backend's own thread loops polling the audio device. Use `poll()`/`epoll()` on audio FDs, never `thread::sleep()`. |
 
-Inside the I/O callback tick (`rill-graph/src/graph.rs:556-588`):
+Inside the I/O callback tick (`rill-graph/src/graph.rs:556-602`):
 
 1. `actor.drain()` — applies queued `CommandEnum::SetParameter` commands from the actor mailbox
-2. `Source::generate()` / `Processor::process()` / `Sink::consume()` via `process_block()`
-3. `Port::propagate()` — recursive DAG traversal through direct port pointers
-4. Sends `CommandEnum::ClockTick` to the parent Patchbay actor
+2. Builds a `RenderContext` with sample clock, transport state (BPM, playing flag, time signature), and hardware clock correction (`speed_ratio`)
+3. `Source::generate()` / `Processor::process()` / `Sink::consume()` via `process_block(&ctx)`
+4. `Port::propagate()` — recursive DAG traversal through direct port pointers (no context needed — port-level `Algorithm::process()` is buffer-only)
+5. Sends `CommandEnum::ClockTick` to the parent Patchbay actor
 
 All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
 `RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside

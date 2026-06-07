@@ -3,10 +3,8 @@
 //! Run with: `cargo bench -p rill-core-dsp --bench reader_bench`
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rill_core::time::ClockTick;
-use rill_core::traits::ActionContext;
+use rill_core::traits::algorithm::Algorithm;
 use rill_core_dsp::generators::{InterpolatedReader, Resampler};
-use rill_core_dsp::Algorithm;
 
 const BLOCK: usize = 256;
 
@@ -43,16 +41,10 @@ fn bench_resampler_44k_to_48k(c: &mut Criterion) {
     rs.set_cubic(true);
     rs.init(48000.0);
     let mut out = vec![0.0f32; BLOCK];
-    let ctx = {
-        use rill_core::time::ClockTick;
-        use rill_core::traits::ActionContext;
-        let tick = Box::leak(Box::new(ClockTick::new(0, BLOCK as u32, 48000.0)));
-        ActionContext::new(tick)
-    };
 
     c.bench_function("resampler_44k1_to_48k", |bench| {
         bench.iter(|| {
-            rs.process(None, black_box(&mut out), &ctx).unwrap();
+            rs.process(None, black_box(&mut out)).unwrap();
         });
     });
 }

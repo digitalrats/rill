@@ -12,7 +12,7 @@ crates for signal processing application development.
 | `telemetry` | `rill-telemetry` (probes) | yes |
 | `osc` | `rill-osc` (OSC server, requires tokio) | yes |
 | `sampler` | `rill-sampler` (sample playback) | yes |
-| `analog` | `rill-core-wdf` + `rill-analog-filters` + `rill-analog-effects` | no |
+| `analog` | `rill-core-model` + `rill-analog-filters` + `rill-analog-effects` | no |
 | `serialization` | graph/patchbay serialization (JSON/CBOR) | yes |
 | `portaudio` | PortAudio backend (implies `io`) | no |
 | `alsa` | ALSA backend (implies `io`) | no |

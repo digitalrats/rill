@@ -106,12 +106,12 @@
 //! impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
 //!     fn generate(
 //!         &mut self,
-//!         clock: &ClockTick,
+//!         ctx: &RenderContext,
 //!         _control_inputs: &[T],
-//!         _clock_inputs: &[ClockTick],
+//!         _clock_inputs: &[RenderContext],
 //!     ) -> ProcessResult<()> {
 //!         let two_pi = T::from_f32(2.0 * std::f32::consts::PI);
-//!         let phase_inc = self.frequency / T::from_f32(clock.sample_rate);
+//!         let phase_inc = self.frequency / T::from_f32(ctx.sample_rate);
 //!         let amp = self.amplitude;
 //!         
 //!         let mut temp = [T::ZERO; BUF_SIZE];
@@ -211,7 +211,7 @@ pub use buffer::{
 pub use queues::{QueueError, QueueResult};
 
 // Re-export time abstractions
-pub use time::{ClockSource, ClockTick, SystemClock};
+pub use time::{ClockSource, ClockTick, RenderContext, SystemClock};
 
 // ============================================================================
 // Constants

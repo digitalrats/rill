@@ -64,6 +64,8 @@ pub use backends::PipewireBackend;
 
 #[cfg(feature = "jack")]
 pub use backends::JackBackend;
+#[cfg(feature = "jack")]
+pub use backends::JackMidiBackend;
 
 #[cfg(feature = "midir")]
 pub use backends::MidirBackend;

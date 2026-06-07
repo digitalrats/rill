@@ -1,9 +1,9 @@
 //! Sine wave oscillator using rill-core-dsp with Transcendental
 
-use rill_core::time::ClockTick;
+use rill_core::time::RenderContext;
 use rill_core::traits::{
-    ActionContext, Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-    ParameterId, Port, Source,
+    Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
+    Source,
 };
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
@@ -40,6 +40,14 @@ pub struct SineOsc<T: Transcendental, const BUF_SIZE: usize> {
     /// Output amplitude (0.0 to 1.0)
     amplitude: T,
 
+    /// Per-sample smoothed amplitude (de-zipper)
+    amp_smooth: T,
+    /// True when note-off requested — continue at full amplitude
+    /// until sine zero-crossing, then hard-silence
+    stop_pending: bool,
+    /// Previous sample sign for zero-crossing detection
+    prev_sign: bool,
+
     /// Phase offset (0.0 to 1.0)
     phase_offset: T,
 
@@ -74,6 +82,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
             osc,
             frequency: T::from_f32(440.0),
             amplitude: T::from_f32(0.5),
+            amp_smooth: T::from_f32(0.5),
             phase_offset: T::ZERO,
             fm_amount: T::ZERO,
             use_fm: false,
@@ -81,6 +90,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
             outputs: vec![Port::output(NodeId(0), 0, "signal_out")],
             controls: Vec::new(),
             state: None,
+            stop_pending: false,
+            prev_sign: false,
             _phantom: PhantomData,
         }
     }
@@ -95,6 +106,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SineOsc<T, BUF_SIZE> {
     /// Set output amplitude (0.0 to 1.0)
     pub fn with_amplitude(mut self, amp: T) -> Self {
         self.amplitude = amp.clamp(T::ZERO, T::from_f32(1.0));
+        self.amp_smooth = self.amplitude;
         self
     }
 
@@ -196,7 +208,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SineOsc<T, 
             }
             "amplitude" => {
                 if let Some(a) = Self::param_to_t(value) {
-                    self.amplitude = a.clamp(T::ZERO, T::from_f32(1.0));
+                    let was_silent = self.amplitude <= T::ZERO;
+                    let target = a.clamp(T::ZERO, T::from_f32(1.0));
+                    if target <= T::ZERO && self.amplitude > T::ZERO {
+                        // Request stop at next zero-crossing — keep current amplitude
+                        self.stop_pending = true;
+                    } else {
+                        self.amplitude = target;
+                        if was_silent && target > T::ZERO {
+                            self.stop_pending = false;
+                            self.osc.set_phase(T::ZERO);
+                        }
+                    }
                     Ok(())
                 } else {
                     Err(ProcessError::Parameter("Expected float".into()))
@@ -293,16 +316,40 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SineOsc<T, 
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
     fn generate(
         &mut self,
-        clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         let out = self.outputs[0].buffer.as_mut_array();
         self.osc.set_frequency(self.frequency.to_f32());
-        self.osc
-            .process(None, &mut out[..], &ActionContext::new(clock))?;
-        for o in out.iter_mut() {
-            *o *= self.amplitude;
+        self.osc.process(None, &mut out[..])?;
+        if self.stop_pending {
+            for i in 0..out.len() {
+                let s = out[i];
+                let cur_sign = s > T::ZERO;
+                // Zero-crossing: sign changed AND absolute value near zero
+                if i > 0 && cur_sign != self.prev_sign && s.to_f32().abs() < 0.1 {
+                    // Halve amplitude at each zero-crossing
+                    self.amplitude *= T::from_f32(0.5);
+                    let half = T::from_f32(0.01);
+                    if self.amplitude <= half {
+                        // Fully decayed: silence from here
+                        for item in out.iter_mut().skip(i) {
+                            *item = T::ZERO;
+                        }
+                        self.amplitude = T::ZERO;
+                        self.stop_pending = false;
+                        self.prev_sign = false;
+                        break;
+                    }
+                }
+                self.prev_sign = cur_sign;
+                out[i] = s * self.amplitude;
+            }
+        } else {
+            for o in out.iter_mut() {
+                *o *= self.amplitude;
+            }
         }
         self.state.as_mut().unwrap().advance();
         Ok(())
@@ -346,8 +393,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        let clock = ClockTick::new(0, 64, 44100.0);
-        osc.generate(&clock, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        osc.generate(&ctx, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -368,8 +415,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        let clock = ClockTick::new(0, 64, 44100.0);
-        osc.generate(&clock, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        osc.generate(&ctx, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -388,8 +435,8 @@ mod tests {
 
         osc.init(44100.0);
 
-        let clock = ClockTick::new(0, 64, 44100.0);
-        osc.generate(&clock, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 64, 44100.0);
+        osc.generate(&ctx, &[], &[]).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 

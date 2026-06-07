@@ -4,7 +4,7 @@ use rill_core::{
     math::vector::traits::Vector as VecTrait,
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
-    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
+    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
 };
 
 // Raw pointer to TapeLoop — safe because the graph is single-threaded.
@@ -106,10 +106,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteHead<T, BUF_SIZE> {
     fn process(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
         feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         debug_assert!(!self.tape.is_null(), "WriteHead: tape not set");

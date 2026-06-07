@@ -6,7 +6,7 @@ One dependency brings in the entire ecosystem:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.2"
+rill-adrift = "0.5.0-beta.6"
 ```
 
 ```rust
@@ -25,9 +25,9 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 | **Graph** | `rill-graph` — static DAG audio graph, `Port::propagate` (process_tick, process_block, spawn) |
 | **Effects** | `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router` |
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
-| **Analog** | `rill-core-wdf`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |
+| **Analog** | `rill-core-model`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |
 | **I/O** | `rill-io` — ALSA, CPAL, PipeWire, JACK backends (pure I/O, no engine) |
-| **Network** | `rill-osc` — OSC server and networking |
+| **Network** | `rill-osc` — OSC server and networking; powers `rill-patchbay` OSC sensors for graph control |
 | **Monitoring** | `rill-telemetry` — probes, collectors |
 | **Lo-Fi** | `rill-lofi` — bitcrush, downsampling, console emulation |
 
@@ -39,7 +39,7 @@ The foundation (`rill-core`) provides lock-free queues, `no_std`-compatible math
 
 ## Project Status
 
-Active development — 17 crates, 0.5.0-beta.2, 487 tests.
+Active development — 18 crates, 0.5.0-beta.6, 487 tests.
 
 - [GitHub](https://github.com/DigitalRats/rill)
 - [crates.io](https://crates.io/crates/rill-adrift)

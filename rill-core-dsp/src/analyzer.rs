@@ -1,6 +1,6 @@
 //! Traits for signal analyzers
 
-use crate::algorithm::Algorithm;
+use rill_core::traits::algorithm::Algorithm;
 use rill_core::Transcendental;
 
 /// Base trait for analyzers

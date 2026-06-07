@@ -243,6 +243,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
                                 SensorDef::Midi { port_name, .. } => {
                                     format!("midi_{port_name}")
                                 }
+                                SensorDef::Osc { port, .. } => {
+                                    format!("osc_{port}")
+                                }
                             },
                             PbModuleDef::Custom { type_name, .. } => type_name.clone(),
                         };

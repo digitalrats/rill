@@ -5,10 +5,10 @@
 //! and other effects.
 
 use super::basic::{BasicOscillator, Waveform};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::generators::{Generator, SyncableGenerator};
 use crate::vector::prelude::*;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// LFO (Low Frequency Oscillator)
@@ -26,7 +26,7 @@ use rill_core::Transcendental;
 /// use rill_core::time::ClockTick;
 /// use rill_core::traits::ActionContext;
 /// use rill_core_dsp::generators::*;
-/// use rill_core_dsp::Algorithm;
+/// use rill_core::traits::algorithm::Algorithm;
 ///
 /// let tick = ClockTick::default();
 /// let ctx = ActionContext::new(&tick);
@@ -41,7 +41,7 @@ use rill_core::Transcendental;
 ///
 /// // Generate modulation signal
 /// let mut output = [0.0_f32];
-/// lfo.process(None, &mut output, &ctx).unwrap();
+/// lfo.process(None, &mut output).unwrap();
 /// let modulation = output[0];
 /// ```
 #[derive(Clone, Copy)]
@@ -153,12 +153,7 @@ impl<T: Transcendental> Algorithm<T> for LFO<T> {
         self.osc.set_phase(self.phase_offset.extract(0));
     }
 
-    fn process(
-        &mut self,
-        _input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         for out in output.iter_mut() {
             *out = self.modulate();
         }
@@ -235,8 +230,6 @@ impl<T: Transcendental> SyncableGenerator<T> for LFO<T> {
 mod tests {
     use super::*;
     use float_cmp::approx_eq;
-    use rill_core::time::ClockTick;
-    use rill_core::traits::ActionContext;
 
     #[test]
     fn test_lfo_creation() {
@@ -253,10 +246,8 @@ mod tests {
 
         // In bipolar mode, values should be in [-1, 1]
         let mut output = [0.0f32; 1];
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         for _ in 0..100 {
-            lfo.process(None, &mut output, &ctx).unwrap();
+            lfo.process(None, &mut output).unwrap();
             let val = output[0];
             assert!(
                 val >= -1.0 && val <= 1.0,
@@ -273,10 +264,8 @@ mod tests {
 
         // In unipolar mode, values should be in [0, 1]
         let mut output = [0.0f32; 1];
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         for _ in 0..100 {
-            lfo.process(None, &mut output, &ctx).unwrap();
+            lfo.process(None, &mut output).unwrap();
             let val = output[0];
             assert!(val >= 0.0 && val <= 1.0, "Value {} out of range [0,1]", val);
         }
@@ -300,10 +289,8 @@ mod tests {
 
         // Advance phase
         let mut output = [0.0f32; 1];
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
         for _ in 0..10 {
-            lfo.process(None, &mut output, &ctx).unwrap();
+            lfo.process(None, &mut output).unwrap();
         }
 
         // Sync with reset
@@ -325,9 +312,7 @@ mod tests {
             lfo.init(44100.0);
 
             let mut output = [0.0f32; 1];
-            let tick = ClockTick::default();
-            let ctx = ActionContext::new(&tick);
-            lfo.process(None, &mut output, &ctx).unwrap();
+            lfo.process(None, &mut output).unwrap();
             let val = output[0];
             assert!(
                 val >= -1.0 && val <= 1.0,
@@ -372,14 +357,12 @@ mod tests {
         let initial_phase = lfo.phase();
         println!("Initial phase: {}", initial_phase.to_f32());
         let mut output = [0.0f32; 1];
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
 
         // Advance phase through several periods
         for i in 0..samples_per_period * 3 {
             // 3 full periods
             let before_phase = lfo.phase();
-            lfo.process(None, &mut output, &ctx).unwrap();
+            lfo.process(None, &mut output).unwrap();
             let after_phase = lfo.phase();
 
             // Check if phase reset occurred

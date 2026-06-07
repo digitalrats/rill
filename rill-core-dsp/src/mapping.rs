@@ -5,7 +5,7 @@
 
 use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
-use rill_core::traits::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 
 /// Mapping strategy for translating normalized [0, 1\] values to a parameter range.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,7 +67,7 @@ impl MappingStrategy {
 /// // Use apply_command to set the incoming value
 /// mapper.apply_command(0.5);    // halfway in normalized range
 /// let mut output = [0.0f32; 1];
-/// mapper.process(None, &mut output, &ctx).unwrap();
+/// mapper.process(None, &mut output).unwrap();
 /// // output maps 0.5 exponentially between 20..20000
 /// ```
 #[derive(Debug, Clone)]
@@ -111,12 +111,7 @@ impl<T: Transcendental> ControlMapper<T> {
 }
 
 impl<T: Transcendental> Algorithm<T> for ControlMapper<T> {
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         for (i, sample) in output.iter_mut().enumerate() {
             // If input is available, use it as the normalized value.
             // Otherwise, use the value set by apply_command.
@@ -159,7 +154,6 @@ impl<T: Transcendental> Algorithm<T> for ControlMapper<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::time::ClockTick;
 
     #[test]
     fn test_linear_mapping() {
@@ -169,52 +163,43 @@ mod tests {
 
     #[test]
     fn test_mapping_strategies() {
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-
         let mut mapper = ControlMapper::new(0.0f32, 100.0, MappingStrategy::Linear);
         mapper.apply_command(0.5);
         let mut out = [0.0f32];
-        mapper.process(None, &mut out, &ctx).unwrap();
+        mapper.process(None, &mut out).unwrap();
         assert!((out[0] - 50.0).abs() < 1e-6);
 
         mapper.set_strategy(MappingStrategy::Inverted);
         mapper.apply_command(0.5);
-        mapper.process(None, &mut out, &ctx).unwrap();
+        mapper.process(None, &mut out).unwrap();
         assert!((out[0] - 50.0).abs() < 1e-6);
 
         mapper.set_strategy(MappingStrategy::Exponential { exponent: 2.0 });
         mapper.apply_command(0.5); // 0.5^2 = 0.25, 0..100 => 25
-        mapper.process(None, &mut out, &ctx).unwrap();
+        mapper.process(None, &mut out).unwrap();
         assert!((out[0] - 25.0).abs() < 1e-6);
     }
 
     #[test]
     fn test_mapping_with_input() {
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-
         let mut mapper = ControlMapper::new(0.0f32, 100.0, MappingStrategy::Linear);
         let input = [0.25f32, 0.75f32];
         let mut output = [0.0f32; 2];
-        mapper.process(Some(&input), &mut output, &ctx).unwrap();
+        mapper.process(Some(&input), &mut output).unwrap();
         assert!((output[0] - 25.0).abs() < 1e-6);
         assert!((output[1] - 75.0).abs() < 1e-6);
     }
 
     #[test]
     fn test_log_mapping_bounds() {
-        let tick = ClockTick::default();
-        let ctx = ActionContext::new(&tick);
-
         let mut mapper = ControlMapper::new(20.0f32, 20000.0, MappingStrategy::Logarithmic);
         mapper.apply_command(0.0);
         let mut out = [0.0f32];
-        mapper.process(None, &mut out, &ctx).unwrap();
+        mapper.process(None, &mut out).unwrap();
         assert!((out[0] - 20.0).abs() < 1.0);
 
         mapper.apply_command(1.0);
-        mapper.process(None, &mut out, &ctx).unwrap();
+        mapper.process(None, &mut out).unwrap();
         assert!((out[0] - 20000.0).abs() < 1.0);
     }
 }

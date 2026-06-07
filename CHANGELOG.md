@@ -1,6 +1,171 @@
 # CHANGELOG
 
-## [0.5.0-beta.5] — In Progress
+## [0.5.0-beta.6] — In Progress
+
+### 📦 Version bump and cleanup
+
+- All 18 crates bumped to `0.5.0-beta.6`.
+- Documentation updated: `SensorDef::Osc` described in architecture docs,
+  `rill-osc` README cross-references `OscSensor`, patchbay README covers
+  `midi`/`osc` feature flags, stale `0.5.0-beta.2` references fixed
+  throughout docs.
+
+### ⚡ Servo conflict resolution (`rill-patchbay`)
+
+- **`Servo::with_control()`** / **`Servo::with_conflict()`** — builder methods
+  to configure `ControlStrategy` and `ConflictStrategy` on a Servo.
+- **`with_control(Modulation { depth })`** — automaton output modulates around
+  `state.base`, combinable with HID input via `BasePlusModulation`.
+- **`with_conflict(TouchOverride)`** — HID input freezes automaton via
+  `state.frozen`, resumes on `UiRelease`.
+- **`with_conflict(BasePlusModulation)`** — HID input updates `state.base`;
+  automaton modulates around it on next `ClockTick`.
+- **`ServoConstructor`** now passes `ServoDef.control_strategy` and
+  `ServoDef.conflict_strategy` through to Servo construction.
+- **`Control` handler fallback mapping arm** now checks `ConflictStrategy`:
+  was ignoring `state.frozen` and `state.base` — now respects all three
+  strategies.
+- **Dead code removed:** `UiCommand` enum (`strategy.rs`) — never used.
+- **Docs:** all PortCombiner references replaced with Servo+strategy
+  architecture diagrams across `README.md`, `patchbay-rack.md`,
+  `actor.md`, `two_thread_architecture.md`.
+
+---
+
+## [0.5.0-beta.5]
+
+### 🕐 Unified RenderContext (Breaking)
+
+**`rill-core` (`time/render.rs`):**
+- `RenderContext` — single stack-allocated context per processing block:
+  `sample_pos`, `samples_since_last`, `sample_rate`, `transport: TransportState`,
+  `speed_ratio` (hardware clock correction, default 1.0).
+- `TransportState` — `is_playing`, `bpm`, `frame_pos`, `time_sig_num/den`,
+  `bar_start_frame`. Replaces `ClockTick::tempo: Option<f32>`.
+- Musical methods moved from `ClockTick` to `RenderContext`:
+  `beat_position()`, `musical_position()`, `is_new_bar()`, `is_new_beat()` —
+  now use configurable `time_sig_num/den` (no longer hardcoded 4/4).
+- `ProcessContext` and `ActionContext` removed — replaced by `&RenderContext`
+  throughout the trait system.
+
+**Trait signatures (breaking):**
+- `Algorithm::process(input, output)` — `ctx` parameter removed (97.4% of impls
+  ignored it; 2 tape heads now use `init()` for sample rate).
+- `Source::generate(&RenderContext, …)`, `Processor::process(&RenderContext, …)`,
+  `Sink::consume(&RenderContext, …)`, `Router::route(&RenderContext, …)` —
+  all use `&RenderContext` instead of `&ClockTick`.
+- `Port::propagate()` — context parameter removed; single `&RenderContext` flows
+  through the DAG without re-wrapping.
+- `Port::run_action()` — context parameter removed.
+- `Port::pre_process()` — `_tick` parameter removed.
+
+**Graph:**
+- `Graph::run()` I/O callback creates one `RenderContext` per block and passes it
+  to both `process_block()` and `propagate()` — no more `ProcessContext` +
+  `ActionContext` duplication.
+- `Graph.system_clock: Option<Arc<SystemClock>>` — when set, creates
+  `RenderContext::with_tempo()` with BPM from the shared clock.
+
+### 🎛️ MIDI Clock Sync
+
+**`rill-patchbay` (`midi_clock.rs`):**
+- `MidiClockTracker` — counts 24ppqn clock pulses (0xF8), derives BPM via
+  running average, writes atomically into `Arc<SystemClock>`.
+- `MidiClockStrategy` trait with three built-in strategies:
+  `FreeRunning` (BPM only), `ResetOnStart` (position reset on Start),
+  `SongPosition` (position reset + `is_playing()` flag).
+- `is_playing: Arc<AtomicBool>` — shared flag, set on MIDI Start/Continue,
+  cleared on Stop. Sequencers and automations check this before producing output.
+- Integrated into `MidiHub` — optional via `MidiHub::with_clock_tracker()`.
+  The tracker's `SystemClock` feeds BPM to `Graph.system_clock`.
+
+### 🌐 OSC Sensor (`rill-patchbay`)
+
+- **`OscSensor`** (`osc.rs`) — OSC input sensor modelled after `MidiHub`/`spawn_midi_sensor`.
+  Binds a UDP socket in a dedicated OS thread, decodes incoming OSC packets
+  via `rill-osc`, produces `ControlEvent::Osc { address, args }` events.
+  Bundles unwound recursively. Implements `Module` + `Sensor` traits.
+- **`spawn_osc_sensor()`** — actor-model variant: spawns a control actor for
+  `SetEnabled` commands + UDP recv loop in OS thread. Sends
+  `CommandEnum::Control(event)` to the servo for mapping.
+- **`parse_osc()`** — converts `OscMessage` → `ControlEvent::Osc`.
+  Numeric args (`Int`, `Float`) collected; strings and blobs silently dropped.
+- **`SensorDef::Osc { port, mappings }`** — serializable descriptor variant
+  in `module_def.rs`. `into_sensor()` gated on `any(feature = "midi", feature = "osc")`.
+- **`OscConstructor`** — registered in `ModuleFactory` via `rill-adrift`:
+  creates mapping-only servo + `spawn_osc_sensor()` pair. Activated by
+  `ModuleDef::Sensor(SensorDef::Osc { ... })`.
+- **Feature gate:** `osc = ["dep:rill-osc"]` in `rill-patchbay`;
+  `rill-adrift/osc` enables `rill-patchbay/osc` passthrough.
+- Existing `EventPattern::OscAddress` / `OscPattern` matching in servo works
+  out-of-the-box — sensor produces `ControlEvent::Osc`, servo matches via
+  `EventPattern::matches()`.
+
+### 🔌 JACK MIDI + Transport
+
+**`rill-io`:**
+- `JackMidiBackend` — JACK MIDI input backend. Registers a `MidiIn` port,
+  bridges JACK process callback to `MidiBackend::poll()` via mpsc channel
+  (same pattern as `MidirBackend`).
+- `JackBackend::set_system_clock()` — JACK transport sync: reads BPM from
+  `TransportBBT` in process callback, writes atomically to `SystemClock`.
+
+### 🔈 Lofi: DC Offset + Output Ceiling
+
+**`rill-lofi` (`config.rs`, `lofi_processor.rs`):**
+- `LofiConfig.dc_offset` — subtracted from signal after dry/wet (before gain).
+  Default 0.0. Use 0.5 for AY-3-8910 to centre [0, 1] around zero.
+- `LofiConfig.output_ceiling` — hard clamp `[-ceiling, +ceiling]` (default 1.0).
+- Formula order: `(dry_wet_mix - offset) * gain, clamp to ±ceiling`.
+- New parameters exposed as `"dc_offset"` and `"output_ceiling"` in
+  `LofiProcessor` metadata → available through `SourceDef.parameters`.
+- 3 new tests: offset removal, ceiling clamp, combined behaviour.
+
+**Registration (`rill-adrift/src/registration.rs`):**
+- `rill/lofi_input` constructor now reads `dc_offset`, `output_gain`,
+  `output_ceiling` from `Params`.
+
+### 🧱 Physical Modeling in `rill-core-model`
+
+**Four new resonant model modules** (`rill-core-model`):
+
+- **`string`** — 1D digital waveguide with fractional-delay allpass interpolation,
+  stiffness dispersion, and frequency-dependent damping. Implements
+  `Algorithm<T>` + `ParameterizedAlgorithm<T, Params = StringParams<T>>`.
+- **`plate`** — 2D FDTD waveguide mesh on rectangular grid with clamped/free
+  boundary conditions. Impulse excitation at configurable position.
+- **`modal`** — parallel bank of 2-pole resonant filters for modal synthesis.
+  Pre-built presets: `bell_modes()` (5 modes, inharmonic bell ratios) and
+  `marimba_modes()` (3 modes, harmonic bar ratios).
+- **`cavity`** — `HelmholtzCavity` (single Helmholtz resonator with optional
+  reed excitation for wind instrument modeling) and `CavityArray` (1D chain
+  of coupled cavities for wave propagation experiments / acoustic metamaterials).
+
+All four types implement `Algorithm<T>` + `ParameterizedAlgorithm<T>`.
+24 new tests.
+
+### ♻️ `ParameterizedAlgorithm` → `rill-core`
+
+**`rill-core` (`traits/algorithm.rs`):**
+- `ParameterizedAlgorithm<T>` trait added — typed parameter access for any
+  `Algorithm` (`params()`, `set_params()`, `set_parameter()`). Generic over
+  `type Params: Clone + Send + Sync`. Previously lived in `rill-core-dsp`.
+
+**`rill-core-dsp`:**
+- `rll-core-dsp/src/algorithm.rs` — now re-exports `ParameterizedAlgorithm`
+  from `rill-core`; definition removed.
+- `Algorithm`, `AlgorithmCategory`, `AlgorithmMetadata`, `ActionContext`,
+  `ProcessResult` no longer re-exported from `rill-core-dsp` — all consumers
+  import directly from `rill_core::traits`.
+- 7 filter `ParameterizedAlgorithm` impls unchanged.
+
+### 📦 `rill-core-wdf` → `rill-core-model`
+
+- Crate renamed: `rill-core-wdf` → `rill-core-model`
+- Internal module `filters` → `wdf` (path: `rill_core_model::wdf::*`)
+- All imports across workspace updated (4 crates, 14 docs, 3 scripts)
+- Current module listing: `macros`, `analysis`, `constants`, `wdf`, `tape`,
+  `string`, `plate`, `modal`, `cavity`
 
 ### 📝 Terminology: «audio» → «signal» / «I/O»
 
@@ -216,7 +381,7 @@ Graph.run() → tick: parent_ref.send(ClockTick)
   - `pre_process()` — feedback mix via 4-wide add (all feedback nodes accelerated)
   - 8 nodes: direct port buffer write eliminates 2 `[T; BUF_SIZE]` copies per block per node
 
-- **WDF SIMD (rill-core-wdf)**:
+- **WDF SIMD (rill-core-model)**:
   - `process_incident_vector` on `Resistor`, `Capacitor`, `Inductor`, `Diode` via `ScalarVector4`
   - Diode Newton-Raphson vectorized with `VectorMask::all()` early exit
   - `process_batch_simd` free function for batch processing
@@ -329,10 +494,10 @@ Graph.run() → tick: parent_ref.send(ClockTick)
   - `IoControl` trait in `rill-core::io` — uniform register write interface
   - `LofiInput<T, BUF_SIZE>` — `Source` node wrapping any `IoBackend` with lofi processing
 
-- **WDF tape module** in `rill-core-wdf`:
+- **WDF tape module** in `rill-core-model`:
   - `RecordHead<T>`, `PlaybackHead<T>` — analog tape physics, `Algorithm<T>`
   - `OpAmp<T>` — operational amplifier as `WdfElement<T>`
-  - `CassetteDeck` in `rill-analog-effects` refactored to use heads from `rill-core-wdf`
+  - `CassetteDeck` in `rill-analog-effects` refactored to use heads from `rill-core-model`
 
 - **`Transcendental` trait extended**: `tanh()`, `signum()`, `random()` — enables
   stochastic modeling in generic WDF/dsp code
@@ -370,7 +535,7 @@ Graph.run() → tick: parent_ref.send(ClockTick)
 
 - **`rill-io/cpal`** — replaced by `rill-io/portaudio` (cross-platform, cleaner API)
 - `Ay38910Emulator`, `NesEmulator` — replaced by `Chip` + `Backend` + `LofiInput`
-- `rill-analog-effects::OperationalAmplifier` — replaced by `rill_core_wdf::OpAmp`
+- `rill-analog-effects::OperationalAmplifier` — replaced by `rill_core_model::OpAmp`
 
 ### 📖 Documentation
 
@@ -672,7 +837,7 @@ All 17 crates published on crates.io at `0.5.0-beta.1`.
 
 #### Аналоговое моделирование
 
-- **`rill-core-wdf`** — WDF-ядро: элементы (R, C, L, диод), адаптеры (последовательный,
+- **`rill-core-model`** — WDF-ядро: элементы (R, C, L, диод), адаптеры (последовательный,
   параллельный), анализ, MoogLadder
 - **`rill-analog-filters`** — аналоговые фильтры на WDF (WdfMoogLadder, WdfRcPole)
 - **`rill-analog-effects`** — аналоговые эффекты (операционный усилитель, кассетный
@@ -706,7 +871,7 @@ All 17 crates published on crates.io at `0.5.0-beta.1`.
 |-------|----------|
 | `rill-core` | Единое ядро (трейты, очереди, математика, макросы) |
 | `rill-core-dsp` | DSP-алгоритмы (фильтры, генераторы, векторные операции) |
-| `rill-core-wdf` | WDF-ядро (элементы, адаптеры, анализ) |
+| `rill-core-model` | WDF-ядро (элементы, адаптеры, анализ) |
 | `rill-patchbay` | Автоматы, сенсоры, серво |
 | `rill-router` | EQ + микшер |
 | `rill-telemetry` | Пробники и коллекторы |

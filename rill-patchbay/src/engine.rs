@@ -14,225 +14,10 @@ use rill_core_actor::{ActorRef, ActorSystem};
 pub use crate::automaton::{EnvelopeAutomaton, LfoAutomaton, LfoWaveform, Range};
 use crate::strategy::{ConflictStrategy, ControlStrategy};
 
-// =============================================================================
-// 1. Event patterns
-// =============================================================================
-
-/// What aspect of a MIDI note event to extract for mapping.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum MidiNoteKind {
-    /// Extracts frequency: `midi_to_freq(note)`. Note Off produces no value.
-    Frequency,
-    /// Extracts amplitude: `velocity / 127` (On) or `0.0` (Off).
-    #[default]
-    Amplitude,
-    /// Extracts gate: `1.0` (On) or `0.0` (Off).
-    Gate,
-}
-
-/// A pattern for matching controller events.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum EventPattern {
-    /// Matches any button event regardless of ID.
-    AnyButton,
-    /// Matches a button event with a specific hardware ID.
-    ButtonId(u32),
-    /// Matches any knob event regardless of ID.
-    AnyKnob,
-    /// Matches a knob event with a specific hardware ID.
-    KnobId(u32),
-    /// Matches any fader event regardless of ID.
-    AnyFader,
-    /// Matches a fader event with a specific hardware ID.
-    FaderId(u32),
-    /// Matches any MIDI event (control change, note, clock, or transport).
-    AnyMidi,
-    /// Matches a MIDI control change event by controller number and optional channel.
-    MidiControl {
-        /// Optional MIDI channel filter; `None` matches any channel.
-        channel: Option<u8>,
-        /// MIDI controller number (CC index).
-        controller: u8,
-    },
-    /// Matches a MIDI note-on or note-off event and extracts a mapped value.
-    MidiNote {
-        /// Optional MIDI channel filter; `None` matches any channel.
-        channel: Option<u8>,
-        /// Optional note number filter; `None` matches any note.
-        note: Option<u8>,
-        /// Which aspect of the note event to use as the mapping value.
-        #[cfg_attr(feature = "serde", serde(default))]
-        kind: MidiNoteKind,
-    },
-    /// Matches a MIDI clock tick event.
-    MidiClock,
-    /// Matches a MIDI transport event (start, stop, or continue).
-    MidiTransport {
-        /// Optional transport kind filter; `None` matches any transport event.
-        kind: Option<MidiTransportKind>,
-    },
-    /// Matches an OSC message by exact address string.
-    OscAddress(String),
-    /// Matches an OSC message whose address contains the given substring.
-    OscPattern(String),
-}
-
-impl EventPattern {
-    /// Checks whether this pattern matches a given control event.
-    pub fn matches(&self, event: &ControlEvent) -> bool {
-        match (self, event) {
-            (EventPattern::AnyButton, ControlEvent::Button { .. }) => true,
-            (EventPattern::ButtonId(id), ControlEvent::Button { id: eid, .. }) => *id == *eid,
-            (EventPattern::AnyKnob, ControlEvent::Knob { .. }) => true,
-            (EventPattern::KnobId(id), ControlEvent::Knob { id: eid, .. }) => *id == *eid,
-            (EventPattern::AnyFader, ControlEvent::Fader { .. }) => true,
-            (EventPattern::FaderId(id), ControlEvent::Fader { id: eid, .. }) => *id == *eid,
-            (
-                EventPattern::MidiControl {
-                    channel,
-                    controller,
-                },
-                ControlEvent::MidiControl {
-                    channel: ech,
-                    controller: ectr,
-                    ..
-                },
-            ) => (channel.is_none() || channel.unwrap() == *ech) && *controller == *ectr,
-            (
-                EventPattern::MidiNote { channel, note, .. },
-                ControlEvent::MidiNote {
-                    channel: ech,
-                    note: en,
-                    ..
-                },
-            ) => {
-                (channel.is_none() || channel.unwrap() == *ech)
-                    && (note.is_none() || note.unwrap() == *en)
-            }
-            (EventPattern::AnyMidi, ControlEvent::MidiControl { .. })
-            | (EventPattern::AnyMidi, ControlEvent::MidiNote { .. })
-            | (EventPattern::AnyMidi, ControlEvent::MidiClock)
-            | (EventPattern::AnyMidi, ControlEvent::MidiTransport { .. }) => true,
-            (EventPattern::MidiClock, ControlEvent::MidiClock) => true,
-            (
-                EventPattern::MidiTransport { kind },
-                ControlEvent::MidiTransport { kind: ek, .. },
-            ) => kind.is_none_or(|k| k == *ek),
-            (EventPattern::OscAddress(addr), ControlEvent::Osc { address, .. }) => addr == address,
-            (EventPattern::OscPattern(pat), ControlEvent::Osc { address, .. }) => {
-                address.contains(pat)
-            }
-            _ => false,
-        }
-    }
-}
-
-// =============================================================================
-// 2. Event types
-// =============================================================================
-
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, PartialEq)]
-/// Hardware control event from a physical interface (knob, button, fader, etc.).
-pub enum ControlEvent {
-    /// A physical button press or release.
-    Button {
-        /// Hardware control identifier.
-        id: u32,
-        /// `true` if the button is currently held down.
-        pressed: bool,
-    },
-    /// A physical knob (rotary encoder or potentiometer) event.
-    Knob {
-        /// Hardware control identifier.
-        id: u32,
-        /// Raw value in hardware-native units.
-        value: f32,
-        /// Value mapped to the [0.0, 1.0] range.
-        normalized: f32,
-    },
-    /// A physical fader (linear slider) event.
-    Fader {
-        /// Hardware control identifier.
-        id: u32,
-        /// Raw value in hardware-native units.
-        value: f32,
-        /// Value mapped to the [0.0, 1.0] range.
-        normalized: f32,
-    },
-    /// A MIDI control change message.
-    MidiControl {
-        /// MIDI channel (0-indexed).
-        channel: u8,
-        /// MIDI controller number.
-        controller: u8,
-        /// Raw 7-bit MIDI value.
-        value: u8,
-        /// Value normalized to [0.0, 1.0].
-        normalized: f32,
-    },
-    /// A MIDI note-on or note-off message.
-    MidiNote {
-        /// MIDI channel (0-indexed).
-        channel: u8,
-        /// MIDI note number.
-        note: u8,
-        /// MIDI velocity value (0-127).
-        velocity: u8,
-        /// `true` for note-on, `false` for note-off.
-        on: bool,
-    },
-    /// An OSC message event.
-    Osc {
-        /// OSC address path.
-        address: String,
-        /// OSC argument list as float values.
-        args: Vec<f32>,
-    },
-    /// A MIDI clock tick event.
-    MidiClock,
-    /// A MIDI transport state change.
-    MidiTransport {
-        /// The type of transport event (start, stop, or continue).
-        kind: MidiTransportKind,
-    },
-}
-
-/// MIDI transport state.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MidiTransportKind {
-    /// Transport started.
-    Start,
-    /// Transport stopped.
-    Stop,
-    /// Transport resumed from current position.
-    Continue,
-}
-
-impl ControlEvent {
-    /// Returns the normalized value (0.0–1.0) of this event, if it carries one.
-    pub fn normalized_value(&self) -> Option<f32> {
-        match self {
-            ControlEvent::Knob { normalized, .. } => Some(*normalized),
-            ControlEvent::Fader { normalized, .. } => Some(*normalized),
-            ControlEvent::MidiControl { normalized, .. } => Some(*normalized),
-            ControlEvent::Button { pressed, .. } => Some(if *pressed { 1.0 } else { 0.0 }),
-            _ => None,
-        }
-    }
-    /// Returns the hardware control ID attached to this event, if any.
-    pub fn id(&self) -> Option<u32> {
-        match self {
-            ControlEvent::Button { id, .. } => Some(*id),
-            ControlEvent::Knob { id, .. } => Some(*id),
-            ControlEvent::Fader { id, .. } => Some(*id),
-            _ => None,
-        }
-    }
-}
+// Re-export control event types from rill-core (canonical home)
+pub use rill_core::queues::control_event::{
+    ControlEvent, EventPattern, MidiNoteKind, MidiTransportKind,
+};
 
 // =============================================================================
 // 2b. OSC Surface
@@ -417,8 +202,32 @@ impl Mapping {
 pub type Time = f64;
 
 /// A unit action for automatons that need no external action per step.
+///
+/// Also implements [`Automaton`] as a no-op — useful for mapping-only servos
+/// where the automaton output is irrelevant.
 #[derive(Debug, Clone, Default)]
 pub struct NoAction;
+
+impl Automaton for NoAction {
+    type Internal = ();
+    type Action = ();
+
+    fn step(
+        &self,
+        _internal: &mut Self::Internal,
+        _current: &ParamValue,
+        _time: Time,
+        _action: &Self::Action,
+    ) -> ParamValue {
+        ParamValue::Float(0.0)
+    }
+
+    fn initial_internal(&self) -> Self::Internal {}
+
+    fn name(&self) -> &str {
+        "NoAction"
+    }
+}
 
 /// Core trait for automatons — stateful signal generators that advance per step.
 pub trait Automaton: Send + Sync + Debug {
@@ -496,6 +305,39 @@ impl ParameterMapping {
 }
 
 // =============================================================================
+// 6.5. Control context — stateful MIDI controller aggregation
+// =============================================================================
+
+/// Per-servo mutable context for stateful control events.
+///
+/// Pitch bend and mod wheel values accumulate here. When a note-on
+/// arrives, the servo composes the final frequency/amplitude from
+/// the context and sends it directly (bypassing mappings).
+#[derive(Debug, Clone)]
+pub(crate) struct ControlContext {
+    pitch_bend_semitones: f64,
+    mod_wheel: f64,
+    active_note: Option<u8>,
+    active_velocity: Option<f32>,
+}
+
+impl Default for ControlContext {
+    fn default() -> Self {
+        Self {
+            pitch_bend_semitones: 0.0,
+            mod_wheel: 1.0,
+            active_note: None,
+            active_velocity: None,
+        }
+    }
+}
+
+/// Convert a MIDI note number to frequency in Hz (A4 = 440 Hz).
+fn midi_note_to_freq(note: u8) -> f64 {
+    440.0 * 2.0f64.powf((note as f64 - 69.0) / 12.0)
+}
+
+// =============================================================================
 // 7. ServoState
 // =============================================================================
 
@@ -517,6 +359,8 @@ pub(crate) struct ServoState<A: Automaton> {
     pub(crate) last_sent_value: f64,
     /// Last table index sent (only used with value tables).
     pub(crate) last_sent_index: i64,
+    /// Stateful control context for pitch bend / mod wheel / note tracking.
+    pub(crate) control_ctx: ControlContext,
 }
 
 // =============================================================================
@@ -525,6 +369,10 @@ pub(crate) struct ServoState<A: Automaton> {
 
 /// Bridges an automaton to a graph parameter, stepping on every clock tick and
 /// sending control commands to the signal graph.
+///
+/// Also accepts external control events (MIDI, OSC, CV/Gate) via
+/// `CommandEnum::Control`, applying registered [`Mapping`]s to convert
+/// them into `SetParameter` commands.
 pub struct Servo<A: Automaton> {
     id: String,
     automaton: Arc<A>,
@@ -538,6 +386,14 @@ pub struct Servo<A: Automaton> {
     control: ControlStrategy,
     conflict: ConflictStrategy,
     table: Option<Vec<ParamValue>>,
+    /// Event-to-parameter mappings for sensor-driven control events.
+    mappings: Vec<Mapping>,
+    /// MIDI CC number for pitch bend (default 128 = pitch bend message).
+    pitch_bend_cc: Option<u8>,
+    /// Pitch bend range in semitones (±).
+    pitch_bend_semis: f64,
+    /// MIDI CC number for mod wheel (default 1).
+    mod_wheel_cc: Option<u8>,
 }
 
 impl<A: Automaton + 'static> Servo<A> {
@@ -575,6 +431,7 @@ impl<A: Automaton + 'static> Servo<A> {
                 frozen: false,
                 last_sent_value: f64::NAN,
                 last_sent_index: -1,
+                control_ctx: ControlContext::default(),
             })),
             graph_ref,
             target_node,
@@ -585,6 +442,10 @@ impl<A: Automaton + 'static> Servo<A> {
             control: ControlStrategy::Absolute,
             conflict: ConflictStrategy::LastWriteWins,
             table: None,
+            mappings: Vec::new(),
+            pitch_bend_cc: None,
+            pitch_bend_semis: 2.0,
+            mod_wheel_cc: None,
         }
     }
 
@@ -606,6 +467,10 @@ impl<A: Automaton + 'static> Servo<A> {
             control,
             conflict,
             table,
+            mappings,
+            pitch_bend_cc,
+            pitch_bend_semis,
+            mod_wheel_cc,
         } = self;
 
         let a = automaton;
@@ -617,10 +482,13 @@ impl<A: Automaton + 'static> Servo<A> {
         let ctrl = control;
         let confl = conflict;
         let tbl = table;
+        let pitch_cc = pitch_bend_cc;
+        let pitch_semis = pitch_bend_semis;
+        let mod_cc = mod_wheel_cc;
         let serv_id = id.clone();
 
         let s2 = s.clone();
-        system.spawn_detached_tokio(
+        system.spawn_detached(
             &format!("servo_{id}"),
             move || {
                 Box::new(move |msg: CommandEnum| match msg {
@@ -718,6 +586,138 @@ impl<A: Automaton + 'static> Servo<A> {
                             state.frozen = false;
                         }
                     }
+                    CommandEnum::Control(event) => {
+                        match &event {
+                            // ── Pitch bend: update context, recalc if note active ──
+                            ControlEvent::MidiControl {
+                                controller,
+                                normalized,
+                                ..
+                            } if Some(*controller) == pitch_cc => {
+                                let mut state = s.lock().unwrap();
+                                let semis = (*normalized as f64 - 0.5) * 2.0 * pitch_semis;
+                                state.control_ctx.pitch_bend_semitones = semis;
+                                drop(state);
+
+                                let s3 = s.lock().unwrap();
+                                if let (Some(note), Some(_vel)) =
+                                    (s3.control_ctx.active_note, s3.control_ctx.active_velocity)
+                                {
+                                    let freq = midi_note_to_freq(note)
+                                        * 2.0f64.powf(s3.control_ctx.pitch_bend_semitones / 12.0);
+                                    let pid = ParameterId::new("frequency").unwrap();
+                                    gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                        PortId::param(nid, 0),
+                                        pid,
+                                        ParamValue::Float(freq as f32),
+                                        SignalOrigin::Automaton(serv_id.clone()),
+                                    )));
+                                }
+                                drop(s3);
+                            }
+                            // ── Mod wheel: update context, recalc if note active ──
+                            ControlEvent::MidiControl {
+                                controller,
+                                normalized,
+                                ..
+                            } if Some(*controller) == mod_cc => {
+                                let mut state = s.lock().unwrap();
+                                state.control_ctx.mod_wheel = *normalized as f64;
+                                drop(state);
+
+                                let s3 = s.lock().unwrap();
+                                if let (Some(_note), Some(vel)) =
+                                    (s3.control_ctx.active_note, s3.control_ctx.active_velocity)
+                                {
+                                    let amp = vel as f64 * s3.control_ctx.mod_wheel;
+                                    let pid = ParameterId::new("amplitude").unwrap();
+                                    gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                        PortId::param(nid, 0),
+                                        pid,
+                                        ParamValue::Float(amp as f32),
+                                        SignalOrigin::Automaton(serv_id.clone()),
+                                    )));
+                                }
+                                drop(s3);
+                            }
+                            // ── Note on: activate, compose from context ──
+                            ControlEvent::MidiNote {
+                                note,
+                                velocity,
+                                on: true,
+                                ..
+                            } if velocity > &0u8 => {
+                                let vel_norm = *velocity as f32 / 127.0;
+                                let mut state = s.lock().unwrap();
+                                state.control_ctx.active_note = Some(*note);
+                                state.control_ctx.active_velocity = Some(vel_norm);
+                                let freq = midi_note_to_freq(*note)
+                                    * 2.0f64.powf(state.control_ctx.pitch_bend_semitones / 12.0);
+                                let amp = vel_norm as f64 * state.control_ctx.mod_wheel;
+                                drop(state);
+
+                                // Send frequency
+                                let pid = ParameterId::new("frequency").unwrap();
+                                gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid,
+                                    ParamValue::Float(freq as f32),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )));
+                                // Send amplitude
+                                let pid_amp = ParameterId::new("amplitude").unwrap();
+                                gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid_amp,
+                                    ParamValue::Float(amp as f32),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )));
+                            }
+                            // ── Note off: deactivate, silence ──
+                            ControlEvent::MidiNote { on: false, .. } => {
+                                let mut state = s.lock().unwrap();
+                                state.control_ctx.active_note = None;
+                                state.control_ctx.active_velocity = None;
+                                drop(state);
+
+                                let pid = ParameterId::new("amplitude").unwrap();
+                                gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid,
+                                    ParamValue::Float(0.0),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )));
+                            }
+                            // ── Fallback: iterate user-defined mappings ──
+                            _ => {
+                                let mut state = s.lock().unwrap();
+                                for mapping in &mappings {
+                                    if let Some(sp) = mapping.apply(&event) {
+                                        match confl {
+                                            ConflictStrategy::TouchOverride => {
+                                                state.frozen = true;
+                                                if let Some(nv) = event.normalized_value() {
+                                                    state.base = nv as f64;
+                                                }
+                                                gr.send(CommandEnum::SetParameter(sp));
+                                                break; // one mapping match — freeze + send
+                                            }
+                                            ConflictStrategy::BasePlusModulation => {
+                                                if let Some(nv) = event.normalized_value() {
+                                                    state.base = nv as f64;
+                                                }
+                                                // Don't send SetParameter — automaton
+                                                // modulates around new base on next ClockTick.
+                                            }
+                                            ConflictStrategy::LastWriteWins => {
+                                                gr.send(CommandEnum::SetParameter(sp));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 })
             },
@@ -728,6 +728,54 @@ impl<A: Automaton + 'static> Servo<A> {
     /// Attaches a preset value table; raw automaton output selects table entries by index.
     pub fn with_table(mut self, table: Vec<ParamValue>) -> Self {
         self.table = Some(table);
+        self
+    }
+
+    /// Enable pitch bend tracking via MIDI CC.
+    ///
+    /// When a pitch bend CC arrives and a note is active, the servo
+    /// recalculates frequency as `midi_to_freq(note) * 2^(bend/12)`.
+    pub fn with_pitch_bend(mut self, cc: u8, semitones: f64) -> Self {
+        self.pitch_bend_cc = Some(cc);
+        self.pitch_bend_semis = semitones;
+        self
+    }
+
+    /// Enable mod wheel tracking via MIDI CC.
+    ///
+    /// When a mod wheel CC arrives and a note is active, the servo
+    /// recalculates amplitude as `(velocity/127) * mod_wheel`.
+    pub fn with_mod_wheel(mut self, cc: u8) -> Self {
+        self.mod_wheel_cc = Some(cc);
+        self
+    }
+
+    /// Attaches sensor event mappings for [`Control`](CommandEnum::Control) dispatch.
+    ///
+    /// When the servo receives a `ControlEvent`, each mapping is checked;
+    /// matching events produce `SetParameter` commands sent to the graph.
+    pub fn with_mappings(mut self, mappings: Vec<Mapping>) -> Self {
+        self.mappings = mappings;
+        self
+    }
+
+    /// Set the control strategy — how the automaton affects the parameter value.
+    ///
+    /// - `Absolute` (default): automaton output [0,1] maps to [min,max].
+    /// - `Modulation { depth }`: automaton output [-1,1] modulates around `base`.
+    pub fn with_control(mut self, strategy: ControlStrategy) -> Self {
+        self.control = strategy;
+        self
+    }
+
+    /// Set the conflict resolution strategy — how UI/HID input interacts with
+    /// automaton control for the same parameter.
+    ///
+    /// - `LastWriteWins` (default): both sources send independently; mailbox order.
+    /// - `TouchOverride`: HID input freezes automaton until `UiRelease`.
+    /// - `BasePlusModulation`: HID input sets the base value; automaton modulates around it.
+    pub fn with_conflict(mut self, strategy: ConflictStrategy) -> Self {
+        self.conflict = strategy;
         self
     }
 

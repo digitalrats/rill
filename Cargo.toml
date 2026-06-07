@@ -12,7 +12,7 @@ members = [
     "rill-router",
     "rill-lofi",
     "rill-io",
-    "rill-core-wdf",
+"rill-core-model",
     "rill-analog-filters",
     "rill-analog-effects",
     "rill-osc",
@@ -42,21 +42,21 @@ tokio = "1.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 # Internal workspace crates
-rill-core = { path = "rill-core", version = "0.5.0-beta.5" }
-rill-core-actor = { path = "rill-core-actor", version = "0.5.0-beta.5" }
-rill-core-dsp = { path = "rill-core-dsp", version = "0.5.0-beta.5" }
-rill-core-wdf = { path = "rill-core-wdf", version = "0.5.0-beta.5" }
-rill-graph = { path = "rill-graph", version = "0.5.0-beta.5" }
-rill-patchbay = { path = "rill-patchbay", version = "0.5.0-beta.5" }
-rill-oscillators = { path = "rill-oscillators", version = "0.5.0-beta.5" }
-rill-digital-filters = { path = "rill-digital-filters", version = "0.5.0-beta.5" }
-rill-digital-effects = { path = "rill-digital-effects", version = "0.5.0-beta.5" }
-rill-router = { path = "rill-router", version = "0.5.0-beta.5" }
-rill-lofi = { path = "rill-lofi", version = "0.5.0-beta.5" }
-rill-io = { path = "rill-io", version = "0.5.0-beta.5" }
-rill-telemetry = { path = "rill-telemetry", version = "0.5.0-beta.5" }
-rill-analog-filters = { path = "rill-analog-filters", version = "0.5.0-beta.5" }
-rill-analog-effects = { path = "rill-analog-effects", version = "0.5.0-beta.5" }
-rill-osc = { path = "rill-osc", version = "0.5.0-beta.5" }
-rill-sampler = { path = "rill-sampler", version = "0.5.0-beta.5" }
-rill-adrift = { path = "rill-adrift", version = "0.5.0-beta.5" }
+rill-core = { path = "rill-core", version = "0.5.0-beta.6" }
+rill-core-actor = { path = "rill-core-actor", version = "0.5.0-beta.6" }
+rill-core-dsp = { path = "rill-core-dsp", version = "0.5.0-beta.6" }
+rill-core-model = { path = "rill-core-model", version = "0.5.0-beta.6" }
+rill-graph = { path = "rill-graph", version = "0.5.0-beta.6" }
+rill-patchbay = { path = "rill-patchbay", version = "0.5.0-beta.6" }
+rill-oscillators = { path = "rill-oscillators", version = "0.5.0-beta.6" }
+rill-digital-filters = { path = "rill-digital-filters", version = "0.5.0-beta.6" }
+rill-digital-effects = { path = "rill-digital-effects", version = "0.5.0-beta.6" }
+rill-router = { path = "rill-router", version = "0.5.0-beta.6" }
+rill-lofi = { path = "rill-lofi", version = "0.5.0-beta.6" }
+rill-io = { path = "rill-io", version = "0.5.0-beta.6" }
+rill-telemetry = { path = "rill-telemetry", version = "0.5.0-beta.6" }
+rill-analog-filters = { path = "rill-analog-filters", version = "0.5.0-beta.6" }
+rill-analog-effects = { path = "rill-analog-effects", version = "0.5.0-beta.6" }
+rill-osc = { path = "rill-osc", version = "0.5.0-beta.6" }
+rill-sampler = { path = "rill-sampler", version = "0.5.0-beta.6" }
+rill-adrift = { path = "rill-adrift", version = "0.5.0-beta.6" }

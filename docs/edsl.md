@@ -3,7 +3,7 @@
 Rill provides two built-in domain-specific languages (eDSL) based on `macro_rules!`:
 
 - **Mathematical eDSL** — vector operations, type-independent arithmetic (`rill-core::math`)
-- **WDF eDSL** — analog circuit description through element composition (`rill-core-wdf::macros`)
+- **WDF eDSL** — analog circuit description through element composition (`rill-core-model::macros`)
 
 Both are implemented via `macro_rules!`, require no external code generators, and expand to flat code at compile time.
 
@@ -240,7 +240,7 @@ Using `s` as the parameter name is a convention.
 ### MoogLadder (4-pole low-pass with resonance)
 
 ```rust
-use rill_core_wdf::filters::{RcPole, MoogLadder};
+use rill_core_model::wdf::{RcPole, MoogLadder};
 
 // RcPole — one-pole low-pass filter (wdf_element!)
 // MoogLadder — cascade of 4 RcPole + resonance feedback (wdf_cascade!)
@@ -259,10 +259,10 @@ let output = filter.process_sample(input);
 ### DiodeClipper (overdrive)
 
 ```rust
-use rill_core_wdf::constants::{BOLTZMANN, ELECTRON_CHARGE};
-use rill_core_wdf::elements::Resistor;
-use rill_core_wdf::filters::{AntiParallelDiode, DiodeClipper};
-use rill_core_wdf::WdfElement;
+use rill_core_model::constants::{BOLTZMANN, ELECTRON_CHARGE};
+use rill_core_model::elements::Resistor;
+use rill_core_model::wdf::{AntiParallelDiode, DiodeClipper};
+use rill_core_model::WdfElement;
 
 let r = Resistor::new(1000.0);
 let vt = BOLTZMANN * 300.0 / ELECTRON_CHARGE;

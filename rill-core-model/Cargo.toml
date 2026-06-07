@@ -1,0 +1,16 @@
+[package]
+name = "rill-core-model"
+version = "0.5.0-beta.6"
+edition = "2021"
+description = "Wave Digital Filter core — elements, adapters, and analysis for analog circuit modeling"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/rill-core-model"
+
+[dependencies]
+rill-core = { workspace = true }
+parking_lot = { workspace = true }
+
+[features]
+default = []

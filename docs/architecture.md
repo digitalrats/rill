@@ -1,8 +1,8 @@
-# Rill Architecture (version 0.5.0-beta.2)
+# Rill Architecture (version 0.5.0-beta.6)
 
 ## General Concept
 
-Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.5.0-beta.2, all crates use a unified `rill-core`.
+Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.5.0-beta.6, all crates use a unified `rill-core`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -31,7 +31,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │              Analog Modeling                          │   │
 │  │  ┌──────────────┐ ┌───────────────┐ ┌──────────────┐ │   │
-│  │  │rill-core-wdf │ │rill-analog-   │ │rill-analog-  │ │   │
+│  │  │rill-core-model │ │rill-analog-   │ │rill-analog-  │ │   │
 │  │  │(WDF core)    │ │filters        │ │effects       │ │   │
 │  │  │ active       │ │(WdfMoogLadder)│ │(op-amp, tape)│ │   │
 │  │  └──────────────┘ └───────────────┘ └──────────────┘ │   │
@@ -107,7 +107,8 @@ rill-core/
 │   │   ├── mod.rs             # Time and clock signals
 │   │   ├── clock.rs           # Clock and ClockSource traits
 │   │   ├── source.rs          # Time source implementations
-│   │   ├── tick.rs            # ClockTick
+│   │   ├── tick.rs            # ClockTick (legacy)
+│   │   ├── render.rs          # RenderContext + TransportState
 │   │   └── error.rs           # Time errors
 │   ├── macros/
 │   │   ├── mod.rs             # Macros
@@ -175,7 +176,9 @@ queue.send(CommandEnum::SetParameter(SetParameter {
 
 #### time
 
-Time and tempo abstractions: `Clock` and `ClockSource` traits, `SystemClock`, `ClockTick` structures. Allow nodes to synchronize with system time or external tempo.
+Time, tempo, and transport abstractions: `RenderContext` (unified per-block context — sample clock, `TransportState` with BPM/playing flag/time signature, `speed_ratio` for hardware clock correction), `SystemClock` (atomic BPM + position), `ClockTick` (legacy), `ClockSource` trait. `RenderContext` is built by the I/O backend once per block, passed through the entire DAG via `process_block(&ctx)`. Transport state flows from JACK/PipeWire transport or MIDI clock sync into `SystemClock`, which feeds BPM into the context.
+
+File: `rill-core/src/time/render.rs`.
 
 ```rust
 use rill_core::time::{Clock, SystemClock};
@@ -223,7 +226,7 @@ assert_eq!(mbox.pop(), Some("hello".into()));
 ## Infrastructure crates
 
 
-### `rill-graph` (0.5.0-beta.2)
+### `rill-graph` (0.5.0-beta.6)
 Audio graph with topological sort.
 
 ```rust
@@ -258,7 +261,7 @@ The Rill graph is built on a rigorous mathematical foundation — **category the
 
 **Block processing:** data is transferred in fixed-size blocks, improving performance through cache locality and enabling SIMD optimizations.
 
-### `rill-patchbay` (0.5.0-beta.2, ✅ active)
+### `rill-patchbay` (0.5.0-beta.6, ✅ active)
 Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automata (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automata" section for details.
 
 ```rust
@@ -314,7 +317,7 @@ manager.start()?;  // Automata begin their own life
 
 ## DSP infrastructure
 
-### `rill-core-dsp` (0.5.0-beta.2)
+### `rill-core-dsp` (0.5.0-beta.6)
 Unified DSP infrastructure with vector operations, algorithms, and macros. Includes:
 
 - **Vector abstractions** (`ScalarVector1`, `ScalarVector2`, `ScalarVector4`) — generic numeric types for portable SIMD operations
@@ -353,16 +356,16 @@ osc.process_block(&[], &mut input);
 filter.process_block(&input, &mut output);
 ```
 
-### `rill-oscillators` (0.5.0-beta.2, ✅ active)
+### `rill-oscillators` (0.5.0-beta.6, ✅ active)
 Graph nodes for oscillators (sine, saw, triangle, square, pulse), noise, LFO, and envelopes. Implements `Source`/`Processor` traits from `rill-core`, using DSP algorithms from `rill-core-dsp::generators` and `ScalarVectorN<T>` vector abstractions.
 
-### `rill-digital-filters` (0.5.0-beta.2, ✅ active)
+### `rill-digital-filters` (0.5.0-beta.6, ✅ active)
 Graph nodes for digital filters: biquad, one-pole, SVF, Butterworth, Chebyshev, comb. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp::filters`.
 
-### `rill-digital-effects` (0.5.0-beta.2, ✅ active)
+### `rill-digital-effects` (0.5.0-beta.6, ✅ active)
 Graph nodes for digital effects: Delay, Distortion, Limiter. Implements the `Processor` trait from `rill-core`, using delay algorithms from `rill-core-dsp::delay`. Optional `modulation` feature enables `rill-oscillators` for LFO modulation.
 
-### `rill-router` (0.5.0-beta.2)
+### `rill-router` (0.5.0-beta.6)
 Router combining equalizer (`rill-eq`) and mixer (`rill-mixer`) functionality with matrix routing capabilities. Includes `eq` (graphic and parametric equalizers) and `mixer` (mixer with channels, sends, master) modules. A `matrix` module is planned for flexible signal routing.
 
 ```rust
@@ -379,7 +382,7 @@ mixer.set_channel_volume(1, 0.8)?;
 
 ## Specialized crates
 
-### `rill-lofi` (0.5.0-beta.2, ✅ active)
+### `rill-lofi` (0.5.0-beta.6, ✅ active)
 Lo-Fi emulation of classic systems (NES, AY-3-8910, Akai S900). Implements graph nodes (`Node`) based on `rill-core`, using internal DSP algorithms to emulate bit depth, sample rate, and characteristic noise of retro systems.
 
 ```rust
@@ -391,28 +394,29 @@ let akai_config = LofiConfig::for_system(ClassicSystem::AkaiS900);
 let mut akai = LofiProcessor::new(akai_config);
 ```
 
-### `rill-telemetry` (0.5.0-beta.2, ✅ active)
+### `rill-telemetry` (0.5.0-beta.6, ✅ active)
 Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
 
-### `rill-core-wdf` (0.5.0-beta.2, ✅ active)
-Wave Digital Filter (WDF) core — elements (Resistor, Capacitor, Inductor, Diode), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion) and WDF filters (WdfMoogLadder). Generic over `rill_core::AudioNum` — supports `f32` and `f64`. Optional `simd` feature enables SIMD vectorization via `rill_core::vector::F64x4` (backed by `wide`).
+### `rill-core-model` (0.5.0-beta.6, ✅ active)
+WDF core + physical modeling — elements (Resistor, Capacitor, Inductor, Diode, OpAmp), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion), WDF filters (MoogLadder, DiodeClipper), tape models (RecordHead, PlaybackHead), and resonant physical models (StringModel — 1D waveguide, PlateModel — 2D FDTD mesh, ModalModel — parallel filter bank, HelmholtzCavity + CavityArray). Generic over `rill_core::Transcendental` — supports `f32` and `f64`.
 
 ```rust
-use rill_core_wdf::{Resistor, Capacitor, WdfElement, WaveVariables};
-use rill_core_wdf::filters::MoogLadder;
+use rill_core_model::{Resistor, Capacitor, WdfElement, WaveVariables};
+use rill_core_model::wdf::{MoogLadder, RcPole};
 use rill_core::traits::Algorithm;
 
 let mut cap: Capacitor<f64> = Capacitor::new(0.1e-6, 44100.0);
 let a = cap.port_resistance();
 
-let mut ladder: MoogLadder<f64> = MoogLadder::new(44100.0);
-ladder.set_cutoff(5000.0);
-ladder.set_resonance(0.7);
-let y = ladder.process_sample(0.5);
+let pole = RcPole::new(0.0.into());
+let mut ladder: MoogLadder<f64> = MoogLadder::new(pole, 1000.0.into(), 0.0.into(), 44100.0.into());
+ladder.set_cutoff(5000.0.into());
+ladder.set_resonance(0.7.into());
+let y = ladder.process_sample(0.5.into());
 ```
 
-### `rill-analog-filters` (0.5.0-beta.2, ✅ active)
-WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_wdf::filters::MoogLadder<f64>`. Provides graph nodes for the processor.
+### `rill-analog-filters` (0.5.0-beta.6, ✅ active)
+WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::wdf::MoogLadder<f64>`. Provides graph nodes for the processor.
 
 ```rust
 use rill_analog_filters::WdfMoogLadderProcessor;
@@ -421,8 +425,8 @@ let mut processor = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
 processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(5000.0));
 ```
 
-### `rill-analog-effects` (0.5.0-beta.2, ✅ active)
-Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-wdf`.
+### `rill-analog-effects` (0.5.0-beta.6, ✅ active)
+Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-model`.
 
 ```rust
 use rill_analog_effects::OperationalAmplifier;
@@ -432,7 +436,7 @@ opamp.set_slew_rate(0.5);
 let output = opamp.process(0.3);
 ```
 
-### `rill-io` (0.5.0-beta.2, active)
+### `rill-io` (0.5.0-beta.6, active)
 Audio input/output. Pure I/O backends — no engine, no processors.
 
 Single trait:
@@ -482,7 +486,7 @@ audio I/O thread (hard or soft RT) + control thread (tokio, patchbay).
 5. **Performance** — zero-cost abstractions, real-time safety
 6. **Testability** — all components are tested in isolation
 
-## Crate dependencies (version 0.5.0-beta.2)
+## Crate dependencies (version 0.5.0-beta.6)
 
 Dependency diagram between crates (solid arrows — mandatory dependencies, dashed — optional):
 
@@ -501,7 +505,7 @@ graph TD
     CORE --> TELEMETRY[rill-telemetry]
     CORE --> ANALOG_FILTERS[rill-analog-filters]
     CORE --> ANALOG_EFFECTS[rill-analog-effects]
-    CORE --> CORE_WDF[rill-core-wdf]
+    CORE --> CORE_WDF[rill-core-model]
     CORE_WDF --> ANALOG_FILTERS
     CORE_WDF --> ANALOG_EFFECTS
     
@@ -630,17 +634,45 @@ let mode = PhysicalSensor::switch("filter_mode")
     .with_positions(vec!["LPF", "BPF", "HPF"]);
 ```
 
-#### MIDI/CV sensors (see the outside world)
+#### MIDI/CV/OSC sensors (see the outside world)
 
-> **API in development.** MIDI and CV sensors are not yet implemented — in the current version, external events are handled via `Engine::handle_event()` and `Mapping`.
+External protocol sensors decode hardware input into `ControlEvent`s and
+dispatch them to servos for parameter mapping.
+
+**MIDI sensors** (feature `midi`):
 
 ```rust
-// Planned API:
-// let midi_note = MidiSensor::note("keyboard")
-//     .with_channel(1);
-// 
-// let cv_in = CvSensor::new("expression")
-//     .with_range(0.0, 5.0);
+use rill_patchbay::{spawn_midi_sensor, MidiHub};
+use rill_core_actor::{ActorSystem, ActorRef};
+use rill_core::queues::CommandEnum;
+
+// Actor-model: spawns polling thread, sends events to servo
+let sensor_ref = spawn_midi_sensor(
+    "keyboard",
+    Box::new(MidirBackend::new("rill-midi")?),
+    &system,
+    servo_ref,
+);
+```
+
+**OSC sensors** (feature `osc`):
+
+```rust
+use rill_patchbay::{spawn_osc_sensor, OscSensor};
+use std::net::SocketAddr;
+
+// Actor-model: binds UDP socket, decodes OSC → ControlEvent::Osc
+let sensor_ref = spawn_osc_sensor(
+    "touchosc",
+    SocketAddr::from(([0, 0, 0, 0], 9000)),
+    &system,
+    servo_ref,
+);
+
+// Legacy Sensor trait path
+let osc = OscSensor::new("touchosc", "0.0.0.0:9000".parse().unwrap());
+osc.attach(events_ref);
+osc.start();
 ```
 
 ### 🎯 Servo — hands
@@ -723,7 +755,7 @@ manager.start()?;  // Automata begin their own life
 ## Plans for future versions
 
 - 🔌 **rill-core-dsp development** — adding new algorithms, optimizing vector operations, SIMD
-- 🌐 **rill-osc** — OSC server for remote control (in development)
+- 🌐 **rill-osc** — OSC server for remote control and UDP-based sensor input
 - 🧩 **Analog modeling** — expanding the WDF element library and analog models
 - 🚦 **rill-router development** — adding matrix routing, expanding the `mixer` module, integration with audio graph
 - 🧪 **Integration tests** — cross-crate tests in per-crate `tests/` (example: patchbay + graph)
@@ -763,7 +795,7 @@ Full license text: [LICENSE.md](../LICENSE.md)
 
 ## Conclusion
 
-Rill architecture version 0.5.0-beta.2 provides:
+Rill architecture version 0.5.0-beta.6 provides:
 
 - ✅ **Stable core** — unified `rill-core` crate with a clear API
 - ✅ **DSP algorithms** — `rill-core-dsp` contains the `Algorithm` trait and DSP algorithm implementations (generators, filters, delay) with vector operations; specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) based on them
@@ -773,6 +805,6 @@ Rill architecture version 0.5.0-beta.2 provides:
 - ✅ **Reliability** — all components thoroughly tested (487 unit tests across the entire workspace)
 - ✅ **Extensibility** — easy to add new algorithms via macros and the `Algorithm` trait
 - ✅ **Consistency** — all crates use the same core version
-- ✅ **Feature unification** — `rill-eq` and `rill-mixer` crates merged into `rill-router` (0.5.0-beta.2) with equalizer and mixer modules
+- ✅ **Feature unification** — `rill-eq` and `rill-mixer` crates merged into `rill-router` (0.5.0-beta.6) with equalizer and mixer modules
 
-The 0.5.0-beta.2 refactoring is complete: all crates have been migrated to a unified `rill-core` and block processing. DSP algorithms are collected in `rill-core-dsp` (the `Algorithm` trait, generators, filters, delays, vector operations). Specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) using these algorithms. `rill-router` has been added as a single entry point for routing, mixing, and equalization of audio signals. The core is stabilized and ready for the next phase of development.
+The 0.5.0-beta.6 refactoring is complete: all crates have been migrated to a unified `rill-core` and block processing. DSP algorithms are collected in `rill-core-dsp` (the `Algorithm` trait, generators, filters, delays, vector operations). Specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) using these algorithms. `rill-router` has been added as a single entry point for routing, mixing, and equalization of audio signals. The core is stabilized and ready for the next phase of development.

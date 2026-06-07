@@ -1,5 +1,5 @@
 use rill_core::interpolate::Interpolate;
-use rill_core::time::ClockTick;
+use rill_core::time::RenderContext;
 use rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
 };
@@ -443,9 +443,9 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 {
     fn generate(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
     ) -> ProcessResult<()> {
         if !self.playing || self.reader.num_channels() == 0 {
             for port in self.outputs.iter_mut() {
@@ -669,8 +669,8 @@ t,channel,value
         node.init(44100.0);
         node.sample_rate = 2.0;
 
-        let clock = ClockTick::new(0, 4, 44100.0);
-        node.generate(&clock, &[], &[]).unwrap();
+        let ctx = RenderContext::new(0, 4, 44100.0);
+        node.generate(&ctx, &[], &[]).unwrap();
 
         let port = node.output_port(0).unwrap();
         let buf = port.buffer.as_array();

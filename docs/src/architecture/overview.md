@@ -13,7 +13,7 @@ independently.
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)  │
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                     │
-│  rill-core-wdf  │  rill-analog-filters  │  rill-analog      │
+│  rill-core-model  │  rill-analog-filters  │  rill-analog      │
 │  -effects                                                  │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
@@ -68,7 +68,9 @@ downstream connections, and feedback state. Processing flow:
 ### Automation (The World of Automatons)
 
 `rill-patchbay` provides generative control signals through **automatons** —
-LFOs, envelopes, sequencers that run on the control thread. Automatons
+LFOs, envelopes, sequencers that run on the control thread. **Sensors**
+(MIDI, OSC) decode external input into `ControlEvent`s and feed them
+into the automaton world through mapping-only servos. Automatons
 connect to graph node parameters through **servos** with configurable
 mapping strategies (linear, exponential, logarithmic).
 

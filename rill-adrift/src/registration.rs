@@ -138,12 +138,18 @@ fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         let bit_depth = params.get_i32("bit_depth", 8) as u8;
         let nonlinear = params.get_bool("nonlinear", false);
         let noise_floor = params.get_f32("noise_floor", -48.0);
-        let config = LofiConfig::for_system(ClassicSystem::Custom {
+        let dc_offset = params.get_f32("dc_offset", 0.0);
+        let output_gain = params.get_f32("output_gain", 1.0);
+        let output_ceiling = params.get_f32("output_ceiling", 1.0);
+        let mut config = LofiConfig::for_system(ClassicSystem::Custom {
             bit_depth,
             sample_rate: params.sample_rate,
             nonlinear,
             noise_floor,
         });
+        config.dc_offset = dc_offset;
+        config.output_gain = output_gain;
+        config.output_ceiling = output_ceiling;
         let mut n = LofiInput::<f32, BUF_SIZE>::new(config);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
@@ -199,7 +205,7 @@ fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BU
     node_ctor!(factory, "rill/sine", |id: NodeId, params: &Params| {
         let mut n = SineOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
-            .with_amplitude(params.get_f32("amp", 0.5));
+            .with_amplitude(params.get_f32("amp", 0.0));
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -208,7 +214,7 @@ fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BU
     node_ctor!(factory, "rill/saw", |id: NodeId, params: &Params| {
         let mut n = SawOsc::<f32, BUF_SIZE>::new()
             .with_frequency(params.get_f32("freq", 440.0))
-            .with_amplitude(params.get_f32("amp", 0.5));
+            .with_amplitude(params.get_f32("amp", 0.0));
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -407,6 +413,8 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
     factory.register(rill_patchbay::servo_constructor::ServoConstructor);
     #[cfg(feature = "midi")]
     register_midi_module(factory);
+    #[cfg(feature = "osc")]
+    register_osc_module(factory);
 }
 
 #[cfg(feature = "midi")]
@@ -430,16 +438,16 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             system: &std::sync::Arc<rill_core_actor::ActorSystem>,
             graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
         ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
-            let SensorDef::Midi {
-                backend,
-                port_name,
-                mappings,
-            } = match module {
-                ModuleDef::Sensor(s) => s,
+            let (backend, port_name, mappings) = match module {
+                ModuleDef::Sensor(SensorDef::Midi {
+                    backend,
+                    port_name,
+                    mappings,
+                }) => (backend, port_name, mappings),
                 _ => {
                     return Err(ModuleError::ConstructionFailed(
-                        "MidiConstructor requires ModuleDef::Sensor".into(),
-                    ))
+                        "MidiConstructor requires ModuleDef::Sensor(SensorDef::Midi)".into(),
+                    ));
                 }
             };
 
@@ -462,14 +470,28 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
                 }
             };
 
-            let actor_ref = rill_patchbay::midi::spawn_midi_sensor(
-                port_name,
-                be,
-                mappings.iter().map(|m| m.to_mapping()).collect(),
-                system,
+            let mappings: Vec<rill_patchbay::engine::Mapping> =
+                mappings.iter().map(|m| m.to_mapping()).collect();
+
+            // Create a servo to apply mappings — the sensor only decodes MIDI
+            let servo_ref = rill_patchbay::Servo::new(
+                format!("midi_servo_{port_name}"),
+                rill_patchbay::engine::NoAction, // no automaton — mapping-only servo
+                NodeId(0),
+                "",
+                rill_patchbay::engine::ParameterMapping::Linear,
+                0.0,
+                1.0,
+                system.clone(),
                 graph_ref.clone(),
-            );
-            Ok(actor_ref)
+            )
+            .with_mappings(mappings)
+            .spawn(system);
+
+            // Spawn the sensor, pointing raw events to the servo
+            let _sensor_ref =
+                rill_patchbay::midi::spawn_midi_sensor(port_name, be, system, servo_ref.clone());
+            Ok(servo_ref)
         }
 
         fn clone_box(&self) -> Box<dyn ModuleConstructor> {
@@ -478,6 +500,73 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
     }
 
     factory.register(MidiConstructor);
+}
+
+#[cfg(feature = "osc")]
+fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::CommandEnum;
+    use rill_patchbay::module_def::{ModuleDef, SensorDef};
+    use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
+    use std::net::SocketAddr;
+
+    struct OscConstructor;
+
+    impl ModuleConstructor for OscConstructor {
+        fn type_name(&self) -> &'static str {
+            "osc"
+        }
+
+        fn construct(
+            &self,
+            module: &ModuleDef,
+            _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
+            system: &std::sync::Arc<rill_core_actor::ActorSystem>,
+            graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
+        ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
+            let (port, mappings) = match module {
+                ModuleDef::Sensor(SensorDef::Osc { port, mappings }) => (port, mappings),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(
+                        "OscConstructor requires ModuleDef::Sensor(SensorDef::Osc)".into(),
+                    ));
+                }
+            };
+
+            let bind_addr = SocketAddr::from(([0, 0, 0, 0], *port));
+            let mappings: Vec<rill_patchbay::engine::Mapping> =
+                mappings.iter().map(|m| m.to_mapping()).collect();
+
+            // Create a servo to apply mappings — the sensor only decodes OSC
+            let servo_ref = rill_patchbay::Servo::new(
+                format!("osc_servo_{port}"),
+                rill_patchbay::engine::NoAction, // no automaton — mapping-only servo
+                NodeId(0),
+                "",
+                rill_patchbay::engine::ParameterMapping::Linear,
+                0.0,
+                1.0,
+                system.clone(),
+                graph_ref.clone(),
+            )
+            .with_mappings(mappings)
+            .spawn(system);
+
+            // Spawn the sensor, pointing raw events to the servo
+            let _sensor_ref = rill_patchbay::osc::spawn_osc_sensor(
+                &format!("osc_{port}"),
+                bind_addr,
+                system,
+                servo_ref.clone(),
+            );
+            Ok(servo_ref)
+        }
+
+        fn clone_box(&self) -> Box<dyn ModuleConstructor> {
+            Box::new(OscConstructor)
+        }
+    }
+
+    factory.register(OscConstructor);
 }
 
 /// Deserialise a JSON graph string into a

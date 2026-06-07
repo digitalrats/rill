@@ -9,7 +9,7 @@ Analog-modeled filters using Wave Digital Filter (WDF) elements.
 ## Dependencies
 
 - `rill-core` — `Node`, `Processor` trait
-- `rill-core-wdf` — WDF elements, adapters, and MoogLadder implementation
+- `rill-core-model` — WDF elements, adapters, and MoogLadder implementation
 
 ## Links
 

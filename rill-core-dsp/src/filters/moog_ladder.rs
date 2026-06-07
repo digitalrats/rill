@@ -5,8 +5,8 @@
 //! runaway oscillation.
 
 use super::{Filter, FilterParams, OnePole};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// Moog ladder 4-pole lowpass filter
@@ -98,12 +98,7 @@ impl<T: Transcendental> Algorithm<T> for MoogLadder<T> {
         self.feedback_prev = T::ZERO;
     }
 
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {

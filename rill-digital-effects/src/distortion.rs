@@ -5,7 +5,7 @@ use rill_core::{
     math::vector::traits::Vector,
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
-    ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult,
+    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
 };
 
 /// Distortion type
@@ -291,10 +291,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Distortion<
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
     fn process(
         &mut self,
-        _clock: &ClockTick,
+        _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
-        _clock_inputs: &[ClockTick],
+        _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         let inp = self.inputs[0].buffer.as_array();

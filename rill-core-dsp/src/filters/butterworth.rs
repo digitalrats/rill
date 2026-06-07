@@ -1,10 +1,11 @@
 //! # Butterworth Filters
 
 use super::{FilterParams, FilterType};
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata, ParameterizedAlgorithm};
+use crate::algorithm::ParameterizedAlgorithm;
 use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 use std::f64::consts::PI as PI64;
 
@@ -285,12 +286,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Algorithm<T> for Butterworth<
         }
     }
 
-    fn process(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-        _ctx: &ActionContext,
-    ) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
         for i in 0..len {

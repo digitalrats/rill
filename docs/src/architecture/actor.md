@@ -50,10 +50,11 @@ is called inside the spawned thread/task → handler never crosses thread bounda
 ```
 Soft-RT (control thread)                    Hard-RT (signal thread)
 ┌──────────────────────────┐               ┌──────────────────────────┐
-│ PortCombiner (tokio)     │   send()      │ Graph actor              │
-│ OSC dispatch             │  ──────────►  │   drain() in callback    │
-│ Sequencer automaton      │   mailbox     │   → set_parameter()      │
-│                          │               │   → generate()           │
+│ Servo actor (tokio)      │   send()      │ Graph actor              │
+│   automaton.step()       │  ──────────►  │   drain() in callback    │
+│   mapping.apply()        │   mailbox     │   → set_parameter()      │
+│   conflict strategies    │               │   → generate()           │
+│ OSC dispatch             │               │   → propagate()          │
 └──────────────────────────┘               └──────────────────────────┘
 ```
 

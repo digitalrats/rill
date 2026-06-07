@@ -10,6 +10,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
@@ -60,6 +62,7 @@ struct StcPlayer {
     ch_row_skip: [isize; 3],
     ch_row_counter: [isize; 3],
     ch_envelope_state: [i8; 3],
+    finished: bool,
 }
 
 const ENVELOPE_OFF: i8 = 0;
@@ -121,6 +124,7 @@ impl StcPlayer {
             ch_row_skip: [0; 3],
             ch_row_counter: [0; 3],
             ch_envelope_state: [ENVELOPE_OFF; 3],
+            finished: false,
         };
 
         p.ch_events[0] = usize::MAX;
@@ -196,6 +200,9 @@ impl StcPlayer {
         self.int_ms += ms;
         if self.int_ms >= INT_MS {
             self.int_ms -= INT_MS;
+            if self.finished {
+                return Some([0u8; 14]); // silence on loop
+            }
             Some(self.step_int())
         } else {
             None
@@ -224,6 +231,7 @@ impl StcPlayer {
                             let mut pos = self.position;
                             if pos >= self.song_length as usize {
                                 pos = 0;
+                                self.finished = true;
                             }
                             self.position = pos + 1;
                             let pos_off = self.pos_ptr + 1 + pos * 2;
@@ -382,7 +390,15 @@ const STC_DATA: &[u8] = include_bytes!("../../../Bonysoft - Popcorn (1993).stc")
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let backend_name = args.get(1).cloned().unwrap_or_else(|| "portaudio".into());
+    let normalize = args.iter().any(|a| a == "--normalize");
+
+    // Backend name: first positional argument that doesn't start with `--`
+    let backend_name = args
+        .iter()
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
 
     let mut be_params = HashMap::new();
@@ -398,14 +414,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
+    // Shared flag: set by Enter keypress (or MIDI Start in the future)
+    let is_playing = Arc::new(AtomicBool::new(false));
+    // Set when the melody loops back to the start
+    let melody_done = Arc::new(AtomicBool::new(false));
+
     // Register the STC player as a custom rack module
+    let playing_flag = is_playing.clone();
+    let melody_done_flag = melody_done.clone();
     system.module_factory_mut().register_fn(
         "stc_player",
         Drain::OsThread { interval_ms: 1 },
-        |_id, _params, graph_ref| {
+        move |_id, _params, graph_ref| {
             let player = RefCell::new(StcPlayer::new(STC_DATA.to_vec()));
             let gr = graph_ref.clone();
+            let playing = playing_flag.clone();
+            let done = melody_done_flag.clone();
             Box::new(move |msg: CommandEnum| {
+                if !playing.load(Ordering::Acquire) {
+                    return;
+                }
                 if let CommandEnum::ClockTick(tick) = msg {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
                     if let Some(regs) = player.borrow_mut().step_ms(ms) {
@@ -417,10 +445,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             SignalOrigin::Manual,
                         )));
                     }
+                    if player.borrow().finished {
+                        done.store(true, Ordering::Release);
+                        playing.store(false, Ordering::Release);
+                    }
                 }
             })
         },
     );
+
+    let mut source_params = HashMap::new();
+    source_params.insert("bit_depth".into(), ParamValue::Int(8));
+    source_params.insert("nonlinear".into(), ParamValue::Bool(false));
+    source_params.insert("noise_floor".into(), ParamValue::Float(-48.0));
+    if normalize {
+        source_params.insert("dc_offset".into(), ParamValue::Float(0.5));
+        source_params.insert("output_gain".into(), ParamValue::Float(1.0));
+        source_params.insert("output_ceiling".into(), ParamValue::Float(0.8));
+    }
 
     let def = ModularSystemDef {
         format_version: "rill/1".into(),
@@ -439,12 +481,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         type_name: "rill/lofi_input".into(),
                         name: "ay_chip".into(),
                         backend: Some("ay38910".into()),
-                        parameters: [
-                            ("bit_depth".into(), ParamValue::Int(8)),
-                            ("nonlinear".into(), ParamValue::Bool(false)),
-                            ("noise_floor".into(), ParamValue::Float(-48.0)),
-                        ]
-                        .into(),
+                        parameters: source_params,
                     }),
                     NodeDef::Sink(SinkDef {
                         id: 1,
@@ -474,14 +511,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
     };
 
-    let _system = system.launch(&def).expect("launch system");
+    // ── Launch backend immediately so PipeWire/JACK ports exist ──────────
+    // Recording apps (Ardour, Audacity via pw-loopback) can connect before
+    // playback starts. The STC module stays silent until is_playing = true.
+    let _running_system = system.launch(&def).expect("launch system");
+    // Small settle: allow backend to register ports before printing prompt
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
-    println!("AY-3-8910 Chiptune — Popcorn (STC)");
-    println!("   Backend: {}\n", backend_display);
-    println!("   Press Enter to stop.\n");
-
+    println!("AY-3-8910 Chiptune — Popcorn (STC) [{backend_display}]\n");
+    println!("Backend ports are live — connect your recording app now.\n");
+    println!("Press Enter to start playback...");
+    println!("  (Future: MIDI Start 0xFA will also trigger playback)\n");
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).ok();
+
+    // ── Start playback ──────────────────────────────────────────────────
+    // In the future, this flag can be wired to MidiClockTracker::playing_flag()
+    is_playing.store(true, Ordering::Release);
+    println!("Playing... (waiting for melody to end)\n");
+
+    // Poll until melody finishes
+    while !melody_done.load(Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    println!("\nMelody finished.");
 
     Ok(())
 }

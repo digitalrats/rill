@@ -2,7 +2,7 @@
 
 **Status:** ✅ completed (see benchmark results)
 **Date:** 2026-05-10
-**Target:** `rill-core`, `rill-core-dsp`, `rill-core-wdf`
+**Target:** `rill-core`, `rill-core-dsp`, `rill-core-model`
 
 ## Executive Summary
 
@@ -26,7 +26,7 @@ This plan activates SIMD in three stages:
 | `vec_map!` macro | Complete (hardcoded ScalarVector4) | `rill-core/src/math/vector/macros.rs` |
 | `sin_slice`, `cos_slice`, `exp_slice` etc. | Complete, untested | `rill-core/src/math/vector/math.rs` |
 | `add_slices`, `sub_slices`, `mul_slices` etc. | Complete, untested | `rill-core/src/math/vector/ops.rs` |
-| WDF SIMD leaf elements | Complete (f64 only) | `rill-core-wdf/src/simd.rs` |
+| WDF SIMD leaf elements | Complete (f64 only) | `rill-core-model/src/simd.rs` |
 
 ### What is broken or missing
 
@@ -410,7 +410,7 @@ White noise uses xorshift which is sequential. To generate 4 samples at once:
 
 ## Phase 4: WDF — Unified Trait (Lower Priority)
 
-**Target crate:** `rill-core-wdf`
+**Target crate:** `rill-core-model`
 **Effort:** ~350 LOC net (delete ~400, write ~750)
 **Prerequisite:** Phase 1 complete (`VectorMask` for all types, `SimdDetector`)
 
@@ -576,7 +576,7 @@ wdf_cascade! {
 
 | File/Item | LOC | Reason |
 |---|---|---|
-| `rill-core-wdf/src/simd.rs` | 378 | Superseded by unified `WdfElement<T,N>` — zero SIMD-specific code needed |
+| `rill-core-model/src/simd.rs` | 378 | Superseded by unified `WdfElement<T,N>` — zero SIMD-specific code needed |
 | `SimdWdfElement` trait | — | Replaced by `WdfElement<T,N>` |
 | `SimdResistor`, `SimdCapacitor`, `SimdDiode` | — | Replaced by generic `Resistor<V>`, `Capacitor<V>`, `Diode<V>` |
 | `process_batch_simd()` | — | Not needed — `process_incident(V)` already handles N lanes |
@@ -590,7 +590,7 @@ wdf_cascade! {
 - [ ] Update `wdf_compose!` macro (Series/Parallel of 2 elements)
 - [ ] Update `wdf_cascade!` macro (N-section cascade with feedback) — MoogLadder, DiodeClipper
 - [ ] Convert `SeriesAdapter`, `ParallelAdapter` to `*<V>` generic
-- [ ] Delete `rill-core-wdf/src/simd.rs`
+- [ ] Delete `rill-core-model/src/simd.rs`
 - [ ] Add backward-compatible type alias: `type WdfElement1<T> = WdfElement<T, 1>`
 - [ ] Scalar tests pass (N=1, zero regression in 21 WDF tests)
 - [ ] SIMD tests: verify element-by-element output matches scalar within 1e-12 for f64
@@ -711,11 +711,11 @@ Note: `as_chunks_mut` is stabilized in Rust 1.77+.
 - `rill-core/src/math/vector/traits.rs` — `Vector<T, N>`, `VectorTranscendental<T, N>`, `VectorMask<T, N>`, `VectorReduce<T, N>`
 - `rill-core-dsp/src/filters/` — all filter implementations with scalar loops
 - `rill-core-dsp/src/generators/` — all generator implementations with scalar loops
-- `rill-core-wdf/src/simd.rs` — existing WDF SIMD leaf elements (**to be deleted** in Phase 4)
-- `rill-core-wdf/src/lib.rs:105` — `WdfElement<T>` trait (**to be unified** with `Vector<T,N>` in Phase 4)
-- `rill-core-wdf/src/elements.rs` — Resistor, Capacitor, Inductor, Diode, OpAmp scalar impls
-- `rill-core-wdf/src/adapters.rs` — SeriesAdapter, ParallelAdapter scalar impls
-- `rill-core-wdf/src/macros/cascade.rs:45` — `wdf_cascade!` macro-generated `process_sample()`
+- `rill-core-model/src/simd.rs` — existing WDF SIMD leaf elements (**to be deleted** in Phase 4)
+- `rill-core-model/src/lib.rs:105` — `WdfElement<T>` trait (**to be unified** with `Vector<T,N>` in Phase 4)
+- `rill-core-model/src/elements.rs` — Resistor, Capacitor, Inductor, Diode, OpAmp scalar impls
+- `rill-core-model/src/adapters.rs` — SeriesAdapter, ParallelAdapter scalar impls
+- `rill-core-model/src/macros/cascade.rs:45` — `wdf_cascade!` macro-generated `process_sample()`
 - `rill-core/src/traits/port.rs:569` — `Port::propagate()` — the processing loop (block-granular, no SIMD needed)
 - `rill-core/src/traits/port.rs:527` — `pre_process()` — feedback mix (element-wise add, SIMD-able)
 - `rill-io/src/backends/alsa.rs` — ALSA f32↔i16 conversion (SIMD-able)

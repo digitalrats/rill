@@ -85,7 +85,7 @@ pub mod servo_constructor;
 /// Automaton wrapper in a green thread (tokio task)
 pub mod automaton_task;
 
-/// Serialization — documents, DOT, formats
+/// Serialization — documents, JSON, CBOR
 #[cfg(feature = "serde")]
 pub mod serialization;
 
@@ -95,6 +95,13 @@ pub use serialization::PatchbayDef;
 /// MIDI hub — raw MIDI → ControlEvent bridge
 #[cfg(feature = "midi")]
 pub mod midi;
+/// MIDI clock tracker — 24ppqn → BPM derivation
+#[cfg(feature = "midi")]
+pub mod midi_clock;
+
+/// OSC sensor — OSC → ControlEvent bridge
+#[cfg(feature = "osc")]
+pub mod osc;
 
 /// Micro-control observer for RT safety monitoring
 pub mod observer;
@@ -103,6 +110,14 @@ pub mod observer;
 pub use midi::spawn_midi_sensor;
 #[cfg(feature = "midi")]
 pub use midi::MidiHub;
+#[cfg(feature = "midi")]
+pub use midi_clock::{
+    FreeRunning, MidiClockStrategy, MidiClockTracker, ResetOnStart, SongPosition,
+};
+#[cfg(feature = "osc")]
+pub use osc::spawn_osc_sensor;
+#[cfg(feature = "osc")]
+pub use osc::OscSensor;
 pub use sensor::Sensor;
 
 // =============================================================================

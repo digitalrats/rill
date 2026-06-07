@@ -33,7 +33,7 @@
 //!     let mut output = [T::ZERO];
 //!     let tick = ClockTick::default();
 //!     let ctx = ActionContext::new(&tick);
-//!     filter.process(Some(&[input]), &mut output, &ctx).unwrap();
+//!     filter.process(Some(&[input]), &mut output).unwrap();
 //!     output[0]
 //! }
 //! ```
@@ -45,7 +45,7 @@
 //! use rill_core::time::ClockTick;
 //! use rill_core::traits::ActionContext;
 //! use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
-//! use rill_core_dsp::Algorithm;
+//! use rill_core::traits::algorithm::Algorithm;
 //!
 //! let mut lowpass = Biquad::<f32>::new(FilterParams {
 //!     filter_type: FilterType::LowPass,
@@ -58,14 +58,14 @@
 //! let mut output = [0.0_f32];
 //! let tick = ClockTick::default();
 //! let ctx = ActionContext::new(&tick);
-//! lowpass.process(Some(&[0.5]), &mut output, &ctx).unwrap();
+//! lowpass.process(Some(&[0.5]), &mut output).unwrap();
 //! let output = output[0];
 //! ```
 //!
 //! ### Creating a parametric equalizer
 //! ```
 //! use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
-//! use rill_core_dsp::Algorithm;
+//! use rill_core::traits::algorithm::Algorithm;
 //!
 //! let mut peak = Biquad::<f32>::new(FilterParams {
 //!     filter_type: FilterType::Peak,
@@ -79,7 +79,7 @@
 //! ### High-order Butterworth filter
 //! ```
 //! use rill_core_dsp::filters::{Butterworth, FilterParams, FilterType};
-//! use rill_core_dsp::Algorithm;
+//! use rill_core::traits::algorithm::Algorithm;
 //!
 //! let mut butter = Butterworth::<f32, 4>::lowpass(1000.0, 4);
 //! butter.init(44100.0);
@@ -312,7 +312,7 @@ impl FilterType {
 ///     let mut output = [T::ZERO];
 ///     let tick = ClockTick::default();
 ///     let ctx = ActionContext::new(&tick);
-///     filter.process(Some(&[input]), &mut output, &ctx).unwrap();
+///     filter.process(Some(&[input]), &mut output).unwrap();
 ///     output[0]
 /// }
 /// ```
@@ -444,7 +444,7 @@ mod examples {
     /// use rill_core::traits::ActionContext;
     /// use rill_core_dsp::filters::*;
     /// use rill_core::Transcendental;
-    /// use rill_core_dsp::Algorithm;
+    /// use rill_core::traits::algorithm::Algorithm;
     /// use std::f32::consts::PI;
     ///
     /// let tick = ClockTick::default();
@@ -463,7 +463,7 @@ mod examples {
     /// let mut smoothed = 0.0;
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
-    ///     smooth.process(Some(&[1.0]), &mut out, &ctx).unwrap();
+    ///     smooth.process(Some(&[1.0]), &mut out).unwrap();
     ///     smoothed = out[0];
     /// }
     /// // After 1000 iterations, value should be close to 1.0
@@ -481,7 +481,7 @@ mod examples {
     /// // Warm up the filter
     /// for _ in 0..1000 {
     ///     let mut out = [0.0_f32];
-    ///     peq.process(Some(&[0.0]), &mut out, &ctx).unwrap();
+    ///     peq.process(Some(&[0.0]), &mut out).unwrap();
     /// }
     ///
     /// // Generate sine wave at filter frequency
@@ -495,7 +495,7 @@ mod examples {
     /// for _ in 0..1000 {
     ///     let input = amplitude * phase.sin();
     ///     let mut out = [0.0_f32];
-    ///     peq.process(Some(&[input]), &mut out, &ctx).unwrap();
+    ///     peq.process(Some(&[input]), &mut out).unwrap();
     ///     let output = out[0];
     ///     max_output = max_output.max(output.abs());
     ///     phase += phase_inc;
@@ -523,7 +523,7 @@ mod examples {
     ///
     /// let input = 0.5;
     /// let mut out = [0.0_f32];
-    /// svf.process(Some(&[input]), &mut out, &ctx).unwrap();
+    /// svf.process(Some(&[input]), &mut out).unwrap();
     /// let lp = out[0];
     /// let hp = svf.highpass();
     /// let bp = svf.bandpass();
@@ -532,7 +532,7 @@ mod examples {
     /// ```rust
     /// // 4. Steep crossover filter (Chebyshev)
     /// use rill_core_dsp::filters::*;
-    /// use rill_core_dsp::Algorithm;
+    /// use rill_core::traits::algorithm::Algorithm;
     ///
     /// let mut xover = ChebyshevI::<f32, 4>::new(
     ///     FilterParams {

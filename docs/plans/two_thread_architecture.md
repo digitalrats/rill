@@ -1,23 +1,25 @@
-# Two-Thread Architecture — Audio + Control (current implementation)
+# Two-Thread Architecture — Control + Signal (current implementation)
 
 ## Overview
 
-**Audio thread (hard/soft RT)** — active I/O node drives the graph via
-`Node::run()` with a tick closure. **Control thread** — actors that send
+**Signal thread (hard/soft RT)** — active I/O node drives the graph via
+`Node::run()` with a tick closure. **Control thread** — Servo actors that send
 `SetParameter` commands and receive `ClockTick` telemetry.
 Communication via lock-free `MpscQueue` through `ActorRef`/`ActorCell`.
 
 ```
-[Control Thread]                         [Audio Thread]
+[Control Thread]                         [Signal Thread]
 ─────────────────────                    ────────────────────
-  PortCombiner (tokio)                  Graph (ActorCell<SetParameter>)
-  SequencerActor                            │
-  OSC dispatch                        active_node.run(tick)
-       │                                    │
-       │ ActorRef::send(SetParameter)   tick closure (per block):
-       ├───────────► Graph ◄───────────  │ 1. drain cmd_queue
-       │                                 │ 2. process_block()
-       ◄─────────── clock_tx ────────►  │ 3. Port::propagate()
+  Servo (tokio actor)               Graph (ActorCell<SetParameter>)
+    automaton.step()                     │
+    mapping.apply()                 active_node.run(tick)
+    ControlStrategy /                    │
+    ConflictStrategy                tick closure (per block):
+       │                            1. drain cmd_queue
+       │ ActorRef::send(SetParameter)│ 2. process_block()
+       ├───────────► Graph ◄─────────── 3. Port::propagate()
+       │                            4. ActorRef::send(ClockTick)
+       ◄─────────── ClockTick ────────  │
                 ActorRef::send            │ 4. clock_tx.send(ClockTick)
                 (ClockTick)              │
                                          ▼
@@ -28,12 +30,12 @@ Communication via lock-free `MpscQueue` through `ActorRef`/`ActorCell`.
 
 | Direction | Type | Mailbox owner | Sender | Purpose |
 |-----------|------|---------------|--------|---------|
-| Control → Audio | `SetParameter` | `Graph` | Control actors via `graph.handle()` | Parameter changes |
-| Audio → Control | `ClockTick` | Sequencer actor | Graph via `graph.clock_tx` | Block-level timing |
+| Control → Signal | `SetParameter` | `Graph` | Servo actors via `graph_ref` | Parameter changes |
+| Signal → Control | `ClockTick` | Servo actors | Graph via `actor.drain()` side effect | Block-level timing |
 
 ## Processing model
 
-The tick closure (created by `Graph::run()`) handles one audio block:
+The tick closure (created by `Graph::run()`) handles one signal block:
 
 1. Drain command queue (`SetParameter` → `set_parameter` on target nodes)
 2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
@@ -50,7 +52,7 @@ on `backend.run()`.
 
 | Component | Thread | Requirements |
 |-----------|-------|------------|
-| `Port::propagate` | Audio (hard RT) | zero-alloc, lock-free |
+| `Port::propagate` | Signal (hard RT) | zero-alloc, lock-free |
 | `Node::run()` | Audio | Stack buffers, no syscalls |
 | `MpscQueue::push` / `ActorRef::send` | Any | Lock-free |
 | `MpscQueue::pop` | Consumer's thread | Lock-free |

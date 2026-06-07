@@ -1,6 +1,6 @@
 [package]
 name = "rill-graph"
-version = "0.5.0-beta.5"
+version = "0.5.0-beta.6"
 edition = "2021"
 description = "Real-time signal graph with block processing"
 license.workspace = true
@@ -23,4 +23,4 @@ serde_cbor = { version = "0.11", optional = true }
 [features]
 default = []
 serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "rill-core/serde"]
-dot = []
+

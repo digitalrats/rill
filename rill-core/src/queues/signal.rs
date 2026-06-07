@@ -26,6 +26,7 @@
 //! ```
 
 use super::command::Command;
+use super::control_event::ControlEvent;
 use crate::time::ClockTick;
 use crate::traits::{ParamValue, ParameterId, PortId};
 use std::fmt;
@@ -560,6 +561,8 @@ pub enum CommandType {
     Stop,
     /// System command.
     System,
+    /// Control event from a sensor.
+    Control,
 }
 
 impl fmt::Display for CommandType {
@@ -572,6 +575,7 @@ impl fmt::Display for CommandType {
             CommandType::ClockTick => write!(f, "ClockTick"),
             CommandType::Stop => write!(f, "Stop"),
             CommandType::System => write!(f, "System"),
+            CommandType::Control => write!(f, "Control"),
         }
     }
 }
@@ -592,6 +596,9 @@ pub enum CommandEnum {
     Servo(ServoCommand),
     /// Clock tick — sent from Graph to Patchbay each processing block.
     ClockTick(ClockTick),
+    /// Control event — decoded by a sensor, dispatched to a servo
+    /// for mapping to a graph parameter.
+    Control(ControlEvent),
     /// Stop command — shuts down the actor's I/O loop.
     Stop,
     /// System-level command with opaque payload.
@@ -614,6 +621,7 @@ impl CommandEnum {
             CommandEnum::ClockTick(_) => CommandType::ClockTick,
             CommandEnum::Stop => CommandType::Stop,
             CommandEnum::System { .. } => CommandType::System,
+            CommandEnum::Control(_) => CommandType::Control,
         }
     }
 
@@ -688,7 +696,10 @@ impl fmt::Display for CommandEnum {
             ),
             CommandEnum::Stop => write!(f, "Stop"),
             CommandEnum::System { kind, data } => {
-                write!(f, "System[{}] ({} bytes)", kind, data.len())
+                write!(f, "System({kind}, {} bytes)", data.len())
+            }
+            CommandEnum::Control(event) => {
+                write!(f, "ControlEvent({event:?})")
             }
         }
     }

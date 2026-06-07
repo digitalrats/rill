@@ -24,7 +24,7 @@ pub use rill_telemetry as telemetry;
 pub use rill_osc as osc;
 
 #[cfg(feature = "analog")]
-pub use rill_core_wdf as core_wdf;
+pub use rill_core_model as core_model;
 
 #[cfg(feature = "analog")]
 pub use rill_analog_filters as analog_filters;

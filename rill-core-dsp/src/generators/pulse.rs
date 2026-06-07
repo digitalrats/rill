@@ -1,9 +1,9 @@
 //! Pulse wave generator with PWM (Pulse Width Modulation)
 
 use super::Generator;
-use crate::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::algorithm::{ActionContext, Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use crate::vector::{ScalarVector1, Vector};
-use rill_core::traits::{ActionContext, ProcessResult};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 /// Pulse wave generator with PWM
@@ -104,7 +104,7 @@ impl<T: Transcendental> Algorithm<T> for PulseOscillator<T> {
         self.phase = ScalarVector1::splat(T::ZERO);
     }
 
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T], _ctx: &ActionContext) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let input = input.unwrap_or(&[]);
         let len = input.len().min(output.len());
 
