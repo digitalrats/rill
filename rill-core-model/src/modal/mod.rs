@@ -101,11 +101,11 @@ impl<T: Transcendental, const MAX_MODES: usize> ModalModel<T, MAX_MODES> {
             let r2 = state.r * state.r;
             let y = self.excitation * state.amplitude + two_r_cos * state.prev_out
                 - r2 * state.prev_prev_out;
-            output = output + y;
+            output += y;
             state.prev_prev_out = state.prev_out;
             state.prev_out = y;
         }
-        self.excitation = self.excitation * T::from_f32(0.99);
+        self.excitation *= T::from_f32(0.99);
         output
     }
 }

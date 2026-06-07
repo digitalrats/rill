@@ -330,12 +330,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T
                 // Zero-crossing: sign changed AND absolute value near zero
                 if i > 0 && cur_sign != self.prev_sign && s.to_f32().abs() < 0.1 {
                     // Halve amplitude at each zero-crossing
-                    self.amplitude = self.amplitude * T::from_f32(0.5);
+                    self.amplitude *= T::from_f32(0.5);
                     let half = T::from_f32(0.01);
                     if self.amplitude <= half {
                         // Fully decayed: silence from here
-                        for j in i..out.len() {
-                            out[j] = T::ZERO;
+                        for item in out.iter_mut().skip(i) {
+                            *item = T::ZERO;
                         }
                         self.amplitude = T::ZERO;
                         self.stop_pending = false;

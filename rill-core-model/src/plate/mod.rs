@@ -79,7 +79,7 @@ impl<T: Transcendental> PlateModel<T> {
                     + self.grid_curr[self.idx(x + 1, y)]
                     - self.grid_curr[i] * T::from_f32(4.0);
                 self.grid_next[i] = c2 * lap + two * self.grid_curr[i] - self.grid_prev[i];
-                self.grid_next[i] = self.grid_next[i] * self.params.decay;
+                self.grid_next[i] *= self.params.decay;
             }
         }
 
@@ -88,19 +88,19 @@ impl<T: Transcendental> PlateModel<T> {
         for x in 0..w {
             let top = self.idx(x, 0);
             let bot = self.idx(x, h - 1);
-            self.grid_next[top] = self.grid_next[top] * bound;
-            self.grid_next[bot] = self.grid_next[bot] * bound;
+            self.grid_next[top] *= bound;
+            self.grid_next[bot] *= bound;
         }
         for y in 1..(h - 1) {
             let left = self.idx(0, y);
             let right = self.idx(w - 1, y);
-            self.grid_next[left] = self.grid_next[left] * bound;
-            self.grid_next[right] = self.grid_next[right] * bound;
+            self.grid_next[left] *= bound;
+            self.grid_next[right] *= bound;
         }
 
         // Excitation injection
         let exc_idx = self.idx(self.exc_x, self.exc_y);
-        self.grid_next[exc_idx] = self.grid_next[exc_idx] + input;
+        self.grid_next[exc_idx] += input;
 
         let output = self.grid_next[exc_idx];
 
