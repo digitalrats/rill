@@ -159,7 +159,8 @@ pub fn spawn_osc_sensor(
             let e2 = enabled.clone();
             move || {
                 Box::new(move |msg: CommandEnum| {
-                    if let CommandEnum::Sensor(SensorCommand::SetEnabled { enabled: en, .. }) = msg {
+                    if let CommandEnum::Sensor(SensorCommand::SetEnabled { enabled: en, .. }) = msg
+                    {
                         e2.store(en, Ordering::Release);
                     }
                 })
