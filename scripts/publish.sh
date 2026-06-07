@@ -15,15 +15,15 @@
 #   5  rill-graph
 #   6  rill-telemetry
 #   7  rill-lofi
-#   8  rill-patchbay
-#   9  rill-oscillators
-#  10  rill-digital-filters
-#  11  rill-digital-effects
-#  12  rill-router
-#  13  rill-io
-#  14  rill-analog-filters
-#  15  rill-analog-effects
-#  16  rill-osc
+#   8  rill-osc
+#   9  rill-io
+#  10  rill-oscillators
+#  11  rill-digital-filters
+#  12  rill-digital-effects
+#  13  rill-router
+#  14  rill-patchbay
+#  15  rill-analog-filters
+#  16  rill-analog-effects
 #  17  rill-sampler
 #  18  rill-adrift
 
@@ -38,6 +38,7 @@ CRATES=(
     rill-graph
     rill-telemetry
     rill-lofi
+    rill-osc
     rill-io
     rill-oscillators
     rill-digital-filters
@@ -46,7 +47,6 @@ CRATES=(
     rill-patchbay
     rill-analog-filters
     rill-analog-effects
-    rill-osc
     rill-sampler
     rill-adrift
 )

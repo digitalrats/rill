@@ -26,8 +26,8 @@ Control thread (soft-RT):                     Signal thread (hard-RT):
 ```
 
 Conflicts between automaton output and HID input (MIDI knob, OSC fader)
-are resolved inside the Servo via `ControlStrategy` and `ConflictStrategy`,
-not a separate PortCombiner component. See `strategy.rs`.
+are resolved inside the Servo via `ControlStrategy` and `ConflictStrategy`. 
+See `strategy.rs`.
 
 ## Key components
 
