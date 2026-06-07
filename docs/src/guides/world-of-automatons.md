@@ -97,10 +97,36 @@ let cutoff = PhysicalSensor::knob("filter_cutoff")
 let button = PhysicalSensor::button("arpeggio_on");
 ```
 
-### MIDI/CV сенсоры (видят внешний мир)
+### MIDI/CV/OSC сенсоры (видят внешний мир)
 
-> **API в разработке.** MIDI и CV сенсоры пока не реализованы — внешние
-> события обрабатываются через `Engine::handle_event()` и `Mapping`.
+**MIDI сенсоры** (фича `midi`):
+
+```rust
+use rill_patchbay::{spawn_midi_sensor, MidiHub};
+
+// Actor-model: поток опроса в отдельном OS-потоке, события → servo
+let sensor_ref = spawn_midi_sensor(
+    "keyboard",
+    Box::new(MidirBackend::new("rill-midi")?),
+    &system,
+    servo_ref,
+);
+```
+
+**OSC сенсоры** (фича `osc`):
+
+```rust
+use rill_patchbay::{spawn_osc_sensor, OscSensor};
+use std::net::SocketAddr;
+
+// Actor-model: UDP-сокет, декодирование OSC → ControlEvent::Osc
+let sensor_ref = spawn_osc_sensor(
+    "touchosc",
+    SocketAddr::from(([0, 0, 0, 0], 9000)),
+    &system,
+    servo_ref,
+);
+```
 
 ## Серво — руки (Servo)
 

@@ -6,8 +6,8 @@
 //!
 //! ## Available sensor types
 //!
-//! - [`midi`] — MIDI controller and note sensors
-//! - [`osc`] — OSC address-based sensors
+//! - [`midi`] — MIDI controller and note sensors ([`MidiHub`], [`spawn_midi_sensor`])
+//! - [`osc`] — OSC address-based sensors ([`OscSensor`], [`spawn_osc_sensor`])
 //! - [`hearing`] — signal analysis algorithms (pitch, envelope, zero-crossing)
 //!   for acoustic sensors that react to graph signal output.
 //!

@@ -212,6 +212,14 @@ pub enum SensorDef {
         #[cfg_attr(feature = "serde", serde(default))]
         mappings: Vec<MappingDef>,
     },
+    /// OSC input over UDP.
+    Osc {
+        /// UDP port to listen on.
+        port: u16,
+        /// Event-to-parameter mappings (OSC address → param).
+        #[cfg_attr(feature = "serde", serde(default))]
+        mappings: Vec<MappingDef>,
+    },
 }
 
 impl SensorDef {
@@ -219,12 +227,14 @@ impl SensorDef {
     pub fn get_mappings(&self) -> Vec<crate::engine::Mapping> {
         match self {
             SensorDef::Midi { mappings, .. } => mappings.iter().map(|m| m.to_mapping()).collect(),
+            SensorDef::Osc { mappings, .. } => mappings.iter().map(|m| m.to_mapping()).collect(),
         }
     }
 
-    #[cfg(feature = "midi")]
+    #[cfg(any(feature = "midi", feature = "osc"))]
     pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
         match self {
+            #[cfg(feature = "midi")]
             SensorDef::Midi {
                 backend,
                 port_name,
@@ -256,9 +266,17 @@ impl SensorDef {
                 let hub = crate::midi::MidiHub::new(port_name.as_str(), be);
                 Some(Box::new(hub))
             }
+            #[cfg(feature = "osc")]
+            SensorDef::Osc { port, mappings: _ } => {
+                let addr = std::net::SocketAddr::from(([0, 0, 0, 0], *port));
+                let sensor = crate::osc::OscSensor::new(format!("osc_{port}"), addr);
+                Some(Box::new(sensor))
+            }
+            #[allow(unreachable_patterns)]
+            _ => None,
         }
     }
-    #[cfg(not(feature = "midi"))]
+    #[cfg(not(any(feature = "midi", feature = "osc")))]
     pub fn into_sensor(&self) -> Option<Box<dyn crate::sensor::Sensor>> {
         None
     }
@@ -292,7 +310,8 @@ impl ModuleDef {
     pub fn type_name(&self) -> &str {
         match self {
             ModuleDef::Servo(_) => "servo",
-            ModuleDef::Sensor(_) => "midi",
+            ModuleDef::Sensor(SensorDef::Midi { .. }) => "midi",
+            ModuleDef::Sensor(SensorDef::Osc { .. }) => "osc",
             ModuleDef::Custom { type_name, .. } => type_name,
         }
     }

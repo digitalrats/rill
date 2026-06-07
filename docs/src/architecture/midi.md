@@ -201,8 +201,8 @@ pub trait Sensor: Send + 'static {
 }
 ```
 
-`MidiHub` implements `Sensor`. Future sensors (OSC, hardware knobs, acoustic
-analysis via [`Hearing`]) follow the same pattern — multiple sensors feed
+`MidiHub` implements `Sensor`. OSC sensors (`OscSensor`, `spawn_osc_sensor`),
+hardware knobs, and acoustic analysis via [`Hearing`] follow the same pattern — multiple sensors feed
 one event mailbox with no locking.
 
 ## Hearing — audio analysis for acoustic sensors

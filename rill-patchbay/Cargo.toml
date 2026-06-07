@@ -13,6 +13,7 @@ rill-core = { workspace = true }
 rill-core-actor = { workspace = true, features = ["tokio"] }
 rill-core-dsp = { workspace = true }
 rill-io = { workspace = true, optional = true }
+rill-osc = { workspace = true, optional = true }
 parking_lot = "0.12"
 thiserror = "1.0"
 rand = "0.8"
@@ -29,6 +30,7 @@ json = ["serde", "dep:serde_json"]
 cbor = ["serde", "dep:serde_cbor"]
 serialization = ["json", "cbor"]
 midi = ["dep:rill-io"]
+osc = ["dep:rill-osc"]
 alsa = ["midi", "rill-io/alsa"]
 
 [dev-dependencies]
