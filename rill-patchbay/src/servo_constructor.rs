@@ -70,6 +70,12 @@ impl ModuleConstructor for ServoConstructor {
                 if let Some(ref t) = s.table {
                     servo = servo.with_table(t.clone());
                 }
+                if let Some(ref cs) = s.control_strategy {
+                    servo = servo.with_control(*cs);
+                }
+                if let Some(ref cf) = s.conflict_strategy {
+                    servo = servo.with_conflict(*cf);
+                }
                 servo.spawn(system)
             }
             AutomatonDef::Envelope {
@@ -83,7 +89,7 @@ impl ModuleConstructor for ServoConstructor {
             } => {
                 let a = EnvelopeAutomaton::adsr(id, *attack, *decay, *sustain, *release)
                     .with_curve(*curve);
-                let servo = Servo::new(
+                let mut servo = Servo::new(
                     id,
                     a,
                     nid,
@@ -94,6 +100,12 @@ impl ModuleConstructor for ServoConstructor {
                     system.clone(),
                     graph_ref.clone(),
                 );
+                if let Some(ref cs) = s.control_strategy {
+                    servo = servo.with_control(*cs);
+                }
+                if let Some(ref cf) = s.conflict_strategy {
+                    servo = servo.with_conflict(*cf);
+                }
                 servo.spawn(system)
             }
             AutomatonDef::Sequencer {
@@ -124,6 +136,12 @@ impl ModuleConstructor for ServoConstructor {
                 );
                 if let Some(ref t) = s.table {
                     servo = servo.with_table(t.clone());
+                }
+                if let Some(ref cs) = s.control_strategy {
+                    servo = servo.with_control(*cs);
+                }
+                if let Some(ref cf) = s.conflict_strategy {
+                    servo = servo.with_conflict(*cf);
                 }
                 servo.spawn(system)
             }

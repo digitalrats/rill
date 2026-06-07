@@ -10,6 +10,26 @@
   `midi`/`osc` feature flags, stale `0.5.0-beta.2` references fixed
   throughout docs.
 
+### ⚡ Servo conflict resolution (`rill-patchbay`)
+
+- **`Servo::with_control()`** / **`Servo::with_conflict()`** — builder methods
+  to configure `ControlStrategy` and `ConflictStrategy` on a Servo.
+- **`with_control(Modulation { depth })`** — automaton output modulates around
+  `state.base`, combinable with HID input via `BasePlusModulation`.
+- **`with_conflict(TouchOverride)`** — HID input freezes automaton via
+  `state.frozen`, resumes on `UiRelease`.
+- **`with_conflict(BasePlusModulation)`** — HID input updates `state.base`;
+  automaton modulates around it on next `ClockTick`.
+- **`ServoConstructor`** now passes `ServoDef.control_strategy` and
+  `ServoDef.conflict_strategy` through to Servo construction.
+- **`Control` handler fallback mapping arm** now checks `ConflictStrategy`:
+  was ignoring `state.frozen` and `state.base` — now respects all three
+  strategies.
+- **Dead code removed:** `UiCommand` enum (`strategy.rs`) — never used.
+- **Docs:** all PortCombiner references replaced with Servo+strategy
+  architecture diagrams across `README.md`, `patchbay-rack.md`,
+  `actor.md`, `two_thread_architecture.md`.
+
 ---
 
 ## [0.5.0-beta.5]

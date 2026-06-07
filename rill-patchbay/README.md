@@ -4,36 +4,46 @@ Automation and control system — LFOs, envelopes, sequencers, sensors, servos, 
 
 ## Architecture
 
-Two-thread design. Automata run on the **control thread** (green threads
-via tokio) and communicate with the audio thread through lock-free
-`MpscQueue<ParameterCommand>`.
+Two-thread design. Automata run inside **Servos** on the control thread
+(tokio actors) and communicate with the signal graph through lock-free
+actor mailboxes (`ActorRef<CommandEnum>`).
 
 ```
-Control thread (tokio):
-  Automaton ── mpsc<f64> ──→ PortCombiner ── MpscQueue ──→ Audio thread
-  UI/MIDI    ── mpsc<UiCmd> → PortCombiner ── MpscQueue ──→ Audio thread
-  Sequencer  ◀── crossbeam<Telemetry> ◀──────────────────── Audio thread
+Control thread (soft-RT):                     Signal thread (hard-RT):
+  ┌──────────┐   ┌──────────┐
+  │ Automaton│   │  Sensor  │                 ┌──────────────────┐
+  │ (LFO,ENV)│   │(MIDI,OSC)│                 │  I/O callback    │
+  └────┬─────┘   └────┬─────┘                 │  actor.drain()   │
+       │              │                       │  generate()      │
+       ▼              ▼                       │  process()       │
+  ┌──────────────────────────┐   ClockTick    │  propagate()     │
+  │        Servo             │◄───────────────│                  │
+  │  automaton.step()       │                └────────▲─────────┘
+  │  mapping.apply()        │                         │
+  │  strategy: control+     │    SetParameter          │
+  │            conflict     │─────────────────────────┘
+  └──────────────────────────┘
 ```
+
+Conflicts between automaton output and HID input (MIDI knob, OSC fader)
+are resolved inside the Servo via `ControlStrategy` and `ConflictStrategy`,
+not a separate PortCombiner component. See `strategy.rs`.
 
 ## Key components
 
 - **Automata** — `LfoAutomaton`, `EnvelopeAutomaton`, `RandomWalkAutomaton`,
   `SequencerAutomaton`, `FunctionAutomaton`, `CellularAutomaton`
-- **PortCombiner** — sits between automaton and audio thread. Resolves
-  conflicts between automaton output and UI/MIDI/OSC input using
-  `ControlStrategy` (Absolute / Modulation) and `ConflictStrategy`.
-- **Sequencer** — `SnapshotSequencer` driven by clock ticks from the audio
-  thread via crossbeam channel. `SequencerHandle` for start/stop/reset.
-- **Servos** — apply automaton signals to graph node parameters via
+- **Servos** — bridge automatons to graph node parameters via
   `ParameterMapping` (Linear, Exponential, Logarithmic, Inverted, Custom).
+  Also apply sensor event mappings (MIDI CC → param, OSC address → param).
+  Built-in conflict resolution via `ControlStrategy` (Absolute / Modulation)
+  and `ConflictStrategy` (TouchOverride / BasePlusModulation / LastWriteWins).
 - **Sensors** — acoustic (pitch, envelope follower), physical (knobs,
   buttons), MIDI, OSC (UDP-based address/argument sensors).
 - **Event mapping** — MIDI CC → parameter, OSC address → parameter,
   with transforms.
-- **`Engine`** — centralised API for adding automata, servos, mappings,
-  green threads, and port combiners (fka `PatchbayControl`).
-- **`Manager`** — high-level coordinator with per-port cancellation
-  domains.
+- **`Engine`** — centralised API for adding automata, servos, and
+  mappings (fka `PatchbayControl`).
 
 ## Usage
 

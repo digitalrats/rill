@@ -690,9 +690,29 @@ impl<A: Automaton + 'static> Servo<A> {
                             }
                             // ── Fallback: iterate user-defined mappings ──
                             _ => {
+                                let mut state = s.lock().unwrap();
                                 for mapping in &mappings {
                                     if let Some(sp) = mapping.apply(&event) {
-                                        gr.send(CommandEnum::SetParameter(sp));
+                                        match confl {
+                                            ConflictStrategy::TouchOverride => {
+                                                state.frozen = true;
+                                                if let Some(nv) = event.normalized_value() {
+                                                    state.base = nv as f64;
+                                                }
+                                                gr.send(CommandEnum::SetParameter(sp));
+                                                break; // one mapping match — freeze + send
+                                            }
+                                            ConflictStrategy::BasePlusModulation => {
+                                                if let Some(nv) = event.normalized_value() {
+                                                    state.base = nv as f64;
+                                                }
+                                                // Don't send SetParameter — automaton
+                                                // modulates around new base on next ClockTick.
+                                            }
+                                            ConflictStrategy::LastWriteWins => {
+                                                gr.send(CommandEnum::SetParameter(sp));
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -736,6 +756,26 @@ impl<A: Automaton + 'static> Servo<A> {
     /// matching events produce `SetParameter` commands sent to the graph.
     pub fn with_mappings(mut self, mappings: Vec<Mapping>) -> Self {
         self.mappings = mappings;
+        self
+    }
+
+    /// Set the control strategy — how the automaton affects the parameter value.
+    ///
+    /// - `Absolute` (default): automaton output [0,1] maps to [min,max].
+    /// - `Modulation { depth }`: automaton output [-1,1] modulates around `base`.
+    pub fn with_control(mut self, strategy: ControlStrategy) -> Self {
+        self.control = strategy;
+        self
+    }
+
+    /// Set the conflict resolution strategy — how UI/HID input interacts with
+    /// automaton control for the same parameter.
+    ///
+    /// - `LastWriteWins` (default): both sources send independently; mailbox order.
+    /// - `TouchOverride`: HID input freezes automaton until `UiRelease`.
+    /// - `BasePlusModulation`: HID input sets the base value; automaton modulates around it.
+    pub fn with_conflict(mut self, strategy: ConflictStrategy) -> Self {
+        self.conflict = strategy;
         self
     }
 

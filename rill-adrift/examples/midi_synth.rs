@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
-use rill_core::traits::{NodeId, ParamValue, ParameterId, Params, PortId};
+use rill_core::traits::{NodeId, ParamValue, Params, PortId};
 use rill_core_actor::ActorSystem;
 use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};

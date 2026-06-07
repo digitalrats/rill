@@ -9,21 +9,19 @@ mapping layer that translates external events into graph parameter commands.
 │                                                                         │
 │  Modules:                                                               │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────┐                          │
-│  │ Automata │  │  Midi    │  │  Sequencer   │                          │
-│  │ (LFO,ENV)│  │  Input   │  │              │                          │
+│  │ Automata │  │  Midi    │  │  OSC Sensor  │                          │
+│  │ (LFO,ENV)│  │  Input   │  │  (UDP)       │                          │
 │  └────┬─────┘  └────┬─────┘  └──────┬───────┘                          │
 │       │             │               │                                   │
 │       ▼             ▼               ▼                                   │
-│  ┌─────────────────────────────────────────┐                           │
-│  │            PortCombiner(s)               │                           │
-│  │    merge automaton + UI with conflict    │                           │
-│  │    resolution strategies                │                           │
-│  └───────────────────┬─────────────────────┘                           │
-│                      │                                                  │
-│  ┌───────────────────▼─────────────────────┐                           │
-│  │              Mappings                    │                           │
-│  │  EventPattern → (node, param, range)    │                           │
-│  └───────────────────┬─────────────────────┘                           │
+│  ┌─────────────────────────────────────────────┐                       │
+│  │                Servo                        │                       │
+│  │  automaton.step() + mapping.apply()         │                       │
+│  │  strategies: ControlStrategy (Absolute /    │                       │
+│  │    Modulation) + ConflictStrategy           │                       │
+│  │    (TouchOverride / BasePlusModulation /    │                       │
+│  │     LastWriteWins)                          │                       │
+│  └───────────────────┬─────────────────────────┘                       │
 │                      │ ActorRef<SetParameter>                          │
 │                      ▼ MpscQueue (lock‑free)                           │
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -221,7 +219,7 @@ pub fn launch(config: LaunchConfig) -> Result<Runtime, Error> {
     config.patchbay_def
         .apply_to_async(&mut control, &registry)?;
     // ↑ One call: automata started, MIDI port opened,
-    //   mappings loaded, PortCombiners running.
+    //   mappings loaded, servos running.
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -244,7 +242,7 @@ pub fn launch(config: LaunchConfig) -> Result<Runtime, Error> {
 pub fn stop(&mut self) {
     self.running.store(false, Ordering::Release);
 
-    // Stop control rack: automata, MidiHub, PortCombiners.
+    // Stop control rack: automata, sensors, servos.
     if let Ok(mut pb) = self.control.lock() {
         pb.stop_all();
     }
