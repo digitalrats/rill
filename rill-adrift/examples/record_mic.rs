@@ -121,6 +121,7 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
         _control_inputs: &[T],
         _clock_inputs: &[rill_adrift::rill_core::time::RenderContext],
         _feedback_inputs: &[&[T; B]],
+        _tick: &rill_adrift::rill_core::time::ClockTick,
     ) -> ProcessResult<()> {
         let all_received = self.inputs.iter().all(|p| p.data_received);
         if all_received {

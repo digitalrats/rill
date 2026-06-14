@@ -199,7 +199,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         _feedback_inputs: &[&[T; BUF_SIZE]],
         tick: &ClockTick,
     ) -> ProcessResult<()> {
-        let _ = tick;
+        for (ch, port) in self.inputs.iter().enumerate() {
+            if port.data_received {
+                let buf = port.signal_buffer();
+                #[allow(unsafe_code)]
+                unsafe {
+                    let buf_f32: &[f32] =
+                        std::slice::from_raw_parts(buf.as_ptr() as *const f32, buf.len());
+                    tick.view.write_output(ch, buf_f32);
+                }
+            }
+        }
         self.state.advance();
         Ok(())
     }
@@ -211,6 +221,8 @@ pub type AudioOutput<T, const B: usize> = Output<T, B>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::traits::buffer_view::NullBufferView;
+    use std::sync::Arc;
 
     #[test]
     fn test_audio_output_creation() {
@@ -234,7 +246,13 @@ mod tests {
         let mut out = Output::<f32, 64>::new();
         let ctx = RenderContext::new(0, 64, 48000.0);
         let signal_inputs: &[&[f32; 64]] = &[];
-        let tick = ClockTick::new(0, 64, 48000.0);
+        let tick = ClockTick::new(
+            0,
+            64,
+            48000.0,
+            "test".to_string(),
+            Arc::new(NullBufferView::new(2, 2)),
+        );
         assert!(out
             .consume(&ctx, signal_inputs, &[], &[], &[], &tick)
             .is_ok());

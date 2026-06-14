@@ -756,7 +756,7 @@ mod tests {
     use crate::factory::NodeConstructor;
     use crate::graph::Graph;
     use rill_core::math::Transcendental;
-    use rill_core::time::RenderContext;
+    use rill_core::time::{ClockTick, RenderContext};
     use rill_core::traits::node::NodeState;
     use rill_core::traits::port::Port;
     use rill_core::traits::{
@@ -905,6 +905,7 @@ mod tests {
             _: &RenderContext,
             _: &[T],
             _: &[RenderContext],
+            _: &ClockTick,
         ) -> ProcessResult<()> {
             Ok(())
         }

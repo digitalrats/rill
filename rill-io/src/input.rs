@@ -192,7 +192,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
         _clock_inputs: &[RenderContext],
         tick: &ClockTick,
     ) -> ProcessResult<()> {
-        let _ = tick;
+        for (ch, port) in self.outputs.iter_mut().enumerate() {
+            let buf = port.buffer_mut();
+            #[allow(unsafe_code)]
+            unsafe {
+                let buf_f32: &mut [f32] =
+                    std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut f32, buf.len());
+                tick.view.read_input(ch, buf_f32);
+            }
+        }
         self.state.advance();
         Ok(())
     }
@@ -221,12 +229,22 @@ mod tests {
 
         fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
 
-        fn run(&self, _running: Arc<AtomicBool>) -> IoResult<()> {
+        fn run(&self, _running: Arc<std::sync::atomic::AtomicBool>) -> IoResult<()> {
             Ok(())
         }
         fn stop(&self) -> IoResult<()> {
             Ok(())
         }
+    }
+
+    fn null_tick(sample_pos: u64, samples_since_last: u32, sample_rate: f32) -> ClockTick {
+        ClockTick::new(
+            sample_pos,
+            samples_since_last,
+            sample_rate,
+            "test".to_string(),
+            Arc::new(NullBufferView::new(2, 2)),
+        )
     }
 
     #[test]
@@ -248,7 +266,7 @@ mod tests {
     fn test_audio_input_generate_without_backend() {
         let mut inp = Input::<f32, 64>::new();
         let ctx = RenderContext::new(0, 64, 48000.0);
-        let tick = ClockTick::new(0, 64, 48000.0);
+        let tick = null_tick(0, 64, 48000.0);
         assert!(inp.generate(&ctx, &[], &[], &tick).is_ok());
     }
 
@@ -267,7 +285,7 @@ mod tests {
 
         assert!(input.has_backend());
         let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
-        let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
+        let tick = null_tick(0, BUF_SZ as u32, 48000.0);
         assert!(input.generate(&ctx, &[], &[], &tick).is_ok());
     }
 }

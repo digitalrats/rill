@@ -166,6 +166,7 @@ macro_rules! sink_node {
                 _control_inputs: &[$T],
                 _clock_inputs: &[$crate::RenderContext],
                 _feedback_inputs: &[&[$T; $BUF]],
+                _tick: &$crate::ClockTick,
             ) -> $crate::ProcessResult<()> {
                 ($consume)(self)?;
                 Ok(())

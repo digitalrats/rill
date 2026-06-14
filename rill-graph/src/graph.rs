@@ -843,6 +843,7 @@ mod tests {
             _: &RenderContext,
             _: &[T],
             _: &[RenderContext],
+            _: &ClockTick,
         ) -> ProcessResult<()> {
             self.output.buffer.as_mut_array().fill(self.value);
             Ok(())
@@ -1065,6 +1066,7 @@ mod tests {
             _: &[T],
             _: &[RenderContext],
             _: &[&[T; B]],
+            _: &ClockTick,
         ) -> ProcessResult<()> {
             Ok(())
         }
