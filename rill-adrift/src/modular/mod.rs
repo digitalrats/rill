@@ -204,23 +204,18 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             if let Some((ref name, ref params)) = backend_name {
                                 match bf.create(name, params) {
                                     Ok(backend) => {
-                                        let view = backend.create_view();
-                                        let block_size = graph_def.block_size;
-                                        let sample_rate = graph_def.sample_rate;
-                                        let source = name.clone();
-                                        let callback = move |_tick: &ClockTick| {
-                                            let tick = ClockTick::new(
-                                                0,
-                                                block_size as u32,
-                                                sample_rate,
-                                                source.clone(),
-                                                view.clone(),
-                                            );
-                                            let _ = state.process_block(&tick);
+                                        let callback = move |tick: &ClockTick| {
+                                            let _ = state.process_block(tick);
                                         };
                                         backend.set_process_callback(Box::new(callback));
                                         if let Err(e) = backend.run(running.clone()) {
                                             log::error!("backend run: {e}");
+                                        }
+                                        // Keep thread alive for callback-driven backends
+                                        // (PortAudio, JACK).  Poll-driven backends block
+                                        // inside run() and reach here only after stop().
+                                        while running.load(Ordering::Acquire) {
+                                            std::thread::park();
                                         }
                                         let _ = backend.stop();
                                     }
