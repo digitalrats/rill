@@ -10,7 +10,6 @@ use rill_core_actor::{Actor, ActorRef, ActorSystem};
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 // ============================================================================
@@ -573,21 +572,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         }
         if let Some(ref parent) = self.parent_ref {
             parent.send(CommandEnum::ClockTick(tick.clone()));
-        }
-        Ok(())
-    }
-
-    /// Convenience method: run graph processing in an internal loop.
-    ///
-    /// Fires one tick immediately and blocks on a NullBackend-managed
-    /// I/O loop.  This is the legacy entry point; new code should use
-    /// [`process_block`](Self::process_block) or [`ProcessingState`]
-    /// with an externally-managed backend.
-    #[allow(unsafe_code)]
-    pub fn run(&mut self, running: Arc<AtomicBool>) -> Result<(), String> {
-        let _ = self.process_block(&ClockTick::default());
-        while running.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::park();
         }
         Ok(())
     }

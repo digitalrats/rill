@@ -9,10 +9,7 @@ use rill_core::{
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
-/// Signal output sink. Writes to backend in `consume()`.
-///
-/// When used as the active (driver) node, [`ActiveNode::run`] sets up the
-/// process callback and blocks on the audio thread.
+/// Signal output sink. Writes to `tick.view` in `consume()`.
 ///
 /// # Ports
 /// - `n` input ports (one per channel), set via [`Self::with_channels`].

@@ -25,9 +25,6 @@ pub mod backend_factory;
 /// Node factory and registry for constructing nodes by type name.
 pub mod factory;
 
-/// ActiveNode trait — nodes that drive graph processing.
-pub mod active;
-
 /// Graph serialization (JSON / CBOR). Feature-gated behind `serialization`.
 #[cfg(feature = "serialization")]
 pub mod serialization;

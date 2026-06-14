@@ -5,11 +5,11 @@ use rill_adrift::registration;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 #[cfg(feature = "serialization")]
+use rill_adrift::rill_core::time::ClockTick;
+#[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
-#[cfg(feature = "serialization")]
-use std::sync::atomic::AtomicBool;
 #[cfg(feature = "serialization")]
 use std::sync::Arc;
 const RATE: f32 = 48000.0;
@@ -124,11 +124,10 @@ fn test_send_parameter_via_queue() {
             SignalOrigin::Manual,
         )));
 
-    // Parameter is in the queue — not yet applied (no callback fired).
-    // Run graph once — NullBackend fires the callback and returns.
-    // running is false, so the park loop exits immediately.
-    let running = Arc::new(AtomicBool::new(false));
-    graph.run(running).expect("run should succeed");
+    // Parameter is in the queue — not yet applied.
+    // Process one block — drains the actor mailbox, applies SetParameter.
+    let tick = ClockTick::default();
+    graph.process_block(&tick).ok();
 
     // After callback: queue drained, parameter applied.
     let val = graph.nodes()[0].get_parameter(&ParameterId::new("frequency").unwrap());

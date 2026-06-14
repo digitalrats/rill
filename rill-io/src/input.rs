@@ -9,11 +9,7 @@ use rill_core::{
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
-/// Signal input source. Reads from a backend in `generate()`, fills output ports.
-///
-/// The backend is owned by this node via `Arc`.  When used as the active
-/// (driver) node, [`ActiveNode::run`] sets up the process callback and
-/// blocks on the audio thread.
+/// Signal input source. Reads from `tick.view` in `generate()`, fills output ports.
 ///
 /// # Ports
 /// - `n` output ports (one per channel), set via [`Self::with_channels`].
@@ -151,30 +147,9 @@ pub type AudioInput<T, const B: usize> = Input<T, B>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_io::IoResult;
-    use crate::buffer::IoRingBuffer;
     use rill_core::time::ClockTick;
-    use rill_core::traits::buffer_view::{BufferView, NullBufferView};
+    use rill_core::traits::buffer_view::NullBufferView;
     use std::sync::Arc;
-
-    struct RingIo {
-        input_ring: Arc<IoRingBuffer>,
-        output_ring: Arc<IoRingBuffer>,
-    }
-    impl IoBackend for RingIo {
-        fn create_view(&self) -> Arc<dyn BufferView> {
-            Arc::new(NullBufferView::new(2, 2))
-        }
-
-        fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
-
-        fn run(&self, _running: Arc<std::sync::atomic::AtomicBool>) -> IoResult<()> {
-            Ok(())
-        }
-        fn stop(&self) -> IoResult<()> {
-            Ok(())
-        }
-    }
 
     fn null_tick(sample_pos: u64, samples_since_last: u32, sample_rate: f32) -> ClockTick {
         ClockTick::new(
@@ -211,19 +186,11 @@ mod tests {
     #[test]
     fn test_input_resolve_backend() {
         const BUF_SZ: usize = 64;
-        let input_ring = Arc::new(IoRingBuffer::new(512));
-        let output_ring = Arc::new(IoRingBuffer::new(512));
-
-        let backend = Box::new(RingIo {
-            input_ring,
-            output_ring,
-        });
         let mut input = Input::<f32, BUF_SZ>::new();
-        // resolve_backend is now a no-op — I/O flows through tick.view
-        IoNode::<f32, BUF_SZ>::resolve_backend(&mut input, backend);
 
         let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
         let tick = null_tick(0, BUF_SZ as u32, 48000.0);
+        // generate reads from tick.view — no backend needed
         assert!(input.generate(&ctx, &[], &[], &tick).is_ok());
     }
 }
