@@ -228,6 +228,8 @@ impl IoBackend for PipewireBackend {
             let out_view = view.clone();
             let out_spos = sample_pos.clone();
             let out_block = block_size;
+            let out_cb = process_cb;
+            let is_input_driver = self.mode == IoMode::InputDriver;
             let listener = stream
                 .add_local_listener_with_user_data(())
                 .process(move |s, _| {
@@ -255,6 +257,22 @@ impl IoBackend for PipewireBackend {
                     let samples: &mut [f32] = unsafe {
                         std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, total_samps)
                     };
+
+                    if !is_input_driver {
+                        // OutputDriver: fire process callback to fill output_ring
+                        let pos = out_spos.fetch_add(out_block as u64, Ordering::Relaxed);
+                        let tick = ClockTick::new(
+                            pos,
+                            out_block as u32,
+                            out_sr as f32,
+                            "pipewire".into(),
+                            out_view.clone(),
+                        );
+                        unsafe {
+                            out_cb.call(&tick);
+                        }
+                    }
+
                     let n = out_ring.read(samples);
                     if n < total_samps {
                         samples[n..].fill(0.0);

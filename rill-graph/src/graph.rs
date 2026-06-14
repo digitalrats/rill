@@ -11,7 +11,7 @@ use rill_core_actor::{Actor, ActorRef, ActorSystem};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 // ============================================================================
@@ -547,7 +547,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         running: Arc<AtomicBool>,
     ) -> Result<(), String> {
         let backend = bf.create(backend_name, be_params)?;
-        let source_name = backend_name.to_string();
 
         // Move state out of &mut self via unsafe — this is safe because
         // we never access self again after this point.

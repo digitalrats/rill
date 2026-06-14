@@ -29,7 +29,6 @@ pub struct DeinterleavedView {
     output_ring: Arc<IoRingBuffer>,
     num_input_channels: usize,
     num_output_channels: usize,
-    block_size: usize,
     /// Input cache: interleaved data + byte length.
     in_cache: UnsafeCell<([f32; MAX_INTERLEAVED], usize)>,
     /// Output cache: interleaved accumulation buffer + channels written count.
@@ -48,14 +47,14 @@ impl DeinterleavedView {
         output_ring: Arc<IoRingBuffer>,
         num_input_channels: usize,
         num_output_channels: usize,
-        block_size: usize,
+        _block_size: usize,
     ) -> Self {
+        let _ = _block_size;
         Self {
             input_ring,
             output_ring,
             num_input_channels,
             num_output_channels,
-            block_size,
             in_cache: UnsafeCell::new(([0.0f32; MAX_INTERLEAVED], 0)),
             out_cache: UnsafeCell::new(([0.0f32; MAX_INTERLEAVED], 0)),
             out_channels_written: AtomicUsize::new(0),
@@ -68,7 +67,7 @@ impl DeinterleavedView {
             let has_new = !self.input_ring.is_empty();
             if has_new || *len == 0 {
                 if self.num_input_channels > 0 {
-                    let needed = (self.block_size * self.num_input_channels).min(MAX_INTERLEAVED);
+                    let needed = MAX_INTERLEAVED;
                     *len = self.input_ring.read(&mut buf[..needed]);
                 }
             }
@@ -112,7 +111,7 @@ impl BufferView for DeinterleavedView {
         if self.num_output_channels == 0 || channel >= self.num_output_channels {
             return src.len();
         }
-        let n_frames = src.len().min(self.block_size);
+        let n_frames = src.len();
         let stride = self.num_output_channels;
         if n_frames == 0 || stride == 0 {
             return 0;
