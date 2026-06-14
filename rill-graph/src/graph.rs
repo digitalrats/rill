@@ -116,6 +116,37 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     parent_ref: Option<ActorRef<CommandEnum>>,
 }
 
+/// A passive I/O backend — delegates writes to a shared real backend
+/// via a raw pointer. Used when multiple IoNodes (Input + Output) share
+/// a single `PipewireBackend`: the active node owns the `Box<IoBackend>`,
+/// the passive node gets this thin reference wrapper.
+///
+/// Safety: the pointer is valid as long as the active node's `Box<IoBackend>`
+/// lives. Both nodes are dropped together when the graph's `Vec<NodeVariant>`
+/// is dropped. The graph is single-threaded.
+struct PassiveRef<T: rill_core::math::Scalar> {
+    ptr: *const dyn rill_core::io::IoBackend<T>,
+}
+
+impl<T: rill_core::math::Scalar> rill_core::io::IoBackend<T> for PassiveRef<T> {
+    fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
+    fn read(&self, _channels: &mut [&mut [T]]) -> usize {
+        0
+    }
+    fn write(&self, channels: &[&[T]]) -> usize {
+        #[allow(unsafe_code)]
+        unsafe {
+            (*self.ptr).write(channels)
+        }
+    }
+    fn run(&self, _running: Arc<AtomicBool>) -> rill_core::io::IoResult<()> {
+        Ok(())
+    }
+    fn stop(&self) -> rill_core::io::IoResult<()> {
+        Ok(())
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Create a new empty graph builder without a node factory.
     pub fn new(
@@ -293,13 +324,28 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let num_nodes = node_entries.len();
 
         // --- Phase 2: Resolve I/O backends for I/O nodes ---
+        // Deduplicate: the first IoNode with a given backend name
+        // gets the real Box<IoBackend>; subsequent nodes get a
+        // PassiveRef that delegates writes to the same instance.
         let sr = self.sample_rate.unwrap_or(44100.0);
+        let mut raw_ptrs: HashMap<String, *const dyn rill_core::io::IoBackend<T>> = HashMap::new();
         for (idx, recipe) in self.recipes.iter().enumerate() {
+            // Only I/O nodes receive backends — non-IoNode entries
+            // (plain Sources, Processors etc.) are skipped here.
+            let Some(io_node) = node_entries[idx].node.as_io_node_mut() else {
+                continue;
+            };
             let name = match recipe.backend.as_ref() {
                 Some(n) => Some(n.clone()),
                 None => self.default_backend.clone(),
             };
-            if let Some(ref name) = name {
+            let Some(ref name) = name else {
+                continue;
+            };
+            if let Some(&raw) = raw_ptrs.get(name) {
+                // Passive — delegate writes to the already-created backend
+                io_node.resolve_backend(Box::new(PassiveRef { ptr: raw }));
+            } else {
                 let mut be_params = HashMap::new();
                 be_params.insert("sample_rate".into(), ParamValue::Float(sr));
                 be_params.insert("buffer_size".into(), ParamValue::Int(BUF_SIZE as i32));
@@ -312,9 +358,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     .backend_factory
                     .create(name, &be_params)
                     .map_err(BuildError::Backend)?;
-                if let Some(io_node) = node_entries[idx].node.as_io_node_mut() {
-                    io_node.resolve_backend(backend);
-                }
+                raw_ptrs.insert(
+                    name.clone(),
+                    &*backend as *const dyn rill_core::io::IoBackend<T>,
+                );
+                io_node.resolve_backend(backend);
             }
         }
 
@@ -476,7 +524,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             nodes,
             topo_order: topo,
             resources: allocated,
-            current_tick: ClockTick::new(0, BUF_SIZE as u32, sr),
+            current_tick: ClockTick::new(
+                0,
+                BUF_SIZE as u32,
+                sr,
+                String::new(),
+                std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
+            ),
             buffers: owned_buffers,
             source_idx,
             active_node_idx,
@@ -529,7 +583,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 
     /// Return the current clock tick.
     pub fn current_tick(&self) -> ClockTick {
-        self.current_tick
+        self.current_tick.clone()
     }
 
     /// Return the number of nodes in the graph.
@@ -576,7 +630,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             } else {
                 RenderContext::new(sample_pos, BUF_SIZE as u32, sample_rate)
             };
-            let tick = ClockTick::with_tempo(sample_pos, BUF_SIZE as u32, sample_rate, ctx.bpm());
+            let tick = ClockTick::with_tempo(
+                sample_pos,
+                BUF_SIZE as u32,
+                sample_rate,
+                ctx.bpm(),
+                String::new(),
+                std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
+            );
             unsafe {
                 let nv = &mut *nodes.get();
                 let _ = nv[source].process_block(&ctx);
@@ -636,6 +697,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::io::IoBackend;
     use rill_core::math::Transcendental;
     use rill_core::time::RenderContext;
     use rill_core::traits::{
