@@ -64,12 +64,9 @@ impl DeinterleavedView {
     fn ensure_input_cache(&self) -> &[f32] {
         unsafe {
             let (ref mut buf, ref mut len) = *self.in_cache.get();
-            let has_new = !self.input_ring.is_empty();
-            if has_new || *len == 0 {
-                if self.num_input_channels > 0 {
-                    let needed = MAX_INTERLEAVED;
-                    *len = self.input_ring.read(&mut buf[..needed]);
-                }
+            if *len == 0 && self.num_input_channels > 0 {
+                let needed = MAX_INTERLEAVED;
+                *len = self.input_ring.read(&mut buf[..needed]);
             }
             &buf[..*len]
         }
@@ -103,6 +100,12 @@ impl BufferView for DeinterleavedView {
         }
         for s in dst.iter_mut().skip(n_frames) {
             *s = 0.0;
+        }
+        // Invalidate cache after last channel so next block refills fresh
+        if channel + 1 >= self.num_input_channels {
+            unsafe {
+                (*self.in_cache.get()).1 = 0;
+            }
         }
         n_frames
     }
