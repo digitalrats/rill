@@ -2,15 +2,13 @@
 //!
 //! Registered as `"rill/output"` with `NodeVariant::Sink`.
 
-use std::cell::Cell;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use rill_core::{
     io::IoBackend,
     math::Transcendental,
     time::ClockTick,
-    traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Sink},
+    traits::{IoNode, Node, NodeCategory, NodeMetadata, NodeState, Sink},
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
@@ -26,9 +24,6 @@ pub struct Output<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn IoBackend>>,
-    active: bool,
-    source_idx: usize,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for Output<T, BUF_SIZE> {
@@ -65,23 +60,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
             metadata,
             inputs,
             state: NodeState::new(44100.0),
-            backend: None,
-            active: true,
-            source_idx: 0,
         }
-    }
-
-    /// Mark this output as active, setting its source node index.
-    pub fn set_active(&mut self, source_idx: usize) {
-        self.active = true;
-        self.source_idx = source_idx;
-    }
-
-    /// Transfer backend ownership to this node.
-    ///
-    /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
-    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
-        <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
     }
 }
 
@@ -109,9 +88,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
     }
 
     fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        Some(self)
-    }
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
         Some(self)
     }
 
@@ -157,35 +133,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
-        self.backend = Some(backend);
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: Arc<AtomicBool>,
-    ) -> rill_core::io::IoResult<()> {
-        let Some(ref backend) = self.backend else {
-            return Err("Output: no backend".into());
-        };
-        let tick_ptr = Box::into_raw(Box::new(tick));
-        let sample_pos = Cell::new(0u64);
-        backend.set_process_callback(Box::new(move |tick: &ClockTick| {
-            unsafe {
-                (*tick_ptr)(sample_pos.get(), tick.sample_rate);
-            }
-            sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-        }));
-        backend.run(running.clone())?;
-        while running.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = backend.stop();
-        drop(unsafe { Box::from_raw(tick_ptr) });
-        Ok(())
+    fn resolve_backend(&mut self, _backend: Box<dyn IoBackend>) {
+        // Backend is no longer stored in the node — I/O flows through
+        // ClockTick::view which is provided by the external backend.
     }
 }
 

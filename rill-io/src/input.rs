@@ -2,15 +2,13 @@
 //!
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
 
-use std::cell::Cell;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use rill_core::{
     io::IoBackend,
     math::Transcendental,
     time::ClockTick,
-    traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Source},
+    traits::{IoNode, Node, NodeCategory, NodeMetadata, NodeState, Source},
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
@@ -27,8 +25,6 @@ pub struct Input<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn IoBackend>>,
-    bufs: Vec<[T; BUF_SIZE]>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for Input<T, BUF_SIZE> {
@@ -59,28 +55,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Input<T, BUF_SIZE> {
         let outputs: Vec<_> = (0..num)
             .map(|i| Port::output(NodeId(0), i as u16, &name(i)))
             .collect();
-        let bufs = vec![[T::ZERO; BUF_SIZE]; num];
 
         Self {
             id: NodeId(0),
             metadata,
             outputs,
             state: NodeState::new(44100.0),
-            backend: None,
-            bufs,
         }
-    }
-
-    /// Returns `true` if a backend is attached.
-    pub fn has_backend(&self) -> bool {
-        self.backend.is_some()
-    }
-
-    /// Transfer backend ownership to this node.
-    ///
-    /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
-    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
-        <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
     }
 }
 
@@ -106,9 +87,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
         self.state.blocks_processed = 0;
     }
     fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        Some(self)
-    }
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
         Some(self)
     }
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
@@ -152,35 +130,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
-        self.backend = Some(backend);
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: Arc<AtomicBool>,
-    ) -> rill_core::io::IoResult<()> {
-        let Some(ref backend) = self.backend else {
-            return Err("Input: no backend".into());
-        };
-        let tick_ptr = Box::into_raw(Box::new(tick));
-        let sample_pos = Cell::new(0u64);
-        backend.set_process_callback(Box::new(move |tick: &ClockTick| {
-            unsafe {
-                (*tick_ptr)(sample_pos.get(), tick.sample_rate);
-            }
-            sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-        }));
-        backend.run(running.clone())?;
-        while running.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = backend.stop();
-        drop(unsafe { Box::from_raw(tick_ptr) });
-        Ok(())
+    fn resolve_backend(&mut self, _backend: Box<dyn IoBackend>) {
+        // Backend is no longer stored in the node — I/O flows through
+        // ClockTick::view which is provided by the external backend.
     }
 }
 
@@ -251,7 +203,6 @@ mod tests {
     fn test_audio_input_creation() {
         let inp = Input::<f32, 64>::new();
         assert_eq!(inp.metadata().signal_outputs, 2);
-        assert!(!inp.has_backend());
     }
 
     #[test]
@@ -281,9 +232,9 @@ mod tests {
             output_ring,
         });
         let mut input = Input::<f32, BUF_SZ>::new();
-        input.resolve_backend(backend);
+        // resolve_backend is now a no-op — I/O flows through tick.view
+        IoNode::<f32, BUF_SZ>::resolve_backend(&mut input, backend);
 
-        assert!(input.has_backend());
         let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
         let tick = null_tick(0, BUF_SZ as u32, 48000.0);
         assert!(input.generate(&ctx, &[], &[], &tick).is_ok());
