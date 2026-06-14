@@ -516,8 +516,5 @@ impl IoBackend for PipewireBackend {
 impl Drop for PipewireBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
-        unsafe {
-            self.process_cb.drop_box();
-        }
     }
 }

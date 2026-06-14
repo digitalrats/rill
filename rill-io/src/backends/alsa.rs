@@ -376,8 +376,5 @@ impl IoBackend for AlsaBackend {
 impl Drop for AlsaBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
-        unsafe {
-            self.process_cb.drop_box();
-        }
     }
 }

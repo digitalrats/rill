@@ -296,7 +296,6 @@ impl Drop for JackBackend {
             if let Some(client) = (*self.active_client.get()).take() {
                 drop(client);
             }
-            self.process_cb.drop_box();
         }
     }
 }

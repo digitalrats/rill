@@ -298,7 +298,6 @@ impl Drop for PortAudioBackend {
         unsafe {
             *self.out_stream.get() = None;
             *self.in_stream.get() = None;
-            self.process_cb.drop_box();
         }
     }
 }

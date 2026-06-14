@@ -106,9 +106,5 @@ impl IoBackend for NullBackend {
 }
 
 impl Drop for NullBackend {
-    fn drop(&mut self) {
-        unsafe {
-            self.cb.drop_box();
-        }
-    }
+    fn drop(&mut self) {}
 }
