@@ -487,13 +487,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
 
         let source_idx = topo.first().copied().unwrap_or(0);
-        let mut active_node_idx = 0;
-        for (i, n) in nodes.iter_mut().enumerate() {
-            if n.as_active_node_mut().is_some() {
-                active_node_idx = i;
-                break;
-            }
-        }
 
         let owned_buffers = buffers.into_inner();
         let allocated = self.resources.clone();
@@ -532,7 +525,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             ),
             buffers: owned_buffers,
             source_idx,
-            active_node_idx,
             actor: Some(actor),
             actor_ref,
             parent_ref: self.parent_ref.clone(),
@@ -556,7 +548,6 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
     topo_order: Vec<usize>,
     source_idx: usize,
-    active_node_idx: usize,
     current_tick: ClockTick,
     pub(crate) resources: Vec<GraphResource>,
     #[allow(dead_code)]
@@ -706,7 +697,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     /// with an externally-managed backend.
     #[allow(unsafe_code)]
     pub fn run(&mut self, running: Arc<AtomicBool>) -> Result<(), String> {
-        self.process_block(&ClockTick::default());
+        let _ = self.process_block(&ClockTick::default());
         while running.load(std::sync::atomic::Ordering::Acquire) {
             std::thread::park();
         }
@@ -750,7 +741,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             current_tick,
             resources: _,
             buffers,
-            active_node_idx: _,
             source_idx: _,
             actor,
             actor_ref: _,

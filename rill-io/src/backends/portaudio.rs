@@ -21,12 +21,14 @@ use portaudio as pa;
 
 /// Callback slot.
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 struct CbSlot(usize);
 
 impl CbSlot {
     fn new() -> Self {
         Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
     }
+    #[allow(dead_code)]
     unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
         (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
     }

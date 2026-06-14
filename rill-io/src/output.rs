@@ -2,8 +2,6 @@
 //!
 //! Registered as `"rill/output"` with `NodeVariant::Sink`.
 
-use std::sync::Arc;
-
 use rill_core::{
     io::IoBackend,
     math::Transcendental,

@@ -2,8 +2,6 @@
 //!
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
 
-use std::sync::Arc;
-
 use rill_core::{
     io::IoBackend,
     math::Transcendental,
