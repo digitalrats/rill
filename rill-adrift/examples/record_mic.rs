@@ -20,7 +20,9 @@ use rill_adrift::rill_core::traits::{
 use rill_adrift::rill_core::Transcendental;
 use rill_adrift::rill_core_actor::ActorSystem;
 use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
-use rill_core::time::ClockTick;
+use std::collections::HashMap;
+
+use rill_adrift::rill_graph::backend_factory::BackendFactory;
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
@@ -226,11 +228,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match builder.build(&system) {
             Ok(graph) => {
                 eprintln!("Graph built ({} nodes). Recording...", graph.node_count());
+                let mut bf = BackendFactory::new();
+                registration::register_backends(&mut bf);
+                let mut be_params = HashMap::new();
+                be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+                be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+                be_params.insert("channels".into(), ParamValue::Int(2));
                 let mut state = graph.into_processing_state();
-                let tick = ClockTick::default();
-                let _ = state.process_block(&tick);
-                while t_run.load(Ordering::Acquire) {
-                    std::thread::park();
+                if let Err(e) = state.run_with_backend(&bf, &backend_name, &be_params, t_run) {
+                    eprintln!("Backend error: {e}");
                 }
             }
             Err(e) => eprintln!("Build error: {e:?}"),

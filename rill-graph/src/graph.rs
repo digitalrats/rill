@@ -11,6 +11,7 @@ use rill_core_actor::{Actor, ActorRef, ActorSystem};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 // ============================================================================
@@ -530,6 +531,37 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         if let Some(ref parent) = self.parent_ref {
             parent.send(CommandEnum::ClockTick(tick.clone()));
         }
+        Ok(())
+    }
+
+    /// Convenience: run this processing state with a backend from the factory.
+    ///
+    /// Creates the backend, wires the process callback, and enters the I/O
+    /// loop.  The `running` flag controls shutdown (set to `false` from
+    /// another thread and unpark this thread).
+    pub fn run_with_backend(
+        &mut self,
+        bf: &BackendFactory,
+        backend_name: &str,
+        be_params: &HashMap<String, ParamValue>,
+        running: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let backend = bf.create(backend_name, be_params)?;
+        let source_name = backend_name.to_string();
+
+        // Move state out of &mut self via unsafe — this is safe because
+        // we never access self again after this point.
+        #[allow(unsafe_code)]
+        let mut state = unsafe { std::ptr::read(self) };
+
+        backend.set_process_callback(Box::new(move |tick: &ClockTick| {
+            let _ = state.process_block(tick);
+        }));
+        backend.run(running.clone())?;
+        while running.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::park();
+        }
+        let _ = backend.stop();
         Ok(())
     }
 }

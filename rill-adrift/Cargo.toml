@@ -48,7 +48,11 @@ required-features = ["io", "sampler"]
 
 [[example]]
 name = "player"
-required-features = ["serialization", "sampler"]
+required-features = ["io", "serialization", "sampler"]
+
+[[example]]
+name = "advanced_player"
+required-features = ["io", "serialization", "sampler"]
 
 [[example]]
 name = "record_mic"

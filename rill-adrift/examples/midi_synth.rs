@@ -21,10 +21,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
-use rill_core::time::ClockTick;
 use rill_core::traits::{NodeId, ParamValue, Params, PortId};
 use rill_core_actor::ActorSystem;
+use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};
 use rill_io::backends::MidirBackend;
 use rill_patchbay::engine::{midi_cc, NoAction, ParameterMapping, Transform};
@@ -75,16 +77,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (graph_tx, graph_rx) = std::sync::mpsc::channel();
     let r_graph = running.clone();
 
-    std::thread::spawn(move || {
+    let audio_thread = std::thread::spawn(move || {
         let sys = ActorSystem::new();
         match builder.build(&sys) {
             Ok(graph) => {
                 let _ = graph_tx.send((sys, graph.handle()));
+                let mut bf = BackendFactory::new();
+                registration::register_backends(&mut bf);
+                let mut be_params = HashMap::new();
+                be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+                be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+                be_params.insert("channels".into(), ParamValue::Int(2));
                 let mut state = graph.into_processing_state();
-                let tick = ClockTick::default();
-                let _ = state.process_block(&tick);
-                while r_graph.load(Ordering::Acquire) {
-                    std::thread::park();
+                if let Err(e) = state.run_with_backend(&bf, &audio_backend, &be_params, r_graph) {
+                    eprintln!("Backend error: {e}");
                 }
             }
             Err(e) => eprintln!("graph build: {:?}", e),
@@ -149,6 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Press Enter to stop.");
 
     let r = running.clone();
+    let handle = audio_thread.thread().clone();
     let shutdown_gr = graph_ref.clone();
     std::thread::spawn(move || {
         let mut input = String::new();
@@ -166,11 +173,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // the backend run a bit more in silence before cutting power
         std::thread::sleep(std::time::Duration::from_secs(1));
         r.store(false, Ordering::Release);
+        handle.unpark();
     });
 
-    while running.load(Ordering::Acquire) {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    audio_thread.join().ok();
 
     println!("Shutting down.");
     Ok(())
