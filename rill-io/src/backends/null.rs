@@ -80,7 +80,7 @@ impl IoBackend for NullBackend {
     }
 
     fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
-        let tick = ClockTick::new(
+        let mut tick = ClockTick::new(
             0,
             self.config.buffer_size,
             self.config.sample_rate as f32,
@@ -90,6 +90,7 @@ impl IoBackend for NullBackend {
                 self.config.output_channels as usize,
             )),
         );
+        tick.speed_ratio = 1.0;
         // Fire the callback once for testing — this triggers graph processing,
         // which drains the actor mailbox (applies queued SetParameter commands).
         unsafe {

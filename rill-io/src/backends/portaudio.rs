@@ -177,13 +177,14 @@ impl IoBackend for PortAudioBackend {
                         };
 
                         let pos = ospos.fetch_add(n_frames as u64, Ordering::Relaxed);
-                        let tick = ClockTick::new(
+                        let mut tick = ClockTick::new(
                             pos,
                             n_frames as u32,
                             sample_rate as f32,
                             "portaudio".into(),
                             view,
                         );
+                        tick.speed_ratio = 1.0;
                         unsafe {
                             oproc.call(&tick);
                         }
@@ -250,13 +251,14 @@ impl IoBackend for PortAudioBackend {
                             ));
 
                             let pos = ispos.fetch_add(n_frames as u64, Ordering::Relaxed);
-                            let tick = ClockTick::new(
+                            let mut tick = ClockTick::new(
                                 pos,
                                 n_frames as u32,
                                 sample_rate as f32,
                                 "portaudio".into(),
                                 view,
                             );
+                            tick.speed_ratio = 1.0;
                             unsafe {
                                 iproc.call(&tick);
                             }

@@ -223,13 +223,14 @@ impl IoBackend for PipewireBackend {
                                 chunk,
                             ));
                             let pos = out_spos.fetch_add(chunk as u64, Ordering::Relaxed);
-                            let tick = ClockTick::new(
+                            let mut tick = ClockTick::new(
                                 pos,
                                 chunk as u32,
                                 out_sr as f32,
                                 "pipewire".into(),
                                 view,
                             );
+                            tick.speed_ratio = 1.0;
                             unsafe {
                                 out_cb.call(&tick);
                             }
@@ -435,13 +436,20 @@ impl IoBackend for PipewireBackend {
                                 (total_samps / actual_channels.max(1)) as u64,
                                 Ordering::Relaxed,
                             );
-                            let tick = ClockTick::new(
+                            let mut tick = ClockTick::new(
                                 pos,
                                 (total_samps / actual_channels.max(1)) as u32,
                                 effective_sr,
                                 "pipewire".into(),
                                 view,
                             );
+                            let config_rate = sample_rate as f64;
+                            let actual_rate = effective_sr as f64;
+                            tick.speed_ratio = if (config_rate - actual_rate).abs() > 1.0 {
+                                config_rate / actual_rate
+                            } else {
+                                1.0
+                            };
                             unsafe {
                                 process_cb.call(&tick);
                             }

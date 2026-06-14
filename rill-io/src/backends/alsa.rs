@@ -248,7 +248,15 @@ fn alsa_io_loop(
             };
 
             let pos = sample_pos.fetch_add(buf_frames as u64, Ordering::Relaxed);
-            let tick = ClockTick::new(pos, buf_frames as u32, negotiated_rate, "alsa".into(), view);
+            let mut tick =
+                ClockTick::new(pos, buf_frames as u32, negotiated_rate, "alsa".into(), view);
+            let config_rate = config.sample_rate as f64;
+            let actual_rate = negotiated_rate as f64;
+            tick.speed_ratio = if (config_rate - actual_rate).abs() > 1.0 {
+                config_rate / actual_rate
+            } else {
+                1.0
+            };
             unsafe {
                 process_cb.call(&tick);
             }
