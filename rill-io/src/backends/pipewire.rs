@@ -217,7 +217,7 @@ impl IoBackend for PipewireBackend {
                             let chunk = (n_frames - offset).min(block_size as usize);
                             let view: Arc<dyn BufferView> = Arc::new(DirectView::new_output_only(
                                 unsafe {
-                                    slice.as_mut_ptr().add(offset * out_chan as usize) as *mut f32
+                                    (slice.as_mut_ptr() as *mut f32).add(offset * out_chan as usize)
                                 },
                                 out_chan as usize,
                                 chunk,
