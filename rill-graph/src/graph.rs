@@ -509,7 +509,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
     #[allow(unsafe_code)]
     pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
         self.actor.drain();
-        let ctx = if let Some(ref clock) = self.system_clock {
+        let mut ctx = if let Some(ref clock) = self.system_clock {
             RenderContext::with_tempo(
                 tick.sample_pos,
                 tick.samples_since_last,
@@ -519,6 +519,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         } else {
             RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
         };
+        ctx.speed_ratio = tick.speed_ratio;
         unsafe {
             let nv = &mut *self.nodes.get();
             let _ = nv[self.source_idx].process_block(&ctx, tick);

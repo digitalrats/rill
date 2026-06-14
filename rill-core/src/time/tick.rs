@@ -59,6 +59,13 @@ pub struct ClockTick {
     /// Backend-specific buffer accessor for reading input / writing output.
     #[doc(hidden)]
     pub view: Arc<dyn BufferView>,
+
+    /// Hardware clock correction factor: `configured_rate / actual_rate`.
+    ///
+    /// `1.0` = nominal (rates match). `< 1.0` = hardware runs faster.
+    /// `> 1.0` = hardware runs slower.  Set by the backend when the
+    /// negotiated hardware rate differs from the graph's configured rate.
+    pub speed_ratio: f64,
 }
 
 impl PartialEq for ClockTick {
@@ -113,6 +120,7 @@ impl ClockTick {
             tempo: None,
             source,
             view,
+            speed_ratio: 1.0,
         }
     }
 
@@ -141,6 +149,7 @@ impl ClockTick {
             tempo: Some(tempo),
             source,
             view,
+            speed_ratio: 1.0,
         }
     }
 
@@ -238,6 +247,7 @@ impl Default for ClockTick {
             tempo: None,
             source: String::new(),
             view: Arc::new(NullBufferView::new(2, 2)),
+            speed_ratio: 1.0,
         }
     }
 }

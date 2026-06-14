@@ -113,6 +113,7 @@ struct JackProcessHandler {
     out_ch: usize,
     sample_pos: Arc<AtomicU64>,
     sample_rate: f32,
+    config_rate: f32,
     sys_clock: Option<Arc<SystemClock>>,
 }
 
@@ -151,7 +152,10 @@ impl ProcessHandler for JackProcessHandler {
         ));
 
         let pos = self.sample_pos.fetch_add(nframes as u64, Ordering::Relaxed);
-        let tick = ClockTick::new(pos, nframes as u32, self.sample_rate, "jack".into(), view);
+        let mut tick = ClockTick::new(pos, nframes as u32, self.config_rate, "jack".into(), view);
+        if self.sample_rate > 0.0 && (self.sample_rate - self.config_rate).abs() > 1.0 {
+            tick.speed_ratio = self.config_rate as f64 / self.sample_rate as f64;
+        }
 
         unsafe {
             self.process_cb.call(&tick);
@@ -230,6 +234,7 @@ impl IoBackend for JackBackend {
         let in_port_names: Vec<_> = in_ports.iter().filter_map(|p| p.name().ok()).collect();
 
         let sample_rate = client.sample_rate() as f32;
+        let config_rate = self.config.sample_rate as f32;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
             out_ports,
@@ -238,6 +243,7 @@ impl IoBackend for JackBackend {
             out_ch,
             sample_pos: self.sample_pos.clone(),
             sample_rate,
+            config_rate,
             sys_clock: self.sys_clock.clone(),
         };
 

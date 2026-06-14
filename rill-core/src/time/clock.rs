@@ -46,6 +46,7 @@ impl SystemClock {
             tempo: Some(self.bpm() as f32),
             source: String::new(),
             view: Arc::new(NullBufferView::new(2, 2)),
+            speed_ratio: 1.0,
         }
     }
 
