@@ -369,7 +369,7 @@ impl IoBackend for PipewireBackend {
                     })
                     .process(move |stream, _| {
                         if !running2.load(Ordering::Acquire) {
-                            ml2.quit();
+                            ml.quit();
                             return;
                         }
                         let mut buf = match stream.dequeue_buffer() {
