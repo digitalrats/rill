@@ -31,10 +31,11 @@
 //!     processor: &mut dyn Processor<T, BUF_SIZE>,
 //!     sink: &mut dyn Sink<T, BUF_SIZE>,
 //!     ctx: &RenderContext,
+//!     tick: &ClockTick,
 //! ) -> ProcessResult<()> {
-//!     source.generate(ctx, &[], &[])?;
+//!     source.generate(ctx, &[], &[], tick)?;
 //!     processor.process(ctx, &[], &[], &[], &[])?;
-//!     sink.consume(ctx, &[], &[], &[], &[])?;
+//!     sink.consume(ctx, &[], &[], &[], &[], tick)?;
 //!     Ok(())
 //! }
 //! ```

@@ -109,6 +109,7 @@
 //!         ctx: &RenderContext,
 //!         _control_inputs: &[T],
 //!         _clock_inputs: &[RenderContext],
+//!         _tick: &ClockTick,
 //!     ) -> ProcessResult<()> {
 //!         let two_pi = T::from_f32(2.0 * std::f32::consts::PI);
 //!         let phase_inc = self.frequency / T::from_f32(ctx.sample_rate);

@@ -13,22 +13,27 @@ struct CbSlot(usize);
 
 impl CbSlot {
     fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
+        Self(Box::into_raw(Box::new(None::<Box<dyn FnMut(&ClockTick)>>)) as usize)
     }
-    unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
-        (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
+    unsafe fn set(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+        (*(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>)) = Some(cb);
     }
-    unsafe fn call(&self, sr: f32) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn(f32)>>) {
-            cb(sr);
+    unsafe fn call(&mut self, tick: &ClockTick) {
+        if let Some(ref mut cb) = *(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>) {
+            cb(tick);
         }
     }
     unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn(f32)>>));
+        drop(Box::from_raw(
+            self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>,
+        ));
     }
 }
 
 /// A no-op audio backend that produces silence and discards output.
+///
+/// Fires the process callback once inside `run()` for testing purposes,
+/// then returns immediately (no I/O loop).
 ///
 /// Useful for testing and offline processing.
 pub struct NullBackend {
@@ -62,12 +67,35 @@ impl NullBackend {
 
 impl IoBackend for NullBackend {
     fn create_view(&self) -> Arc<dyn BufferView> {
-        Arc::new(NullBufferView::new(0, 0))
+        Arc::new(NullBufferView::new(
+            self.config.input_channels as usize,
+            self.config.output_channels as usize,
+        ))
     }
 
-    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
+    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+        unsafe {
+            self.cb.set(cb);
+        }
+    }
 
     fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
+        let tick = ClockTick::new(
+            0,
+            self.config.buffer_size,
+            self.config.sample_rate as f32,
+            "null".into(),
+            Arc::new(NullBufferView::new(
+                self.config.input_channels as usize,
+                self.config.output_channels as usize,
+            )),
+        );
+        // Fire the callback once for testing — this triggers graph processing,
+        // which drains the actor mailbox (applies queued SetParameter commands).
+        unsafe {
+            let mut_ref: *mut CbSlot = &self.cb as *const CbSlot as *mut CbSlot;
+            (*mut_ref).call(&tick);
+        }
         Ok(())
     }
 
