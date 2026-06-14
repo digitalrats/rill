@@ -8,7 +8,7 @@ use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 use rill_core::traits::port::Port;
 use rill_core::traits::processable::Processable;
 use rill_core::traits::ParamValue;
-use rill_core::traits::{Node, NodeId, NodeVariant, Params};
+use rill_core::traits::{Node, NodeId, NodeVariant, Params, ProcessResult};
 use rill_core_actor::{Actor, ActorRef, ActorSystem};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
@@ -569,6 +569,55 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     pub system_clock: Option<Arc<SystemClock>>,
 }
 
+/// Owned processing state extracted from a [`Graph`].
+///
+/// Holds the parts needed for the I/O callback loop: the actor mailbox
+/// for draining `SetParameter` commands, the node array, and routing
+/// metadata.  The state is `!Send + !Sync` — it stays on the I/O thread.
+///
+/// Created via [`Graph::into_processing_state`].
+pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
+    actor: Actor<CommandEnum>,
+    nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
+    source_idx: usize,
+    parent_ref: Option<ActorRef<CommandEnum>>,
+    system_clock: Option<Arc<SystemClock>>,
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
+    /// Process one block of signal data driven by an external [`ClockTick`].
+    ///
+    /// Same logic as [`Graph::process_block`] but operates on independently
+    /// owned state (no borrow of the original `Graph`).
+    #[allow(unsafe_code)]
+    pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        self.actor.drain();
+        let ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            let _ = nv[self.source_idx].process_block(&ctx, tick);
+            for po in 0..nv[self.source_idx].num_signal_outputs() {
+                if let Some(port) = nv[self.source_idx].output_port(po) {
+                    let _ = port.propagate(port.buffer(), &ctx, tick);
+                }
+            }
+        }
+        if let Some(ref parent) = self.parent_ref {
+            parent.send(CommandEnum::ClockTick(tick.clone()));
+        }
+        Ok(())
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     // ========================================================================
     // Accessors
@@ -607,55 +656,76 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         &self.resources
     }
 
-    /// Run graph processing through the active node.
+    /// Process one block of signal data driven by an external [`ClockTick`].
+    ///
+    /// Called from the backend's process callback. Performs:
+    ///
+    /// 1. Drains the graph's actor mailbox (applies queued `SetParameter`s).
+    /// 2. Creates a [`RenderContext`] from the tick.
+    /// 3. Calls `process_block` on the source node and recursively
+    ///    propagates through the DAG via [`Port::propagate`].
+    /// 4. Sends the tick to the parent [`ActorRef`] (if any).
+    ///
+    /// The graph is `!Send + !Sync` — it stays on the I/O callback thread.
     #[allow(unsafe_code)]
-    pub fn run(&mut self, running: Arc<AtomicBool>) -> Result<(), String> {
-        let mut actor = self.actor.take().ok_or("graph already running")?;
-        let source = self.source_idx;
-        let parent = self.parent_ref.clone();
-        let nodes = self.nodes.clone();
-        let idx = self.active_node_idx;
-        let sys_clock = self.system_clock.clone();
-
-        let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
+    pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        if let Some(ref mut actor) = self.actor {
             actor.drain();
-            let ctx = if let Some(ref clock) = sys_clock {
-                RenderContext::with_tempo(
-                    sample_pos,
-                    BUF_SIZE as u32,
-                    sample_rate,
-                    clock.bpm() as f32,
-                )
-            } else {
-                RenderContext::new(sample_pos, BUF_SIZE as u32, sample_rate)
-            };
-            let tick = ClockTick::with_tempo(
-                sample_pos,
-                BUF_SIZE as u32,
-                sample_rate,
-                ctx.bpm(),
-                String::new(),
-                std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
-            );
-            unsafe {
-                let nv = &mut *nodes.get();
-                let _ = nv[source].process_block(&ctx, &tick);
-                for po in 0..nv[source].num_signal_outputs() {
-                    if let Some(port) = nv[source].output_port(po) {
-                        let _ = port.propagate(port.buffer(), &ctx, &tick);
-                    }
+        }
+        let ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        self.current_tick = tick.clone();
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            let _ = nv[self.source_idx].process_block(&ctx, tick);
+            for po in 0..nv[self.source_idx].num_signal_outputs() {
+                if let Some(port) = nv[self.source_idx].output_port(po) {
+                    let _ = port.propagate(port.buffer(), &ctx, tick);
                 }
             }
-            if let Some(ref parent) = parent {
-                parent.send(CommandEnum::ClockTick(tick));
-            }
-        });
+        }
+        if let Some(ref parent) = self.parent_ref {
+            parent.send(CommandEnum::ClockTick(tick.clone()));
+        }
+        Ok(())
+    }
 
-        unsafe {
-            self.nodes.get().as_mut().unwrap()[idx]
-                .as_active_node_mut()
-                .ok_or("no active node")?
-                .run(tick, running)
+    /// Convenience method: run graph processing in an internal loop.
+    ///
+    /// Fires one tick immediately and blocks on a NullBackend-managed
+    /// I/O loop.  This is the legacy entry point; new code should use
+    /// [`process_block`](Self::process_block) or [`ProcessingState`]
+    /// with an externally-managed backend.
+    #[allow(unsafe_code)]
+    pub fn run(&mut self, running: Arc<AtomicBool>) -> Result<(), String> {
+        self.process_block(&ClockTick::default());
+        while running.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::park();
+        }
+        Ok(())
+    }
+
+    /// Consume the graph and return a [`ProcessingState`] that owns all
+    /// parts needed for the I/O callback loop.
+    ///
+    /// `ProcessingState` is `!Send + !Sync` — it stays on the I/O thread
+    /// and is moved into the backend's process callback closure.
+    pub fn into_processing_state(mut self) -> ProcessingState<T, BUF_SIZE> {
+        let actor = self.actor.take().expect("graph actor missing");
+        ProcessingState {
+            actor,
+            nodes: self.nodes,
+            source_idx: self.source_idx,
+            parent_ref: self.parent_ref,
+            system_clock: self.system_clock,
         }
     }
 
