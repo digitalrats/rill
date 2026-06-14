@@ -66,6 +66,7 @@ pub struct PipewireBackend {
     sample_pos: Arc<AtomicU64>,
     negotiated_input_channels: Arc<AtomicU32>,
     negotiated_input_rate: Arc<AtomicU32>,
+    negotiated_output_rate: Arc<AtomicU32>,
     mode: IoMode,
 }
 
@@ -94,6 +95,7 @@ impl PipewireBackend {
             sample_pos: Arc::new(AtomicU64::new(0)),
             negotiated_input_channels: Arc::new(AtomicU32::new(input_channels)),
             negotiated_input_rate: Arc::new(AtomicU32::new(sample_rate)),
+            negotiated_output_rate: Arc::new(AtomicU32::new(sample_rate)),
             mode: if input_channels > 0 {
                 IoMode::InputDriver
             } else {
@@ -184,9 +186,21 @@ impl IoBackend for PipewireBackend {
             let out_spos = sample_pos.clone();
             let out_cb = process_cb;
             let is_input_driver = self.mode == IoMode::InputDriver;
+            let out_nrate = self.negotiated_output_rate.clone();
+            let out_nrate_proc = self.negotiated_output_rate.clone();
 
             let listener = stream
                 .add_local_listener_with_user_data(())
+                .param_changed(move |_stream, _data, id, param| {
+                    if id == spa_sys::SPA_PARAM_Format {
+                        if let Some(param) = param {
+                            let mut ai = spa::param::audio::AudioInfoRaw::new();
+                            if ai.parse(param).is_ok() {
+                                out_nrate.store(ai.rate(), Ordering::Relaxed);
+                            }
+                        }
+                    }
+                })
                 .process(move |s, _| {
                     if !out_running.load(Ordering::Acquire) {
                         out_ml.quit();
@@ -230,7 +244,13 @@ impl IoBackend for PipewireBackend {
                                 "pipewire".into(),
                                 view,
                             );
-                            tick.speed_ratio = 1.0;
+                            let nrate = out_nrate_proc.load(Ordering::Relaxed) as f64;
+                            let config_rate = out_sr as f64;
+                            tick.speed_ratio = if nrate > 0.0 && (config_rate - nrate).abs() > 1.0 {
+                                config_rate / nrate
+                            } else {
+                                1.0
+                            };
                             unsafe {
                                 out_cb.call(&tick);
                             }
