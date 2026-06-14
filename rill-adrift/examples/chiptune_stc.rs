@@ -5,8 +5,8 @@
 //! (the STC player) that receives ClockTick via the rack actor.
 //!
 //! Usage:
-//!   cargo run --example chiptune_stc --features "lofi,portaudio,serialization" -- [backend]
-//!   cargo run --example chiptune_stc --features "lofi,alsa,serialization" -- alsa
+//!   cargo run --example chiptune_stc --features "io,lofi,portaudio,serialization" -- [backend]
+//!   cargo run --example chiptune_stc --features "io,lofi,alsa,serialization" -- alsa
 
 use std::cell::RefCell;
 use std::collections::HashMap;

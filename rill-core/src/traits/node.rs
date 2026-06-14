@@ -309,6 +309,13 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
     /// Resolve named resource buffers (tape loops, etc.) from the registry.
     fn resolve_resources(&mut self, _buffers: &crate::buffer::BufferRegistry<T>) {}
 
+    /// Returns `Some(self)` if this node needs a control backend
+    /// injected at build time (e.g. `LofiInput` for chip register writes).
+    /// Returns `None` by default.
+    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
+        None
+    }
+
     /// Set node ID
     fn set_id(&mut self, id: NodeId);
 
@@ -396,6 +403,19 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
     fn num_outputs(&self) -> usize {
         self.num_signal_outputs() + self.num_control_outputs() + self.num_clock_outputs()
     }
+}
+
+// ============================================================================
+// IoNode Trait (control backends only)
+// ============================================================================
+
+/// Marker trait for nodes that accept a control backend at build time.
+///
+/// Only used for `LofiInput` which needs a backend for chip register writes.
+/// I/O backends are managed externally by the orchestrator.
+pub trait IoNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
+    /// Inject a control backend into this node.
+    fn resolve_backend(&mut self, backend: Box<dyn crate::io::IoBackend>);
 }
 
 // ============================================================================

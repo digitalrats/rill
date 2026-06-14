@@ -62,6 +62,7 @@ pub mod prelude {
         // Core traits
         BufferView,
         Eurorack,
+        IoNode,
         Node,
         NodeCategory,
         // Node types
