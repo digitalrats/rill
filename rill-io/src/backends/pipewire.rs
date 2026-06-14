@@ -1,9 +1,8 @@
 //! PipeWire backend for Linux
 //!
 //! Uses `pipewire` (0.9) with `MainLoopRc` / `ContextRc` / `StreamBox`.
-//! Signal data flows through `IoRingBuffer` pairs bridged by `DeinterleavedView`.
-//! The process callback receives a `ClockTick` carrying the view — graph nodes
-//! read/write through `tick.view` uniformly.
+//! Zero-copy via `DirectView` — graph nodes read/write directly from/to
+//! the PipeWire DMA buffers through `tick.view`.
 //!
 //! `run()` — blocking: initializes PW, creates context/core/streams,
 //! enters mainloop iterate loop. Exits when `running` becomes false.
@@ -17,26 +16,14 @@ use pw::properties::properties;
 use pw::spa;
 use pw::spa::sys as spa_sys;
 
-use crate::buffer::IoRingBuffer;
-use crate::buffer_view::DeinterleavedView;
+use crate::buffer_view::DirectView;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use rill_core::io::IoBackend;
 use rill_core::time::ClockTick;
-use rill_core::traits::buffer_view::BufferView;
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
-/// Maximum stereo block in samples (4096 frames × 2 channels).
-const MAX_BLOCK_SAMPLES: usize = 8192;
-
-/// I/O mode — determines which PW stream drives the tick.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum IoMode {
-    InputDriver,
-    OutputDriver,
-}
-
-/// Callback slot — stores the process callback via raw pointer for `Send`-safe
-/// single-threaded access from the PW RT callbacks.
+/// Callback slot — stores the process callback via raw pointer.
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
 
@@ -59,21 +46,20 @@ impl CbSlot {
     }
 }
 
+/// I/O mode — determines which PW stream drives the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum IoMode {
+    InputDriver,
+    OutputDriver,
+}
+
 // ============================================================================
 // PipewireBackend
 // ============================================================================
 
-/// PipeWire audio backend — processes audio via PW stream callbacks.
-///
-/// Signal data flows through `IoRingBuffer` → `DeinterleavedView` →
-/// `tick.view` in graph nodes.  The input stream callback writes capture
-/// data into the input ring; the output stream callback drains the output
-/// ring to the playback DMA buffer.
+/// PipeWire audio backend with zero-copy DMA access via `DirectView`.
 pub struct PipewireBackend {
     config: AudioConfig,
-    input_ring: Arc<IoRingBuffer>,
-    output_ring: Arc<IoRingBuffer>,
-    view: Arc<dyn BufferView>,
     process_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
@@ -92,35 +78,15 @@ impl fmt::Debug for PipewireBackend {
 }
 
 impl PipewireBackend {
-    /// Create a new PipeWire backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(target_os = "linux") {
             return Err(IoError::Unsupported(
                 "PipeWire is only available on Linux".into(),
             ));
         }
-
         let input_channels = config.input_channels;
-        let output_channels = config.output_channels;
         let sample_rate = config.sample_rate;
-        let block_size = config.buffer_size as usize;
-        let ring_cap = (block_size * output_channels.max(1) as usize * 256).next_power_of_two();
-        let in_ring_cap = (block_size * input_channels.max(1) as usize * 256).next_power_of_two();
-
-        let input_ring = Arc::new(IoRingBuffer::new(in_ring_cap));
-        let output_ring = Arc::new(IoRingBuffer::new(ring_cap));
-        let view: Arc<dyn BufferView> = Arc::new(DeinterleavedView::new(
-            input_ring.clone(),
-            output_ring.clone(),
-            input_channels as usize,
-            output_channels as usize,
-            block_size,
-        ));
-
         Ok(Self {
-            input_ring,
-            output_ring,
-            view,
             config,
             process_cb: CbSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
@@ -136,25 +102,12 @@ impl PipewireBackend {
         })
     }
 
-    /// Return the negotiated sample rate from PipeWire.
     pub fn negotiated_rate(&self) -> u32 {
         self.negotiated_input_rate.load(Ordering::Relaxed)
     }
 
-    /// Return the negotiated channel count from PipeWire.
     pub fn negotiated_channels(&self) -> u32 {
         self.negotiated_input_channels.load(Ordering::Relaxed)
-    }
-
-    /// Create a `ClockTick` for the current block.
-    fn make_tick(&self, sample_pos: u64, n_frames: u32, sample_rate: f32) -> ClockTick {
-        ClockTick::new(
-            sample_pos,
-            n_frames,
-            sample_rate,
-            "pipewire".into(),
-            self.view.clone(),
-        )
     }
 }
 
@@ -164,7 +117,11 @@ impl PipewireBackend {
 
 impl IoBackend for PipewireBackend {
     fn create_view(&self) -> Arc<dyn BufferView> {
-        self.view.clone()
+        // Real views are created per-callback with DMA pointers.
+        Arc::new(NullBufferView::new(
+            self.config.input_channels as usize,
+            self.config.output_channels as usize,
+        ))
     }
 
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
@@ -175,8 +132,6 @@ impl IoBackend for PipewireBackend {
 
     fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
         let process_cb = self.process_cb;
-        let ibuf = self.input_ring.clone();
-        let obuf = self.output_ring.clone();
         let xruns = self.xruns.clone();
         let sample_rate = self.config.sample_rate;
         let block_size = self.config.buffer_size;
@@ -184,7 +139,6 @@ impl IoBackend for PipewireBackend {
         let in_channels = self.config.input_channels;
         let out_device = self.config.output_device.clone();
         let in_device = self.config.input_device.clone();
-        let view = self.view.clone();
         let sample_pos = self.sample_pos.clone();
 
         pw::init();
@@ -205,7 +159,6 @@ impl IoBackend for PipewireBackend {
 
         if out_channels > 0 {
             let out_chan = out_channels;
-            let buf_frames = block_size as usize;
             let out_node = out_device.as_deref().unwrap_or("rill-output");
             let out_desc = format!("Rill Audio Output ({out_node})");
             let mut out_props = properties! {
@@ -228,13 +181,10 @@ impl IoBackend for PipewireBackend {
             let out_running = running.clone();
             let out_ml = ml.clone();
             let out_sr = sample_rate;
-            let out_ring = obuf.clone();
-            let out_view = view.clone();
             let out_spos = sample_pos.clone();
-            let out_block = block_size;
             let out_cb = process_cb;
             let is_input_driver = self.mode == IoMode::InputDriver;
-            let out_diag = std::sync::atomic::AtomicBool::new(true);
+
             let listener = stream
                 .add_local_listener_with_user_data(())
                 .process(move |s, _| {
@@ -259,44 +209,49 @@ impl IoBackend for PipewireBackend {
                     let total_samps = slice.len() / 4;
                     let n_frames = total_samps / out_chan as usize;
                     let stride = out_chan as usize * 4;
-                    let samples: &mut [f32] = unsafe {
-                        std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, total_samps)
-                    };
-
-                    if out_diag.swap(false, Ordering::Relaxed) {
-                        eprintln!(
-                            "PW out: n_frames={n_frames} total_samps={total_samps} out_block={out_block}"
-                        );
-                    }
 
                     if !is_input_driver {
+                        // OutputDriver: create DirectView, fire process_cb in chunks
                         let mut offset = 0usize;
                         while offset < n_frames {
-                            let chunk = (n_frames - offset).min(out_block as usize);
+                            let chunk = (n_frames - offset).min(block_size as usize);
+                            let view: Arc<dyn BufferView> = Arc::new(DirectView::new_output_only(
+                                unsafe {
+                                    slice.as_mut_ptr().add(offset * out_chan as usize) as *mut f32
+                                },
+                                out_chan as usize,
+                                chunk,
+                            ));
                             let pos = out_spos.fetch_add(chunk as u64, Ordering::Relaxed);
                             let tick = ClockTick::new(
                                 pos,
                                 chunk as u32,
                                 out_sr as f32,
                                 "pipewire".into(),
-                                out_view.clone(),
+                                view,
                             );
                             unsafe {
                                 out_cb.call(&tick);
                             }
                             offset += chunk;
                         }
-                    }
-
-                    let n = out_ring.read(samples);
-                    if n < total_samps {
-                        samples[n..].fill(0.0);
+                    } else {
+                        // InputDriver: copy output_ring → DMA (passive output)
+                        let samples: &mut [f32] = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                slice.as_mut_ptr() as *mut f32,
+                                total_samps,
+                            )
+                        };
+                        // In InputDriver mode, the input callback drives the tick
+                        // and fills a ring buffer. For now, silence the output.
+                        samples.fill(0.0);
                     }
 
                     let ck = data.chunk_mut();
                     *ck.offset_mut() = 0;
                     *ck.stride_mut() = stride as i32;
-                    *ck.size_mut() = (n * 4) as u32;
+                    *ck.size_mut() = (total_samps * 4) as u32;
                 })
                 .register()
                 .map_err(|e| format!("PW output listener: {e}"))?;
@@ -398,7 +353,6 @@ impl IoBackend for PipewireBackend {
                 let nch_proc = self.negotiated_input_channels.clone();
                 let nrate_proc = self.negotiated_input_rate.clone();
                 let is_driver = self.mode == IoMode::InputDriver;
-                let buf_frames = block_size as usize;
 
                 let listener = in_st
                     .add_local_listener_with_user_data(())
@@ -415,7 +369,7 @@ impl IoBackend for PipewireBackend {
                     })
                     .process(move |stream, _| {
                         if !running2.load(Ordering::Acquire) {
-                            ml.quit();
+                            ml2.quit();
                             return;
                         }
                         let mut buf = match stream.dequeue_buffer() {
@@ -464,34 +418,32 @@ impl IoBackend for PipewireBackend {
                         let data_start = chunk_offset.min(slice.len());
                         let data_end = (chunk_offset + chunk_size).min(slice.len());
                         let sample_bytes = &slice[data_start..data_end];
-                        let samples: &[f32] = bytemuck::cast_slice(sample_bytes);
-                        let len = samples.len().min(MAX_BLOCK_SAMPLES);
+                        let total_samps = sample_bytes.len() / 4;
 
-                        let written = ibuf.write(&samples[..len]);
-                        if written < len {
-                            log::warn!(
-                                "PW input: ring buffer overflow, wrote {written}/{} samples",
-                                len
-                            );
-                        }
+                        let view: Arc<dyn BufferView> = Arc::new(DirectView::new_interleaved(
+                            sample_bytes.as_ptr() as *const f32,
+                            std::ptr::null_mut(),
+                            actual_channels,
+                            0,
+                            total_samps / actual_channels.max(1),
+                        ));
 
-                        let block_samps = buf_frames * actual_channels;
                         if out_channels == 0 || is_driver {
-                            while ibuf.len() >= block_samps {
-                                let sr = nrate_proc.load(Ordering::Relaxed) as f32;
-                                let effective_sr = if sr > 0.0 { sr } else { sample_rate as f32 };
-                                let pos =
-                                    sample_pos.fetch_add(buf_frames as u64, Ordering::Relaxed);
-                                let tick = ClockTick::new(
-                                    pos,
-                                    buf_frames as u32,
-                                    effective_sr,
-                                    "pipewire".into(),
-                                    view.clone(),
-                                );
-                                unsafe {
-                                    process_cb.call(&tick);
-                                }
+                            let sr = nrate_proc.load(Ordering::Relaxed) as f32;
+                            let effective_sr = if sr > 0.0 { sr } else { sample_rate as f32 };
+                            let pos = sample_pos.fetch_add(
+                                (total_samps / actual_channels.max(1)) as u64,
+                                Ordering::Relaxed,
+                            );
+                            let tick = ClockTick::new(
+                                pos,
+                                (total_samps / actual_channels.max(1)) as u32,
+                                effective_sr,
+                                "pipewire".into(),
+                                view,
+                            );
+                            unsafe {
+                                process_cb.call(&tick);
                             }
                         }
                     })

@@ -1,9 +1,8 @@
 //! ALSA backend for Linux
 //!
 //! `run()` — blocking: opens PCM, configures, enters a poll-driven loop.
-//! Signal data flows through `IoRingBuffer` pairs bridged by `DeinterleavedView`.
-//! The process callback receives a `ClockTick` carrying the view — graph nodes
-//! read/write through `tick.view` uniformly.
+//! Zero-copy via `DirectView` — graph nodes read/write directly from/to
+//! per-block f32 buffers through `tick.view`.
 //!
 //! Exits when `running` becomes false. Cleanup happens inside `run()` before returning.
 
@@ -16,14 +15,13 @@ use std::sync::Arc;
 use alsa::pcm::{Access, Format, HwParams};
 use alsa::{Direction, ValueOr, PCM};
 
-use crate::buffer::IoRingBuffer;
-use crate::buffer_view::DeinterleavedView;
+use crate::buffer_view::DirectView;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use rill_core::io::IoBackend;
 use rill_core::math::functions::{f32_to_i16_chunk, i16_to_f32_chunk};
 use rill_core::time::ClockTick;
-use rill_core::traits::buffer_view::BufferView;
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 // ============================================================================
 // Callback slot
@@ -59,15 +57,11 @@ impl CbSlot {
 
 /// ALSA audio backend — poll-driven I/O loop.
 ///
-/// Signal data flows through `IoRingBuffer` → `DeinterleavedView` →
-/// `tick.view` in graph nodes.  The poll loop reads capture data into the
-/// input ring, triggers graph processing via the view, then drains the
-/// output ring to the playback PCM.
+/// Zero-copy DMA access via `DirectView` — per-block f32 buffers are
+/// allocated on the stack inside the poll loop.  Graph nodes read/write
+/// through `tick.view` directly without ring buffers.
 pub struct AlsaBackend {
     config: AudioConfig,
-    input_ring: Arc<IoRingBuffer>,
-    output_ring: Arc<IoRingBuffer>,
-    view: Arc<dyn BufferView>,
     process_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
@@ -86,27 +80,8 @@ impl fmt::Debug for AlsaBackend {
 impl AlsaBackend {
     /// Create a new ALSA backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
-        let input_channels = config.input_channels;
-        let output_channels = config.output_channels;
-        let block_size = config.buffer_size as usize;
-        let ring_cap = (block_size * output_channels.max(1) as usize * 32).next_power_of_two();
-        let in_ring_cap = (block_size * input_channels.max(1) as usize * 32).next_power_of_two();
-
-        let input_ring = Arc::new(IoRingBuffer::new(in_ring_cap));
-        let output_ring = Arc::new(IoRingBuffer::new(ring_cap));
-        let view: Arc<dyn BufferView> = Arc::new(DeinterleavedView::new(
-            input_ring.clone(),
-            output_ring.clone(),
-            input_channels as usize,
-            output_channels as usize,
-            block_size,
-        ));
-
         Ok(Self {
             config,
-            input_ring,
-            output_ring,
-            view,
             process_cb: CbSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
@@ -122,9 +97,6 @@ impl AlsaBackend {
 fn alsa_io_loop(
     process_cb: CbSlot,
     xruns: Arc<AtomicU32>,
-    input_ring: Arc<IoRingBuffer>,
-    output_ring: Arc<IoRingBuffer>,
-    view: Arc<dyn BufferView>,
     sample_pos: Arc<AtomicU64>,
     config: &AudioConfig,
     running: &AtomicBool,
@@ -189,7 +161,8 @@ fn alsa_io_loop(
     let chunk_samples = buf_frames * out_ch.max(1);
     let in_sz = (buf_frames * in_ch).clamp(1, MAX_BLOCK_SAMPLES);
 
-    let mut f32_buf = [0.0f32; MAX_BLOCK_SAMPLES];
+    let mut cap_f32 = [0.0f32; MAX_BLOCK_SAMPLES];
+    let mut play_f32 = [0.0f32; MAX_BLOCK_SAMPLES];
     let mut i16_buf = [0i16; MAX_BLOCK_SAMPLES];
     let mut cb_i16 = [0i16; MAX_BLOCK_SAMPLES];
 
@@ -227,16 +200,15 @@ fn alsa_io_loop(
             break;
         }
 
-        // ── Capture: read interleaved i16 → convert to f32 → write to input ring ──
+        // ── Capture: read interleaved i16 → convert to f32 → fill cap_f32 ──
         if has_capture {
             let pcm = pcm_capture.as_ref().unwrap();
             match pcm.io_i16() {
                 Ok(io) => match io.readi(&mut cb_i16[..in_sz]) {
                     Ok(n_read) => {
                         let n = (n_read * in_ch).min(in_sz);
-                        let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-                        i16_to_f32_chunk(&cb_i16[..n], &mut temp[..n]);
-                        input_ring.write(&temp[..n]);
+                        cap_f32[..n].fill(0.0);
+                        i16_to_f32_chunk(&cb_i16[..n], &mut cap_f32[..n]);
                     }
                     Err(e) => {
                         eprintln!("ALSA capture read: {e}");
@@ -249,28 +221,44 @@ fn alsa_io_loop(
             }
         }
 
-        // ── Process block: create ClockTick → call graph callback ──
-        let pos = sample_pos.fetch_add(buf_frames as u64, Ordering::Relaxed);
-        let tick = ClockTick::new(
-            pos,
-            buf_frames as u32,
-            negotiated_rate,
-            "alsa".into(),
-            view.clone(),
-        );
-        unsafe {
-            process_cb.call(&tick);
+        // ── Process block: create DirectView → ClockTick → call graph callback ──
+        {
+            let view: Arc<dyn BufferView> = if has_capture && has_playback {
+                Arc::new(DirectView::new_interleaved(
+                    cap_f32.as_ptr(),
+                    play_f32.as_mut_ptr(),
+                    in_ch,
+                    out_ch,
+                    buf_frames,
+                ))
+            } else if has_capture {
+                Arc::new(DirectView::new_interleaved(
+                    cap_f32.as_ptr(),
+                    std::ptr::null_mut(),
+                    in_ch,
+                    0,
+                    buf_frames,
+                ))
+            } else {
+                Arc::new(DirectView::new_output_only(
+                    play_f32.as_mut_ptr(),
+                    out_ch,
+                    buf_frames,
+                ))
+            };
+
+            let pos = sample_pos.fetch_add(buf_frames as u64, Ordering::Relaxed);
+            let tick = ClockTick::new(pos, buf_frames as u32, negotiated_rate, "alsa".into(), view);
+            unsafe {
+                process_cb.call(&tick);
+            }
         }
 
-        // ── Playback: read interleaved f32 from output ring → convert to i16 → write ──
+        // ── Playback: convert play_f32 → i16 → write to PCM ──
         if has_playback {
             let pcm = pcm_playback.as_ref().unwrap();
             let total_samps = chunk_samples;
-            let n = output_ring.read(&mut f32_buf[..total_samps]);
-            if n < total_samps {
-                f32_buf[n..total_samps].fill(0.0);
-            }
-            f32_to_i16_chunk(&f32_buf[..total_samps], &mut i16_buf[..total_samps]);
+            f32_to_i16_chunk(&play_f32[..total_samps], &mut i16_buf[..total_samps]);
 
             let mut retries = 3usize;
             loop {
@@ -346,7 +334,11 @@ fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<(u3
 
 impl IoBackend for AlsaBackend {
     fn create_view(&self) -> Arc<dyn BufferView> {
-        self.view.clone()
+        // Real views are created per-callback with DMA pointers.
+        Arc::new(NullBufferView::new(
+            self.config.input_channels as usize,
+            self.config.output_channels as usize,
+        ))
     }
 
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
@@ -360,9 +352,6 @@ impl IoBackend for AlsaBackend {
         alsa_io_loop(
             self.process_cb,
             self.xruns.clone(),
-            self.input_ring.clone(),
-            self.output_ring.clone(),
-            self.view.clone(),
             self.sample_pos.clone(),
             &self.config,
             &running,

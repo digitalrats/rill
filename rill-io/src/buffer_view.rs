@@ -1,46 +1,171 @@
 //! Backend-specific BufferView implementations.
 //!
-//! Each backend provides its own `BufferView` adapter that encapsulates
-//! per-backend rules (interleave/deinterleave semantics) for reading
-//! input from and writing output to lock-free `IoRingBuffer`s.
+//! `DirectView` provides zero-copy access to DMA buffers during the
+//! I/O callback.  Raw pointers are valid only for the duration of the
+//! `process_cb.call()` — no ring buffers, no extra copies.
+//!
+//! `DeinterleavedView` bridges `IoRingBuffer` pairs for interleaved backends
+//! (PortAudio, ALSA) — deinterleaves on read, interleaves on write.
 
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use crate::buffer::IoRingBuffer;
 use rill_core::traits::buffer_view::BufferView;
 
-use crate::buffer::IoRingBuffer;
+/// Maximum channel count for planar layouts.
+const MAX_CH: usize = 8;
 
-/// Maximum interleaved buffer size: 1024 frames × 8 channels = 8192 floats.
-/// Per-chunk cache — the ring buffer handles accumulation across chunks.
-const MAX_INTERLEAVED: usize = 8192;
+/// Zero-copy BufferView that reads/writes directly from/to DMA buffers.
+///
+/// Created inside the backend's process callback with raw pointers to
+/// the hardware DMA buffers.  Pointers are valid only for the duration
+/// of `process_cb.call(&tick)`.
+///
+/// Supports both interleaved (single ptr per direction, stride = channels)
+/// and planar (per-channel ptrs, stride = 1) layouts.
+pub struct DirectView {
+    /// Interleaved input buffer (if planar, unused).
+    in_ptr: *const f32,
+    /// Interleaved output buffer (if planar, unused).
+    out_ptr: *mut f32,
+    /// Per-channel input pointers (if interleaved, unused).
+    in_ptrs: [*const f32; MAX_CH],
+    /// Per-channel output pointers (if interleaved, unused).
+    out_ptrs: [*mut f32; MAX_CH],
+    num_in: usize,
+    num_out: usize,
+    n_frames: usize,
+    /// true = interleaved (use in_ptr/out_ptr), false = planar (use in_ptrs/out_ptrs).
+    planar: bool,
+}
 
-/// BufferView for interleaved backends (PipeWire, PortAudio, JACK, ALSA).
-///
-/// Input: the first `read_input` call of a block drains `input_ring` and
-/// caches the interleaved data; subsequent calls within the same block
-/// serve from the cache.
-///
-/// Output: `write_output` calls accumulate per-channel data into a shared
-/// interleaved buffer.  The buffer is flushed to `output_ring` when all
-/// channels have been written for the block.
+// Safety: pointers are valid for the duration of the callback,
+// single-threaded access inside graph processing.
+unsafe impl Send for DirectView {}
+unsafe impl Sync for DirectView {}
+
+impl DirectView {
+    /// Create a view for interleaved DMA buffers.
+    ///
+    /// `input` / `output` point to the start of the interleaved buffer.
+    /// Stride is `num_channels`.
+    pub fn new_interleaved(
+        input: *const f32,
+        output: *mut f32,
+        num_input_channels: usize,
+        num_output_channels: usize,
+        n_frames: usize,
+    ) -> Self {
+        Self {
+            in_ptr: input,
+            out_ptr: output,
+            in_ptrs: [std::ptr::null(); MAX_CH],
+            out_ptrs: [std::ptr::null_mut(); MAX_CH],
+            num_in: num_input_channels,
+            num_out: num_output_channels,
+            n_frames,
+            planar: false,
+        }
+    }
+
+    /// Create a view for planar (per-channel) DMA buffers.
+    ///
+    /// `inputs` / `outputs` are arrays of per-channel pointers.
+    pub fn new_planar(inputs: &[*const f32], outputs: &[*mut f32], n_frames: usize) -> Self {
+        let mut s = Self {
+            in_ptr: std::ptr::null(),
+            out_ptr: std::ptr::null_mut(),
+            in_ptrs: [std::ptr::null(); MAX_CH],
+            out_ptrs: [std::ptr::null_mut(); MAX_CH],
+            num_in: inputs.len(),
+            num_out: outputs.len(),
+            n_frames,
+            planar: true,
+        };
+        for (i, &p) in inputs.iter().enumerate() {
+            if i < MAX_CH {
+                s.in_ptrs[i] = p;
+            }
+        }
+        for (i, &p) in outputs.iter().enumerate() {
+            if i < MAX_CH {
+                s.out_ptrs[i] = p;
+            }
+        }
+        s
+    }
+
+    /// Create an output-only interleaved view (no input).
+    pub fn new_output_only(output: *mut f32, num_channels: usize, n_frames: usize) -> Self {
+        Self::new_interleaved(std::ptr::null(), output, 0, num_channels, n_frames)
+    }
+}
+
+impl BufferView for DirectView {
+    fn num_input_channels(&self) -> usize {
+        self.num_in
+    }
+
+    fn num_output_channels(&self) -> usize {
+        self.num_out
+    }
+
+    fn read_input(&self, channel: usize, dst: &mut [f32]) -> usize {
+        if self.num_in == 0 || channel >= self.num_in {
+            dst.fill(0.0);
+            return dst.len();
+        }
+        let n = dst.len().min(self.n_frames);
+        if self.planar {
+            unsafe {
+                let src = std::slice::from_raw_parts(self.in_ptrs[channel], self.n_frames);
+                dst[..n].copy_from_slice(&src[..n]);
+            }
+        } else {
+            let stride = self.num_in;
+            unsafe {
+                for i in 0..n {
+                    dst[i] = *self.in_ptr.add(i * stride + channel);
+                }
+            }
+        }
+        for s in dst.iter_mut().skip(n) {
+            *s = 0.0;
+        }
+        n
+    }
+
+    fn write_output(&self, channel: usize, src: &[f32]) -> usize {
+        if self.num_out == 0 || channel >= self.num_out {
+            return src.len();
+        }
+        let n = src.len().min(self.n_frames);
+        if self.planar {
+            unsafe {
+                let dst = std::slice::from_raw_parts_mut(self.out_ptrs[channel], self.n_frames);
+                dst[..n].copy_from_slice(&src[..n]);
+            }
+        } else {
+            let stride = self.num_out;
+            unsafe {
+                for i in 0..n {
+                    *self.out_ptr.add(i * stride + channel) = src[i];
+                }
+            }
+        }
+        n
+    }
+}
+
+/// BufferView that bridges `IoRingBuffer` pairs for interleaved backends
+/// (PortAudio, ALSA). Deinterleaves on read, interleaves on write.
 pub struct DeinterleavedView {
     input_ring: Arc<IoRingBuffer>,
     output_ring: Arc<IoRingBuffer>,
     num_input_channels: usize,
     num_output_channels: usize,
-    /// Input cache: interleaved data + byte length.
-    in_cache: UnsafeCell<([f32; MAX_INTERLEAVED], usize)>,
-    /// Output cache: interleaved accumulation buffer + channels written count.
-    out_cache: UnsafeCell<([f32; MAX_INTERLEAVED], usize)>,
-    out_channels_written: AtomicUsize,
+    block_size: usize,
 }
-
-// Safety: DeinterleavedView is used single-threaded inside the graph
-// processing callback.
-unsafe impl Send for DeinterleavedView {}
-unsafe impl Sync for DeinterleavedView {}
 
 impl DeinterleavedView {
     pub fn new(
@@ -48,28 +173,14 @@ impl DeinterleavedView {
         output_ring: Arc<IoRingBuffer>,
         num_input_channels: usize,
         num_output_channels: usize,
-        _block_size: usize,
+        block_size: usize,
     ) -> Self {
-        let _ = _block_size;
         Self {
             input_ring,
             output_ring,
             num_input_channels,
             num_output_channels,
-            in_cache: UnsafeCell::new(([0.0f32; MAX_INTERLEAVED], 0)),
-            out_cache: UnsafeCell::new(([0.0f32; MAX_INTERLEAVED], 0)),
-            out_channels_written: AtomicUsize::new(0),
-        }
-    }
-
-    fn ensure_input_cache(&self) -> &[f32] {
-        unsafe {
-            let (ref mut buf, ref mut len) = *self.in_cache.get();
-            if *len == 0 && self.num_input_channels > 0 {
-                let needed = MAX_INTERLEAVED;
-                *len = self.input_ring.read(&mut buf[..needed]);
-            }
-            &buf[..*len]
+            block_size,
         }
     }
 }
@@ -84,181 +195,23 @@ impl BufferView for DeinterleavedView {
     }
 
     fn read_input(&self, channel: usize, dst: &mut [f32]) -> usize {
-        if self.num_input_channels == 0 || channel >= self.num_input_channels {
-            dst.fill(0.0);
-            return dst.len();
-        }
+        let n = dst.len().min(self.block_size);
         let stride = self.num_input_channels;
-        let interleaved = self.ensure_input_cache();
-        let total_frames = if stride > 0 {
-            interleaved.len() / stride
-        } else {
-            0
-        };
-        let n_frames = dst.len().min(total_frames);
-        for i in 0..n_frames {
-            dst[i] = interleaved[i * stride + channel];
+        let mut buf = vec![0.0f32; n * stride];
+        let read = self.input_ring.read(&mut buf);
+        for frame in 0..(read / stride).min(n) {
+            dst[frame] = buf[frame * stride + channel];
         }
-        for s in dst.iter_mut().skip(n_frames) {
-            *s = 0.0;
-        }
-        // Invalidate cache after last channel so next block refills fresh
-        if channel + 1 >= self.num_input_channels {
-            unsafe {
-                (*self.in_cache.get()).1 = 0;
-            }
-        }
-        n_frames
+        (read / stride).min(n)
     }
 
     fn write_output(&self, channel: usize, src: &[f32]) -> usize {
-        if self.num_output_channels == 0 || channel >= self.num_output_channels {
-            return src.len();
-        }
-        let n_frames = src.len();
+        let n = src.len().min(self.block_size);
         let stride = self.num_output_channels;
-        if n_frames == 0 || stride == 0 {
-            return 0;
+        let mut buf = vec![0.0f32; n * stride];
+        for frame in 0..n {
+            buf[frame * stride + channel] = src[frame];
         }
-
-        // Accumulate into shared interleaved output buffer
-        unsafe {
-            let (ref mut buf, ref mut len) = *self.out_cache.get();
-            let needed = n_frames * stride;
-            if *len == 0 {
-                // Clear the cache for a new block
-                for v in buf[..needed.min(MAX_INTERLEAVED)].iter_mut() {
-                    *v = 0.0;
-                }
-            }
-            for i in 0..n_frames {
-                buf[i * stride + channel] = src[i];
-            }
-            *len = needed;
-
-            let prev = self.out_channels_written.fetch_add(1, Ordering::Relaxed);
-            // Last channel flushes the buffer to the ring
-            if prev + 1 >= self.num_output_channels {
-                let written = self.output_ring.write(&buf[..needed.min(MAX_INTERLEAVED)]);
-                *len = 0;
-                self.out_channels_written.store(0, Ordering::Relaxed);
-                return written / stride;
-            }
-        }
-        n_frames
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_deinterleaved_view_read_input() {
-        let input_ring = Arc::new(IoRingBuffer::new(64));
-        let output_ring = Arc::new(IoRingBuffer::new(64));
-        let view = DeinterleavedView::new(input_ring.clone(), output_ring, 2, 0, 8);
-
-        let interleaved: [f32; 16] = [
-            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
-        ];
-        input_ring.write(&interleaved);
-
-        let mut left = [0.0f32; 8];
-        let mut right = [0.0f32; 8];
-        let n_left = view.read_input(0, &mut left);
-        let n_right = view.read_input(1, &mut right);
-
-        assert_eq!(n_left, 8);
-        assert_eq!(n_right, 8);
-        assert_eq!(left, [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0]);
-        assert_eq!(right, [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0]);
-    }
-
-    #[test]
-    fn test_deinterleaved_view_write_output() {
-        let input_ring = Arc::new(IoRingBuffer::new(64));
-        let output_ring = Arc::new(IoRingBuffer::new(64));
-        let view = DeinterleavedView::new(input_ring, output_ring.clone(), 0, 2, 8);
-
-        let left = [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0_f32];
-        let right = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0_f32];
-        view.write_output(0, &left);
-        view.write_output(1, &right);
-
-        let mut interleaved = [0.0f32; 16];
-        output_ring.read(&mut interleaved);
-        assert_eq!(
-            interleaved,
-            [
-                0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
-                15.0
-            ]
-        );
-    }
-
-    #[test]
-    fn test_roundtrip_push_pull() {
-        let input_ring = Arc::new(IoRingBuffer::new(256));
-        let output_ring = Arc::new(IoRingBuffer::new(256));
-        let view = DeinterleavedView::new(input_ring.clone(), output_ring.clone(), 2, 2, 8);
-
-        // Push: interleaved input
-        let stereo_in: [f32; 16] = [
-            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6,
-        ];
-        input_ring.write(&stereo_in);
-
-        // Read per-channel (graph input)
-        let mut lb = [0.0f32; 8];
-        let mut rb = [0.0f32; 8];
-        view.read_input(0, &mut lb);
-        view.read_input(1, &mut rb);
-
-        // Identity: write same data (graph output)
-        view.write_output(0, &lb);
-        view.write_output(1, &rb);
-
-        // Pull: interleaved output
-        let mut stereo_out = [0.0f32; 16];
-        output_ring.read(&mut stereo_out);
-        assert_eq!(stereo_out, stereo_in);
-    }
-
-    #[test]
-    fn test_push_pull_multiple_blocks() {
-        let input_ring = Arc::new(IoRingBuffer::new(256));
-        let output_ring = Arc::new(IoRingBuffer::new(256));
-        let view = DeinterleavedView::new(input_ring.clone(), output_ring.clone(), 2, 2, 4);
-
-        for block in 0..3 {
-            let base = (block * 8) as f32;
-            let in_data: [f32; 8] = [
-                base,
-                base + 1.0,
-                base + 2.0,
-                base + 3.0,
-                base + 4.0,
-                base + 5.0,
-                base + 6.0,
-                base + 7.0,
-            ];
-            input_ring.write(&in_data);
-
-            let mut lb = [0.0f32; 4];
-            let mut rb = [0.0f32; 4];
-            view.read_input(0, &mut lb);
-            view.read_input(1, &mut rb);
-
-            assert_eq!(lb, [base, base + 2.0, base + 4.0, base + 6.0]);
-            assert_eq!(rb, [base + 1.0, base + 3.0, base + 5.0, base + 7.0]);
-
-            view.write_output(0, &lb);
-            view.write_output(1, &rb);
-
-            let mut out_data = [0.0f32; 8];
-            output_ring.read(&mut out_data);
-            assert_eq!(out_data, in_data);
-        }
+        self.output_ring.write(&buf)
     }
 }

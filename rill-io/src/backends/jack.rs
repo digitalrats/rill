@@ -1,7 +1,8 @@
-//! JACK backend — signal data flows through `IoRingBuffer` pairs
-//! bridged by `DeinterleavedView`. The process callback receives a
-//! `ClockTick` carrying the view — graph nodes read/write through
-//! `tick.view` uniformly.
+//! JACK backend — zero-copy DMA access via `DirectView`.
+//! JACK provides per-channel (planar) buffer pointers; the process
+//! callback wraps them in a `DirectView::new_planar()` and fires
+//! `process_cb.call(&tick)` once per JACK buffer — graph nodes
+//! read/write directly from/to JACK DMA buffers through `tick.view`.
 //!
 //! `run()` — blocking: creates JACK client, activates, enters poll
 //! loop. Process callback runs on JACK RT thread.
@@ -14,17 +15,12 @@ use std::sync::Arc;
 
 use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
 
-use crate::buffer::IoRingBuffer;
-use crate::buffer_view::DeinterleavedView;
+use crate::buffer_view::DirectView;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use rill_core::io::IoBackend;
 use rill_core::time::{ClockTick, SystemClock};
-use rill_core::traits::buffer_view::BufferView;
-
-/// Maximum interleaved buffer size: 4096 frames × 2 channels = 8192 floats.
-/// Stack-allocated to avoid heap allocation in the RT path.
-const MAX_INTERLEAVED: usize = 8192;
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 /// Callback slot — stores the process callback via raw pointer for `Send`-safe
 /// single-threaded access from the JACK RT callback.
@@ -53,9 +49,6 @@ impl CbSlot {
 /// JACK signal backend.
 pub struct JackBackend {
     config: AudioConfig,
-    input_ring: Arc<IoRingBuffer>,
-    output_ring: Arc<IoRingBuffer>,
-    view: Arc<dyn BufferView>,
     process_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
@@ -87,27 +80,8 @@ impl JackBackend {
             ));
         }
 
-        let input_channels = config.input_channels as usize;
-        let output_channels = config.output_channels as usize;
-        let block_size = config.buffer_size as usize;
-        let ring_cap = (block_size * output_channels.max(1) * 32).next_power_of_two();
-        let in_ring_cap = (block_size * input_channels.max(1) * 32).next_power_of_two();
-
-        let input_ring = Arc::new(IoRingBuffer::new(in_ring_cap));
-        let output_ring = Arc::new(IoRingBuffer::new(ring_cap));
-        let view: Arc<dyn BufferView> = Arc::new(DeinterleavedView::new(
-            input_ring.clone(),
-            output_ring.clone(),
-            input_channels,
-            output_channels,
-            block_size,
-        ));
-
         Ok(Self {
             config,
-            input_ring,
-            output_ring,
-            view,
             process_cb: CbSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
@@ -137,18 +111,13 @@ struct JackProcessHandler {
     in_ports: Vec<Port<AudioIn>>,
     in_ch: usize,
     out_ch: usize,
-    input_ring: Arc<IoRingBuffer>,
-    output_ring: Arc<IoRingBuffer>,
-    view: Arc<dyn BufferView>,
     sample_pos: Arc<AtomicU64>,
     sample_rate: f32,
-    block_size: usize,
     sys_clock: Option<Arc<SystemClock>>,
 }
 
 impl ProcessHandler for JackProcessHandler {
     fn process(&mut self, client: &Client, ps: &ProcessScope) -> Control {
-        // JACK Transport sync — update BPM from transport master
         if let Some(ref clock) = self.sys_clock {
             if let Ok(state) = client.transport().query() {
                 if state.pos.valid_bbt() {
@@ -160,61 +129,32 @@ impl ProcessHandler for JackProcessHandler {
         }
 
         let nframes = ps.n_frames() as usize;
-        let chunk = self.block_size;
 
-        // Capture: write all input to ring buffer (one interleaved write)
-        if !self.in_ports.is_empty() && self.in_ch > 0 {
-            let total_samps = nframes * self.in_ch;
-            let cap = total_samps.min(MAX_INTERLEAVED);
-            let mut interleaved = [0.0f32; MAX_INTERLEAVED];
-            for i in 0..nframes {
-                for ch in 0..self.in_ch {
-                    if ch < self.in_ports.len() {
-                        let src = self.in_ports[ch].as_slice(ps);
-                        if i < src.len() {
-                            interleaved[i * self.in_ch + ch] = src[i];
-                        }
-                    }
-                }
+        let mut in_ptrs: [*const f32; 8] = [std::ptr::null(); 8];
+        let mut out_ptrs: [*mut f32; 8] = [std::ptr::null_mut(); 8];
+
+        for ch in 0..self.in_ch {
+            if ch < self.in_ports.len() {
+                in_ptrs[ch] = self.in_ports[ch].as_slice(ps).as_ptr();
             }
-            self.input_ring.write(&interleaved[..cap]);
+        }
+        for ch in 0..self.out_ch {
+            if ch < self.out_ports.len() {
+                out_ptrs[ch] = self.out_ports[ch].as_mut_slice(ps).as_mut_ptr();
+            }
         }
 
-        // Process in chunks of block_size — graph processes BUF_SIZE frames per call
-        let mut offset = 0usize;
-        while offset < nframes {
-            let n = (nframes - offset).min(chunk);
-            let pos = self.sample_pos.fetch_add(n as u64, Ordering::Relaxed);
-            let tick = ClockTick::new(
-                pos,
-                n as u32,
-                self.sample_rate,
-                "jack".into(),
-                self.view.clone(),
-            );
-            unsafe {
-                self.process_cb.call(&tick);
-            }
-            offset += n;
-        }
+        let view: Arc<dyn BufferView> = Arc::new(DirectView::new_planar(
+            &in_ptrs[..self.in_ch],
+            &out_ptrs[..self.out_ch],
+            nframes,
+        ));
 
-        // Playback: read output ring → output ports (deinterleaved)
-        if !self.out_ports.is_empty() && self.out_ch > 0 {
-            let total_samps = nframes * self.out_ch;
-            let cap = total_samps.min(MAX_INTERLEAVED);
-            let mut interleaved = [0.0f32; MAX_INTERLEAVED];
-            let n = self.output_ring.read(&mut interleaved[..cap]);
-            for ch in 0..self.out_ch {
-                let buf = self.out_ports[ch].as_mut_slice(ps);
-                for i in 0..nframes {
-                    let idx = i * self.out_ch + ch;
-                    if idx < n {
-                        buf[i] = interleaved[idx];
-                    } else {
-                        buf[i] = 0.0;
-                    }
-                }
-            }
+        let pos = self.sample_pos.fetch_add(nframes as u64, Ordering::Relaxed);
+        let tick = ClockTick::new(pos, nframes as u32, self.sample_rate, "jack".into(), view);
+
+        unsafe {
+            self.process_cb.call(&tick);
         }
 
         Control::Continue
@@ -227,7 +167,10 @@ impl ProcessHandler for JackProcessHandler {
 
 impl IoBackend for JackBackend {
     fn create_view(&self) -> Arc<dyn BufferView> {
-        self.view.clone()
+        Arc::new(NullBufferView::new(
+            self.config.input_channels as usize,
+            self.config.output_channels as usize,
+        ))
     }
 
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
@@ -287,19 +230,14 @@ impl IoBackend for JackBackend {
         let in_port_names: Vec<_> = in_ports.iter().filter_map(|p| p.name().ok()).collect();
 
         let sample_rate = client.sample_rate() as f32;
-        let block_size = self.config.buffer_size as usize;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
             out_ports,
             in_ports,
             in_ch,
             out_ch,
-            input_ring: self.input_ring.clone(),
-            output_ring: self.output_ring.clone(),
-            view: self.view.clone(),
             sample_pos: self.sample_pos.clone(),
             sample_rate,
-            block_size,
             sys_clock: self.sys_clock.clone(),
         };
 
