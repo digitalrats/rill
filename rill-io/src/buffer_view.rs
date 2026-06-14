@@ -13,6 +13,7 @@ use rill_core::traits::buffer_view::BufferView;
 use crate::buffer::IoRingBuffer;
 
 /// Maximum interleaved buffer size: 1024 frames × 8 channels = 8192 floats.
+/// Per-chunk cache — the ring buffer handles accumulation across chunks.
 const MAX_INTERLEAVED: usize = 8192;
 
 /// BufferView for interleaved backends (PipeWire, PortAudio, JACK, ALSA).

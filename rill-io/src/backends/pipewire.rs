@@ -104,8 +104,8 @@ impl PipewireBackend {
         let output_channels = config.output_channels;
         let sample_rate = config.sample_rate;
         let block_size = config.buffer_size as usize;
-        let ring_cap = (block_size * output_channels.max(1) as usize * 32).next_power_of_two();
-        let in_ring_cap = (block_size * input_channels.max(1) as usize * 32).next_power_of_two();
+        let ring_cap = (block_size * output_channels.max(1) as usize * 256).next_power_of_two();
+        let in_ring_cap = (block_size * input_channels.max(1) as usize * 256).next_power_of_two();
 
         let input_ring = Arc::new(IoRingBuffer::new(in_ring_cap));
         let output_ring = Arc::new(IoRingBuffer::new(ring_cap));
@@ -216,6 +216,10 @@ impl IoBackend for PipewireBackend {
                 *pw::keys::NODE_DESCRIPTION => out_desc.as_str(),
             };
             out_props.insert("audio.channels", out_chan.to_string());
+            out_props.insert(
+                *pw::keys::NODE_LATENCY,
+                format!("{}/{}", block_size, sample_rate),
+            );
 
             let stream =
                 pw::stream::StreamBox::new(&core, &format!("{out_node}-output"), out_props)
@@ -230,6 +234,7 @@ impl IoBackend for PipewireBackend {
             let out_block = block_size;
             let out_cb = process_cb;
             let is_input_driver = self.mode == IoMode::InputDriver;
+            let out_diag = std::sync::atomic::AtomicBool::new(true);
             let listener = stream
                 .add_local_listener_with_user_data(())
                 .process(move |s, _| {
@@ -246,50 +251,28 @@ impl IoBackend for PipewireBackend {
                         return;
                     }
                     let data = &mut datas[0];
-
-                    // Read chunk metadata first (before data.data() borrow)
-                    let (ck_offset, ck_stride_raw, ck_size_raw) = {
-                        let ck = data.chunk();
-                        (
-                            ck.offset() as usize,
-                            ck.stride() as usize,
-                            ck.size() as usize,
-                        )
-                    };
-
                     let slice = match data.data() {
                         Some(s) => s,
                         None => return,
                     };
 
-                    // Use chunk metadata for actual buffer layout;
-                    // fall back to slice dimensions if metadata is zero.
-                    let stride = if ck_stride_raw > 0 {
-                        ck_stride_raw
-                    } else {
-                        out_chan as usize * 4
-                    };
-                    let n_frames = if ck_size_raw > 0 {
-                        ck_size_raw / stride
-                    } else {
-                        slice.len() / stride
-                    };
-                    let total_samps = n_frames * (stride / 4);
-                    let byte_start = ck_offset.min(slice.len());
-                    let byte_end = (ck_offset + total_samps * 4).min(slice.len());
-                    let sample_bytes = &mut slice[byte_start..byte_end];
+                    let total_samps = slice.len() / 4;
+                    let n_frames = total_samps / out_chan as usize;
+                    let stride = out_chan as usize * 4;
                     let samples: &mut [f32] = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            sample_bytes.as_mut_ptr() as *mut f32,
-                            total_samps,
-                        )
+                        std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, total_samps)
                     };
 
+                    if out_diag.swap(false, Ordering::Relaxed) {
+                        eprintln!(
+                            "PW out: n_frames={n_frames} total_samps={total_samps} out_block={out_block}"
+                        );
+                    }
+
                     if !is_input_driver {
-                        // OutputDriver: fire process_cb in chunks to fill output_ring
-                        let mut offset_frames = 0usize;
-                        while offset_frames < n_frames {
-                            let chunk = (n_frames - offset_frames).min(out_block as usize);
+                        let mut offset = 0usize;
+                        while offset < n_frames {
+                            let chunk = (n_frames - offset).min(out_block as usize);
                             let pos = out_spos.fetch_add(chunk as u64, Ordering::Relaxed);
                             let tick = ClockTick::new(
                                 pos,
@@ -301,7 +284,7 @@ impl IoBackend for PipewireBackend {
                             unsafe {
                                 out_cb.call(&tick);
                             }
-                            offset_frames += chunk;
+                            offset += chunk;
                         }
                     }
 
@@ -313,7 +296,7 @@ impl IoBackend for PipewireBackend {
                     let ck = data.chunk_mut();
                     *ck.offset_mut() = 0;
                     *ck.stride_mut() = stride as i32;
-                    *ck.size_mut() = (total_samps * 4) as u32;
+                    *ck.size_mut() = (n * 4) as u32;
                 })
                 .register()
                 .map_err(|e| format!("PW output listener: {e}"))?;
