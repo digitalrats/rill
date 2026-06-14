@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use rill_core::{
     math::Transcendental,
-    time::RenderContext,
+    time::{ClockTick, RenderContext},
     traits::{
         Node, NodeCategory, NodeMetadata, NodeState, ParamValue, ParameterId, Port, PortId,
         ProcessError, ProcessResult, Sink,
@@ -151,6 +151,7 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; B]],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
         if self.inputs.is_empty() {
             return Ok(());

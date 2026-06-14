@@ -473,6 +473,7 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
         ctx: &crate::time::RenderContext,
         control_inputs: &[T],
         clock_inputs: &[crate::time::RenderContext],
+        tick: &crate::time::ClockTick,
     ) -> ProcessResult<()>;
 
     /// Number of signal outputs (default 1)
@@ -552,6 +553,7 @@ pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, B
         control_inputs: &[T],
         clock_inputs: &[crate::time::RenderContext],
         feedback_inputs: &[&[T; BUF_SIZE]],
+        tick: &crate::time::ClockTick,
     ) -> ProcessResult<()>;
 }
 

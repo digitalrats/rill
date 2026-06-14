@@ -197,7 +197,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
+        tick: &ClockTick,
     ) -> ProcessResult<()> {
+        let _ = tick;
         self.state.advance();
         Ok(())
     }
@@ -232,6 +234,9 @@ mod tests {
         let mut out = Output::<f32, 64>::new();
         let ctx = RenderContext::new(0, 64, 48000.0);
         let signal_inputs: &[&[f32; 64]] = &[];
-        assert!(out.consume(&ctx, signal_inputs, &[], &[], &[]).is_ok());
+        let tick = ClockTick::new(0, 64, 48000.0);
+        assert!(out
+            .consume(&ctx, signal_inputs, &[], &[], &[], &tick)
+            .is_ok());
     }
 }

@@ -1,6 +1,7 @@
 use rill_core::{
     io::IoBackend,
     math::Transcendental,
+    time::ClockTick,
     traits::{IoNode, Node, Source},
     NodeCategory, NodeId, NodeMetadata, NodeState, ParamMetadata, ParamType, ParamValue,
     ParameterId, Port, ProcessResult, RenderContext,
@@ -178,6 +179,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for LofiInput
         _ctx: &RenderContext,
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
         if let Some(ref io) = self.backend {
             let nch = self.outputs.len();

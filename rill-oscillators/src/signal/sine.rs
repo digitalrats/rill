@@ -1,6 +1,6 @@
 //! Sine wave oscillator using rill-core-dsp with Transcendental
 
-use rill_core::time::RenderContext;
+use rill_core::time::{ClockTick, RenderContext};
 use rill_core::traits::{
     Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     Source,
@@ -319,6 +319,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T
         _ctx: &RenderContext,
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
         let out = self.outputs[0].buffer.as_mut_array();
         self.osc.set_frequency(self.frequency.to_f32());
@@ -394,7 +395,14 @@ mod tests {
         osc.init(44100.0);
 
         let ctx = RenderContext::new(0, 64, 44100.0);
-        osc.generate(&ctx, &[], &[]).unwrap();
+        let tick = ClockTick::new(
+            0,
+            64,
+            44100.0,
+            String::new(),
+            std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
+        );
+        osc.generate(&ctx, &[], &[], &tick).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -416,7 +424,14 @@ mod tests {
         osc.init(44100.0);
 
         let ctx = RenderContext::new(0, 64, 44100.0);
-        osc.generate(&ctx, &[], &[]).unwrap();
+        let tick = ClockTick::new(
+            0,
+            64,
+            44100.0,
+            String::new(),
+            std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
+        );
+        osc.generate(&ctx, &[], &[], &tick).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 
@@ -436,7 +451,14 @@ mod tests {
         osc.init(44100.0);
 
         let ctx = RenderContext::new(0, 64, 44100.0);
-        osc.generate(&ctx, &[], &[]).unwrap();
+        let tick = ClockTick::new(
+            0,
+            64,
+            44100.0,
+            String::new(),
+            std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
+        );
+        osc.generate(&ctx, &[], &[], &tick).unwrap();
 
         let output = osc.outputs[0].buffer.as_array();
 

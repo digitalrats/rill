@@ -190,7 +190,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
         _ctx: &RenderContext,
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
+        tick: &ClockTick,
     ) -> ProcessResult<()> {
+        let _ = tick;
         self.state.advance();
         Ok(())
     }
@@ -246,7 +248,8 @@ mod tests {
     fn test_audio_input_generate_without_backend() {
         let mut inp = Input::<f32, 64>::new();
         let ctx = RenderContext::new(0, 64, 48000.0);
-        assert!(inp.generate(&ctx, &[], &[]).is_ok());
+        let tick = ClockTick::new(0, 64, 48000.0);
+        assert!(inp.generate(&ctx, &[], &[], &tick).is_ok());
     }
 
     #[test]
@@ -264,6 +267,7 @@ mod tests {
 
         assert!(input.has_backend());
         let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
-        assert!(input.generate(&ctx, &[], &[]).is_ok());
+        let tick = ClockTick::new(0, BUF_SZ as u32, 48000.0);
+        assert!(input.generate(&ctx, &[], &[], &tick).is_ok());
     }
 }

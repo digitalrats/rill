@@ -639,10 +639,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             );
             unsafe {
                 let nv = &mut *nodes.get();
-                let _ = nv[source].process_block(&ctx);
+                let _ = nv[source].process_block(&ctx, &tick);
                 for po in 0..nv[source].num_signal_outputs() {
                     if let Some(port) = nv[source].output_port(po) {
-                        let _ = port.propagate(port.buffer(), &ctx);
+                        let _ = port.propagate(port.buffer(), &ctx, &tick);
                     }
                 }
             }
@@ -1091,12 +1091,19 @@ mod tests {
         let source_idx = graph.source_idx;
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
+        let tick = ClockTick::new(
+            0,
+            BUF as u32,
+            44100.0,
+            String::new(),
+            std::sync::Arc::new(NullBufferView::new(2, 2)),
+        );
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();
-            nv[source_idx].process_block(&ctx).unwrap();
+            nv[source_idx].process_block(&ctx, &tick).unwrap();
             if let Some(port) = nv[source_idx].output_port(0) {
-                port.propagate(port.buffer(), &ctx).unwrap();
+                port.propagate(port.buffer(), &ctx, &tick).unwrap();
             }
         }
         unsafe {
@@ -1133,6 +1140,13 @@ mod tests {
         eprintln!("source_idx: {source_idx}, src_idx: {src_idx}, proc_idx: {proc_idx}, snk_idx: {snk_idx}");
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
+        let tick = ClockTick::new(
+            0,
+            BUF as u32,
+            44100.0,
+            String::new(),
+            std::sync::Arc::new(NullBufferView::new(2, 2)),
+        );
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();
@@ -1143,7 +1157,7 @@ mod tests {
                 std::mem::discriminant(&nv[2]),
             );
 
-            let _ = nv[source_idx].process_block(&ctx);
+            let _ = nv[source_idx].process_block(&ctx, &tick);
             let src_val = nv[source_idx].output_port(0).unwrap().buffer.as_array()[0];
             eprintln!("source output: {src_val}");
 
@@ -1202,7 +1216,7 @@ mod tests {
             );
             // --- END DEBUG ---
 
-            out_port.propagate(out_port.buffer(), &ctx).unwrap();
+            out_port.propagate(out_port.buffer(), &ctx, &tick).unwrap();
 
             // --- AFTER PROPAGATE: debug buffer values ---
             {
