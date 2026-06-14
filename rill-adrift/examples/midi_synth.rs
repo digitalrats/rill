@@ -18,14 +18,12 @@
 //! cargo run --example midi_synth --features "midi,io,alsa" -- 1 alsa
 //! ```
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, Params, PortId};
 use rill_core_actor::ActorSystem;
-use rill_graph::backend_factory::BackendFactory;
 use rill_graph::{GraphBuilder, NodeFactory};
 use rill_io::backends::MidirBackend;
 use rill_patchbay::engine::{midi_cc, NoAction, ParameterMapping, Transform};
@@ -56,23 +54,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Available MIDI ports:");
     let _ = MidirBackend::list_ports("rill-probe");
 
-    // ── 1. Register node types and backends ────────────────────────
+    // ── 1. Register node types ────────────────────────
     let mut nf = NodeFactory::<f32, BUF>::new();
     registration::register_all_nodes::<BUF>(&mut nf);
-    let mut bf = BackendFactory::new();
-    registration::register_backends(&mut bf);
 
-    let mut builder = GraphBuilder::new(Arc::new(nf), Arc::new(bf));
+    let mut builder = GraphBuilder::new(Arc::new(nf));
 
-    // ── 2. Configure backend ────────────────────────────────────────
-    let mut be_params = HashMap::new();
-    be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-    be_params.insert("output_channels".into(), ParamValue::Int(2));
-    be_params.insert("input_channels".into(), ParamValue::Int(0));
-    builder.set_default_backend(audio_backend.clone(), be_params);
-
-    // ── 3. Build signal topology: sine oscillator → stereo output ──
+    // ── 2. Build signal topology: sine oscillator → stereo output ──
     let mut osc_params = Params::new(RATE);
     osc_params.insert("freq", ParamValue::Float(220.0));
     osc_params.insert("amp", ParamValue::Float(0.0));

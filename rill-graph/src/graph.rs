@@ -1,17 +1,14 @@
-use crate::backend_factory::BackendFactory;
 use crate::factory::NodeFactory;
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
 use rill_core::time::{ClockTick, RenderContext, SystemClock};
-use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 use rill_core::traits::port::Port;
 use rill_core::traits::processable::Processable;
-use rill_core::traits::ParamValue;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params, ProcessResult};
 use rill_core_actor::{Actor, ActorRef, ActorSystem};
 use std::cell::UnsafeCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -58,7 +55,6 @@ struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
     id: NodeId,
     params: Params,
-    backend: Option<String>,
     routing_entries: Vec<(usize, usize, f32)>,
     _phantom: std::marker::PhantomData<(T, [(); BUF_SIZE])>,
 }
@@ -104,12 +100,6 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     resources: Vec<GraphResource>,
     /// Shared node factory (required, from Runtime).
     factory: Arc<NodeFactory<T, BUF_SIZE>>,
-    /// Shared backend factory (required, from Runtime).
-    backend_factory: Arc<BackendFactory>,
-    /// Default backend name for nodes that don't specify one explicitly.
-    default_backend: Option<String>,
-    /// Default backend parameters (sample_rate, buffer_size, channels).
-    backend_params: HashMap<String, ParamValue>,
     /// Sample rate override. When set, used in [`build`](Self::build).
     /// Populated from [`GraphDef::sample_rate`] during deserialization.
     sample_rate: Option<f32>,
@@ -117,41 +107,9 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     parent_ref: Option<ActorRef<CommandEnum>>,
 }
 
-/// A passive I/O backend — delegates to a shared real backend
-/// via a raw pointer. Used when multiple IoNodes (Input + Output) share
-/// a single `PipewireBackend`: the active node owns the `Box<dyn IoBackend>`,
-/// the passive node gets this thin reference wrapper.
-///
-/// Safety: the pointer is valid as long as the active node's `Box<dyn IoBackend>`
-/// lives. Both nodes are dropped together when the graph's `Vec<NodeVariant>`
-/// is dropped. The graph is single-threaded.
-#[allow(dead_code)]
-struct PassiveRef {
-    ptr: *const dyn rill_core::io::IoBackend,
-}
-
-#[allow(unsafe_code)]
-unsafe impl Send for PassiveRef {}
-
-impl rill_core::io::IoBackend for PassiveRef {
-    fn create_view(&self) -> Arc<dyn BufferView> {
-        Arc::new(NullBufferView::new(2, 2))
-    }
-    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
-    fn run(&self, _running: Arc<AtomicBool>) -> rill_core::io::IoResult<()> {
-        Ok(())
-    }
-    fn stop(&self) -> rill_core::io::IoResult<()> {
-        Ok(())
-    }
-}
-
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
-    /// Create a new empty graph builder without a node factory.
-    pub fn new(
-        factory: Arc<NodeFactory<T, BUF_SIZE>>,
-        backend_factory: Arc<BackendFactory>,
-    ) -> Self {
+    /// Create a new empty graph builder.
+    pub fn new(factory: Arc<NodeFactory<T, BUF_SIZE>>) -> Self {
         Self {
             recipes: Vec::new(),
             signal_edges: Vec::new(),
@@ -160,9 +118,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             feedback_edges: Vec::new(),
             resources: Vec::new(),
             factory,
-            backend_factory,
-            default_backend: None,
-            backend_params: HashMap::new(),
             sample_rate: None,
             parent_ref: None,
         }
@@ -190,18 +145,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             type_name: type_name.to_string(),
             id,
             params: params.clone(),
-            backend: None,
             routing_entries: Vec::new(),
             _phantom: std::marker::PhantomData,
         });
         idx
-    }
-
-    /// Assign a named backend to the node at the given index.
-    pub fn set_node_backend(&mut self, idx: usize, name: String) {
-        if let Some(recipe) = self.recipes.get_mut(idx) {
-            recipe.backend = Some(name);
-        }
     }
 
     /// Store a routing matrix entry to be applied at build time.
@@ -221,17 +168,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.recipes.len()
     }
 
-    /// Set the default backend name and parameters. Nodes without an explicit
-    pub fn set_default_backend(&mut self, name: String, params: HashMap<String, ParamValue>) {
-        self.default_backend = Some(name);
-        self.backend_params = params;
-    }
-
-    /// Get the default backend name, if set.
-    pub fn default_backend_name(&self) -> Option<&String> {
-        self.default_backend.as_ref()
-    }
-
     /// Set the sample rate for this builder.
     pub fn set_sample_rate(&mut self, sr: f32) {
         self.sample_rate = Some(sr);
@@ -240,11 +176,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Set the parent RackCase actor reference (Graph → parent ClockTick).
     pub fn set_parent_ref(&mut self, parent: ActorRef<CommandEnum>) {
         self.parent_ref = Some(parent);
-    }
-
-    /// Access the shared backend factory.
-    pub fn backend_factory(&self) -> &Arc<BackendFactory> {
-        &self.backend_factory
     }
 
     /// Connect signal ports.
@@ -322,50 +253,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let num_nodes = node_entries.len();
 
-        // --- Phase 2: Resolve I/O backends for I/O nodes ---
-        // Deduplicate: the first IoNode with a given backend name
-        // gets the real Box<dyn IoBackend>; subsequent nodes get a
-        // PassiveRef that delegates writes to the same instance.
-        let sr = self.sample_rate.unwrap_or(44100.0);
-        let mut raw_ptrs: HashMap<String, *const dyn rill_core::io::IoBackend> = HashMap::new();
-        for (idx, recipe) in self.recipes.iter().enumerate() {
-            // Only I/O nodes receive backends — non-IoNode entries
-            // (plain Sources, Processors etc.) are skipped here.
-            let Some(io_node) = node_entries[idx].node.as_io_node_mut() else {
-                continue;
-            };
-            let name = match recipe.backend.as_ref() {
-                Some(n) => Some(n.clone()),
-                None => self.default_backend.clone(),
-            };
-            let Some(ref name) = name else {
-                continue;
-            };
-            if let Some(&raw) = raw_ptrs.get(name) {
-                // Passive — delegate writes to the already-created backend
-                io_node.resolve_backend(Box::new(PassiveRef { ptr: raw }));
-            } else {
-                let mut be_params = HashMap::new();
-                be_params.insert("sample_rate".into(), ParamValue::Float(sr));
-                be_params.insert("buffer_size".into(), ParamValue::Int(BUF_SIZE as i32));
-                if self.default_backend.as_ref() == Some(name) {
-                    for (k, v) in &self.backend_params {
-                        be_params.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
-                }
-                let backend = self
-                    .backend_factory
-                    .create(name, &be_params)
-                    .map_err(BuildError::Backend)?;
-                raw_ptrs.insert(
-                    name.clone(),
-                    &*backend as *const dyn rill_core::io::IoBackend,
-                );
-                io_node.resolve_backend(backend);
-            }
-        }
-
-        // --- Phase 3: adjacency for Kahn (signal edges only) ---
+        // --- Phase 2: adjacency for Kahn (signal edges only) ---
         let mut in_degree = vec![0usize; num_nodes];
         let mut out_edges: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); num_nodes];
 
@@ -519,7 +407,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             current_tick: ClockTick::new(
                 0,
                 BUF_SIZE as u32,
-                sr,
+                self.sample_rate.unwrap_or(44100.0),
                 String::new(),
                 std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
             ),
@@ -796,7 +684,7 @@ mod tests {
     }
 
     fn test_builder<const B: usize>(factory: &Arc<NodeFactory<f32, B>>) -> GraphBuilder<f32, B> {
-        GraphBuilder::new(factory.clone(), Arc::new(BackendFactory::new()))
+        GraphBuilder::new(factory.clone())
     }
 
     fn test_params(sample_rate: f32) -> Params {

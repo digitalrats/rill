@@ -2,7 +2,7 @@ use rill_core::{
     io::IoBackend,
     math::Transcendental,
     time::ClockTick,
-    traits::{IoNode, Node, Source},
+    traits::{Node, Source},
     NodeCategory, NodeId, NodeMetadata, NodeState, ParamMetadata, ParamType, ParamValue,
     ParameterId, Port, ProcessResult, RenderContext,
 };
@@ -119,9 +119,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LofiInput<T
         self.state.reset();
         self.lofi.reset();
     }
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        Some(self)
-    }
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
         self.lofi.get_parameter(id)
     }
@@ -164,12 +161,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LofiInput<T
     }
     fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for LofiInput<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
-        self.backend = Some(backend);
     }
 }
 

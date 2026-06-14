@@ -60,10 +60,8 @@ pub mod prelude {
     // Re-export from parent modules
     pub use super::{
         // Core traits
-        ActiveNode,
         BufferView,
         Eurorack,
-        IoNode,
         Node,
         NodeCategory,
         // Node types

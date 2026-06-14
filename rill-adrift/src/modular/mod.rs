@@ -14,7 +14,6 @@ use rill_core::traits::ParamValue;
 #[cfg(feature = "serialization")]
 use rill_core_actor::ActorRef;
 use rill_core_actor::ActorSystem;
-use rill_graph::backend_factory::BackendFactory;
 #[cfg(feature = "serialization")]
 use rill_graph::Graph;
 use rill_graph::{GraphBuilder, NodeFactory};
@@ -62,7 +61,6 @@ pub enum ModularError {
 pub struct ModularSystem<const BUF: usize = 64> {
     dead: Arc<MpscQueue<SetParameter>>,
     node_factory: Arc<Mutex<NodeFactory<f32, BUF>>>,
-    backend_factory: Arc<BackendFactory>,
     actor_system: Arc<ActorSystem>,
     module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,
@@ -78,15 +76,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
     pub fn new(config: ModularConfig) -> Self {
         let mut nf = NodeFactory::new();
         crate::registration::register_all_nodes(&mut nf);
-        let bf = {
-            #[allow(unused_mut)]
-            let mut bf = BackendFactory::new();
-            #[cfg(feature = "io")]
-            crate::registration::register_backends(&mut bf);
-            #[cfg(feature = "lofi")]
-            crate::registration::register_lofi_backends(&mut bf);
-            bf
-        };
         let mut module_factory = ModuleFactory::new();
         crate::registration::register_modules(&mut module_factory);
         let default_backend = config.backend_name.clone().map(|n| {
@@ -100,7 +89,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
         Self {
             dead: Arc::new(MpscQueue::new()),
             node_factory: Arc::new(Mutex::new(nf)),
-            backend_factory: Arc::new(bf),
             module_factory,
             default_backend,
             actor_system: Arc::new(ActorSystem::new()),
@@ -117,14 +105,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     }
 
     pub(crate) fn create_builder(&self) -> GraphBuilder<f32, BUF> {
-        let mut builder = GraphBuilder::new(
-            Arc::new(self.node_factory.lock().unwrap().clone()),
-            self.backend_factory.clone(),
-        );
-        if let Some((ref name, ref params)) = self.default_backend {
-            builder.set_default_backend(name.clone(), params.clone());
-        }
-        builder
+        GraphBuilder::new(Arc::new(self.node_factory.lock().unwrap().clone()))
     }
     /// Build a signal graph from a GraphDef.
     #[cfg(feature = "serialization")]
@@ -159,8 +140,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
         for rd in &def.racks {
             let node_factory = self.node_factory.clone();
-            let backend_factory = self.backend_factory.clone();
-            let default_backend = self.default_backend.clone();
             let sys = self.actor_system.clone();
             let sys_svc = self.actor_system.clone();
             let gd = rd.graph.clone();
@@ -193,13 +172,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
             // 2. Build graph on I/O thread
             if let Some(case) = self.cases.get_mut(&rd.name) {
                 case.start(move |running| {
-                    let mut builder = GraphBuilder::new(
-                        Arc::new(node_factory.lock().unwrap().clone()),
-                        backend_factory,
-                    );
-                    if let Some((ref name, ref params)) = default_backend {
-                        builder.set_default_backend(name.clone(), params.clone());
-                    }
+                    let mut builder =
+                        GraphBuilder::new(Arc::new(node_factory.lock().unwrap().clone()));
                     builder.set_parent_ref(parent_ref);
                     if let Err(e) = gd.populate(&mut builder) {
                         log::error!("graph populate: {e}");

@@ -3,10 +3,9 @@
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
 
 use rill_core::{
-    io::IoBackend,
     math::Transcendental,
     time::ClockTick,
-    traits::{IoNode, Node, NodeCategory, NodeMetadata, NodeState, Source},
+    traits::{Node, NodeCategory, NodeMetadata, NodeState, Source},
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
@@ -84,9 +83,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
     }
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        Some(self)
-    }
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
         None
     }
@@ -124,13 +120,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
     }
     fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, _backend: Box<dyn IoBackend>) {
-        // Backend is no longer stored in the node — I/O flows through
-        // ClockTick::view which is provided by the external backend.
     }
 }
 

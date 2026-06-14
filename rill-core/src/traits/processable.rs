@@ -166,24 +166,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NodeVariant
             NodeVariant::Sink(sink) => sink.resolve_resources(buffers),
         }
     }
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn crate::traits::node::IoNode<T, BUF_SIZE>> {
-        match self {
-            NodeVariant::Source(src) => src.as_io_node_mut(),
-            NodeVariant::Processor(proc) => proc.as_io_node_mut(),
-            NodeVariant::Router(rt) => rt.as_io_node_mut(),
-            NodeVariant::Sink(sink) => sink.as_io_node_mut(),
-        }
-    }
-    fn as_active_node_mut(
-        &mut self,
-    ) -> Option<&mut dyn crate::traits::node::ActiveNode<T, BUF_SIZE>> {
-        match self {
-            NodeVariant::Source(src) => src.as_active_node_mut(),
-            NodeVariant::Processor(proc) => proc.as_active_node_mut(),
-            NodeVariant::Router(rt) => rt.as_active_node_mut(),
-            NodeVariant::Sink(sink) => sink.as_active_node_mut(),
-        }
-    }
     fn reset(&mut self) {
         match self {
             NodeVariant::Source(src) => src.reset(),

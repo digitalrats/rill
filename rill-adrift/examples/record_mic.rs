@@ -9,7 +9,6 @@
 //!   cargo run --example record_mic --features "io,serialization,sampler,pipewire" -- pipewire [file.wav]
 //!   cargo run --example record_mic --features "io,serialization,sampler,alsa" -- alsa [file.wav]
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +19,6 @@ use rill_adrift::rill_core::traits::{
 };
 use rill_adrift::rill_core::Transcendental;
 use rill_adrift::rill_core_actor::ActorSystem;
-use rill_adrift::rill_graph::backend_factory::BackendFactory;
 use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
 
 const BUF: usize = 256;
@@ -214,19 +212,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             NodeVariant::Sink(Box::new(sink))
         });
 
-        let mut backends = BackendFactory::new();
-        registration::register_backends(&mut backends);
-
         // ── Build graph ──────────────────────────────────────────
-        let mut builder = GraphBuilder::new(Arc::new(factory), Arc::new(backends));
-
-        let mut be_params = HashMap::new();
-        be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-        be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-        be_params.insert("input_channels".into(), ParamValue::Int(2));
-        be_params.insert("output_channels".into(), ParamValue::Int(0));
-
-        builder.set_default_backend(backend_name.clone(), be_params);
+        let mut builder = GraphBuilder::new(Arc::new(factory));
 
         let mic = builder.add_node("rill/input", &Params::new(RATE));
         let recorder = builder.add_node("rill/record_sink", &Params::new(RATE));

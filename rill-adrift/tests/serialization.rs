@@ -65,11 +65,6 @@ fn test_deserialize_input_biquad_output() {
 
     let def = registration::load_graph_json(json).expect("load_graph_json");
     let mut system = ModularSystem::<B>::new(ModularConfig::default());
-    let mut p = std::collections::HashMap::new();
-    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
-    p.insert("buffer_size".into(), ParamValue::Int(B as i32));
-    p.insert("channels".into(), ParamValue::Int(2));
-    system.set_default_backend("null", p);
 
     let graph = system
         .build_graph(&def)
@@ -116,11 +111,6 @@ fn test_send_parameter_via_queue() {
     )
     .expect("load_graph_json");
     let mut system = ModularSystem::<B>::new(ModularConfig::default());
-    let mut p = std::collections::HashMap::new();
-    p.insert("sample_rate".into(), ParamValue::Int(RATE as i32));
-    p.insert("buffer_size".into(), ParamValue::Int(B as i32));
-    p.insert("channels".into(), ParamValue::Int(2));
-    system.set_default_backend("null", p);
 
     let mut graph = system.build_graph(&def).expect("graph build");
 
