@@ -44,10 +44,9 @@ impl CbSlot {
             cb(tick);
         }
     }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(
-            self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>,
-        ));
+    unsafe fn take_box(&self) {
+        let taken = (*(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>)).take();
+        drop(taken);
     }
 }
 
@@ -376,5 +375,8 @@ impl IoBackend for AlsaBackend {
 impl Drop for AlsaBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
+        unsafe {
+            self.process_cb.take_box();
+        }
     }
 }

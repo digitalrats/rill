@@ -23,10 +23,9 @@ impl CbSlot {
             cb(tick);
         }
     }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(
-            self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>,
-        ));
+    unsafe fn take_box(&self) {
+        let taken = (*(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>)).take();
+        drop(taken);
     }
 }
 
@@ -106,5 +105,9 @@ impl IoBackend for NullBackend {
 }
 
 impl Drop for NullBackend {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        unsafe {
+            self.cb.take_box();
+        }
+    }
 }
