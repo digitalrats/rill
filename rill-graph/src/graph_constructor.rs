@@ -1,15 +1,15 @@
 //! Graph constructor — creates a signal graph from a [`GraphDef`] descriptor
 //! and returns its actor handle.
 //!
-//! The graph runs on a dedicated OS thread (its I/O callback drives processing).
-//! [`GraphConstructor`] captures the node and backend factories at construction
-//! time so they do not need to be passed on every call.
+//! The graph runs on a dedicated OS thread. [`GraphConstructor`] captures the
+//! node factory at construction time so it does not need to be passed on every call.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
+use rill_core::time::ClockTick;
 use rill_core_actor::{ActorRef, ActorSystem};
 
 use crate::serialization::GraphDef;
@@ -22,7 +22,7 @@ pub enum GraphBuildError {
     BuildFailed(String),
 }
 
-/// Captures factories and builds [`crate::Graph`] instances from [`GraphDef`].
+/// Captures a node factory and builds [`crate::Graph`] instances from [`GraphDef`].
 pub struct GraphConstructor<T: Transcendental, const BUF: usize> {
     node_factory: Arc<Mutex<NodeFactory<T, BUF>>>,
 }
@@ -35,15 +35,9 @@ impl<T: Transcendental, const BUF: usize> GraphConstructor<T, BUF> {
 
     /// Build a signal graph from `def` and return the actor handles.
     ///
-    /// # Arguments
-    /// * `def` — graph topology descriptor
-    /// * `system` — actor system for spawning the inline drain actor
-    /// * `parent_ref` — parent actor for the graph to send `ClockTick` to
+    /// The graph is built, one tick is fired, and the thread parks on `running`.
     ///
-    /// Returns a tuple of `(graph_thread, graph_handle)` where
-    /// `graph_thread` is a join handle for the dedicated I/O thread,
-    /// and `graph_handle` is the `ActorRef<CommandEnum>` that receives
-    /// parameter commands.
+    /// Returns a tuple of `(graph_thread, graph_handle)`.
     #[allow(clippy::type_complexity)]
     pub fn run(
         &self,
@@ -66,9 +60,15 @@ impl<T: Transcendental, const BUF: usize> GraphConstructor<T, BUF> {
                 return;
             }
             match builder.build(&sys) {
-                Ok(mut graph) => {
+                Ok(graph) => {
                     let _ = graph_tx.send(graph.handle());
-                    graph.run(running).ok();
+                    let mut state = graph.into_processing_state();
+                    let tick = ClockTick::default();
+                    // Fire one tick to apply any queued parameters
+                    let _ = state.process_block(&tick);
+                    while running.load(Ordering::Acquire) {
+                        std::thread::park();
+                    }
                 }
                 Err(e) => log::error!("graph build: {e:?}"),
             }

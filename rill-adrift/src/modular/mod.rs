@@ -4,12 +4,15 @@
 //! * RackDef — control system (LFO, envelope, sequencer)
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 #[cfg(feature = "serialization")]
 use rill_core::queues::CommandEnum;
 use rill_core::queues::{MpscQueue, SetParameter};
+#[cfg(feature = "serialization")]
+use rill_core::time::ClockTick;
 use rill_core::traits::ParamValue;
 #[cfg(feature = "serialization")]
 use rill_core_actor::ActorRef;
@@ -180,9 +183,14 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         return;
                     }
                     match builder.build(&sys) {
-                        Ok(mut graph) => {
+                        Ok(graph) => {
                             let _ = graph_tx.send(graph.handle());
-                            graph.run(running).ok();
+                            let mut state = graph.into_processing_state();
+                            let tick = ClockTick::default();
+                            let _ = state.process_block(&tick);
+                            while running.load(Ordering::Acquire) {
+                                std::thread::park();
+                            }
                         }
                         Err(e) => log::error!("graph build: {e:?}"),
                     };

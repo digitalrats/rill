@@ -20,6 +20,7 @@ use rill_adrift::rill_core::traits::{
 use rill_adrift::rill_core::Transcendental;
 use rill_adrift::rill_core_actor::ActorSystem;
 use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
+use rill_core::time::ClockTick;
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
@@ -223,9 +224,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ── Build and run ────────────────────────────────────────
         let system = ActorSystem::new();
         match builder.build(&system) {
-            Ok(mut graph) => {
+            Ok(graph) => {
                 eprintln!("Graph built ({} nodes). Recording...", graph.node_count());
-                graph.run(t_run).ok();
+                let mut state = graph.into_processing_state();
+                let tick = ClockTick::default();
+                let _ = state.process_block(&tick);
+                while t_run.load(Ordering::Acquire) {
+                    std::thread::park();
+                }
             }
             Err(e) => eprintln!("Build error: {e:?}"),
         }

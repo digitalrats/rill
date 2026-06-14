@@ -23,6 +23,7 @@ use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::registration;
 use rill_adrift::rill_core::{
     queues::{CommandEnum, SetParameter, SignalOrigin},
+    time::ClockTick,
     NodeId, ParamValue, ParameterId, PortId,
 };
 use serde::Deserialize;
@@ -138,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend_name = backend_name.clone();
         let wav_path = wav_path.clone();
         std::thread::spawn(move || {
-            let mut graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
 
             // Send parameter changes via the actor mailbox
             let handle = graph.handle();
@@ -159,7 +160,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SignalOrigin::Manual,
             )));
 
-            graph.run(running).ok();
+            let mut state = graph.into_processing_state();
+            let tick = ClockTick::default();
+            let _ = state.process_block(&tick);
+            while running.load(Ordering::Acquire) {
+                std::thread::park();
+            }
         })
     };
 

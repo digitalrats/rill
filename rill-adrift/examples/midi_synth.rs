@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+use rill_core::time::ClockTick;
 use rill_core::traits::{NodeId, ParamValue, Params, PortId};
 use rill_core_actor::ActorSystem;
 use rill_graph::{GraphBuilder, NodeFactory};
@@ -77,10 +78,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         let sys = ActorSystem::new();
         match builder.build(&sys) {
-            Ok(mut graph) => {
+            Ok(graph) => {
                 let _ = graph_tx.send((sys, graph.handle()));
-                if let Err(e) = graph.run(r_graph) {
-                    eprintln!("audio backend error: {e}");
+                let mut state = graph.into_processing_state();
+                let tick = ClockTick::default();
+                let _ = state.process_block(&tick);
+                while r_graph.load(Ordering::Acquire) {
+                    std::thread::park();
                 }
             }
             Err(e) => eprintln!("graph build: {:?}", e),
