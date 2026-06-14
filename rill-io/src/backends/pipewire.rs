@@ -104,8 +104,8 @@ impl PipewireBackend {
         let output_channels = config.output_channels;
         let sample_rate = config.sample_rate;
         let block_size = config.buffer_size as usize;
-        let ring_cap = (block_size * output_channels.max(1) * 32).next_power_of_two();
-        let in_ring_cap = (block_size * input_channels.max(1) * 32).next_power_of_two();
+        let ring_cap = (block_size * output_channels.max(1) as usize * 32).next_power_of_two();
+        let in_ring_cap = (block_size * input_channels.max(1) as usize * 32).next_power_of_two();
 
         let input_ring = Arc::new(IoRingBuffer::new(in_ring_cap));
         let output_ring = Arc::new(IoRingBuffer::new(ring_cap));
@@ -365,6 +365,7 @@ impl IoBackend for PipewireBackend {
                 let nch_proc = self.negotiated_input_channels.clone();
                 let nrate_proc = self.negotiated_input_rate.clone();
                 let is_driver = self.mode == IoMode::InputDriver;
+                let buf_frames = block_size as usize;
 
                 let listener = in_st
                     .add_local_listener_with_user_data(())
@@ -381,7 +382,7 @@ impl IoBackend for PipewireBackend {
                     })
                     .process(move |stream, _| {
                         if !running2.load(Ordering::Acquire) {
-                            ml2.quit();
+                            ml.quit();
                             return;
                         }
                         let mut buf = match stream.dequeue_buffer() {
