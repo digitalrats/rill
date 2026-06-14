@@ -14,6 +14,7 @@ pub type BackendCtor =
     fn(params: &HashMap<String, ParamValue>) -> Result<Box<dyn IoBackend>, String>;
 
 /// Registry of named backend constructors (analogue of `NodeFactory`).
+#[derive(Clone)]
 pub struct BackendFactory {
     ctors: HashMap<&'static str, BackendCtor>,
 }
