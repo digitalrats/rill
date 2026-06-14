@@ -251,11 +251,31 @@ impl IoBackend for PipewireBackend {
                         None => return,
                     };
 
-                    let stride = out_chan as usize * 4;
-                    let n_frames = slice.len() / stride;
-                    let total_samps = n_frames * out_chan as usize;
+                    // Use chunk metadata for actual buffer layout
+                    let ck = data.chunk();
+                    let ck_offset = ck.offset() as usize;
+                    let ck_stride = ck.stride() as usize;
+                    let ck_size = ck.size() as usize;
+                    // Fall back to full slice if chunk metadata is zero
+                    let stride = if ck_stride > 0 {
+                        ck_stride
+                    } else {
+                        out_chan as usize * 4
+                    };
+                    let n_frames = if ck_size > 0 {
+                        ck_size / stride
+                    } else {
+                        slice.len() / stride
+                    };
+                    let total_samps = n_frames * (stride / 4);
+                    let byte_start = ck_offset.min(slice.len());
+                    let byte_end = (ck_offset + total_samps * 4).min(slice.len());
+                    let sample_bytes = &mut slice[byte_start..byte_end];
                     let samples: &mut [f32] = unsafe {
-                        std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, total_samps)
+                        std::slice::from_raw_parts_mut(
+                            sample_bytes.as_mut_ptr() as *mut f32,
+                            total_samps,
+                        )
                     };
 
                     if !is_input_driver {
@@ -286,7 +306,7 @@ impl IoBackend for PipewireBackend {
                     let ck = data.chunk_mut();
                     *ck.offset_mut() = 0;
                     *ck.stride_mut() = stride as i32;
-                    *ck.size_mut() = total_samps as u32 * 4;
+                    *ck.size_mut() = (total_samps * 4) as u32;
                 })
                 .register()
                 .map_err(|e| format!("PW output listener: {e}"))?;
