@@ -18,7 +18,8 @@ use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
 use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
-use rill_core::time::SystemClock;
+use rill_core::time::{ClockTick, SystemClock};
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 /// Callback slot.
 #[derive(Copy, Clone)]
@@ -267,58 +268,12 @@ impl ProcessHandler for JackProcessHandler {
 // IoBackend impl
 // ============================================================================
 
-impl IoBackend<f32> for JackBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
-        unsafe {
-            self.process_cb.set(cb);
-        }
+impl IoBackend for JackBackend {
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        Arc::new(NullBufferView::new(0, 0))
     }
 
-    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
-        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-        if frames == 0 {
-            return 0;
-        }
-        let out_ch = self.config.input_channels.max(1) as usize;
-        let cap = frames.saturating_mul(out_ch).min(4096);
-        let mut temp = [0.0f32; 4096];
-        let n = self.input_ring.read(&mut temp[..cap]);
-        let frames_out = n / out_ch;
-        let out = frames_out.min(frames);
-        if out_ch >= 2 {
-            for i in 0..out {
-                if let Some(c) = channels.get_mut(0) {
-                    c[i] = temp[i * out_ch];
-                }
-                if let Some(c) = channels.get_mut(1) {
-                    c[i] = temp[i * out_ch + 1];
-                }
-            }
-        } else {
-            for i in 0..out {
-                if let Some(c) = channels.get_mut(0) {
-                    c[i] = temp[i];
-                }
-            }
-        }
-        out
-    }
-
-    fn write(&self, channels: &[&[f32]]) -> usize {
-        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-        if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity().min(frames);
-            let dst = win.as_mut_slice();
-            let left = channels.first().copied().unwrap_or(&[]);
-            let right = channels.get(1).copied().unwrap_or(left);
-            for i in 0..cap {
-                dst[i] = (left[i] + right[i]) * 0.5;
-            }
-            cap
-        } else {
-            0
-        }
-    }
+    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
 
     fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
         self.setup()

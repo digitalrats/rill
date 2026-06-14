@@ -5,6 +5,8 @@ use std::sync::Arc;
 use crate::config::AudioConfig;
 
 use rill_core::io::IoBackend;
+use rill_core::time::ClockTick;
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
@@ -58,28 +60,17 @@ impl NullBackend {
     }
 }
 
-impl IoBackend<f32> for NullBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
-        unsafe {
-            self.cb.set(cb);
-        }
+impl IoBackend for NullBackend {
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        Arc::new(NullBufferView::new(0, 0))
     }
-    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
-        let n = channels.first().map(|c| c.len()).unwrap_or(0);
-        for ch in channels.iter_mut() {
-            ch[..n].fill(0.0);
-        }
-        n
-    }
-    fn write(&self, channels: &[&[f32]]) -> usize {
-        channels.first().map(|c| c.len()).unwrap_or(0)
-    }
+
+    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
+
     fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
-        unsafe {
-            self.cb.call(self.config.sample_rate as f32);
-        }
         Ok(())
     }
+
     fn stop(&self) -> Result<(), String> {
         Ok(())
     }

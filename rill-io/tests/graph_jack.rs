@@ -38,7 +38,7 @@ mod graph_jack_it {
             .with_channels(2);
 
         let backend = JackBackend::new(config).unwrap();
-        let backend: Box<dyn rill_core::io::IoBackend<f32>> = Box::new(backend);
+        let backend: Box<dyn rill_core::io::IoBackend> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
         settle(300);
@@ -69,7 +69,7 @@ mod graph_jack_it {
             .with_channels(2);
 
         let backend = JackBackend::new(config).unwrap();
-        let backend: Box<dyn rill_core::io::IoBackend<f32>> = Box::new(backend);
+        let backend: Box<dyn rill_core::io::IoBackend> = Box::new(backend);
 
         let mut input = AudioInput::<f32, BUF_SZ>::new();
         settle(300);

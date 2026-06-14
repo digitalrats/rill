@@ -581,9 +581,9 @@ pub fn load_graph_json(
     rill_graph::serialization::from_json(json)
 }
 
-/// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).
+/// Register all built-in backends into a [`BackendFactory`](rill_graph::backend_factory::BackendFactory).
 #[cfg(feature = "io")]
-pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
+pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
     factory.register("null", |p| {
         Ok(Box::new(crate::io::backends::NullBackend::new(
             cfg_from_params(p),
@@ -621,7 +621,7 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
 
 /// Register lo‑fi chip emulation backends.
 #[cfg(feature = "lofi")]
-pub fn register_lofi_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
+pub fn register_lofi_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
     factory.register("ay38910", |p| {
         let sr = p
             .get("sample_rate")
@@ -646,14 +646,21 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let in_ch = p
         .get("input_channels")
         .and_then(|v| v.as_i32())
-        .unwrap_or(ch as i32) as u32;
+        .unwrap_or(0) as u32;
     let out_ch = p
         .get("output_channels")
         .and_then(|v| v.as_i32())
         .unwrap_or(ch as i32) as u32;
-    crate::io::AudioConfig::new()
+    let mut cfg = crate::io::AudioConfig::new()
         .with_sample_rate(sr)
         .with_buffer_size(bs)
         .with_input_channels(in_ch)
-        .with_output_channels(out_ch)
+        .with_output_channels(out_ch);
+    if let Some(ParamValue::String(ref d)) = p.get("input_device") {
+        cfg = cfg.with_input_device(d.as_str());
+    }
+    if let Some(ParamValue::String(ref d)) = p.get("output_device") {
+        cfg = cfg.with_output_device(d.as_str());
+    }
+    cfg
 }

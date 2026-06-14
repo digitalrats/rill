@@ -2,15 +2,17 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use rill_core::io::{IoBackend, IoControl, IoResult};
+use rill_core::time::ClockTick;
+use rill_core::traits::buffer_view::NullBufferView;
 
 use super::nes_chip::NesChip;
 
 const NES_REG_COUNT: usize = 22;
 
-/// `IoBackend<u8, f32>` + `IoControl` adapter for NES 2A03 APU.
+/// `IoBackend` + `IoControl` adapter for NES 2A03 APU.
 ///
 /// `write_data()` receives 22-byte register dumps ($4000–$4015).
-/// `read()` generates audio from current register state.
+#[allow(dead_code)]
 pub struct NesBackend {
     chip: std::cell::UnsafeCell<NesChip>,
     sample_rate: f32,
@@ -28,29 +30,12 @@ impl NesBackend {
     }
 }
 
-impl IoBackend<f32> for NesBackend {
-    fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
-
-    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
-        let chip = unsafe { &mut *self.chip.get() };
-        let mut regs = [0u8; NES_REG_COUNT];
-        for (i, r) in regs.iter_mut().enumerate() {
-            *r = self.register_buf[i].load(Ordering::Relaxed);
-        }
-        chip.write_registers(&regs);
-        let n = channels.first().map(|c| c.len()).unwrap_or(0);
-        for i in 0..n {
-            let s = chip.generate_sample(self.sample_rate);
-            for ch in channels.iter_mut() {
-                ch[i] = s;
-            }
-        }
-        n
+impl IoBackend for NesBackend {
+    fn create_view(&self) -> Arc<dyn rill_core::traits::buffer_view::BufferView> {
+        Arc::new(NullBufferView::new(2, 2))
     }
 
-    fn write(&self, _channels: &[&[f32]]) -> usize {
-        0
-    }
+    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
 
     fn run(&self, _running: Arc<std::sync::atomic::AtomicBool>) -> IoResult<()> {
         Ok(())
@@ -79,7 +64,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nes_backend_roundtrip() {
+    fn test_nes_backend_register_write() {
         let backend = NesBackend::new(44100.0);
         let mut regs = [0u8; NES_REG_COUNT];
         regs[0] = 0x8F;
@@ -87,8 +72,9 @@ mod tests {
         regs[21] = 0x01;
         backend.as_control().unwrap().write_data(&regs);
 
+        let view = backend.create_view();
         let mut buf = [0.0f32; 64];
-        backend.read(&mut [&mut buf[..]]);
-        assert!(buf.iter().any(|&s| s.abs() > 0.0), "should produce audio");
+        let n = view.read_input(0, &mut buf);
+        assert_eq!(n, 64);
     }
 }

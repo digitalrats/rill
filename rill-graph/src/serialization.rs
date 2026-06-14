@@ -975,7 +975,7 @@ mod tests {
         Arc::new(r)
     }
 
-    fn empty_backends() -> Arc<BackendFactory<f32>> {
+    fn empty_backends() -> Arc<BackendFactory> {
         Arc::new(BackendFactory::new())
     }
 

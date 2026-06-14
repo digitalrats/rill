@@ -9,6 +9,7 @@ use std::sync::Arc;
 use rill_core::{
     io::IoBackend,
     math::Transcendental,
+    time::ClockTick,
     traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Sink},
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
@@ -25,7 +26,7 @@ pub struct Output<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn IoBackend<T>>>,
+    backend: Option<Box<dyn IoBackend>>,
     active: bool,
     source_idx: usize,
 }
@@ -79,7 +80,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
     /// Transfer backend ownership to this node.
     ///
     /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
-    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
         <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
     }
 }
@@ -156,7 +157,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+    fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
         self.backend = Some(backend);
     }
 }
@@ -172,9 +173,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Outpu
         };
         let tick_ptr = Box::into_raw(Box::new(tick));
         let sample_pos = Cell::new(0u64);
-        backend.set_process_callback(Box::new(move |actual_sr: f32| {
+        backend.set_process_callback(Box::new(move |tick: &ClockTick| {
             unsafe {
-                (*tick_ptr)(sample_pos.get(), actual_sr);
+                (*tick_ptr)(sample_pos.get(), tick.sample_rate);
             }
             sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
         }));
@@ -197,25 +198,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        if let Some(ref backend) = self.backend {
-            let nch = self.inputs.len();
-            if nch > 0 {
-                let all_received = self.inputs.iter().all(|p| p.data_received);
-                if all_received {
-                    let mut channels: Vec<&[T]> = Vec::with_capacity(nch);
-                    for i in 0..nch {
-                        if let Some(port) = self.inputs.get(i) {
-                            channels.push(port.signal_buffer().as_array());
-                        }
-                    }
-                    backend.write(&channels);
-                    for p in &mut self.inputs {
-                        p.data_received = false;
-                    }
-                    self.state.advance();
-                }
-            }
-        }
+        self.state.advance();
         Ok(())
     }
 }

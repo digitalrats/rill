@@ -419,7 +419,7 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
 /// assembly via [`resolve_backend`](IoNode::resolve_backend).
 pub trait IoNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
     /// Take ownership of an I/O backend.
-    fn resolve_backend(&mut self, backend: Box<dyn crate::io::IoBackend<T>>);
+    fn resolve_backend(&mut self, backend: Box<dyn crate::io::IoBackend>);
 }
 
 // ============================================================================

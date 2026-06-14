@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::PwBuffers;
 use rill_core::io::IoBackend;
 
-type BackendTriple = (Box<dyn IoBackend<f32>>, Arc<PwBuffers>);
+type BackendTriple = (Box<dyn IoBackend>, Arc<PwBuffers>);
 
 /// Ensure a PipeWire backend is available (stub when `pipewire` feature is disabled).
 #[cfg(not(feature = "pipewire"))]
@@ -26,6 +26,6 @@ pub fn ensure(sample_rate: u32, buf_size: u32, channels: u32) -> Option<BackendT
         .with_channels(channels);
     let backend = PipewireBackend::new(config).ok()?;
     let rings = backend.rings();
-    let backend: Box<dyn IoBackend<f32>> = Box::new(backend);
+    let backend: Box<dyn IoBackend> = Box::new(backend);
     Some((backend, rings))
 }

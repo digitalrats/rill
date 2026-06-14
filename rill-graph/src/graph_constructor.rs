@@ -27,14 +27,14 @@ pub enum GraphBuildError {
 /// Captures factories and builds [`crate::Graph`] instances from [`GraphDef`].
 pub struct GraphConstructor<T: Transcendental, const BUF: usize> {
     node_factory: Arc<Mutex<NodeFactory<T, BUF>>>,
-    backend_factory: Arc<BackendFactory<T>>,
+    backend_factory: Arc<BackendFactory>,
 }
 
 impl<T: Transcendental, const BUF: usize> GraphConstructor<T, BUF> {
     /// Create a new graph constructor with shared node and backend factories.
     pub fn new(
         node_factory: Arc<Mutex<NodeFactory<T, BUF>>>,
-        backend_factory: Arc<BackendFactory<T>>,
+        backend_factory: Arc<BackendFactory>,
     ) -> Self {
         Self {
             node_factory,

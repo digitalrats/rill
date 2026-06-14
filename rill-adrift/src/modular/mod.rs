@@ -62,7 +62,7 @@ pub enum ModularError {
 pub struct ModularSystem<const BUF: usize = 64> {
     dead: Arc<MpscQueue<SetParameter>>,
     node_factory: Arc<Mutex<NodeFactory<f32, BUF>>>,
-    backend_factory: Arc<BackendFactory<f32>>,
+    backend_factory: Arc<BackendFactory>,
     actor_system: Arc<ActorSystem>,
     module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,

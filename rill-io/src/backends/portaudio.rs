@@ -14,6 +14,8 @@ use crate::config::AudioConfig;
 use crate::error::IoResult;
 use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
+use rill_core::time::ClockTick;
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 use portaudio as pa;
 
@@ -78,50 +80,12 @@ impl PortAudioBackend {
 // IoBackend impl
 // ============================================================================
 
-impl IoBackend<f32> for PortAudioBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
-        unsafe {
-            self.process_cb.set(cb);
-        }
+impl IoBackend for PortAudioBackend {
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        Arc::new(NullBufferView::new(0, 0))
     }
 
-    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
-        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-        let cap = frames.min(256).saturating_mul(2);
-        let mut temp = [0.0f32; 512];
-        let n = self.input_ring.read(&mut temp[..cap]);
-        let frames_out = n / 2;
-        for i in 0..frames_out.min(frames) {
-            if let Some(ch) = channels.get_mut(0) {
-                ch[i] = temp[i * 2];
-            }
-            if let Some(ch) = channels.get_mut(1) {
-                ch[i] = temp[i * 2 + 1];
-            }
-        }
-        frames_out
-    }
-
-    fn write(&self, channels: &[&[f32]]) -> usize {
-        let nch = channels.len();
-        if nch == 0 {
-            return 0;
-        }
-        let frames = channels[0].len();
-        if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity().min(frames * nch);
-            let dst = win.as_mut_slice();
-            let write_frames = cap / nch;
-            for i in 0..write_frames {
-                for ch in 0..nch {
-                    dst[i * nch + ch] = channels[ch][i];
-                }
-            }
-            write_frames
-        } else {
-            0
-        }
-    }
+    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
 
     fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
         let process_cb = self.process_cb;

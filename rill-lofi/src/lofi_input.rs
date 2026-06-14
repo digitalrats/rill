@@ -9,17 +9,17 @@ use rill_core::{
 use crate::config::LofiConfig;
 use crate::lofi_processor::LofiProcessor;
 
-/// Source node wrapping an [`IoBackend<T>`] with lofi processing.
+/// Source node wrapping an [`IoBackend`] with lofi processing.
 ///
-/// Follows `Input<T, BUF_SIZE>` pattern from rill-io. Reads audio from backend,
-/// applies lofi processing (bitcrush, noise, DAC, delay), fills output ports.
+/// Follows `Input<T, BUF_SIZE>` pattern from rill-io. Applies lofi processing
+/// (bitcrush, noise, DAC, delay), fills output ports.
 /// Chip control goes through `write_to_backend(data)` or `set_parameter("io_write", ...)`.
 pub struct LofiInput<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn IoBackend<T>>>,
+    backend: Option<Box<dyn IoBackend>>,
     bufs: Vec<[T; BUF_SIZE]>,
     lofi: LofiProcessor<BUF_SIZE>,
 }
@@ -167,7 +167,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LofiInput<T
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for LofiInput<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
+    fn resolve_backend(&mut self, backend: Box<dyn IoBackend>) {
         self.backend = Some(backend);
     }
 }
@@ -185,15 +185,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for LofiInput
                 self.state.advance();
                 return Ok(());
             }
-            let mut channels: Vec<&mut [T]> = self.bufs.iter_mut().map(|b| &mut b[..]).collect();
-            let n = io.read(&mut channels);
-            for buf in self.bufs.iter_mut() {
-                for s in buf[..n.min(BUF_SIZE)].iter_mut() {
-                    *s = T::from_f32(self.lofi.process_sample(s.to_f32()));
+            let view = io.create_view();
+            for (i, buf) in self.bufs.iter_mut().enumerate() {
+                let mut f32_buf = [0.0f32; BUF_SIZE];
+                let ch = i % view.num_input_channels().max(1);
+                let n = view.read_input(ch, &mut f32_buf);
+                for s in f32_buf[..n.min(BUF_SIZE)].iter() {
+                    buf[i] = T::from_f32(self.lofi.process_sample(*s));
                 }
-            }
-            if n >= BUF_SIZE {
-                for (i, buf) in self.bufs.iter().enumerate() {
+                if n >= BUF_SIZE {
                     if let Some(port) = self.outputs.get_mut(i) {
                         port.buffer_mut().as_mut_array()[..BUF_SIZE]
                             .copy_from_slice(&buf[..BUF_SIZE]);

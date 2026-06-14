@@ -4,6 +4,7 @@ use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
 use rill_core::time::{ClockTick, RenderContext, SystemClock};
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 use rill_core::traits::port::Port;
 use rill_core::traits::processable::Processable;
 use rill_core::traits::ParamValue;
@@ -104,7 +105,7 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     /// Shared node factory (required, from Runtime).
     factory: Arc<NodeFactory<T, BUF_SIZE>>,
     /// Shared backend factory (required, from Runtime).
-    backend_factory: Arc<BackendFactory<T>>,
+    backend_factory: Arc<BackendFactory>,
     /// Default backend name for nodes that don't specify one explicitly.
     default_backend: Option<String>,
     /// Default backend parameters (sample_rate, buffer_size, channels).
@@ -116,29 +117,27 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     parent_ref: Option<ActorRef<CommandEnum>>,
 }
 
-/// A passive I/O backend — delegates writes to a shared real backend
+/// A passive I/O backend — delegates to a shared real backend
 /// via a raw pointer. Used when multiple IoNodes (Input + Output) share
-/// a single `PipewireBackend`: the active node owns the `Box<IoBackend>`,
+/// a single `PipewireBackend`: the active node owns the `Box<dyn IoBackend>`,
 /// the passive node gets this thin reference wrapper.
 ///
-/// Safety: the pointer is valid as long as the active node's `Box<IoBackend>`
+/// Safety: the pointer is valid as long as the active node's `Box<dyn IoBackend>`
 /// lives. Both nodes are dropped together when the graph's `Vec<NodeVariant>`
 /// is dropped. The graph is single-threaded.
-struct PassiveRef<T: rill_core::math::Scalar> {
-    ptr: *const dyn rill_core::io::IoBackend<T>,
+#[allow(dead_code)]
+struct PassiveRef {
+    ptr: *const dyn rill_core::io::IoBackend,
 }
 
-impl<T: rill_core::math::Scalar> rill_core::io::IoBackend<T> for PassiveRef<T> {
-    fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
-    fn read(&self, _channels: &mut [&mut [T]]) -> usize {
-        0
+#[allow(unsafe_code)]
+unsafe impl Send for PassiveRef {}
+
+impl rill_core::io::IoBackend for PassiveRef {
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        Arc::new(NullBufferView::new(2, 2))
     }
-    fn write(&self, channels: &[&[T]]) -> usize {
-        #[allow(unsafe_code)]
-        unsafe {
-            (*self.ptr).write(channels)
-        }
-    }
+    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
     fn run(&self, _running: Arc<AtomicBool>) -> rill_core::io::IoResult<()> {
         Ok(())
     }
@@ -151,7 +150,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Create a new empty graph builder without a node factory.
     pub fn new(
         factory: Arc<NodeFactory<T, BUF_SIZE>>,
-        backend_factory: Arc<BackendFactory<T>>,
+        backend_factory: Arc<BackendFactory>,
     ) -> Self {
         Self {
             recipes: Vec::new(),
@@ -244,7 +243,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     }
 
     /// Access the shared backend factory.
-    pub fn backend_factory(&self) -> &Arc<BackendFactory<T>> {
+    pub fn backend_factory(&self) -> &Arc<BackendFactory> {
         &self.backend_factory
     }
 
@@ -325,10 +324,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         // --- Phase 2: Resolve I/O backends for I/O nodes ---
         // Deduplicate: the first IoNode with a given backend name
-        // gets the real Box<IoBackend>; subsequent nodes get a
+        // gets the real Box<dyn IoBackend>; subsequent nodes get a
         // PassiveRef that delegates writes to the same instance.
         let sr = self.sample_rate.unwrap_or(44100.0);
-        let mut raw_ptrs: HashMap<String, *const dyn rill_core::io::IoBackend<T>> = HashMap::new();
+        let mut raw_ptrs: HashMap<String, *const dyn rill_core::io::IoBackend> = HashMap::new();
         for (idx, recipe) in self.recipes.iter().enumerate() {
             // Only I/O nodes receive backends — non-IoNode entries
             // (plain Sources, Processors etc.) are skipped here.
@@ -360,7 +359,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     .map_err(BuildError::Backend)?;
                 raw_ptrs.insert(
                     name.clone(),
-                    &*backend as *const dyn rill_core::io::IoBackend<T>,
+                    &*backend as *const dyn rill_core::io::IoBackend,
                 );
                 io_node.resolve_backend(backend);
             }
@@ -697,7 +696,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::io::IoBackend;
     use rill_core::math::Transcendental;
     use rill_core::time::RenderContext;
     use rill_core::traits::{

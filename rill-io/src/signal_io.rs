@@ -1,3 +1,3 @@
-//! # IoBackendPtr — removed, use `Arc<dyn IoBackend<T>>` instead
+//! # IoBackendPtr — removed, use `Arc<dyn IoBackend>` instead
 
 pub use rill_core::io::{IoBackend, IoResult};

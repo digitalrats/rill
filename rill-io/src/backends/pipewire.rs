@@ -24,9 +24,18 @@ use crate::error::{IoError, IoResult};
 use crate::output_window::{OutputSlot, OutputWindow};
 use crate::PwBuffers;
 use rill_core::io::IoBackend;
+use rill_core::time::ClockTick;
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 /// Maximum stereo block in samples (4096 frames × 2 channels).
 const MAX_BLOCK_SAMPLES: usize = 8192;
+
+/// I/O mode — determines which PW stream drives the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum IoMode {
+    InputDriver,
+    OutputDriver,
+}
 
 /// Callback slot.
 #[derive(Copy, Clone)]
@@ -59,12 +68,14 @@ impl CbSlot {
 pub struct PipewireBackend {
     config: AudioConfig,
     input_buffer: Arc<IoRingBuffer>,
+    output_ring: Arc<IoRingBuffer>,
     process_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     output_slot: OutputSlot,
     negotiated_input_channels: Arc<AtomicU32>,
     negotiated_input_rate: Arc<AtomicU32>,
+    mode: IoMode,
 }
 
 impl fmt::Debug for PipewireBackend {
@@ -85,11 +96,14 @@ impl PipewireBackend {
         }
 
         let input_channels = config.input_channels;
+        let output_channels = config.output_channels;
         let sample_rate = config.sample_rate;
+        let ring_cap = (config.buffer_size * output_channels.max(1) * 32) as usize;
         Ok(Self {
             input_buffer: Arc::new(IoRingBuffer::new(
                 (config.buffer_size * config.input_channels.max(1) * 32) as usize,
             )),
+            output_ring: Arc::new(IoRingBuffer::new(ring_cap)),
             config,
             process_cb: CbSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
@@ -97,6 +111,11 @@ impl PipewireBackend {
             output_slot: OutputSlot::new(),
             negotiated_input_channels: Arc::new(AtomicU32::new(input_channels)),
             negotiated_input_rate: Arc::new(AtomicU32::new(sample_rate)),
+            mode: if input_channels > 0 {
+                IoMode::InputDriver
+            } else {
+                IoMode::OutputDriver
+            },
         })
     }
 
@@ -123,68 +142,12 @@ impl PipewireBackend {
 // IoBackend impl
 // ============================================================================
 
-impl IoBackend<f32> for PipewireBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
-        unsafe {
-            self.process_cb.set(cb);
-        }
+impl IoBackend for PipewireBackend {
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        Arc::new(NullBufferView::new(0, 0))
     }
 
-    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
-        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-        if frames == 0 {
-            return 0;
-        }
-        let out_ch = {
-            let c = self.negotiated_input_channels.load(Ordering::Relaxed);
-            if c > 0 {
-                c as usize
-            } else {
-                self.config.input_channels.max(1) as usize
-            }
-        };
-        let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-        let max_s = frames.saturating_mul(out_ch).min(MAX_BLOCK_SAMPLES);
-        let n_read = self.input_buffer.read(&mut temp[..max_s]);
-        let frames_out = n_read / out_ch;
-        let out = frames_out.min(frames);
-        if out_ch >= 2 && channels.len() >= 2 {
-            let (ch0, rest) = channels.split_at_mut(1);
-            let (ch1, _) = rest.split_at_mut(1);
-            let (c0, c1) = (&mut ch0[0][..out], &mut ch1[0][..out]);
-            deinterleave_stereo(&temp[..out * 2], c0, c1);
-        } else {
-            for i in 0..out {
-                if let Some(c) = channels.get_mut(0) {
-                    c[i] = temp[i];
-                }
-                if let Some(c) = channels.get_mut(1) {
-                    c[i] = temp[i];
-                }
-            }
-        }
-        out
-    }
-
-    fn write(&self, channels: &[&[f32]]) -> usize {
-        let nch = channels.len();
-        if nch == 0 {
-            return 0;
-        }
-        let frames = channels[0].len();
-        if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity().min(frames * nch);
-            let dst = win.as_mut_slice();
-            if nch >= 2 {
-                interleave_stereo(channels[0], channels[1], &mut dst[..frames * 2]);
-            } else {
-                dst[..frames].copy_from_slice(&channels[0][..frames]);
-            }
-            cap / nch
-        } else {
-            0
-        }
-    }
+    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
 
     fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
         let process_cb = self.process_cb;
@@ -237,6 +200,8 @@ impl IoBackend<f32> for PipewireBackend {
             let out_running = running.clone();
             let out_ml = ml.clone();
             let out_sr = sample_rate;
+            let is_input_driver = self.mode == IoMode::InputDriver;
+            let out_ring = self.output_ring.clone();
             let listener = stream
                 .add_local_listener_with_user_data(())
                 .process(move |s, _| {
@@ -257,28 +222,45 @@ impl IoBackend<f32> for PipewireBackend {
                         Some(s) => s,
                         None => return,
                     };
-                    let stride = out_chan as usize * 4;
-                    let n_frames = slice.len() / stride;
-                    let mut offset = 0usize;
-                    while offset + chunk_bytes <= slice.len() {
-                        let chunk = &mut slice[offset..offset + chunk_bytes];
-                        unsafe {
-                            oslot.set(OutputWindow::new(
-                                chunk.as_mut_ptr() as *mut f32,
-                                chunk_frames * out_chan as usize,
-                            ));
-                            process_cb.call(out_sr as f32);
-                            oslot.clear();
+
+                    if is_input_driver {
+                        // Passive output: read from output_ring → DMA.
+                        // Tick is driven by the input stream.
+                        let total_samps = slice.len() / 4;
+                        let samples: &mut [f32] = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                slice.as_mut_ptr() as *mut f32,
+                                total_samps,
+                            )
+                        };
+                        let n = out_ring.read(samples);
+                        if n < total_samps {
+                            samples[n..].fill(0.0);
                         }
-                        offset += chunk_bytes;
+                    } else {
+                        let stride = out_chan as usize * 4;
+                        let n_frames = slice.len() / stride;
+                        let mut offset = 0usize;
+                        while offset + chunk_bytes <= slice.len() {
+                            let chunk = &mut slice[offset..offset + chunk_bytes];
+                            unsafe {
+                                oslot.set(OutputWindow::new(
+                                    chunk.as_mut_ptr() as *mut f32,
+                                    chunk_frames * out_chan as usize,
+                                ));
+                                process_cb.call(out_sr as f32);
+                                oslot.clear();
+                            }
+                            offset += chunk_bytes;
+                        }
+                        if offset < slice.len() {
+                            slice[offset..].fill(0);
+                        }
+                        let ck = data.chunk_mut();
+                        *ck.offset_mut() = 0;
+                        *ck.stride_mut() = stride as i32;
+                        *ck.size_mut() = (stride * n_frames) as u32;
                     }
-                    if offset < slice.len() {
-                        slice[offset..].fill(0);
-                    }
-                    let ck = data.chunk_mut();
-                    *ck.offset_mut() = 0;
-                    *ck.stride_mut() = stride as i32;
-                    *ck.size_mut() = (stride * n_frames) as u32;
                 })
                 .register()
                 .map_err(|e| format!("PW output listener: {e}"))?;
@@ -339,7 +321,7 @@ impl IoBackend<f32> for PipewireBackend {
             let mut in_props = properties! {
                 *pw::keys::MEDIA_TYPE => "Audio",
                 *pw::keys::MEDIA_ROLE => "Music",
-                *pw::keys::MEDIA_CATEGORY => "Capture",
+                *pw::keys::MEDIA_CATEGORY => "Stream",
                 *pw::keys::NODE_NAME => in_node,
                 *pw::keys::NODE_DESCRIPTION => in_desc.as_str(),
             };
@@ -382,6 +364,7 @@ impl IoBackend<f32> for PipewireBackend {
                 let nrate_fmt = self.negotiated_input_rate.clone();
                 let nch_proc = self.negotiated_input_channels.clone();
                 let nrate_proc = self.negotiated_input_rate.clone();
+                let is_driver = self.mode == IoMode::InputDriver;
 
                 let listener = in_st
                     .add_local_listener_with_user_data(())
@@ -462,7 +445,7 @@ impl IoBackend<f32> for PipewireBackend {
                         }
 
                         let block_samps = buf_frames * actual_channels;
-                        if out_channels == 0 {
+                        if out_channels == 0 || is_driver {
                             while ibuf.len() >= block_samps {
                                 unsafe {
                                     let sr = nrate_proc.load(std::sync::atomic::Ordering::Relaxed)
