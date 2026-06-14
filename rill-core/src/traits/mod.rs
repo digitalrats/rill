@@ -7,6 +7,8 @@
 pub mod action;
 /// Algorithm trait and action contexts.
 pub mod algorithm;
+/// BufferView trait for backend-specific ring buffer access.
+pub mod buffer_view;
 mod error;
 /// Core node trait (`Node`) and related types.
 pub mod node;
@@ -24,6 +26,7 @@ pub mod router;
 // Re-export all public items
 pub use action::*;
 pub use algorithm::*;
+pub use buffer_view::*;
 pub use error::*;
 pub use node::*;
 pub use param::*;
@@ -58,6 +61,7 @@ pub mod prelude {
     pub use super::{
         // Core traits
         ActiveNode,
+        BufferView,
         Eurorack,
         IoNode,
         Node,
