@@ -259,17 +259,22 @@ impl IoBackend for PipewireBackend {
                     };
 
                     if !is_input_driver {
-                        // OutputDriver: fire process callback to fill output_ring
-                        let pos = out_spos.fetch_add(out_block as u64, Ordering::Relaxed);
-                        let tick = ClockTick::new(
-                            pos,
-                            out_block as u32,
-                            out_sr as f32,
-                            "pipewire".into(),
-                            out_view.clone(),
-                        );
-                        unsafe {
-                            out_cb.call(&tick);
+                        // OutputDriver: fire process_cb in chunks to fill output_ring
+                        let mut offset_frames = 0usize;
+                        while offset_frames < n_frames {
+                            let chunk = (n_frames - offset_frames).min(out_block as usize);
+                            let pos = out_spos.fetch_add(chunk as u64, Ordering::Relaxed);
+                            let tick = ClockTick::new(
+                                pos,
+                                chunk as u32,
+                                out_sr as f32,
+                                "pipewire".into(),
+                                out_view.clone(),
+                            );
+                            unsafe {
+                                out_cb.call(&tick);
+                            }
+                            offset_frames += chunk;
                         }
                     }
 

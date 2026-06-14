@@ -142,6 +142,7 @@ struct JackProcessHandler {
     view: Arc<dyn BufferView>,
     sample_pos: Arc<AtomicU64>,
     sample_rate: f32,
+    block_size: usize,
     sys_clock: Option<Arc<SystemClock>>,
 }
 
@@ -159,8 +160,9 @@ impl ProcessHandler for JackProcessHandler {
         }
 
         let nframes = ps.n_frames() as usize;
+        let chunk = self.block_size;
 
-        // Capture: read input ports → ring buffer (interleaved)
+        // Capture: write all input to ring buffer (one interleaved write)
         if !self.in_ports.is_empty() && self.in_ch > 0 {
             let total_samps = nframes * self.in_ch;
             let cap = total_samps.min(MAX_INTERLEAVED);
@@ -178,17 +180,22 @@ impl ProcessHandler for JackProcessHandler {
             self.input_ring.write(&interleaved[..cap]);
         }
 
-        // Create ClockTick and fire process callback
-        let pos = self.sample_pos.fetch_add(nframes as u64, Ordering::Relaxed);
-        let tick = ClockTick::new(
-            pos,
-            nframes as u32,
-            self.sample_rate,
-            "jack".into(),
-            self.view.clone(),
-        );
-        unsafe {
-            self.process_cb.call(&tick);
+        // Process in chunks of block_size — graph processes BUF_SIZE frames per call
+        let mut offset = 0usize;
+        while offset < nframes {
+            let n = (nframes - offset).min(chunk);
+            let pos = self.sample_pos.fetch_add(n as u64, Ordering::Relaxed);
+            let tick = ClockTick::new(
+                pos,
+                n as u32,
+                self.sample_rate,
+                "jack".into(),
+                self.view.clone(),
+            );
+            unsafe {
+                self.process_cb.call(&tick);
+            }
+            offset += n;
         }
 
         // Playback: read output ring → output ports (deinterleaved)
@@ -280,6 +287,7 @@ impl IoBackend for JackBackend {
         let in_port_names: Vec<_> = in_ports.iter().filter_map(|p| p.name().ok()).collect();
 
         let sample_rate = client.sample_rate() as f32;
+        let block_size = self.config.buffer_size as usize;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
             out_ports,
@@ -291,6 +299,7 @@ impl IoBackend for JackBackend {
             view: self.view.clone(),
             sample_pos: self.sample_pos.clone(),
             sample_rate,
+            block_size,
             sys_clock: self.sys_clock.clone(),
         };
 
