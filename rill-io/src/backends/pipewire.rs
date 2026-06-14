@@ -246,24 +246,31 @@ impl IoBackend for PipewireBackend {
                         return;
                     }
                     let data = &mut datas[0];
+
+                    // Read chunk metadata first (before data.data() borrow)
+                    let (ck_offset, ck_stride_raw, ck_size_raw) = {
+                        let ck = data.chunk();
+                        (
+                            ck.offset() as usize,
+                            ck.stride() as usize,
+                            ck.size() as usize,
+                        )
+                    };
+
                     let slice = match data.data() {
                         Some(s) => s,
                         None => return,
                     };
 
-                    // Use chunk metadata for actual buffer layout
-                    let ck = data.chunk();
-                    let ck_offset = ck.offset() as usize;
-                    let ck_stride = ck.stride() as usize;
-                    let ck_size = ck.size() as usize;
-                    // Fall back to full slice if chunk metadata is zero
-                    let stride = if ck_stride > 0 {
-                        ck_stride
+                    // Use chunk metadata for actual buffer layout;
+                    // fall back to slice dimensions if metadata is zero.
+                    let stride = if ck_stride_raw > 0 {
+                        ck_stride_raw
                     } else {
                         out_chan as usize * 4
                     };
-                    let n_frames = if ck_size > 0 {
-                        ck_size / stride
+                    let n_frames = if ck_size_raw > 0 {
+                        ck_size_raw / stride
                     } else {
                         slice.len() / stride
                     };
