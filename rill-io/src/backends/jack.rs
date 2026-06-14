@@ -1,58 +1,67 @@
-//! JACK backend — OutputWindow, no ring buffer for output.
+//! JACK backend — signal data flows through `IoRingBuffer` pairs
+//! bridged by `DeinterleavedView`. The process callback receives a
+//! `ClockTick` carrying the view — graph nodes read/write through
+//! `tick.view` uniformly.
 //!
-//! `run()` — non-blocking: creates JACK client, activates, saves
-//! the handle and returns. Process callback runs on JACK RT thread.
-//! `stop()` drops the handle → JACK deactivates.
-//! No `std::thread`, `std::sync`.
+//! `run()` — blocking: creates JACK client, activates, enters poll
+//! loop. Process callback runs on JACK RT thread.
+//! `stop()` sets `running = false` and deactivates the client.
 
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
 
 use crate::buffer::IoRingBuffer;
-
+use crate::buffer_view::DeinterleavedView;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
-use crate::output_window::{OutputSlot, OutputWindow};
 use rill_core::io::IoBackend;
 use rill_core::time::{ClockTick, SystemClock};
-use rill_core::traits::buffer_view::{BufferView, NullBufferView};
+use rill_core::traits::buffer_view::BufferView;
 
-/// Callback slot.
+/// Maximum interleaved buffer size: 4096 frames × 2 channels = 8192 floats.
+/// Stack-allocated to avoid heap allocation in the RT path.
+const MAX_INTERLEAVED: usize = 8192;
+
+/// Callback slot — stores the process callback via raw pointer for `Send`-safe
+/// single-threaded access from the JACK RT callback.
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
 
 impl CbSlot {
     fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
+        Self(Box::into_raw(Box::new(None::<Box<dyn FnMut(&ClockTick)>>)) as usize)
     }
-    unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
-        (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
+    unsafe fn set(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+        (*(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>)) = Some(cb);
     }
-    unsafe fn call(&self, sr: f32) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn(f32)>>) {
-            cb(sr);
+    unsafe fn call(&self, tick: &ClockTick) {
+        if let Some(ref mut cb) = *(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>) {
+            cb(tick);
         }
     }
     unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn(f32)>>));
+        drop(Box::from_raw(
+            self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>,
+        ));
     }
 }
 
-/// JACK audio backend.
+/// JACK signal backend.
 pub struct JackBackend {
     config: AudioConfig,
-    process_cb: CbSlot,
-    output_slot: OutputSlot,
     input_ring: Arc<IoRingBuffer>,
-    #[allow(dead_code)]
+    output_ring: Arc<IoRingBuffer>,
+    view: Arc<dyn BufferView>,
+    process_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
+    sample_pos: Arc<AtomicU64>,
     /// Stores the active JACK client handle.
-    /// Set once in `run()` (audio thread), taken once in `stop()` (control thread).
+    /// Set once in `run()` (I/O thread), taken once in `stop()` (control thread).
     active_client: UnsafeCell<Option<jack::AsyncClient<(), JackProcessHandler>>>,
     /// Optional shared system clock for JACK transport sync.
     /// When set, the process callback queries JACK transport state and
@@ -78,16 +87,31 @@ impl JackBackend {
             ));
         }
 
-        // JACK periods (nframes) can be 1024-4096, so ring buffer needs
-        // to hold multiple periods. Use 32x multiplier like PipeWire.
-        let buf_cap = (config.buffer_size * config.input_channels.max(1) * 32) as usize;
+        let input_channels = config.input_channels as usize;
+        let output_channels = config.output_channels as usize;
+        let block_size = config.buffer_size as usize;
+        let ring_cap = (block_size * output_channels.max(1) * 32).next_power_of_two();
+        let in_ring_cap = (block_size * input_channels.max(1) * 32).next_power_of_two();
+
+        let input_ring = Arc::new(IoRingBuffer::new(in_ring_cap));
+        let output_ring = Arc::new(IoRingBuffer::new(ring_cap));
+        let view: Arc<dyn BufferView> = Arc::new(DeinterleavedView::new(
+            input_ring.clone(),
+            output_ring.clone(),
+            input_channels,
+            output_channels,
+            block_size,
+        ));
+
         Ok(Self {
             config,
+            input_ring,
+            output_ring,
+            view,
             process_cb: CbSlot::new(),
-            output_slot: OutputSlot::new(),
-            input_ring: Arc::new(IoRingBuffer::new(buf_cap)),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
+            sample_pos: Arc::new(AtomicU64::new(0)),
             active_client: UnsafeCell::new(None),
             sys_clock: None,
         })
@@ -103,30 +127,139 @@ impl JackBackend {
     pub fn set_system_clock(&mut self, clock: Arc<SystemClock>) {
         self.sys_clock = Some(clock);
     }
+}
 
-    /// Common setup: create JACK client, register ports, activate.
-    /// Called from `run()` (non‑blocking).
-    fn setup(&self) -> Result<(), String> {
+// ─── ProcessHandler ──────────────────────────────────────────────────────
+
+struct JackProcessHandler {
+    process_cb: CbSlot,
+    out_ports: Vec<Port<AudioOut>>,
+    in_ports: Vec<Port<AudioIn>>,
+    in_ch: usize,
+    out_ch: usize,
+    input_ring: Arc<IoRingBuffer>,
+    output_ring: Arc<IoRingBuffer>,
+    view: Arc<dyn BufferView>,
+    sample_pos: Arc<AtomicU64>,
+    sample_rate: f32,
+    sys_clock: Option<Arc<SystemClock>>,
+}
+
+impl ProcessHandler for JackProcessHandler {
+    fn process(&mut self, client: &Client, ps: &ProcessScope) -> Control {
+        // JACK Transport sync — update BPM from transport master
+        if let Some(ref clock) = self.sys_clock {
+            if let Ok(state) = client.transport().query() {
+                if state.pos.valid_bbt() {
+                    if let Some(bbt) = state.pos.bbt() {
+                        clock.set_bpm(bbt.bpm);
+                    }
+                }
+            }
+        }
+
+        let nframes = ps.n_frames() as usize;
+
+        // Capture: read input ports → ring buffer (interleaved)
+        if !self.in_ports.is_empty() && self.in_ch > 0 {
+            let total_samps = nframes * self.in_ch;
+            let cap = total_samps.min(MAX_INTERLEAVED);
+            let mut interleaved = [0.0f32; MAX_INTERLEAVED];
+            for i in 0..nframes {
+                for ch in 0..self.in_ch {
+                    if ch < self.in_ports.len() {
+                        let src = self.in_ports[ch].as_slice(ps);
+                        if i < src.len() {
+                            interleaved[i * self.in_ch + ch] = src[i];
+                        }
+                    }
+                }
+            }
+            self.input_ring.write(&interleaved[..cap]);
+        }
+
+        // Create ClockTick and fire process callback
+        let pos = self.sample_pos.fetch_add(nframes as u64, Ordering::Relaxed);
+        let tick = ClockTick::new(
+            pos,
+            nframes as u32,
+            self.sample_rate,
+            "jack".into(),
+            self.view.clone(),
+        );
+        unsafe {
+            self.process_cb.call(&tick);
+        }
+
+        // Playback: read output ring → output ports (deinterleaved)
+        if !self.out_ports.is_empty() && self.out_ch > 0 {
+            let total_samps = nframes * self.out_ch;
+            let cap = total_samps.min(MAX_INTERLEAVED);
+            let mut interleaved = [0.0f32; MAX_INTERLEAVED];
+            let n = self.output_ring.read(&mut interleaved[..cap]);
+            for ch in 0..self.out_ch {
+                let buf = self.out_ports[ch].as_mut_slice(ps);
+                for i in 0..nframes {
+                    let idx = i * self.out_ch + ch;
+                    if idx < n {
+                        buf[i] = interleaved[idx];
+                    } else {
+                        buf[i] = 0.0;
+                    }
+                }
+            }
+        }
+
+        Control::Continue
+    }
+}
+
+// ============================================================================
+// IoBackend impl
+// ============================================================================
+
+impl IoBackend for JackBackend {
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        self.view.clone()
+    }
+
+    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+        unsafe {
+            self.process_cb.set(cb);
+        }
+    }
+
+    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
         let client_name = self.config.output_device.as_deref().unwrap_or("rill");
 
         let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
             .map_err(|e| format!("JACK client new: {e:?}"))?;
 
-        let out_port: Option<Port<AudioOut>> = if self.config.output_channels > 0 {
-            Some(
-                client
-                    .register_port("output", AudioOut)
-                    .map_err(|e| format!("JACK output port: {e:?}"))?,
-            )
+        let out_ch = self.config.output_channels.min(2) as usize;
+        let out_ports: Vec<Port<AudioOut>> = if out_ch > 0 {
+            let mut ports = Vec::with_capacity(out_ch);
+            for i in 0..out_ch {
+                let name = if out_ch == 1 {
+                    "output".into()
+                } else {
+                    format!("output_{}", i + 1)
+                };
+                ports.push(
+                    client
+                        .register_port(&name, AudioOut)
+                        .map_err(|e| format!("JACK output port {name}: {e:?}"))?,
+                );
+            }
+            ports
         } else {
-            None
+            Vec::new()
         };
 
-        let in_ports: Vec<Port<AudioIn>> = if self.config.input_channels > 0 {
-            let n = self.config.input_channels.min(2) as usize;
-            let mut ports = Vec::with_capacity(n);
-            for i in 0..n {
-                let name = if n == 1 {
+        let in_ch = self.config.input_channels.min(2) as usize;
+        let in_ports: Vec<Port<AudioIn>> = if in_ch > 0 {
+            let mut ports = Vec::with_capacity(in_ch);
+            for i in 0..in_ch {
+                let name = if in_ch == 1 {
                     "input".into()
                 } else {
                     format!("input_{}", i + 1)
@@ -142,19 +275,21 @@ impl JackBackend {
             Vec::new()
         };
 
-        // Auto-connect ports (before activation, ports are already registered)
-        let out_port_name = out_port.as_ref().and_then(|p| p.name().ok());
+        // Collect port names for auto-connect
+        let out_port_names: Vec<_> = out_ports.iter().filter_map(|p| p.name().ok()).collect();
         let in_port_names: Vec<_> = in_ports.iter().filter_map(|p| p.name().ok()).collect();
 
-        let in_ch = self.config.input_channels.max(1) as usize;
         let sample_rate = client.sample_rate() as f32;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
-            out_port,
+            out_ports,
             in_ports,
             in_ch,
-            output_slot: self.output_slot.clone(),
+            out_ch,
             input_ring: self.input_ring.clone(),
+            output_ring: self.output_ring.clone(),
+            view: self.view.clone(),
+            sample_pos: self.sample_pos.clone(),
             sample_rate,
             sys_clock: self.sys_clock.clone(),
         };
@@ -164,11 +299,10 @@ impl JackBackend {
             .map_err(|e| format!("JACK activate: {e:?}"))?;
 
         let jack_client = active_client.as_client();
-        if let Some(name) = out_port_name {
-            for target in &["system:playback_1", "system:playback_2"] {
-                if let Err(e) = jack_client.connect_ports_by_name(&name, target) {
-                    log::info!("JACK connect {name} → {target}: {e}");
-                }
+        for (i, name) in out_port_names.iter().enumerate() {
+            let target = format!("system:playback_{}", i + 1);
+            if let Err(e) = jack_client.connect_ports_by_name(name, &target) {
+                log::info!("JACK connect {name} → {target}: {e}");
             }
         }
         for (i, name) in in_port_names.iter().enumerate() {
@@ -182,101 +316,13 @@ impl JackBackend {
         unsafe {
             *self.active_client.get() = Some(active_client);
         }
+
+        // Block until stop() is called
+        while self.running.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
         Ok(())
-    }
-}
-
-// ─── ProcessHandler ──────────────────────────────────────────────────────
-
-struct JackProcessHandler {
-    process_cb: CbSlot,
-    out_port: Option<Port<AudioOut>>,
-    in_ports: Vec<Port<AudioIn>>,
-    in_ch: usize,
-    output_slot: OutputSlot,
-    input_ring: Arc<IoRingBuffer>,
-    sample_rate: f32,
-    sys_clock: Option<Arc<SystemClock>>,
-}
-
-impl ProcessHandler for JackProcessHandler {
-    fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
-        // JACK Transport sync — update BPM from transport master
-        if let Some(ref clock) = self.sys_clock {
-            if let Ok(state) = _client.transport().query() {
-                if state.pos.valid_bbt() {
-                    if let Some(bbt) = state.pos.bbt() {
-                        clock.set_bpm(bbt.bpm);
-                    }
-                }
-            }
-        }
-
-        let nframes = ps.n_frames() as usize;
-
-        // Capture: read input ports → ring buffer (interleaved)
-        if !self.in_ports.is_empty() {
-            let n_samp = nframes * self.in_ch;
-            let max_samp = n_samp.min(4096);
-            let mut temp = [0.0f32; 4096];
-            let len = max_samp;
-            for i in 0..nframes.min(len / self.in_ch) {
-                for ch in 0..self.in_ch.min(2) {
-                    if ch < self.in_ports.len() {
-                        let src = self.in_ports[ch].as_slice(ps);
-                        if i < src.len() {
-                            temp[i * self.in_ch + ch] = src[i];
-                        }
-                    }
-                }
-            }
-            self.input_ring.write(&temp[..len]);
-        }
-
-        // Playback: process graph → output port
-        if let Some(ref mut out) = self.out_port {
-            let buf = out.as_mut_slice(ps);
-            let chunk = 256usize;
-            let mut off = 0usize;
-            while off + chunk <= nframes {
-                unsafe {
-                    self.output_slot
-                        .set(OutputWindow::new(buf.as_mut_ptr().add(off), chunk));
-                    self.process_cb.call(self.sample_rate);
-                    self.output_slot.clear();
-                }
-                off += chunk;
-            }
-            if off < nframes {
-                buf[off..nframes].fill(0.0);
-            }
-        } else if !self.in_ports.is_empty() {
-            // Capture-only: process all available blocks
-            let chunk_samps = 256 * self.in_ch;
-            while self.input_ring.len() >= chunk_samps {
-                unsafe {
-                    self.process_cb.call(self.sample_rate);
-                }
-            }
-        }
-
-        Control::Continue
-    }
-}
-
-// ============================================================================
-// IoBackend impl
-// ============================================================================
-
-impl IoBackend for JackBackend {
-    fn create_view(&self) -> Arc<dyn BufferView> {
-        Arc::new(NullBufferView::new(0, 0))
-    }
-
-    fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
-
-    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
-        self.setup()
     }
 
     fn stop(&self) -> Result<(), String> {
