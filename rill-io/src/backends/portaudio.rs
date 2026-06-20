@@ -185,10 +185,6 @@ impl IoBackend for PortAudioBackend {
                             view,
                         );
                         tick.speed_ratio = 1.0;
-                        eprintln!(
-                            "PA out: n_frames={n_frames} has_input={has_input} is_output_driver={is_output_driver} firing={}",
-                            is_output_driver
-                        );
                         if is_output_driver {
                             unsafe {
                                 oproc.call(&tick);
@@ -271,10 +267,6 @@ impl IoBackend for PortAudioBackend {
                         );
                         tick.speed_ratio = 1.0;
                         if is_input_driver {
-                            eprintln!(
-                                "PA in: buf_len={} in_ch={in_ch} n_frames={n_frames} has_output={has_output} is_input_driver={is_input_driver}",
-                                args.buffer.len()
-                            );
                             unsafe {
                                 iproc.call(&tick);
                             }

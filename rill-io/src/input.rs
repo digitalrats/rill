@@ -127,11 +127,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
         _clock_inputs: &[RenderContext],
         tick: &ClockTick,
     ) -> ProcessResult<()> {
-        let n_in = tick.view.num_input_channels();
-        eprintln!(
-            "Input::generate called, n_in={n_in} block={}",
-            self.state.blocks_processed
-        );
         for (ch, port) in self.outputs.iter_mut().enumerate() {
             let buf = port.buffer_mut();
             #[allow(unsafe_code)]

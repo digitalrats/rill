@@ -646,7 +646,7 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let in_ch = p
         .get("input_channels")
         .and_then(|v| v.as_i32())
-        .unwrap_or(0) as u32;
+        .unwrap_or(ch as i32) as u32;
     let out_ch = p
         .get("output_channels")
         .and_then(|v| v.as_i32())
