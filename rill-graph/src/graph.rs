@@ -522,9 +522,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         let backend = bf.create(backend_name, be_params)?;
 
         backend.set_process_callback(Box::new(move |tick: &ClockTick| {
-            if tick.is_new_block {
-                let _ = self.process_block(tick);
-            }
+            let _ = self.process_block(tick);
             self.send_clock_tick(tick);
         }));
         backend.run(running.clone())?;

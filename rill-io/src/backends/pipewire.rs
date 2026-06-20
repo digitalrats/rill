@@ -250,25 +250,11 @@ impl IoBackend for PipewireBackend {
                             } else {
                                 1.0
                             };
-                            tick.is_final = false;
+                            tick.is_final = offset + chunk >= n_frames;
                             unsafe {
                                 out_cb.call(&tick);
                             }
                             offset += chunk;
-                        }
-                        // Send summary tick once per DMA buffer for correct timing
-                        let summary_view: Arc<dyn BufferView> = Arc::new(NullBufferView::new(0, 0));
-                        let mut summary = ClockTick::new(
-                            0,
-                            n_frames as u32,
-                            out_sr as f32,
-                            "pipewire".into(),
-                            summary_view,
-                        );
-                        summary.is_new_block = false;
-                        summary.is_final = true;
-                        unsafe {
-                            out_cb.call(&summary);
                         }
                     } else {
                         // InputDriver: copy output_ring → DMA (passive output)
