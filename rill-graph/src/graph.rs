@@ -492,10 +492,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
                 }
             }
         }
-        if let Some(ref parent) = self.parent_ref {
-            parent.send(CommandEnum::ClockTick(tick.clone()));
-        }
         Ok(())
+    }
+
+    /// Send a ClockTick to the parent actor (rack fan-out).
+    ///
+    /// Called by the backend's process callback at the appropriate time
+    /// (once per I/O callback for standard backends, once per DMA buffer
+    /// for chunking backends).
+    pub fn send_clock_tick(&self, tick: &ClockTick) {
+        if tick.is_final {
+            if let Some(ref parent) = self.parent_ref {
+                parent.send(CommandEnum::ClockTick(tick.clone()));
+            }
+        }
     }
 
     /// Convenience: run this processing state with a backend from the factory.
@@ -513,6 +523,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
 
         backend.set_process_callback(Box::new(move |tick: &ClockTick| {
             let _ = self.process_block(tick);
+            self.send_clock_tick(tick);
         }));
         backend.run(running.clone())?;
         while running.load(std::sync::atomic::Ordering::Acquire) {
@@ -596,9 +607,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
                     let _ = port.propagate(port.buffer(), &ctx, tick);
                 }
             }
-        }
-        if let Some(ref parent) = self.parent_ref {
-            parent.send(CommandEnum::ClockTick(tick.clone()));
         }
         Ok(())
     }

@@ -66,6 +66,13 @@ pub struct ClockTick {
     /// `> 1.0` = hardware runs slower.  Set by the backend when the
     /// negotiated hardware rate differs from the graph's configured rate.
     pub speed_ratio: f64,
+
+    /// Whether this tick should trigger a ClockTick dispatch to modules.
+    ///
+    /// `true` by default.  Chunking backends (PipeWire) set this to `false`
+    /// for intermediate chunks and `true` only for the final chunk of the
+    /// DMA buffer — avoiding 48 ClockTick dispatches per PW callback.
+    pub is_final: bool,
 }
 
 impl PartialEq for ClockTick {
@@ -121,6 +128,7 @@ impl ClockTick {
             source,
             view,
             speed_ratio: 1.0,
+            is_final: true,
         }
     }
 
@@ -150,6 +158,7 @@ impl ClockTick {
             source,
             view,
             speed_ratio: 1.0,
+            is_final: true,
         }
     }
 
@@ -248,6 +257,7 @@ impl Default for ClockTick {
             source: String::new(),
             view: Arc::new(NullBufferView::new(2, 2)),
             speed_ratio: 1.0,
+            is_final: true,
         }
     }
 }

@@ -250,6 +250,8 @@ impl IoBackend for PipewireBackend {
                             } else {
                                 1.0
                             };
+                            let is_last = offset + chunk >= n_frames;
+                            tick.is_final = is_last;
                             unsafe {
                                 out_cb.call(&tick);
                             }

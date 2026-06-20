@@ -47,6 +47,7 @@ impl SystemClock {
             source: String::new(),
             view: Arc::new(NullBufferView::new(2, 2)),
             speed_ratio: 1.0,
+            is_final: true,
         }
     }
 
