@@ -1,16 +1,14 @@
 //! PipeWire backend for Linux
 //!
 //! Uses `pipewire` (0.9) with `MainLoopRc` / `ContextRc` / `StreamBox`.
-//! Output writes directly to the PW DMA buffer via OutputWindow (no ring buffer).
-//! Input still uses IoRingBuffer.
+//! Zero-copy via `DirectView` — graph nodes read/write directly from/to
+//! the PipeWire DMA buffers through `tick.view`.
 //!
 //! `run()` — blocking: initializes PW, creates context/core/streams,
 //! enters mainloop iterate loop. Exits when `running` becomes false.
-//! No `std::thread`, `std::sync`.
 
-use rill_core::math::functions::{deinterleave_stereo, interleave_stereo};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use pipewire as pw;
@@ -18,53 +16,58 @@ use pw::properties::properties;
 use pw::spa;
 use pw::spa::sys as spa_sys;
 
-use crate::buffer::IoRingBuffer;
+use crate::buffer_view::DirectView;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
-use crate::output_window::{OutputSlot, OutputWindow};
-use crate::PwBuffers;
 use rill_core::io::IoBackend;
+use rill_core::time::ClockTick;
+use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
-/// Maximum stereo block in samples (4096 frames × 2 channels).
-const MAX_BLOCK_SAMPLES: usize = 8192;
-
-/// Callback slot.
+/// Callback slot — stores the process callback via raw pointer.
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
 
 impl CbSlot {
     fn new() -> Self {
-        Self(Box::into_raw(Box::new(None::<Box<dyn Fn(f32)>>)) as usize)
+        Self(Box::into_raw(Box::new(None::<Box<dyn FnMut(&ClockTick)>>)) as usize)
     }
-    unsafe fn set(&self, cb: Box<dyn Fn(f32)>) {
-        (*(self.0 as *mut Option<Box<dyn Fn(f32)>>)) = Some(cb);
+    unsafe fn set(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+        (*(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>)) = Some(cb);
     }
-    unsafe fn call(&self, sr: f32) {
-        if let Some(ref cb) = *(self.0 as *mut Option<Box<dyn Fn(f32)>>) {
-            cb(sr);
+    unsafe fn call(&self, tick: &ClockTick) {
+        if let Some(ref mut cb) = *(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>) {
+            cb(tick);
         }
     }
-    unsafe fn drop_box(&self) {
-        drop(Box::from_raw(self.0 as *mut Option<Box<dyn Fn(f32)>>));
+    unsafe fn take_box(&self) {
+        let taken = (*(self.0 as *mut Option<Box<dyn FnMut(&ClockTick)>>)).take();
+        drop(taken);
     }
 }
 
+/// I/O mode — determines which PW stream drives the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum IoMode {
+    InputDriver,
+    OutputDriver,
+}
+
+// ============================================================================
 // PipewireBackend
 // ============================================================================
 
-/// Direct capture data — set by capture callback, read by generate().
-/// Valid only during process_cb.call() on the PW RT thread.
-/// PipeWire audio backend — processes audio via PW stream callbacks,
-/// output goes directly to PW DMA buffer through `OutputWindow`.
+/// PipeWire audio backend with zero-copy DMA access via `DirectView`.
 pub struct PipewireBackend {
     config: AudioConfig,
-    input_buffer: Arc<IoRingBuffer>,
     process_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
-    output_slot: OutputSlot,
+    sample_pos: Arc<AtomicU64>,
     negotiated_input_channels: Arc<AtomicU32>,
     negotiated_input_rate: Arc<AtomicU32>,
+    negotiated_output_rate: Arc<AtomicU32>,
+    negotiated_output_channels: Arc<AtomicU32>,
+    mode: IoMode,
 }
 
 impl fmt::Debug for PipewireBackend {
@@ -76,46 +79,39 @@ impl fmt::Debug for PipewireBackend {
 }
 
 impl PipewireBackend {
-    /// Create a new PipeWire backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(target_os = "linux") {
             return Err(IoError::Unsupported(
                 "PipeWire is only available on Linux".into(),
             ));
         }
-
         let input_channels = config.input_channels;
+        let output_channels = config.output_channels;
         let sample_rate = config.sample_rate;
         Ok(Self {
-            input_buffer: Arc::new(IoRingBuffer::new(
-                (config.buffer_size * config.input_channels.max(1) * 32) as usize,
-            )),
             config,
             process_cb: CbSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
-            output_slot: OutputSlot::new(),
+            sample_pos: Arc::new(AtomicU64::new(0)),
             negotiated_input_channels: Arc::new(AtomicU32::new(input_channels)),
             negotiated_input_rate: Arc::new(AtomicU32::new(sample_rate)),
+            negotiated_output_rate: Arc::new(AtomicU32::new(sample_rate)),
+            negotiated_output_channels: Arc::new(AtomicU32::new(output_channels)),
+            mode: if input_channels > 0 {
+                IoMode::InputDriver
+            } else {
+                IoMode::OutputDriver
+            },
         })
     }
 
-    /// Return the negotiated sample rate from PipeWire (falls back to config rate until negotiated).
     pub fn negotiated_rate(&self) -> u32 {
         self.negotiated_input_rate.load(Ordering::Relaxed)
     }
 
-    /// Return the negotiated channel count from PipeWire, or 0 if not yet negotiated.
     pub fn negotiated_channels(&self) -> u32 {
         self.negotiated_input_channels.load(Ordering::Relaxed)
-    }
-
-    /// Return shared ring buffers for injection into AudioInput/AudioOutput.
-    pub fn rings(&self) -> Arc<PwBuffers> {
-        Arc::new(PwBuffers {
-            input: self.input_buffer.clone(),
-            output: Arc::new(IoRingBuffer::new(0)),
-        })
     }
 }
 
@@ -123,79 +119,31 @@ impl PipewireBackend {
 // IoBackend impl
 // ============================================================================
 
-impl IoBackend<f32> for PipewireBackend {
-    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>) {
+impl IoBackend for PipewireBackend {
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        // Real views are created per-callback with DMA pointers.
+        Arc::new(NullBufferView::new(
+            self.config.input_channels as usize,
+            self.config.output_channels as usize,
+        ))
+    }
+
+    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.process_cb.set(cb);
         }
     }
 
-    fn read(&self, channels: &mut [&mut [f32]]) -> usize {
-        let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-        if frames == 0 {
-            return 0;
-        }
-        let out_ch = {
-            let c = self.negotiated_input_channels.load(Ordering::Relaxed);
-            if c > 0 {
-                c as usize
-            } else {
-                self.config.input_channels.max(1) as usize
-            }
-        };
-        let mut temp = [0.0f32; MAX_BLOCK_SAMPLES];
-        let max_s = frames.saturating_mul(out_ch).min(MAX_BLOCK_SAMPLES);
-        let n_read = self.input_buffer.read(&mut temp[..max_s]);
-        let frames_out = n_read / out_ch;
-        let out = frames_out.min(frames);
-        if out_ch >= 2 && channels.len() >= 2 {
-            let (ch0, rest) = channels.split_at_mut(1);
-            let (ch1, _) = rest.split_at_mut(1);
-            let (c0, c1) = (&mut ch0[0][..out], &mut ch1[0][..out]);
-            deinterleave_stereo(&temp[..out * 2], c0, c1);
-        } else {
-            for i in 0..out {
-                if let Some(c) = channels.get_mut(0) {
-                    c[i] = temp[i];
-                }
-                if let Some(c) = channels.get_mut(1) {
-                    c[i] = temp[i];
-                }
-            }
-        }
-        out
-    }
-
-    fn write(&self, channels: &[&[f32]]) -> usize {
-        let nch = channels.len();
-        if nch == 0 {
-            return 0;
-        }
-        let frames = channels[0].len();
-        if let Some(win) = unsafe { self.output_slot.as_mut() } {
-            let cap = win.capacity().min(frames * nch);
-            let dst = win.as_mut_slice();
-            if nch >= 2 {
-                interleave_stereo(channels[0], channels[1], &mut dst[..frames * 2]);
-            } else {
-                dst[..frames].copy_from_slice(&channels[0][..frames]);
-            }
-            cap / nch
-        } else {
-            0
-        }
-    }
-
     fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
         let process_cb = self.process_cb;
-        let oslot = self.output_slot.clone();
-        let ibuf = self.input_buffer.clone();
         let xruns = self.xruns.clone();
         let sample_rate = self.config.sample_rate;
+        let block_size = self.config.buffer_size;
         let out_channels = self.config.output_channels;
         let in_channels = self.config.input_channels;
         let out_device = self.config.output_device.clone();
         let in_device = self.config.input_device.clone();
+        let sample_pos = self.sample_pos.clone();
 
         pw::init();
 
@@ -207,18 +155,14 @@ impl IoBackend<f32> for PipewireBackend {
             .connect_rc(None)
             .map_err(|e| format!("PW core.connect_rc: {e}"))?;
 
-        // Output stream and listener — alive for the duration of run()
+        // ── Output stream ────────────────────────────────────────────────────
         let _out_stream;
         let _out_listener;
         let ml = mainloop.clone();
-        let ml2 = ml.clone();
         let running2 = running.clone();
 
         if out_channels > 0 {
             let out_chan = out_channels;
-            let buf_frames = self.config.buffer_size as usize;
-            let chunk_frames = buf_frames;
-            let chunk_bytes = chunk_frames * out_chan as usize * 4;
             let out_node = out_device.as_deref().unwrap_or("rill-output");
             let out_desc = format!("Rill Audio Output ({out_node})");
             let mut out_props = properties! {
@@ -229,6 +173,10 @@ impl IoBackend<f32> for PipewireBackend {
                 *pw::keys::NODE_DESCRIPTION => out_desc.as_str(),
             };
             out_props.insert("audio.channels", out_chan.to_string());
+            out_props.insert(
+                *pw::keys::NODE_LATENCY,
+                format!("{}/{}", block_size, sample_rate),
+            );
 
             let stream =
                 pw::stream::StreamBox::new(&core, &format!("{out_node}-output"), out_props)
@@ -237,8 +185,27 @@ impl IoBackend<f32> for PipewireBackend {
             let out_running = running.clone();
             let out_ml = ml.clone();
             let out_sr = sample_rate;
+            let out_spos = sample_pos.clone();
+            let out_cb = process_cb;
+            let is_input_driver = self.mode == IoMode::InputDriver;
+            let out_nrate = self.negotiated_output_rate.clone();
+            let out_nrate_proc = self.negotiated_output_rate.clone();
+            let out_nchan = self.negotiated_output_channels.clone();
+            let out_nchan_proc = self.negotiated_output_channels.clone();
+
             let listener = stream
                 .add_local_listener_with_user_data(())
+                .param_changed(move |_stream, _data, id, param| {
+                    if id == spa_sys::SPA_PARAM_Format {
+                        if let Some(param) = param {
+                            let mut ai = spa::param::audio::AudioInfoRaw::new();
+                            if ai.parse(param).is_ok() {
+                                out_nrate.store(ai.rate(), Ordering::Relaxed);
+                                out_nchan.store(ai.channels(), Ordering::Relaxed);
+                            }
+                        }
+                    }
+                })
                 .process(move |s, _| {
                     if !out_running.load(Ordering::Acquire) {
                         out_ml.quit();
@@ -253,32 +220,98 @@ impl IoBackend<f32> for PipewireBackend {
                         return;
                     }
                     let data = &mut datas[0];
+
+                    // Read chunk metadata before data.data() to avoid borrow conflict
+                    let (ck_stride, ck_size) = {
+                        let ck = data.chunk();
+                        (ck.stride() as usize, ck.size() as usize)
+                    };
+
                     let slice = match data.data() {
                         Some(s) => s,
                         None => return,
                     };
-                    let stride = out_chan as usize * 4;
-                    let n_frames = slice.len() / stride;
-                    let mut offset = 0usize;
-                    while offset + chunk_bytes <= slice.len() {
-                        let chunk = &mut slice[offset..offset + chunk_bytes];
-                        unsafe {
-                            oslot.set(OutputWindow::new(
-                                chunk.as_mut_ptr() as *mut f32,
-                                chunk_frames * out_chan as usize,
-                            ));
-                            process_cb.call(out_sr as f32);
-                            oslot.clear();
+
+                    let stride = if ck_stride > 0 {
+                        ck_stride
+                    } else {
+                        let actual_ch = out_nchan_proc.load(Ordering::Relaxed) as usize;
+                        if actual_ch > 0 {
+                            actual_ch * 4
+                        } else {
+                            out_chan as usize * 4
                         }
-                        offset += chunk_bytes;
+                    };
+                    let n_frames = if ck_stride > 0 && ck_size > 0 {
+                        ck_size / ck_stride
+                    } else {
+                        slice.len() / stride
+                    };
+                    let total_samps = n_frames * (stride / 4);
+
+                    if !is_input_driver {
+                        // OutputDriver: create DirectView, fire process_cb in chunks
+                        let mut offset = 0usize;
+                        while offset < n_frames {
+                            let chunk = (n_frames - offset).min(block_size as usize);
+                            let view: Arc<dyn BufferView> = Arc::new(DirectView::new_output_only(
+                                unsafe {
+                                    (slice.as_mut_ptr() as *mut f32).add(offset * out_chan as usize)
+                                },
+                                out_chan as usize,
+                                chunk,
+                            ));
+                            let pos = out_spos.fetch_add(chunk as u64, Ordering::Relaxed);
+                            let mut tick = ClockTick::new(
+                                pos,
+                                chunk as u32,
+                                out_sr as f32,
+                                "pipewire".into(),
+                                view,
+                            );
+                            let nrate = out_nrate_proc.load(Ordering::Relaxed) as f64;
+                            let config_rate = out_sr as f64;
+                            tick.speed_ratio = if nrate > 0.0 && (config_rate - nrate).abs() > 1.0 {
+                                config_rate / nrate
+                            } else {
+                                1.0
+                            };
+                            // tick.is_final = true for ALL chunks — control path advances
+                            // correctly across multiple small-step ticks.
+                            unsafe {
+                                out_cb.call(&tick);
+                            }
+                            offset += chunk;
+                        }
+                        // Zero-fill any remainder of the DMA buffer
+                        // (when n_frames is not an exact multiple of block_size)
+                        let filled_samps = offset * out_chan as usize;
+                        if filled_samps < total_samps {
+                            let samples: &mut [f32] = unsafe {
+                                std::slice::from_raw_parts_mut(
+                                    slice.as_mut_ptr() as *mut f32,
+                                    total_samps,
+                                )
+                            };
+                            samples[filled_samps..].fill(0.0);
+                        }
+                    } else {
+                        // InputDriver: copy output_ring → DMA (passive output)
+                        let samples: &mut [f32] = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                slice.as_mut_ptr() as *mut f32,
+                                total_samps,
+                            )
+                        };
+                        // In InputDriver mode, the input callback drives the tick
+                        // and fills a ring buffer. For now, silence the output.
+                        samples.fill(0.0);
                     }
-                    if offset < slice.len() {
-                        slice[offset..].fill(0);
-                    }
+
                     let ck = data.chunk_mut();
                     *ck.offset_mut() = 0;
                     *ck.stride_mut() = stride as i32;
-                    *ck.size_mut() = (stride * n_frames) as u32;
+                    *ck.size_mut() = (total_samps * 4) as u32;
                 })
                 .register()
                 .map_err(|e| format!("PW output listener: {e}"))?;
@@ -310,13 +343,49 @@ impl IoBackend<f32> for PipewireBackend {
             .into_inner();
             let mut out_params = [spa::pod::Pod::from_bytes(&params_bytes).unwrap()];
 
+            // Request buffer size matching our BUF_SIZE
+            let buf_frames = block_size as i32;
+            let buf_size: i32 = buf_frames * out_chan as i32 * 4;
+            let buffers_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+                std::io::Cursor::new(Vec::new()),
+                &spa::pod::Value::Object(spa::pod::Object {
+                    type_: spa_sys::SPA_TYPE_OBJECT_ParamBuffers,
+                    id: spa_sys::SPA_PARAM_Buffers,
+                    properties: {
+                        use spa::pod::Property;
+                        vec![
+                            Property::new(
+                                spa_sys::SPA_PARAM_BUFFERS_blocks,
+                                spa::pod::Value::Int(1),
+                            ),
+                            Property::new(
+                                spa_sys::SPA_PARAM_BUFFERS_size,
+                                spa::pod::Value::Int(buf_size),
+                            ),
+                            Property::new(
+                                spa_sys::SPA_PARAM_BUFFERS_stride,
+                                spa::pod::Value::Int((out_chan * 4) as i32),
+                            ),
+                        ]
+                    },
+                }),
+            )
+            .unwrap()
+            .0
+            .into_inner();
+            let buffer_pod = spa::pod::Pod::from_bytes(&buffers_bytes).unwrap();
+            let mut all_params = vec![
+                spa::pod::Pod::from_bytes(&params_bytes).unwrap(),
+                buffer_pod,
+            ];
+
             if let Err(e) = stream.connect(
                 spa::utils::Direction::Output,
                 None,
                 pw::stream::StreamFlags::AUTOCONNECT
                     | pw::stream::StreamFlags::MAP_BUFFERS
                     | pw::stream::StreamFlags::RT_PROCESS,
-                &mut out_params,
+                &mut all_params,
             ) {
                 return Err(format!("PW output connect: {e}"));
             }
@@ -329,7 +398,7 @@ impl IoBackend<f32> for PipewireBackend {
 
         self.running.store(true, Ordering::Release);
 
-        // ── Input stream ────────────────────────────────────────────────────
+        // ── Input stream ─────────────────────────────────────────────────────
         let in_stream: Option<pw::stream::StreamBox>;
         let _in_listener: Option<_>;
 
@@ -339,14 +408,14 @@ impl IoBackend<f32> for PipewireBackend {
             let mut in_props = properties! {
                 *pw::keys::MEDIA_TYPE => "Audio",
                 *pw::keys::MEDIA_ROLE => "Music",
-                *pw::keys::MEDIA_CATEGORY => "Capture",
+                *pw::keys::MEDIA_CATEGORY => "Stream",
                 *pw::keys::NODE_NAME => in_node,
                 *pw::keys::NODE_DESCRIPTION => in_desc.as_str(),
             };
             in_props.insert("audio.channels", in_channels.to_string());
             in_props.insert(
                 *pw::keys::NODE_LATENCY,
-                format!("{}/{}", self.config.buffer_size, sample_rate),
+                format!("{}/{}", block_size, sample_rate),
             );
 
             in_stream =
@@ -358,11 +427,9 @@ impl IoBackend<f32> for PipewireBackend {
                     }
                 };
 
-            // Input listener — MUST live until end of run() or PW stops calling it.
             if let Some(ref in_st) = in_stream {
                 let mut in_ai = spa::param::audio::AudioInfoRaw::new();
                 in_ai.set_format(spa::param::audio::AudioFormat::F32LE);
-                // Don't set rate/channels — let PW negotiate.
 
                 let in_params_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
                     std::io::Cursor::new(Vec::new()),
@@ -377,11 +444,11 @@ impl IoBackend<f32> for PipewireBackend {
                 .into_inner();
                 let mut in_params = [spa::pod::Pod::from_bytes(&in_params_bytes).unwrap()];
 
-                let buf_frames = self.config.buffer_size as usize;
                 let nch_fmt = self.negotiated_input_channels.clone();
                 let nrate_fmt = self.negotiated_input_rate.clone();
                 let nch_proc = self.negotiated_input_channels.clone();
                 let nrate_proc = self.negotiated_input_rate.clone();
+                let is_driver = self.mode == IoMode::InputDriver;
 
                 let listener = in_st
                     .add_local_listener_with_user_data(())
@@ -390,17 +457,15 @@ impl IoBackend<f32> for PipewireBackend {
                             if let Some(param) = param {
                                 let mut ai = spa::param::audio::AudioInfoRaw::new();
                                 if ai.parse(param).is_ok() {
-                                    nch_fmt
-                                        .store(ai.channels(), std::sync::atomic::Ordering::Relaxed);
-                                    nrate_fmt
-                                        .store(ai.rate(), std::sync::atomic::Ordering::Relaxed);
+                                    nch_fmt.store(ai.channels(), Ordering::Relaxed);
+                                    nrate_fmt.store(ai.rate(), Ordering::Relaxed);
                                 }
                             }
                         }
                     })
                     .process(move |stream, _| {
                         if !running2.load(Ordering::Acquire) {
-                            ml2.quit();
+                            ml.quit();
                             return;
                         }
                         let mut buf = match stream.dequeue_buffer() {
@@ -417,7 +482,7 @@ impl IoBackend<f32> for PipewireBackend {
                         let data = &mut datas[0];
 
                         let actual_channels = {
-                            let c = nch_proc.load(std::sync::atomic::Ordering::Relaxed);
+                            let c = nch_proc.load(Ordering::Relaxed);
                             if c > 0 {
                                 c as usize
                             } else {
@@ -429,8 +494,7 @@ impl IoBackend<f32> for PipewireBackend {
                         let chunk_size;
                         {
                             let ck = data.chunk_mut();
-                            let flags = ck.flags();
-                            if flags.contains(spa::buffer::ChunkFlags::CORRUPTED) {
+                            if ck.flags().contains(spa::buffer::ChunkFlags::CORRUPTED) {
                                 xruns.fetch_add(1, Ordering::Relaxed);
                                 return;
                             }
@@ -450,25 +514,39 @@ impl IoBackend<f32> for PipewireBackend {
                         let data_start = chunk_offset.min(slice.len());
                         let data_end = (chunk_offset + chunk_size).min(slice.len());
                         let sample_bytes = &slice[data_start..data_end];
-                        let samples: &[f32] = bytemuck::cast_slice(sample_bytes);
-                        let len = samples.len().min(MAX_BLOCK_SAMPLES);
+                        let total_samps = sample_bytes.len() / 4;
 
-                        let written = ibuf.write(&samples[..len]);
-                        if written < len {
-                            log::warn!(
-                                "PW input: ring buffer overflow, wrote {written}/{} samples",
-                                len
+                        let view: Arc<dyn BufferView> = Arc::new(DirectView::new_interleaved(
+                            sample_bytes.as_ptr() as *const f32,
+                            std::ptr::null_mut(),
+                            actual_channels,
+                            0,
+                            total_samps / actual_channels.max(1),
+                        ));
+
+                        if out_channels == 0 || is_driver {
+                            let sr = nrate_proc.load(Ordering::Relaxed) as f32;
+                            let effective_sr = if sr > 0.0 { sr } else { sample_rate as f32 };
+                            let pos = sample_pos.fetch_add(
+                                (total_samps / actual_channels.max(1)) as u64,
+                                Ordering::Relaxed,
                             );
-                        }
-
-                        let block_samps = buf_frames * actual_channels;
-                        if out_channels == 0 {
-                            while ibuf.len() >= block_samps {
-                                unsafe {
-                                    let sr = nrate_proc.load(std::sync::atomic::Ordering::Relaxed)
-                                        as f32;
-                                    process_cb.call(if sr > 0.0 { sr } else { sample_rate as f32 });
-                                }
+                            let mut tick = ClockTick::new(
+                                pos,
+                                (total_samps / actual_channels.max(1)) as u32,
+                                effective_sr,
+                                "pipewire".into(),
+                                view,
+                            );
+                            let config_rate = sample_rate as f64;
+                            let actual_rate = effective_sr as f64;
+                            tick.speed_ratio = if (config_rate - actual_rate).abs() > 1.0 {
+                                config_rate / actual_rate
+                            } else {
+                                1.0
+                            };
+                            unsafe {
+                                process_cb.call(&tick);
                             }
                         }
                     })
@@ -495,8 +573,6 @@ impl IoBackend<f32> for PipewireBackend {
         }
 
         // ── PW event loop ───────────────────────────────────────────────────
-        // No own loop — run() blocks the thread, events are
-        // handled by PW. Callback checks running and calls quit.
         mainloop.run();
 
         if let Some(ref s) = in_stream {
@@ -516,7 +592,7 @@ impl Drop for PipewireBackend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
         unsafe {
-            self.process_cb.drop_box();
+            self.process_cb.take_box();
         }
     }
 }

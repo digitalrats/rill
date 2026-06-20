@@ -5,8 +5,8 @@
 //! (the STC player) that receives ClockTick via the rack actor.
 //!
 //! Usage:
-//!   cargo run --example chiptune_stc --features "lofi,portaudio,serialization" -- [backend]
-//!   cargo run --example chiptune_stc --features "lofi,alsa,serialization" -- alsa
+//!   cargo run --example chiptune_stc --features "io,lofi,portaudio,serialization" -- [backend]
+//!   cargo run --example chiptune_stc --features "io,lofi,alsa,serialization" -- alsa
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -201,7 +201,7 @@ impl StcPlayer {
         if self.int_ms >= INT_MS {
             self.int_ms -= INT_MS;
             if self.finished {
-                return Some([0u8; 14]); // silence on loop
+                return Some([0u8; 14]);
             }
             Some(self.step_int())
         } else {
@@ -437,7 +437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let CommandEnum::ClockTick(tick) = msg {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
                     if let Some(regs) = player.borrow_mut().step_ms(ms) {
-                        let pid = ParameterId::new("io_write").unwrap();
+                        let pid = ParameterId::new("register_write").unwrap();
                         gr.send(CommandEnum::SetParameter(SetParameter::new(
                             PortId::param(NodeId(0), 0),
                             pid,
@@ -478,9 +478,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 nodes: vec![
                     NodeDef::Source(SourceDef {
                         id: 0,
-                        type_name: "rill/lofi_input".into(),
+                        type_name: "rill/lofi_chip".into(),
                         name: "ay_chip".into(),
-                        backend: Some("ay38910".into()),
+                        backend: None,
                         parameters: source_params,
                     }),
                     NodeDef::Sink(SinkDef {

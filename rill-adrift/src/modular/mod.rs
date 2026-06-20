@@ -4,16 +4,20 @@
 //! * RackDef — control system (LFO, envelope, sequencer)
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 #[cfg(feature = "serialization")]
 use rill_core::queues::CommandEnum;
 use rill_core::queues::{MpscQueue, SetParameter};
+#[cfg(feature = "serialization")]
+use rill_core::time::ClockTick;
 use rill_core::traits::ParamValue;
 #[cfg(feature = "serialization")]
 use rill_core_actor::ActorRef;
 use rill_core_actor::ActorSystem;
+#[cfg(feature = "serialization")]
 use rill_graph::backend_factory::BackendFactory;
 #[cfg(feature = "serialization")]
 use rill_graph::Graph;
@@ -62,7 +66,6 @@ pub enum ModularError {
 pub struct ModularSystem<const BUF: usize = 64> {
     dead: Arc<MpscQueue<SetParameter>>,
     node_factory: Arc<Mutex<NodeFactory<f32, BUF>>>,
-    backend_factory: Arc<BackendFactory<f32>>,
     actor_system: Arc<ActorSystem>,
     module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,
@@ -78,15 +81,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
     pub fn new(config: ModularConfig) -> Self {
         let mut nf = NodeFactory::new();
         crate::registration::register_all_nodes(&mut nf);
-        let bf = {
-            #[allow(unused_mut)]
-            let mut bf = BackendFactory::new();
-            #[cfg(feature = "io")]
-            crate::registration::register_backends(&mut bf);
-            #[cfg(feature = "lofi")]
-            crate::registration::register_lofi_backends(&mut bf);
-            bf
-        };
         let mut module_factory = ModuleFactory::new();
         crate::registration::register_modules(&mut module_factory);
         let default_backend = config.backend_name.clone().map(|n| {
@@ -100,7 +94,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
         Self {
             dead: Arc::new(MpscQueue::new()),
             node_factory: Arc::new(Mutex::new(nf)),
-            backend_factory: Arc::new(bf),
             module_factory,
             default_backend,
             actor_system: Arc::new(ActorSystem::new()),
@@ -117,14 +110,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     }
 
     pub(crate) fn create_builder(&self) -> GraphBuilder<f32, BUF> {
-        let mut builder = GraphBuilder::new(
-            Arc::new(self.node_factory.lock().unwrap().clone()),
-            self.backend_factory.clone(),
-        );
-        if let Some((ref name, ref params)) = self.default_backend {
-            builder.set_default_backend(name.clone(), params.clone());
-        }
-        builder
+        GraphBuilder::new(Arc::new(self.node_factory.lock().unwrap().clone()))
     }
     /// Build a signal graph from a GraphDef.
     #[cfg(feature = "serialization")]
@@ -159,8 +145,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
         for rd in &def.racks {
             let node_factory = self.node_factory.clone();
-            let backend_factory = self.backend_factory.clone();
-            let default_backend = self.default_backend.clone();
             let sys = self.actor_system.clone();
             let sys_svc = self.actor_system.clone();
             let gd = rd.graph.clone();
@@ -192,23 +176,66 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
             // 2. Build graph on I/O thread
             if let Some(case) = self.cases.get_mut(&rd.name) {
+                let backend_name = self.default_backend.clone();
+                #[cfg(feature = "io")]
+                let bf = {
+                    let mut f = BackendFactory::new();
+                    crate::registration::register_backends(&mut f);
+                    f
+                };
+                #[cfg(not(feature = "io"))]
+                let bf = BackendFactory::new();
+                let graph_def = gd.clone();
                 case.start(move |running| {
-                    let mut builder = GraphBuilder::new(
-                        Arc::new(node_factory.lock().unwrap().clone()),
-                        backend_factory,
-                    );
-                    if let Some((ref name, ref params)) = default_backend {
-                        builder.set_default_backend(name.clone(), params.clone());
-                    }
+                    let mut builder =
+                        GraphBuilder::new(Arc::new(node_factory.lock().unwrap().clone()));
                     builder.set_parent_ref(parent_ref);
-                    if let Err(e) = gd.populate(&mut builder) {
+                    if let Err(e) = graph_def.populate(&mut builder) {
                         log::error!("graph populate: {e}");
                         return;
                     }
                     match builder.build(&sys) {
-                        Ok(mut graph) => {
+                        Ok(graph) => {
                             let _ = graph_tx.send(graph.handle());
-                            graph.run(running).ok();
+                            let mut state = graph.into_processing_state();
+
+                            // Create the I/O backend and wire the processing loop
+                            if let Some((ref name, ref params)) = backend_name {
+                                match bf.create(name, params) {
+                                    Ok(backend) => {
+                                        let callback = move |tick: &ClockTick| {
+                                            let _ = state.process_block(tick);
+                                            state.send_clock_tick(tick);
+                                        };
+                                        backend.set_process_callback(Box::new(callback));
+                                        if let Err(e) = backend.run(running.clone()) {
+                                            log::error!("backend run: {e}");
+                                        }
+                                        // Keep thread alive for callback-driven backends
+                                        // (PortAudio, JACK).  Poll-driven backends block
+                                        // inside run() and reach here only after stop().
+                                        while running.load(Ordering::Acquire) {
+                                            std::thread::park();
+                                        }
+                                        let _ = backend.stop();
+                                    }
+                                    Err(e) => {
+                                        log::error!("backend create '{}': {e}", name);
+                                        let tick = ClockTick::default();
+                                        let _ = state.process_block(&tick);
+                                        while running.load(Ordering::Acquire) {
+                                            std::thread::park();
+                                        }
+                                    }
+                                }
+                            } else {
+                                // No backend configured — fire one tick then park
+                                let tick = ClockTick::default();
+                                let _ = state.process_block(&tick);
+                                while running.load(Ordering::Acquire) {
+                                    std::thread::park();
+                                }
+                            }
                         }
                         Err(e) => log::error!("graph build: {e:?}"),
                     };

@@ -1,12 +1,14 @@
-//! Global PipeWire context — lazily initialised once, shared by
-//! AudioInput and AudioOutput nodes via [`PwBuffers`].
+//! Global PipeWire context — lazily initialised once.
+//!
+//! In the new architecture backends are created externally and their
+//! `BufferView` is obtained via `IoBackend::create_view()`.
 
 use std::sync::Arc;
 
-use crate::PwBuffers;
 use rill_core::io::IoBackend;
+use rill_core::traits::buffer_view::BufferView;
 
-type BackendTriple = (Box<dyn IoBackend<f32>>, Arc<PwBuffers>);
+type BackendTriple = (Box<dyn IoBackend>, Arc<dyn BufferView>);
 
 /// Ensure a PipeWire backend is available (stub when `pipewire` feature is disabled).
 #[cfg(not(feature = "pipewire"))]
@@ -25,7 +27,7 @@ pub fn ensure(sample_rate: u32, buf_size: u32, channels: u32) -> Option<BackendT
         .with_buffer_size(buf_size)
         .with_channels(channels);
     let backend = PipewireBackend::new(config).ok()?;
-    let rings = backend.rings();
-    let backend: Box<dyn IoBackend<f32>> = Box::new(backend);
-    Some((backend, rings))
+    let view = backend.create_view();
+    let backend: Box<dyn IoBackend> = Box::new(backend);
+    Some((backend, view))
 }

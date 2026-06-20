@@ -1,6 +1,6 @@
 //! Sawtooth wave oscillator using rill-core-dsp with Transcendental
 
-use rill_core::time::RenderContext;
+use rill_core::time::{ClockTick, RenderContext};
 use rill_core::traits::{
     Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     Source,
@@ -212,6 +212,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SawOsc<T,
         _ctx: &RenderContext,
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
         let out = self.outputs[0].buffer.as_mut_array();
         self.osc.set_frequency(self.frequency.to_f32());

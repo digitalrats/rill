@@ -562,13 +562,6 @@ impl GraphDef {
             }
             let idx = builder.add_node_with_id(nd.type_name(), &p, NodeId(nd.id()));
 
-            // Resolve backend name (only Source/Sink)
-            if let Some(name) = nd.backend() {
-                builder.set_node_backend(idx, name.to_string());
-            } else if let Some(ref name) = builder.default_backend_name() {
-                builder.set_node_backend(idx, name.to_string());
-            }
-
             // Apply pre-configured routing matrix (Router only)
             if let NodeDef::Router(ref r) = nd {
                 for entry in &r.routing_matrix {
@@ -752,11 +745,10 @@ pub fn from_cbor(bytes: &[u8]) -> Result<GraphDef, SerializationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend_factory::BackendFactory;
     use crate::factory::NodeConstructor;
     use crate::graph::Graph;
     use rill_core::math::Transcendental;
-    use rill_core::time::RenderContext;
+    use rill_core::time::{ClockTick, RenderContext};
     use rill_core::traits::node::NodeState;
     use rill_core::traits::port::Port;
     use rill_core::traits::{
@@ -905,6 +897,7 @@ mod tests {
             _: &RenderContext,
             _: &[T],
             _: &[RenderContext],
+            _: &ClockTick,
         ) -> ProcessResult<()> {
             Ok(())
         }
@@ -975,12 +968,8 @@ mod tests {
         Arc::new(r)
     }
 
-    fn empty_backends() -> Arc<BackendFactory<f32>> {
-        Arc::new(BackendFactory::new())
-    }
-
     fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
-        let mut b = GraphBuilder::new(Arc::new(factory.clone()), empty_backends());
+        let mut b = GraphBuilder::new(Arc::new(factory.clone()));
         let src = b.add_node("rill/test", &Params::new(44100.0));
         let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
@@ -1002,7 +991,7 @@ mod tests {
         assert!(json.contains("connections"));
 
         let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut restored = GraphBuilder::new(reg.clone());
         def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 2);
 
@@ -1019,7 +1008,7 @@ mod tests {
         assert!(!cbor.is_empty());
 
         let def = from_cbor(&cbor).expect("from_cbor");
-        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut restored = GraphBuilder::new(reg.clone());
         def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 2);
     }
@@ -1027,7 +1016,7 @@ mod tests {
     #[test]
     fn test_empty_graph_roundtrip() {
         let reg = empty_factory();
-        let graph = GraphBuilder::new(empty_factory(), empty_backends())
+        let graph = GraphBuilder::new(empty_factory())
             .build(&test_system())
             .expect("graph build");
 
@@ -1036,7 +1025,7 @@ mod tests {
         assert!(json.contains(r#""connections": []"#));
 
         let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut restored = GraphBuilder::new(reg.clone());
         def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 0);
     }
@@ -1048,7 +1037,7 @@ mod tests {
     #[test]
     fn test_export_parameters() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
         b.add_node(
             "rill/param",
             &Params::new(44100.0)
@@ -1069,7 +1058,7 @@ mod tests {
     #[test]
     fn test_roundtrip_parameters() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
         b.add_node(
             "rill/param",
             &Params::new(48000.0)
@@ -1080,7 +1069,7 @@ mod tests {
 
         let json = to_json(&graph).expect("to_json");
         let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut restored = GraphBuilder::new(reg.clone());
         def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 1);
         restored.build(&test_system()).expect("rebuild");
@@ -1093,7 +1082,7 @@ mod tests {
     #[test]
     fn test_export_feedback_connection() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
         let src = b.add_node("rill/test", &Params::new(44100.0));
         let proc = b.add_node("rill/test", &Params::new(44100.0));
         b.connect_signal(src, 0, proc, 0);
@@ -1115,7 +1104,7 @@ mod tests {
     fn test_export_type_name_explicit() {
         // ParamCtor declares type_name = Some("rill/param")
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
         b.add_node("rill/param", &Params::new(44100.0));
         let graph = b.build(&test_system()).expect("build");
 
@@ -1144,7 +1133,7 @@ mod tests {
         }
         reg.register(FallbackCtor);
         let reg = Arc::new(reg);
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
 
         b.add_node("rill/fallback", &Params::new(44100.0));
         let graph = b.build(&test_system()).expect("build");
@@ -1160,7 +1149,7 @@ mod tests {
     #[test]
     fn test_roundtrip_preserves_node_ids() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
         // Explicit IDs via add_node_with_id
         b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100));
         b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200));
@@ -1172,7 +1161,7 @@ mod tests {
         assert!(json.contains(r#""id": 200"#));
 
         let def = from_json(&json).expect("from_json");
-        let mut rebuilt = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut rebuilt = GraphBuilder::new(reg.clone());
         def.populate(&mut rebuilt).expect("populate");
         assert_eq!(rebuilt.node_count(), 2);
     }
@@ -1184,7 +1173,7 @@ mod tests {
     #[test]
     fn test_roundtrip_complex_topology() {
         let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
         let s0 = b.add_node("rill/test", &Params::new(44100.0));
         let p1 = b.add_node("rill/param", &Params::new(44100.0));
         let p2 = b.add_node("rill/param", &Params::new(44100.0));
@@ -1195,7 +1184,7 @@ mod tests {
 
         let json = to_json(&graph).expect("to_json");
         let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut restored = GraphBuilder::new(reg.clone());
         def.populate(&mut restored).expect("populate");
         assert_eq!(restored.node_count(), 3);
 
@@ -1235,7 +1224,7 @@ mod tests {
             connections: vec![],
             description: None,
         };
-        let mut b = GraphBuilder::new(reg.clone(), empty_backends());
+        let mut b = GraphBuilder::new(reg.clone());
         match doc.populate(&mut b) {
             Err(SerializationError::DuplicateNodeId(id)) => assert_eq!(id, 0),
             _ => panic!("expected DuplicateNodeId"),
@@ -1254,7 +1243,7 @@ mod tests {
             description: None,
         };
         let r = Arc::new(NodeFactory::<f32, 256>::new());
-        let mut b = GraphBuilder::new(r.clone(), empty_backends());
+        let mut b = GraphBuilder::new(r.clone());
         match doc.populate(&mut b) {
             Err(SerializationError::InvalidFormat(_)) => {}
             _ => panic!("expected InvalidFormat"),

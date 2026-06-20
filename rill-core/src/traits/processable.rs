@@ -1,7 +1,7 @@
 //! Processable trait and NodeVariant.
 
 use crate::math::Transcendental;
-use crate::time::RenderContext;
+use crate::time::{ClockTick, RenderContext};
 use crate::traits::port::Port;
 use crate::traits::Node;
 use crate::traits::ProcessResult;
@@ -22,10 +22,12 @@ pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
     ///
     /// * `ctx` — [`RenderContext`] with sample clock, transport state, and
     ///   hardware clock correction.
+    /// * `tick` — [`ClockTick`] with timing info and backend buffer view.
+    ///   Only Source and Sink nodes use the view; Processor and Router ignore it.
     ///
     /// # Errors
     /// Returns a [`ProcessError`](crate::traits::ProcessError) if processing fails.
-    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()>;
+    fn process_block(&mut self, ctx: &RenderContext, tick: &ClockTick) -> ProcessResult<()>;
 }
 
 // ============================================================================
@@ -37,7 +39,7 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
+    fn process_block(&mut self, ctx: &RenderContext, tick: &ClockTick) -> ProcessResult<()> {
         // Compile-time guard: BUF_SIZE must be SIMD-aligned (multiple of 4).
         // Fires at monomorphization time when a concrete BUF_SIZE is used.
         const {
@@ -46,7 +48,7 @@ where
                 "BUF_SIZE must be a multiple of 4 for SIMD"
             )
         }
-        self.as_mut().generate(ctx, &[], &[])
+        self.as_mut().generate(ctx, &[], &[], tick)
     }
 }
 
@@ -55,7 +57,7 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
+    fn process_block(&mut self, ctx: &RenderContext, _tick: &ClockTick) -> ProcessResult<()> {
         self.as_mut().process(ctx, &[], &[], &[], &[])
     }
 }
@@ -65,8 +67,8 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
-        self.as_mut().consume(ctx, &[], &[], &[], &[])
+    fn process_block(&mut self, ctx: &RenderContext, tick: &ClockTick) -> ProcessResult<()> {
+        self.as_mut().consume(ctx, &[], &[], &[], &[], tick)
     }
 }
 
@@ -75,7 +77,7 @@ impl<T, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
 where
     T: Transcendental,
 {
-    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
+    fn process_block(&mut self, ctx: &RenderContext, _tick: &ClockTick) -> ProcessResult<()> {
         (**self).route(ctx, &[])
     }
 }
@@ -101,12 +103,12 @@ pub enum NodeVariant<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> Processable<T, BUF_SIZE>
     for NodeVariant<T, BUF_SIZE>
 {
-    fn process_block(&mut self, ctx: &RenderContext) -> ProcessResult<()> {
+    fn process_block(&mut self, ctx: &RenderContext, tick: &ClockTick) -> ProcessResult<()> {
         match self {
-            NodeVariant::Source(src) => src.process_block(ctx),
-            NodeVariant::Processor(proc) => proc.process_block(ctx),
-            NodeVariant::Router(rt) => rt.process_block(ctx),
-            NodeVariant::Sink(sink) => sink.process_block(ctx),
+            NodeVariant::Source(src) => src.process_block(ctx, tick),
+            NodeVariant::Processor(proc) => proc.process_block(ctx, tick),
+            NodeVariant::Router(rt) => rt.process_block(ctx, tick),
+            NodeVariant::Sink(sink) => sink.process_block(ctx, tick),
         }
     }
 }
@@ -162,24 +164,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NodeVariant
             NodeVariant::Processor(proc) => proc.resolve_resources(buffers),
             NodeVariant::Router(rt) => rt.resolve_resources(buffers),
             NodeVariant::Sink(sink) => sink.resolve_resources(buffers),
-        }
-    }
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn crate::traits::node::IoNode<T, BUF_SIZE>> {
-        match self {
-            NodeVariant::Source(src) => src.as_io_node_mut(),
-            NodeVariant::Processor(proc) => proc.as_io_node_mut(),
-            NodeVariant::Router(rt) => rt.as_io_node_mut(),
-            NodeVariant::Sink(sink) => sink.as_io_node_mut(),
-        }
-    }
-    fn as_active_node_mut(
-        &mut self,
-    ) -> Option<&mut dyn crate::traits::node::ActiveNode<T, BUF_SIZE>> {
-        match self {
-            NodeVariant::Source(src) => src.as_active_node_mut(),
-            NodeVariant::Processor(proc) => proc.as_active_node_mut(),
-            NodeVariant::Router(rt) => rt.as_active_node_mut(),
-            NodeVariant::Sink(sink) => sink.as_active_node_mut(),
         }
     }
     fn reset(&mut self) {

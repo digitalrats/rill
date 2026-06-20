@@ -187,6 +187,7 @@ macro_rules! source_node {
                 _ctx: &$crate::RenderContext,
                 _control_inputs: &[$T],
                 _clock_inputs: &[$crate::RenderContext],
+                _tick: &$crate::ClockTick,
             ) -> $crate::ProcessResult<()> {
                 ($generate)(self)?;
                 Ok(())

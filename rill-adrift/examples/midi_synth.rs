@@ -18,9 +18,10 @@
 //! cargo run --example midi_synth --features "midi,io,alsa" -- 1 alsa
 //! ```
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use std::collections::HashMap;
 
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, Params, PortId};
@@ -51,28 +52,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.as_str())
         .unwrap_or("portaudio")
         .to_string();
+    let audio_backend_display = audio_backend.clone();
 
     // Show available ports
     eprintln!("Available MIDI ports:");
     let _ = MidirBackend::list_ports("rill-probe");
 
-    // ── 1. Register node types and backends ────────────────────────
+    // ── 1. Register node types ────────────────────────
     let mut nf = NodeFactory::<f32, BUF>::new();
     registration::register_all_nodes::<BUF>(&mut nf);
-    let mut bf = BackendFactory::new();
-    registration::register_backends(&mut bf);
 
-    let mut builder = GraphBuilder::new(Arc::new(nf), Arc::new(bf));
+    let mut builder = GraphBuilder::new(Arc::new(nf));
 
-    // ── 2. Configure backend ────────────────────────────────────────
-    let mut be_params = HashMap::new();
-    be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-    be_params.insert("output_channels".into(), ParamValue::Int(2));
-    be_params.insert("input_channels".into(), ParamValue::Int(0));
-    builder.set_default_backend(audio_backend.clone(), be_params);
-
-    // ── 3. Build signal topology: sine oscillator → stereo output ──
+    // ── 2. Build signal topology: sine oscillator → stereo output ──
     let mut osc_params = Params::new(RATE);
     osc_params.insert("freq", ParamValue::Float(220.0));
     osc_params.insert("amp", ParamValue::Float(0.0));
@@ -86,13 +78,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (graph_tx, graph_rx) = std::sync::mpsc::channel();
     let r_graph = running.clone();
 
-    std::thread::spawn(move || {
+    let audio_thread = std::thread::spawn(move || {
         let sys = ActorSystem::new();
         match builder.build(&sys) {
-            Ok(mut graph) => {
+            Ok(graph) => {
                 let _ = graph_tx.send((sys, graph.handle()));
-                if let Err(e) = graph.run(r_graph) {
-                    eprintln!("audio backend error: {e}");
+                let mut bf = BackendFactory::new();
+                registration::register_backends(&mut bf);
+                let mut be_params = HashMap::new();
+                be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+                be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+                be_params.insert("channels".into(), ParamValue::Int(2));
+                let mut state = graph.into_processing_state();
+                if let Err(e) = state.run_with_backend(&bf, &audio_backend, &be_params, r_graph) {
+                    eprintln!("Backend error: {e}");
                 }
             }
             Err(e) => eprintln!("graph build: {:?}", e),
@@ -147,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_midi_sensor("midi", midi_backend, &system, servo_ref);
 
     // ── 6. Keep alive until Enter ────────────────────────────────────
-    println!("MIDI synth active (backend: {audio_backend}):");
+    println!("MIDI synth active (backend: {audio_backend_display}):");
     println!("  Pitch bend (CC#128) → ±2 semitones (stateful)");
     println!("  Mod wheel (CC#1)    → amplitude (stateful)");
     println!("  CC#7 (volume)       → amplitude (0.0 – 1.0)");
@@ -157,6 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Press Enter to stop.");
 
     let r = running.clone();
+    let handle = audio_thread.thread().clone();
     let shutdown_gr = graph_ref.clone();
     std::thread::spawn(move || {
         let mut input = String::new();
@@ -174,11 +174,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // the backend run a bit more in silence before cutting power
         std::thread::sleep(std::time::Duration::from_secs(1));
         r.store(false, Ordering::Release);
+        handle.unpark();
     });
 
-    while running.load(Ordering::Acquire) {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    audio_thread.join().ok();
 
     println!("Shutting down.");
     Ok(())

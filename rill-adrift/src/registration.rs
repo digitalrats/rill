@@ -155,6 +155,30 @@ fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
     });
+
+    node_ctor!(factory, "rill/lofi_chip", |id: NodeId, params: &Params| {
+        use rill_lofi::{Ay38910Chip, LofiChipSource, LofiConfig};
+        let bit_depth = params.get_i32("bit_depth", 8) as u8;
+        let nonlinear = params.get_bool("nonlinear", false);
+        let noise_floor = params.get_f32("noise_floor", -48.0);
+        let dc_offset = params.get_f32("dc_offset", 0.0);
+        let output_gain = params.get_f32("output_gain", 1.0);
+        let output_ceiling = params.get_f32("output_ceiling", 1.0);
+        let mut config = LofiConfig::for_system(rill_lofi::ClassicSystem::Custom {
+            bit_depth,
+            sample_rate: params.sample_rate,
+            nonlinear,
+            noise_floor,
+        });
+        config.dc_offset = dc_offset;
+        config.output_gain = output_gain;
+        config.output_ceiling = output_ceiling;
+        let chip = Ay38910Chip::new(1_750_000.0);
+        let mut n = LofiChipSource::<Ay38910Chip, BUF_SIZE>::new(chip, config, 1);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Source(Box::new(n))
+    });
 }
 
 // ============================================================================
@@ -569,21 +593,9 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
     factory.register(OscConstructor);
 }
 
-/// Deserialise a JSON graph string into a
-/// [rill_graph::serialization::GraphDef].
-///
-/// Use [`ModularSystem::create_builder`](crate::modular::ModularSystem::create_builder)
-/// to build a graph from the definition.
-#[cfg(feature = "serialization")]
-pub fn load_graph_json(
-    json: &str,
-) -> Result<rill_graph::serialization::GraphDef, rill_graph::serialization::SerializationError> {
-    rill_graph::serialization::from_json(json)
-}
-
-/// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).
+/// Register all built-in backends into a [`BackendFactory`](rill_graph::backend_factory::BackendFactory).
 #[cfg(feature = "io")]
-pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
+pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
     factory.register("null", |p| {
         Ok(Box::new(crate::io::backends::NullBackend::new(
             cfg_from_params(p),
@@ -619,22 +631,6 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     });
 }
 
-/// Register lo‑fi chip emulation backends.
-#[cfg(feature = "lofi")]
-pub fn register_lofi_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
-    factory.register("ay38910", |p| {
-        let sr = p
-            .get("sample_rate")
-            .and_then(|v| v.as_f32())
-            .unwrap_or(44100.0);
-        let chip_clock = p
-            .get("chip_clock")
-            .and_then(|v| v.as_f32())
-            .unwrap_or(1_750_000.0);
-        Ok(Box::new(rill_lofi::Ay38910Backend::new(chip_clock, sr)))
-    });
-}
-
 #[cfg(feature = "io")]
 fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let sr = p
@@ -646,14 +642,33 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let in_ch = p
         .get("input_channels")
         .and_then(|v| v.as_i32())
-        .unwrap_or(ch as i32) as u32;
+        .unwrap_or(0) as u32;
     let out_ch = p
         .get("output_channels")
         .and_then(|v| v.as_i32())
         .unwrap_or(ch as i32) as u32;
-    crate::io::AudioConfig::new()
+    let mut cfg = crate::io::AudioConfig::new()
         .with_sample_rate(sr)
         .with_buffer_size(bs)
         .with_input_channels(in_ch)
-        .with_output_channels(out_ch)
+        .with_output_channels(out_ch);
+    if let Some(ParamValue::String(ref d)) = p.get("input_device") {
+        cfg = cfg.with_input_device(d.as_str());
+    }
+    if let Some(ParamValue::String(ref d)) = p.get("output_device") {
+        cfg = cfg.with_output_device(d.as_str());
+    }
+    cfg
+}
+
+/// Deserialise a JSON graph string into a
+/// [rill_graph::serialization::GraphDef].
+///
+/// Use [`ModularSystem::create_builder`](crate::modular::ModularSystem::create_builder)
+/// to build a graph from the definition.
+#[cfg(feature = "serialization")]
+pub fn load_graph_json(
+    json: &str,
+) -> Result<rill_graph::serialization::GraphDef, rill_graph::serialization::SerializationError> {
+    rill_graph::serialization::from_json(json)
 }

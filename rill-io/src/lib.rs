@@ -9,6 +9,7 @@
 
 mod backend;
 pub mod buffer;
+pub mod buffer_view;
 mod config;
 mod error;
 

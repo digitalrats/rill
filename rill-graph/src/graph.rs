@@ -6,8 +6,7 @@ use rill_core::queues::CommandEnum;
 use rill_core::time::{ClockTick, RenderContext, SystemClock};
 use rill_core::traits::port::Port;
 use rill_core::traits::processable::Processable;
-use rill_core::traits::ParamValue;
-use rill_core::traits::{Node, NodeId, NodeVariant, Params};
+use rill_core::traits::{Node, NodeId, NodeVariant, ParamValue, Params, ProcessResult};
 use rill_core_actor::{Actor, ActorRef, ActorSystem};
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
@@ -57,7 +56,6 @@ struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
     id: NodeId,
     params: Params,
-    backend: Option<String>,
     routing_entries: Vec<(usize, usize, f32)>,
     _phantom: std::marker::PhantomData<(T, [(); BUF_SIZE])>,
 }
@@ -103,12 +101,6 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     resources: Vec<GraphResource>,
     /// Shared node factory (required, from Runtime).
     factory: Arc<NodeFactory<T, BUF_SIZE>>,
-    /// Shared backend factory (required, from Runtime).
-    backend_factory: Arc<BackendFactory<T>>,
-    /// Default backend name for nodes that don't specify one explicitly.
-    default_backend: Option<String>,
-    /// Default backend parameters (sample_rate, buffer_size, channels).
-    backend_params: HashMap<String, ParamValue>,
     /// Sample rate override. When set, used in [`build`](Self::build).
     /// Populated from [`GraphDef::sample_rate`] during deserialization.
     sample_rate: Option<f32>,
@@ -117,11 +109,8 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
-    /// Create a new empty graph builder without a node factory.
-    pub fn new(
-        factory: Arc<NodeFactory<T, BUF_SIZE>>,
-        backend_factory: Arc<BackendFactory<T>>,
-    ) -> Self {
+    /// Create a new empty graph builder.
+    pub fn new(factory: Arc<NodeFactory<T, BUF_SIZE>>) -> Self {
         Self {
             recipes: Vec::new(),
             signal_edges: Vec::new(),
@@ -130,9 +119,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             feedback_edges: Vec::new(),
             resources: Vec::new(),
             factory,
-            backend_factory,
-            default_backend: None,
-            backend_params: HashMap::new(),
             sample_rate: None,
             parent_ref: None,
         }
@@ -160,18 +146,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             type_name: type_name.to_string(),
             id,
             params: params.clone(),
-            backend: None,
             routing_entries: Vec::new(),
             _phantom: std::marker::PhantomData,
         });
         idx
-    }
-
-    /// Assign a named backend to the node at the given index.
-    pub fn set_node_backend(&mut self, idx: usize, name: String) {
-        if let Some(recipe) = self.recipes.get_mut(idx) {
-            recipe.backend = Some(name);
-        }
     }
 
     /// Store a routing matrix entry to be applied at build time.
@@ -191,17 +169,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.recipes.len()
     }
 
-    /// Set the default backend name and parameters. Nodes without an explicit
-    pub fn set_default_backend(&mut self, name: String, params: HashMap<String, ParamValue>) {
-        self.default_backend = Some(name);
-        self.backend_params = params;
-    }
-
-    /// Get the default backend name, if set.
-    pub fn default_backend_name(&self) -> Option<&String> {
-        self.default_backend.as_ref()
-    }
-
     /// Set the sample rate for this builder.
     pub fn set_sample_rate(&mut self, sr: f32) {
         self.sample_rate = Some(sr);
@@ -210,11 +177,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Set the parent RackCase actor reference (Graph → parent ClockTick).
     pub fn set_parent_ref(&mut self, parent: ActorRef<CommandEnum>) {
         self.parent_ref = Some(parent);
-    }
-
-    /// Access the shared backend factory.
-    pub fn backend_factory(&self) -> &Arc<BackendFactory<T>> {
-        &self.backend_factory
     }
 
     /// Connect signal ports.
@@ -292,33 +254,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let num_nodes = node_entries.len();
 
-        // --- Phase 2: Resolve I/O backends for I/O nodes ---
-        let sr = self.sample_rate.unwrap_or(44100.0);
-        for (idx, recipe) in self.recipes.iter().enumerate() {
-            let name = match recipe.backend.as_ref() {
-                Some(n) => Some(n.clone()),
-                None => self.default_backend.clone(),
-            };
-            if let Some(ref name) = name {
-                let mut be_params = HashMap::new();
-                be_params.insert("sample_rate".into(), ParamValue::Float(sr));
-                be_params.insert("buffer_size".into(), ParamValue::Int(BUF_SIZE as i32));
-                if self.default_backend.as_ref() == Some(name) {
-                    for (k, v) in &self.backend_params {
-                        be_params.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
-                }
-                let backend = self
-                    .backend_factory
-                    .create(name, &be_params)
-                    .map_err(BuildError::Backend)?;
-                if let Some(io_node) = node_entries[idx].node.as_io_node_mut() {
-                    io_node.resolve_backend(backend);
-                }
-            }
-        }
-
-        // --- Phase 3: adjacency for Kahn (signal edges only) ---
+        // --- Phase 2: adjacency for Kahn (signal edges only) ---
         let mut in_degree = vec![0usize; num_nodes];
         let mut out_edges: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); num_nodes];
 
@@ -355,7 +291,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let mut nodes: Vec<NodeVariant<T, BUF_SIZE>> =
             node_entries.into_iter().map(|e| e.node).collect();
 
-        // --- Phase 4: port pointer wiring on the final nodes Vec ---
+        // --- Phase 5: port pointer wiring on the final nodes Vec ---
         for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
             if let Some(port) = nodes[from_n].output_port_mut(from_p) {
                 port.downstream.push((to_n, to_p));
@@ -440,13 +376,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
 
         let source_idx = topo.first().copied().unwrap_or(0);
-        let mut active_node_idx = 0;
-        for (i, n) in nodes.iter_mut().enumerate() {
-            if n.as_active_node_mut().is_some() {
-                active_node_idx = i;
-                break;
-            }
-        }
 
         let owned_buffers = buffers.into_inner();
         let allocated = self.resources.clone();
@@ -476,10 +405,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             nodes,
             topo_order: topo,
             resources: allocated,
-            current_tick: ClockTick::new(0, BUF_SIZE as u32, sr),
+            current_tick: ClockTick::new(
+                0,
+                BUF_SIZE as u32,
+                self.sample_rate.unwrap_or(44100.0),
+                String::new(),
+                std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
+            ),
             buffers: owned_buffers,
             source_idx,
-            active_node_idx,
             actor: Some(actor),
             actor_ref,
             parent_ref: self.parent_ref.clone(),
@@ -503,7 +437,6 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
     topo_order: Vec<usize>,
     source_idx: usize,
-    active_node_idx: usize,
     current_tick: ClockTick,
     pub(crate) resources: Vec<GraphResource>,
     #[allow(dead_code)]
@@ -514,6 +447,91 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     /// Optional shared system clock, updated by external sync sources (MIDI, JACK transport).
     /// When set, the I/O callback reads BPM from it and creates `ClockTick::with_tempo`.
     pub system_clock: Option<Arc<SystemClock>>,
+}
+
+/// Owned processing state extracted from a [`Graph`].
+///
+/// Holds the parts needed for the I/O callback loop: the actor mailbox
+/// for draining `SetParameter` commands, the node array, and routing
+/// metadata.  The state is `!Send + !Sync` — it stays on the I/O thread.
+///
+/// Created via [`Graph::into_processing_state`].
+pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
+    actor: Actor<CommandEnum>,
+    nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
+    source_idx: usize,
+    parent_ref: Option<ActorRef<CommandEnum>>,
+    system_clock: Option<Arc<SystemClock>>,
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
+    /// Process one block of signal data driven by an external [`ClockTick`].
+    ///
+    /// Same logic as [`Graph::process_block`] but operates on independently
+    /// owned state (no borrow of the original `Graph`).
+    #[allow(unsafe_code)]
+    pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        self.actor.drain();
+        let mut ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        ctx.speed_ratio = tick.speed_ratio;
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            let _ = nv[self.source_idx].process_block(&ctx, tick);
+            for po in 0..nv[self.source_idx].num_signal_outputs() {
+                if let Some(port) = nv[self.source_idx].output_port(po) {
+                    let _ = port.propagate(port.buffer(), &ctx, tick);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Send a ClockTick to the parent actor (rack fan-out).
+    ///
+    /// Called by the backend's process callback at the appropriate time
+    /// (once per I/O callback for standard backends, once per DMA buffer
+    /// for chunking backends).
+    pub fn send_clock_tick(&self, tick: &ClockTick) {
+        if tick.is_final {
+            if let Some(ref parent) = self.parent_ref {
+                parent.send(CommandEnum::ClockTick(tick.clone()));
+            }
+        }
+    }
+
+    /// Convenience: run this processing state with a backend from the factory.
+    ///
+    /// Consumes `self`, creates the backend, wires the process callback,
+    /// and enters the I/O loop.  The `running` flag controls shutdown.
+    pub fn run_with_backend(
+        mut self,
+        bf: &BackendFactory,
+        backend_name: &str,
+        be_params: &HashMap<String, ParamValue>,
+        running: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let backend = bf.create(backend_name, be_params)?;
+
+        backend.set_process_callback(Box::new(move |tick: &ClockTick| {
+            let _ = self.process_block(tick);
+            self.send_clock_tick(tick);
+        }));
+        backend.run(running.clone())?;
+        while running.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::park();
+        }
+        let _ = backend.stop();
+        Ok(())
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
@@ -529,7 +547,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 
     /// Return the current clock tick.
     pub fn current_tick(&self) -> ClockTick {
-        self.current_tick
+        self.current_tick.clone()
     }
 
     /// Return the number of nodes in the graph.
@@ -554,48 +572,58 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         &self.resources
     }
 
-    /// Run graph processing through the active node.
+    /// Process one block of signal data driven by an external [`ClockTick`].
+    ///
+    /// Called from the backend's process callback. Performs:
+    ///
+    /// 1. Drains the graph's actor mailbox (applies queued `SetParameter`s).
+    /// 2. Creates a [`RenderContext`] from the tick.
+    /// 3. Calls `process_block` on the source node and recursively
+    ///    propagates through the DAG via [`Port::propagate`].
+    /// 4. Sends the tick to the parent [`ActorRef`] (if any).
+    ///
+    /// The graph is `!Send + !Sync` — it stays on the I/O callback thread.
     #[allow(unsafe_code)]
-    pub fn run(&mut self, running: Arc<AtomicBool>) -> Result<(), String> {
-        let mut actor = self.actor.take().ok_or("graph already running")?;
-        let source = self.source_idx;
-        let parent = self.parent_ref.clone();
-        let nodes = self.nodes.clone();
-        let idx = self.active_node_idx;
-        let sys_clock = self.system_clock.clone();
-
-        let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
+    pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        if let Some(ref mut actor) = self.actor {
             actor.drain();
-            let ctx = if let Some(ref clock) = sys_clock {
-                RenderContext::with_tempo(
-                    sample_pos,
-                    BUF_SIZE as u32,
-                    sample_rate,
-                    clock.bpm() as f32,
-                )
-            } else {
-                RenderContext::new(sample_pos, BUF_SIZE as u32, sample_rate)
-            };
-            let tick = ClockTick::with_tempo(sample_pos, BUF_SIZE as u32, sample_rate, ctx.bpm());
-            unsafe {
-                let nv = &mut *nodes.get();
-                let _ = nv[source].process_block(&ctx);
-                for po in 0..nv[source].num_signal_outputs() {
-                    if let Some(port) = nv[source].output_port(po) {
-                        let _ = port.propagate(port.buffer(), &ctx);
-                    }
+        }
+        let ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        self.current_tick = tick.clone();
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            let _ = nv[self.source_idx].process_block(&ctx, tick);
+            for po in 0..nv[self.source_idx].num_signal_outputs() {
+                if let Some(port) = nv[self.source_idx].output_port(po) {
+                    let _ = port.propagate(port.buffer(), &ctx, tick);
                 }
             }
-            if let Some(ref parent) = parent {
-                parent.send(CommandEnum::ClockTick(tick));
-            }
-        });
+        }
+        Ok(())
+    }
 
-        unsafe {
-            self.nodes.get().as_mut().unwrap()[idx]
-                .as_active_node_mut()
-                .ok_or("no active node")?
-                .run(tick, running)
+    /// Consume the graph and return a [`ProcessingState`] that owns all
+    /// parts needed for the I/O callback loop.
+    ///
+    /// `ProcessingState` is `!Send + !Sync` — it stays on the I/O thread
+    /// and is moved into the backend's process callback closure.
+    pub fn into_processing_state(mut self) -> ProcessingState<T, BUF_SIZE> {
+        let actor = self.actor.take().expect("graph actor missing");
+        ProcessingState {
+            actor,
+            nodes: self.nodes,
+            source_idx: self.source_idx,
+            parent_ref: self.parent_ref,
+            system_clock: self.system_clock,
         }
     }
 
@@ -620,7 +648,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             current_tick,
             resources: _,
             buffers,
-            active_node_idx: _,
             source_idx: _,
             actor,
             actor_ref: _,
@@ -638,6 +665,7 @@ mod tests {
     use super::*;
     use rill_core::math::Transcendental;
     use rill_core::time::RenderContext;
+    use rill_core::traits::buffer_view::NullBufferView;
     use rill_core::traits::{
         Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
         ProcessResult, Processor, Sink, Source,
@@ -676,7 +704,7 @@ mod tests {
     }
 
     fn test_builder<const B: usize>(factory: &Arc<NodeFactory<f32, B>>) -> GraphBuilder<f32, B> {
-        GraphBuilder::new(factory.clone(), Arc::new(BackendFactory::new()))
+        GraphBuilder::new(factory.clone())
     }
 
     fn test_params(sample_rate: f32) -> Params {
@@ -783,6 +811,7 @@ mod tests {
             _: &RenderContext,
             _: &[T],
             _: &[RenderContext],
+            _: &ClockTick,
         ) -> ProcessResult<()> {
             self.output.buffer.as_mut_array().fill(self.value);
             Ok(())
@@ -1005,6 +1034,7 @@ mod tests {
             _: &[T],
             _: &[RenderContext],
             _: &[&[T; B]],
+            _: &ClockTick,
         ) -> ProcessResult<()> {
             Ok(())
         }
@@ -1031,12 +1061,19 @@ mod tests {
         let source_idx = graph.source_idx;
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
+        let tick = ClockTick::new(
+            0,
+            BUF as u32,
+            44100.0,
+            String::new(),
+            std::sync::Arc::new(NullBufferView::new(2, 2)),
+        );
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();
-            nv[source_idx].process_block(&ctx).unwrap();
+            nv[source_idx].process_block(&ctx, &tick).unwrap();
             if let Some(port) = nv[source_idx].output_port(0) {
-                port.propagate(port.buffer(), &ctx).unwrap();
+                port.propagate(port.buffer(), &ctx, &tick).unwrap();
             }
         }
         unsafe {
@@ -1073,6 +1110,13 @@ mod tests {
         eprintln!("source_idx: {source_idx}, src_idx: {src_idx}, proc_idx: {proc_idx}, snk_idx: {snk_idx}");
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
+        let tick = ClockTick::new(
+            0,
+            BUF as u32,
+            44100.0,
+            String::new(),
+            std::sync::Arc::new(NullBufferView::new(2, 2)),
+        );
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();
@@ -1083,7 +1127,7 @@ mod tests {
                 std::mem::discriminant(&nv[2]),
             );
 
-            let _ = nv[source_idx].process_block(&ctx);
+            let _ = nv[source_idx].process_block(&ctx, &tick);
             let src_val = nv[source_idx].output_port(0).unwrap().buffer.as_array()[0];
             eprintln!("source output: {src_val}");
 
@@ -1142,7 +1186,7 @@ mod tests {
             );
             // --- END DEBUG ---
 
-            out_port.propagate(out_port.buffer(), &ctx).unwrap();
+            out_port.propagate(out_port.buffer(), &ctx, &tick).unwrap();
 
             // --- AFTER PROPAGATE: debug buffer values ---
             {

@@ -25,6 +25,7 @@ use rill_adrift::rill_core::{
     queues::{CommandEnum, SetParameter, SignalOrigin},
     NodeId, ParamValue, ParameterId, PortId,
 };
+use rill_adrift::rill_graph::backend_factory::BackendFactory;
 use serde::Deserialize;
 
 const BUF: usize = 256;
@@ -138,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend_name = backend_name.clone();
         let wav_path = wav_path.clone();
         std::thread::spawn(move || {
-            let mut graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
 
             // Send parameter changes via the actor mailbox
             let handle = graph.handle();
@@ -159,7 +160,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SignalOrigin::Manual,
             )));
 
-            graph.run(running).ok();
+            let mut bf = BackendFactory::new();
+            registration::register_backends(&mut bf);
+            let mut be_params = HashMap::new();
+            be_params.insert("sample_rate".into(), ParamValue::Float(cfg.sample_rate));
+            be_params.insert("buffer_size".into(), ParamValue::Int(cfg.block_size as i32));
+            be_params.insert("channels".into(), ParamValue::Int(2));
+            let mut state = graph.into_processing_state();
+            if let Err(e) = state.run_with_backend(&bf, &backend_name, &be_params, running) {
+                eprintln!("Backend error: {e}");
+            }
         })
     };
 

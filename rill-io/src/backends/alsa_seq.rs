@@ -2,7 +2,7 @@
 //!
 //! Opens an ALSA sequencer input port and polls for incoming MIDI events.
 
-use std::ffi::CStr;
+use std::ffi::CString;
 
 use alsa::seq;
 use alsa::Direction;
@@ -34,17 +34,19 @@ impl AlsaSeqBackend {
     ///
     /// `name` — visible client name in ALSA patchbays.
     pub fn new(name: &str) -> IoResult<Self> {
-        let cname = CStr::from_bytes_until_nul(name.as_bytes())
+        let cname = CString::new(name)
             .map_err(|_| IoError::Init(format!("name contains nul byte: {name}")))?;
 
-        let seq = seq::Seq::open(Some(cname), Some(Direction::Capture), true)
+        let seq = seq::Seq::open(None, Some(Direction::Capture), true)
             .map_err(|e| IoError::Init(format!("alsa seq open: {e}")))?;
+        seq.set_client_name(&cname)
+            .map_err(|e| IoError::Init(format!("alsa seq set_client_name: {e}")))?;
 
         let mut port_info = seq::PortInfo::empty()
             .map_err(|e| IoError::Init(format!("alsa seq port_info: {e}")))?;
         port_info.set_capability(seq::PortCap::READ | seq::PortCap::SUBS_READ);
         port_info.set_type(seq::PortType::MIDI_GENERIC | seq::PortType::APPLICATION);
-        port_info.set_name(cname);
+        port_info.set_name(&cname);
 
         seq.create_port(&port_info)
             .map_err(|e| IoError::Init(format!("alsa seq create_port: {e}")))?;

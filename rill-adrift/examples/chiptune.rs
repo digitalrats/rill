@@ -106,9 +106,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 nodes: vec![
                     NodeDef::Source(SourceDef {
                         id: 0,
-                        type_name: "rill/lofi_input".into(),
+                        type_name: "rill/lofi_chip".into(),
                         name: "ay_chip".into(),
-                        backend: Some("ay38910".into()),
+                        backend: None,
                         parameters: [
                             ("bit_depth".into(), ParamValue::Int(8)),
                             ("nonlinear".into(), ParamValue::Bool(false)),
@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "melody".into(),
                 target_node: 0,
-                target_param: "io_write".into(),
+                target_param: "register_write".into(),
                 mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
                 min: 0.0,
                 max: 1.0,

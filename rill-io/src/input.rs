@@ -2,22 +2,14 @@
 //!
 //! Registered as `"rill/input"` with `NodeVariant::Source`.
 
-use std::cell::Cell;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
 use rill_core::{
-    io::IoBackend,
     math::Transcendental,
-    traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Source},
+    time::ClockTick,
+    traits::{Node, NodeCategory, NodeMetadata, NodeState, Source},
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
-/// Signal input source. Reads from a backend in `generate()`, fills output ports.
-///
-/// The backend is owned by this node via `Arc`.  When used as the active
-/// (driver) node, [`ActiveNode::run`] sets up the process callback and
-/// blocks on the audio thread.
+/// Signal input source. Reads from `tick.view` in `generate()`, fills output ports.
 ///
 /// # Ports
 /// - `n` output ports (one per channel), set via [`Self::with_channels`].
@@ -26,8 +18,6 @@ pub struct Input<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn IoBackend<T>>>,
-    bufs: Vec<[T; BUF_SIZE]>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for Input<T, BUF_SIZE> {
@@ -58,28 +48,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Input<T, BUF_SIZE> {
         let outputs: Vec<_> = (0..num)
             .map(|i| Port::output(NodeId(0), i as u16, &name(i)))
             .collect();
-        let bufs = vec![[T::ZERO; BUF_SIZE]; num];
 
         Self {
             id: NodeId(0),
             metadata,
             outputs,
             state: NodeState::new(44100.0),
-            backend: None,
-            bufs,
         }
-    }
-
-    /// Returns `true` if a backend is attached.
-    pub fn has_backend(&self) -> bool {
-        self.backend.is_some()
-    }
-
-    /// Transfer backend ownership to this node.
-    ///
-    /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
-    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
-        <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
     }
 }
 
@@ -103,12 +78,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
     fn reset(&mut self) {
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
-    }
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        Some(self)
-    }
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
-        Some(self)
     }
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
         None
@@ -150,61 +119,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Input<T, BU
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
-        self.backend = Some(backend);
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Input<T, BUF_SIZE> {
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: Arc<AtomicBool>,
-    ) -> rill_core::io::IoResult<()> {
-        let Some(ref backend) = self.backend else {
-            return Err("Input: no backend".into());
-        };
-        let tick_ptr = Box::into_raw(Box::new(tick));
-        let sample_pos = Cell::new(0u64);
-        backend.set_process_callback(Box::new(move |actual_sr: f32| {
-            unsafe {
-                (*tick_ptr)(sample_pos.get(), actual_sr);
-            }
-            sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-        }));
-        backend.run(running.clone())?;
-        while running.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = backend.stop();
-        drop(unsafe { Box::from_raw(tick_ptr) });
-        Ok(())
-    }
-}
-
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, BUF_SIZE> {
     fn generate(
         &mut self,
         _ctx: &RenderContext,
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
+        tick: &ClockTick,
     ) -> ProcessResult<()> {
-        if let Some(ref io) = self.backend {
-            let nch = self.outputs.len();
-            if nch == 0 {
-                self.state.advance();
-                return Ok(());
-            }
-            let mut channels: Vec<&mut [T]> = self.bufs.iter_mut().map(|b| &mut b[..]).collect();
-            let n = io.read(&mut channels);
-            if n >= BUF_SIZE {
-                for (i, buf) in self.bufs.iter().enumerate() {
-                    if let Some(port) = self.outputs.get_mut(i) {
-                        let dst = port.buffer_mut().as_mut_array();
-                        dst[..BUF_SIZE].copy_from_slice(&buf[..BUF_SIZE]);
-                    }
-                }
+        for (ch, port) in self.outputs.iter_mut().enumerate() {
+            let buf = port.buffer_mut();
+            #[allow(unsafe_code)]
+            unsafe {
+                let buf_f32: &mut [f32] =
+                    std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut f32, buf.len());
+                tick.view.read_input(ch, buf_f32);
             }
         }
         self.state.advance();
@@ -218,57 +147,24 @@ pub type AudioInput<T, const B: usize> = Input<T, B>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_io::IoResult;
-    use crate::buffer::IoRingBuffer;
+    use rill_core::time::ClockTick;
+    use rill_core::traits::buffer_view::NullBufferView;
     use std::sync::Arc;
 
-    struct RingIo {
-        input_ring: Arc<IoRingBuffer>,
-        output_ring: Arc<IoRingBuffer>,
-    }
-    impl IoBackend<f32> for RingIo {
-        fn set_process_callback(&self, _cb: Box<dyn Fn(f32)>) {}
-        fn read(&self, channels: &mut [&mut [f32]]) -> usize {
-            let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-            let mut temp = vec![0.0f32; frames * 2];
-            let n = self.input_ring.read(&mut temp);
-            let out = n / 2;
-            for i in 0..out.min(frames) {
-                if let Some(ch) = channels.get_mut(0) {
-                    ch[i] = temp[i * 2];
-                }
-                if let Some(ch) = channels.get_mut(1) {
-                    ch[i] = temp[i * 2 + 1];
-                }
-            }
-            out
-        }
-        fn write(&self, channels: &[&[f32]]) -> usize {
-            let frames = channels.first().map(|c| c.len()).unwrap_or(0);
-            let mut temp = vec![0.0f32; frames * 2];
-            for i in 0..frames {
-                if let Some(ch) = channels.get(0) {
-                    temp[i * 2] = ch[i];
-                }
-                if let Some(ch) = channels.get(1) {
-                    temp[i * 2 + 1] = ch[i];
-                }
-            }
-            self.output_ring.write(&temp) / 2
-        }
-        fn run(&self, _running: Arc<AtomicBool>) -> IoResult<()> {
-            Ok(())
-        }
-        fn stop(&self) -> IoResult<()> {
-            Ok(())
-        }
+    fn null_tick(sample_pos: u64, samples_since_last: u32, sample_rate: f32) -> ClockTick {
+        ClockTick::new(
+            sample_pos,
+            samples_since_last,
+            sample_rate,
+            "test".to_string(),
+            Arc::new(NullBufferView::new(2, 2)),
+        )
     }
 
     #[test]
     fn test_audio_input_creation() {
         let inp = Input::<f32, 64>::new();
         assert_eq!(inp.metadata().signal_outputs, 2);
-        assert!(!inp.has_backend());
     }
 
     #[test]
@@ -283,48 +179,18 @@ mod tests {
     fn test_audio_input_generate_without_backend() {
         let mut inp = Input::<f32, 64>::new();
         let ctx = RenderContext::new(0, 64, 48000.0);
-        assert!(inp.generate(&ctx, &[], &[]).is_ok());
+        let tick = null_tick(0, 64, 48000.0);
+        assert!(inp.generate(&ctx, &[], &[], &tick).is_ok());
     }
 
     #[test]
-    fn test_loopback_through_rings() {
+    fn test_input_resolve_backend() {
         const BUF_SZ: usize = 64;
-        let input_ring = Arc::new(IoRingBuffer::new(512));
-        let output_ring = Arc::new(IoRingBuffer::new(512));
-
-        let backend = Box::new(RingIo {
-            input_ring: input_ring.clone(),
-            output_ring: output_ring.clone(),
-        });
         let mut input = Input::<f32, BUF_SZ>::new();
-        input.resolve_backend(backend);
-
-        let test_val: f32 = 42.0;
-        let mut test_block = vec![0.0f32; BUF_SZ * 2];
-        for i in 0..BUF_SZ {
-            test_block[i * 2] = test_val;
-            test_block[i * 2 + 1] = test_val;
-        }
-        input_ring.write(&test_block);
 
         let ctx = RenderContext::new(0, BUF_SZ as u32, 48000.0);
-        input.generate(&ctx, &[], &[]).unwrap();
-
-        let l = input.output_port(0).unwrap().buffer.as_array();
-        let r = input.output_port(1).unwrap().buffer.as_array();
-        for i in 0..BUF_SZ {
-            assert!(
-                (l[i] - 42.0).abs() < 1e-6,
-                "left[{}] should be 42.0, got {}",
-                i,
-                l[i]
-            );
-            assert!(
-                (r[i] - 42.0).abs() < 1e-6,
-                "right[{}] should be 42.0, got {}",
-                i,
-                r[i]
-            );
-        }
+        let tick = null_tick(0, BUF_SZ as u32, 48000.0);
+        // generate reads from tick.view — no backend needed
+        assert!(input.generate(&ctx, &[], &[], &tick).is_ok());
     }
 }

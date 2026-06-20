@@ -1,4 +1,4 @@
-//! # BackendFactory — constructor registry for audio backends
+//! # BackendFactory — constructor registry for I/O backends
 
 use std::collections::HashMap;
 
@@ -10,15 +10,16 @@ use rill_core::traits::ParamValue;
 /// Backend constructors receive a parameter map with string keys and
 /// [`ParamValue`] entries. Typical keys: `"sample_rate"`, `"buffer_size"`,
 /// `"channels"`. Each constructor parses the values it needs.
-pub type BackendCtor<T> =
-    fn(params: &HashMap<String, ParamValue>) -> Result<Box<dyn IoBackend<T>>, String>;
+pub type BackendCtor =
+    fn(params: &HashMap<String, ParamValue>) -> Result<Box<dyn IoBackend>, String>;
 
 /// Registry of named backend constructors (analogue of `NodeFactory`).
-pub struct BackendFactory<T> {
-    ctors: HashMap<&'static str, BackendCtor<T>>,
+#[derive(Clone)]
+pub struct BackendFactory {
+    ctors: HashMap<&'static str, BackendCtor>,
 }
 
-impl<T> BackendFactory<T> {
+impl BackendFactory {
     /// Create an empty backend factory.
     pub fn new() -> Self {
         Self {
@@ -27,7 +28,7 @@ impl<T> BackendFactory<T> {
     }
 
     /// Register a named backend constructor.
-    pub fn register(&mut self, name: &'static str, ctor: BackendCtor<T>) {
+    pub fn register(&mut self, name: &'static str, ctor: BackendCtor) {
         self.ctors.insert(name, ctor);
     }
 
@@ -36,7 +37,7 @@ impl<T> BackendFactory<T> {
         &self,
         name: &str,
         params: &HashMap<String, ParamValue>,
-    ) -> Result<Box<dyn IoBackend<T>>, String> {
+    ) -> Result<Box<dyn IoBackend>, String> {
         match self.ctors.get(name) {
             Some(ctor) => ctor(params),
             None => Err(format!("unknown backend: {name}")),
@@ -49,7 +50,7 @@ impl<T> BackendFactory<T> {
     }
 }
 
-impl<T> Default for BackendFactory<T> {
+impl Default for BackendFactory {
     fn default() -> Self {
         Self::new()
     }

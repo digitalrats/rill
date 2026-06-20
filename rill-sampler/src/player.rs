@@ -1,4 +1,4 @@
-use rill_core::time::RenderContext;
+use rill_core::time::{ClockTick, RenderContext};
 use rill_core::traits::{
     Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     Source,
@@ -387,6 +387,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
         _ctx: &RenderContext,
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
         let amp = self.amplitude;
 

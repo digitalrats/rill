@@ -2,21 +2,14 @@
 //!
 //! Registered as `"rill/output"` with `NodeVariant::Sink`.
 
-use std::cell::Cell;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
 use rill_core::{
-    io::IoBackend,
     math::Transcendental,
-    traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Sink},
+    time::ClockTick,
+    traits::{Node, NodeCategory, NodeMetadata, NodeState, Sink},
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
-/// Signal output sink. Writes to backend in `consume()`.
-///
-/// When used as the active (driver) node, [`ActiveNode::run`] sets up the
-/// process callback and blocks on the audio thread.
+/// Signal output sink. Writes to `tick.view` in `consume()`.
 ///
 /// # Ports
 /// - `n` input ports (one per channel), set via [`Self::with_channels`].
@@ -25,9 +18,6 @@ pub struct Output<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn IoBackend<T>>>,
-    active: bool,
-    source_idx: usize,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for Output<T, BUF_SIZE> {
@@ -64,23 +54,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
             metadata,
             inputs,
             state: NodeState::new(44100.0),
-            backend: None,
-            active: true,
-            source_idx: 0,
         }
-    }
-
-    /// Mark this output as active, setting its source node index.
-    pub fn set_active(&mut self, source_idx: usize) {
-        self.active = true;
-        self.source_idx = source_idx;
-    }
-
-    /// Transfer backend ownership to this node.
-    ///
-    /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
-    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
-        <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
     }
 }
 
@@ -105,13 +79,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
     fn reset(&mut self) {
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
-    }
-
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        Some(self)
-    }
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
-        Some(self)
     }
 
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
@@ -155,39 +122,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
-        self.backend = Some(backend);
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: Arc<AtomicBool>,
-    ) -> rill_core::io::IoResult<()> {
-        let Some(ref backend) = self.backend else {
-            return Err("Output: no backend".into());
-        };
-        let tick_ptr = Box::into_raw(Box::new(tick));
-        let sample_pos = Cell::new(0u64);
-        backend.set_process_callback(Box::new(move |actual_sr: f32| {
-            unsafe {
-                (*tick_ptr)(sample_pos.get(), actual_sr);
-            }
-            sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-        }));
-        backend.run(running.clone())?;
-        while running.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = backend.stop();
-        drop(unsafe { Box::from_raw(tick_ptr) });
-        Ok(())
-    }
-}
-
 impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, BUF_SIZE> {
     fn consume(
         &mut self,
@@ -196,26 +130,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
+        tick: &ClockTick,
     ) -> ProcessResult<()> {
-        if let Some(ref backend) = self.backend {
-            let nch = self.inputs.len();
-            if nch > 0 {
-                let all_received = self.inputs.iter().all(|p| p.data_received);
-                if all_received {
-                    let mut channels: Vec<&[T]> = Vec::with_capacity(nch);
-                    for i in 0..nch {
-                        if let Some(port) = self.inputs.get(i) {
-                            channels.push(port.signal_buffer().as_array());
-                        }
-                    }
-                    backend.write(&channels);
-                    for p in &mut self.inputs {
-                        p.data_received = false;
-                    }
-                    self.state.advance();
+        for (ch, port) in self.inputs.iter().enumerate() {
+            if port.data_received {
+                let buf = port.signal_buffer();
+                #[allow(unsafe_code)]
+                unsafe {
+                    let buf_f32: &[f32] =
+                        std::slice::from_raw_parts(buf.as_ptr() as *const f32, buf.len());
+                    tick.view.write_output(ch, buf_f32);
                 }
             }
         }
+        self.state.advance();
         Ok(())
     }
 }
@@ -226,6 +154,8 @@ pub type AudioOutput<T, const B: usize> = Output<T, B>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::traits::buffer_view::NullBufferView;
+    use std::sync::Arc;
 
     #[test]
     fn test_audio_output_creation() {
@@ -249,6 +179,15 @@ mod tests {
         let mut out = Output::<f32, 64>::new();
         let ctx = RenderContext::new(0, 64, 48000.0);
         let signal_inputs: &[&[f32; 64]] = &[];
-        assert!(out.consume(&ctx, signal_inputs, &[], &[], &[]).is_ok());
+        let tick = ClockTick::new(
+            0,
+            64,
+            48000.0,
+            "test".to_string(),
+            Arc::new(NullBufferView::new(2, 2)),
+        );
+        assert!(out
+            .consume(&ctx, signal_inputs, &[], &[], &[], &tick)
+            .is_ok());
     }
 }

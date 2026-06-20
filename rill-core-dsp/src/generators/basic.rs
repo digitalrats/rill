@@ -5,7 +5,8 @@ use crate::vector::prelude::*;
 use rill_core::math::vector::scalar::ScalarVector4;
 use rill_core::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
 use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use rill_core::traits::ProcessResult;
+use rill_core::traits::parameter_write::ParameterWrite;
+use rill_core::traits::{ParamValue, ProcessError, ProcessResult};
 use rill_core::Transcendental;
 use std::f32::consts::PI;
 
@@ -443,6 +444,55 @@ impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
         } else {
             amp
         });
+    }
+}
+
+// ==================== ParameterWrite trait implementation ====================
+
+impl<T: Transcendental> ParameterWrite for BasicOscillator<T> {
+    fn write_parameter(&mut self, name: &str, value: ParamValue) -> ProcessResult<()> {
+        match name {
+            "frequency" => {
+                if let Some(f) = value.as_f32() {
+                    self.set_frequency(f);
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("frequency expects float"))
+            }
+            "amplitude" => {
+                if let Some(a) = value.as_f32() {
+                    self.set_amplitude(T::from_f32(a));
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("amplitude expects float"))
+            }
+            "phase" => {
+                if let Some(p) = value.as_f32() {
+                    self.set_phase(T::from_f32(p));
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("phase expects float"))
+            }
+            "fm_amount" => {
+                if let Some(f) = value.as_f32() {
+                    self.fm_amount = ScalarVector1::splat(T::from_f32(f));
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("fm_amount expects float"))
+            }
+            _ => Err(ProcessError::parameter(format!(
+                "unknown parameter: {name}"
+            ))),
+        }
+    }
+
+    fn read_parameter(&self, name: &str) -> Option<ParamValue> {
+        match name {
+            "frequency" => Some(ParamValue::Float(self.frequency())),
+            "amplitude" => Some(ParamValue::Float(self.amplitude().to_f32())),
+            "phase" => Some(ParamValue::Float(self.phase().to_f32())),
+            _ => None,
+        }
     }
 }
 

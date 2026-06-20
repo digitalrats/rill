@@ -543,6 +543,12 @@ impl<A: Automaton + 'static> Servo<A> {
                         }
                         state.last_sent_value = value;
 
+                        // Skip SetParameter when no target parameter configured
+                        // (mapping-only servos with NoAction automaton).
+                        if param.is_empty() {
+                            return;
+                        }
+
                         let pid = ParameterId::new(&param).unwrap();
                         gr.send(CommandEnum::SetParameter(SetParameter::new(
                             PortId::param(nid, 0),

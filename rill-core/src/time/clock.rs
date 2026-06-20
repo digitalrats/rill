@@ -1,7 +1,9 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use super::tick;
+use crate::traits::buffer_view::NullBufferView;
 
 /// High-precision system clock for sample-accurate timing.
 ///
@@ -42,6 +44,10 @@ impl SystemClock {
             is_new_block: true,
             sample_rate: self.sample_rate,
             tempo: Some(self.bpm() as f32),
+            source: String::new(),
+            view: Arc::new(NullBufferView::new(2, 2)),
+            speed_ratio: 1.0,
+            is_final: true,
         }
     }
 
