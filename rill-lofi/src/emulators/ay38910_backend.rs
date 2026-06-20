@@ -3,12 +3,68 @@ use std::sync::Arc;
 
 use rill_core::io::{IoBackend, IoControl, IoResult};
 use rill_core::time::ClockTick;
-use rill_core::traits::buffer_view::NullBufferView;
+use rill_core::traits::buffer_view::BufferView;
 
 use super::ay38910_chip::Ay38910Chip;
 
+/// BufferView that reads audio samples directly from the AY-3-8910 chip emulation.
+///
+/// Each `read_input` call generates `n` samples by calling
+/// `chip.generate_sample(sample_rate)` and writing the register values
+/// from `register_buf` into the chip before generation.
+struct Ay38910View {
+    chip: *const Ay38910Chip,
+    register_buf: *const [AtomicU8; 16],
+    sample_rate: f32,
+    num_channels: usize,
+}
+
+unsafe impl Send for Ay38910View {}
+unsafe impl Sync for Ay38910View {}
+
+impl Ay38910View {
+    unsafe fn generate(&self, dst: &mut [f32]) {
+        let chip = &mut *(self.chip as *mut Ay38910Chip);
+        let regs = &*self.register_buf;
+        for (i, r) in regs.iter().enumerate() {
+            chip.write_register(i, r.load(Ordering::Relaxed));
+        }
+        for s in dst.iter_mut() {
+            *s = chip.generate_sample(self.sample_rate);
+        }
+    }
+}
+
+impl BufferView for Ay38910View {
+    fn num_input_channels(&self) -> usize {
+        self.num_channels
+    }
+
+    fn num_output_channels(&self) -> usize {
+        0
+    }
+
+    fn read_input(&self, channel: usize, dst: &mut [f32]) -> usize {
+        if channel >= self.num_channels {
+            dst.fill(0.0);
+            return dst.len();
+        }
+        // AY-3-8910 is mono — generate to all channels
+        unsafe {
+            self.generate(dst);
+        }
+        dst.len()
+    }
+
+    fn write_output(&self, _channel: usize, _src: &[f32]) -> usize {
+        0
+    }
+}
+
 /// `IoBackend` + `IoControl` adapter for AY-3-8910 chip emulation.
 ///
+/// Does NOT produce audio via I/O — the audio is generated on-the-fly
+/// by [`Ay38910View`] returned from [`create_view`](Ay38910Backend::create_view).
 /// Register writes go through `as_control()?.write_data()`, stored in atomics
 /// for cross-thread safety.
 #[allow(dead_code)]
@@ -19,7 +75,6 @@ pub struct Ay38910Backend {
 }
 
 impl Ay38910Backend {
-    /// Create a new AY-3-8910 backend with the given chip clock and sample rate.
     pub fn new(chip_clock: f32, sample_rate: f32) -> Self {
         Self {
             chip: std::cell::UnsafeCell::new(Ay38910Chip::new(chip_clock)),
@@ -30,8 +85,13 @@ impl Ay38910Backend {
 }
 
 impl IoBackend for Ay38910Backend {
-    fn create_view(&self) -> Arc<dyn rill_core::traits::buffer_view::BufferView> {
-        Arc::new(NullBufferView::new(2, 2))
+    fn create_view(&self) -> Arc<dyn BufferView> {
+        Arc::new(Ay38910View {
+            chip: self.chip.get(),
+            register_buf: &self.register_buf,
+            sample_rate: self.sample_rate,
+            num_channels: 1, // AY-3-8910 is mono; LofiInput duplicates to stereo
+        })
     }
 
     fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
@@ -68,14 +128,11 @@ mod tests {
 
         let view = backend.create_view();
         let mut buf = [0.0f32; 64];
-        // Muted: read through view (NullBufferView fills with zeros)
         view.read_input(0, &mut buf);
-        assert!(
-            buf.iter().all(|&s| s.abs() < 0.001),
-            "null view should produce zeros"
-        );
+        // Unconfigured chip should produce near-silence
+        let max = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(max < 0.5, "unconfigured chip max={max}");
 
-        // Write active registers via IoControl
         let mut active = [0u8; 16];
         active[0] = 23;
         active[1] = 1;
@@ -83,5 +140,10 @@ mod tests {
         active[8] = 10;
         let n = backend.as_control().unwrap().write_data(&active);
         assert_eq!(n, 16);
+
+        view.read_input(0, &mut buf);
+        let max_after = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        // With registers configured, should produce some signal
+        assert!(max_after > 0.001, "configured chip should produce signal");
     }
 }

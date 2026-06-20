@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "melody".into(),
                 target_node: 0,
-                target_param: "io_write".into(),
+                target_param: "register_write".into(),
                 mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
                 min: 0.0,
                 max: 1.0,

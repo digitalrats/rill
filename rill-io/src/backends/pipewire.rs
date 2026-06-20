@@ -152,11 +152,6 @@ impl IoBackend for PipewireBackend {
             .connect_rc(None)
             .map_err(|e| format!("PW core.connect_rc: {e}"))?;
 
-        eprintln!(
-            "PW run: out_ch={out_channels} in_ch={in_channels} mode={:?}",
-            self.mode
-        );
-
         // ── Output stream ────────────────────────────────────────────────────
         let _out_stream;
         let _out_listener;
@@ -229,7 +224,6 @@ impl IoBackend for PipewireBackend {
                     let stride = out_chan as usize * 4;
 
                     if !is_input_driver {
-                        eprintln!("PW out: n_frames={n_frames} block_size={block_size} out_chan={out_chan}");
                         // OutputDriver: create DirectView, fire process_cb in chunks
                         let mut offset = 0usize;
                         while offset < n_frames {

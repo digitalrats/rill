@@ -437,7 +437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let CommandEnum::ClockTick(tick) = msg {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
                     if let Some(regs) = player.borrow_mut().step_ms(ms) {
-                        let pid = ParameterId::new("io_write").unwrap();
+                        let pid = ParameterId::new("register_write").unwrap();
                         gr.send(CommandEnum::SetParameter(SetParameter::new(
                             PortId::param(NodeId(0), 0),
                             pid,

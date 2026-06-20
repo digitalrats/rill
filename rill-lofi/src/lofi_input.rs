@@ -14,7 +14,7 @@ use crate::lofi_processor::LofiProcessor;
 ///
 /// Follows `Input<T, BUF_SIZE>` pattern from rill-io. Applies lofi processing
 /// (bitcrush, noise, DAC, delay), fills output ports.
-/// Chip control goes through `write_to_backend(data)` or `set_parameter("io_write", ...)`.
+/// Chip control goes through `write_to_backend(data)` or `set_parameter("register_write", ...)`.
 pub struct LofiInput<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
@@ -123,12 +123,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LofiInput<T
         self.lofi.get_parameter(id)
     }
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
-        if id.as_str() == "io_write" {
+        if id.as_str() == "register_write" {
             if let Some(bytes) = value.as_bytes() {
                 self.write_to_backend(bytes);
                 return Ok(());
             }
-            return Err(rill_core::ProcessError::parameter("io_write expects Bytes"));
+            return Err(rill_core::ProcessError::parameter(
+                "register_write expects Bytes",
+            ));
         }
         self.lofi.set_parameter(id, value)
     }
