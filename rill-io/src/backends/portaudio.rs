@@ -241,6 +241,11 @@ impl IoBackend for PortAudioBackend {
                             // Input-only: create DirectView and fire the process tick.
                             let in_ch = effective_in as usize;
                             let n_frames = args.buffer.len() / in_ch.max(1);
+                            eprintln!(
+                                "PA in: buf_len={} in_ch={in_ch} n_frames={n_frames} first4={:?}",
+                                args.buffer.len(),
+                                &args.buffer[..args.buffer.len().min(8)]
+                            );
                             let view: Arc<dyn BufferView> = Arc::new(DirectView::new_interleaved(
                                 args.buffer.as_ptr(),
                                 std::ptr::null_mut(),

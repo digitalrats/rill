@@ -127,14 +127,24 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
         _clock_inputs: &[RenderContext],
         tick: &ClockTick,
     ) -> ProcessResult<()> {
+        let mut max_abs = 0.0f32;
         for (ch, port) in self.outputs.iter_mut().enumerate() {
             let buf = port.buffer_mut();
             #[allow(unsafe_code)]
             unsafe {
                 let buf_f32: &mut [f32] =
                     std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut f32, buf.len());
-                tick.view.read_input(ch, buf_f32);
+                let n = tick.view.read_input(ch, buf_f32);
+                for &s in &buf_f32[..n] {
+                    let a = s.abs();
+                    if a > max_abs {
+                        max_abs = a;
+                    }
+                }
             }
+        }
+        if self.state.blocks_processed < 3 {
+            eprintln!("Input::generate {}ch, max={max_abs:.6}", self.outputs.len());
         }
         self.state.advance();
         Ok(())

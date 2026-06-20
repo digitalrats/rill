@@ -537,11 +537,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
 
     /// Convenience: run this processing state with a backend from the factory.
     ///
-    /// Creates the backend, wires the process callback, and enters the I/O
-    /// loop.  The `running` flag controls shutdown (set to `false` from
-    /// another thread and unpark this thread).
+    /// Consumes `self`, creates the backend, wires the process callback,
+    /// and enters the I/O loop.  The `running` flag controls shutdown.
     pub fn run_with_backend(
-        &mut self,
+        mut self,
         bf: &BackendFactory,
         backend_name: &str,
         be_params: &HashMap<String, ParamValue>,
@@ -549,13 +548,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
     ) -> Result<(), String> {
         let backend = bf.create(backend_name, be_params)?;
 
-        // Move state out of &mut self via unsafe — this is safe because
-        // we never access self again after this point.
-        #[allow(unsafe_code)]
-        let mut state = unsafe { std::ptr::read(self) };
-
         backend.set_process_callback(Box::new(move |tick: &ClockTick| {
-            let _ = state.process_block(tick);
+            let _ = self.process_block(tick);
         }));
         backend.run(running.clone())?;
         while running.load(std::sync::atomic::Ordering::Acquire) {
