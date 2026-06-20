@@ -136,6 +136,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
                 tick.view.read_input(ch, buf_f32);
             }
         }
+        if self.state.blocks_processed == 0 {
+            let buf = self.outputs[0].buffer.as_array();
+            let max = buf.iter().map(|s| s.to_f32().abs()).fold(0.0f32, f32::max);
+            eprintln!(
+                "Input::generate first_block max={max:.6} n_in={}",
+                tick.view.num_input_channels()
+            );
+        }
         self.state.advance();
         Ok(())
     }
