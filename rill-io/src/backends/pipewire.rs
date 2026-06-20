@@ -214,20 +214,23 @@ impl IoBackend for PipewireBackend {
                         return;
                     }
                     let data = &mut datas[0];
+
+                    // Read chunk metadata before data.data() to avoid borrow conflict
+                    let (ck_stride, ck_size) = {
+                        let ck = data.chunk();
+                        (ck.stride() as usize, ck.size() as usize)
+                    };
+
                     let slice = match data.data() {
                         Some(s) => s,
                         None => return,
                     };
 
-                    // Use chunk metadata for actual buffer layout
-                    let ck = data.chunk();
-                    let ck_stride = ck.stride() as usize;
                     let stride = if ck_stride > 0 {
                         ck_stride
                     } else {
                         out_chan as usize * 4
                     };
-                    let ck_size = ck.size() as usize;
                     let n_frames = if ck_stride > 0 && ck_size > 0 {
                         ck_size / ck_stride
                     } else {
