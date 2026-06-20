@@ -14,6 +14,8 @@ mod error;
 pub mod node;
 /// Parameter types and IDs (`ParameterId`, `ParamValue`, `ParamType`, etc.).
 pub mod param;
+/// ParameterWrite trait — polymorphic control interface for DSP engines.
+pub mod parameter_write;
 /// Port types and identifiers (`PortId`, `PortDirection`, `PortType`).
 pub mod port;
 /// Processing traits (`Processable`, `Processor`, `Source`, `Sink`).
@@ -30,6 +32,7 @@ pub use buffer_view::*;
 pub use error::*;
 pub use node::*;
 pub use param::*;
+pub use parameter_write::*;
 pub use port::*;
 pub use processable::*;
 pub use rack::*;
@@ -80,6 +83,7 @@ pub mod prelude {
         // Parameter handling
         ParameterId,
         ParameterResult,
+        ParameterWrite,
         Port,
 
         PortDirection,

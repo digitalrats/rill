@@ -8,8 +8,8 @@ use std::marker::PhantomData;
 use rill_core::{
     time::{ClockTick, RenderContext},
     traits::{
-        algorithm::Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue,
-        ParameterId, Port, ProcessError, ProcessResult, Source,
+        algorithm::Algorithm, parameter_write::ParameterWrite, Node, NodeCategory, NodeId,
+        NodeMetadata, NodeState, ParamValue, ParameterId, Port, ProcessResult, Source,
     },
 };
 
@@ -22,7 +22,8 @@ use crate::lofi_processor::LofiProcessor;
 /// `C` implements both `Algorithm<f32>` (audio generation) and
 /// `ChipEmulator` (register writes).  `LofiProcessor` applies
 /// bitcrushing, noise, and DAC coloring after the chip output.
-pub struct LofiChipSource<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usize> {
+pub struct LofiChipSource<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize>
+{
     id: NodeId,
     metadata: NodeMetadata,
     chip: C,
@@ -32,7 +33,9 @@ pub struct LofiChipSource<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usiz
     _phantom: PhantomData<[f32; BUF_SIZE]>,
 }
 
-impl<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usize> LofiChipSource<C, BUF_SIZE> {
+impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize>
+    LofiChipSource<C, BUF_SIZE>
+{
     /// Create a new chip source with the given emulator and lofi configuration.
     pub fn new(chip: C, lofi_config: LofiConfig, num_channels: usize) -> Self {
         let mut metadata = NodeMetadata::new("LofiChip", NodeCategory::Source);
@@ -63,7 +66,7 @@ impl<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usize> LofiChipSource<C, 
     }
 }
 
-impl<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usize> Node<f32, BUF_SIZE>
+impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> Node<f32, BUF_SIZE>
     for LofiChipSource<C, BUF_SIZE>
 {
     fn node_type_id(&self) -> rill_core::NodeTypeId
@@ -102,12 +105,13 @@ impl<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usize> Node<f32, BUF_SIZE
     }
 
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
-        if id.as_str() == "register_write" {
-            if let Some(bytes) = value.as_bytes() {
-                self.chip.write_registers(bytes);
-                return Ok(());
-            }
-            return Err(ProcessError::parameter("register_write expects Bytes"));
+        // Try chip-specific parameters first (via ParameterWrite)
+        if self
+            .chip
+            .write_parameter(id.as_str(), value.clone())
+            .is_ok()
+        {
+            return Ok(());
         }
         // Delegate lofi parameters (bit_depth, dry_wet, etc.) to LofiProcessor
         Node::<f32, BUF_SIZE>::set_parameter(&mut self.lofi, id, value)
@@ -154,7 +158,7 @@ impl<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usize> Node<f32, BUF_SIZE
     }
 }
 
-impl<C: Algorithm<f32> + ChipEmulator, const BUF_SIZE: usize> Source<f32, BUF_SIZE>
+impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> Source<f32, BUF_SIZE>
     for LofiChipSource<C, BUF_SIZE>
 {
     fn generate(

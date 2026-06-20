@@ -1,5 +1,6 @@
 use rill_core::traits::algorithm::Algorithm;
-use rill_core::traits::ProcessResult;
+use rill_core::traits::parameter_write::ParameterWrite;
+use rill_core::traits::{ParamValue, ProcessError, ProcessResult};
 
 use crate::chip_emulator::ChipEmulator;
 
@@ -309,6 +310,23 @@ impl ChipEmulator for Ay38910Chip {
     fn write_registers(&mut self, regs: &[u8]) {
         for (i, &v) in regs.iter().enumerate().take(16) {
             self.write_register(i, v);
+        }
+    }
+}
+
+impl ParameterWrite for Ay38910Chip {
+    fn write_parameter(&mut self, name: &str, value: ParamValue) -> ProcessResult<()> {
+        match name {
+            "register_write" => {
+                if let Some(bytes) = value.as_bytes() {
+                    self.write_registers(bytes);
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("register_write expects Bytes"))
+            }
+            _ => Err(ProcessError::parameter(format!(
+                "unknown parameter: {name}"
+            ))),
         }
     }
 }
