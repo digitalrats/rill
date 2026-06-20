@@ -70,8 +70,6 @@ pub struct ModularSystem<const BUF: usize = 64> {
     module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,
     default_backend: Option<(String, HashMap<String, ParamValue>)>,
-    #[cfg(feature = "serialization")]
-    backend_factory: BackendFactory,
     #[allow(dead_code)]
     config: ModularConfig,
     #[cfg(feature = "serialization")]
@@ -85,12 +83,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
         crate::registration::register_all_nodes(&mut nf);
         let mut module_factory = ModuleFactory::new();
         crate::registration::register_modules(&mut module_factory);
-        #[cfg(feature = "serialization")]
-        let mut backend_factory = BackendFactory::new();
-        #[cfg(all(feature = "serialization", feature = "io"))]
-        crate::registration::register_backends(&mut backend_factory);
-        #[cfg(all(feature = "serialization", feature = "lofi"))]
-        crate::registration::register_lofi_backends(&mut backend_factory);
         let default_backend = config.backend_name.clone().map(|n| {
             let params = config
                 .backend_params
@@ -106,8 +98,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
             default_backend,
             actor_system: Arc::new(ActorSystem::new()),
             cases: HashMap::new(),
-            #[cfg(feature = "serialization")]
-            backend_factory,
             config,
             #[cfg(feature = "serialization")]
             tokio_rt: None,
@@ -121,7 +111,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
     pub(crate) fn create_builder(&self) -> GraphBuilder<f32, BUF> {
         GraphBuilder::new(Arc::new(self.node_factory.lock().unwrap().clone()))
-            .with_backend_factory(Arc::new(self.backend_factory.clone()))
     }
     /// Build a signal graph from a GraphDef.
     #[cfg(feature = "serialization")]
@@ -188,7 +177,14 @@ impl<const BUF: usize> ModularSystem<BUF> {
             // 2. Build graph on I/O thread
             if let Some(case) = self.cases.get_mut(&rd.name) {
                 let backend_name = self.default_backend.clone();
-                let bf = self.backend_factory.clone();
+                #[cfg(feature = "io")]
+                let bf = {
+                    let mut f = BackendFactory::new();
+                    crate::registration::register_backends(&mut f);
+                    f
+                };
+                #[cfg(not(feature = "io"))]
+                let bf = BackendFactory::new();
                 let graph_def = gd.clone();
                 case.start(move |running| {
                     let mut builder =

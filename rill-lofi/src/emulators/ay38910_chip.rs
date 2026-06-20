@@ -1,3 +1,8 @@
+use rill_core::traits::algorithm::Algorithm;
+use rill_core::traits::ProcessResult;
+
+use crate::chip_emulator::ChipEmulator;
+
 #[derive(Clone)]
 struct AyChannel {
     tone_period: u16,
@@ -42,6 +47,7 @@ pub struct Ay38910Chip {
     pub(crate) chip_clock: f32,
     pub(crate) registers: [u8; 16],
     pub(crate) registers_dirty: bool,
+    sample_rate: f32,
 }
 
 impl Ay38910Chip {
@@ -89,6 +95,7 @@ impl Ay38910Chip {
             chip_clock,
             registers: [0; 16],
             registers_dirty: true,
+            sample_rate: 44100.0,
         }
     }
 
@@ -251,6 +258,58 @@ impl Ay38910Chip {
             };
         }
         self.envelope.counter += 1;
+    }
+}
+
+impl Algorithm<f32> for Ay38910Chip {
+    fn process(&mut self, _input: Option<&[f32]>, output: &mut [f32]) -> ProcessResult<()> {
+        if self.registers_dirty {
+            self.update_from_registers();
+            self.registers_dirty = false;
+        }
+        for s in output.iter_mut() {
+            *s = self.generate_sample(self.sample_rate);
+        }
+        Ok(())
+    }
+
+    fn init(&mut self, sample_rate: f32) {
+        self.sample_rate = sample_rate;
+    }
+
+    fn reset(&mut self) {
+        self.registers = [0; 16];
+        self.registers_dirty = true;
+        for ch in &mut self.channels {
+            ch.phase = 0.0;
+            ch.tone_period = 0;
+            ch.volume = 0;
+            ch.use_envelope = false;
+        }
+        self.noise = AyNoise {
+            period: 0,
+            shift_register: 0x0001_0000,
+            output: false,
+            phase: 0.0,
+        };
+        self.envelope = AyEnvelope {
+            period: 0,
+            mode: 0,
+            phase: 0.0,
+            value: 0,
+            counter: 0,
+        };
+        self.mixer.channel_modes = [0; 3];
+        self.mixer.io_a_enabled = false;
+        self.mixer.io_b_enabled = false;
+    }
+}
+
+impl ChipEmulator for Ay38910Chip {
+    fn write_registers(&mut self, regs: &[u8]) {
+        for (i, &v) in regs.iter().enumerate().take(16) {
+            self.write_register(i, v);
+        }
     }
 }
 

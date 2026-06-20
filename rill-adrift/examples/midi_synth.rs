@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.as_str())
         .unwrap_or("portaudio")
         .to_string();
+    let audio_backend_display = audio_backend.clone();
 
     // Show available ports
     eprintln!("Available MIDI ports:");
@@ -145,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_midi_sensor("midi", midi_backend, &system, servo_ref);
 
     // ── 6. Keep alive until Enter ────────────────────────────────────
-    println!("MIDI synth active (backend: {audio_backend}):");
+    println!("MIDI synth active (backend: {audio_backend_display}):");
     println!("  Pitch bend (CC#128) → ±2 semitones (stateful)");
     println!("  Mod wheel (CC#1)    → amplitude (stateful)");
     println!("  CC#7 (volume)       → amplitude (0.0 – 1.0)");

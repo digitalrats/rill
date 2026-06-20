@@ -562,11 +562,6 @@ impl GraphDef {
             }
             let idx = builder.add_node_with_id(nd.type_name(), &p, NodeId(nd.id()));
 
-            // Propagate backend name for control backends (e.g. AY-3-8910)
-            if let Some(be) = nd.backend() {
-                builder.set_node_backend(idx, be.to_string());
-            }
-
             // Apply pre-configured routing matrix (Router only)
             if let NodeDef::Router(ref r) = nd {
                 for entry in &r.routing_matrix {

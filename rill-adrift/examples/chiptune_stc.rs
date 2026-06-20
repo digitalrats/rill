@@ -478,9 +478,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 nodes: vec![
                     NodeDef::Source(SourceDef {
                         id: 0,
-                        type_name: "rill/lofi_input".into(),
+                        type_name: "rill/lofi_chip".into(),
                         name: "ay_chip".into(),
-                        backend: Some("ay38910".into()),
+                        backend: None,
                         parameters: source_params,
                     }),
                     NodeDef::Sink(SinkDef {

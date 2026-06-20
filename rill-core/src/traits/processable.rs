@@ -2,7 +2,6 @@
 
 use crate::math::Transcendental;
 use crate::time::{ClockTick, RenderContext};
-use crate::traits::node::IoNode;
 use crate::traits::port::Port;
 use crate::traits::Node;
 use crate::traits::ProcessResult;
@@ -165,14 +164,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NodeVariant
             NodeVariant::Processor(proc) => proc.resolve_resources(buffers),
             NodeVariant::Router(rt) => rt.resolve_resources(buffers),
             NodeVariant::Sink(sink) => sink.resolve_resources(buffers),
-        }
-    }
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        match self {
-            NodeVariant::Source(src) => src.as_io_node_mut(),
-            NodeVariant::Processor(proc) => proc.as_io_node_mut(),
-            NodeVariant::Router(rt) => rt.as_io_node_mut(),
-            NodeVariant::Sink(sink) => sink.as_io_node_mut(),
         }
     }
     fn reset(&mut self) {

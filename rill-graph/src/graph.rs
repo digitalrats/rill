@@ -56,7 +56,6 @@ struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
     id: NodeId,
     params: Params,
-    backend: Option<String>,
     routing_entries: Vec<(usize, usize, f32)>,
     _phantom: std::marker::PhantomData<(T, [(); BUF_SIZE])>,
 }
@@ -102,8 +101,6 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     resources: Vec<GraphResource>,
     /// Shared node factory (required, from Runtime).
     factory: Arc<NodeFactory<T, BUF_SIZE>>,
-    /// Shared backend factory for control backends (e.g. AY-3-8910 for LofiInput).
-    backend_factory: Arc<BackendFactory>,
     /// Sample rate override. When set, used in [`build`](Self::build).
     /// Populated from [`GraphDef::sample_rate`] during deserialization.
     sample_rate: Option<f32>,
@@ -122,23 +119,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             feedback_edges: Vec::new(),
             resources: Vec::new(),
             factory,
-            backend_factory: Arc::new(BackendFactory::new()),
             sample_rate: None,
             parent_ref: None,
-        }
-    }
-
-    /// Provide a backend factory for control backend injection
-    /// (e.g. AY-3-8910 for `LofiInput` chip register writes).
-    pub fn with_backend_factory(mut self, bf: Arc<BackendFactory>) -> Self {
-        self.backend_factory = bf;
-        self
-    }
-
-    /// Assign a named backend to the node at the given index (for control backends).
-    pub fn set_node_backend(&mut self, idx: usize, name: String) {
-        if let Some(recipe) = self.recipes.get_mut(idx) {
-            recipe.backend = Some(name);
         }
     }
 
@@ -164,7 +146,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             type_name: type_name.to_string(),
             id,
             params: params.clone(),
-            backend: None,
             routing_entries: Vec::new(),
             _phantom: std::marker::PhantomData,
         });
@@ -273,25 +254,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         let num_nodes = node_entries.len();
 
-        // --- Phase 2: inject control backends (e.g. AY-3-8910 for LofiInput) ---
-        let sr = self.sample_rate.unwrap_or(44100.0);
-        for (idx, recipe) in self.recipes.iter().enumerate() {
-            let Some(ref name) = recipe.backend else {
-                continue;
-            };
-            let Some(io_node) = node_entries[idx].node.as_io_node_mut() else {
-                continue;
-            };
-            let mut be_params = HashMap::new();
-            be_params.insert("sample_rate".into(), ParamValue::Float(sr));
-            be_params.insert("buffer_size".into(), ParamValue::Int(BUF_SIZE as i32));
-            match self.backend_factory.create(name, &be_params) {
-                Ok(backend) => io_node.resolve_backend(backend),
-                Err(e) => log::error!("control backend '{}': {}", name, e),
-            }
-        }
-
-        // --- Phase 3: adjacency for Kahn (signal edges only) ---
+        // --- Phase 2: adjacency for Kahn (signal edges only) ---
         let mut in_degree = vec![0usize; num_nodes];
         let mut out_edges: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); num_nodes];
 
