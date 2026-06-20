@@ -234,6 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
                 be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
                 be_params.insert("channels".into(), ParamValue::Int(2));
+                be_params.insert("input_channels".into(), ParamValue::Int(2));
                 let mut state = graph.into_processing_state();
                 if let Err(e) = state.run_with_backend(&bf, &backend_name, &be_params, t_run) {
                     eprintln!("Backend error: {e}");
