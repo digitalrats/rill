@@ -182,7 +182,7 @@ impl IoBackend for JackBackend {
         }
     }
 
-    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
+    fn run(&self, running: Arc<AtomicBool>) -> Result<(), String> {
         let client_name = self.config.output_device.as_deref().unwrap_or("rill");
 
         let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
@@ -269,8 +269,8 @@ impl IoBackend for JackBackend {
             *self.active_client.get() = Some(active_client);
         }
 
-        // Block until stop() is called
-        while self.running.load(Ordering::Acquire) {
+        // Block until orchestrator signals stop via the running flag
+        while running.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
