@@ -219,9 +219,21 @@ impl IoBackend for PipewireBackend {
                         None => return,
                     };
 
-                    let total_samps = slice.len() / 4;
-                    let n_frames = total_samps / out_chan as usize;
-                    let stride = out_chan as usize * 4;
+                    // Use chunk metadata for actual buffer layout
+                    let ck = data.chunk();
+                    let ck_stride = ck.stride() as usize;
+                    let stride = if ck_stride > 0 {
+                        ck_stride
+                    } else {
+                        out_chan as usize * 4
+                    };
+                    let ck_size = ck.size() as usize;
+                    let n_frames = if ck_stride > 0 && ck_size > 0 {
+                        ck_size / ck_stride
+                    } else {
+                        slice.len() / stride
+                    };
+                    let total_samps = n_frames * (stride / 4);
 
                     if !is_input_driver {
                         // OutputDriver: create DirectView, fire process_cb in chunks
@@ -286,6 +298,21 @@ impl IoBackend for PipewireBackend {
                     *ck.offset_mut() = 0;
                     *ck.stride_mut() = stride as i32;
                     *ck.size_mut() = (total_samps * 4) as u32;
+                    // Dump first/last samples for click diagnosis
+                    let samp: &[f32] = unsafe {
+                        std::slice::from_raw_parts(
+                            slice.as_ptr() as *const f32,
+                            total_samps.min(16),
+                        )
+                    };
+                    let tail = total_samps.saturating_sub(8);
+                    let tail_samp: &[f32] = unsafe {
+                        std::slice::from_raw_parts(
+                            slice.as_ptr().add(tail * 4) as *const f32,
+                            (total_samps - tail).min(8),
+                        )
+                    };
+                    eprintln!("PW buf: first={:?} last={:?}", samp, tail_samp);
                 })
                 .register()
                 .map_err(|e| format!("PW output listener: {e}"))?;
