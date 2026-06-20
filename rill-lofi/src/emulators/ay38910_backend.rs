@@ -50,6 +50,12 @@ impl BufferView for Ay38910View {
             return dst.len();
         }
         // AY-3-8910 is mono — generate to all channels
+        eprintln!(
+            "AY38910 read_input: ch={channel} len={} reg0={} reg7={}",
+            dst.len(),
+            unsafe { (*self.register_buf)[0].load(Ordering::Relaxed) },
+            unsafe { (*self.register_buf)[7].load(Ordering::Relaxed) },
+        );
         unsafe {
             self.generate(dst);
         }

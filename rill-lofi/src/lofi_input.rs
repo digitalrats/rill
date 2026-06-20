@@ -183,6 +183,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for LofiInput
         _clock_inputs: &[RenderContext],
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
+        eprintln!("LofiInput::generate has_backend={}", self.backend.is_some());
         if let Some(ref io) = self.backend {
             let nch = self.outputs.len();
             if nch == 0 {
