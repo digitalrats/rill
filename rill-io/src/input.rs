@@ -127,6 +127,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
         _clock_inputs: &[RenderContext],
         tick: &ClockTick,
     ) -> ProcessResult<()> {
+        let n_in = tick.view.num_input_channels();
+        eprintln!(
+            "Input::generate called, n_in={n_in} block={}",
+            self.state.blocks_processed
+        );
         for (ch, port) in self.outputs.iter_mut().enumerate() {
             let buf = port.buffer_mut();
             #[allow(unsafe_code)]
@@ -135,14 +140,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
                     std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut f32, buf.len());
                 tick.view.read_input(ch, buf_f32);
             }
-        }
-        if self.state.blocks_processed == 0 {
-            let buf = self.outputs[0].buffer.as_array();
-            let max = buf.iter().map(|s| s.to_f32().abs()).fold(0.0f32, f32::max);
-            eprintln!(
-                "Input::generate first_block max={max:.6} n_in={}",
-                tick.view.num_input_channels()
-            );
         }
         self.state.advance();
         Ok(())
