@@ -113,6 +113,7 @@ struct JackProcessHandler {
     sample_pos: Arc<AtomicU64>,
     sample_rate: f32,
     config_rate: f32,
+    block_size: usize,
     sys_clock: Option<Arc<SystemClock>>,
 }
 
@@ -129,35 +130,46 @@ impl ProcessHandler for JackProcessHandler {
         }
 
         let nframes = ps.n_frames() as usize;
+        let chunk_size = self.block_size;
 
-        let mut in_ptrs: [*const f32; 8] = [std::ptr::null(); 8];
-        let mut out_ptrs: [*mut f32; 8] = [std::ptr::null_mut(); 8];
+        // Process JACK buffer in BUF_SIZE chunks
+        let mut offset = 0usize;
+        while offset < nframes {
+            let n = (nframes - offset).min(chunk_size);
 
-        for ch in 0..self.in_ch {
-            if ch < self.in_ports.len() {
-                in_ptrs[ch] = self.in_ports[ch].as_slice(ps).as_ptr();
+            let mut in_ptrs: [*const f32; 8] = [std::ptr::null(); 8];
+            let mut out_ptrs: [*mut f32; 8] = [std::ptr::null_mut(); 8];
+
+            unsafe {
+                for ch in 0..self.in_ch {
+                    if ch < self.in_ports.len() {
+                        in_ptrs[ch] = self.in_ports[ch].as_slice(ps).as_ptr().add(offset);
+                    }
+                }
+                for ch in 0..self.out_ch {
+                    if ch < self.out_ports.len() {
+                        out_ptrs[ch] = self.out_ports[ch].as_mut_slice(ps).as_mut_ptr().add(offset);
+                    }
+                }
             }
-        }
-        for ch in 0..self.out_ch {
-            if ch < self.out_ports.len() {
-                out_ptrs[ch] = self.out_ports[ch].as_mut_slice(ps).as_mut_ptr();
+
+            let view: Arc<dyn BufferView> = Arc::new(DirectView::new_planar(
+                &in_ptrs[..self.in_ch],
+                &out_ptrs[..self.out_ch],
+                n,
+            ));
+
+            let pos = self.sample_pos.fetch_add(n as u64, Ordering::Relaxed);
+            let mut tick = ClockTick::new(pos, n as u32, self.config_rate, "jack".into(), view);
+            if self.sample_rate > 0.0 && (self.sample_rate - self.config_rate).abs() > 1.0 {
+                tick.speed_ratio = self.config_rate as f64 / self.sample_rate as f64;
             }
-        }
 
-        let view: Arc<dyn BufferView> = Arc::new(DirectView::new_planar(
-            &in_ptrs[..self.in_ch],
-            &out_ptrs[..self.out_ch],
-            nframes,
-        ));
+            unsafe {
+                self.process_cb.call(&tick);
+            }
 
-        let pos = self.sample_pos.fetch_add(nframes as u64, Ordering::Relaxed);
-        let mut tick = ClockTick::new(pos, nframes as u32, self.config_rate, "jack".into(), view);
-        if self.sample_rate > 0.0 && (self.sample_rate - self.config_rate).abs() > 1.0 {
-            tick.speed_ratio = self.config_rate as f64 / self.sample_rate as f64;
-        }
-
-        unsafe {
-            self.process_cb.call(&tick);
+            offset += n;
         }
 
         Control::Continue
@@ -234,6 +246,7 @@ impl IoBackend for JackBackend {
 
         let sample_rate = client.sample_rate() as f32;
         let config_rate = self.config.sample_rate as f32;
+        let block_size = self.config.buffer_size as usize;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
             out_ports,
@@ -243,6 +256,7 @@ impl IoBackend for JackBackend {
             sample_pos: self.sample_pos.clone(),
             sample_rate,
             config_rate,
+            block_size,
             sys_clock: self.sys_clock.clone(),
         };
 
