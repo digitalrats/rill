@@ -343,13 +343,49 @@ impl IoBackend for PipewireBackend {
             .into_inner();
             let mut out_params = [spa::pod::Pod::from_bytes(&params_bytes).unwrap()];
 
+            // Request buffer size matching our BUF_SIZE
+            let buf_frames = block_size as i32;
+            let buf_size: i32 = buf_frames * out_chan as i32 * 4;
+            let buffers_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+                std::io::Cursor::new(Vec::new()),
+                &spa::pod::Value::Object(spa::pod::Object {
+                    type_: spa_sys::SPA_TYPE_OBJECT_ParamBuffers,
+                    id: spa_sys::SPA_PARAM_Buffers,
+                    properties: {
+                        use spa::pod::Property;
+                        vec![
+                            Property::new(
+                                spa_sys::SPA_PARAM_BUFFERS_blocks,
+                                spa::pod::Value::Int(1),
+                            ),
+                            Property::new(
+                                spa_sys::SPA_PARAM_BUFFERS_size,
+                                spa::pod::Value::Int(buf_size),
+                            ),
+                            Property::new(
+                                spa_sys::SPA_PARAM_BUFFERS_stride,
+                                spa::pod::Value::Int((out_chan * 4) as i32),
+                            ),
+                        ]
+                    },
+                }),
+            )
+            .unwrap()
+            .0
+            .into_inner();
+            let buffer_pod = spa::pod::Pod::from_bytes(&buffers_bytes).unwrap();
+            let mut all_params = vec![
+                spa::pod::Pod::from_bytes(&params_bytes).unwrap(),
+                buffer_pod,
+            ];
+
             if let Err(e) = stream.connect(
                 spa::utils::Direction::Output,
                 None,
                 pw::stream::StreamFlags::AUTOCONNECT
                     | pw::stream::StreamFlags::MAP_BUFFERS
                     | pw::stream::StreamFlags::RT_PROCESS,
-                &mut out_params,
+                &mut all_params,
             ) {
                 return Err(format!("PW output connect: {e}"));
             }
