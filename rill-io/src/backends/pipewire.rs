@@ -250,7 +250,8 @@ impl IoBackend for PipewireBackend {
                             } else {
                                 1.0
                             };
-                            tick.is_final = offset + chunk >= n_frames;
+                            // tick.is_final = true for ALL chunks — control path advances
+                            // correctly across multiple small-step ticks.
                             unsafe {
                                 out_cb.call(&tick);
                             }
