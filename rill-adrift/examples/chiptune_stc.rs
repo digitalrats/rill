@@ -198,15 +198,15 @@ impl StcPlayer {
     fn step_ms(&mut self, ms: f64) -> Option<[u8; 14]> {
         const INT_MS: f64 = 1000.0 / 48.828125;
         self.int_ms += ms;
-        if self.int_ms >= INT_MS {
+        let mut result = None;
+        while self.int_ms >= INT_MS {
             self.int_ms -= INT_MS;
             if self.finished {
-                return Some([0u8; 14]); // silence on loop
+                return Some([0u8; 14]);
             }
-            Some(self.step_int())
-        } else {
-            None
+            result = Some(self.step_int());
         }
+        result
     }
 
     fn step_int(&mut self) -> [u8; 14] {
