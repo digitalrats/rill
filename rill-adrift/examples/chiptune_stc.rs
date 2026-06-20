@@ -391,6 +391,7 @@ const STC_DATA: &[u8] = include_bytes!("../../../Bonysoft - Popcorn (1993).stc")
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let normalize = args.iter().any(|a| a == "--normalize");
+    let dry_run = args.iter().any(|a| a == "--dry");
 
     // Backend name: first positional argument that doesn't start with `--`
     let backend_name = args
@@ -458,6 +459,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     source_params.insert("bit_depth".into(), ParamValue::Int(8));
     source_params.insert("nonlinear".into(), ParamValue::Bool(false));
     source_params.insert("noise_floor".into(), ParamValue::Float(-48.0));
+    if dry_run {
+        source_params.insert("enable_bitcrush".into(), ParamValue::Bool(false));
+        source_params.insert("enable_sr_reduction".into(), ParamValue::Bool(false));
+        source_params.insert("enable_noise".into(), ParamValue::Bool(false));
+        source_params.insert("dry_wet".into(), ParamValue::Float(0.0));
+        source_params.insert("output_gain".into(), ParamValue::Float(1.0));
+        source_params.insert("dc_offset".into(), ParamValue::Float(0.0));
+    }
     if normalize {
         source_params.insert("dc_offset".into(), ParamValue::Float(0.5));
         source_params.insert("output_gain".into(), ParamValue::Float(1.0));
