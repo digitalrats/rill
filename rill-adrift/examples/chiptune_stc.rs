@@ -199,12 +199,20 @@ impl StcPlayer {
         const INT_MS: f64 = 1000.0 / 48.828125;
         self.int_ms += ms;
         let mut result = None;
+        let mut count = 0u32;
         while self.int_ms >= INT_MS {
             self.int_ms -= INT_MS;
             if self.finished {
                 return Some([0u8; 14]);
             }
             result = Some(self.step_int());
+            count += 1;
+        }
+        if count > 0 {
+            eprintln!(
+                "STC step_ms: ms={ms:.3} steps={count} int_ms={:.3}",
+                self.int_ms
+            );
         }
         result
     }
@@ -436,6 +444,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let CommandEnum::ClockTick(tick) = msg {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+                    eprintln!(
+                        "STC tick: samples={} sr={} ms={ms:.3}",
+                        tick.samples_since_last, tick.sample_rate
+                    );
                     if let Some(regs) = player.borrow_mut().step_ms(ms) {
                         let pid = ParameterId::new("register_write").unwrap();
                         gr.send(CommandEnum::SetParameter(SetParameter::new(
