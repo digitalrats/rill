@@ -172,6 +172,14 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> S
         let mut raw = [0.0f32; BUF_SIZE];
         self.chip.process(None, &mut raw)?;
 
+        eprintln!(
+            "chip raw block={}: first={:.4} last={:.4} sr={}",
+            self.state.blocks_processed,
+            raw[0],
+            raw[BUF_SIZE - 1],
+            self.state.sample_rate
+        );
+
         // Apply lofi processing and write to output ports
         let out0 = self.outputs[0].buffer.as_mut_array();
         for (j, s) in out0.iter_mut().enumerate() {
