@@ -140,6 +140,7 @@ impl IoBackend for PortAudioBackend {
             let orun = running.clone();
             let out_ch = out_channels as usize;
             let in_ch = in_channels as usize;
+            let is_output_driver = in_channels == 0;
 
             let settings = pa
                 .default_output_stream_settings::<f32>(
@@ -184,8 +185,10 @@ impl IoBackend for PortAudioBackend {
                             view,
                         );
                         tick.speed_ratio = 1.0;
-                        unsafe {
-                            oproc.call(&tick);
+                        if is_output_driver {
+                            unsafe {
+                                oproc.call(&tick);
+                            }
                         }
 
                         pa::Continue
@@ -207,6 +210,7 @@ impl IoBackend for PortAudioBackend {
             let iproc = process_cb;
             let ispos = sample_pos;
             let irun = running.clone();
+            let is_input_driver = has_input;
 
             let settings = pa
                 .default_input_stream_settings::<f32>(
@@ -249,7 +253,7 @@ impl IoBackend for PortAudioBackend {
                             args.buffer.as_ptr(),
                             std::ptr::null_mut(),
                             in_ch,
-                            if has_output { 0 } else { 0 },
+                            0,
                             n_frames,
                         ));
 
@@ -262,8 +266,10 @@ impl IoBackend for PortAudioBackend {
                             view,
                         );
                         tick.speed_ratio = 1.0;
-                        unsafe {
-                            iproc.call(&tick);
+                        if is_input_driver {
+                            unsafe {
+                                iproc.call(&tick);
+                            }
                         }
 
                         pa::Continue

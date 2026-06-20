@@ -125,21 +125,6 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
         _tick: &rill_adrift::rill_core::time::ClockTick,
     ) -> ProcessResult<()> {
         let all_received = self.inputs.iter().all(|p| p.data_received);
-        if self.state.blocks_processed < 3 {
-            eprintln!(
-                "RecordingSink: data_received={all_received} blocks_processed={}",
-                self.state.blocks_processed
-            );
-            if all_received {
-                if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
-                    let l = lp.buffer.as_array();
-                    let r = rp.buffer.as_array();
-                    let lm = l.iter().map(|s| s.to_f32().abs()).fold(0.0f32, f32::max);
-                    let rm = r.iter().map(|s| s.to_f32().abs()).fold(0.0f32, f32::max);
-                    eprintln!("RecordingSink: left_max={lm:.6} right_max={rm:.6}");
-                }
-            }
-        }
         if all_received {
             if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
                 let l = lp.buffer.as_array();
