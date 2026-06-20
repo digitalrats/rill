@@ -257,6 +257,18 @@ impl IoBackend for PipewireBackend {
                             }
                             offset += chunk;
                         }
+                        // Zero-fill any remainder of the DMA buffer
+                        // (when n_frames is not an exact multiple of block_size)
+                        let filled_samps = offset * out_chan as usize;
+                        if filled_samps < total_samps {
+                            let samples: &mut [f32] = unsafe {
+                                std::slice::from_raw_parts_mut(
+                                    slice.as_mut_ptr() as *mut f32,
+                                    total_samps,
+                                )
+                            };
+                            samples[filled_samps..].fill(0.0);
+                        }
                     } else {
                         // InputDriver: copy output_ring → DMA (passive output)
                         let samples: &mut [f32] = unsafe {
