@@ -183,6 +183,14 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> S
             port.buffer_mut().as_mut_array().copy_from_slice(&out0_copy);
         }
 
+        eprintln!(
+            "lofi block={}: first={:.4} mid={:.4} last={:.4}",
+            self.state.blocks_processed,
+            self.outputs[0].buffer.as_array()[0],
+            self.outputs[0].buffer.as_array()[BUF_SIZE / 2],
+            self.outputs[0].buffer.as_array()[BUF_SIZE - 1],
+        );
+
         self.state.advance();
         Ok(())
     }
