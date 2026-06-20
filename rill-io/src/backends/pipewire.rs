@@ -236,7 +236,11 @@ impl IoBackend for PipewireBackend {
                         ck_stride
                     } else {
                         let actual_ch = out_nchan_proc.load(Ordering::Relaxed) as usize;
-                        if actual_ch > 0 { actual_ch * 4 } else { out_chan as usize * 4 }
+                        if actual_ch > 0 {
+                            actual_ch * 4
+                        } else {
+                            out_chan as usize * 4
+                        }
                     };
                     let n_frames = if ck_stride > 0 && ck_size > 0 {
                         ck_size / ck_stride
@@ -244,13 +248,6 @@ impl IoBackend for PipewireBackend {
                         slice.len() / stride
                     };
                     let total_samps = n_frames * (stride / 4);
-
-                    {
-                        let actual_ch = out_nchan_proc.load(Ordering::Relaxed) as usize;
-                        eprintln!(
-                            "PW ch: config={out_chan} actual={actual_ch} stride={stride} n_frames={n_frames} total_samps={total_samps}"
-                        );
-                    }
 
                     if !is_input_driver {
                         // OutputDriver: create DirectView, fire process_cb in chunks
