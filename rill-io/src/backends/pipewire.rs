@@ -301,6 +301,22 @@ impl IoBackend for PipewireBackend {
                     *ck.offset_mut() = 0;
                     *ck.stride_mut() = stride as i32;
                     *ck.size_mut() = (total_samps * 4) as u32;
+                    // Dump buffer boundary
+                    if total_samps >= 4 {
+                        let s: &[f32] =
+                            unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const f32, 2) };
+                        let tail = total_samps.saturating_sub(2);
+                        let t: &[f32] = unsafe {
+                            std::slice::from_raw_parts(
+                                slice.as_ptr().add(tail * 4) as *const f32,
+                                2,
+                            )
+                        };
+                        eprintln!(
+                            "PW buf: tail=[{:.4},{:.4}] head=[{:.4},{:.4}] n_frames={n_frames}",
+                            t[0], t[1], s[0], s[1]
+                        );
+                    }
                 })
                 .register()
                 .map_err(|e| format!("PW output listener: {e}"))?;
