@@ -204,7 +204,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
                                 match bf.create(name, params) {
                                     Ok(backend) => {
                                         let callback = move |tick: &ClockTick| {
-                                            let _ = state.process_block(tick);
+                                            if tick.is_new_block {
+                                                let _ = state.process_block(tick);
+                                            }
                                             state.send_clock_tick(tick);
                                         };
                                         backend.set_process_callback(Box::new(callback));
