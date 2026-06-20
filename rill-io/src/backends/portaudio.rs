@@ -223,9 +223,15 @@ impl IoBackend for PortAudioBackend {
                             return pa::Complete;
                         }
 
+                        let in_ch = effective_in as usize;
+                        let n_frames = args.buffer.len() / in_ch.max(1);
+
+                        // Always fire the process tick from the input callback
+                        // when in InputDriver mode (has_output = true means the
+                        // output callback is passive — it just reads output_ring).
                         if has_output {
-                            // Copy DMA capture data into the shared buffer for the
-                            // output callback to pick up when it fires the tick.
+                            // Also copy to capture buffer for the output callback
+                            // to use when it fires the tick (not needed for recording).
                             let n = args
                                 .buffer
                                 .len()
@@ -237,35 +243,27 @@ impl IoBackend for PortAudioBackend {
                                     n,
                                 );
                             }
-                        } else {
-                            // Input-only: create DirectView and fire the process tick.
-                            let in_ch = effective_in as usize;
-                            let n_frames = args.buffer.len() / in_ch.max(1);
-                            eprintln!(
-                                "PA in: buf_len={} in_ch={in_ch} n_frames={n_frames} first4={:?}",
-                                args.buffer.len(),
-                                &args.buffer[..args.buffer.len().min(8)]
-                            );
-                            let view: Arc<dyn BufferView> = Arc::new(DirectView::new_interleaved(
-                                args.buffer.as_ptr(),
-                                std::ptr::null_mut(),
-                                in_ch,
-                                0,
-                                n_frames,
-                            ));
+                        }
 
-                            let pos = ispos.fetch_add(n_frames as u64, Ordering::Relaxed);
-                            let mut tick = ClockTick::new(
-                                pos,
-                                n_frames as u32,
-                                sample_rate as f32,
-                                "portaudio".into(),
-                                view,
-                            );
-                            tick.speed_ratio = 1.0;
-                            unsafe {
-                                iproc.call(&tick);
-                            }
+                        let view: Arc<dyn BufferView> = Arc::new(DirectView::new_interleaved(
+                            args.buffer.as_ptr(),
+                            std::ptr::null_mut(),
+                            in_ch,
+                            if has_output { 0 } else { 0 },
+                            n_frames,
+                        ));
+
+                        let pos = ispos.fetch_add(n_frames as u64, Ordering::Relaxed);
+                        let mut tick = ClockTick::new(
+                            pos,
+                            n_frames as u32,
+                            sample_rate as f32,
+                            "portaudio".into(),
+                            view,
+                        );
+                        tick.speed_ratio = 1.0;
+                        unsafe {
+                            iproc.call(&tick);
                         }
 
                         pa::Continue
