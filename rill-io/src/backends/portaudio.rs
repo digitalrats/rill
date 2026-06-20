@@ -141,6 +141,11 @@ impl IoBackend for PortAudioBackend {
             let out_ch = out_channels as usize;
             let in_ch = in_channels as usize;
             let is_output_driver = in_channels == 0;
+            let is_input_driver_flag = in_channels > 0;
+
+            eprintln!(
+                "PA run: out_ch={out_channels} in_ch={in_channels} has_input={has_input} is_output_driver={is_output_driver} is_input_driver={is_input_driver_flag}",
+            );
 
             let settings = pa
                 .default_output_stream_settings::<f32>(
