@@ -195,26 +195,16 @@ impl StcPlayer {
         pitch
     }
 
-    fn step_ms(&mut self, ms: f64) -> Option<[u8; 14]> {
+    fn step_ms(&mut self, ms: f64, mut on_step: impl FnMut(&[u8; 14])) {
         const INT_MS: f64 = 1000.0 / 48.828125;
         self.int_ms += ms;
-        let mut result = None;
-        let mut count = 0u32;
         while self.int_ms >= INT_MS {
             self.int_ms -= INT_MS;
             if self.finished {
-                return Some([0u8; 14]);
+                return;
             }
-            result = Some(self.step_int());
-            count += 1;
+            on_step(&self.step_int());
         }
-        if count > 0 {
-            eprintln!(
-                "STC step_ms: ms={ms:.3} steps={count} int_ms={:.3}",
-                self.int_ms
-            );
-        }
-        result
     }
 
     fn step_int(&mut self) -> [u8; 14] {
@@ -444,19 +434,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let CommandEnum::ClockTick(tick) = msg {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
-                    eprintln!(
-                        "STC tick: samples={} sr={} ms={ms:.3}",
-                        tick.samples_since_last, tick.sample_rate
-                    );
-                    if let Some(regs) = player.borrow_mut().step_ms(ms) {
-                        let pid = ParameterId::new("register_write").unwrap();
-                        gr.send(CommandEnum::SetParameter(SetParameter::new(
+                    let pid = ParameterId::new("register_write").unwrap();
+                    let gr_clone = gr.clone();
+                    player.borrow_mut().step_ms(ms, move |regs: &[u8; 14]| {
+                        gr_clone.send(CommandEnum::SetParameter(SetParameter::new(
                             PortId::param(NodeId(0), 0),
-                            pid,
+                            pid.clone(),
                             ParamValue::Bytes(regs.to_vec()),
                             SignalOrigin::Manual,
                         )));
-                    }
+                    });
                     if player.borrow().finished {
                         done.store(true, Ordering::Release);
                         playing.store(false, Ordering::Release);
