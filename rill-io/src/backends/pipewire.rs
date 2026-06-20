@@ -66,6 +66,7 @@ pub struct PipewireBackend {
     negotiated_input_channels: Arc<AtomicU32>,
     negotiated_input_rate: Arc<AtomicU32>,
     negotiated_output_rate: Arc<AtomicU32>,
+    negotiated_output_channels: Arc<AtomicU32>,
     mode: IoMode,
 }
 
@@ -95,6 +96,7 @@ impl PipewireBackend {
             negotiated_input_channels: Arc::new(AtomicU32::new(input_channels)),
             negotiated_input_rate: Arc::new(AtomicU32::new(sample_rate)),
             negotiated_output_rate: Arc::new(AtomicU32::new(sample_rate)),
+            negotiated_output_channels: Arc::new(AtomicU32::new(output_channels)),
             mode: if input_channels > 0 {
                 IoMode::InputDriver
             } else {
@@ -187,6 +189,8 @@ impl IoBackend for PipewireBackend {
             let is_input_driver = self.mode == IoMode::InputDriver;
             let out_nrate = self.negotiated_output_rate.clone();
             let out_nrate_proc = self.negotiated_output_rate.clone();
+            let out_nchan = self.negotiated_output_channels.clone();
+            let out_nchan_proc = self.negotiated_output_channels.clone();
 
             let listener = stream
                 .add_local_listener_with_user_data(())
@@ -196,6 +200,7 @@ impl IoBackend for PipewireBackend {
                             let mut ai = spa::param::audio::AudioInfoRaw::new();
                             if ai.parse(param).is_ok() {
                                 out_nrate.store(ai.rate(), Ordering::Relaxed);
+                                out_nchan.store(ai.channels(), Ordering::Relaxed);
                             }
                         }
                     }
@@ -229,7 +234,8 @@ impl IoBackend for PipewireBackend {
                     let stride = if ck_stride > 0 {
                         ck_stride
                     } else {
-                        out_chan as usize * 4
+                        let actual_ch = out_nchan_proc.load(Ordering::Relaxed) as usize;
+                        if actual_ch > 0 { actual_ch * 4 } else { out_chan as usize * 4 }
                     };
                     let n_frames = if ck_stride > 0 && ck_size > 0 {
                         ck_size / ck_stride
@@ -237,6 +243,13 @@ impl IoBackend for PipewireBackend {
                         slice.len() / stride
                     };
                     let total_samps = n_frames * (stride / 4);
+
+                    {
+                        let actual_ch = out_nchan_proc.load(Ordering::Relaxed) as usize;
+                        eprintln!(
+                            "PW ch: config={out_chan} actual={actual_ch} stride={stride} n_frames={n_frames} total_samps={total_samps}"
+                        );
+                    }
 
                     if !is_input_driver {
                         // OutputDriver: create DirectView, fire process_cb in chunks
