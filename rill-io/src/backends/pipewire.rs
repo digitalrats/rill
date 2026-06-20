@@ -86,6 +86,7 @@ impl PipewireBackend {
             ));
         }
         let input_channels = config.input_channels;
+        let output_channels = config.output_channels;
         let sample_rate = config.sample_rate;
         Ok(Self {
             config,
