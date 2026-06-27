@@ -43,8 +43,8 @@ pub struct NodeDef {
 ```
 
 - `backend` — specifies a named backend from `BackendFactory` for this
-  I/O node.  When `None` and a default backend is configured on the
-  builder, the default is used.  Processor nodes leave this empty.
+  I/O node.  The orchestrator uses `BackendFactory` to create backends externally;
+  the builder no longer holds a factory.  Processor nodes leave this empty.
 
 ### `ParamValue`
 

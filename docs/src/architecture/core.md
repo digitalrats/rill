@@ -19,39 +19,23 @@ pub trait Node<T: Transcendental, const BUF_SIZE: usize> {
     fn set_id(&mut self, id: NodeId);
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-
-    // Downcasting helpers (default no-op)
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> { None }
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> { None }
 }
 ```
 
-### `IoNode` and `ActiveNode`
+### ParameterWrite
 
-Two extension traits form a hierarchy for I/O-capable nodes:
+`ParameterWrite` is the polymorphic control interface for DSP engines.
+It decouples parameter dispatch from the concrete engine type:
 
 ```rust
-pub trait IoNode<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>);
-}
-
-pub trait ActiveNode<T: Transcendental, const BUF_SIZE: usize>: IoNode<T, BUF_SIZE> {
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: Arc<AtomicBool>,
-    ) -> IoResult<()>;
+pub trait ParameterWrite {
+    fn write_parameter(&mut self, name: &str, value: ParamValue) -> ProcessResult<()>;
+    fn read_parameter(&self, name: &str) -> Option<ParamValue> { None }
 }
 ```
 
-- **`IoNode`** — implemented by `Input`, `Output`, `LofiInput`. Receives a backend
-  during `GraphBuilder::build()`. Only nodes implementing this trait get backends.
-- **`ActiveNode`** — implemented by `Input` and `Output`. The single node in a graph
-  that drives the audio callback loop. `Graph::run()` calls `ActiveNode::run()` with
-  a tick closure that drains commands, processes the source, and propagates ports.
-
-`GraphBuilder::build()` uses `as_io_node_mut()` / `as_active_node_mut()` to detect
-which nodes implement these traits — no name-based matching required.
+Implemented by `BasicOscillator<f32>`, `Ay38910Chip`, and any engine
+that accepts named parameter writes.
 
 ### `Source`, `Processor`, `Sink`
 
@@ -71,28 +55,21 @@ pub trait Sink<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
 
 ### `IoBackend` and `IoControl`
 
-Backends are owned by I/O nodes. No `Send + Sync` bounds — they live on
-the audio thread exclusively.
+Backends are created **externally** by the orchestrator. The `IoBackend`
+trait is `Send` so backends can be passed between threads.
+
+`BufferView` (returned by `create_view()`) provides the signal callback
+with access to I/O buffers.
 
 ```rust
-pub trait IoBackend<T: Scalar> {
-    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>);
-    fn read(&self, channels: &mut [&mut [T]]) -> usize;
-    fn write(&self, channels: &[&[T]]) -> usize;
+pub trait IoBackend: Send {
+    fn create_view(&self) -> Arc<dyn BufferView>;
+    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>);
     fn run(&self, running: Arc<AtomicBool>) -> IoResult<()>;
     fn stop(&self) -> IoResult<()>;
-    fn as_control(&self) -> Option<&dyn IoControl> { None }
-}
-
-pub trait IoControl {
-    fn write_data(&self, data: &[u8]) -> usize;
 }
 ```
 
-`IoControl::write_data()` receives raw bytes — interpretation is
-backend-specific (e.g. AY-3-8910 register writes, MIDI, proprietary
-protocols).  Control actors send bytes via `ParamValue::Bytes` through
-the standard command queue.
 
 ### `ParamValue`
 
@@ -136,6 +113,10 @@ pub struct ClockTick {
     pub is_new_block: bool,
     pub sample_rate: f32,
     pub tempo: Option<f32>,
+    pub source: SignalSource,
+    pub view: Arc<dyn BufferView>,
+    pub speed_ratio: f64,
+    pub is_final: bool,
 }
 ```
 

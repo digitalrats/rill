@@ -52,15 +52,16 @@ See [Signal graph (rill-graph)](../architecture/graph.md) for details.
 
 | Model | Active node | Use case |
 |-------|-------------|----------|
-| **Pull** | `AudioOutput` (Sink) | Audio playback — sink drives the graph |
-| **Push** | `AudioInput` (Source) | Audio capture — source drives the graph |
+| **Pull** | `Output` (Sink) | Signal playback — sink drives the graph |
+| **Push** | `Input` (Source) | Signal capture — source drives the graph |
 
 ### Port-based propagation
 
 The signal graph has no external engine. Each `Port` owns its buffer,
 downstream connections, and feedback state. Processing flow:
 
-1. `Source::generate()` fills the output buffer
+1. I/O buffers are obtained from `tick.view` (a `BufferView`)
+2. `Source::generate()` fills the output buffer
 2. `Port::propagate()` copies data to downstream input ports (zero-copy for 1:1)
 3. Each downstream node runs `process_block()`: `Processor::process()` or `Sink::consume()`
 4. Recursion continues through the DAG until all sinks are reached

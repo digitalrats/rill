@@ -441,41 +441,41 @@ Audio input/output. Pure I/O backends — no engine, no processors.
 
 Single trait:
 
-- [`IoBackend`] — `set_process_callback(Fn(f32))`, `read`, `write`, `run`, `stop`
+- [`IoBackend`] — `create_view() -> Arc<dyn BufferView>`, `set_process_callback(FnMut(&ClockTick))`, `run`, `stop`, optional `as_control()`
 
-The process callback receives the actual negotiated sample rate (`f32`)
-from the backend so that `ClockTick` always reflects the true device rate.
+The process callback receives a `&ClockTick` with timing information,
+the backend's `BufferView` (for zero-copy DMA access via `DirectView`),
+and a `speed_ratio` for hardware clock correction.
 
 Two graph nodes:
 
-- **`Output`** (Sink) — `start()` registers the callback, drives the graph.
-  The backend can be created externally via `set_backend()` or by name via
-  `init_backend("pipewire", config)`. `start()` sets the callback.
-- **`AudioOutput`** (Sink) — push or pull model. Borrows the backend via
-  `AudioIoPtr`. In pull model: `set_active(source_idx)`. `start()` calls
-  `generate()` on Source, then `propagate()`.
+- **`Input`** (Source) — reads from `tick.view.read_input()` into output port buffers.
+  No longer owns a backend; I/O data flows through `tick.view` provided by the
+  orchestrator's backend.
+- **`Output`** (Sink) — writes to `tick.view.write_output()` from input port buffers.
+  Same pattern — the view carries the DMA pointers.
 
-Both nodes use the same callback:
-1. Drain `MpscQueue<ParameterCommand>`
-2. `process_block(source)` — `generate()` / `process()` / `consume()`
-3. `Port::propagate()` — recursive DAG traversal
-  4. `AudioOutput::consume()` reads from its input ports → `write_output()`
+Backends are created **externally** by the orchestrator
+(`ModularSystem::launch()` or `ProcessingState::run_with_backend()`).
+The orchestrator wires the backend's process callback to
+`ProcessingState::process_block()`.  The graph is `!Send + !Sync` —
+it stays on the I/O callback thread.
 
 ### Graph processing
 
-The graph has no external engine. `Port::propagate()` — recursive DAG traversal:
+The graph has no external engine. `ProcessingState::process_block(&tick)`:
 
-1. Copies the output buffer to downstream node input ports (zero-copy for 1:1)
-2. Calls `process_block()` on each downstream node:
-   - **Source** — `generate()`
-   - **Processor** — `process()`
-   - **Sink** — `consume()` (reads from its input ports)
-3. Recursively traverses each node's output ports
+1. Drains the actor mailbox (applies queued `SetParameter` commands)
+2. Calls `source.process_block(&ctx, &tick)` — Source fills output ports
+3. `Port::propagate()` — recursive DAG traversal, zero-copy for 1:1 connections
+4. `send_clock_tick(&tick)` — dispatches timing to modules (gated by `tick.is_final`)
 
-`AudioInput::start()` / `AudioOutput::start()` set the callback on
-the backend, which calls `process_block(source)` → `propagate()` on
-each audio tick. No external loop. Two-thread architecture:
-audio I/O thread (hard or soft RT) + control thread (tokio, patchbay).
+For chunking backends (PipeWire), `process_block` is called multiple times
+per DMA buffer.  Only the final chunk has `is_final = true`, ensuring
+control-path modules receive one `ClockTick` per I/O cycle.
+
+No external loop. Two-thread architecture:
+I/O callback thread (hard or soft RT) + control thread (tokio, patchbay).
 
 ## Key architectural principles
 

@@ -163,7 +163,7 @@ Rill is a **universal signal processing platform**, not exclusively audio. The t
 
 ### Two backend models
 
-The signal graph runs wherever the `AudioIo` process callback fires. The
+The signal graph runs wherever the `IoBackend` process callback fires. The
 constraints depend on the backend model:
 
 | Model | Backends | RT guarantee |
@@ -265,8 +265,8 @@ chmod +x .git/hooks/pre-commit
 
 ### I/O callback — where the signal graph runs
 
-The I/O backend (`IoBackend`) drives processing through an `ActiveNode` (typically
-`Input<T,BUF_SIZE>`). The lifecycle is defined by the `IoBackend` trait
+The orchestrator creates a backend, extracts `ProcessingState` from the graph,
+and drives processing through the process callback. The lifecycle is defined by the `IoBackend` trait
 (`rill_core/src/io.rs:26`):
 
 1. `set_process_callback()` — registers the graph tick closure
@@ -294,8 +294,9 @@ All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
 this path. No atomics, no locks — the graph is a single-threaded static DAG.
 
 > **Backward compat:** `AudioIo` (`rill-io/src/audio_io.rs`) is a type alias
-> for `dyn IoBackend<f32>`, kept for legacy code. `AudioInput`/`AudioOutput`
-> are aliases for `Input`/`Output`. The `ActiveNode` trait is the real driver.
+> for `dyn IoBackend`, kept for legacy code. `AudioInput`/`AudioOutput`
+> are aliases for `Input`/`Output`. The orchestrator drives the graph via
+> `ProcessingState::process_block()`.
 
 ### Control path (soft RT)
 
@@ -367,7 +368,7 @@ recursively through direct port pointers.
 - No CI workflows exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: the I/O callback runs the graph via `ActiveNode::run()`,
+- **Two-thread architecture**: the I/O callback runs the graph via `ProcessingState::process_block()`,
   driving `generate()` / `process()` / `consume()` / `propagate()`. The control thread
   (soft RT) runs `rill-patchbay` actors (Servos, Sensors). Communication via
   `ActorRef<CommandEnum>`.

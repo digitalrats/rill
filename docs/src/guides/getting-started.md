@@ -37,9 +37,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.connect_signal(osc, 0, sink, 0);
     let _graph = builder.build()?;
 
-    // The graph is ready. AudioOutput from rill-io drives it:
-    // output.set_active(source_idx);
-    // output.start(ptr, drain_fn, sample_rate);
+    // The graph is ready. Input/Output nodes from rill-io drive it.
+    // let output = Output::<f32, BUF_SIZE>::with_channels(2);
+    // The orchestrator creates a backend, extracts ProcessingState,
+    // and registers the process callback.
 
     Ok(())
 }
@@ -50,8 +51,8 @@ impl Node<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 impl Sink<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 ```
 
-> **Note:** `AudioOutput` / `AudioInput` are in `rill-io` (feature-gated
-> behind `io`). For testing without audio hardware, use the `NullBackend`
+> **Note:** `Output` / `Input` are in `rill-io` (feature-gated
+> behind `io`). For testing without I/O hardware, use the `NullBackend`
 > or a custom `Sink` implementation.
 
 ## Using individual DSP algorithms
@@ -86,17 +87,20 @@ rill-adrift = { version = "0.5.0-beta.6", features = ["io", "alsa"] }
 
 Available backends: `portaudio` (default), `alsa`, `pipewire`, `jack`.
 
-The `AudioInput` node (push model) owns the backend and calls
-`Source::generate()` on each audio tick. `AudioOutput` (pull model)
-drives the graph from the sink side.
+The `Input` node (push model) drives the graph from the source side.
+`Output` (pull model) drives the graph from the sink side.
+The orchestrator creates the backend, extracts `ProcessingState` from the graph,
+and registers the process callback.
 
 ```rust
-use rill_io::AudioOutput;
+use rill_io::{Output, PortAudioBackend, BackendFactory};
 
-let mut output = AudioOutput::<f32, 256>::new();
-output.set_backend(ptr);
-output.set_active(source_idx);
-output.start(nodes_ptr, drain_fn, 44100.0);
+let backend = BackendFactory::new().create("portaudio", &BackendParams::default())?;
+let mut state = graph.into_processing_state();
+backend.set_process_callback(Box::new(move |tick: &ClockTick| {
+    let _ = state.process_block(tick);
+}));
+backend.run(Arc::new(AtomicBool::new(true)))?;
 ```
 
 ## Two-Thread Architecture

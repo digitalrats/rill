@@ -1,6 +1,6 @@
 # Real-Time Safety
 
-The signal graph runs wherever the `AudioIo` process callback fires. The
+The signal graph runs wherever the `IoBackend` process callback fires. The
 constraints depend on the backend model.
 
 ## Two backend models

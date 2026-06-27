@@ -11,86 +11,39 @@ Processing is driven by `Port::propagate`.
 │  add_source() → idx  add_processor() → idx              │
 │  add_sink() → idx    connect_signal(from, to)           │
 │  connect_feedback(from, to)                              │
-│  set_default_backend(name, params)                       │
-│  set_clock_tx(tx: ActorRef<ClockTick>)                   │
-│  build() → Graph                                         │
-└──────────────────────┬───────────────────────────────────┘
-                       │ consume
-                       ▼
-┌──────────────────────────────────────────────────────────┐
-│                       Graph                              │
-│  ┌────────┐   ┌────────────┐   ┌────────┐               │
-│  │ Source │──►│ Processor  │──►│  Sink  │  ...          │
-│  └────────┘   └────────────┘   └────────┘               │
-│                                                          │
-│  nodes: Vec<NodeVariant>        topo_order: Vec<usize>   │
-│  active_node_idx: Option<usize>                          │
-│  cmd_queue: Arc<MpscQueue<SetParameter>>   (control→audio)│
-│  clock_tx: ActorRef<ClockTick>              (audio→control)│
-└──────────────────────┬───────────────────────────────────┘
-                       │ Graph::run()
-                       ▼
-┌──────────────────────────────────────────────────────────┐
-│                Tick closure (per block)                   │
-│  1. Drain cmd_queue → set_parameter on target nodes      │
-│  2. process_block() on source node                       │
-│  3. Port::propagate() — recursive DAG traversal          │
-│     • Copy data to downstream input ports                │
-│     • process_block() on downstream nodes                │
-│     • Recurse through output ports                       │
-│  4. clock_tx.send(ClockTick) → control thread            │
 └──────────────────────────────────────────────────────────┘
 ```
 
-## Processing model
+### Backend ownership
 
-The processing callback (called once per audio block):
+Backends are created **externally** by the orchestrator, not inside
+graph nodes.  The `GraphBuilder` no longer holds a `BackendFactory`.
 
-1. Drain `MpscQueue<SetParameter>` (control→audio commands)
-2. Call `Source::generate()` — fills output buffers
-3. Call `Port::propagate()` — recursive DAG traversal:
-   - Copy data to downstream input ports (zero-copy for 1:1 via `upstream_buffer`)
-   - Call the downstream node's `process_block` (`generate`/`process`/`consume`)
-   - Recurse through output ports' `downstream_input_ptrs`
-4. Send `ClockTick` to control thread via `clock_tx`
+1. The orchestrator creates a backend via `BackendFactory::create()`
+2. The backend's `BufferView` is obtained via `create_view()`
+3. `ProcessingState` is extracted from the `Graph` via `into_processing_state()`
+4. The orchestrator registers a process callback on the backend:
 
-## Backend ownership
-
-Each I/O node owns its backend via `Box<dyn IoBackend<T>>`.
-Backends are created in `GraphBuilder::build()` and passed only to nodes
-implementing `IoNode` (detected via `as_io_node_mut()`).
-Per-node backends are specified through `NodeDef.backend: Option<String>`
-in serialized graphs or via `GraphBuilder::set_node_backend(idx, name)`.
-
-The active (driver) node owns the audio I/O backend (e.g. PortAudio)
-and implements `ActiveNode::run()` to set up the process callback and block
-on the audio thread.  The active node is detected via `as_active_node_mut()`.
-
+```rust,ignore
+let backend = bf.create(name, &params)?;
+let mut state = graph.into_processing_state();
+backend.set_process_callback(Box::new(move |tick: &ClockTick| {
+    let _ = state.process_block(tick);
+    state.send_clock_tick(tick);
+}));
+backend.run(running)?;
 ```
-build():
-  for each node with a backend name:
-    backend = BackendFactory::create(name, params)
-    if let Some(io_node) = node.as_io_node_mut() {
-        io_node.resolve_backend(backend)
-    }
 
-  find active node via as_active_node_mut() → store active_node_idx
+### Processing flow
 
-run():
-  let tick: Box<dyn FnMut(u64, f32)> = Box::new(move |sample_pos, sample_rate| {
-      // drain command queue
-      while let Some(cmd) = cmd_queue.pop() {
-          nodes[cmd.node].set_parameter(&cmd.parameter, cmd.value);
-      }
-      // process source node
-      nodes[source_idx].process_block(&mut ctx);
-      // propagate through DAG
-      port.propagate(...);
-      // send clock tick to control-side actors
-      clock_tx.send(ClockTick::new(sample_pos, BUF_SIZE as u32, sample_rate));
-  });
-  nodes[active_idx].as_active_node_mut().unwrap().run(tick, running)
-```
+`ProcessingState::process_block(&tick)`:
+1. `actor.drain()` — applies queued `SetParameter` commands
+2. Creates `RenderContext` from the tick
+3. `source.process_block(&ctx, &tick)` — fills output ports
+4. `Port::propagate()` — recursive DAG traversal
+
+`send_clock_tick(&tick)` dispatches a single `ClockTick` per I/O cycle
+to the rack actor (gated by `tick.is_final`).
 
 ## Serialized graphs (GraphDef)
 
@@ -106,7 +59,7 @@ let def = GraphDef {
         NodeDef {
             id: 1,
             type_name: "rill/output",
-            backend: None,  // uses default backend from RuntimeConfig
+            backend: None,  // nodes can optionally reference backends by name
             parameters: [("channels", ParamValue::Float(1.0))].into(),
         },
     ],
@@ -133,15 +86,17 @@ impl ActorCell for Graph {
 }
 ```
 
-The command queue is drained from the process callback in `Graph::run()`.
+The command queue is drained from the process callback via
+`ProcessingState::process_block()`.
 
 ## Key components
 
 | Component | Purpose |
 |-----------|---------|
-| `GraphBuilder` | Mutable builder: nodes, connections, backends, clock channel |
-| `Graph` | Immutable DAG container, owned by audio thread |
-| `GraphDef` | Serializable graph topology (nodes + connections + backends) |
+| `GraphBuilder` | Mutable builder: nodes and connections |
+| `Graph` | Immutable DAG container; `into_processing_state()` extracts runtime state |
+| `ProcessingState` | Runtime processor: `process_block()`, `send_clock_tick()` |
+| `GraphDef` | Serializable graph topology (nodes + connections) |
 | `NodeDef` | Node in a serialized graph: type, params, optional backend name |
 | `Port` | Owns buffer, downstream routes, and feedback state |
 
@@ -149,5 +104,5 @@ The command queue is drained from the process callback in `Graph::run()`.
 
 - `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`
 - `rill-core-actor` — `ActorRef<SetParameter>`, `ActorCell` (mailbox infrastructure)
-- `rill-io` — `Input`/`Output` nodes implementing `IoNode` + `ActiveNode`
+- `rill-io` — `Input`/`Output` nodes, `IoBackend` trait
 - `rill-patchbay` — automation via parameter commands through the actor mailbox

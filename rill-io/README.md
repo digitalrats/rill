@@ -6,28 +6,26 @@ This crate provides I/O backends and the `Output`/`Input` graph
 nodes that own the reactive stream (process callback or similar).
 
 All backends implement [`IoBackend`] — a trait for reactive stream processing:
-`set_process_callback`, `read`, `write`, `run`, `stop`.
+`set_process_callback`, `create_view`, `run`, `stop`.
 
 The process callback receives the actual negotiated sample rate (`f32`)
 from the backend so that `ClockTick` always contains the true device rate.
 
 ## Nodes
 
-- **`Output`** — `Sink` node. Borrows backend via [`IoBackendPtr`].
-  `start()` registers the process callback and drives the graph:
+- **`Output`** — `Sink` node. The orchestrator creates a backend,
+  extracts `ProcessingState` from the graph, and registers a process callback.
 
   ```rust
   let mut output = Output::<f32, 256>::with_channels(2);
   ```
 
-- **`Input`** — `Source` node (push model). Borrows backend via
-  [`IoBackendPtr`]. `start()` registers the process callback.
+- **`Input`** — `Source` node (push model). Same orchestrator-driven model.
 
-In both cases the callback does:
-1. Drain `MpscQueue<ParameterCommand>` into graph nodes
-2. Create `ClockTick` with the backend‑supplied sample rate
-3. `process_block()` on the driver node
-4. `Port::propagate()` — recursive DAG traversal
+The process callback (registered by the orchestrator) does:
+1. Drain actor mailbox (`SetParameter` commands) into graph nodes
+2. `ProcessingState::process_block(&tick)` — generates, processes, propagates
+3. `ProcessingState::send_clock_tick(&tick)` — dispatches to control actors
 
 ## Backends
 
