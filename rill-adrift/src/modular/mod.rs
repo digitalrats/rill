@@ -204,7 +204,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
                                 match bf.create_any(name, params) {
                                     Ok((driver, capture, playback)) => {
                                         state.wire_backends(capture, playback);
-                                        if let Err(e) = state.run_with_driver(driver, running.clone()) {
+                                        if let Err(e) =
+                                            state.run_with_driver(driver, running.clone())
+                                        {
                                             log::error!("driver run: {e}");
                                         }
                                     }

@@ -211,8 +211,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
         be_params.insert("input_channels".into(), ParamValue::Int(2));
         be_params.insert("output_channels".into(), ParamValue::Int(0));
-        let InputBundle { driver, capture } =
-            bf.create_input(&be_name, &be_params).expect("create input backend");
+        let InputBundle { driver, capture } = bf
+            .create_input(&be_name, &be_params)
+            .expect("create input backend");
 
         // ── 2. Register node types ──────────────────
         let mut factory = NodeFactory::<f32, BUF>::new();

@@ -56,8 +56,7 @@ fn build_graph(
 ) -> Result<rill_adrift::rill_graph::Graph<f32, BUF>, Box<dyn std::error::Error>> {
     let graph_path = crate_dir.join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
     let json = std::fs::read_to_string(&graph_path)?;
-    let def =
-        registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
+    let def = registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
 
     let system = ModularSystem::<BUF>::new(ModularConfig {
         sample_rate: cfg.sample_rate,
@@ -115,17 +114,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let running = running.clone();
         let crate_dir = crate_dir.to_path_buf();
         let backend_name = backend_name.clone();
-        let wav_path = wav_arg
-            .map(|s| {
-                let p = std::path::Path::new(s);
-                if p.is_absolute() {
-                    p.to_string_lossy().to_string()
-                } else {
-                    std::env::current_dir()
-                        .map(|cwd| cwd.join(p).to_string_lossy().to_string())
-                        .unwrap_or_else(|_| crate_dir.join(p).to_string_lossy().to_string())
-                }
-            });
+        let wav_path = wav_arg.map(|s| {
+            let p = std::path::Path::new(s);
+            if p.is_absolute() {
+                p.to_string_lossy().to_string()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(p).to_string_lossy().to_string())
+                    .unwrap_or_else(|_| crate_dir.join(p).to_string_lossy().to_string())
+            }
+        });
         std::thread::spawn(move || {
             // ── 1. Create backend before graph construction ──
             let mut bf = BackendFactory::new();
@@ -134,8 +132,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             be_params.insert("sample_rate".into(), ParamValue::Float(cfg.sample_rate));
             be_params.insert("buffer_size".into(), ParamValue::Int(cfg.block_size as i32));
             be_params.insert("channels".into(), ParamValue::Int(2));
-            let OutputBundle { driver, playback } =
-                bf.create_output(&backend_name, &be_params).expect("create output backend");
+            let OutputBundle { driver, playback } = bf
+                .create_output(&backend_name, &be_params)
+                .expect("create output backend");
 
             // Load WAV on control thread
             let slab: Option<Arc<SignalSlab>> = wav_path.as_ref().and_then(|path| {
@@ -151,8 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            let graph = build_graph(&cfg, &crate_dir, &backend_name)
-                .expect("build_graph");
+            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
 
             // Send slab via actor mailbox
             let handle = graph.handle();

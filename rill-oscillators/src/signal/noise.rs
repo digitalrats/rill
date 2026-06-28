@@ -329,13 +329,7 @@ mod tests {
         noise.init(44100.0);
 
         let ctx = RenderContext::new(0, 64, 44100.0);
-        let tick = ClockTick::new(
-            0,
-            64,
-            44100.0,
-            String::new(),
-
-        );
+        let tick = ClockTick::new(0, 64, 44100.0, String::new());
 
         noise.generate(&ctx, &[], &[], &tick).unwrap();
     }
@@ -350,13 +344,7 @@ mod tests {
             noise.init(44100.0);
 
             let ctx = RenderContext::new(0, 64, 44100.0);
-            let tick = ClockTick::new(
-                0,
-                64,
-                44100.0,
-                String::new(),
-    
-            );
+            let tick = ClockTick::new(0, 64, 44100.0, String::new());
 
             noise.generate(&ctx, &[], &[], &tick).unwrap();
 

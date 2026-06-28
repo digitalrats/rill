@@ -136,9 +136,9 @@ impl fmt::Debug for PipewireBackend {
 impl PipewireBackend {
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(target_os = "linux") {
-            return Err(IoError::Unsupported(
-                "PipeWire is only available on Linux".into(),
-            ).to_string());
+            return Err(
+                IoError::Unsupported("PipeWire is only available on Linux".into()).to_string(),
+            );
         }
         let input_channels = config.input_channels;
         let output_channels = config.output_channels;
@@ -203,8 +203,8 @@ impl IoDriver for PipewireBackend {
 
         pw::init();
 
-        let mainloop = pw::main_loop::MainLoopRc::new(None)
-            .map_err(|e| format!("PW MainLoopRc::new: {e}"))?;
+        let mainloop =
+            pw::main_loop::MainLoopRc::new(None).map_err(|e| format!("PW MainLoopRc::new: {e}"))?;
         let context = pw::context::ContextRc::new(&mainloop, None)
             .map_err(|e| format!("PW ContextRc::new: {e}"))?;
         let core = context
@@ -303,12 +303,8 @@ impl IoDriver for PipewireBackend {
                         let pos = out_spos.fetch_add(chunk as u64, Ordering::Relaxed);
 
                         // Build tick (timing only, no view)
-                        let mut tick = ClockTick::new(
-                            pos,
-                            chunk as u32,
-                            out_sr as f32,
-                            "pipewire".into(),
-                        );
+                        let mut tick =
+                            ClockTick::new(pos, chunk as u32, out_sr as f32, "pipewire".into());
                         let nrate = out_nrate_proc.load(Ordering::Relaxed) as f64;
                         let config_rate = out_sr as f64;
                         tick.speed_ratio = if nrate > 0.0 && (config_rate - nrate).abs() > 1.0 {
@@ -319,10 +315,11 @@ impl IoDriver for PipewireBackend {
 
                         // Store output DMA window for write_output()
                         unsafe {
-                            output_window
-                                .as_ref()
-                                .unwrap()
-                                .set(out_ptr.add(offset * out_chan as usize), out_chan as usize, chunk);
+                            output_window.as_ref().unwrap().set(
+                                out_ptr.add(offset * out_chan as usize),
+                                out_chan as usize,
+                                chunk,
+                            );
                             process_cb.call(&tick);
                             output_window.as_ref().unwrap().clear();
                             if has_input {
@@ -336,9 +333,8 @@ impl IoDriver for PipewireBackend {
                     // Zero-fill remainder
                     let filled_samps = offset * out_chan as usize;
                     if filled_samps < total_samps {
-                        let samples: &mut [f32] = unsafe {
-                            std::slice::from_raw_parts_mut(out_ptr, total_samps)
-                        };
+                        let samples: &mut [f32] =
+                            unsafe { std::slice::from_raw_parts_mut(out_ptr, total_samps) };
                         samples[filled_samps..].fill(0.0);
                     }
 
@@ -413,17 +409,14 @@ impl IoDriver for PipewireBackend {
                 format!("{}/{}", block_size, sample_rate),
             );
 
-            let stream = match pw::stream::StreamBox::new(
-                &core,
-                &format!("{in_node}-input"),
-                in_props,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::warn!("PW StreamBox input: {e} — capture disabled");
-                    return Err(format!("PW StreamBox input: {e}"));
-                }
-            };
+            let stream =
+                match pw::stream::StreamBox::new(&core, &format!("{in_node}-input"), in_props) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!("PW StreamBox input: {e} — capture disabled");
+                        return Err(format!("PW StreamBox input: {e}"));
+                    }
+                };
 
             let no_output = out_channels == 0;
 
@@ -521,12 +514,8 @@ impl IoDriver for PipewireBackend {
                         while offset < n_frames {
                             let chunk = (n_frames - offset).min(block_size);
                             let pos = sample_pos.fetch_add(chunk as u64, Ordering::Relaxed);
-                            let mut tick = ClockTick::new(
-                                pos,
-                                chunk as u32,
-                                effective_sr,
-                                "pipewire".into(),
-                            );
+                            let mut tick =
+                                ClockTick::new(pos, chunk as u32, effective_sr, "pipewire".into());
                             tick.speed_ratio = speed_ratio;
                             unsafe {
                                 input_window.as_ref().unwrap().set(

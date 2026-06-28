@@ -165,10 +165,7 @@ impl IoDriver for PortAudioBackend {
 
                         // Store output DMA window for IoPlayback::write_output
                         unsafe {
-                            output_slot.set(OutputWindow::new(
-                                buffer.as_mut_ptr(),
-                                buffer.len(),
-                            ));
+                            output_slot.set(OutputWindow::new(buffer.as_mut_ptr(), buffer.len()));
                         }
 
                         if is_output_driver {

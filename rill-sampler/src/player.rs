@@ -296,7 +296,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SamplePlaye
                         self.loop_start = 0.0;
 
                         if !s.channels.is_empty() {
-                            let boxed: Box<[T]> = s.channels.remove(0)
+                            let boxed: Box<[T]> = s
+                                .channels
+                                .remove(0)
                                 .into_vec()
                                 .into_iter()
                                 .map(T::from_f32)
@@ -311,7 +313,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SamplePlaye
                         }
 
                         if !s.channels.is_empty() {
-                            let boxed: Box<[T]> = s.channels.remove(0)
+                            let boxed: Box<[T]> = s
+                                .channels
+                                .remove(0)
                                 .into_vec()
                                 .into_iter()
                                 .map(T::from_f32)
@@ -326,8 +330,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SamplePlaye
                             self.right = Some(rp);
 
                             if self.outputs.len() < 2 {
-                                self.outputs
-                                    .push(Port::output(NodeId(0), 1, "right"));
+                                self.outputs.push(Port::output(NodeId(0), 1, "right"));
                             }
                         } else {
                             self.right = None;
@@ -341,9 +344,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SamplePlaye
                         }
                         Ok(())
                     } else {
-                        Err(ProcessError::Parameter(
-                            "SignalSlab is still shared".into(),
-                        ))
+                        Err(ProcessError::Parameter("SignalSlab is still shared".into()))
                     }
                 } else {
                     Err(ProcessError::Parameter("Expected SignalSlab".into()))

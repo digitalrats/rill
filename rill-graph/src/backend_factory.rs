@@ -9,7 +9,14 @@ use rill_core::traits::ParamValue;
 /// Constructor signature. Returns `(driver, capture?, playback?)`.
 pub type BackendCtor = fn(
     params: &HashMap<String, ParamValue>,
-) -> Result<(Arc<dyn IoDriver>, Option<Arc<dyn IoCapture>>, Option<Arc<dyn IoPlayback>>), String>;
+) -> Result<
+    (
+        Arc<dyn IoDriver>,
+        Option<Arc<dyn IoCapture>>,
+        Option<Arc<dyn IoPlayback>>,
+    ),
+    String,
+>;
 
 /// Output-only backend bundle.
 pub struct OutputBundle {
@@ -34,7 +41,14 @@ pub struct DuplexBundle {
 #[derive(Clone)]
 pub struct BackendFactory {
     ctors: HashMap<&'static str, BackendCtor>,
-    cache: HashMap<String, (Arc<dyn IoDriver>, Option<Arc<dyn IoCapture>>, Option<Arc<dyn IoPlayback>>)>,
+    cache: HashMap<
+        String,
+        (
+            Arc<dyn IoDriver>,
+            Option<Arc<dyn IoCapture>>,
+            Option<Arc<dyn IoPlayback>>,
+        ),
+    >,
 }
 
 impl BackendFactory {
@@ -56,7 +70,14 @@ impl BackendFactory {
         &mut self,
         name: &str,
         params: &HashMap<String, ParamValue>,
-    ) -> Result<(Arc<dyn IoDriver>, Option<Arc<dyn IoCapture>>, Option<Arc<dyn IoPlayback>>), String> {
+    ) -> Result<
+        (
+            Arc<dyn IoDriver>,
+            Option<Arc<dyn IoCapture>>,
+            Option<Arc<dyn IoPlayback>>,
+        ),
+        String,
+    > {
         if let Some(cached) = self.cache.get(name) {
             return Ok(cached.clone());
         }
@@ -75,7 +96,14 @@ impl BackendFactory {
         &mut self,
         name: &str,
         params: &HashMap<String, ParamValue>,
-    ) -> Result<(Arc<dyn IoDriver>, Option<Arc<dyn IoCapture>>, Option<Arc<dyn IoPlayback>>), String> {
+    ) -> Result<
+        (
+            Arc<dyn IoDriver>,
+            Option<Arc<dyn IoCapture>>,
+            Option<Arc<dyn IoPlayback>>,
+        ),
+        String,
+    > {
         self.get_or_create(name, params)
     }
 
@@ -88,7 +116,8 @@ impl BackendFactory {
         let (driver, _capture, playback) = self.get_or_create(name, params)?;
         Ok(OutputBundle {
             driver,
-            playback: playback.ok_or_else(|| format!("backend '{name}' does not support output"))?,
+            playback: playback
+                .ok_or_else(|| format!("backend '{name}' does not support output"))?,
         })
     }
 
@@ -114,8 +143,7 @@ impl BackendFactory {
         let (driver, capture, playback) = self.get_or_create(name, params)?;
         Ok(DuplexBundle {
             driver,
-            capture: capture
-                .ok_or_else(|| format!("backend '{name}' does not support input"))?,
+            capture: capture.ok_or_else(|| format!("backend '{name}' does not support input"))?,
             playback: playback
                 .ok_or_else(|| format!("backend '{name}' does not support output"))?,
         })

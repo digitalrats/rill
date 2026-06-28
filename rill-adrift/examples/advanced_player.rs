@@ -147,8 +147,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             be_params.insert("sample_rate".into(), ParamValue::Float(cfg.sample_rate));
             be_params.insert("buffer_size".into(), ParamValue::Int(cfg.block_size as i32));
             be_params.insert("channels".into(), ParamValue::Int(2));
-            let OutputBundle { driver, playback } =
-                bf.create_output(&backend_name, &be_params).expect("create output backend");
+            let OutputBundle { driver, playback } = bf
+                .create_output(&backend_name, &be_params)
+                .expect("create output backend");
 
             // Load WAV file on control thread BEFORE graph processing starts.
             let slab: Option<Arc<SignalSlab>> = wav_path.as_ref().and_then(|path| {

@@ -103,12 +103,7 @@ impl ClockTick {
     ///
     /// # Returns
     /// A new `ClockTick` with `is_new_block = true` and `tempo = None`
-    pub fn new(
-        sample_pos: u64,
-        samples_since_last: u32,
-        sample_rate: f32,
-        source: String,
-    ) -> Self {
+    pub fn new(sample_pos: u64, samples_since_last: u32, sample_rate: f32, source: String) -> Self {
         Self {
             sample_pos,
             samples_since_last,
@@ -315,15 +310,13 @@ mod tests {
 
     #[test]
     fn test_musical_position() {
-        let tick =
-            ClockTick::with_tempo(44100 * 2, 44100, 44100.0, 120.0, "test".into());
+        let tick = ClockTick::with_tempo(44100 * 2, 44100, 44100.0, 120.0, "test".into());
         // 2 seconds at 120 BPM = 4 beats
         // 4 beats = 1 bar
         let pos = tick.musical_position();
         assert_eq!(pos, Some((1, 0, 0)));
 
-        let tick =
-            ClockTick::with_tempo(44100 * 3, 44100, 44100.0, 120.0, "test".into());
+        let tick = ClockTick::with_tempo(44100 * 3, 44100, 44100.0, 120.0, "test".into());
         // 3 seconds = 6 beats = 1.5 bars
         let pos = tick.musical_position();
         assert_eq!(pos, Some((1, 2, 0)));

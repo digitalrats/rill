@@ -65,8 +65,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
     be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
     be_params.insert("channels".into(), ParamValue::Int(2));
-    let OutputBundle { driver, playback } =
-        bf.create_output(&audio_backend, &be_params).expect("create output backend");
+    let OutputBundle { driver, playback } = bf
+        .create_output(&audio_backend, &be_params)
+        .expect("create output backend");
 
     // ── 2. Register node types ────────────────────────
     let mut nf = NodeFactory::<f32, BUF>::new();

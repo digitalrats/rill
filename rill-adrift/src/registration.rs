@@ -63,14 +63,18 @@ fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) 
         }
     }
 
-    node_ctor!(factory, "rill/output", move |id: NodeId, params: &Params| {
-        let ch = params.get_f32("channels", 2.0) as usize;
-        let null_pb = Arc::new(NullPlayback);
-        let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(null_pb, ch);
-        Node::set_id(&mut n, id);
-        Node::init(&mut n, params.sample_rate);
-        NodeVariant::Sink(Box::new(n))
-    });
+    node_ctor!(
+        factory,
+        "rill/output",
+        move |id: NodeId, params: &Params| {
+            let ch = params.get_f32("channels", 2.0) as usize;
+            let null_pb = Arc::new(NullPlayback);
+            let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(null_pb, ch);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Sink(Box::new(n))
+        }
+    );
 
     node_ctor!(factory, "rill/input", move |id: NodeId, params: &Params| {
         let ch = params.get_f32("channels", 2.0) as usize;
@@ -601,10 +605,8 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     factory.register("alsa", |p| {
         let cfg = cfg_from_params(p);
         let out_ch = cfg.output_channels > 0;
-        let b = Arc::new(
-            crate::io::backends::AlsaBackend::new(cfg)
-                .map_err(|e| format!("alsa: {e}"))?,
-        );
+        let b =
+            Arc::new(crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?);
         Ok((
             b.clone() as Arc<dyn rill_core::io::IoDriver>,
             None,
@@ -622,8 +624,7 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
         let in_ch = cfg.input_channels > 0;
         let out_ch = cfg.output_channels > 0;
         let be = Arc::new(
-            crate::io::backends::PipewireBackend::new(cfg)
-                .map_err(|e| format!("pipewire: {e}"))?,
+            crate::io::backends::PipewireBackend::new(cfg).map_err(|e| format!("pipewire: {e}"))?,
         );
         Ok((
             be.clone() as Arc<dyn rill_core::io::IoDriver>,
@@ -644,10 +645,8 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     factory.register("jack", |p| {
         let cfg = cfg_from_params(p);
         let out_ch = cfg.output_channels > 0;
-        let b = Arc::new(
-            crate::io::backends::JackBackend::new(cfg)
-                .map_err(|e| format!("jack: {e}"))?,
-        );
+        let b =
+            Arc::new(crate::io::backends::JackBackend::new(cfg).map_err(|e| format!("jack: {e}"))?);
         Ok((
             b.clone() as Arc<dyn rill_core::io::IoDriver>,
             None,

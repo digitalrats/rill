@@ -65,8 +65,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
         be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
         be_params.insert("channels".into(), ParamValue::Int(2));
-        let OutputBundle { driver, playback } =
-            bf.create_output(&be_name, &be_params).expect("create output backend");
+        let OutputBundle { driver, playback } = bf
+            .create_output(&be_name, &be_params)
+            .expect("create output backend");
 
         // ── Load WAV on control thread ────
         let slab: Option<Arc<SignalSlab>> = match rill_adrift::sampler::wav::load_slab(&wav_path) {

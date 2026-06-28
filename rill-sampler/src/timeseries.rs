@@ -671,13 +671,7 @@ t,channel,value
         node.sample_rate = 2.0;
 
         let ctx = RenderContext::new(0, 4, 44100.0);
-        let tick = ClockTick::new(
-            0,
-            4,
-            44100.0,
-            String::new(),
-            
-        );
+        let tick = ClockTick::new(0, 4, 44100.0, String::new());
         node.generate(&ctx, &[], &[], &tick).unwrap();
 
         let port = node.output_port(0).unwrap();

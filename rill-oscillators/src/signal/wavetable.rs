@@ -278,13 +278,7 @@ mod tests {
         let mut osc = WavetableOscNode::<f32, 64, WT>::sine(440.0).with_amplitude(0.5);
         osc.init(44100.0);
         let ctx = RenderContext::new(0, 64, 44100.0);
-        let tick = ClockTick::new(
-            0,
-            64,
-            44100.0,
-            String::new(),
-
-        );
+        let tick = ClockTick::new(0, 64, 44100.0, String::new());
         osc.generate(&ctx, &[], &[], &tick).unwrap();
         let output = osc.outputs[0].buffer.as_array();
         assert!(

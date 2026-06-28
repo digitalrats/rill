@@ -46,56 +46,57 @@ impl From<hound::Error> for WavError {
 /// `ParamValue::SignalSlab` and consumed with zero allocations on
 /// the real-time I/O thread.
 pub fn load_slab(path: &str) -> Result<SignalSlab, WavError> {
-        let mut reader = hound::WavReader::open(path)?;
-        let spec = reader.spec();
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
 
-        let channels = spec.channels;
-        let sample_rate = spec.sample_rate as f32;
-        let bits = spec.bits_per_sample;
+    let channels = spec.channels;
+    let sample_rate = spec.sample_rate as f32;
+    let bits = spec.bits_per_sample;
 
-        let num_frames = reader.duration() as usize;
+    let num_frames = reader.duration() as usize;
 
-        let f32_samples: Vec<f32> = match bits {
-            16 => reader
-                .samples::<i16>()
-                .map(|r| r.map(|s| s as f32 / 32768.0))
+    let f32_samples: Vec<f32> = match bits {
+        16 => reader
+            .samples::<i16>()
+            .map(|r| r.map(|s| s as f32 / 32768.0))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?,
+        24 => {
+            const SCALE: f32 = 1.0 / 8388608.0;
+            reader
+                .samples::<i32>()
+                .map(|r| r.map(|s| s as f32 * SCALE))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?,
-            24 => {
-                const SCALE: f32 = 1.0 / 8388608.0;
-                reader
-                    .samples::<i32>()
-                    .map(|r| r.map(|s| s as f32 * SCALE))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?
-            }
-            other => {
-                return Err(WavError::Format(format!(
-                    "Only 16/24-bit supported, got {}-bit",
-                    other
-                )))
-            }
-        };
+                .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?
+        }
+        other => {
+            return Err(WavError::Format(format!(
+                "Only 16/24-bit supported, got {}-bit",
+                other
+            )))
+        }
+    };
 
-        let mut slab_channels: Vec<Box<[f32]>> = Vec::with_capacity(channels as usize);
-        if channels == 1 {
-            slab_channels.push(f32_samples.into_boxed_slice());
-        } else {
-            let ch = channels as usize;
-            let mut per_channel: Vec<Vec<f32>> = (0..ch).map(|_| Vec::with_capacity(num_frames)).collect();
-            for chunk in f32_samples.chunks(ch) {
-                for (i, &s) in chunk.iter().enumerate() {
-                    per_channel[i].push(s);
-                }
-            }
-            for v in per_channel {
-                slab_channels.push(v.into_boxed_slice());
+    let mut slab_channels: Vec<Box<[f32]>> = Vec::with_capacity(channels as usize);
+    if channels == 1 {
+        slab_channels.push(f32_samples.into_boxed_slice());
+    } else {
+        let ch = channels as usize;
+        let mut per_channel: Vec<Vec<f32>> =
+            (0..ch).map(|_| Vec::with_capacity(num_frames)).collect();
+        for chunk in f32_samples.chunks(ch) {
+            for (i, &s) in chunk.iter().enumerate() {
+                per_channel[i].push(s);
             }
         }
-
-        Ok(SignalSlab {
-            channels: slab_channels,
-            sample_rate,
-            num_frames,
-        })
+        for v in per_channel {
+            slab_channels.push(v.into_boxed_slice());
+        }
     }
+
+    Ok(SignalSlab {
+        channels: slab_channels,
+        sample_rate,
+        num_frames,
+    })
+}

@@ -24,5 +24,7 @@ pub fn ensure(sample_rate: u32, buf_size: u32, channels: u32) -> Option<Box<dyn 
         .with_sample_rate(sample_rate)
         .with_buffer_size(buf_size)
         .with_channels(channels);
-    PipewireBackend::new(config).ok().map(|b| Box::new(b) as Box<dyn IoDriver>)
+    PipewireBackend::new(config)
+        .ok()
+        .map(|b| Box::new(b) as Box<dyn IoDriver>)
 }
