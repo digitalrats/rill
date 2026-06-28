@@ -10,6 +10,7 @@ use super::error::{ParameterError, ParameterResult};
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 // ============================================================================
 // Parameter ID
@@ -112,6 +113,9 @@ pub enum ParamType {
 
     /// Raw byte array (for IoControl writes)
     Bytes,
+
+    /// Pre-loaded signal data (for sampler hot-swap)
+    Slab,
 }
 
 impl ParamType {
@@ -124,6 +128,7 @@ impl ParamType {
             Self::String => "string",
             Self::Choice => "choice",
             Self::Bytes => "bytes",
+            Self::Slab => "slab",
         }
     }
 }
@@ -135,11 +140,31 @@ impl fmt::Display for ParamType {
 }
 
 // ============================================================================
+// Signal Slab — pre-loaded sample data for playback
+// ============================================================================
+
+/// Pre-loaded, deinterleaved signal data ready for playback.
+///
+/// One `Box<[f32]>` per channel. Created on a control thread from a WAV
+/// file or synthetic source, passed to a sampler via
+/// [`ParamValue::SignalSlab`]. Channel-agnostic.
+#[derive(Debug, Clone)]
+pub struct SignalSlab {
+    /// One boxed slice per channel of deinterleaved sample data.
+    /// Extracted via [`Arc::try_unwrap`] for zero-copy transfer to sampler.
+    pub channels: Vec<Box<[f32]>>,
+    /// Original sample rate in Hz.
+    pub sample_rate: f32,
+    /// Number of frames (samples per channel).
+    pub num_frames: usize,
+}
+
+// ============================================================================
 // Parameter Value
 // ============================================================================
 
 /// Parameter value (can be of different types)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParamValue {
     /// Floating point value
@@ -159,6 +184,28 @@ pub enum ParamValue {
 
     /// Raw byte array for backend IoControl writes
     Bytes(Vec<u8>),
+
+    /// Pre-loaded signal data for sampler hot-swap.
+    ///
+    /// Passed via the `"source"` parameter. Created on a control thread,
+    /// consumed with zero allocations on the real-time I/O thread.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    SignalSlab(Arc<SignalSlab>),
+}
+
+impl PartialEq for ParamValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Float(a), Self::Float(b)) => a == b,
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Choice(a), Self::Choice(b)) => a == b,
+            (Self::Bytes(a), Self::Bytes(b)) => a == b,
+            (Self::SignalSlab(a), Self::SignalSlab(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 impl ParamValue {
@@ -171,6 +218,7 @@ impl ParamValue {
             Self::String(_) => ParamType::String,
             Self::Choice(_) => ParamType::Choice,
             Self::Bytes(_) => ParamType::Bytes,
+            Self::SignalSlab(_) => ParamType::Slab,
         }
     }
 

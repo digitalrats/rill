@@ -2,11 +2,11 @@
 //!
 //! A `BufferView` encapsulates per-backend rules (interleave/deinterleave,
 //! stride, alignment) for reading input samples from and writing output
-//! samples to cross-thread ring buffers.
+//! samples to cross-thread ring buffers or DMA windows.
 //!
-//! Each backend provides its own implementation. Nodes use this trait
-//! uniformly via `tick.view.read_input(ch, buf)` and
-//! `tick.view.write_output(ch, buf)`.
+//! Used internally by `rill-io` backends (`DirectView`, `DeinterleavedView`).
+//! Graph nodes access I/O through `IoCapture::read_input()` and
+//! `IoPlayback::write_output()` — they do not use `BufferView` directly.
 
 /// Backend-specific accessor for I/O ring buffers.
 ///

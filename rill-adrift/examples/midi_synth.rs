@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, Params, PortId};
 use rill_core_actor::ActorSystem;
-use rill_graph::backend_factory::BackendFactory;
+use rill_graph::backend_factory::{BackendFactory, OutputBundle};
 use rill_graph::{GraphBuilder, NodeFactory};
 use rill_io::backends::MidirBackend;
 use rill_patchbay::engine::{midi_cc, NoAction, ParameterMapping, Transform};
@@ -58,13 +58,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Available MIDI ports:");
     let _ = MidirBackend::list_ports("rill-probe");
 
-    // ── 1. Register node types ────────────────────────
+    // ── 1. Create backend first ────────────────────────
+    let mut bf = BackendFactory::new();
+    registration::register_backends(&mut bf);
+    let mut be_params = HashMap::new();
+    be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+    be_params.insert("channels".into(), ParamValue::Int(2));
+    let OutputBundle { driver, playback } = bf
+        .create_output(&audio_backend, &be_params)
+        .expect("create output backend");
+
+    // ── 2. Register node types ────────────────────────
     let mut nf = NodeFactory::<f32, BUF>::new();
     registration::register_all_nodes::<BUF>(&mut nf);
 
     let mut builder = GraphBuilder::new(Arc::new(nf));
 
-    // ── 2. Build signal topology: sine oscillator → stereo output ──
+    // ── 3. Build signal topology: sine oscillator → stereo output ──
     let mut osc_params = Params::new(RATE);
     osc_params.insert("freq", ParamValue::Float(220.0));
     osc_params.insert("amp", ParamValue::Float(0.0));
@@ -83,14 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match builder.build(&sys) {
             Ok(graph) => {
                 let _ = graph_tx.send((sys, graph.handle()));
-                let mut bf = BackendFactory::new();
-                registration::register_backends(&mut bf);
-                let mut be_params = HashMap::new();
-                be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-                be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-                be_params.insert("channels".into(), ParamValue::Int(2));
                 let mut state = graph.into_processing_state();
-                if let Err(e) = state.run_with_backend(&bf, &audio_backend, &be_params, r_graph) {
+                state.wire_backends(None, Some(playback));
+                if let Err(e) = state.run_with_driver(driver, r_graph) {
                     eprintln!("Backend error: {e}");
                 }
             }

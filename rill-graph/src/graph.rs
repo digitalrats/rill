@@ -1,6 +1,9 @@
 use crate::backend_factory::BackendFactory;
 use crate::factory::NodeFactory;
+use std::sync::Arc;
+
 use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
+use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
 use rill_core::time::{ClockTick, RenderContext, SystemClock};
@@ -12,7 +15,6 @@ use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 // ============================================================================
 // Internal routing metadata
@@ -410,7 +412,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 BUF_SIZE as u32,
                 self.sample_rate.unwrap_or(44100.0),
                 String::new(),
-                std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
             ),
             buffers: owned_buffers,
             source_idx,
@@ -462,6 +463,8 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     source_idx: usize,
     parent_ref: Option<ActorRef<CommandEnum>>,
     system_clock: Option<Arc<SystemClock>>,
+    #[allow(dead_code)]
+    buffers: Vec<Box<dyn Buffer<T> + Send>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
@@ -508,28 +511,55 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         }
     }
 
-    /// Convenience: run this processing state with a backend from the factory.
+    /// Wire capture/playback backends into Source/Sink nodes after graph construction.
     ///
-    /// Consumes `self`, creates the backend, wires the process callback,
-    /// and enters the I/O loop.  The `running` flag controls shutdown.
-    pub fn run_with_backend(
+    /// Must be called after `into_processing_state()` and before the driver starts.
+    /// Only Source nodes respond to `set_capture`; only Sink nodes respond to
+    /// `set_playback`.  Processor and Router nodes ignore both.
+    #[allow(unsafe_code)]
+    pub fn wire_backends(
+        &mut self,
+        capture: Option<Arc<dyn IoCapture>>,
+        playback: Option<Arc<dyn IoPlayback>>,
+    ) {
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            for node in nv.iter_mut() {
+                if let Some(ref c) = capture {
+                    match node {
+                        NodeVariant::Source(src) => src.set_capture(c.clone()),
+                        _ => {}
+                    }
+                }
+                if let Some(ref p) = playback {
+                    match node {
+                        NodeVariant::Sink(sink) => sink.set_playback(p.clone()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run this processing state with a pre-created driver backend.
+    ///
+    /// Consumes `self`, wires the process callback, enters the I/O loop.
+    /// The `running` flag controls shutdown.
+    pub fn run_with_driver(
         mut self,
-        bf: &BackendFactory,
-        backend_name: &str,
-        be_params: &HashMap<String, ParamValue>,
+        driver: Arc<dyn IoDriver>,
         running: Arc<AtomicBool>,
     ) -> Result<(), String> {
-        let backend = bf.create(backend_name, be_params)?;
-
-        backend.set_process_callback(Box::new(move |tick: &ClockTick| {
+        self.actor.drain();
+        driver.set_process_callback(Box::new(move |tick: &ClockTick| {
             let _ = self.process_block(tick);
             self.send_clock_tick(tick);
         }));
-        backend.run(running.clone())?;
+        driver.run(running.clone())?;
         while running.load(std::sync::atomic::Ordering::Acquire) {
             std::thread::park();
         }
-        let _ = backend.stop();
+        let _ = driver.stop();
         Ok(())
     }
 }
@@ -624,6 +654,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             source_idx: self.source_idx,
             parent_ref: self.parent_ref,
             system_clock: self.system_clock,
+            buffers: self.buffers,
         }
     }
 
@@ -1061,13 +1092,7 @@ mod tests {
         let source_idx = graph.source_idx;
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
-        let tick = ClockTick::new(
-            0,
-            BUF as u32,
-            44100.0,
-            String::new(),
-            std::sync::Arc::new(NullBufferView::new(2, 2)),
-        );
+        let tick = ClockTick::new(0, BUF as u32, 44100.0, String::new());
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();
@@ -1110,13 +1135,7 @@ mod tests {
         eprintln!("source_idx: {source_idx}, src_idx: {src_idx}, proc_idx: {proc_idx}, snk_idx: {snk_idx}");
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
-        let tick = ClockTick::new(
-            0,
-            BUF as u32,
-            44100.0,
-            String::new(),
-            std::sync::Arc::new(NullBufferView::new(2, 2)),
-        );
+        let tick = ClockTick::new(0, BUF as u32, 44100.0, String::new());
         let nodes = graph.nodes.clone();
         unsafe {
             let nv = &mut *nodes.get();

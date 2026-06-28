@@ -53,22 +53,34 @@ pub trait Sink<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
 }
 ```
 
-### `IoBackend` and `IoControl`
+### `IoDriver`, `IoCapture`, `IoPlayback`
 
-Backends are created **externally** by the orchestrator. The `IoBackend`
-trait is `Send` so backends can be passed between threads.
-
-`BufferView` (returned by `create_view()`) provides the signal callback
-with access to I/O buffers.
+Backends are created **externally** by the orchestrator. Three orthogonal
+traits separate concerns:
 
 ```rust
-pub trait IoBackend: Send {
-    fn create_view(&self) -> Arc<dyn BufferView>;
+pub trait IoDriver: Send + Sync {
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>);
     fn run(&self, running: Arc<AtomicBool>) -> IoResult<()>;
     fn stop(&self) -> IoResult<()>;
 }
+
+pub trait IoCapture: Send + Sync {
+    fn read_input(&self, channel: usize, dst: &mut [f32]) -> usize;
+    fn num_input_channels(&self) -> usize;
+}
+
+pub trait IoPlayback: Send + Sync {
+    fn write_output(&self, channel: usize, src: &[f32]) -> usize;
+    fn num_output_channels(&self) -> usize;
+}
 ```
+
+A single backend struct (e.g. `PipewireBackend`) implements `IoDriver`
+and optionally `IoCapture` / `IoPlayback`.  The driver owns the timing loop;
+capture and playback provide data access.
+
+`IoBackend` exists as a backward-compatible alias: `pub trait IoBackend: IoDriver {}`.
 
 
 ### `ParamValue`
@@ -104,7 +116,9 @@ while let Some(cmd) = cmd_queue.pop() {
 
 ## `ClockTick`
 
-Sample-accurate timing sent from audio to control thread:
+Sample-accurate timing sent from driver to control thread.
+Carries only timing metadata — I/O access is through `IoCapture`/`IoPlayback`
+traits held by graph nodes.
 
 ```rust
 pub struct ClockTick {
@@ -113,8 +127,7 @@ pub struct ClockTick {
     pub is_new_block: bool,
     pub sample_rate: f32,
     pub tempo: Option<f32>,
-    pub source: SignalSource,
-    pub view: Arc<dyn BufferView>,
+    pub source: String,
     pub speed_ratio: f64,
     pub is_final: bool,
 }
@@ -129,6 +142,6 @@ rill-core/
 ├── buffer/   — PipeBuffer, DelayLine, RingBuffer, FixedBuffer
 ├── queues/   — MpscQueue, SetParameter, Telemetry
 ├── time/     — ClockTick, SystemClock
-├── io/       — IoBackend, IoControl, IoResult
+├── io/       — IoDriver, IoCapture, IoPlayback, IoControl, IoResult
 └── macros/   — source_node!, processor_node!, sink_node!
 ```

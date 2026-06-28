@@ -15,12 +15,11 @@ use std::sync::Arc;
 
 use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
 
-use crate::buffer_view::DirectView;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
-use rill_core::io::IoBackend;
+use crate::output_window::{OutputSlot, OutputWindow};
+use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::time::{ClockTick, SystemClock};
-use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 /// Callback slot — stores the process callback via raw pointer for `Send`-safe
 /// single-threaded access from the JACK RT callback.
@@ -49,6 +48,7 @@ impl CbSlot {
 pub struct JackBackend {
     config: AudioConfig,
     process_cb: CbSlot,
+    output_slot: OutputSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     sample_pos: Arc<AtomicU64>,
@@ -70,6 +70,8 @@ impl fmt::Debug for JackBackend {
     }
 }
 
+unsafe impl Sync for JackBackend {}
+
 impl JackBackend {
     /// Create a new JACK backend.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
@@ -82,6 +84,7 @@ impl JackBackend {
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
+            output_slot: OutputSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             sample_pos: Arc::new(AtomicU64::new(0)),
@@ -106,6 +109,7 @@ impl JackBackend {
 
 struct JackProcessHandler {
     process_cb: CbSlot,
+    output_slot: OutputSlot,
     out_ports: Vec<Port<AudioOut>>,
     in_ports: Vec<Port<AudioIn>>,
     in_ch: usize,
@@ -119,6 +123,8 @@ struct JackProcessHandler {
 
 impl ProcessHandler for JackProcessHandler {
     fn process(&mut self, client: &Client, ps: &ProcessScope) -> Control {
+        const MAX_BLOCK_SAMPLES: usize = 8192;
+
         if let Some(ref clock) = self.sys_clock {
             if let Ok(state) = client.transport().query() {
                 if state.pos.valid_bbt() {
@@ -131,6 +137,8 @@ impl ProcessHandler for JackProcessHandler {
 
         let nframes = ps.n_frames() as usize;
         let chunk_size = self.block_size;
+
+        let mut interleaved_out = [0.0f32; MAX_BLOCK_SAMPLES];
 
         // Process JACK buffer in BUF_SIZE chunks
         let mut offset = 0usize;
@@ -153,20 +161,36 @@ impl ProcessHandler for JackProcessHandler {
                 }
             }
 
-            let view: Arc<dyn BufferView> = Arc::new(DirectView::new_planar(
-                &in_ptrs[..self.in_ch],
-                &out_ptrs[..self.out_ch],
-                n,
-            ));
-
             let pos = self.sample_pos.fetch_add(n as u64, Ordering::Relaxed);
-            let mut tick = ClockTick::new(pos, n as u32, self.config_rate, "jack".into(), view);
+            let mut tick = ClockTick::new(pos, n as u32, self.config_rate, "jack".into());
             if self.sample_rate > 0.0 && (self.sample_rate - self.config_rate).abs() > 1.0 {
                 tick.speed_ratio = self.config_rate as f64 / self.sample_rate as f64;
             }
 
+            if self.out_ch > 0 {
+                let len = n * self.out_ch;
+                interleaved_out[..len].fill(0.0);
+                unsafe {
+                    self.output_slot
+                        .set(OutputWindow::new(interleaved_out.as_mut_ptr(), len));
+                }
+            }
+
             unsafe {
                 self.process_cb.call(&tick);
+            }
+
+            if self.out_ch > 0 {
+                unsafe {
+                    self.output_slot.clear();
+                    for ch in 0..self.out_ch {
+                        if !out_ptrs[ch].is_null() {
+                            for i in 0..n {
+                                *out_ptrs[ch].add(i) = interleaved_out[i * self.out_ch + ch];
+                            }
+                        }
+                    }
+                }
             }
 
             offset += n;
@@ -177,17 +201,10 @@ impl ProcessHandler for JackProcessHandler {
 }
 
 // ============================================================================
-// IoBackend impl
+// IoDriver impl
 // ============================================================================
 
-impl IoBackend for JackBackend {
-    fn create_view(&self) -> Arc<dyn BufferView> {
-        Arc::new(NullBufferView::new(
-            self.config.input_channels as usize,
-            self.config.output_channels as usize,
-        ))
-    }
-
+impl IoDriver for JackBackend {
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.process_cb.set(cb);
@@ -249,6 +266,7 @@ impl IoBackend for JackBackend {
         let block_size = self.config.buffer_size as usize;
         let handler = JackProcessHandler {
             process_cb: self.process_cb,
+            output_slot: self.output_slot.clone(),
             out_ports,
             in_ports,
             in_ch,
@@ -299,6 +317,40 @@ impl IoBackend for JackBackend {
             }
         }
         Ok(())
+    }
+}
+
+impl IoPlayback for JackBackend {
+    fn write_output(&self, channel: usize, src: &[f32]) -> usize {
+        unsafe {
+            if let Some(window) = self.output_slot.as_mut() {
+                let buf = window.as_mut_slice();
+                let nch = self.config.output_channels as usize;
+                let n_frames = buf.len() / nch.max(1);
+                let n = src.len().min(n_frames);
+                for i in 0..n {
+                    buf[i * nch + channel] = src[i];
+                }
+                n
+            } else {
+                0
+            }
+        }
+    }
+
+    fn num_output_channels(&self) -> usize {
+        self.config.output_channels as usize
+    }
+}
+
+impl IoCapture for JackBackend {
+    fn read_input(&self, _channel: usize, dst: &mut [f32]) -> usize {
+        dst.fill(0.0);
+        dst.len()
+    }
+
+    fn num_input_channels(&self) -> usize {
+        self.config.input_channels as usize
     }
 }
 

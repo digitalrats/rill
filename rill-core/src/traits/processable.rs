@@ -22,8 +22,9 @@ pub trait Processable<T: Transcendental, const BUF_SIZE: usize> {
     ///
     /// * `ctx` — [`RenderContext`] with sample clock, transport state, and
     ///   hardware clock correction.
-    /// * `tick` — [`ClockTick`] with timing info and backend buffer view.
-    ///   Only Source and Sink nodes use the view; Processor and Router ignore it.
+    /// * `tick` — [`ClockTick`] with timing metadata (sample position,
+    ///   rate, speed_ratio).  I/O access is through `IoCapture` / `IoPlayback`
+    ///   traits held by Source / Sink nodes.  Processor and Router ignore the tick.
     ///
     /// # Errors
     /// Returns a [`ProcessError`](crate::traits::ProcessError) if processing fails.

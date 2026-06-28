@@ -9,8 +9,6 @@ use rill_core_dsp::generators::{Generator, LoopMode, SamplePlayer};
 use std::marker::PhantomData;
 
 use crate::buffer::SampleBuffer;
-#[cfg(feature = "wav")]
-use crate::wav::load_wav;
 
 /// Sample-playback source node with stereo support.
 ///
@@ -290,39 +288,66 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SamplePlaye
                     Err(ProcessError::Parameter("Expected choice".into()))
                 }
             }
-            #[cfg(feature = "wav")]
-            "file" => {
-                if let ParamValue::String(path) = &value {
-                    match load_wav(path) {
-                        Ok(sample) => {
-                            let converted = SampleBuffer {
-                                data: sample.data.into_iter().map(|s| T::from_f32(s)).collect(),
-                                right: sample
-                                    .right
-                                    .map(|r| r.into_iter().map(|s| T::from_f32(s)).collect()),
-                                sample_rate: sample.sample_rate,
-                                channels: sample.channels,
-                                name: sample.name,
-                            };
-                            self.load(converted);
-                            self.gate = true;
-                            self.left.set_gate(true);
-                            if let Some(ref mut r) = self.right {
-                                r.set_gate(true);
+            "source" => {
+                if let ParamValue::SignalSlab(slab) = value {
+                    if let Ok(mut s) = std::sync::Arc::try_unwrap(slab) {
+                        let len = s.num_frames as f64;
+                        self.loop_end = len;
+                        self.loop_start = 0.0;
+
+                        if !s.channels.is_empty() {
+                            let boxed: Box<[T]> = s
+                                .channels
+                                .remove(0)
+                                .into_vec()
+                                .into_iter()
+                                .map(T::from_f32)
+                                .collect::<Vec<T>>()
+                                .into_boxed_slice();
+                            self.left = SamplePlayer::from_boxed(boxed);
+                            self.left.set_loop_start(0.0);
+                            self.left.set_loop_end(len);
+                            self.left.set_loop_mode(self.loop_mode);
+                            self.left.set_playback_rate(self.rate);
+                            self.left.set_cubic(self.cubic);
+                        }
+
+                        if !s.channels.is_empty() {
+                            let boxed: Box<[T]> = s
+                                .channels
+                                .remove(0)
+                                .into_vec()
+                                .into_iter()
+                                .map(T::from_f32)
+                                .collect::<Vec<T>>()
+                                .into_boxed_slice();
+                            let mut rp = SamplePlayer::from_boxed(boxed);
+                            rp.set_loop_start(0.0);
+                            rp.set_loop_end(len);
+                            rp.set_loop_mode(self.loop_mode);
+                            rp.set_playback_rate(self.rate);
+                            rp.set_cubic(self.cubic);
+                            self.right = Some(rp);
+
+                            if self.outputs.len() < 2 {
+                                self.outputs.push(Port::output(NodeId(0), 1, "right"));
                             }
-                            eprintln!("SamplePlayer: loaded {path}");
-                            Ok(())
+                        } else {
+                            self.right = None;
+                            self.outputs.truncate(1);
                         }
-                        Err(e) => {
-                            eprintln!("SamplePlayer: could not load {path}: {e}");
-                            Err(ProcessError::Parameter(format!(
-                                "Cannot load {}: {}",
-                                path, e
-                            )))
+
+                        self.gate = true;
+                        self.left.set_gate(true);
+                        if let Some(ref mut r) = self.right {
+                            r.set_gate(true);
                         }
+                        Ok(())
+                    } else {
+                        Err(ProcessError::Parameter("SignalSlab is still shared".into()))
                     }
                 } else {
-                    Err(ProcessError::Parameter("Expected string path".into()))
+                    Err(ProcessError::Parameter("Expected SignalSlab".into()))
                 }
             }
             _ => Err(ProcessError::Parameter(format!(

@@ -178,7 +178,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
             if let Some(case) = self.cases.get_mut(&rd.name) {
                 let backend_name = self.default_backend.clone();
                 #[cfg(feature = "io")]
-                let bf = {
+                let mut bf = {
                     let mut f = BackendFactory::new();
                     crate::registration::register_backends(&mut f);
                     f
@@ -199,25 +199,16 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             let _ = graph_tx.send(graph.handle());
                             let mut state = graph.into_processing_state();
 
-                            // Create the I/O backend and wire the processing loop
+                            // Create backend and wire to nodes
                             if let Some((ref name, ref params)) = backend_name {
-                                match bf.create(name, params) {
-                                    Ok(backend) => {
-                                        let callback = move |tick: &ClockTick| {
-                                            let _ = state.process_block(tick);
-                                            state.send_clock_tick(tick);
-                                        };
-                                        backend.set_process_callback(Box::new(callback));
-                                        if let Err(e) = backend.run(running.clone()) {
-                                            log::error!("backend run: {e}");
+                                match bf.create_any(name, params) {
+                                    Ok((driver, capture, playback)) => {
+                                        state.wire_backends(capture, playback);
+                                        if let Err(e) =
+                                            state.run_with_driver(driver, running.clone())
+                                        {
+                                            log::error!("driver run: {e}");
                                         }
-                                        // Keep thread alive for callback-driven backends
-                                        // (PortAudio, JACK).  Poll-driven backends block
-                                        // inside run() and reach here only after stop().
-                                        while running.load(Ordering::Acquire) {
-                                            std::thread::park();
-                                        }
-                                        let _ = backend.stop();
                                     }
                                     Err(e) => {
                                         log::error!("backend create '{}': {e}", name);
@@ -229,7 +220,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
                                     }
                                 }
                             } else {
-                                // No backend configured — fire one tick then park
                                 let tick = ClockTick::default();
                                 let _ = state.process_block(&tick);
                                 while running.load(Ordering::Acquire) {

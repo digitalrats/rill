@@ -9,9 +9,7 @@
                 "id": 0,
                 "type_name": "rill/sampler",
                 "name": "player",
-                "parameters": {
-                    "file": "../test.wav"
-                }
+                "parameters": {}
             }
         },
         {

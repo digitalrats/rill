@@ -22,7 +22,7 @@ use rill_adrift::rill_core_actor::ActorSystem;
 use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
 use std::collections::HashMap;
 
-use rill_adrift::rill_graph::backend_factory::BackendFactory;
+use rill_adrift::rill_graph::backend_factory::{BackendFactory, InputBundle};
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
@@ -127,8 +127,8 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
         let all_received = self.inputs.iter().all(|p| p.data_received);
         if all_received {
             if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
-                let l = lp.buffer.as_array();
-                let r = rp.buffer.as_array();
+                let l = lp.signal_buffer().as_array();
+                let r = rp.signal_buffer().as_array();
                 let mut dst = self.recorded.lock().unwrap();
                 for i in 0..B {
                     dst.push(l[i].to_f32());
@@ -201,8 +201,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
     let rec = recorded.clone();
+    let be_name = backend_name.clone();
     let audio_thread = std::thread::spawn(move || {
-        // ── Register node types and backends ──────────────────
+        // ── 1. Register backends first ──────────────────
+        let mut bf = BackendFactory::new();
+        registration::register_backends(&mut bf);
+        let mut be_params = HashMap::new();
+        be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+        be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+        be_params.insert("input_channels".into(), ParamValue::Int(2));
+        be_params.insert("output_channels".into(), ParamValue::Int(0));
+        let InputBundle { driver, capture } = bf
+            .create_input(&be_name, &be_params)
+            .expect("create input backend");
+
+        // ── 2. Register node types ──────────────────
         let mut factory = NodeFactory::<f32, BUF>::new();
         registration::register_all_nodes::<BUF>(&mut factory);
 
@@ -215,7 +228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             NodeVariant::Sink(Box::new(sink))
         });
 
-        // ── Build graph ──────────────────────────────────────────
+        // ── 3. Build graph ──────────────────────────────────────────
         let mut builder = GraphBuilder::new(Arc::new(factory));
 
         let mic = builder.add_node("rill/input", &Params::new(RATE));
@@ -228,15 +241,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match builder.build(&system) {
             Ok(graph) => {
                 eprintln!("Graph built ({} nodes). Recording...", graph.node_count());
-                let mut bf = BackendFactory::new();
-                registration::register_backends(&mut bf);
-                let mut be_params = HashMap::new();
-                be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-                be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-                be_params.insert("channels".into(), ParamValue::Int(2));
-                be_params.insert("input_channels".into(), ParamValue::Int(2));
                 let mut state = graph.into_processing_state();
-                if let Err(e) = state.run_with_backend(&bf, &backend_name, &be_params, t_run) {
+                state.wire_backends(Some(capture), None);
+                if let Err(e) = state.run_with_driver(driver, t_run) {
                     eprintln!("Backend error: {e}");
                 }
             }
