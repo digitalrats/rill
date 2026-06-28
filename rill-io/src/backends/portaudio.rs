@@ -10,12 +10,11 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::buffer_view::DirectView;
 use crate::config::AudioConfig;
 use crate::error::IoResult;
-use rill_core::io::IoBackend;
+use crate::output_window::{OutputSlot, OutputWindow};
+use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::time::ClockTick;
-use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 use portaudio as pa;
 
@@ -55,9 +54,8 @@ pub struct PortAudioBackend {
     sample_pos: Arc<AtomicU64>,
     out_stream: UnsafeCell<Option<pa::stream::Stream<pa::NonBlocking, pa::Output<f32>>>>,
     in_stream: UnsafeCell<Option<pa::stream::Stream<pa::NonBlocking, pa::Input<f32>>>>,
-    /// Pre-allocated capture buffer for output+input mode.
-    /// Input callback copies DMA data here; output callback uses it for `DirectView`.
     capture_buf: Vec<f32>,
+    output_slot: OutputSlot,
 }
 
 impl fmt::Debug for PortAudioBackend {
@@ -68,6 +66,8 @@ impl fmt::Debug for PortAudioBackend {
             .finish()
     }
 }
+
+unsafe impl Sync for PortAudioBackend {}
 
 impl PortAudioBackend {
     /// Create a new PortAudio backend from the given configuration.
@@ -85,23 +85,16 @@ impl PortAudioBackend {
             out_stream: UnsafeCell::new(None),
             in_stream: UnsafeCell::new(None),
             capture_buf: vec![0.0f32; in_cap],
+            output_slot: OutputSlot::new(),
         })
     }
 }
 
 // ============================================================================
-// IoBackend impl
+// IoDriver impl
 // ============================================================================
 
-impl IoBackend for PortAudioBackend {
-    fn create_view(&self) -> Arc<dyn BufferView> {
-        // Real views are created per-callback with DMA pointers.
-        Arc::new(NullBufferView::new(
-            self.config.input_channels as usize,
-            self.config.output_channels as usize,
-        ))
-    }
-
+impl IoDriver for PortAudioBackend {
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.process_cb.set(cb);
@@ -141,6 +134,7 @@ impl IoBackend for PortAudioBackend {
             let out_ch = out_channels as usize;
             let in_ch = in_channels as usize;
             let is_output_driver = in_channels == 0;
+            let output_slot = self.output_slot.clone();
 
             let settings = pa
                 .default_output_stream_settings::<f32>(
@@ -160,35 +154,31 @@ impl IoBackend for PortAudioBackend {
                         let buffer = args.buffer;
                         let n_frames = buffer.len() / out_ch.max(1);
 
-                        let view: Arc<dyn BufferView> = if has_input {
-                            Arc::new(DirectView::new_interleaved(
-                                cap_ptr_usize as *const f32,
-                                buffer.as_mut_ptr(),
-                                in_ch,
-                                out_ch,
-                                n_frames,
-                            ))
-                        } else {
-                            Arc::new(DirectView::new_output_only(
-                                buffer.as_mut_ptr(),
-                                out_ch,
-                                n_frames,
-                            ))
-                        };
-
                         let pos = ospos.fetch_add(n_frames as u64, Ordering::Relaxed);
                         let mut tick = ClockTick::new(
                             pos,
                             n_frames as u32,
                             sample_rate as f32,
                             "portaudio".into(),
-                            view,
                         );
                         tick.speed_ratio = 1.0;
+
+                        // Store output DMA window for IoPlayback::write_output
+                        unsafe {
+                            output_slot.set(OutputWindow::new(
+                                buffer.as_mut_ptr(),
+                                buffer.len(),
+                            ));
+                        }
+
                         if is_output_driver {
                             unsafe {
                                 oproc.call(&tick);
                             }
+                        }
+
+                        unsafe {
+                            output_slot.clear();
                         }
 
                         pa::Continue
@@ -249,21 +239,12 @@ impl IoBackend for PortAudioBackend {
                             }
                         }
 
-                        let view: Arc<dyn BufferView> = Arc::new(DirectView::new_interleaved(
-                            args.buffer.as_ptr(),
-                            std::ptr::null_mut(),
-                            in_ch,
-                            0,
-                            n_frames,
-                        ));
-
                         let pos = ispos.fetch_add(n_frames as u64, Ordering::Relaxed);
                         let mut tick = ClockTick::new(
                             pos,
                             n_frames as u32,
                             sample_rate as f32,
                             "portaudio".into(),
-                            view,
                         );
                         tick.speed_ratio = 1.0;
                         if is_input_driver {
@@ -310,5 +291,47 @@ impl Drop for PortAudioBackend {
             *self.out_stream.get() = None;
             *self.in_stream.get() = None;
         }
+    }
+}
+
+// ============================================================================
+// IoPlayback impl
+// ============================================================================
+
+impl IoPlayback for PortAudioBackend {
+    fn write_output(&self, channel: usize, src: &[f32]) -> usize {
+        unsafe {
+            if let Some(window) = self.output_slot.as_mut() {
+                let buf = window.as_mut_slice();
+                let nch = self.config.output_channels as usize;
+                let n_frames = buf.len() / nch.max(1);
+                let n = src.len().min(n_frames);
+                for i in 0..n {
+                    buf[i * nch + channel] = src[i];
+                }
+                n
+            } else {
+                0
+            }
+        }
+    }
+
+    fn num_output_channels(&self) -> usize {
+        self.config.output_channels as usize
+    }
+}
+
+// ============================================================================
+// IoCapture impl
+// ============================================================================
+
+impl IoCapture for PortAudioBackend {
+    fn read_input(&self, _channel: usize, dst: &mut [f32]) -> usize {
+        dst.fill(0.0);
+        dst.len()
+    }
+
+    fn num_input_channels(&self) -> usize {
+        self.config.input_channels as usize
     }
 }

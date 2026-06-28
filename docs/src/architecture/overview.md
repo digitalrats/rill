@@ -60,7 +60,7 @@ See [Signal graph (rill-graph)](../architecture/graph.md) for details.
 The signal graph has no external engine. Each `Port` owns its buffer,
 downstream connections, and feedback state. Processing flow:
 
-1. I/O buffers are obtained from `tick.view` (a `BufferView`)
+1. `Source::generate()` fills the output buffer (from `IoCapture` if it's an `Input` node)
 2. `Source::generate()` fills the output buffer
 2. `Port::propagate()` copies data to downstream input ports (zero-copy for 1:1)
 3. Each downstream node runs `process_block()`: `Processor::process()` or `Sink::consume()`

@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use crate::config::AudioConfig;
 
-use rill_core::io::IoBackend;
+use rill_core::io::{IoDriver, IoResult};
 use rill_core::time::ClockTick;
-use rill_core::traits::buffer_view::{BufferView, NullBufferView};
 
 #[derive(Copy, Clone)]
 struct CbSlot(usize);
@@ -64,30 +63,19 @@ impl NullBackend {
     }
 }
 
-impl IoBackend for NullBackend {
-    fn create_view(&self) -> Arc<dyn BufferView> {
-        Arc::new(NullBufferView::new(
-            self.config.input_channels as usize,
-            self.config.output_channels as usize,
-        ))
-    }
-
+impl IoDriver for NullBackend {
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.cb.set(cb);
         }
     }
 
-    fn run(&self, _running: Arc<AtomicBool>) -> Result<(), String> {
+    fn run(&self, _running: Arc<AtomicBool>) -> IoResult<()> {
         let mut tick = ClockTick::new(
             0,
             self.config.buffer_size,
             self.config.sample_rate as f32,
             "null".into(),
-            Arc::new(NullBufferView::new(
-                self.config.input_channels as usize,
-                self.config.output_channels as usize,
-            )),
         );
         tick.speed_ratio = 1.0;
         // Fire the callback once for testing — this triggers graph processing,
@@ -99,7 +87,7 @@ impl IoBackend for NullBackend {
         Ok(())
     }
 
-    fn stop(&self) -> Result<(), String> {
+    fn stop(&self) -> IoResult<()> {
         Ok(())
     }
 }

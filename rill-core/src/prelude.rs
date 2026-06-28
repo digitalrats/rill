@@ -393,13 +393,7 @@ mod tests {
         let _port_id = PortId::signal_in(_node_id, 0);
         let _param_id = ParameterId::new("test").unwrap();
         let _clock = SystemClock::with_sample_rate(44100.0);
-        let _tick = ClockTick::new(
-            0,
-            64,
-            44100.0,
-            "test".to_string(),
-            std::sync::Arc::new(crate::traits::buffer_view::NullBufferView::new(2, 2)),
-        );
+        let _tick = ClockTick::new(0, 64, 44100.0, "test".to_string());
 
         // Test buffer creation
         let _pipe = PipeBuffer::<f32, 64>::new();

@@ -14,8 +14,12 @@ use std::sync::Arc;
 
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::registration;
-use rill_adrift::rill_core::ParamValue;
-use rill_adrift::rill_graph::backend_factory::BackendFactory;
+use rill_adrift::rill_core::{
+    queues::{CommandEnum, SetParameter, SignalOrigin},
+    traits::SignalSlab,
+    NodeId, ParamValue, ParameterId, PortId,
+};
+use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
 use serde::Deserialize;
 
 const BUF: usize = 256;
@@ -49,28 +53,11 @@ fn build_graph(
     cfg: &AppConfig,
     crate_dir: &std::path::Path,
     backend_name: &str,
-    wav_override: Option<&str>,
 ) -> Result<rill_adrift::rill_graph::Graph<f32, BUF>, Box<dyn std::error::Error>> {
     let graph_path = crate_dir.join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
     let json = std::fs::read_to_string(&graph_path)?;
-    let mut def =
+    let def =
         registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
-
-    if let Some(wav_path) = wav_override {
-        let path = std::path::Path::new(wav_path);
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path))
-                .unwrap_or_else(|_| crate_dir.join(path))
-        };
-        def.set_node_param(
-            0,
-            "file",
-            ParamValue::String(resolved.to_string_lossy().to_string()),
-        );
-    }
 
     let system = ModularSystem::<BUF>::new(ModularConfig {
         sample_rate: cfg.sample_rate,
@@ -128,18 +115,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let running = running.clone();
         let crate_dir = crate_dir.to_path_buf();
         let backend_name = backend_name.clone();
-        let wav_file = wav_arg.map(|s| s.to_string());
+        let wav_path = wav_arg
+            .map(|s| {
+                let p = std::path::Path::new(s);
+                if p.is_absolute() {
+                    p.to_string_lossy().to_string()
+                } else {
+                    std::env::current_dir()
+                        .map(|cwd| cwd.join(p).to_string_lossy().to_string())
+                        .unwrap_or_else(|_| crate_dir.join(p).to_string_lossy().to_string())
+                }
+            });
         std::thread::spawn(move || {
-            let graph = build_graph(&cfg, &crate_dir, &backend_name, wav_file.as_deref())
-                .expect("build_graph");
+            // ── 1. Create backend before graph construction ──
             let mut bf = BackendFactory::new();
             registration::register_backends(&mut bf);
             let mut be_params = HashMap::new();
             be_params.insert("sample_rate".into(), ParamValue::Float(cfg.sample_rate));
             be_params.insert("buffer_size".into(), ParamValue::Int(cfg.block_size as i32));
             be_params.insert("channels".into(), ParamValue::Int(2));
+            let OutputBundle { driver, playback } =
+                bf.create_output(&backend_name, &be_params).expect("create output backend");
+
+            // Load WAV on control thread
+            let slab: Option<Arc<SignalSlab>> = wav_path.as_ref().and_then(|path| {
+                match rill_adrift::sampler::wav::load_slab(path) {
+                    Ok(s) => {
+                        eprintln!("SamplePlayer: loaded {path}");
+                        Some(Arc::new(s))
+                    }
+                    Err(e) => {
+                        eprintln!("SamplePlayer: could not load {path}: {e}");
+                        None
+                    }
+                }
+            });
+
+            let graph = build_graph(&cfg, &crate_dir, &backend_name)
+                .expect("build_graph");
+
+            // Send slab via actor mailbox
+            let handle = graph.handle();
+            if let Some(ref s) = slab {
+                handle.send(CommandEnum::SetParameter(SetParameter::new(
+                    PortId::signal_out(NodeId(0), 0),
+                    ParameterId::new("source").unwrap(),
+                    ParamValue::SignalSlab(s.clone()),
+                    SignalOrigin::Manual,
+                )));
+            }
+            drop(slab);
+
             let mut state = graph.into_processing_state();
-            if let Err(e) = state.run_with_backend(&bf, &backend_name, &be_params, running) {
+            state.wire_backends(None, Some(playback));
+            if let Err(e) = state.run_with_driver(driver, running) {
                 eprintln!("Backend error: {e}");
             }
         })

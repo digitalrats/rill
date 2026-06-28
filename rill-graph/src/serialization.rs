@@ -705,6 +705,7 @@ fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
                 .map(|&x| serde_json::Value::Number(x.into()))
                 .collect(),
         ),
+        ParamValue::SignalSlab(_) => serde_json::Value::Null,
     }
 }
 

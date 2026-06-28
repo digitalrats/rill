@@ -283,7 +283,7 @@ mod tests {
             64,
             44100.0,
             String::new(),
-            std::sync::Arc::new(rill_core::traits::buffer_view::NullBufferView::new(2, 2)),
+
         );
         osc.generate(&ctx, &[], &[], &tick).unwrap();
         let output = osc.outputs[0].buffer.as_array();

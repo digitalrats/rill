@@ -33,13 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     noise.init(sample_rate);
 
     let ctx = RenderContext::new(0, BLOCK_SIZE as u32, sample_rate);
-    let tick = ClockTick::new(
-        0,
-        BLOCK_SIZE as u32,
-        sample_rate,
-        "example".to_string(),
-        Arc::new(NullBufferView::new(2, 2)),
-    );
+    let tick = ClockTick::new(0, BLOCK_SIZE as u32, sample_rate, "example".to_string());
 
     // Generate one block each
     sine.generate(&ctx, &[], &[], &tick)?;

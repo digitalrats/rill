@@ -15,13 +15,13 @@ use std::sync::Arc;
 use alsa::pcm::{Access, Format, HwParams};
 use alsa::{Direction, ValueOr, PCM};
 
-use crate::buffer_view::DirectView;
 use crate::config::AudioConfig;
 use crate::error::{IoError, IoResult};
-use rill_core::io::IoBackend;
+use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::math::functions::{f32_to_i16_chunk, i16_to_f32_chunk};
 use rill_core::time::ClockTick;
-use rill_core::traits::buffer_view::{BufferView, NullBufferView};
+
+use crate::output_window::{OutputSlot, OutputWindow};
 
 // ============================================================================
 // Callback slot
@@ -62,6 +62,7 @@ impl CbSlot {
 pub struct AlsaBackend {
     config: AudioConfig,
     process_cb: CbSlot,
+    output_slot: OutputSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     sample_pos: Arc<AtomicU64>,
@@ -82,6 +83,7 @@ impl AlsaBackend {
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
+            output_slot: OutputSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             sample_pos: Arc::new(AtomicU64::new(0)),
@@ -95,6 +97,7 @@ impl AlsaBackend {
 
 fn alsa_io_loop(
     process_cb: CbSlot,
+    output_slot: OutputSlot,
     xruns: Arc<AtomicU32>,
     sample_pos: Arc<AtomicU64>,
     config: &AudioConfig,
@@ -220,35 +223,17 @@ fn alsa_io_loop(
             }
         }
 
-        // ── Process block: create DirectView → ClockTick → call graph callback ──
+        // ── Process block: ClockTick → call graph callback ──
         {
-            let view: Arc<dyn BufferView> = if has_capture && has_playback {
-                Arc::new(DirectView::new_interleaved(
-                    cap_f32.as_ptr(),
-                    play_f32.as_mut_ptr(),
-                    in_ch,
-                    out_ch,
-                    buf_frames,
-                ))
-            } else if has_capture {
-                Arc::new(DirectView::new_interleaved(
-                    cap_f32.as_ptr(),
-                    std::ptr::null_mut(),
-                    in_ch,
-                    0,
-                    buf_frames,
-                ))
-            } else {
-                Arc::new(DirectView::new_output_only(
-                    play_f32.as_mut_ptr(),
-                    out_ch,
-                    buf_frames,
-                ))
-            };
-
+            if has_playback {
+                play_f32[..chunk_samples].fill(0.0);
+                unsafe {
+                    output_slot.set(OutputWindow::new(play_f32.as_mut_ptr(), chunk_samples));
+                }
+            }
             let pos = sample_pos.fetch_add(buf_frames as u64, Ordering::Relaxed);
             let mut tick =
-                ClockTick::new(pos, buf_frames as u32, negotiated_rate, "alsa".into(), view);
+                ClockTick::new(pos, buf_frames as u32, negotiated_rate, "alsa".into());
             let config_rate = config.sample_rate as f64;
             let actual_rate = negotiated_rate as f64;
             tick.speed_ratio = if (config_rate - actual_rate).abs() > 1.0 {
@@ -258,6 +243,11 @@ fn alsa_io_loop(
             };
             unsafe {
                 process_cb.call(&tick);
+            }
+            if has_playback {
+                unsafe {
+                    output_slot.clear();
+                }
             }
         }
 
@@ -336,18 +326,10 @@ fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<(u3
 }
 
 // ============================================================================
-// IoBackend impl
+// IoDriver impl
 // ============================================================================
 
-impl IoBackend for AlsaBackend {
-    fn create_view(&self) -> Arc<dyn BufferView> {
-        // Real views are created per-callback with DMA pointers.
-        Arc::new(NullBufferView::new(
-            self.config.input_channels as usize,
-            self.config.output_channels as usize,
-        ))
-    }
-
+impl IoDriver for AlsaBackend {
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.process_cb.set(cb);
@@ -358,6 +340,7 @@ impl IoBackend for AlsaBackend {
         self.running.store(true, Ordering::Release);
         alsa_io_loop(
             self.process_cb,
+            self.output_slot.clone(),
             self.xruns.clone(),
             self.sample_pos.clone(),
             &self.config,
@@ -369,6 +352,40 @@ impl IoBackend for AlsaBackend {
     fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::Release);
         Ok(())
+    }
+}
+
+impl IoPlayback for AlsaBackend {
+    fn write_output(&self, channel: usize, src: &[f32]) -> usize {
+        unsafe {
+            if let Some(window) = self.output_slot.as_mut() {
+                let buf = window.as_mut_slice();
+                let nch = self.config.output_channels as usize;
+                let n_frames = buf.len() / nch.max(1);
+                let n = src.len().min(n_frames);
+                for i in 0..n {
+                    buf[i * nch + channel] = src[i];
+                }
+                n
+            } else {
+                0
+            }
+        }
+    }
+
+    fn num_output_channels(&self) -> usize {
+        self.config.output_channels as usize
+    }
+}
+
+impl IoCapture for AlsaBackend {
+    fn read_input(&self, _channel: usize, dst: &mut [f32]) -> usize {
+        dst.fill(0.0);
+        dst.len()
+    }
+
+    fn num_input_channels(&self) -> usize {
+        self.config.input_channels as usize
     }
 }
 

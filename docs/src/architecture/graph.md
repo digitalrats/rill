@@ -19,20 +19,21 @@ Processing is driven by `Port::propagate`.
 Backends are created **externally** by the orchestrator, not inside
 graph nodes.  The `GraphBuilder` no longer holds a `BackendFactory`.
 
-1. The orchestrator creates a backend via `BackendFactory::create()`
-2. The backend's `BufferView` is obtained via `create_view()`
-3. `ProcessingState` is extracted from the `Graph` via `into_processing_state()`
-4. The orchestrator registers a process callback on the backend:
+1. The orchestrator creates a backend via `BackendFactory::create_output()` /
+   `create_input()` / `create_duplex()`, obtaining `IoDriver`, `IoCapture`,
+   `IoPlayback` capability objects
+2. `ProcessingState` is extracted from the `Graph` via `into_processing_state()`
+3. `state.wire_backends(capture, playback)` injects backends into Source / Sink nodes
+4. The orchestrator runs the graph through the driver:
 
 ```rust,ignore
-let backend = bf.create(name, &params)?;
+let OutputBundle { driver, playback } = bf.create_output(name, &params)?;
 let mut state = graph.into_processing_state();
-backend.set_process_callback(Box::new(move |tick: &ClockTick| {
-    let _ = state.process_block(tick);
-    state.send_clock_tick(tick);
-}));
-backend.run(running)?;
+state.wire_backends(None, Some(playback));
+state.run_with_driver(driver, running)?;
 ```
+
+`run_with_driver()` internally calls `set_process_callback` + `run` + parks until stopped.
 
 ### Processing flow
 

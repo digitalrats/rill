@@ -402,17 +402,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend_display = backend_name.clone();
 
     let mut be_params = HashMap::new();
-    be_params.insert("sample_rate".into(), RATE.to_string());
-    be_params.insert("buffer_size".into(), BUF.to_string());
-    be_params.insert("channels".into(), "1".to_string());
+    be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+    be_params.insert("channels".into(), ParamValue::Int(1));
 
     let mut system = ModularSystem::<BUF>::new(ModularConfig {
         sample_rate: RATE,
         block_size: BUF,
-        backend_name: Some(backend_name.clone()),
-        backend_params: be_params,
+        backend_name: None,
+        backend_params: HashMap::new(),
         ..Default::default()
     });
+    system.set_default_backend(&backend_name, be_params);
 
     // Shared flag: set by Enter keypress (or MIDI Start in the future)
     let is_playing = Arc::new(AtomicBool::new(false));

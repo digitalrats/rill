@@ -10,7 +10,6 @@ pub mod dsp;
 pub mod emulators;
 mod error;
 mod lofi_chip_source;
-mod lofi_input;
 mod lofi_processor;
 
 // Re-export core types
@@ -19,7 +18,6 @@ pub use config::{ClassicSystem, HardwareEmulation, LofiConfig};
 pub use emulators::{AkaiS900Emulator, Ay38910Chip, NesChip};
 pub use error::{LofiError, LofiResult};
 pub use lofi_chip_source::LofiChipSource;
-pub use lofi_input::LofiInput;
 pub use lofi_processor::LofiProcessor;
 
 // Re-export for convenience

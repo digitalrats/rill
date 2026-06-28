@@ -438,6 +438,9 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
     fn num_clock_inputs(&self) -> usize {
         0
     }
+
+    /// Attach a capture backend. No-op by default; I/O nodes override.
+    fn set_capture(&mut self, _capture: std::sync::Arc<dyn crate::io::IoCapture>) {}
 }
 
 // ============================================================================
@@ -503,6 +506,9 @@ pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, B
         feedback_inputs: &[&[T; BUF_SIZE]],
         tick: &crate::time::ClockTick,
     ) -> ProcessResult<()>;
+
+    /// Attach a playback backend. No-op by default; I/O nodes override.
+    fn set_playback(&mut self, _playback: std::sync::Arc<dyn crate::io::IoPlayback>) {}
 }
 
 // ============================================================================

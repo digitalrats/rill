@@ -441,25 +441,27 @@ Audio input/output. Pure I/O backends — no engine, no processors.
 
 Single trait:
 
-- [`IoBackend`] — `create_view() -> Arc<dyn BufferView>`, `set_process_callback(FnMut(&ClockTick))`, `run`, `stop`, optional `as_control()`
+- **`IoDriver`** — drives the graph: `set_process_callback(FnMut(&ClockTick))`, `run`, `stop`
+- **`IoCapture`** — reads input: `read_input(channel, &mut [f32])`, `num_input_channels()`
+- **`IoPlayback`** — writes output: `write_output(channel, &[f32])`, `num_output_channels()`
+- **`IoControl`** — optional: `write_data(&[u8])` for chip register writes
 
-The process callback receives a `&ClockTick` with timing information,
-the backend's `BufferView` (for zero-copy DMA access via `DirectView`),
-and a `speed_ratio` for hardware clock correction.
+A single backend struct (e.g. `PipewireBackend`) implements `IoDriver` and
+optionally `IoCapture` / `IoPlayback`.  The driver owns the timing loop.
 
 Two graph nodes:
 
-- **`Input`** (Source) — reads from `tick.view.read_input()` into output port buffers.
-  No longer owns a backend; I/O data flows through `tick.view` provided by the
-  orchestrator's backend.
-- **`Output`** (Sink) — writes to `tick.view.write_output()` from input port buffers.
-  Same pattern — the view carries the DMA pointers.
+- **`Input`** (Source) — holds `Arc<dyn IoCapture>`, calls `read_input()` directly
+  in `generate()`.  No longer depends on `ClockTick` for I/O.
+- **`Output`** (Sink) — holds `Arc<dyn IoPlayback>`, calls `write_output()` directly
+  in `consume()`.  Same pattern.
 
-Backends are created **externally** by the orchestrator
-(`ModularSystem::launch()` or `ProcessingState::run_with_backend()`).
-The orchestrator wires the backend's process callback to
-`ProcessingState::process_block()`.  The graph is `!Send + !Sync` —
-it stays on the I/O callback thread.
+Backends are created by the orchestrator **before** graph construction.
+`ProcessingState::wire_backends(capture, playback)` injects the backends
+into Source / Sink nodes via `Source::set_capture()` / `Sink::set_playback()`.
+The driver is wired separately via `ProcessingState::run_with_driver()`.
+
+The graph is `!Send + !Sync` — it stays on the I/O callback thread.
 
 ### Graph processing
 

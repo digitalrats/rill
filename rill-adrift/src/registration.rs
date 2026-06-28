@@ -39,17 +39,43 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
 
 #[cfg(feature = "io")]
 fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    node_ctor!(factory, "rill/output", |id: NodeId, params: &Params| {
+    use rill_core::io::{IoCapture, IoPlayback};
+    use std::sync::Arc;
+
+    struct NullCapture;
+    impl IoCapture for NullCapture {
+        fn read_input(&self, _channel: usize, dst: &mut [f32]) -> usize {
+            dst.fill(0.0);
+            dst.len()
+        }
+        fn num_input_channels(&self) -> usize {
+            2
+        }
+    }
+
+    struct NullPlayback;
+    impl IoPlayback for NullPlayback {
+        fn write_output(&self, _channel: usize, _src: &[f32]) -> usize {
+            _src.len()
+        }
+        fn num_output_channels(&self) -> usize {
+            2
+        }
+    }
+
+    node_ctor!(factory, "rill/output", move |id: NodeId, params: &Params| {
         let ch = params.get_f32("channels", 2.0) as usize;
-        let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(ch);
+        let null_pb = Arc::new(NullPlayback);
+        let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(null_pb, ch);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Sink(Box::new(n))
     });
 
-    node_ctor!(factory, "rill/input", |id: NodeId, params: &Params| {
+    node_ctor!(factory, "rill/input", move |id: NodeId, params: &Params| {
         let ch = params.get_f32("channels", 2.0) as usize;
-        let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(ch);
+        let null_cap = Arc::new(NullCapture);
+        let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(null_cap, ch);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -63,20 +89,11 @@ fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) 
 #[cfg(feature = "sampler")]
 fn register_sampler<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_sampler::player::SamplePlayerNode;
-    use rill_sampler::wav::load_wav;
 
     node_ctor!(factory, "rill/sampler", |id: NodeId, params: &Params| {
         let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
-        if let Some(path) = params.get("file").and_then(|v| v.as_str()) {
-            if let Ok(sample) = load_wav(path) {
-                n.load(sample);
-                n.play();
-            } else {
-                eprintln!("SamplePlayer: could not load {path}");
-            }
-        }
         NodeVariant::Source(Box::new(n))
     });
 }
@@ -131,29 +148,6 @@ fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         }
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Processor(Box::new(n))
-    });
-
-    node_ctor!(factory, "rill/lofi_input", |id: NodeId, params: &Params| {
-        use rill_lofi::{ClassicSystem, LofiConfig, LofiInput};
-        let bit_depth = params.get_i32("bit_depth", 8) as u8;
-        let nonlinear = params.get_bool("nonlinear", false);
-        let noise_floor = params.get_f32("noise_floor", -48.0);
-        let dc_offset = params.get_f32("dc_offset", 0.0);
-        let output_gain = params.get_f32("output_gain", 1.0);
-        let output_ceiling = params.get_f32("output_ceiling", 1.0);
-        let mut config = LofiConfig::for_system(ClassicSystem::Custom {
-            bit_depth,
-            sample_rate: params.sample_rate,
-            nonlinear,
-            noise_floor,
-        });
-        config.dc_offset = dc_offset;
-        config.output_gain = output_gain;
-        config.output_ceiling = output_ceiling;
-        let mut n = LofiInput::<f32, BUF_SIZE>::new(config);
-        Node::set_id(&mut n, id);
-        Node::init(&mut n, params.sample_rate);
-        NodeVariant::Source(Box::new(n))
     });
 
     node_ctor!(factory, "rill/lofi_chip", |id: NodeId, params: &Params| {
@@ -596,38 +590,92 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
 /// Register all built-in backends into a [`BackendFactory`](rill_graph::backend_factory::BackendFactory).
 #[cfg(feature = "io")]
 pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
+    use std::sync::Arc;
+
     factory.register("null", |p| {
-        Ok(Box::new(crate::io::backends::NullBackend::new(
-            cfg_from_params(p),
-        )))
+        let b = Arc::new(crate::io::backends::NullBackend::new(cfg_from_params(p)));
+        Ok((b as Arc<dyn rill_core::io::IoDriver>, None, None))
     });
 
     #[cfg(feature = "alsa")]
     factory.register("alsa", |p| {
-        let b = crate::io::backends::AlsaBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("alsa: {e}"))?;
-        Ok(Box::new(b))
+        let cfg = cfg_from_params(p);
+        let out_ch = cfg.output_channels > 0;
+        let b = Arc::new(
+            crate::io::backends::AlsaBackend::new(cfg)
+                .map_err(|e| format!("alsa: {e}"))?,
+        );
+        Ok((
+            b.clone() as Arc<dyn rill_core::io::IoDriver>,
+            None,
+            if out_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 
     #[cfg(feature = "pipewire")]
     factory.register("pipewire", |p| {
-        let b = crate::io::backends::PipewireBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("pipewire: {e}"))?;
-        Ok(Box::new(b))
+        let cfg = cfg_from_params(p);
+        let in_ch = cfg.input_channels > 0;
+        let out_ch = cfg.output_channels > 0;
+        let be = Arc::new(
+            crate::io::backends::PipewireBackend::new(cfg)
+                .map_err(|e| format!("pipewire: {e}"))?,
+        );
+        Ok((
+            be.clone() as Arc<dyn rill_core::io::IoDriver>,
+            if in_ch {
+                Some(be.clone() as Arc<dyn rill_core::io::IoCapture>)
+            } else {
+                None
+            },
+            if out_ch {
+                Some(be.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 
     #[cfg(feature = "jack")]
     factory.register("jack", |p| {
-        let b = crate::io::backends::JackBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("jack: {e}"))?;
-        Ok(Box::new(b))
+        let cfg = cfg_from_params(p);
+        let out_ch = cfg.output_channels > 0;
+        let b = Arc::new(
+            crate::io::backends::JackBackend::new(cfg)
+                .map_err(|e| format!("jack: {e}"))?,
+        );
+        Ok((
+            b.clone() as Arc<dyn rill_core::io::IoDriver>,
+            None,
+            if out_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 
     #[cfg(feature = "portaudio")]
     factory.register("portaudio", |p| {
-        let b = crate::io::backends::PortAudioBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("portaudio: {e}"))?;
-        Ok(Box::new(b))
+        let cfg = cfg_from_params(p);
+        let out_ch = cfg.output_channels > 0;
+        let b = Arc::new(
+            crate::io::backends::PortAudioBackend::new(cfg)
+                .map_err(|e| format!("portaudio: {e}"))?,
+        );
+        Ok((
+            b.clone() as Arc<dyn rill_core::io::IoDriver>,
+            None,
+            if out_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 }
 
