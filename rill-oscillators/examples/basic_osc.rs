@@ -1,11 +1,9 @@
 //! Basic oscillator example
 use rill_core::time::ClockTick;
-use rill_core::traits::buffer_view::NullBufferView;
 use rill_core::traits::Node;
 use rill_core::traits::Source;
 use rill_core::RenderContext;
 use rill_oscillators::{NoiseOsc, NoiseType, SawOsc, SineOsc};
-use std::sync::Arc;
 
 const BLOCK_SIZE: usize = 64;
 

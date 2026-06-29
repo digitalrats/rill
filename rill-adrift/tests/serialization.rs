@@ -10,9 +10,6 @@ use rill_adrift::rill_core::time::ClockTick;
 use rill_adrift::rill_core::traits::Node;
 #[cfg(feature = "serialization")]
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId, PortId};
-#[cfg(feature = "serialization")]
-use std::sync::Arc;
-const RATE: f32 = 48000.0;
 
 #[cfg(feature = "serialization")]
 #[test]
@@ -64,7 +61,7 @@ fn test_deserialize_input_biquad_output() {
     }"#;
 
     let def = registration::load_graph_json(json).expect("load_graph_json");
-    let mut system = ModularSystem::<B>::new(ModularConfig::default());
+    let system = ModularSystem::<B>::new(ModularConfig::default());
 
     let graph = system
         .build_graph(&def)
@@ -110,7 +107,7 @@ fn test_send_parameter_via_queue() {
     }"#,
     )
     .expect("load_graph_json");
-    let mut system = ModularSystem::<B>::new(ModularConfig::default());
+    let system = ModularSystem::<B>::new(ModularConfig::default());
 
     let mut graph = system.build_graph(&def).expect("graph build");
 

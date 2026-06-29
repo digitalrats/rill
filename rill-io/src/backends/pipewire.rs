@@ -25,7 +25,7 @@ use pw::spa;
 use pw::spa::sys as spa_sys;
 
 use crate::config::AudioConfig;
-use crate::error::{IoError, IoResult as IoErrorResult};
+use crate::error::IoError;
 use rill_core::io::{IoCapture, IoDriver, IoPlayback, IoResult};
 use rill_core::time::ClockTick;
 
@@ -134,6 +134,7 @@ impl fmt::Debug for PipewireBackend {
 }
 
 impl PipewireBackend {
+    /// Create a new PipeWire backend with the given audio configuration.
     pub fn new(config: AudioConfig) -> IoResult<Self> {
         if !cfg!(target_os = "linux") {
             return Err(
@@ -158,10 +159,12 @@ impl PipewireBackend {
         })
     }
 
+    /// Return the negotiated input sample rate from PipeWire.
     pub fn negotiated_rate(&self) -> u32 {
         self.negotiated_input_rate.load(Ordering::Relaxed)
     }
 
+    /// Return the negotiated number of input channels from PipeWire.
     pub fn negotiated_channels(&self) -> u32 {
         self.negotiated_input_channels.load(Ordering::Relaxed)
     }

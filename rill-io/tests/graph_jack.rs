@@ -7,7 +7,7 @@
 mod graph_jack_it {
     use std::time::Duration;
 
-    use rill_core::io::IoBackend;
+    use rill_core::io::{IoCapture, IoDriver, IoPlayback};
     use rill_core::time::ClockTick;
     use rill_io::{AudioConfig, JackBackend};
 
@@ -38,8 +38,7 @@ mod graph_jack_it {
         let backend = JackBackend::new(config).unwrap();
         settle(300);
 
-        let view = backend.create_view();
-        assert!(view.num_input_channels() > 0 || view.num_output_channels() > 0);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
         backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
         let _ = backend.stop();
@@ -61,8 +60,7 @@ mod graph_jack_it {
         let backend = JackBackend::new(config).unwrap();
         settle(300);
 
-        let view = backend.create_view();
-        assert!(view.num_input_channels() > 0 || view.num_output_channels() > 0);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
         let _ = backend.stop();
         drop(backend);

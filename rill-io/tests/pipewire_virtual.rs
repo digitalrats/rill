@@ -6,7 +6,7 @@
 
 #[cfg(feature = "pipewire")]
 mod pipewire_it {
-    use rill_core::io::IoBackend;
+    use rill_core::io::{IoCapture, IoDriver, IoPlayback};
     use rill_core::time::ClockTick;
     use rill_io::{AudioConfig, BackendType, PipewireBackend};
     use std::process::Command;
@@ -80,8 +80,7 @@ mod pipewire_it {
             .with_channels(2);
 
         let backend = PipewireBackend::new(config).unwrap();
-        let view = backend.create_view();
-        assert!(view.num_input_channels() > 0 || view.num_output_channels() > 0);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
         backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
         settle(100);
@@ -116,8 +115,7 @@ mod pipewire_it {
         let backend = PipewireBackend::new(config).unwrap();
         settle(300);
 
-        let view = backend.create_view();
-        assert!(view.num_input_channels() > 0 || view.num_output_channels() > 0);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
         backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
         let _ = backend.stop();

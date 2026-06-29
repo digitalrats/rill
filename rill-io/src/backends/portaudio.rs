@@ -132,7 +132,7 @@ impl IoDriver for PortAudioBackend {
             let ospos = sample_pos.clone();
             let orun = running.clone();
             let out_ch = out_channels as usize;
-            let in_ch = in_channels as usize;
+            let _in_ch = in_channels as usize;
             let is_output_driver = in_channels == 0;
             let output_slot = self.output_slot.clone();
 
