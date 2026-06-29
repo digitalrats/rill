@@ -19,7 +19,7 @@ rill-core-dsp = "0.5.0-beta.6"
 This example builds a signal graph with a sine oscillator and runs it
 through the pull model (Sink drives processing):
 
-```rust
+```rust,no_run
 use rill_adrift::prelude::*;
 use rill_adrift::rill_core::traits::*;
 use rill_adrift::rill_core::time::ClockTick;
@@ -87,7 +87,7 @@ The `Input` node (push model) drives the graph from the source side.
 The orchestrator creates the backend, extracts `ProcessingState` from the graph,
 and registers the process callback.
 
-```rust
+```rust,no_run
 use rill_io::{BackendFactory, BackendParams};
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -103,7 +103,7 @@ state.run_with_driver(output.driver, Arc::new(AtomicBool::new(true)))?;
 - **Signal thread** (hard or soft RT) — runs the process callback:
   drain `MpscQueue`, `generate()`, `propagate()`, `consume()`.
   No heap allocs, no locks, no syscalls.
-- **Control thread** (tokio green threads) — runs `Manager`
+- **Control thread** (tokio green threads) — runs `Patchbay`
   with automatons (LFO, envelopes, sequencers). Communicates via
   lock-free `MpscQueue<ParameterCommand>`.
 

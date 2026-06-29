@@ -16,7 +16,7 @@ independently.
 │  rill-core-model  │  rill-analog-filters  │  rill-analog      │
 │  -effects                                                  │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
+│  rill-io (PortAudio / ALSA / PipeWire / JACK)                    │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)   │
 └─────────────────────────────────────────────────────────────┘
