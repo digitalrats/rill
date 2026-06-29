@@ -168,6 +168,7 @@ pub struct DeinterleavedView {
 }
 
 impl DeinterleavedView {
+    /// Create a new deinterleaved view bridging input and output ring buffers.
     pub fn new(
         input_ring: Arc<IoRingBuffer>,
         output_ring: Arc<IoRingBuffer>,

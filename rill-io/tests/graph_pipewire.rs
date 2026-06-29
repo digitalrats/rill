@@ -4,7 +4,7 @@
 mod graph_pipewire_it {
     use std::time::Duration;
 
-    use rill_core::io::IoBackend;
+    use rill_core::io::{IoCapture, IoDriver, IoPlayback};
     use rill_core::time::ClockTick;
     use rill_io::{AudioConfig, PipewireBackend};
 
@@ -22,14 +22,11 @@ mod graph_pipewire_it {
         let backend = PipewireBackend::new(config).unwrap();
         settle(100);
 
-        // Verify backend creates a valid view
-        let view = backend.create_view();
-        assert!(view.num_input_channels() > 0 || view.num_output_channels() > 0);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
-        let tick = ClockTick::new(0, 64, 48000.0, "test".into(), view);
+        let tick = ClockTick::new(0, 64, 48000.0, "test".into());
         backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
         let _ = backend.stop();
-        // Drop backend — runs Drop cleanup
         drop(backend);
         drop(tick);
     }
@@ -44,10 +41,8 @@ mod graph_pipewire_it {
         let backend = PipewireBackend::new(config).unwrap();
         settle(100);
 
-        let view = backend.create_view();
-        assert!(view.num_input_channels() > 0 || view.num_output_channels() > 0);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
-        // Backend can be stopped and dropped
         let _ = backend.stop();
         drop(backend);
     }

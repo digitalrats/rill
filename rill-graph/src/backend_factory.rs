@@ -20,20 +20,27 @@ pub type BackendCtor = fn(
 
 /// Output-only backend bundle.
 pub struct OutputBundle {
+    /// The clock driver.
     pub driver: Arc<dyn IoDriver>,
+    /// The playback (output) backend.
     pub playback: Arc<dyn IoPlayback>,
 }
 
 /// Input-only backend bundle.
 pub struct InputBundle {
+    /// The clock driver.
     pub driver: Arc<dyn IoDriver>,
+    /// The capture (input) backend.
     pub capture: Arc<dyn IoCapture>,
 }
 
 /// Full-duplex backend bundle.
 pub struct DuplexBundle {
+    /// The clock driver.
     pub driver: Arc<dyn IoDriver>,
+    /// The capture (input) backend.
     pub capture: Arc<dyn IoCapture>,
+    /// The playback (output) backend.
     pub playback: Arc<dyn IoPlayback>,
 }
 

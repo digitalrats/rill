@@ -49,6 +49,7 @@ pub struct JackBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     output_slot: OutputSlot,
+    #[allow(dead_code)]
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     sample_pos: Arc<AtomicU64>,
