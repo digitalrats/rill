@@ -695,7 +695,7 @@ mod tests {
     use super::*;
     use rill_core::math::Transcendental;
     use rill_core::time::RenderContext;
-    
+
     use rill_core::traits::{
         Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
         ProcessResult, Processor, Sink, Source,

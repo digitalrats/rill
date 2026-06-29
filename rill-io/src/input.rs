@@ -151,7 +151,6 @@ pub type AudioInput<T, const B: usize> = Input<T, B>;
 mod tests {
     use super::*;
     use rill_core::io::IoCapture;
-    
 
     struct NullCapture {
         channels: usize,

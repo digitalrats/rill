@@ -4,7 +4,6 @@
 //! `BackendFactory` and implement `IoDriver` + optionally
 //! `IoCapture` / `IoPlayback`.
 
-
 use rill_core::io::IoDriver;
 
 /// Ensure a PipeWire backend is available (stub when `pipewire` feature is disabled).
