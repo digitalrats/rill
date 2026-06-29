@@ -14,7 +14,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │                      Infrastructure                            │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
 │   │rill-osc │  │rill-graph  │  │rill-patchbay│  │rill- │   │
-│   │(in development)│ │(audio graph) │ │(automation) │ │sampler│   │
+│   │(OSC server)    │ │(signal graph)│ │(automation) │ │sampler│   │
 │   └────────────┘  └────────────┘  └────────────┘  └──────┘   │
 ├─────────────────────────────────────────────────────────────┤
 │                      Audio Processing                        │
@@ -42,7 +42,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  │  ALSA    │ │  CPAL    │ │ PipeWire │ │   JACK   │      │
 │  │(rill-io) │ │(rill-io) │ │(rill-io) │ │(rill-io) │      │
 │  │ active   │ │ active   │ │ active   │ │ active   │      │
-│  │ disabled │ │ disabled │ │ disabled │ │ disabled │      │
+│  │          │ │          │ │          │ │          │      │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘      │
 ├─────────────────────────────────────────────────────────────┤
 │                         Core                                  │
@@ -50,7 +50,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  │                   rill-core                          │    │
 │  │  ┌─────────────┐  ┌─────────────┐                  │    │
 │  │  │   traits    │  │   queues    │                  │    │
-│  │  │ (traits)    │  │  (queues)  │                  │    │
+│  │  │(Node,etc.)  │  │(MpscQueue) │                  │    │
 │  │  └─────────────┘  └─────────────┘                  │    │
 │  │  rill-core-actor (ActorRef, ActorCell, ActorSystem) │    │
 │  └─────────────────────────────────────────────────────┘    │
@@ -262,7 +262,7 @@ The Rill graph is built on a rigorous mathematical foundation — **category the
 **Block processing:** data is transferred in fixed-size blocks, improving performance through cache locality and enabling SIMD optimizations.
 
 ### `rill-patchbay` (0.5.0-beta.6, ✅ active)
-Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automata (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automata" section for details.
+Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automatons (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automatons" section for details.
 
 ```rust
 use rill_patchbay::prelude::*;
@@ -285,14 +285,14 @@ control.add_envelope(
     vca_node_id, "gain", 0.0, 1.0,
 );
 
-// External event mapping (MIDI, OSC)
+    // External event mapping (MIDI, OSC)
 control.add_mapping_str(
     "midi:7:1",
     filter_node_id, "cutoff",
     20.0, 20000.0, Transform::Logarithmic,
 );
 
-// Update automata in a loop
+// Update automatons in a loop
 control.update(1.0 / 60.0);
 ```
 
@@ -309,9 +309,9 @@ manager.add_lfo_servo(
     osc_node_id, "frequency",
     ParameterMapping::Linear, 400.0, 480.0,
 )?;
-
-manager.start()?;  // Automata begin their own life
+manager.start()?;  // Automatons begin their own life
 ```
+
 
 
 
@@ -528,16 +528,16 @@ graph TD
     style ANALOG_EFFECTS fill:#90ee90
     
     %% Planned
-    SERVER[rill-osc<br/>(in development)]
+    SERVER[rill-osc<br/>(OSC server)]
     
     CORE -.-> SERVER
     
     style SERVER fill:#cccccc
 ```
 
-## World of Automata
+## World of Automatons
 
-**Rill Patchbay** is not just a control system. It is a **world** where **automata** live — mysterious beings that sense the environment and influence it. They communicate in the language of signals, hear sound through sensors, and affect the Graph through servos.
+**Rill Patchbay** is not just a control system. It is a **world** where **automatons** live — mysterious beings that sense the environment and influence it. They communicate in the language of signals, hear sound through sensors, and affect the Graph through servos.
 
 ### 🧠 World architecture
 
@@ -549,7 +549,7 @@ graph TD
 │  ┌─────────────────────────────────────────────────┐ │
 │  │                    PATCHBAY                       │ │
 │  │  ┌─────────────────────────────────────────┐    │ │
-│  │  │           AUTOMATA (mind)              │    │ │
+│  │  │          AUTOMATONS (mind)             │    │ │
 │  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐ │ │
 │  │  │  │   LFO    │  │   ENV    │  │  RANDOM  │ │ │
 │  │  │  └────┬─────┘  └────┬─────┘  └────┬─────┘ │ │
@@ -582,9 +582,9 @@ graph TD
 └─────────────────────────────────────────────────────┘
 ```
 
-### 🦾 Automata — mind (Automaton)
+### 🦾 Automatons — mind (Automaton)
 
-Automata are intelligent beings that make decisions and generate signals. They can be simple (LFO, envelope) or complex (logic circuits, mathematical transformers).
+Automatons are intelligent beings that make decisions and generate signals. They can be simple (LFO, envelope) or complex (logic circuits, mathematical transformers).
 
 | Automaton | Description | Code example |
 |---------|----------|---------------------|
@@ -597,7 +597,8 @@ Automata are intelligent beings that make decisions and generate signals. They c
 
 ### 👁️ Sensors — senses
 
-For automata to perceive the world, they need sensory organs. Sensors convert external stimuli into signals understandable by automata.
+For automatons to perceive the world, they need sensory organs. Sensors
+convert external stimuli into signals understandable by automatons.
 
 #### Acoustic sensors (hear sound)
 
@@ -679,7 +680,7 @@ osc.start();
 
 ### 🎯 Servo — hands
 
-Servos are the **actuators** of automata. Obeying the laws of nature (non-blocking queues), they transmit signals from the world of automata to the Graph, changing sound parameters.
+Servos are the **actuators** of automatons. Obeying the laws of nature (non-blocking queues), they transmit signals from the world of automatons to the Graph, changing sound parameters.
 
 ```rust
 // Servo controlling filter cutoff
@@ -695,16 +696,16 @@ let filter_servo = Servo::new(
 
 ### ⚡ Laws of nature (non-blocking queues)
 
-The world of automata and the world of sound exist in parallel. They are connected by **non-blocking queues**:
+The world of automatons and the world of sound exist in parallel. They are connected by **non-blocking queues**:
 
 - **Command Queue** — servos send commands to the Graph
 - **Telemetry Queue** — sensors receive data from the Graph
 
-This allows automata to "think" at their own pace without interfering with the audio stream.
+This allows automatons to "think" at their own pace without interfering with the audio stream.
 
 ### 🏭 Automaton Space (Patchbay)
 
-**Patchbay** is the place where all your automata live, where their senses and hands are located.
+**Patchbay** is the place where all your automatons live, where their senses and hands are located.
 
 ```rust
 use rill_patchbay::prelude::*;
@@ -730,7 +731,7 @@ control.add_envelope(
     0.0, 1.0,
 );
 
-// Update automata in a loop
+// Update automatons in a loop
 loop {
     control.update(1.0 / 60.0);
     std::thread::sleep(std::time::Duration::from_millis(16));
@@ -751,7 +752,7 @@ manager.add_lfo_servo(
     ParameterMapping::Linear, 400.0, 480.0,
 )?;
 
-manager.start()?;  // Automata begin their own life
+manager.start()?;  // Automatons begin their own life
 ```
 
 ## Plans for future versions

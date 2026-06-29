@@ -14,7 +14,7 @@ For individual crates (if you don't need the full ecosystem):
 rill-core-dsp = "0.5.0-beta.6"
 ```
 
-## Example: Audio graph with sine oscillator
+## Example: Signal graph with sine oscillator
 
 This example builds a signal graph with a sine oscillator and runs it
 through the pull model (Sink drives processing):
@@ -77,7 +77,7 @@ osc.process_block(&[], &mut input)?;
 delay.process_block(&input, &mut output)?;
 ```
 
-## Audio I/O
+## Signal I/O
 
 Enable the `io` feature on `rill-adrift` (default):
 
@@ -105,7 +105,7 @@ backend.run(Arc::new(AtomicBool::new(true)))?;
 
 ## Two-Thread Architecture
 
-- **Audio thread** (hard or soft RT) — runs the process callback:
+- **Signal thread** (hard or soft RT) — runs the process callback:
   drain `MpscQueue`, `generate()`, `propagate()`, `consume()`.
   No heap allocs, no locks, no syscalls.
 - **Control thread** (tokio green threads) — runs `Manager`

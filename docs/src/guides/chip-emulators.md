@@ -19,7 +19,7 @@ Every chip emulator follows the same model:
 ### 1. Chip (`Ay38910Chip`) — pure logic
 
 Contains only the chip's digital model — registers, tone generators, noise LFSR,
-envelope. No audio I/O, no graph integration, no lofi processing. Directly testable.
+envelope. No signal I/O, no graph integration, no lofi processing. Directly testable.
 
 **AY-3-8910 register map (16 × 8-bit):**
 
@@ -51,7 +51,7 @@ let sample = chip.generate_sample(44100.0);
 
 `LofiChipSource` wraps `Ay38910Chip` (which implements `Algorithm<f32> + ChipEmulator`)
 and drives sample generation. Register writes go through `set_parameter("register_write", bytes)`.
-Audio generation via `chip.process(None, &mut out)`.
+Signal generation via `chip.process(None, &mut out)`.
 
 ```rust
 use rill_adrift::lofi::{Ay38910Chip, LofiChipSource};

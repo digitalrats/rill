@@ -8,7 +8,7 @@ buffers, queues, time, and error types.
 ### `Node`
 
 Base trait for all signal graph nodes. No `Send` or `Sync` bounds — nodes live on the
-audio thread exclusively.
+signal thread exclusively.
 
 ```rust
 pub trait Node<T: Transcendental, const BUF_SIZE: usize> {

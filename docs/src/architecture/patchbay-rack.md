@@ -1,7 +1,7 @@
 # Patchbay Rack
 
 The Patchbay is the **control rack** — an independent subsystem that hosts
-modulation generators (automata), event dispatch (MidiHub, OSC), and the
+modulation generators (automatons), event dispatch (MidiHub, OSC), and the
 mapping layer that translates external events into graph parameter commands.
 
 ```
@@ -9,7 +9,7 @@ mapping layer that translates external events into graph parameter commands.
 │                                                                         │
 │  Modules:                                                               │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────┐                          │
-│  │ Automata │  │  Midi    │  │  OSC Sensor  │                          │
+│  │Automatons│  │  Midi    │  │  OSC Sensor  │                          │
 │  │ (LFO,ENV)│  │  Input   │  │  (UDP)       │                          │
 │  └────┬─────┘  └────┬─────┘  └──────┬───────┘                          │
 │       │             │               │                                   │
@@ -40,7 +40,7 @@ and configured through a single document (`PatchbayDef`):
 
 | Module | Role | Configured via |
 |--------|------|---------------|
-| **Automata** | Modulation generators (LFO, envelope) | `automata` + `servos` |
+| **Automatons** | Modulation generators (LFO, envelope) | `automata` + `servos` |
 | **MidiInput** | External MIDI event source | `SensorDef::Midi` |
 | **OscSensor** | External OSC event source (UDP) | `SensorDef::Osc` |
 | **Sequencer** | Step sequencer driven by signal clock | `attach_sequencer()` |
@@ -154,7 +154,7 @@ The current `Runtime::load_patchbay()` creates **two** `Patchbay` instances:
 | `control` | Owns automaton handles (`port_combiners`, `automaton_handles`) | All |
 | `control_shared` (`Arc<Mutex<>>`) | Receives events from OSC/MIDI | mappings only |
 
-This split exists because **automata run as tokio green threads** (no Mutex
+This split exists because **automatons run as tokio green threads** (no Mutex
 needed — channels do the work) while **event dispatch needs `&mut self`**
 (protected by Mutex). The shared instance is a stripped copy with only
 mappings.
@@ -169,7 +169,7 @@ let pb = Arc::new(Mutex::new(Patchbay::new(graph_handle)));
 - **Automaton setup**: `pb.lock().add_automaton_task(...)` — done once at init
 - **Shutdown**: `pb.lock().stop_all()` — done once
 
-The Mutex is **not** contended during runtime because automata communicate via
+The Mutex is **not** contended during runtime because automatons communicate via
 channels, not by locking Patchbay. Only the MidiHub's OS thread locks (briefly,
 to run `handle_event`). One instance is sufficient.
 
@@ -218,7 +218,7 @@ pub fn launch(config: LaunchConfig) -> Result<Runtime, Error> {
     let mut control = Patchbay::new(graph_handle);
     config.patchbay_def
         .apply_to_async(&mut control, &registry)?;
-    // ↑ One call: automata started, MIDI port opened,
+    // ↑ One call: automatons started, MIDI port opened,
     //   mappings loaded, servos running.
 
     let running = Arc::new(AtomicBool::new(true));
@@ -242,7 +242,7 @@ pub fn launch(config: LaunchConfig) -> Result<Runtime, Error> {
 pub fn stop(&mut self) {
     self.running.store(false, Ordering::Release);
 
-    // Stop control rack: automata, sensors, servos.
+    // Stop control rack: automatons, sensors, servos.
     if let Ok(mut pb) = self.control.lock() {
         pb.stop_all();
     }

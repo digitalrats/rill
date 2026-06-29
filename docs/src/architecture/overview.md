@@ -43,7 +43,7 @@ a source node and cascades through the DAG.
   `generate()` → `propagate()` → `consume()`. No heap allocs, no locks,
   no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay` with
-  automata (LFO, envelopes, sequencers). Communicates with the signal
+  automatons (LFO, envelopes, sequencers). Communicates with the signal
   thread via lock-free `MpscQueue<ParameterCommand>`.
 
 See [Signal graph (rill-graph)](../architecture/graph.md) for details.
