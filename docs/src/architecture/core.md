@@ -82,6 +82,32 @@ capture and playback provide data access.
 
 `IoBackend` exists as a backward-compatible alias: `pub trait IoBackend: IoDriver {}`.
 
+### `ProcessingState`
+
+Extracted from `Graph` via `into_processing_state()`, this struct is the
+runtime engine that drives the signal graph inside the I/O callback:
+
+```rust
+pub struct ProcessingState<T, const BUF_SIZE: usize> { /* ... */ }
+
+impl ProcessingState<T, BUF_SIZE> {
+    pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()>;
+    pub fn wire_backends(
+        &mut self,
+        capture: Option<Arc<dyn IoCapture>>,
+        playback: Option<Arc<dyn IoPlayback>>,
+    );
+    pub fn run_with_driver(
+        &mut self,
+        driver: Box<dyn IoDriver>,
+        running: Arc<AtomicBool>,
+    ) -> IoResult<()>;
+}
+```
+
+`process_block()` is the per-block entry point called from the I/O callback.
+It drains the actor mailbox, runs sources/processors/sinks, triggers port
+propagation, and dispatches `ClockTick` to the control rack.
 
 ### `ParamValue`
 

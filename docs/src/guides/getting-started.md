@@ -22,38 +22,33 @@ through the pull model (Sink drives processing):
 ```rust
 use rill_adrift::prelude::*;
 use rill_adrift::rill_core::traits::*;
+use rill_adrift::rill_core::time::ClockTick;
 use rill_adrift::rill_graph::GraphBuilder;
 use rill_adrift::rill_oscillators::SineOscNode;
 
 const BUF_SIZE: usize = 256;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Build the graph
     let mut builder = GraphBuilder::<f32, BUF_SIZE>::new();
-    let osc = builder.add_source(
-        Box::new(SineOscNode::<f32, BUF_SIZE>::new().with_frequency(440.0))
-    );
+    let osc = builder.add_source(Box::new(
+        SineOscNode::<f32, BUF_SIZE>::new().with_frequency(440.0)
+    ));
     let sink = builder.add_sink(Box::new(MySink::new()));
-    builder.connect_signal(osc, 0, sink, 0);
-    let _graph = builder.build()?;
+    builder.connect_signal(osc, 0, sink, 0)?;
+    let graph = builder.build()?;
 
-    // The graph is ready. Input/Output nodes from rill-io drive it.
-    // let output = Output::<f32, BUF_SIZE>::with_channels(2);
-    // The orchestrator creates a backend, extracts ProcessingState,
-    // and registers the process callback.
+    let mut state = graph.into_processing_state();
+    let tick = ClockTick::new_block(0, BUF_SIZE as u32, 44100.0);
+    state.process_block(&tick)?;
 
     Ok(())
 }
-
-// Minimal sink that prints RMS every block
-struct MySink<const BUF_SIZE: usize> { .. }
-impl Node<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
-impl Sink<f32, BUF_SIZE> for MySink<BUF_SIZE> { .. }
 ```
 
-> **Note:** `Output` / `Input` are in `rill-io` (feature-gated
-> behind `io`). For testing without I/O hardware, use the `NullBackend`
-> or a custom `Sink` implementation.
+> **Note:** For real I/O, use `Output` / `Input` from `rill-io` (feature-gated
+> behind `io`). The `Output` node (Sink) writes to `IoPlayback`, `Input` (Source)
+> reads from `IoCapture`. The orchestrator creates the backend, extracts
+> `ProcessingState`, and registers the process callback.
 
 ## Using individual DSP algorithms
 
@@ -85,7 +80,7 @@ Enable the `io` feature on `rill-adrift` (default):
 rill-adrift = { version = "0.5.0-beta.6", features = ["io", "alsa"] }
 ```
 
-Available backends: `portaudio` (default), `alsa`, `pipewire`, `jack`.
+Available backends: `portaudio` (default), `alsa` (Linux), `pipewire` (Linux), `jack` (Linux).
 
 The `Input` node (push model) drives the graph from the source side.
 `Output` (pull model) drives the graph from the sink side.
@@ -93,14 +88,14 @@ The orchestrator creates the backend, extracts `ProcessingState` from the graph,
 and registers the process callback.
 
 ```rust
-use rill_io::{Output, PortAudioBackend, BackendFactory};
+use rill_io::{BackendFactory, BackendParams};
+use std::sync::{Arc, atomic::AtomicBool};
 
-let backend = BackendFactory::new().create("portaudio", &BackendParams::default())?;
+let factory = BackendFactory::new();
+let output = factory.create_output("portaudio", &BackendParams::default())?;
 let mut state = graph.into_processing_state();
-backend.set_process_callback(Box::new(move |tick: &ClockTick| {
-    let _ = state.process_block(tick);
-}));
-backend.run(Arc::new(AtomicBool::new(true)))?;
+state.wire_backends(None, Some(output.playback));
+state.run_with_driver(output.driver, Arc::new(AtomicBool::new(true)))?;
 ```
 
 ## Two-Thread Architecture

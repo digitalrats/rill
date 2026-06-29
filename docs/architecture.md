@@ -126,7 +126,7 @@ rill-core/
 
 #### buffer (buffers)
 
-Provides buffer types for transferring audio data between nodes: `PipeBuffer` (single-threaded channel), `FanOutBuffer` (fan-out), `FanInBuffer` (summing), `DelayLine` (delay line), `RingBuffer` (ring buffer). All buffers implement the `Buffer` trait and support usage statistics.
+Provides buffer types for transferring signal data between nodes: `PipeBuffer` (single-threaded channel), `FanOutBuffer` (fan-out), `FanInBuffer` (summing), `DelayLine` (delay line), `RingBuffer` (ring buffer). All buffers implement the `Buffer` trait and support usage statistics.
 
 ```rust
 use rill_core::buffer::{PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer};
@@ -161,7 +161,7 @@ let phase = 3.0.wrap_phase();   // in range [0, 2π)
 
 #### queues
 
-Implements non-blocking command and telemetry queues for communication between the audio graph and the outside world. Contains `CommandQueue`, `TelemetryQueue`, `SignalOrigin`, `MicroControlObserver` and other components for real-time parameter control.
+Implements non-blocking command and telemetry queues for communication between the signal graph and the outside world. Contains `CommandQueue`, `TelemetryQueue`, `SignalOrigin`, `MicroControlObserver` and other components for real-time parameter control.
 
 ```rust
 use rill_core::queues::{CommandQueue, CommandEnum, SetParameter};
@@ -757,11 +757,10 @@ manager.start()?;  // Automatons begin their own life
 
 ## Plans for future versions
 
-- 🔌 **rill-core-dsp development** — adding new algorithms, optimizing vector operations, SIMD
-- 🌐 **rill-osc** — OSC server for remote control and UDP-based sensor input
-- 🧩 **Analog modeling** — expanding the WDF element library and analog models
-- 🚦 **rill-router development** — adding matrix routing, expanding the `mixer` module, integration with audio graph
-- 🧪 **Integration tests** — cross-crate tests in per-crate `tests/` (example: patchbay + graph)
+- 🔌 **rill-core-dsp** — new DSP algorithms, SIMD optimization (activated via `simd` feature)
+- 🧩 **Analog modeling** — expanding WDF element library and physical models
+- 🧪 **Cross-crate integration tests** — end-to-end tests spanning multiple crates
+- 📦 **rill-sampler** — WAV loading, time-series playback, streaming from disk
 
 ### 🧪 Testing
 
@@ -796,18 +795,12 @@ The project is distributed under the **Apache 2.0** license. This means you can:
 
 Full license text: [LICENSE.md](../LICENSE.md)
 
-## Conclusion
+## Summary
 
-Rill architecture version 0.5.0-beta.6 provides:
-
-- ✅ **Stable core** — unified `rill-core` crate with a clear API
-- ✅ **DSP algorithms** — `rill-core-dsp` contains the `Algorithm` trait and DSP algorithm implementations (generators, filters, delay) with vector operations; specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) based on them
-- ✅ **Vector abstractions** — portability and performance via `ScalarVectorN<T>` and the `AudioNum` trait
-- ✅ **Clean modularity** — each crate has its own responsibility (some temporarily disabled)
-- ✅ **Performance** — optimized for real-time, block processing
-- ✅ **Reliability** — all components thoroughly tested (487 unit tests across the entire workspace)
-- ✅ **Extensibility** — easy to add new algorithms via macros and the `Algorithm` trait
-- ✅ **Consistency** — all crates use the same core version
-- ✅ **Feature unification** — `rill-eq` and `rill-mixer` crates merged into `rill-router` (0.5.0-beta.6) with equalizer and mixer modules
-
-The 0.5.0-beta.6 refactoring is complete: all crates have been migrated to a unified `rill-core` and block processing. DSP algorithms are collected in `rill-core-dsp` (the `Algorithm` trait, generators, filters, delays, vector operations). Specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) using these algorithms. `rill-router` has been added as a single entry point for routing, mixing, and equalization of audio signals. The core is stabilized and ready for the next phase of development.
+- **Stable core** — unified `rill-core` crate with clear API boundaries
+- **DSP infrastructure** — `rill-core-dsp` provides the `Algorithm` trait and implementations (generators, filters, delay) with vector operations; specialized crates provide graph nodes
+- **Vector abstractions** — `ScalarVectorN<T>` for portable SIMD across x86 and ARM
+- **Clean modularity** — each crate has a single responsibility, composable independently
+- **Real-time safe** — zero-allocation hot path, lock-free SPSC queues, no syscalls
+- **Well-tested** — 487 unit tests across the workspace
+- **Extensible** — add custom algorithms via macros or the `Algorithm` trait, register custom graph nodes via `NodeFactory`
