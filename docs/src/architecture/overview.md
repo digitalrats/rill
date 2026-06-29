@@ -16,7 +16,7 @@ independently.
 │  rill-core-model  │  rill-analog-filters  │  rill-analog      │
 │  -effects                                                  │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
+│  rill-io (PortAudio / ALSA / PipeWire / JACK)                    │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)   │
 └─────────────────────────────────────────────────────────────┘
@@ -43,28 +43,30 @@ a source node and cascades through the DAG.
   `generate()` → `propagate()` → `consume()`. No heap allocs, no locks,
   no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay` with
-  automata (LFO, envelopes, sequencers). Communicates with the signal
+  automatons (LFO, envelopes, sequencers). Communicates with the signal
   thread via lock-free `MpscQueue<ParameterCommand>`.
 
 See [Signal graph (rill-graph)](../architecture/graph.md) for details.
 
 ### Processing models
 
-| Model | Active node | Use case |
-|-------|-------------|----------|
-| **Pull** | `Output` (Sink) | Signal playback — sink drives the graph |
-| **Push** | `Input` (Source) | Signal capture — source drives the graph |
+| Direction | Active side | Node type |
+|-----------|------------|-----------|
+| **Output** | Playback | Sink writes to `IoPlayback` |
+| **Input** | Capture | Source reads from `IoCapture` |
 
 ### Port-based propagation
 
-The signal graph has no external engine. Each `Port` owns its buffer,
-downstream connections, and feedback state. Processing flow:
+The signal graph has no external engine loop. Each `Port` owns its buffer,
+downstream connections, and feedback state. Processing is driven by
+`ProcessingState::process_block()`:
 
-1. `Source::generate()` fills the output buffer (from `IoCapture` if it's an `Input` node)
-2. `Source::generate()` fills the output buffer
-2. `Port::propagate()` copies data to downstream input ports (zero-copy for 1:1)
-3. Each downstream node runs `process_block()`: `Processor::process()` or `Sink::consume()`
-4. Recursion continues through the DAG until all sinks are reached
+1. Drain the actor mailbox — apply queued `SetParameter` commands
+2. `Source::generate()` fills output buffers (reads from `IoCapture` for Input nodes)
+3. `Port::propagate()` copies data to downstream input ports (zero-copy for 1:1 fan-out)
+4. Each downstream node runs `Processor::process()` or `Sink::consume()`
+5. Recursion continues through the DAG until all sinks are reached
+6. `send_clock_tick()` dispatches timing to the control rack
 
 ### Automation (The World of Automatons)
 

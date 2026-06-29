@@ -205,10 +205,10 @@ pub trait Sensor: Send + 'static {
 hardware knobs, and acoustic analysis via [`Hearing`] follow the same pattern — multiple sensors feed
 one event mailbox with no locking.
 
-## Hearing — audio analysis for acoustic sensors
+## Hearing — signal analysis for acoustic sensors
 
-The [`hearing`] module provides audio analysis algorithms for acoustic
-sensors that react to graph audio output:
+The [`hearing`] module provides signal analysis algorithms for acoustic
+sensors that react to graph signal output:
 
 | Algorithm | What it detects |
 |---|---|
@@ -218,7 +218,7 @@ sensors that react to graph audio output:
 
 Each implements `Hearing: process(&mut self, audio: &[f32]) -> f32`.
 An `AcousticSensor` (future) wraps a `Hearing` implementation, subscribes
-to graph telemetry, and produces `ControlEvent`s from audio features.
+to graph telemetry, and produces `ControlEvent`s from signal features.
 
 ## Commands
 

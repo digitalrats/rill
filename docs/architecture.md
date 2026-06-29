@@ -14,7 +14,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │                      Infrastructure                            │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
 │   │rill-osc │  │rill-graph  │  │rill-patchbay│  │rill- │   │
-│   │(in development)│ │(audio graph) │ │(automation) │ │sampler│   │
+│   │(OSC server)    │ │(signal graph)│ │(automation) │ │sampler│   │
 │   └────────────┘  └────────────┘  └────────────┘  └──────┘   │
 ├─────────────────────────────────────────────────────────────┤
 │                      Audio Processing                        │
@@ -42,7 +42,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  │  ALSA    │ │  CPAL    │ │ PipeWire │ │   JACK   │      │
 │  │(rill-io) │ │(rill-io) │ │(rill-io) │ │(rill-io) │      │
 │  │ active   │ │ active   │ │ active   │ │ active   │      │
-│  │ disabled │ │ disabled │ │ disabled │ │ disabled │      │
+│  │          │ │          │ │          │ │          │      │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘      │
 ├─────────────────────────────────────────────────────────────┤
 │                         Core                                  │
@@ -50,7 +50,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  │                   rill-core                          │    │
 │  │  ┌─────────────┐  ┌─────────────┐                  │    │
 │  │  │   traits    │  │   queues    │                  │    │
-│  │  │ (traits)    │  │  (queues)  │                  │    │
+│  │  │(Node,etc.)  │  │(MpscQueue) │                  │    │
 │  │  └─────────────┘  └─────────────┘                  │    │
 │  │  rill-core-actor (ActorRef, ActorCell, ActorSystem) │    │
 │  └─────────────────────────────────────────────────────┘    │
@@ -126,7 +126,7 @@ rill-core/
 
 #### buffer (buffers)
 
-Provides buffer types for transferring audio data between nodes: `PipeBuffer` (single-threaded channel), `FanOutBuffer` (fan-out), `FanInBuffer` (summing), `DelayLine` (delay line), `RingBuffer` (ring buffer). All buffers implement the `Buffer` trait and support usage statistics.
+Provides buffer types for transferring signal data between nodes: `PipeBuffer` (single-threaded channel), `FanOutBuffer` (fan-out), `FanInBuffer` (summing), `DelayLine` (delay line), `RingBuffer` (ring buffer). All buffers implement the `Buffer` trait and support usage statistics.
 
 ```rust
 use rill_core::buffer::{PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer};
@@ -161,7 +161,7 @@ let phase = 3.0.wrap_phase();   // in range [0, 2π)
 
 #### queues
 
-Implements non-blocking command and telemetry queues for communication between the audio graph and the outside world. Contains `CommandQueue`, `TelemetryQueue`, `SignalOrigin`, `MicroControlObserver` and other components for real-time parameter control.
+Implements non-blocking command and telemetry queues for communication between the signal graph and the outside world. Contains `CommandQueue`, `TelemetryQueue`, `SignalOrigin`, `MicroControlObserver` and other components for real-time parameter control.
 
 ```rust
 use rill_core::queues::{CommandQueue, CommandEnum, SetParameter};
@@ -262,7 +262,7 @@ The Rill graph is built on a rigorous mathematical foundation — **category the
 **Block processing:** data is transferred in fixed-size blocks, improving performance through cache locality and enabling SIMD optimizations.
 
 ### `rill-patchbay` (0.5.0-beta.6, ✅ active)
-Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automata (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automata" section for details.
+Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automatons (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automatons" section for details.
 
 ```rust
 use rill_patchbay::prelude::*;
@@ -285,14 +285,14 @@ control.add_envelope(
     vca_node_id, "gain", 0.0, 1.0,
 );
 
-// External event mapping (MIDI, OSC)
+    // External event mapping (MIDI, OSC)
 control.add_mapping_str(
     "midi:7:1",
     filter_node_id, "cutoff",
     20.0, 20000.0, Transform::Logarithmic,
 );
 
-// Update automata in a loop
+// Update automatons in a loop
 control.update(1.0 / 60.0);
 ```
 
@@ -309,9 +309,9 @@ manager.add_lfo_servo(
     osc_node_id, "frequency",
     ParameterMapping::Linear, 400.0, 480.0,
 )?;
-
-manager.start()?;  // Automata begin their own life
+manager.start()?;  // Automatons begin their own life
 ```
+
 
 
 
@@ -528,28 +528,28 @@ graph TD
     style ANALOG_EFFECTS fill:#90ee90
     
     %% Planned
-    SERVER[rill-osc<br/>(in development)]
+    SERVER[rill-osc<br/>(OSC server)]
     
     CORE -.-> SERVER
     
     style SERVER fill:#cccccc
 ```
 
-## World of Automata
+## World of Automatons
 
-**Rill Patchbay** is not just a control system. It is a **world** where **automata** live — mysterious beings that sense the environment and influence it. They communicate in the language of signals, hear sound through sensors, and affect the Graph through servos.
+**Rill Patchbay** is not just a control system. It is a **world** where **automatons** live — mysterious beings that sense the environment and influence it. They communicate in the language of signals, hear sound through sensors, and affect the Graph through servos.
 
 ### 🧠 World architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│             WORLD OF AUTOMATA                        │
+│             WORLD OF AUTOMATONS                      │
 │  (your Rill application)                       │
 │                                                       │
 │  ┌─────────────────────────────────────────────────┐ │
 │  │                    PATCHBAY                       │ │
 │  │  ┌─────────────────────────────────────────┐    │ │
-│  │  │           AUTOMATA (mind)              │    │ │
+│  │  │          AUTOMATONS (mind)             │    │ │
 │  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐ │ │
 │  │  │  │   LFO    │  │   ENV    │  │  RANDOM  │ │ │
 │  │  │  └────┬─────┘  └────┬─────┘  └────┬─────┘ │ │
@@ -582,9 +582,9 @@ graph TD
 └─────────────────────────────────────────────────────┘
 ```
 
-### 🦾 Automata — mind (Automaton)
+### 🦾 Automatons — mind (Automaton)
 
-Automata are intelligent beings that make decisions and generate signals. They can be simple (LFO, envelope) or complex (logic circuits, mathematical transformers).
+Automatons are intelligent beings that make decisions and generate signals. They can be simple (LFO, envelope) or complex (logic circuits, mathematical transformers).
 
 | Automaton | Description | Code example |
 |---------|----------|---------------------|
@@ -597,7 +597,8 @@ Automata are intelligent beings that make decisions and generate signals. They c
 
 ### 👁️ Sensors — senses
 
-For automata to perceive the world, they need sensory organs. Sensors convert external stimuli into signals understandable by automata.
+For automatons to perceive the world, they need sensory organs. Sensors
+convert external stimuli into signals understandable by automatons.
 
 #### Acoustic sensors (hear sound)
 
@@ -679,7 +680,7 @@ osc.start();
 
 ### 🎯 Servo — hands
 
-Servos are the **actuators** of automata. Obeying the laws of nature (non-blocking queues), they transmit signals from the world of automata to the Graph, changing sound parameters.
+Servos are the **actuators** of automatons. Obeying the laws of nature (non-blocking queues), they transmit signals from the world of automatons to the Graph, changing sound parameters.
 
 ```rust
 // Servo controlling filter cutoff
@@ -695,16 +696,16 @@ let filter_servo = Servo::new(
 
 ### ⚡ Laws of nature (non-blocking queues)
 
-The world of automata and the world of sound exist in parallel. They are connected by **non-blocking queues**:
+The world of automatons and the world of sound exist in parallel. They are connected by **non-blocking queues**:
 
 - **Command Queue** — servos send commands to the Graph
 - **Telemetry Queue** — sensors receive data from the Graph
 
-This allows automata to "think" at their own pace without interfering with the audio stream.
+This allows automatons to "think" at their own pace without interfering with the audio stream.
 
 ### 🏭 Automaton Space (Patchbay)
 
-**Patchbay** is the place where all your automata live, where their senses and hands are located.
+**Patchbay** is the place where all your automatons live, where their senses and hands are located.
 
 ```rust
 use rill_patchbay::prelude::*;
@@ -730,7 +731,7 @@ control.add_envelope(
     0.0, 1.0,
 );
 
-// Update automata in a loop
+// Update automatons in a loop
 loop {
     control.update(1.0 / 60.0);
     std::thread::sleep(std::time::Duration::from_millis(16));
@@ -751,16 +752,15 @@ manager.add_lfo_servo(
     ParameterMapping::Linear, 400.0, 480.0,
 )?;
 
-manager.start()?;  // Automata begin their own life
+manager.start()?;  // Automatons begin their own life
 ```
 
 ## Plans for future versions
 
-- 🔌 **rill-core-dsp development** — adding new algorithms, optimizing vector operations, SIMD
-- 🌐 **rill-osc** — OSC server for remote control and UDP-based sensor input
-- 🧩 **Analog modeling** — expanding the WDF element library and analog models
-- 🚦 **rill-router development** — adding matrix routing, expanding the `mixer` module, integration with audio graph
-- 🧪 **Integration tests** — cross-crate tests in per-crate `tests/` (example: patchbay + graph)
+- 🔌 **rill-core-dsp** — new DSP algorithms, SIMD optimization (activated via `simd` feature)
+- 🧩 **Analog modeling** — expanding WDF element library and physical models
+- 🧪 **Cross-crate integration tests** — end-to-end tests spanning multiple crates
+- 📦 **rill-sampler** — WAV loading, time-series playback, streaming from disk
 
 ### 🧪 Testing
 
@@ -795,18 +795,12 @@ The project is distributed under the **Apache 2.0** license. This means you can:
 
 Full license text: [LICENSE.md](../LICENSE.md)
 
-## Conclusion
+## Summary
 
-Rill architecture version 0.5.0-beta.6 provides:
-
-- ✅ **Stable core** — unified `rill-core` crate with a clear API
-- ✅ **DSP algorithms** — `rill-core-dsp` contains the `Algorithm` trait and DSP algorithm implementations (generators, filters, delay) with vector operations; specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) based on them
-- ✅ **Vector abstractions** — portability and performance via `ScalarVectorN<T>` and the `AudioNum` trait
-- ✅ **Clean modularity** — each crate has its own responsibility (some temporarily disabled)
-- ✅ **Performance** — optimized for real-time, block processing
-- ✅ **Reliability** — all components thoroughly tested (487 unit tests across the entire workspace)
-- ✅ **Extensibility** — easy to add new algorithms via macros and the `Algorithm` trait
-- ✅ **Consistency** — all crates use the same core version
-- ✅ **Feature unification** — `rill-eq` and `rill-mixer` crates merged into `rill-router` (0.5.0-beta.6) with equalizer and mixer modules
-
-The 0.5.0-beta.6 refactoring is complete: all crates have been migrated to a unified `rill-core` and block processing. DSP algorithms are collected in `rill-core-dsp` (the `Algorithm` trait, generators, filters, delays, vector operations). Specialized crates (`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`) provide graph nodes (`Node`) using these algorithms. `rill-router` has been added as a single entry point for routing, mixing, and equalization of audio signals. The core is stabilized and ready for the next phase of development.
+- **Stable core** — unified `rill-core` crate with clear API boundaries
+- **DSP infrastructure** — `rill-core-dsp` provides the `Algorithm` trait and implementations (generators, filters, delay) with vector operations; specialized crates provide graph nodes
+- **Vector abstractions** — `ScalarVectorN<T>` for portable SIMD across x86 and ARM
+- **Clean modularity** — each crate has a single responsibility, composable independently
+- **Real-time safe** — zero-allocation hot path, lock-free SPSC queues, no syscalls
+- **Well-tested** — 487 unit tests across the workspace
+- **Extensible** — add custom algorithms via macros or the `Algorithm` trait, register custom graph nodes via `NodeFactory`
