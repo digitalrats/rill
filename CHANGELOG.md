@@ -10,6 +10,85 @@
   `midi`/`osc` feature flags, stale `0.5.0-beta.2` references fixed
   throughout docs.
 
+### 🔌 I/O Backend Extraction (`rill-core`, `rill-io`, `rill-graph`)
+
+Major architecture change: backends extracted from graph nodes to the
+orchestrator layer. Signal graph is now pure DSP (no I/O knowledge), all
+hardware interaction lives in `ProcessingState` + backend traits.
+
+**`rill-core` (`io.rs`):**
+- **`IoBackend` → `IoDriver` + `IoCapture` + `IoPlayback`** — single
+  monolithic trait split into three orthogonal capabilities. One struct
+  can implement any combination: `IoDriver` runs the clock loop,
+  `IoCapture` reads input samples, `IoPlayback` writes output samples.
+  Mirrors the `MidiInput`/`MidiOutput` split on the audio side.
+- **`BufferView`** trait — zero-copy DMA access during I/O callback:
+  `read_input(channel, dst)` and `write_output(channel, src)`. Nodes
+  hold `Arc<dyn BufferView>` and read/write directly without
+  intermediate ring buffers.
+- **`ProcessingState`** — new: owns graph runtime parts (actor mailbox,
+  node storage, parent rack ref). Created via
+  `graph.into_processing_state()`. Wired with backends via
+  `wire_backends(capture, playback)`. Drives processing loop:
+  `process_block(&ClockTick)` → DSP → `send_clock_tick()`.
+- **`ParameterWrite`** trait — polymorphic parameter injection into
+  the graph mid-cycle (used by PipeWire per-chunk params).
+- **Removed:** `IoNode`, `ActiveNode` traits — backends no longer
+  injected into graph nodes.
+
+**`rill-io`:**
+- **`DirectView`** — interleaved/planar DMA access via raw pointers,
+  implements `BufferView`. Created per-callback by each backend.
+  `read_input()`/`write_output()` operate directly on hardware DMA
+  buffers — no copies between graph and backend.
+- **`OutputWindow`** — adapter for backends that need partial buffer
+  writes. Wraps `IoPlayback` + `DirectView`, handles multi-chunk DMA.
+- **`ClockTick.is_final`** — for chunking backends (PipeWire):
+  `is_final = true` only on the last chunk of a DMA buffer.
+  `send_clock_tick()` is gated on `is_final` — prevents duplicate
+  `ClockTick` broadcasts mid-buffer.
+- **PipeWire backend** — major rewrite for chunk processing. DMA buffer
+  split into chunks of `block_size`, per-chunk parameter updates via
+  `ParameterWrite`, `is_final` timing. Buffer size negotiation via
+  `SPA_PARAM_Buffers`. Zero-fill DMA remainder after chunk loop.
+- **JACK backend** — chunk processing by `block_size`, uses orchestrator
+  `running` flag for shutdown. `run()` returns immediately
+  (callback-driven), `stop()` coordinates with JACK thread.
+- **PortAudio backend** — unchanged structurally, gains `DirectView`
+  + `OutputWindow` for output path.
+- **ALSA backend** — unchanged structurally, poll-driven (`snd_pcm_wait`),
+  gains same view/window pattern.
+
+**`rill-graph` (`backend_factory.rs`):**
+- **`BackendFactory` refactored.** Constructor signature changed:
+  `fn(params) -> Box<dyn IoBackend>` → `fn(params) -> (Arc<dyn IoDriver>,
+  Option<Arc<dyn IoCapture>>, Option<Arc<dyn IoPlayback>>)`.
+- **Bundle types:** `DuplexBundle` (driver + capture + playback),
+  `OutputBundle` (driver + playback), `InputBundle` (driver + capture).
+- **`create_any()`** — returns whatever capabilities the backend provides.
+  Replaces `create() -> Box<dyn IoBackend>`.
+- **Caching** — backends cached by name in factory, reused across racks.
+
+**Backend lifecycle (complete):**
+```
+orchestrator:
+  1. factory.create_any(name, params) → (driver, capture, playback)
+  2. graph.into_processing_state() → ProcessingState
+  3. state.wire_backends(capture, playback)
+  4. driver.set_process_callback(|tick| { state.process_block(&tick); })
+  5. driver.run(running)
+
+callback (RT thread):
+  state.process_block(&tick) → Source::generate → DSP → Sink::consume
+  state.send_clock_tick(&tick) [gated on tick.is_final]
+```
+
+**Removed:** `LofiInput` node (`rill-lofi`). Replaced by
+`LofiChipSource` — a `Source` node wrapping any `Algorithm<f32>` +
+`ChipEmulator` + `ParameterWrite`. `IoControl` trait provides
+`write_data()` channel for chip register writes via the backend's
+control interface.
+
 ### 🎹 MIDI Output (`rill-io`, `rill-patchbay`, `rill-adrift`)
 
 MIDI output infrastructure — rill as MIDI master, sending Clock, Transport,
