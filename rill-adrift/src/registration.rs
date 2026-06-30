@@ -435,6 +435,8 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
     factory.register(rill_patchbay::servo_constructor::ServoConstructor);
     #[cfg(feature = "midi")]
     register_midi_module(factory);
+    #[cfg(feature = "midi")]
+    register_clock_module(factory);
     #[cfg(feature = "osc")]
     register_osc_module(factory);
 }
@@ -589,6 +591,84 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
     }
 
     factory.register(OscConstructor);
+}
+
+#[cfg(feature = "midi")]
+fn register_clock_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::CommandEnum;
+    use rill_core_actor::ActorRef;
+    use rill_io::midi_output::MidiOutput;
+    use rill_patchbay::midi_clock::spawn_midi_clock_output;
+    use rill_patchbay::module_def::{ClockDef, ModuleDef};
+    use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
+
+    struct ClockConstructor;
+
+    impl ModuleConstructor for ClockConstructor {
+        fn type_name(&self) -> &'static str {
+            "clock"
+        }
+
+        fn construct(
+            &self,
+            module: &ModuleDef,
+            _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
+            system: &std::sync::Arc<rill_core_actor::ActorSystem>,
+            _graph_ref: &ActorRef<CommandEnum>,
+        ) -> Result<ActorRef<CommandEnum>, ModuleError> {
+            let (backend, port_name, auto_start) = match module {
+                ModuleDef::Clock(ClockDef {
+                    backend,
+                    port_name,
+                    auto_start,
+                }) => (backend, port_name, auto_start),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(
+                        "ClockConstructor requires ModuleDef::Clock".into(),
+                    ));
+                }
+            };
+
+            let output: Box<dyn MidiOutput> = match backend.as_str() {
+                "midir" => {
+                    let b = rill_io::backends::MidirBackend::new_output_by_name(
+                        "rill-clock",
+                        port_name,
+                    )
+                    .or_else(|_| rill_io::backends::MidirBackend::new_output("rill-clock"))
+                    .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?;
+                    Box::new(b)
+                }
+                #[cfg(feature = "alsa")]
+                "alsa_seq" => Box::new(
+                    rill_io::backends::AlsaSeqBackend::new_output(port_name)
+                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?,
+                ),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(format!(
+                        "unknown MIDI output backend '{backend}'"
+                    )));
+                }
+            };
+
+            let clock_ref = spawn_midi_clock_output(system, output);
+
+            if *auto_start {
+                use rill_core::queues::control_event::{ControlEvent, MidiTransportKind};
+                clock_ref.send(CommandEnum::Control(ControlEvent::MidiTransport {
+                    kind: MidiTransportKind::Start,
+                }));
+            }
+
+            Ok(clock_ref)
+        }
+
+        fn clone_box(&self) -> Box<dyn ModuleConstructor> {
+            Box::new(ClockConstructor)
+        }
+    }
+
+    factory.register(ClockConstructor);
 }
 
 /// Register all built-in backends into a [`BackendFactory`](rill_graph::backend_factory::BackendFactory).
