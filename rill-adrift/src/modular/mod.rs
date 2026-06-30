@@ -255,6 +255,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             .construct(&pb_module, &automaton_defs_slice, &sys_svc, &graph_ref)
                             .map_err(|e| ModularError::Rack(e.to_string()))?;
                         let id = match &pb_module {
+                            PbModuleDef::Clock(c) => format!("clock_{}", c.backend),
                             PbModuleDef::Servo(s) => s.automaton_id.clone(),
                             PbModuleDef::Sensor(s) => match s {
                                 SensorDef::Midi { port_name, .. } => {
@@ -300,6 +301,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 /// patchbay [`ModuleDef`] (which does not). Panics on `Graph` variant.
 fn to_pb_module(m: &ModuleDef) -> rill_patchbay::module_def::ModuleDef {
     match m {
+        ModuleDef::Clock(c) => rill_patchbay::module_def::ModuleDef::Clock(c.clone()),
         ModuleDef::Servo(s) => rill_patchbay::module_def::ModuleDef::Servo(s.clone()),
         ModuleDef::Sensor(s) => rill_patchbay::module_def::ModuleDef::Sensor(s.clone()),
         ModuleDef::Custom { type_name, params } => rill_patchbay::module_def::ModuleDef::Custom {
