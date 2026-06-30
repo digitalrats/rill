@@ -305,3 +305,92 @@ pub fn parse_midi(msg: &MidiMessage) -> Option<ControlEvent> {
 fn unsupported(_msg: &MidiMessage) -> Option<ControlEvent> {
     None
 }
+
+/// Serialize a [`ControlEvent`] back to a raw [`MidiMessage`].
+///
+/// This is the reverse of [`parse_midi`]. Only Clock, Transport,
+/// and Note events are supported. Other events return `None`.
+pub fn serialize_to_midi(event: &ControlEvent) -> Option<MidiMessage> {
+    match event {
+        ControlEvent::MidiClock => Some(MidiMessage::new(0xF8, 0, 0)),
+        ControlEvent::MidiTransport { kind } => {
+            let status = match kind {
+                MidiTransportKind::Start => 0xFA,
+                MidiTransportKind::Stop => 0xFC,
+                MidiTransportKind::Continue => 0xFB,
+            };
+            Some(MidiMessage::new(status, 0, 0))
+        }
+        ControlEvent::MidiNote {
+            note, velocity, on, ..
+        } => {
+            let status = if *on { 0x90 } else { 0x80 };
+            Some(MidiMessage::new(
+                status,
+                *note,
+                if *on { *velocity } else { 0 },
+            ))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rill_core::queues::control_event::MidiTransportKind;
+
+    #[test]
+    fn test_serialize_midi_clock_roundtrip() {
+        let event = ControlEvent::MidiClock;
+        let msg = serialize_to_midi(&event).unwrap();
+        let back = parse_midi(&msg).unwrap();
+        assert_eq!(back, event);
+    }
+
+    #[test]
+    fn test_serialize_midi_transport_roundtrip() {
+        for kind in [
+            MidiTransportKind::Start,
+            MidiTransportKind::Stop,
+            MidiTransportKind::Continue,
+        ] {
+            let event = ControlEvent::MidiTransport { kind };
+            let msg = serialize_to_midi(&event).unwrap();
+            let back = parse_midi(&msg).unwrap();
+            assert_eq!(back, event);
+        }
+    }
+
+    #[test]
+    fn test_serialize_midi_note_roundtrip() {
+        let event = ControlEvent::MidiNote {
+            channel: 0,
+            note: 64,
+            velocity: 100,
+            on: true,
+        };
+        let msg = serialize_to_midi(&event).unwrap();
+        assert_eq!(msg, MidiMessage::new(0x90, 64, 100));
+
+        let event_off = ControlEvent::MidiNote {
+            channel: 0,
+            note: 64,
+            velocity: 0,
+            on: false,
+        };
+        let msg_off = serialize_to_midi(&event_off).unwrap();
+        assert_eq!(msg_off, MidiMessage::new(0x80, 64, 0));
+    }
+
+    #[test]
+    fn test_serialize_unsupported_returns_none() {
+        let event = ControlEvent::MidiControl {
+            channel: 0,
+            controller: 7,
+            value: 100,
+            normalized: 0.8,
+        };
+        assert!(serialize_to_midi(&event).is_none());
+    }
+}
