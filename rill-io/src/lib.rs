@@ -41,6 +41,9 @@ pub mod midi_message;
 /// MIDI input trait.
 pub mod midi_input;
 
+/// MIDI output trait.
+pub mod midi_output;
+
 pub use backend::{BackendType, DeviceInfo};
 pub use config::AudioConfig;
 pub use error::{IoError, IoResult};
@@ -52,6 +55,8 @@ pub use rings::PwBuffers;
 
 pub use midi_input::MidiInput;
 pub use midi_message::MidiMessage;
+
+pub use midi_output::MidiOutput;
 
 pub use backends::NullBackend;
 
