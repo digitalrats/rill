@@ -1,14 +1,63 @@
 # CHANGELOG
 
-## [0.5.0-beta.6] — In Progress
+## [0.5.0-beta.7] — In Progress
 
 ### 📦 Version bump and cleanup
 
-- All 18 crates bumped to `0.5.0-beta.6`.
+- All 18 crates bumped to `0.5.0-beta.7`.
 - Documentation updated: `SensorDef::Osc` described in architecture docs,
   `rill-osc` README cross-references `OscSensor`, patchbay README covers
   `midi`/`osc` feature flags, stale `0.5.0-beta.2` references fixed
   throughout docs.
+
+### 🎹 MIDI Output (`rill-io`, `rill-patchbay`, `rill-adrift`)
+
+MIDI output infrastructure — rill as MIDI master, sending Clock, Transport,
+and (future) Note messages to external devices.
+
+**`rill-io`:**
+- **`MidiBackend` → `MidiInput`** (breaking rename) — trait now accurately
+  reflects its input-only role (`poll() -> Vec<MidiMessage>`).
+- **`MidiOutput` trait** — new: `send(&mut self, &MidiMessage) -> IoResult<()>`.
+  Mirrors `MidiInput` for output direction.
+- **`MidiOutput` impl for `MidirBackend`** — `new_output()`, `new_output_by_name()`
+  constructors using `midir::MidiOutput::connect()`. Struct changed to
+  `MidirConnection` enum (Input/Output) to support both directions.
+- **`MidiOutput` impl for `AlsaSeqBackend`** — `new_output()` with write-capable
+  ALSA sequencer port, `midi_to_alsa_event()` for MIDI→ALSA event conversion.
+- **`MidiOutput` impl for `JackMidiBackend`** — `new_output()`, `connect_output()`
+  with `MidiOut` port, bidirectional process handler (input + output in one
+  JACK client).
+
+**`rill-patchbay`:**
+- **`MidiClockGenerator`** — output-side counterpart of `MidiClockTracker`.
+  Pure math: converts `ClockTick` → `Vec<ControlEvent::MidiClock>` using 24ppqn
+  (24 pulses per quarter note). Derives tick spacing from absolute sample
+  position — no cumulative drift. Transport state machine: Start resets phase,
+  Stop/Continue follow standard MIDI transport semantics. 6 unit tests.
+- **`spawn_midi_clock_output()`** — actor owning `MidiClockGenerator` +
+  `Box<dyn MidiOutput>`. Receives `ClockTick` via Rack broadcast and
+  `MidiTransport` commands, serializes via `serialize_to_midi()`, sends
+  through backend.
+- **`serialize_to_midi()`** — reverse of `parse_midi()`. Converts
+  `ControlEvent::MidiClock` → `0xF8`, `MidiTransport` → `0xFA/0xFB/0xFC`,
+  `MidiNote` → `0x90/0x80`. Round-trip tests: `parse_midi(serialize_to_midi(e)) == e`.
+- **`ClockDef { backend, port_name, auto_start }`** — serializable MIDI clock
+  output descriptor. Added to `ModuleDef::Clock(ClockDef)` variant.
+- Re-exports: `MidiClockGenerator`, `spawn_midi_clock_output`, `serialize_to_midi`,
+  `ClockDef`.
+
+**`rill-adrift`:**
+- **`ModuleDef::Clock(ClockDef)`** variant in adrift serialization layer,
+  for `ModularSystemDef` JSON documents.
+- **`ClockConstructor`** — registered in `ModuleFactory` as `"clock"`.
+  Creates `MidiOutput` backend, calls `spawn_midi_clock_output()`,
+  supports `auto_start`.
+- **`to_pb_module()` + rack dispatch** — `ClockDef` conversion and
+  module ID extraction for rack actor fan-out.
+
+**Design doc + plan:** `docs/superpowers/specs/2026-06-30-midi-output-design.md`,
+`docs/superpowers/plans/2026-06-30-midi-output-plan.md`.
 
 ### ⚡ Servo conflict resolution (`rill-patchbay`)
 
