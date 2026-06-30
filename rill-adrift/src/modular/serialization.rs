@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use rill_core::traits::ParamValue;
 use rill_graph::serialization::GraphDef;
-use rill_patchbay::module_def::ClockDef;
-use rill_patchbay::serialization::{AutomatonDef, MappingDef, SensorDef, ServoDef};
+use rill_patchbay::serialization::{AutomatonDef, ClockDef, MappingDef, SensorDef, ServoDef};
 
 // ============================================================================
 // ModuleDef

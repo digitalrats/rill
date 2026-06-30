@@ -255,7 +255,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             .construct(&pb_module, &automaton_defs_slice, &sys_svc, &graph_ref)
                             .map_err(|e| ModularError::Rack(e.to_string()))?;
                         let id = match &pb_module {
-                            PbModuleDef::Clock(c) => format!("clock_{}", c.backend),
+                            PbModuleDef::Clock(c) => {
+                                format!("clock_{}", c.port_name)
+                            }
                             PbModuleDef::Servo(s) => s.automaton_id.clone(),
                             PbModuleDef::Sensor(s) => match s {
                                 SensorDef::Midi { port_name, .. } => {
