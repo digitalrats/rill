@@ -15,19 +15,33 @@
 MIDI output infrastructure — rill as MIDI master, sending Clock, Transport,
 and (future) Note messages to external devices.
 
-**`rill-io`:**
+**`rill-io` — backend architecture:**
 - **`MidiBackend` → `MidiInput`** (breaking rename) — trait now accurately
   reflects its input-only role (`poll() -> Vec<MidiMessage>`).
-- **`MidiOutput` trait** — new: `send(&mut self, &MidiMessage) -> IoResult<()>`.
-  Mirrors `MidiInput` for output direction.
-- **`MidiOutput` impl for `MidirBackend`** — `new_output()`, `new_output_by_name()`
-  constructors using `midir::MidiOutput::connect()`. Struct changed to
-  `MidirConnection` enum (Input/Output) to support both directions.
-- **`MidiOutput` impl for `AlsaSeqBackend`** — `new_output()` with write-capable
-  ALSA sequencer port, `midi_to_alsa_event()` for MIDI→ALSA event conversion.
-- **`MidiOutput` impl for `JackMidiBackend`** — `new_output()`, `connect_output()`
-  with `MidiOut` port, bidirectional process handler (input + output in one
-  JACK client).
+- **`MidiOutput` trait** (new) — `send(&mut self, &MidiMessage) -> IoResult<()>`,
+  symmetric to `MidiInput`. Together they mirror the audio-side
+  `IoCapture`/`IoPlayback` separation — input and output are distinct
+  traits, each backend implements the direction(s) it supports.
+- **`MidirBackend`** — struct refactored: `_conn` field changed from
+  `MidiInputConnection<()>` to `MidirConnection` enum (`Input`/`Output`
+  variants). New constructors: `new_output()`, `new_output_by_name()`
+  using `midir::MidiOutput::connect()`. Backend can now be opened in
+  either direction — reused across both `MidiInput` and `MidiOutput`
+  trait impls.
+- **`AlsaSeqBackend`** — struct unchanged (`seq::Seq` is inherently
+  bidirectional). New `new_output()` constructor opens with
+  `Direction::Playback` + `PortCap::WRITE` (vs `Capture` + `READ` for
+  input). New `midi_to_alsa_event()` helper — reverse of existing
+  `alsa_event_to_midi()` — converts `MidiMessage` to ALSA `Event` for
+  `event_output()` + `drain_output()`.
+- **`JackMidiBackend`** — most significant struct change: `rx` split to
+  `Option<Receiver<MidiMessage>>`, new `tx: Option<SyncSender<MidiMessage>>`.
+  `JackMidiHandler` (process callback) becomes **bidirectional**:
+  `MidiIn` port → channel → `MidiInput::poll()`, and channel →
+  `MidiOut` port → `MidiOutput::send()`. Both directions coexist in
+  one JACK client — `connect()` opens input, `connect_output()` opens
+  output. Same pattern for internal comms (input drains `tx → rx`,
+  output feeds `tx → rx` in reverse).
 
 **`rill-patchbay`:**
 - **`MidiClockGenerator`** — output-side counterpart of `MidiClockTracker`.
