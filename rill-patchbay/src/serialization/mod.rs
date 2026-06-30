@@ -6,7 +6,8 @@ use crate::engine::OscSurface;
 
 // Re-export all module definition types from the always-compiled module.
 pub use crate::module_def::{
-    AutomatonDef, MappingDef, MappingType, ModuleDef, SensorDef, ServoDef, StepDef, TransformDef,
+    AutomatonDef, ClockDef, MappingDef, MappingType, ModuleDef, SensorDef, ServoDef, StepDef,
+    TransformDef,
 };
 
 // ============================================================================

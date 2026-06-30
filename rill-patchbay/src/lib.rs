@@ -76,6 +76,8 @@ pub mod strategy;
 /// Rack module type definitions (always compiled)
 pub mod module_def;
 
+pub use module_def::ClockDef;
+
 /// Custom module factory — type registry for rack module construction
 pub mod module_factory;
 
@@ -107,12 +109,17 @@ pub mod osc;
 pub mod observer;
 
 #[cfg(feature = "midi")]
+pub use midi::serialize_to_midi;
+#[cfg(feature = "midi")]
 pub use midi::spawn_midi_sensor;
 #[cfg(feature = "midi")]
 pub use midi::MidiHub;
 #[cfg(feature = "midi")]
+pub use midi_clock::MidiClockGenerator;
+#[cfg(feature = "midi")]
 pub use midi_clock::{
-    FreeRunning, MidiClockStrategy, MidiClockTracker, ResetOnStart, SongPosition,
+    spawn_midi_clock_output, FreeRunning, MidiClockStrategy, MidiClockTracker, ResetOnStart,
+    SongPosition,
 };
 #[cfg(feature = "osc")]
 pub use osc::spawn_osc_sensor;

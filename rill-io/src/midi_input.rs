@@ -1,6 +1,6 @@
-//! MIDI backend trait for polling raw MIDI messages.
+//! MIDI input trait for polling raw MIDI messages.
 //!
-//! Similar in spirit to [`crate::audio_io`] for audio, `MidiBackend`
+//! Similar in spirit to [`crate::audio_io`] for audio, `MidiInput`
 //! provides a uniform interface for receiving MIDI data from hardware
 //! or virtual devices.
 //!
@@ -22,7 +22,7 @@ use crate::midi_message::MidiMessage;
 /// `poll()` may block briefly (with a timeout) to wait for events.
 /// This trait is intended for use on a dedicated non-RT thread — not
 /// the audio callback.
-pub trait MidiBackend: Send + 'static {
+pub trait MidiInput: Send + 'static {
     /// Poll for available MIDI messages.
     ///
     /// Returns immediately if no messages have arrived since the last

@@ -240,8 +240,8 @@ impl SensorDef {
                 port_name,
                 mappings: _,
             } => {
-                use rill_io::midi_backend::MidiBackend;
-                let be: Box<dyn MidiBackend> = match backend.as_str() {
+                use rill_io::midi_input::MidiInput;
+                let be: Box<dyn MidiInput> = match backend.as_str() {
                     "midir" => Box::new(rill_io::backends::MidirBackend::new(port_name).ok()?),
                     "alsa_seq" => {
                         #[cfg(feature = "alsa")]
@@ -283,6 +283,23 @@ impl SensorDef {
 }
 
 // ============================================================================
+// ClockDef — MIDI clock output definition
+// ============================================================================
+
+/// Serializable MIDI clock output configuration.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
+pub struct ClockDef {
+    /// Backend type — `"midir"`, `"alsa_seq"`, or `"jack"`.
+    pub backend: String,
+    /// Port name for the backend.
+    pub port_name: String,
+    /// Start clock automatically when the system launches.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub auto_start: bool,
+}
+
+// ============================================================================
 // ModuleDef — unified servo, sensor, and custom module serialization
 // ============================================================================
 
@@ -291,6 +308,8 @@ impl SensorDef {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub enum ModuleDef {
+    /// MIDI clock output module.
+    Clock(ClockDef),
     /// Servo: automaton → graph parameter bridge.
     Servo(ServoDef),
     /// Sensor: external input (MIDI, OSC, etc.).
@@ -309,6 +328,7 @@ impl ModuleDef {
     /// Returns the factory registration key for this module.
     pub fn type_name(&self) -> &str {
         match self {
+            ModuleDef::Clock(_) => "clock",
             ModuleDef::Servo(_) => "servo",
             ModuleDef::Sensor(SensorDef::Midi { .. }) => "midi",
             ModuleDef::Sensor(SensorDef::Osc { .. }) => "osc",

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use rill_core::traits::ParamValue;
 use rill_graph::serialization::GraphDef;
-use rill_patchbay::serialization::{AutomatonDef, MappingDef, SensorDef, ServoDef};
+use rill_patchbay::serialization::{AutomatonDef, ClockDef, MappingDef, SensorDef, ServoDef};
 
 // ============================================================================
 // ModuleDef
@@ -20,6 +20,8 @@ use rill_patchbay::serialization::{AutomatonDef, MappingDef, SensorDef, ServoDef
 /// or Graph (signal graph with its own I/O loop).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModuleDef {
+    /// MIDI clock output module.
+    Clock(ClockDef),
     /// Servo — bridges an automaton (LFO, envelope, etc.) to a graph parameter.
     Servo(ServoDef),
     /// Sensor — external input source (MIDI, OSC, etc.).
