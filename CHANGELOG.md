@@ -1,14 +1,156 @@
 # CHANGELOG
 
-## [0.5.0-beta.6] — In Progress
+## [0.5.0-beta.7] — In Progress
 
 ### 📦 Version bump and cleanup
 
-- All 18 crates bumped to `0.5.0-beta.6`.
+- All 18 crates bumped to `0.5.0-beta.7`.
 - Documentation updated: `SensorDef::Osc` described in architecture docs,
   `rill-osc` README cross-references `OscSensor`, patchbay README covers
   `midi`/`osc` feature flags, stale `0.5.0-beta.2` references fixed
   throughout docs.
+
+### 🔌 I/O Backend Extraction (`rill-core`, `rill-io`, `rill-graph`)
+
+Major architecture change: backends extracted from graph nodes to the
+orchestrator layer. Signal graph is now pure DSP (no I/O knowledge), all
+hardware interaction lives in `ProcessingState` + backend traits.
+
+**`rill-core` (`io.rs`):**
+- **`IoBackend` → `IoDriver` + `IoCapture` + `IoPlayback`** — single
+  monolithic trait split into three orthogonal capabilities. One struct
+  can implement any combination: `IoDriver` runs the clock loop,
+  `IoCapture` reads input samples, `IoPlayback` writes output samples.
+  Mirrors the `MidiInput`/`MidiOutput` split on the audio side.
+- **`BufferView`** trait — zero-copy DMA access during I/O callback:
+  `read_input(channel, dst)` and `write_output(channel, src)`. Nodes
+  hold `Arc<dyn BufferView>` and read/write directly without
+  intermediate ring buffers.
+- **`ProcessingState`** — new: owns graph runtime parts (actor mailbox,
+  node storage, parent rack ref). Created via
+  `graph.into_processing_state()`. Wired with backends via
+  `wire_backends(capture, playback)`. Drives processing loop:
+  `process_block(&ClockTick)` → DSP → `send_clock_tick()`.
+- **`ParameterWrite`** trait — polymorphic parameter injection into
+  the graph mid-cycle (used by PipeWire per-chunk params).
+- **Removed:** `IoNode`, `ActiveNode` traits — backends no longer
+  injected into graph nodes.
+
+**`rill-io`:**
+- **`DirectView`** — interleaved/planar DMA access via raw pointers,
+  implements `BufferView`. Created per-callback by each backend.
+  `read_input()`/`write_output()` operate directly on hardware DMA
+  buffers — no copies between graph and backend.
+- **`OutputWindow`** — adapter for backends that need partial buffer
+  writes. Wraps `IoPlayback` + `DirectView`, handles multi-chunk DMA.
+- **`ClockTick.is_final`** — for chunking backends (PipeWire):
+  `is_final = true` only on the last chunk of a DMA buffer.
+  `send_clock_tick()` is gated on `is_final` — prevents duplicate
+  `ClockTick` broadcasts mid-buffer.
+- **PipeWire backend** — major rewrite for chunk processing. DMA buffer
+  split into chunks of `block_size`, per-chunk parameter updates via
+  `ParameterWrite`, `is_final` timing. Buffer size negotiation via
+  `SPA_PARAM_Buffers`. Zero-fill DMA remainder after chunk loop.
+- **JACK backend** — chunk processing by `block_size`, uses orchestrator
+  `running` flag for shutdown. `run()` returns immediately
+  (callback-driven), `stop()` coordinates with JACK thread.
+- **PortAudio backend** — unchanged structurally, gains `DirectView`
+  + `OutputWindow` for output path.
+- **ALSA backend** — unchanged structurally, poll-driven (`snd_pcm_wait`),
+  gains same view/window pattern.
+
+**`rill-graph` (`backend_factory.rs`):**
+- **`BackendFactory` refactored.** Constructor signature changed:
+  `fn(params) -> Box<dyn IoBackend>` → `fn(params) -> (Arc<dyn IoDriver>,
+  Option<Arc<dyn IoCapture>>, Option<Arc<dyn IoPlayback>>)`.
+- **Bundle types:** `DuplexBundle` (driver + capture + playback),
+  `OutputBundle` (driver + playback), `InputBundle` (driver + capture).
+- **`create_any()`** — returns whatever capabilities the backend provides.
+  Replaces `create() -> Box<dyn IoBackend>`.
+- **Caching** — backends cached by name in factory, reused across racks.
+
+**Backend lifecycle (complete):**
+```
+orchestrator:
+  1. factory.create_any(name, params) → (driver, capture, playback)
+  2. graph.into_processing_state() → ProcessingState
+  3. state.wire_backends(capture, playback)
+  4. driver.set_process_callback(|tick| { state.process_block(&tick); })
+  5. driver.run(running)
+
+callback (RT thread):
+  state.process_block(&tick) → Source::generate → DSP → Sink::consume
+  state.send_clock_tick(&tick) [gated on tick.is_final]
+```
+
+**Removed:** `LofiInput` node (`rill-lofi`). Replaced by
+`LofiChipSource` — a `Source` node wrapping any `Algorithm<f32>` +
+`ChipEmulator` + `ParameterWrite`. `IoControl` trait provides
+`write_data()` channel for chip register writes via the backend's
+control interface.
+
+### 🎹 MIDI Output (`rill-io`, `rill-patchbay`, `rill-adrift`)
+
+MIDI output infrastructure — rill as MIDI master, sending Clock, Transport,
+and (future) Note messages to external devices.
+
+**`rill-io` — backend architecture:**
+- **`MidiBackend` → `MidiInput`** (breaking rename) — trait now accurately
+  reflects its input-only role (`poll() -> Vec<MidiMessage>`).
+- **`MidiOutput` trait** (new) — `send(&mut self, &MidiMessage) -> IoResult<()>`,
+  symmetric to `MidiInput`. Together they mirror the audio-side
+  `IoCapture`/`IoPlayback` separation — input and output are distinct
+  traits, each backend implements the direction(s) it supports.
+- **`MidirBackend`** — struct refactored: `_conn` field changed from
+  `MidiInputConnection<()>` to `MidirConnection` enum (`Input`/`Output`
+  variants). New constructors: `new_output()`, `new_output_by_name()`
+  using `midir::MidiOutput::connect()`. Backend can now be opened in
+  either direction — reused across both `MidiInput` and `MidiOutput`
+  trait impls.
+- **`AlsaSeqBackend`** — struct unchanged (`seq::Seq` is inherently
+  bidirectional). New `new_output()` constructor opens with
+  `Direction::Playback` + `PortCap::WRITE` (vs `Capture` + `READ` for
+  input). New `midi_to_alsa_event()` helper — reverse of existing
+  `alsa_event_to_midi()` — converts `MidiMessage` to ALSA `Event` for
+  `event_output()` + `drain_output()`.
+- **`JackMidiBackend`** — most significant struct change: `rx` split to
+  `Option<Receiver<MidiMessage>>`, new `tx: Option<SyncSender<MidiMessage>>`.
+  `JackMidiHandler` (process callback) becomes **bidirectional**:
+  `MidiIn` port → channel → `MidiInput::poll()`, and channel →
+  `MidiOut` port → `MidiOutput::send()`. Both directions coexist in
+  one JACK client — `connect()` opens input, `connect_output()` opens
+  output. Same pattern for internal comms (input drains `tx → rx`,
+  output feeds `tx → rx` in reverse).
+
+**`rill-patchbay`:**
+- **`MidiClockGenerator`** — output-side counterpart of `MidiClockTracker`.
+  Pure math: converts `ClockTick` → `Vec<ControlEvent::MidiClock>` using 24ppqn
+  (24 pulses per quarter note). Derives tick spacing from absolute sample
+  position — no cumulative drift. Transport state machine: Start resets phase,
+  Stop/Continue follow standard MIDI transport semantics. 6 unit tests.
+- **`spawn_midi_clock_output()`** — actor owning `MidiClockGenerator` +
+  `Box<dyn MidiOutput>`. Receives `ClockTick` via Rack broadcast and
+  `MidiTransport` commands, serializes via `serialize_to_midi()`, sends
+  through backend.
+- **`serialize_to_midi()`** — reverse of `parse_midi()`. Converts
+  `ControlEvent::MidiClock` → `0xF8`, `MidiTransport` → `0xFA/0xFB/0xFC`,
+  `MidiNote` → `0x90/0x80`. Round-trip tests: `parse_midi(serialize_to_midi(e)) == e`.
+- **`ClockDef { backend, port_name, auto_start }`** — serializable MIDI clock
+  output descriptor. Added to `ModuleDef::Clock(ClockDef)` variant.
+- Re-exports: `MidiClockGenerator`, `spawn_midi_clock_output`, `serialize_to_midi`,
+  `ClockDef`.
+
+**`rill-adrift`:**
+- **`ModuleDef::Clock(ClockDef)`** variant in adrift serialization layer,
+  for `ModularSystemDef` JSON documents.
+- **`ClockConstructor`** — registered in `ModuleFactory` as `"clock"`.
+  Creates `MidiOutput` backend, calls `spawn_midi_clock_output()`,
+  supports `auto_start`.
+- **`to_pb_module()` + rack dispatch** — `ClockDef` conversion and
+  module ID extraction for rack actor fan-out.
+
+**Design doc + plan:** `docs/superpowers/specs/2026-06-30-midi-output-design.md`,
+`docs/superpowers/plans/2026-06-30-midi-output-plan.md`.
 
 ### ⚡ Servo conflict resolution (`rill-patchbay`)
 
