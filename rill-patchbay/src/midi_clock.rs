@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use rill_core::time::SystemClock;
+use rill_core::queues::control_event::{ControlEvent, MidiTransportKind};
+use rill_core::time::{ClockTick, SystemClock};
 
 // =============================================================================
 // MidiClockStrategy
@@ -259,6 +260,90 @@ impl MidiClockTracker {
     }
 }
 
+// =============================================================================
+// MidiClockGenerator — output-side MIDI clock pulse generator
+// =============================================================================
+
+/// Generates MIDI clock pulses from signal-level [`ClockTick`] events.
+///
+/// This is the output counterpart of [`MidiClockTracker`] (input side).
+/// On each `tick()` call it computes how many 24ppqn MIDI clock pulses
+/// fall within the signal block and returns them as [`ControlEvent::MidiClock`].
+///
+/// Uses absolute sample position from [`ClockTick`] to avoid cumulative
+/// drift. When BPM changes, `samples_per_tick` is recalculated.
+pub struct MidiClockGenerator {
+    next_tick_at: f64,
+    samples_per_tick: f64,
+    bpm: f64,
+    playing: bool,
+}
+
+impl MidiClockGenerator {
+    /// Create a stopped generator. No ticks are produced until
+    /// a [`ControlEvent::MidiTransport`] with `Start` is received.
+    pub fn new() -> Self {
+        Self {
+            next_tick_at: 0.0,
+            samples_per_tick: 0.0,
+            bpm: 0.0,
+            playing: false,
+        }
+    }
+
+    /// Process one signal block. Returns MIDI clock events for 24ppqn
+    /// ticks that fall within `[clock.sample_pos, clock.sample_pos + block_size)`.
+    /// Returns empty vec if transport is not playing or tempo is not set.
+    pub fn tick(&mut self, clock: &ClockTick) -> Vec<ControlEvent> {
+        if !self.playing {
+            return Vec::new();
+        }
+
+        let tempo = match clock.tempo {
+            Some(t) => t as f64,
+            None => return Vec::new(),
+        };
+
+        if (tempo - self.bpm).abs() > f64::EPSILON {
+            self.bpm = tempo;
+            let spb = 60.0 / self.bpm;
+            self.samples_per_tick = clock.sample_rate as f64 * spb / 24.0;
+        }
+
+        let block_end = clock.sample_pos as f64 + clock.samples_since_last as f64;
+        let mut events = Vec::new();
+
+        while self.next_tick_at < block_end {
+            events.push(ControlEvent::MidiClock);
+            self.next_tick_at += self.samples_per_tick;
+        }
+
+        events
+    }
+
+    /// Handle a transport state change.
+    pub fn handle_transport(&mut self, kind: MidiTransportKind, current_sample: u64) {
+        match kind {
+            MidiTransportKind::Start => {
+                self.next_tick_at = current_sample as f64;
+                self.playing = true;
+            }
+            MidiTransportKind::Stop => {
+                self.playing = false;
+            }
+            MidiTransportKind::Continue => {
+                self.playing = true;
+            }
+        }
+    }
+}
+
+impl Default for MidiClockGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +437,135 @@ mod tests {
             "BPM {:.1} out of clamp range",
             bpm
         );
+    }
+
+    #[test]
+    fn test_clock_generator_no_ticks_when_stopped() {
+        let mut gen = MidiClockGenerator::new();
+        let tick = ClockTick::new(48000, 256, 48000.0, "test".into());
+        let events = gen.tick(&tick);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_clock_generator_no_ticks_without_tempo() {
+        let mut gen = MidiClockGenerator::new();
+        gen.handle_transport(MidiTransportKind::Start, 0);
+        let tick = ClockTick {
+            sample_pos: 0,
+            samples_since_last: 256,
+            is_new_block: true,
+            sample_rate: 48000.0,
+            tempo: None,
+            source: "test".into(),
+            speed_ratio: 1.0,
+            is_final: true,
+        };
+        let events = gen.tick(&tick);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_clock_generator_produces_ticks_at_120bpm() {
+        let mut gen = MidiClockGenerator::new();
+        gen.handle_transport(MidiTransportKind::Start, 0);
+        let tick = ClockTick {
+            sample_pos: 0,
+            samples_since_last: 2048,
+            is_new_block: true,
+            sample_rate: 48000.0,
+            tempo: Some(120.0),
+            source: "test".into(),
+            speed_ratio: 1.0,
+            is_final: true,
+        };
+        let events = gen.tick(&tick);
+        // 48kHz @ 120bpm = 1000 samples/tick. Block 0..2048 → ticks at 0, 1000, 2000.
+        assert_eq!(events.len(), 3);
+        for e in &events {
+            assert_eq!(*e, ControlEvent::MidiClock);
+        }
+    }
+
+    #[test]
+    fn test_clock_generator_tracks_phase_across_blocks() {
+        let mut gen = MidiClockGenerator::new();
+        gen.handle_transport(MidiTransportKind::Start, 0);
+        let tick1 = ClockTick {
+            sample_pos: 0,
+            samples_since_last: 1200,
+            is_new_block: true,
+            sample_rate: 48000.0,
+            tempo: Some(120.0),
+            source: "test".into(),
+            speed_ratio: 1.0,
+            is_final: true,
+        };
+        let events1 = gen.tick(&tick1);
+        // Block 0..1200 → ticks at 0, 1000.
+        assert_eq!(events1.len(), 2);
+        let tick2 = ClockTick {
+            sample_pos: 1200,
+            samples_since_last: 1200,
+            is_new_block: true,
+            sample_rate: 48000.0,
+            tempo: Some(120.0),
+            source: "test".into(),
+            speed_ratio: 1.0,
+            is_final: true,
+        };
+        let events2 = gen.tick(&tick2);
+        // Block 1200..2400 → next_tick_at was 2000, one tick at 2000.
+        assert_eq!(events2.len(), 1);
+    }
+
+    #[test]
+    fn test_clock_generator_transport_stop() {
+        let mut gen = MidiClockGenerator::new();
+        gen.handle_transport(MidiTransportKind::Start, 0);
+        let tick = ClockTick {
+            sample_pos: 0,
+            samples_since_last: 5000,
+            is_new_block: true,
+            sample_rate: 48000.0,
+            tempo: Some(120.0),
+            source: "test".into(),
+            speed_ratio: 1.0,
+            is_final: true,
+        };
+        let events = gen.tick(&tick);
+        assert_eq!(events.len(), 5);
+        gen.handle_transport(MidiTransportKind::Stop, 0);
+        let tick2 = ClockTick {
+            sample_pos: 5000,
+            samples_since_last: 256,
+            is_new_block: true,
+            sample_rate: 48000.0,
+            tempo: Some(120.0),
+            source: "test".into(),
+            speed_ratio: 1.0,
+            is_final: true,
+        };
+        let events2 = gen.tick(&tick2);
+        assert!(events2.is_empty());
+    }
+
+    #[test]
+    fn test_clock_generator_start_resets_phase() {
+        let mut gen = MidiClockGenerator::new();
+        gen.handle_transport(MidiTransportKind::Start, 48000);
+        let tick = ClockTick {
+            sample_pos: 48000,
+            samples_since_last: 2048,
+            is_new_block: true,
+            sample_rate: 48000.0,
+            tempo: Some(120.0),
+            source: "test".into(),
+            speed_ratio: 1.0,
+            is_final: true,
+        };
+        let events = gen.tick(&tick);
+        // Start resets next_tick_at to 48000. Block 48000..50048 → ticks at 48000, 49000, 50000.
+        assert_eq!(events.len(), 3);
     }
 }
