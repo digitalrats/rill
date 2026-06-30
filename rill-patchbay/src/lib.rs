@@ -118,7 +118,8 @@ pub use midi::MidiHub;
 pub use midi_clock::MidiClockGenerator;
 #[cfg(feature = "midi")]
 pub use midi_clock::{
-    FreeRunning, MidiClockStrategy, MidiClockTracker, ResetOnStart, SongPosition,
+    spawn_midi_clock_output, FreeRunning, MidiClockStrategy, MidiClockTracker, ResetOnStart,
+    SongPosition,
 };
 #[cfg(feature = "osc")]
 pub use osc::spawn_osc_sensor;

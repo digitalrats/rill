@@ -20,7 +20,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rill_core::queues::control_event::{ControlEvent, MidiTransportKind};
+use rill_core::queues::CommandEnum;
 use rill_core::time::{ClockTick, SystemClock};
+use rill_core_actor::{ActorRef, ActorSystem};
+
+use rill_io::midi_output::MidiOutput;
+
+use crate::midi::serialize_to_midi;
 
 // =============================================================================
 // MidiClockStrategy
@@ -342,6 +348,48 @@ impl Default for MidiClockGenerator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Spawn a MIDI clock output actor.
+///
+/// The actor owns a [`MidiOutput`] backend and a [`MidiClockGenerator`].
+/// It receives [`CommandEnum::ClockTick`] via Rack broadcast and
+/// [`CommandEnum::Control(ControlEvent::MidiTransport)`] for transport
+/// control.
+pub fn spawn_midi_clock_output(
+    system: &ActorSystem,
+    output: Box<dyn MidiOutput>,
+) -> ActorRef<CommandEnum> {
+    let mut generator = MidiClockGenerator::new();
+    let mut backend = output;
+
+    system.spawn_detached(
+        "midi_clock_output",
+        move || {
+            Box::new(move |msg: CommandEnum| match msg {
+                CommandEnum::ClockTick(clock_tick) => {
+                    let events = generator.tick(&clock_tick);
+                    for event in &events {
+                        if let Some(msg) = serialize_to_midi(event) {
+                            if let Err(e) = backend.send(&msg) {
+                                log::warn!("midi clock output send error: {e}");
+                            }
+                        }
+                    }
+                }
+                CommandEnum::Control(ControlEvent::MidiTransport { kind }) => {
+                    generator.handle_transport(kind, 0);
+                    if let Some(msg) = serialize_to_midi(&ControlEvent::MidiTransport { kind }) {
+                        if let Err(e) = backend.send(&msg) {
+                            log::warn!("midi transport send error: {e}");
+                        }
+                    }
+                }
+                _ => {}
+            })
+        },
+        10,
+    )
 }
 
 #[cfg(test)]
