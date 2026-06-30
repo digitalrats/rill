@@ -9,11 +9,12 @@
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
-use jack::{Client, ClientOptions, Control, MidiIn, Port, ProcessHandler, ProcessScope};
+use jack::{Client, ClientOptions, Control, MidiIn, MidiOut, Port, ProcessHandler, ProcessScope};
 
-use crate::error::IoResult;
+use crate::error::{IoError, IoResult};
 use crate::midi_input::MidiInput;
 use crate::midi_message::MidiMessage;
+use crate::midi_output::MidiOutput;
 
 const CHANNEL_CAPACITY: usize = 256;
 
@@ -22,7 +23,8 @@ const CHANNEL_CAPACITY: usize = 256;
 /// Registers a single `MidiIn` port named `"midi_in"`. Auto-connects to
 /// the first available `midi_capture` port on startup.
 pub struct JackMidiBackend {
-    rx: Receiver<MidiMessage>,
+    pub(crate) rx: Option<Receiver<MidiMessage>>,
+    tx: Option<SyncSender<MidiMessage>>,
     _active: Option<jack::AsyncClient<(), JackMidiHandler>>,
     client_name: String,
 }
@@ -33,12 +35,51 @@ impl JackMidiBackend {
     /// The backend is **not connected** until `connect()` is called.
     /// `client_name` appears in JACK patchbay (e.g. `"rill_midi"`).
     pub fn new(client_name: impl Into<String>) -> IoResult<Self> {
-        let (_tx, rx) = sync_channel::<MidiMessage>(0);
+        let (_, rx) = sync_channel::<MidiMessage>(0);
         Ok(Self {
-            rx,
+            rx: Some(rx),
+            tx: None,
             _active: None,
             client_name: client_name.into(),
         })
+    }
+
+    /// Create a JACK MIDI output backend.
+    pub fn new_output(client_name: impl Into<String>) -> IoResult<Self> {
+        let (tx, _) = sync_channel::<MidiMessage>(0);
+        Ok(Self {
+            rx: None,
+            tx: Some(tx),
+            _active: None,
+            client_name: client_name.into(),
+        })
+    }
+
+    /// Connect output to JACK and register the MIDI out port.
+    pub fn connect_output(&mut self) -> Result<(), String> {
+        let name = &self.client_name;
+        let (client, _status) = Client::new(name.as_str(), ClientOptions::NO_START_SERVER)
+            .map_err(|e| format!("JACK MIDI output client new: {e:?}"))?;
+
+        let midi_out: Port<MidiOut> = client
+            .register_port("midi_out", MidiOut::default())
+            .map_err(|e| format!("JACK MIDI output port: {e:?}"))?;
+
+        let (tx_write, rx) = sync_channel(CHANNEL_CAPACITY);
+        let handler = JackMidiHandler {
+            tx: None,
+            rx: Some(rx),
+            midi_in: None,
+            midi_out: Some(midi_out),
+        };
+
+        let active = client
+            .activate_async((), handler)
+            .map_err(|e| format!("JACK MIDI output activate: {e:?}"))?;
+
+        self.tx = Some(tx_write);
+        self._active = Some(active);
+        Ok(())
     }
 
     /// Connect to JACK and register the MIDI port.
@@ -55,7 +96,12 @@ impl JackMidiBackend {
             .map_err(|e| format!("JACK MIDI port: {e:?}"))?;
 
         let (tx, rx) = sync_channel(CHANNEL_CAPACITY);
-        let handler = JackMidiHandler { tx, midi_in };
+        let handler = JackMidiHandler {
+            tx: Some(tx),
+            rx: None,
+            midi_in: Some(midi_in),
+            midi_out: None,
+        };
 
         let active = client
             .activate_async((), handler)
@@ -80,7 +126,7 @@ impl JackMidiBackend {
             }
         }
 
-        self.rx = rx;
+        self.rx = Some(rx);
         self._active = Some(active);
         Ok(())
     }
@@ -89,16 +135,28 @@ impl JackMidiBackend {
 impl MidiInput for JackMidiBackend {
     fn poll(&mut self) -> IoResult<Vec<MidiMessage>> {
         let mut events = Vec::new();
-        loop {
-            match self.rx.try_recv() {
-                Ok(msg) => events.push(msg),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    return Ok(events);
+        if let Some(ref rx) = self.rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => events.push(msg),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(events),
                 }
             }
         }
         Ok(events)
+    }
+}
+
+impl MidiOutput for JackMidiBackend {
+    fn send(&mut self, message: &MidiMessage) -> IoResult<()> {
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| IoError::Midi("backend opened as input, not output".into()))?;
+        tx.try_send(*message)
+            .map_err(|_| IoError::Midi("JACK MIDI output channel full".into()))?;
+        Ok(())
     }
 }
 
@@ -111,16 +169,34 @@ impl Drop for JackMidiBackend {
 // ─── JACK Process Handler ──────────────────────────────────────────────────
 
 struct JackMidiHandler {
-    tx: SyncSender<MidiMessage>,
-    midi_in: Port<MidiIn>,
+    tx: Option<SyncSender<MidiMessage>>,
+    rx: Option<Receiver<MidiMessage>>,
+    midi_in: Option<Port<MidiIn>>,
+    midi_out: Option<Port<MidiOut>>,
 }
 
 impl ProcessHandler for JackMidiHandler {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
-        for event in self.midi_in.iter(ps) {
-            let bytes = event.bytes;
-            let msg = bytes_to_midi(bytes);
-            let _ = self.tx.try_send(msg);
+        if let (Some(ref midi_in), Some(ref tx)) = (&self.midi_in, &self.tx) {
+            for event in midi_in.iter(ps) {
+                let msg = bytes_to_midi(event.bytes);
+                let _ = tx.try_send(msg);
+            }
+        }
+        if let (Some(ref mut midi_out), Some(ref rx)) = (&mut self.midi_out, &self.rx) {
+            let mut writer = midi_out.writer(ps);
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => {
+                        let _ = writer.write(&jack::RawMidi {
+                            time: 0,
+                            bytes: msg.as_bytes(),
+                        });
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                }
+            }
         }
         Control::Continue
     }
