@@ -1,14 +1,14 @@
 //! Cross-platform MIDI backend using `midir`.
 //!
 //! Connects to an existing MIDI input port and pushes received messages
-//! through an internal channel, drained by [`MidiBackend::poll`].
+//! through an internal channel, drained by [`MidiInput::poll`].
 //!
 //! Supported platforms: Linux (ALSA), macOS (CoreMIDI), Windows (WinMM).
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::error::{IoError, IoResult};
-use crate::midi_backend::MidiBackend;
+use crate::midi_input::MidiInput;
 use crate::midi_message::MidiMessage;
 
 /// Cross-platform MIDI backend powered by `midir`.
@@ -19,7 +19,7 @@ use crate::midi_message::MidiMessage;
 /// # Example
 ///
 /// ```rust,no_run
-/// use rill_io::midi_backend::MidiBackend;
+/// use rill_io::midi_input::MidiInput;
 /// use rill_io::backends::MidirBackend;
 ///
 /// let mut be = MidirBackend::new("rill-midi").unwrap();
@@ -163,7 +163,7 @@ impl MidirBackend {
     }
 }
 
-impl MidiBackend for MidirBackend {
+impl MidiInput for MidirBackend {
     fn poll(&mut self) -> IoResult<Vec<MidiMessage>> {
         let mut events = Vec::new();
         loop {

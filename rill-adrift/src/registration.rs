@@ -442,7 +442,7 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
 #[cfg(feature = "midi")]
 fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
     use rill_core::queues::CommandEnum;
-    use rill_io::midi_backend::MidiBackend;
+    use rill_io::midi_input::MidiInput;
     use rill_patchbay::module_def::{ModuleDef, SensorDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
 
@@ -473,7 +473,7 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
                 }
             };
 
-            let be: Box<dyn MidiBackend> = match backend.as_str() {
+            let be: Box<dyn MidiInput> = match backend.as_str() {
                 "midir" => {
                     let b = rill_io::backends::MidirBackend::new_by_name("rill-midi", port_name)
                         .or_else(|_| rill_io::backends::MidirBackend::new("rill-midi"))

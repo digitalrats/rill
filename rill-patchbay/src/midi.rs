@@ -14,14 +14,14 @@ use std::time::Duration;
 
 use rill_core::queues::{CommandEnum, SensorCommand};
 use rill_core_actor::{ActorRef, ActorSystem};
-use rill_io::midi_backend::MidiBackend;
+use rill_io::midi_input::MidiInput;
 use rill_io::midi_message::MidiMessage;
 
 use crate::engine::{ControlEvent, MidiTransportKind, Module};
 use crate::midi_clock::MidiClockTracker;
 use crate::sensor::Sensor;
 
-/// MIDI sensor — polls a [`MidiBackend`] on a dedicated OS thread,
+/// MIDI sensor — polls a [`MidiInput`] on a dedicated OS thread,
 /// parses raw bytes into [`ControlEvent`]s, and dispatches via [`ActorRef`].
 ///
 /// Optionally integrates a [`MidiClockTracker`] for MIDI clock sync:
@@ -32,13 +32,13 @@ pub struct MidiHub {
     thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
     events: Option<ActorRef<ControlEvent>>,
-    backend: Option<Box<dyn MidiBackend>>,
+    backend: Option<Box<dyn MidiInput>>,
     tracker: Option<MidiClockTracker>,
 }
 
 impl MidiHub {
     /// Create a new MIDI sensor with a backend.
-    pub fn new(id: impl Into<String>, backend: Box<dyn MidiBackend>) -> Self {
+    pub fn new(id: impl Into<String>, backend: Box<dyn MidiInput>) -> Self {
         Self {
             id: id.into(),
             thread: None,
@@ -56,7 +56,7 @@ impl MidiHub {
     /// wiring into the signal graph.
     pub fn with_clock_tracker(
         id: impl Into<String>,
-        backend: Box<dyn MidiBackend>,
+        backend: Box<dyn MidiInput>,
         tracker: MidiClockTracker,
     ) -> Self {
         Self {
@@ -72,7 +72,7 @@ impl MidiHub {
     /// Convenience: create, attach, and start in one call.
     pub fn start(
         id: impl Into<String>,
-        backend: Box<dyn MidiBackend>,
+        backend: Box<dyn MidiInput>,
         events: ActorRef<ControlEvent>,
     ) -> Self {
         let mut hub = Self::new(id, backend);
@@ -167,7 +167,7 @@ impl Drop for MidiHub {
 /// * `servo_ref` — target servo's actor reference for delivering events
 pub fn spawn_midi_sensor(
     id: &str,
-    backend: Box<dyn MidiBackend>,
+    backend: Box<dyn MidiInput>,
     system: &ActorSystem,
     servo_ref: ActorRef<CommandEnum>,
 ) -> ActorRef<CommandEnum> {

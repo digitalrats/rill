@@ -240,8 +240,8 @@ impl SensorDef {
                 port_name,
                 mappings: _,
             } => {
-                use rill_io::midi_backend::MidiBackend;
-                let be: Box<dyn MidiBackend> = match backend.as_str() {
+                use rill_io::midi_input::MidiInput;
+                let be: Box<dyn MidiInput> = match backend.as_str() {
                     "midir" => Box::new(rill_io::backends::MidirBackend::new(port_name).ok()?),
                     "alsa_seq" => {
                         #[cfg(feature = "alsa")]

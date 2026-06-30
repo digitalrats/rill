@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 5. MIDI sensor with declarative mappings ────────────────────
     // Connect: by name substring or numeric index
-    let midi_backend: Box<dyn rill_io::midi_backend::MidiBackend> = if let Ok(idx) =
+    let midi_backend: Box<dyn rill_io::midi_input::MidiInput> = if let Ok(idx) =
         midi_spec.parse::<usize>()
     {
         Box::new(MidirBackend::new_by_port("rill-midi-synth", idx).map_err(|e| e.to_string())?)

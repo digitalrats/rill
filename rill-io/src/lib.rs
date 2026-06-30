@@ -38,8 +38,8 @@ pub mod pw;
 /// Raw MIDI message type.
 pub mod midi_message;
 
-/// MIDI backend trait.
-pub mod midi_backend;
+/// MIDI input trait.
+pub mod midi_input;
 
 pub use backend::{BackendType, DeviceInfo};
 pub use config::AudioConfig;
@@ -50,7 +50,7 @@ pub use output::AudioOutput;
 pub use output::Output;
 pub use rings::PwBuffers;
 
-pub use midi_backend::MidiBackend;
+pub use midi_input::MidiInput;
 pub use midi_message::MidiMessage;
 
 pub use backends::NullBackend;

@@ -1,4 +1,4 @@
-//! JACK MIDI backend — bridges JACK MIDI input to `MidiBackend::poll()`.
+//! JACK MIDI backend — bridges JACK MIDI input to `MidiInput::poll()`.
 //!
 //! Creates a lightweight JACK client with a `MidiIn` port. The JACK
 //! process callback writes incoming MIDI events to an mpsc channel;
@@ -12,7 +12,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use jack::{Client, ClientOptions, Control, MidiIn, Port, ProcessHandler, ProcessScope};
 
 use crate::error::IoResult;
-use crate::midi_backend::MidiBackend;
+use crate::midi_input::MidiInput;
 use crate::midi_message::MidiMessage;
 
 const CHANNEL_CAPACITY: usize = 256;
@@ -86,7 +86,7 @@ impl JackMidiBackend {
     }
 }
 
-impl MidiBackend for JackMidiBackend {
+impl MidiInput for JackMidiBackend {
     fn poll(&mut self) -> IoResult<Vec<MidiMessage>> {
         let mut events = Vec::new();
         loop {

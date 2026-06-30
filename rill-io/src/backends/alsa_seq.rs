@@ -8,7 +8,7 @@ use alsa::seq;
 use alsa::Direction;
 
 use crate::error::{IoError, IoResult};
-use crate::midi_backend::MidiBackend;
+use crate::midi_input::MidiInput;
 use crate::midi_message::MidiMessage;
 
 /// ALSA sequencer MIDI backend.
@@ -19,7 +19,7 @@ use crate::midi_message::MidiMessage;
 /// # Example
 ///
 /// ```rust,no_run
-/// use rill_io::midi_backend::MidiBackend;
+/// use rill_io::midi_input::MidiInput;
 /// use rill_io::backends::AlsaSeqBackend;
 ///
 /// let mut be = AlsaSeqBackend::new("rill-midi").unwrap();
@@ -55,7 +55,7 @@ impl AlsaSeqBackend {
     }
 }
 
-impl MidiBackend for AlsaSeqBackend {
+impl MidiInput for AlsaSeqBackend {
     fn poll(&mut self) -> IoResult<Vec<MidiMessage>> {
         let mut events = Vec::new();
         let mut input = self.seq.input();
