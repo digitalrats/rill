@@ -188,7 +188,7 @@ mod tests {
 
         let value = walk.step(&mut internal, &current, 0.01, &NoAction);
         let val = value.as_f32().unwrap();
-        assert!(val >= -1.0 && val <= 1.0);
+        assert!((-1.0..=1.0).contains(&val));
     }
 
     #[test]
@@ -199,6 +199,6 @@ mod tests {
 
         let value = logistic.step(&mut internal, &current, 0.0, &NoAction);
         let val = value.as_f32().unwrap();
-        assert!(val >= 0.0 && val <= 1.0);
+        assert!((0.0..=1.0).contains(&val));
     }
 }

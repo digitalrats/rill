@@ -343,6 +343,7 @@ mod tests {
             _: &RenderContext,
             _: &[T],
             _: &[RenderContext],
+            _: &rill_core::time::ClockTick,
         ) -> ProcessResult<()> {
             Ok(())
         }

@@ -10,16 +10,16 @@ Every chip emulator follows the same model:
 
 ```
 ┌──────────────┐    ┌────────────────────┐    ┌───────────────────┐
-│  Ay38910Chip │    │  Ay38910Backend    │    │  LofiInput<f32,N> │
-│  pure logic  │───►│  IoBackend<f32>    │───►│  Source node      │
-│  testable    │    │  + IoControl       │    │  lofi processing  │
+│  Ay38910Chip │    │  LofiChipSource    │    │  LofiInput<f32,N>  │
+│  Algorithm   │───►│  wraps chip,       │───►│  Source node       │
+│  + ChipEmul. │    │  drives generation │    │  lofi processing   │
 └──────────────┘    └────────────────────┘    └───────────────────┘
 ```
 
 ### 1. Chip (`Ay38910Chip`) — pure logic
 
 Contains only the chip's digital model — registers, tone generators, noise LFSR,
-envelope. No audio I/O, no graph integration, no lofi processing. Directly testable.
+envelope. No signal I/O, no graph integration, no lofi processing. Directly testable.
 
 **AY-3-8910 register map (16 × 8-bit):**
 
@@ -47,43 +47,42 @@ chip.write_register(7, 0x38); // mixer: Ch A tone+noise ON, B/C tone ON
 let sample = chip.generate_sample(44100.0);
 ```
 
-### 2. Backend (`Ay38910Backend`) — IoBackend + IoControl
+### 2. LofiChipSource — wraps chip as Algorithm
 
-Wraps the chip as an `IoBackend<f32>`. `read()` loads register values from atomics
-and generates signal sample-by-sample. Register writes go through `IoControl::write_data()`
-using atomic stores for cross-thread safety (control thread → signal thread).
+`LofiChipSource` wraps `Ay38910Chip` (which implements `Algorithm<f32> + ChipEmulator`)
+and drives sample generation. Register writes go through `set_parameter("register_write", bytes)`.
+Signal generation via `chip.process(None, &mut out)`.
 
 ```rust
-use rill_adrift::lofi::Ay38910Backend;
+use rill_adrift::lofi::{Ay38910Chip, LofiChipSource};
 
-let backend = Ay38910Backend::new(1_750_000.0, 44100.0);
-let ctrl = backend.as_control().unwrap();
+let mut chip = Ay38910Chip::new(1_750_000.0, 44100.0);
 let regs = [0x17, 0x01, 0, 0, 0, 0, 0, 0x38, 0x0A, 0, 0, 0, 0, 0, 0, 0];
-ctrl.write_data(&regs);           // writes all 16 registers atomically
+chip.set_parameter("register_write", ParamValue::Bytes(regs.into()))?;
 
 let mut buf = [0.0f32; 256];
-backend.read(&mut [&mut buf[..]]);  // generates 256 samples
+chip.process(None, &mut buf)?;
 ```
 
 ### 3. LofiInput — Source node in the graph
 
-`LofiInput` wraps any `IoBackend<f32>` and applies vintage degradation: bitcrushing,
+`LofiInput` wraps a `LofiChipSource` and applies vintage degradation: bitcrushing,
 noise floor, DAC nonlinearity, delay. Configured at construction and runtime-tunable
 via `set_parameter`.
 
 In a typical graph (e.g., `chiptune.rs`): the sequencer (via Servo + Automaton) sends
-register bytes to `LofiInput.set_parameter("io_write", ParamValue::Bytes(regs))`,
-which calls `backend.write_data(regs)` on the AY backend.
+register bytes to `LofiInput.set_parameter("register_write", ParamValue::Bytes(regs))`,
+which forwards to the chip.
 
 ```
-[SequencerAutomaton] → [Servo] → SetParameter("io_write", regs)
-                                      │
+[SequencerAutomaton] → [Servo] → SetParameter("register_write", regs)
+                                       │
 ┌─────────────────────────────────────┘
 ▼
 Graph tick: actor.drain()
-  → LofiInput.set_parameter("io_write", regs)  // writes registers
-  → LofiInput.generate()                        // reads backend, lofi processing
-  → propagate → Output                          // audio to device
+  → LofiInput.set_parameter("register_write", regs)  // writes registers
+  → LofiInput.generate()                             // reads chip, lofi processing
+  → propagate → Output                               // signal to device
 ```
 
 ## Full example: AY-3-8910 chiptune player
@@ -172,19 +171,18 @@ differ from hardware by one sample period.
 
 | Chip | Structs | Registers | Features |
 |------|---------|-----------|----------|
-| AY-3-8910 | `Ay38910Chip`, `Ay38910Backend` | 16 × 8-bit | 3 tone channels, noise LFSR, envelope |
-| NES 2A03 | `NesChip`, `NesBackend` | 22 × 8-bit ($4000–$4015) | 2 pulse + sweep, triangle, noise, DPCM |
+| AY-3-8910 | `Ay38910Chip`, `LofiChipSource` | 16 × 8-bit | 3 tone channels, noise LFSR, envelope |
 
-## IoControl trait
+## ParameterWrite trait
 
-The `IoControl` trait in `rill-core::io` provides a uniform interface for
-sending register data to chip backends:
+Chip emulators implement the `ParameterWrite` trait from `rill-core` for
+register-level control:
 
 ```rust
-pub trait IoControl: Send + Sync {
-    fn write_data(&self, data: &[u8]) -> usize;
+pub trait ParameterWrite {
+    fn write_parameter(&mut self, name: &str, value: ParamValue) -> ProcessResult<()>;
+    fn read_parameter(&self, name: &str) -> Option<ParamValue> { None }
 }
 ```
 
-`IoBackend` has a default `as_control() -> Option<&dyn IoControl>` method.
-Hardware backends return `None`. Chip backends return `Some(self)`.
+Register writes use `set_parameter("register_write", ParamValue::Bytes(regs))`.

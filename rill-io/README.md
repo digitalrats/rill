@@ -5,29 +5,36 @@ Audio I/O backends — PortAudio, ALSA, PipeWire, JACK.
 This crate provides I/O backends and the `Output`/`Input` graph
 nodes that own the reactive stream (process callback or similar).
 
-All backends implement [`IoBackend`] — a trait for reactive stream processing:
-`set_process_callback`, `read`, `write`, `run`, `stop`.
+I/O is split into three orthogonal traits:
 
-The process callback receives the actual negotiated sample rate (`f32`)
-from the backend so that `ClockTick` always contains the true device rate.
+- **`IoDriver`** — `set_process_callback`, `run`, `stop` (owns the timing loop)
+- **`IoCapture`** — `read_input(channel, &mut [f32])`, `num_input_channels()`
+- **`IoPlayback`** — `write_output(channel, &[f32])`, `num_output_channels()`
+
+A single backend struct (e.g. `PipewireBackend`) implements `IoDriver`
+and optionally `IoCapture` / `IoPlayback`.
+`IoBackend` is a backward-compatible alias: `pub trait IoBackend: IoDriver {}`.
+
+The process callback is registered via `IoDriver::set_process_callback()`.
 
 ## Nodes
 
-- **`Output`** — `Sink` node. Borrows backend via [`IoBackendPtr`].
-  `start()` registers the process callback and drives the graph:
+- **`Output`** — `Sink` node. Holds `Arc<dyn IoPlayback>` and calls
+  `write_output()` directly in `consume()`.  The backend is injected via
+  `Sink::set_playback()` by `ProcessingState::wire_backends()`.
 
   ```rust
-  let mut output = Output::<f32, 256>::with_channels(2);
+  let playback: Arc<dyn IoPlayback> = ...;
+  let mut output = Output::<f32, 256>::with_channels(playback, 2);
   ```
 
-- **`Input`** — `Source` node (push model). Borrows backend via
-  [`IoBackendPtr`]. `start()` registers the process callback.
+- **`Input`** — `Source` node (push model). Holds `Arc<dyn IoCapture>`.
+  Same pattern — `Source::set_capture()` injects the backend.
 
-In both cases the callback does:
-1. Drain `MpscQueue<ParameterCommand>` into graph nodes
-2. Create `ClockTick` with the backend‑supplied sample rate
-3. `process_block()` on the driver node
-4. `Port::propagate()` — recursive DAG traversal
+The process callback (registered by the orchestrator) does:
+1. Drain actor mailbox (`SetParameter` commands) into graph nodes
+2. `ProcessingState::process_block(&tick)` — generates, processes, propagates
+3. `ProcessingState::send_clock_tick(&tick)` — dispatches to control actors
 
 ## Backends
 

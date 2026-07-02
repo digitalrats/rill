@@ -4,7 +4,8 @@
 mod graph_alsa_it {
     use std::process::Command;
 
-    use rill_core::io::IoBackend;
+    use rill_core::io::{IoCapture, IoDriver, IoPlayback};
+    use rill_core::time::ClockTick;
     use rill_io::{AlsaBackend, AudioConfig};
 
     fn alsa_loopback_available() -> bool {
@@ -29,7 +30,11 @@ mod graph_alsa_it {
             .with_output_device("hw:Loopback,0,0");
 
         let backend = AlsaBackend::new(config).unwrap();
-        let _ = backend.write(&[&[0.0f32; 256][..]]);
+
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
+        let _tick = ClockTick::new(0, 256, 48000.0, "test".into());
+        backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
+
         let _ = backend.stop();
     }
 }

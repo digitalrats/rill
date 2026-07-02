@@ -570,9 +570,11 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(CACHE_LINE_SIZE, 64);
-        assert!(MAX_BUFFER_SIZE > MIN_BUFFER_SIZE);
-        assert!(DEFAULT_BUFFER_SIZE >= MIN_BUFFER_SIZE);
-        assert!(DEFAULT_BUFFER_SIZE <= MAX_BUFFER_SIZE);
+        const {
+            assert!(MAX_BUFFER_SIZE > MIN_BUFFER_SIZE);
+            assert!(DEFAULT_BUFFER_SIZE >= MIN_BUFFER_SIZE);
+            assert!(DEFAULT_BUFFER_SIZE <= MAX_BUFFER_SIZE);
+        }
     }
 
     #[test]

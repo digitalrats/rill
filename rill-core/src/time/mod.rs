@@ -52,6 +52,6 @@ mod tests {
     #[test]
     fn test_module_exports() {
         let _clock = SystemClock::with_sample_rate(44100.0);
-        let _tick = ClockTick::new(0, 64, 44100.0);
+        let _tick = ClockTick::new(0, 64, 44100.0, "test".to_string());
     }
 }

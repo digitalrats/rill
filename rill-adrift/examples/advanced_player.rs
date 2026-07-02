@@ -23,8 +23,10 @@ use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::registration;
 use rill_adrift::rill_core::{
     queues::{CommandEnum, SetParameter, SignalOrigin},
+    traits::SignalSlab,
     NodeId, ParamValue, ParameterId, PortId,
 };
+use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
 use serde::Deserialize;
 
 const BUF: usize = 256;
@@ -127,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|| cfg.backend.as_ref().map(|b| b.name.clone()))
         .unwrap_or_else(|| "null".into());
 
-    let wav_path = wav_arg.map(|s| resolve_wav_path(s, &crate_dir));
+    let wav_path = wav_arg.map(|s| resolve_wav_path(s, crate_dir));
 
     let running = Arc::new(AtomicBool::new(true));
 
@@ -138,18 +140,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend_name = backend_name.clone();
         let wav_path = wav_path.clone();
         std::thread::spawn(move || {
-            let mut graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+            // ── 1. Create backend before graph construction ──
+            let mut bf = BackendFactory::new();
+            registration::register_backends(&mut bf);
+            let mut be_params = HashMap::new();
+            be_params.insert("sample_rate".into(), ParamValue::Float(cfg.sample_rate));
+            be_params.insert("buffer_size".into(), ParamValue::Int(cfg.block_size as i32));
+            be_params.insert("channels".into(), ParamValue::Int(2));
+            let OutputBundle { driver, playback } = bf
+                .create_output(&backend_name, &be_params)
+                .expect("create output backend");
+
+            // Load WAV file on control thread BEFORE graph processing starts.
+            let slab: Option<Arc<SignalSlab>> = wav_path.as_ref().and_then(|path| {
+                match rill_adrift::sampler::wav::load_slab(path) {
+                    Ok(s) => {
+                        eprintln!("SamplePlayer: loaded {path}");
+                        Some(Arc::new(s))
+                    }
+                    Err(e) => {
+                        eprintln!("SamplePlayer: could not load {path}: {e}");
+                        None
+                    }
+                }
+            });
+
+            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
 
             // Send parameter changes via the actor mailbox
             let handle = graph.handle();
-            if let Some(ref path) = wav_path {
+            if let Some(ref s) = slab {
                 handle.send(CommandEnum::SetParameter(SetParameter::new(
                     PortId::signal_out(NodeId(0), 0),
-                    ParameterId::new("file").unwrap(),
-                    ParamValue::String(path.clone()),
+                    ParameterId::new("source").unwrap(),
+                    ParamValue::SignalSlab(s.clone()),
                     SignalOrigin::Manual,
                 )));
             }
+            // Drop local Arc reference so try_unwrap succeeds in the sampler.
+            drop(slab);
 
             // Example: set filter cutoff
             handle.send(CommandEnum::SetParameter(SetParameter::new(
@@ -159,7 +188,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SignalOrigin::Manual,
             )));
 
-            graph.run(running).ok();
+            let mut state = graph.into_processing_state();
+            state.wire_backends(None, Some(playback));
+            if let Err(e) = state.run_with_driver(driver, running) {
+                eprintln!("Backend error: {e}");
+            }
         })
     };
 

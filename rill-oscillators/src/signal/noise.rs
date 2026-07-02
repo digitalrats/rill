@@ -1,7 +1,7 @@
 //! Noise generators
 
 use rand::Rng;
-use rill_core::time::RenderContext;
+use rill_core::time::{ClockTick, RenderContext};
 use rill_core::traits::{
     Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
 };
@@ -300,6 +300,7 @@ impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
         _ctx: &RenderContext,
         _control_inputs: &[f32],
         _clock_inputs: &[RenderContext],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
         let mut temp = [0.0f32; BUF_SIZE];
         self.generate_block(&mut temp);
@@ -328,8 +329,9 @@ mod tests {
         noise.init(44100.0);
 
         let ctx = RenderContext::new(0, 64, 44100.0);
+        let tick = ClockTick::new(0, 64, 44100.0, String::new());
 
-        noise.generate(&ctx, &[], &[]).unwrap();
+        noise.generate(&ctx, &[], &[], &tick).unwrap();
     }
 
     #[test]
@@ -342,8 +344,9 @@ mod tests {
             noise.init(44100.0);
 
             let ctx = RenderContext::new(0, 64, 44100.0);
+            let tick = ClockTick::new(0, 64, 44100.0, String::new());
 
-            noise.generate(&ctx, &[], &[]).unwrap();
+            noise.generate(&ctx, &[], &[], &tick).unwrap();
 
             let output = noise.outputs[0].buffer.as_array();
 

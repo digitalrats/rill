@@ -1,6 +1,6 @@
 [package]
 name = "rill-lofi"
-version = "0.5.0-beta.6"
+version = "0.5.0-beta.7"
 edition = "2021"
 description = "Lo-fi audio emulation: 8-bit, 12-bit, NES, AY-3-8910, Akai S900"
 license.workspace = true

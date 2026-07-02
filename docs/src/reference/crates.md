@@ -27,11 +27,11 @@ The Rill workspace consists of 18 crates, all versioned synchronously.
 | Crate | Features                                                                                      |
 |-------|----------|
 | `rill-core` | `serde`, `simd`                                                                               |
-| `rill-core-dsp` | `simd`, `f64`, `fast_math`, `unstable`                                                        |
+| `rill-core-dsp` | `simd`, `f64`, `fast_math`                                                                     |
 | `rill-core-model` | (no non-default features)                                                                     |
 | `rill-digital-effects` | `modulation` (enables `rill-oscillators`)                                                     |
 | `rill-graph` | `serialization`                                                                               |
 | `rill-patchbay` | `serde`, `json`, `cbor`, `serialization`, `midi` (MIDI input), `osc` (OSC input) |
-| `rill-io` | `portaudio` (default), `alsa`, `pipewire`, `jack`, `all-backends`                             |
+| `rill-io` | `portaudio` (default), `midir` (default), `alsa`, `pipewire`, `jack`, `all-backends`        |
 | `rill-sampler` | `wav` (default, enables `hound`)                                                              |
-| `rill-adrift` | `io`, `lofi`, `telemetry`, `osc`, `sampler` (default); `analog` (opt-in); backend passthrough |
+| `rill-adrift` | `io`, `lofi`, `telemetry`, `osc`, `sampler`, `portaudio` (default); `analog`, `midi`, `alsa`, `jack`, `pipewire` (opt-in) |

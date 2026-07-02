@@ -4,7 +4,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rill_core::traits::algorithm::Algorithm;
-use rill_core_dsp::filters::{Biquad, Filter, FilterParams, FilterType};
+use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 const BLOCK: usize = 256;
 const SR: f32 = 44100.0;

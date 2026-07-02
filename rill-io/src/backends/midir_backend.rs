@@ -1,15 +1,22 @@
 //! Cross-platform MIDI backend using `midir`.
 //!
 //! Connects to an existing MIDI input port and pushes received messages
-//! through an internal channel, drained by [`MidiBackend::poll`].
+//! through an internal channel, drained by [`MidiInput::poll`].
 //!
 //! Supported platforms: Linux (ALSA), macOS (CoreMIDI), Windows (WinMM).
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::error::{IoError, IoResult};
-use crate::midi_backend::MidiBackend;
+use crate::midi_input::MidiInput;
 use crate::midi_message::MidiMessage;
+use crate::midi_output::MidiOutput;
+
+#[allow(dead_code)]
+enum MidirConnection {
+    Input(midir::MidiInputConnection<()>),
+    Output(midir::MidiOutputConnection),
+}
 
 /// Cross-platform MIDI backend powered by `midir`.
 ///
@@ -19,7 +26,7 @@ use crate::midi_message::MidiMessage;
 /// # Example
 ///
 /// ```rust,no_run
-/// use rill_io::midi_backend::MidiBackend;
+/// use rill_io::midi_input::MidiInput;
 /// use rill_io::backends::MidirBackend;
 ///
 /// let mut be = MidirBackend::new("rill-midi").unwrap();
@@ -27,7 +34,7 @@ use crate::midi_message::MidiMessage;
 /// ```
 pub struct MidirBackend {
     rx: Receiver<MidiMessage>,
-    _conn: midir::MidiInputConnection<()>,
+    _conn: MidirConnection,
 }
 
 impl MidirBackend {
@@ -159,11 +166,62 @@ impl MidirBackend {
             ports.len()
         );
 
-        Ok(Self { rx, _conn: conn })
+        Ok(Self {
+            rx,
+            _conn: MidirConnection::Input(conn),
+        })
+    }
+
+    /// Create a new MIDI output, connect to a port by substring match.
+    pub fn new_output_by_name(name: &str, port_name: &str) -> IoResult<Self> {
+        Self::connect_output(name, |midi_out, ports| {
+            for (i, p) in ports.iter().enumerate() {
+                let pname = midi_out.port_name(p).unwrap_or_else(|_| "?".into());
+                if pname.contains(port_name) {
+                    return Ok((i, pname));
+                }
+            }
+            Err(IoError::DeviceNotFound(format!(
+                "no MIDI output port matching '{}' ({} total)",
+                port_name,
+                ports.len()
+            )))
+        })
+    }
+
+    /// Create a new MIDI output, connect to the first available port.
+    pub fn new_output(name: &str) -> IoResult<Self> {
+        Self::connect_output(name, |midi_out, ports| {
+            if ports.is_empty() {
+                return Err(IoError::DeviceNotFound("no MIDI output ports".into()));
+            }
+            let pname = midi_out.port_name(&ports[0]).unwrap_or_else(|_| "?".into());
+            Ok((0, pname))
+        })
+    }
+
+    fn connect_output(
+        name: &str,
+        find: impl FnOnce(&midir::MidiOutput, &[midir::MidiOutputPort]) -> IoResult<(usize, String)>,
+    ) -> IoResult<Self> {
+        let midi_out =
+            midir::MidiOutput::new(name).map_err(|e| IoError::Init(format!("midir out: {e}")))?;
+        let ports = midi_out.ports();
+        let (port_idx, port_name) = find(&midi_out, &ports)?;
+        let port = &ports[port_idx];
+        let conn = midi_out
+            .connect(port, "rill-midi-out")
+            .map_err(|e| IoError::Init(format!("midir out connect: {e}")))?;
+        log::info!("midir out: connected to port #{port_idx} '{port_name}'");
+        let (_tx, rx) = std::sync::mpsc::channel::<MidiMessage>();
+        Ok(Self {
+            rx,
+            _conn: MidirConnection::Output(conn),
+        })
     }
 }
 
-impl MidiBackend for MidirBackend {
+impl MidiInput for MidirBackend {
     fn poll(&mut self) -> IoResult<Vec<MidiMessage>> {
         let mut events = Vec::new();
         loop {
@@ -176,6 +234,21 @@ impl MidiBackend for MidirBackend {
             }
         }
         Ok(events)
+    }
+}
+
+impl MidiOutput for MidirBackend {
+    fn send(&mut self, message: &MidiMessage) -> IoResult<()> {
+        match &mut self._conn {
+            MidirConnection::Output(conn) => {
+                conn.send(message.as_bytes())
+                    .map_err(|e| IoError::Midi(format!("midir send: {e}")))?;
+                Ok(())
+            }
+            MidirConnection::Input(_) => {
+                Err(IoError::Midi("backend opened as input, not output".into()))
+            }
+        }
     }
 }
 

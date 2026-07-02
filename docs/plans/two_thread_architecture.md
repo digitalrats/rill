@@ -2,28 +2,27 @@
 
 ## Overview
 
-**Signal thread (hard/soft RT)** — active I/O node drives the graph via
-`Node::run()` with a tick closure. **Control thread** — Servo actors that send
+**Signal thread (hard/soft RT)** — the orchestrator creates a backend,
+extracts `ProcessingState` from the graph, and registers a process callback
+driven by the backend. **Control thread** — Servo actors that send
 `SetParameter` commands and receive `ClockTick` telemetry.
 Communication via lock-free `MpscQueue` through `ActorRef`/`ActorCell`.
 
 ```
 [Control Thread]                         [Signal Thread]
 ─────────────────────                    ────────────────────
-  Servo (tokio actor)               Graph (ActorCell<SetParameter>)
+  Servo (tokio actor)               ProcessingState
     automaton.step()                     │
-    mapping.apply()                 active_node.run(tick)
+    mapping.apply()                 process_callback(tick):
     ControlStrategy /                    │
-    ConflictStrategy                tick closure (per block):
-       │                            1. drain cmd_queue
-       │ ActorRef::send(SetParameter)│ 2. process_block()
-       ├───────────► Graph ◄─────────── 3. Port::propagate()
-       │                            4. ActorRef::send(ClockTick)
+    ConflictStrategy                1. actor.drain()
+       │                            2. process_block(tick)
+       │ ActorRef::send(SetParameter)│ 3. Port::propagate()
+       ├───────────► Graph ◄─────────── 4. send_clock_tick(tick)
+       │                             │
        ◄─────────── ClockTick ────────  │
-                ActorRef::send            │ 4. clock_tx.send(ClockTick)
-                (ClockTick)              │
-                                         ▼
-                                  backend.run(running)
+                ActorRef::send              │
+                (ClockTick)              backend.run(running)
 ```
 
 ## Bidirectional channels
@@ -35,7 +34,8 @@ Communication via lock-free `MpscQueue` through `ActorRef`/`ActorCell`.
 
 ## Processing model
 
-The tick closure (created by `Graph::run()`) handles one signal block:
+The process callback (registered on the backend by the orchestrator)
+handles one signal block:
 
 1. Drain command queue (`SetParameter` → `set_parameter` on target nodes)
 2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
@@ -44,16 +44,16 @@ The tick closure (created by `Graph::run()`) handles one signal block:
 
 ## Backend ownership
 
-Each I/O node owns its backend via `Box<dyn IoBackend<T>>`.
-The active node's `Node::run()` sets up the process callback and blocks
-on `backend.run()`.
+The orchestrator creates a backend via `BackendFactory::create()`,
+extracts `ProcessingState` from the graph, and registers a process callback.
+The backend's `run()` method enters the I/O loop.
 
 ## Thread Safety Summary
 
 | Component | Thread | Requirements |
 |-----------|-------|------------|
-| `Port::propagate` | Signal (hard RT) | zero-alloc, lock-free |
-| `Node::run()` | Audio | Stack buffers, no syscalls |
+| `ProcessingState::process_block` | Signal (hard RT) | zero-alloc, lock-free |
+| `IoBackend::run` | I/O | Stack buffers, no syscalls |
 | `MpscQueue::push` / `ActorRef::send` | Any | Lock-free |
 | `MpscQueue::pop` | Consumer's thread | Lock-free |
 | `ActorCell::receive` | Consumer's thread | Matches consumer's RT profile |

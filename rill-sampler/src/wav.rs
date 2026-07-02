@@ -2,8 +2,7 @@
 //!
 //! Supports mono and stereo 16-bit and 24-bit PCM WAV files.
 
-use crate::buffer::SampleBuffer;
-use rill_core::prelude::Sample;
+use rill_core::traits::SignalSlab;
 
 /// Errors that can occur during WAV loading.
 #[derive(Debug)]
@@ -40,77 +39,64 @@ impl From<hound::Error> for WavError {
     }
 }
 
-/// Load a WAV file into a `SampleBuffer<Sample>`.
+/// Load a WAV file into a [`SignalSlab`] ready for sampler hot-swap.
 ///
-/// Supports 16-bit and 24-bit PCM, mono and stereo.
-pub fn load_wav(path: &str) -> Result<SampleBuffer<Sample>, WavError> {
+/// Performs all file I/O and allocations on the calling thread.
+/// The resulting `SignalSlab` can be sent to a sampler node via
+/// `ParamValue::SignalSlab` and consumed with zero allocations on
+/// the real-time I/O thread.
+pub fn load_slab(path: &str) -> Result<SignalSlab, WavError> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
 
     let channels = spec.channels;
     let sample_rate = spec.sample_rate as f32;
-    let bits_per_sample = spec.bits_per_sample;
+    let bits = spec.bits_per_sample;
 
-    if channels != 1 && channels != 2 {
-        return Err(WavError::Format(format!(
-            "Only mono/stereo supported, got {} channels",
-            channels
-        )));
-    }
+    let num_frames = reader.duration() as usize;
 
-    let name = path.rsplit('/').next().unwrap_or(path).to_string();
-
-    match bits_per_sample {
-        16 => {
-            let samples: Vec<i16> = reader
-                .samples::<i16>()
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?;
-            Ok(samples_to_buffer(
-                samples.into_iter().map(|s| s as f32 / 32768.0),
-                channels,
-                sample_rate,
-                name,
-            ))
-        }
+    let f32_samples: Vec<f32> = match bits {
+        16 => reader
+            .samples::<i16>()
+            .map(|r| r.map(|s| s as f32 / 32768.0))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?,
         24 => {
-            let samples: Vec<i32> = reader
+            const SCALE: f32 = 1.0 / 8388608.0;
+            reader
                 .samples::<i32>()
+                .map(|r| r.map(|s| s as f32 * SCALE))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?;
-            const SCALE: f32 = 1.0 / 8388608.0; // 2^23
-            Ok(samples_to_buffer(
-                samples.into_iter().map(|s| s as f32 * SCALE),
-                channels,
-                sample_rate,
-                name,
-            ))
+                .map_err(|e| WavError::Format(format!("Sample read error: {}", e)))?
         }
-        other => Err(WavError::Format(format!(
-            "Only 16/24-bit PCM supported, got {}-bit",
-            other
-        ))),
-    }
-}
+        other => {
+            return Err(WavError::Format(format!(
+                "Only 16/24-bit supported, got {}-bit",
+                other
+            )))
+        }
+    };
 
-fn samples_to_buffer(
-    samples: impl Iterator<Item = f32>,
-    channels: u16,
-    sample_rate: f32,
-    name: String,
-) -> SampleBuffer<Sample> {
-    let data: Vec<Sample> = samples.collect();
+    let mut slab_channels: Vec<Box<[f32]>> = Vec::with_capacity(channels as usize);
     if channels == 1 {
-        SampleBuffer::mono(data, sample_rate, name)
+        slab_channels.push(f32_samples.into_boxed_slice());
     } else {
-        let mut left = Vec::with_capacity(data.len() / 2);
-        let mut right = Vec::with_capacity(data.len() / 2);
-        for chunk in data.chunks(2) {
-            left.push(chunk[0]);
-            if chunk.len() > 1 {
-                right.push(chunk[1]);
+        let ch = channels as usize;
+        let mut per_channel: Vec<Vec<f32>> =
+            (0..ch).map(|_| Vec::with_capacity(num_frames)).collect();
+        for chunk in f32_samples.chunks(ch) {
+            for (i, &s) in chunk.iter().enumerate() {
+                per_channel[i].push(s);
             }
         }
-        SampleBuffer::stereo(left, right, sample_rate, name)
+        for v in per_channel {
+            slab_channels.push(v.into_boxed_slice());
+        }
     }
+
+    Ok(SignalSlab {
+        channels: slab_channels,
+        sample_rate,
+        num_frames,
+    })
 }

@@ -587,6 +587,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         &self,
         buffer: &FixedBuffer<T, BUF_SIZE>,
         ctx: &RenderContext,
+        tick: &crate::time::ClockTick,
     ) -> ProcessResult<()> {
         for &ptr in &self.downstream_input_ptrs {
             unsafe {
@@ -605,7 +606,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
                         p.pre_process();
                     }
                 }
-                nv.process_block(ctx)?;
+                nv.process_block(ctx, tick)?;
                 for po in 0..nv.num_signal_outputs() {
                     if let Some(p) = nv.output_port_mut(po) {
                         p.snapshot_feedback();
@@ -613,7 +614,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
                 }
                 for po in 0..nv.num_signal_outputs() {
                     if let Some(p) = nv.output_port(po) {
-                        p.propagate(p.buffer(), ctx)?;
+                        p.propagate(p.buffer(), ctx, tick)?;
                     }
                 }
             }

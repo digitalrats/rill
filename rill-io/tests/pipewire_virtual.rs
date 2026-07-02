@@ -1,8 +1,13 @@
 //! Integration tests for PipeWire backend using virtual null-sink devices.
+//!
+//! Tests lifecycle (create/stop) and `DeinterleavedView` creation.
+//! Full I/O round-trip tests require the graph processing callback flow,
+//! which is tested at the graph level.
 
 #[cfg(feature = "pipewire")]
 mod pipewire_it {
-    use rill_core::io::IoBackend;
+    use rill_core::io::{IoCapture, IoDriver, IoPlayback};
+    use rill_core::time::ClockTick;
     use rill_io::{AudioConfig, BackendType, PipewireBackend};
     use std::process::Command;
     use std::time::Duration;
@@ -75,11 +80,10 @@ mod pipewire_it {
             .with_channels(2);
 
         let backend = PipewireBackend::new(config).unwrap();
-        let buf = [0.0f32; 256];
-        let _ = backend.write(&[&buf[..]]);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
+
+        backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
         settle(100);
-        let mut out = [0.0f32; 256];
-        let _ = backend.read(&mut [&mut out[..]]);
         let _ = backend.stop();
     }
 
@@ -111,12 +115,9 @@ mod pipewire_it {
         let backend = PipewireBackend::new(config).unwrap();
         settle(300);
 
-        let test_data: Vec<f32> = (0..256).map(|i| (i as f32) / 256.0).collect();
-        let _ = backend.write(&[&test_data[..]]);
+        assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
-        settle(300);
-        let mut read_buf = vec![0.0f32; 256];
-        let _ = backend.read(&mut [&mut read_buf[..]]);
+        backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
         let _ = backend.stop();
     }
 }

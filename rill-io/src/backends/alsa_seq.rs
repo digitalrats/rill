@@ -2,14 +2,15 @@
 //!
 //! Opens an ALSA sequencer input port and polls for incoming MIDI events.
 
-use std::ffi::CStr;
+use std::ffi::CString;
 
 use alsa::seq;
 use alsa::Direction;
 
 use crate::error::{IoError, IoResult};
-use crate::midi_backend::MidiBackend;
+use crate::midi_input::MidiInput;
 use crate::midi_message::MidiMessage;
+use crate::midi_output::MidiOutput;
 
 /// ALSA sequencer MIDI backend.
 ///
@@ -19,7 +20,7 @@ use crate::midi_message::MidiMessage;
 /// # Example
 ///
 /// ```rust,no_run
-/// use rill_io::midi_backend::MidiBackend;
+/// use rill_io::midi_input::MidiInput;
 /// use rill_io::backends::AlsaSeqBackend;
 ///
 /// let mut be = AlsaSeqBackend::new("rill-midi").unwrap();
@@ -34,26 +35,46 @@ impl AlsaSeqBackend {
     ///
     /// `name` — visible client name in ALSA patchbays.
     pub fn new(name: &str) -> IoResult<Self> {
-        let cname = CStr::from_bytes_until_nul(name.as_bytes())
+        let cname = CString::new(name)
             .map_err(|_| IoError::Init(format!("name contains nul byte: {name}")))?;
 
-        let seq = seq::Seq::open(Some(cname), Some(Direction::Capture), true)
+        let seq = seq::Seq::open(None, Some(Direction::Capture), true)
             .map_err(|e| IoError::Init(format!("alsa seq open: {e}")))?;
+        seq.set_client_name(&cname)
+            .map_err(|e| IoError::Init(format!("alsa seq set_client_name: {e}")))?;
 
         let mut port_info = seq::PortInfo::empty()
             .map_err(|e| IoError::Init(format!("alsa seq port_info: {e}")))?;
         port_info.set_capability(seq::PortCap::READ | seq::PortCap::SUBS_READ);
         port_info.set_type(seq::PortType::MIDI_GENERIC | seq::PortType::APPLICATION);
-        port_info.set_name(cname);
+        port_info.set_name(&cname);
 
         seq.create_port(&port_info)
             .map_err(|e| IoError::Init(format!("alsa seq create_port: {e}")))?;
 
         Ok(Self { seq })
     }
+
+    /// Create a new MIDI output port on the ALSA sequencer.
+    pub fn new_output(name: &str) -> IoResult<Self> {
+        let cname = CString::new(name)
+            .map_err(|_| IoError::Init(format!("name contains nul byte: {name}")))?;
+        let seq = seq::Seq::open(None, Some(Direction::Playback), true)
+            .map_err(|e| IoError::Init(format!("alsa seq output open: {e}")))?;
+        seq.set_client_name(&cname)
+            .map_err(|e| IoError::Init(format!("alsa seq set_client_name: {e}")))?;
+        let mut port_info = seq::PortInfo::empty()
+            .map_err(|e| IoError::Init(format!("alsa seq port_info: {e}")))?;
+        port_info.set_capability(seq::PortCap::WRITE | seq::PortCap::SUBS_WRITE);
+        port_info.set_type(seq::PortType::MIDI_GENERIC | seq::PortType::APPLICATION);
+        port_info.set_name(&cname);
+        seq.create_port(&port_info)
+            .map_err(|e| IoError::Init(format!("alsa seq create_port: {e}")))?;
+        Ok(Self { seq })
+    }
 }
 
-impl MidiBackend for AlsaSeqBackend {
+impl MidiInput for AlsaSeqBackend {
     fn poll(&mut self) -> IoResult<Vec<MidiMessage>> {
         let mut events = Vec::new();
         let mut input = self.seq.input();
@@ -74,6 +95,19 @@ impl MidiBackend for AlsaSeqBackend {
             }
         }
         Ok(events)
+    }
+}
+
+impl MidiOutput for AlsaSeqBackend {
+    fn send(&mut self, message: &MidiMessage) -> IoResult<()> {
+        let mut ev = midi_to_alsa_event(message);
+        self.seq
+            .event_output(&mut ev)
+            .map_err(|e| IoError::Backend(format!("alsa seq output: {e}")))?;
+        self.seq
+            .drain_output()
+            .map_err(|e| IoError::Backend(format!("alsa seq drain: {e}")))?;
+        Ok(())
     }
 }
 
@@ -130,5 +164,34 @@ fn alsa_event_to_midi(ev: &seq::Event) -> Option<MidiMessage> {
         seq::EventType::Continue => Some(MidiMessage::new(0xFB, 0, 0)),
         seq::EventType::Stop => Some(MidiMessage::new(0xFC, 0, 0)),
         _ => None,
+    }
+}
+
+fn midi_to_alsa_event(msg: &MidiMessage) -> seq::Event<'_> {
+    let status = msg.status();
+    match status {
+        0xF8 => seq::Event::new(seq::EventType::Clock, &seq::EvNote::default()),
+        0xFA => seq::Event::new(seq::EventType::Start, &seq::EvNote::default()),
+        0xFB => seq::Event::new(seq::EventType::Continue, &seq::EvNote::default()),
+        0xFC => seq::Event::new(seq::EventType::Stop, &seq::EvNote::default()),
+        s if s & 0xF0 == 0x90 => {
+            let data = seq::EvNote {
+                channel: s & 0x0F,
+                note: msg.data1(),
+                velocity: msg.data2(),
+                ..seq::EvNote::default()
+            };
+            seq::Event::new(seq::EventType::Noteon, &data)
+        }
+        s if s & 0xF0 == 0x80 => {
+            let data = seq::EvNote {
+                channel: s & 0x0F,
+                note: msg.data1(),
+                velocity: msg.data2(),
+                ..seq::EvNote::default()
+            };
+            seq::Event::new(seq::EventType::Noteoff, &data)
+        }
+        _ => seq::Event::new(seq::EventType::None, &seq::EvNote::default()),
     }
 }

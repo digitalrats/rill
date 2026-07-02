@@ -7,6 +7,8 @@
 //!   cargo run --example chiptune --features "lofi,portaudio,serialization" [portaudio]
 //!   cargo run --example chiptune --features "lofi,alsa,serialization" [alsa]
 
+use std::collections::HashMap;
+
 use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::traits::ParamValue;
@@ -87,10 +89,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let mut be_params = std::collections::HashMap::new();
-    be_params.insert("sample_rate".into(), RATE.to_string());
-    be_params.insert("buffer_size".into(), BUF.to_string());
-    be_params.insert("channels".into(), "1".to_string());
+    let mut be_params = HashMap::new();
+    be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+    be_params.insert("channels".into(), ParamValue::Int(1));
 
     let def = ModularSystemDef {
         format_version: "rill/1".into(),
@@ -106,9 +108,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 nodes: vec![
                     NodeDef::Source(SourceDef {
                         id: 0,
-                        type_name: "rill/lofi_input".into(),
+                        type_name: "rill/lofi_chip".into(),
                         name: "ay_chip".into(),
-                        backend: Some("ay38910".into()),
+                        backend: None,
                         parameters: [
                             ("bit_depth".into(), ParamValue::Int(8)),
                             ("nonlinear".into(), ParamValue::Bool(false)),
@@ -142,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             modules: vec![ModuleDef::Servo(ServoDef {
                 automaton_id: "melody".into(),
                 target_node: 0,
-                target_param: "io_write".into(),
+                target_param: "register_write".into(),
                 mapping: rill_adrift::rill_patchbay::serialization::MappingType::Linear,
                 min: 0.0,
                 max: 1.0,
@@ -161,12 +163,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ModularConfig {
         sample_rate: RATE,
         block_size: BUF,
-        backend_name: Some(backend_name.clone()),
-        backend_params: be_params,
+        backend_name: None,
+        backend_params: HashMap::new(),
         ..Default::default()
     };
 
-    let system = ModularSystem::<BUF>::new(config);
+    let mut system = ModularSystem::<BUF>::new(config);
+    system.set_default_backend(&backend_name, be_params);
     let _system = system.launch(&def).expect("launch system");
 
     println!("AY-3-8910 Chiptune — Popcorn");

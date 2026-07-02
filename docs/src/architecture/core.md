@@ -8,7 +8,7 @@ buffers, queues, time, and error types.
 ### `Node`
 
 Base trait for all signal graph nodes. No `Send` or `Sync` bounds — nodes live on the
-audio thread exclusively.
+signal thread exclusively.
 
 ```rust
 pub trait Node<T: Transcendental, const BUF_SIZE: usize> {
@@ -19,39 +19,23 @@ pub trait Node<T: Transcendental, const BUF_SIZE: usize> {
     fn set_id(&mut self, id: NodeId);
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue>;
     fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()>;
-
-    // Downcasting helpers (default no-op)
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> { None }
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> { None }
 }
 ```
 
-### `IoNode` and `ActiveNode`
+### ParameterWrite
 
-Two extension traits form a hierarchy for I/O-capable nodes:
+`ParameterWrite` is the polymorphic control interface for DSP engines.
+It decouples parameter dispatch from the concrete engine type:
 
 ```rust
-pub trait IoNode<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>);
-}
-
-pub trait ActiveNode<T: Transcendental, const BUF_SIZE: usize>: IoNode<T, BUF_SIZE> {
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: Arc<AtomicBool>,
-    ) -> IoResult<()>;
+pub trait ParameterWrite {
+    fn write_parameter(&mut self, name: &str, value: ParamValue) -> ProcessResult<()>;
+    fn read_parameter(&self, name: &str) -> Option<ParamValue> { None }
 }
 ```
 
-- **`IoNode`** — implemented by `Input`, `Output`, `LofiInput`. Receives a backend
-  during `GraphBuilder::build()`. Only nodes implementing this trait get backends.
-- **`ActiveNode`** — implemented by `Input` and `Output`. The single node in a graph
-  that drives the audio callback loop. `Graph::run()` calls `ActiveNode::run()` with
-  a tick closure that drains commands, processes the source, and propagates ports.
-
-`GraphBuilder::build()` uses `as_io_node_mut()` / `as_active_node_mut()` to detect
-which nodes implement these traits — no name-based matching required.
+Implemented by `BasicOscillator<f32>`, `Ay38910Chip`, and any engine
+that accepts named parameter writes.
 
 ### `Source`, `Processor`, `Sink`
 
@@ -69,30 +53,61 @@ pub trait Sink<T: Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
 }
 ```
 
-### `IoBackend` and `IoControl`
+### `IoDriver`, `IoCapture`, `IoPlayback`
 
-Backends are owned by I/O nodes. No `Send + Sync` bounds — they live on
-the audio thread exclusively.
+Backends are created **externally** by the orchestrator. Three orthogonal
+traits separate concerns:
 
 ```rust
-pub trait IoBackend<T: Scalar> {
-    fn set_process_callback(&self, cb: Box<dyn Fn(f32)>);
-    fn read(&self, channels: &mut [&mut [T]]) -> usize;
-    fn write(&self, channels: &[&[T]]) -> usize;
+pub trait IoDriver: Send + Sync {
+    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>);
     fn run(&self, running: Arc<AtomicBool>) -> IoResult<()>;
     fn stop(&self) -> IoResult<()>;
-    fn as_control(&self) -> Option<&dyn IoControl> { None }
 }
 
-pub trait IoControl {
-    fn write_data(&self, data: &[u8]) -> usize;
+pub trait IoCapture: Send + Sync {
+    fn read_input(&self, channel: usize, dst: &mut [f32]) -> usize;
+    fn num_input_channels(&self) -> usize;
+}
+
+pub trait IoPlayback: Send + Sync {
+    fn write_output(&self, channel: usize, src: &[f32]) -> usize;
+    fn num_output_channels(&self) -> usize;
 }
 ```
 
-`IoControl::write_data()` receives raw bytes — interpretation is
-backend-specific (e.g. AY-3-8910 register writes, MIDI, proprietary
-protocols).  Control actors send bytes via `ParamValue::Bytes` through
-the standard command queue.
+A single backend struct (e.g. `PipewireBackend`) implements `IoDriver`
+and optionally `IoCapture` / `IoPlayback`.  The driver owns the timing loop;
+capture and playback provide data access.
+
+`IoBackend` exists as a backward-compatible alias: `pub trait IoBackend: IoDriver {}`.
+
+### `ProcessingState`
+
+Extracted from `Graph` via `into_processing_state()`, this struct is the
+runtime engine that drives the signal graph inside the I/O callback:
+
+```rust
+pub struct ProcessingState<T, const BUF_SIZE: usize> { /* ... */ }
+
+impl ProcessingState<T, BUF_SIZE> {
+    pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()>;
+    pub fn wire_backends(
+        &mut self,
+        capture: Option<Arc<dyn IoCapture>>,
+        playback: Option<Arc<dyn IoPlayback>>,
+    );
+    pub fn run_with_driver(
+        &mut self,
+        driver: Box<dyn IoDriver>,
+        running: Arc<AtomicBool>,
+    ) -> IoResult<()>;
+}
+```
+
+`process_block()` is the per-block entry point called from the I/O callback.
+It drains the actor mailbox, runs sources/processors/sinks, triggers port
+propagation, and dispatches `ClockTick` to the control rack.
 
 ### `ParamValue`
 
@@ -127,7 +142,9 @@ while let Some(cmd) = cmd_queue.pop() {
 
 ## `ClockTick`
 
-Sample-accurate timing sent from audio to control thread:
+Sample-accurate timing sent from driver to control thread.
+Carries only timing metadata — I/O access is through `IoCapture`/`IoPlayback`
+traits held by graph nodes.
 
 ```rust
 pub struct ClockTick {
@@ -136,6 +153,9 @@ pub struct ClockTick {
     pub is_new_block: bool,
     pub sample_rate: f32,
     pub tempo: Option<f32>,
+    pub source: String,
+    pub speed_ratio: f64,
+    pub is_final: bool,
 }
 ```
 
@@ -148,6 +168,6 @@ rill-core/
 ├── buffer/   — PipeBuffer, DelayLine, RingBuffer, FixedBuffer
 ├── queues/   — MpscQueue, SetParameter, Telemetry
 ├── time/     — ClockTick, SystemClock
-├── io/       — IoBackend, IoControl, IoResult
+├── io/       — IoDriver, IoCapture, IoPlayback, IoControl, IoResult
 └── macros/   — source_node!, processor_node!, sink_node!
 ```

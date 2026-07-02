@@ -42,6 +42,9 @@ impl SystemClock {
             is_new_block: true,
             sample_rate: self.sample_rate,
             tempo: Some(self.bpm() as f32),
+            source: String::new(),
+            speed_ratio: 1.0,
+            is_final: true,
         }
     }
 

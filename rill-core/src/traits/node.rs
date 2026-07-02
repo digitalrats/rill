@@ -309,16 +309,6 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
     /// Resolve named resource buffers (tape loops, etc.) from the registry.
     fn resolve_resources(&mut self, _buffers: &crate::buffer::BufferRegistry<T>) {}
 
-    /// Downcast to [`IoNode`] if this node implements it.
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        None
-    }
-
-    /// Downcast to [`ActiveNode`] if this node implements it.
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
-        None
-    }
-
     /// Set node ID
     fn set_id(&mut self, id: NodeId);
 
@@ -409,48 +399,6 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
 }
 
 // ============================================================================
-// IoNode Trait
-// ============================================================================
-
-/// A node that owns an I/O backend.
-///
-/// Implemented by nodes that read from or write to a hardware device
-/// (`Input`, `Output`, `LofiInput`). The backend is injected during graph
-/// assembly via [`resolve_backend`](IoNode::resolve_backend).
-pub trait IoNode<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, BUF_SIZE> {
-    /// Take ownership of an I/O backend.
-    fn resolve_backend(&mut self, backend: Box<dyn crate::io::IoBackend<T>>);
-}
-
-// ============================================================================
-// ActiveNode Trait
-// ============================================================================
-
-/// A node that drives graph processing through its I/O backend.
-///
-/// The active node is the single node in a graph that hosts the
-/// callback loop. It receives a tick closure from [`Graph`] and registers
-/// it as the process callback on its backend.
-///
-/// Only one node per graph implements this trait — it must also implement
-/// [`IoNode`].
-pub trait ActiveNode<T: crate::math::Transcendental, const BUF_SIZE: usize>:
-    IoNode<T, BUF_SIZE>
-{
-    /// Run graph processing through this node's I/O backend.
-    ///
-    /// The `tick` closure is called once per signal block with
-    /// `(sample_pos, sample_rate)`. The implementation must register it
-    /// as a process callback on the backend and block until `running`
-    /// becomes `false`.
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> crate::io::IoResult<()>;
-}
-
-// ============================================================================
 // Source Trait (Active generators)
 // ============================================================================
 
@@ -473,6 +421,7 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
         ctx: &crate::time::RenderContext,
         control_inputs: &[T],
         clock_inputs: &[crate::time::RenderContext],
+        tick: &crate::time::ClockTick,
     ) -> ProcessResult<()>;
 
     /// Number of signal outputs (default 1)
@@ -489,6 +438,9 @@ pub trait Source<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T,
     fn num_clock_inputs(&self) -> usize {
         0
     }
+
+    /// Attach a capture backend. No-op by default; I/O nodes override.
+    fn set_capture(&mut self, _capture: std::sync::Arc<dyn crate::io::IoCapture>) {}
 }
 
 // ============================================================================
@@ -552,7 +504,11 @@ pub trait Sink<T: crate::math::Transcendental, const BUF_SIZE: usize>: Node<T, B
         control_inputs: &[T],
         clock_inputs: &[crate::time::RenderContext],
         feedback_inputs: &[&[T; BUF_SIZE]],
+        tick: &crate::time::ClockTick,
     ) -> ProcessResult<()>;
+
+    /// Attach a playback backend. No-op by default; I/O nodes override.
+    fn set_playback(&mut self, _playback: std::sync::Arc<dyn crate::io::IoPlayback>) {}
 }
 
 // ============================================================================

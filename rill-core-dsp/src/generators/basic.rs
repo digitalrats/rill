@@ -5,7 +5,8 @@ use crate::vector::prelude::*;
 use rill_core::math::vector::scalar::ScalarVector4;
 use rill_core::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
 use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use rill_core::traits::ProcessResult;
+use rill_core::traits::parameter_write::ParameterWrite;
+use rill_core::traits::{ParamValue, ProcessError, ProcessResult};
 use rill_core::Transcendental;
 use std::f32::consts::PI;
 
@@ -446,6 +447,55 @@ impl<T: Transcendental> Generator<T> for BasicOscillator<T> {
     }
 }
 
+// ==================== ParameterWrite trait implementation ====================
+
+impl<T: Transcendental> ParameterWrite for BasicOscillator<T> {
+    fn write_parameter(&mut self, name: &str, value: ParamValue) -> ProcessResult<()> {
+        match name {
+            "frequency" => {
+                if let Some(f) = value.as_f32() {
+                    self.set_frequency(f);
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("frequency expects float"))
+            }
+            "amplitude" => {
+                if let Some(a) = value.as_f32() {
+                    self.set_amplitude(T::from_f32(a));
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("amplitude expects float"))
+            }
+            "phase" => {
+                if let Some(p) = value.as_f32() {
+                    self.set_phase(T::from_f32(p));
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("phase expects float"))
+            }
+            "fm_amount" => {
+                if let Some(f) = value.as_f32() {
+                    self.fm_amount = ScalarVector1::splat(T::from_f32(f));
+                    return Ok(());
+                }
+                Err(ProcessError::parameter("fm_amount expects float"))
+            }
+            _ => Err(ProcessError::parameter(format!(
+                "unknown parameter: {name}"
+            ))),
+        }
+    }
+
+    fn read_parameter(&self, name: &str) -> Option<ParamValue> {
+        match name {
+            "frequency" => Some(ParamValue::Float(self.frequency())),
+            "amplitude" => Some(ParamValue::Float(self.amplitude().to_f32())),
+            "phase" => Some(ParamValue::Float(self.phase().to_f32())),
+            _ => None,
+        }
+    }
+}
+
 // ==================== SyncableGenerator trait implementation ====================
 
 impl<T: Transcendental> SyncableGenerator<T> for BasicOscillator<T> {
@@ -498,7 +548,7 @@ mod tests {
         osc.process(None, &mut output).unwrap();
         let sample2 = output[0];
         assert!(sample2 != 0.0);
-        assert!(sample2 >= -0.5 && sample2 <= 0.5);
+        assert!((-0.5..=0.5).contains(&sample2));
     }
 
     #[test]
@@ -509,7 +559,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         osc.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -0.5 && sample <= 0.5);
+        assert!((-0.5..=0.5).contains(&sample));
     }
 
     #[test]
@@ -531,7 +581,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         osc.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -0.5 && sample <= 0.5);
+        assert!((-0.5..=0.5).contains(&sample));
     }
 
     #[test]
@@ -591,14 +641,14 @@ mod tests {
         let mut output = [0.0f32; 1];
         osc.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -1.0 && sample <= 1.0);
+        assert!((-1.0..=1.0).contains(&sample));
     }
 
     #[test]
     fn test_clone_copy() {
         let osc1 = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
         let osc2 = osc1; // Copy via Copy trait
-        let osc3 = osc1.clone(); // Explicit clone
+        let osc3 = Clone::clone(&osc1); // Explicit clone
 
         assert_eq!(osc1.frequency(), osc2.frequency());
         assert_eq!(osc1.frequency(), osc3.frequency());

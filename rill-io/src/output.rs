@@ -2,21 +2,17 @@
 //!
 //! Registered as `"rill/output"` with `NodeVariant::Sink`.
 
-use std::cell::Cell;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use rill_core::{
-    io::IoBackend,
+    io::IoPlayback,
     math::Transcendental,
-    traits::{ActiveNode, IoNode, Node, NodeCategory, NodeMetadata, NodeState, Sink},
+    time::ClockTick,
+    traits::{Node, NodeCategory, NodeMetadata, NodeState, Sink},
     NodeId, ParamValue, ParameterId, Port, ProcessResult, RenderContext,
 };
 
-/// Signal output sink. Writes to backend in `consume()`.
-///
-/// When used as the active (driver) node, [`ActiveNode::run`] sets up the
-/// process callback and blocks on the audio thread.
+/// Signal output sink. Writes to [`IoPlayback`] in `consume()`.
 ///
 /// # Ports
 /// - `n` input ports (one per channel), set via [`Self::with_channels`].
@@ -25,25 +21,17 @@ pub struct Output<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    backend: Option<Box<dyn IoBackend<T>>>,
-    active: bool,
-    source_idx: usize,
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> Default for Output<T, BUF_SIZE> {
-    fn default() -> Self {
-        Self::new()
-    }
+    playback: Arc<dyn IoPlayback>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
-    /// Create a new stereo output sink.
-    pub fn new() -> Self {
-        Self::with_channels(2)
+    /// Create a new output sink with a playback backend.
+    pub fn new(playback: Arc<dyn IoPlayback>) -> Self {
+        Self::with_channels(playback, 2)
     }
 
     /// Create a new output sink with the given number of channels.
-    pub fn with_channels(num: usize) -> Self {
+    pub fn with_channels(playback: Arc<dyn IoPlayback>, num: usize) -> Self {
         let mut metadata = NodeMetadata::new("Output", NodeCategory::Sink);
         metadata.signal_inputs = num;
         metadata.signal_outputs = 0;
@@ -64,23 +52,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Output<T, BUF_SIZE> {
             metadata,
             inputs,
             state: NodeState::new(44100.0),
-            backend: None,
-            active: true,
-            source_idx: 0,
+            playback,
         }
-    }
-
-    /// Mark this output as active, setting its source node index.
-    pub fn set_active(&mut self, source_idx: usize) {
-        self.active = true;
-        self.source_idx = source_idx;
-    }
-
-    /// Transfer backend ownership to this node.
-    ///
-    /// Convenience inherent method — delegates to [`IoNode::resolve_backend`].
-    pub fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
-        <Self as IoNode<T, BUF_SIZE>>::resolve_backend(self, backend);
     }
 }
 
@@ -105,13 +78,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
     fn reset(&mut self) {
         self.state.sample_pos = 0;
         self.state.blocks_processed = 0;
-    }
-
-    fn as_io_node_mut(&mut self) -> Option<&mut dyn IoNode<T, BUF_SIZE>> {
-        Some(self)
-    }
-    fn as_active_node_mut(&mut self) -> Option<&mut dyn ActiveNode<T, BUF_SIZE>> {
-        Some(self)
     }
 
     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
@@ -155,39 +121,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Output<T, B
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> IoNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
-    fn resolve_backend(&mut self, backend: Box<dyn IoBackend<T>>) {
-        self.backend = Some(backend);
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> ActiveNode<T, BUF_SIZE> for Output<T, BUF_SIZE> {
-    fn run(
-        &mut self,
-        tick: Box<dyn FnMut(u64, f32)>,
-        running: Arc<AtomicBool>,
-    ) -> rill_core::io::IoResult<()> {
-        let Some(ref backend) = self.backend else {
-            return Err("Output: no backend".into());
-        };
-        let tick_ptr = Box::into_raw(Box::new(tick));
-        let sample_pos = Cell::new(0u64);
-        backend.set_process_callback(Box::new(move |actual_sr: f32| {
-            unsafe {
-                (*tick_ptr)(sample_pos.get(), actual_sr);
-            }
-            sample_pos.set(sample_pos.get() + BUF_SIZE as u64);
-        }));
-        backend.run(running.clone())?;
-        while running.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = backend.stop();
-        drop(unsafe { Box::from_raw(tick_ptr) });
-        Ok(())
-    }
-}
-
 impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, BUF_SIZE> {
     fn consume(
         &mut self,
@@ -196,27 +129,25 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
-        if let Some(ref backend) = self.backend {
-            let nch = self.inputs.len();
-            if nch > 0 {
-                let all_received = self.inputs.iter().all(|p| p.data_received);
-                if all_received {
-                    let mut channels: Vec<&[T]> = Vec::with_capacity(nch);
-                    for i in 0..nch {
-                        if let Some(port) = self.inputs.get(i) {
-                            channels.push(port.signal_buffer().as_array());
-                        }
-                    }
-                    backend.write(&channels);
-                    for p in &mut self.inputs {
-                        p.data_received = false;
-                    }
-                    self.state.advance();
+        for (ch, port) in self.inputs.iter().enumerate() {
+            if port.data_received {
+                let buf = port.signal_buffer();
+                #[allow(unsafe_code)]
+                unsafe {
+                    let buf_f32: &[f32] =
+                        std::slice::from_raw_parts(buf.as_ptr() as *const f32, buf.len());
+                    self.playback.write_output(ch, buf_f32);
                 }
             }
         }
+        self.state.advance();
         Ok(())
+    }
+
+    fn set_playback(&mut self, playback: Arc<dyn IoPlayback>) {
+        self.playback = playback;
     }
 }
 
@@ -226,10 +157,24 @@ pub type AudioOutput<T, const B: usize> = Output<T, B>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::io::IoPlayback;
+
+    struct NullPlayback {
+        channels: usize,
+    }
+    impl IoPlayback for NullPlayback {
+        fn write_output(&self, _channel: usize, _src: &[f32]) -> usize {
+            _src.len()
+        }
+        fn num_output_channels(&self) -> usize {
+            self.channels
+        }
+    }
 
     #[test]
-    fn test_audio_output_creation() {
-        let out = Output::<f32, 64>::new();
+    fn test_output_creation() {
+        let pb = Arc::new(NullPlayback { channels: 2 });
+        let out = Output::<f32, 64>::new(pb);
         assert_eq!(out.metadata().signal_inputs, 2);
         assert_eq!(out.metadata().signal_outputs, 0);
         assert!(out.input_port(0).is_some());
@@ -237,18 +182,23 @@ mod tests {
     }
 
     #[test]
-    fn test_audio_output_mono() {
-        let out = Output::<f32, 64>::with_channels(1);
+    fn test_output_mono() {
+        let pb = Arc::new(NullPlayback { channels: 1 });
+        let out = Output::<f32, 64>::with_channels(pb, 1);
         assert_eq!(out.metadata().signal_inputs, 1);
         assert!(out.input_port(0).is_some());
         assert!(out.input_port(1).is_none());
     }
 
     #[test]
-    fn test_audio_output_consume() {
-        let mut out = Output::<f32, 64>::new();
+    fn test_output_consume() {
+        let pb = Arc::new(NullPlayback { channels: 2 });
+        let mut out = Output::<f32, 64>::new(pb);
         let ctx = RenderContext::new(0, 64, 48000.0);
         let signal_inputs: &[&[f32; 64]] = &[];
-        assert!(out.consume(&ctx, signal_inputs, &[], &[], &[]).is_ok());
+        let tick = ClockTick::new(0, 64, 48000.0, "test".into());
+        assert!(out
+            .consume(&ctx, signal_inputs, &[], &[], &[], &tick)
+            .is_ok());
     }
 }

@@ -31,10 +31,11 @@
 //!     processor: &mut dyn Processor<T, BUF_SIZE>,
 //!     sink: &mut dyn Sink<T, BUF_SIZE>,
 //!     ctx: &RenderContext,
+//!     tick: &ClockTick,
 //! ) -> ProcessResult<()> {
-//!     source.generate(ctx, &[], &[])?;
+//!     source.generate(ctx, &[], &[], tick)?;
 //!     processor.process(ctx, &[], &[], &[], &[])?;
-//!     sink.consume(ctx, &[], &[], &[], &[])?;
+//!     sink.consume(ctx, &[], &[], &[], &[], tick)?;
 //!     Ok(())
 //! }
 //! ```
@@ -392,7 +393,7 @@ mod tests {
         let _port_id = PortId::signal_in(_node_id, 0);
         let _param_id = ParameterId::new("test").unwrap();
         let _clock = SystemClock::with_sample_rate(44100.0);
-        let _tick = ClockTick::new(0, 64, 44100.0);
+        let _tick = ClockTick::new(0, 64, 44100.0, "test".to_string());
 
         // Test buffer creation
         let _pipe = PipeBuffer::<f32, 64>::new();
@@ -481,12 +482,12 @@ mod tests {
 
     #[test]
     fn test_macros() {
-        let data = vec![1.0, 2.0, 3.0];
+        let data = [1.0, 2.0, 3.0];
         let block = mono_block!(data, 4);
         assert_eq!(block, [1.0, 2.0, 3.0, 0.0]);
 
-        let left = vec![1.0; 4];
-        let right = vec![2.0; 4];
+        let left = [1.0; 4];
+        let right = [2.0; 4];
         let stereo = stereo_block!(left, right, 4);
         assert_eq!(stereo[0], [1.0; 4]);
         assert_eq!(stereo[1], [2.0; 4]);

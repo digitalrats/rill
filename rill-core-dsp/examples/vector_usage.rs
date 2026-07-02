@@ -65,8 +65,8 @@ fn main() {
 
     // Original signal (sine wave)
     let mut signal = [0.0f32; 16];
-    for i in 0..16 {
-        signal[i] = (i as f32 * 0.1).sin();
+    for (i, sample) in signal.iter_mut().enumerate() {
+        *sample = (i as f32 * 0.1).sin();
     }
     println!("   Original signal: {:?}", signal);
 
@@ -102,10 +102,10 @@ fn main() {
     // 6. Vector trait method demonstration
     println!("\n6. Vector trait methods:");
 
-    let vec = ScalarVector4::splat(3.14);
+    let vec = ScalarVector4::splat(2.5);
     let mut arr = [0.0f32; 4];
     vec.store(&mut arr);
-    println!("   Vector from single value 3.14: {:?}", arr);
+    println!("   Vector from single value 2.5: {:?}", arr);
 
     // Extract element
     println!("   extract(2) = {}", vec.extract(2));

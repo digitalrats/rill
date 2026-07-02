@@ -2,20 +2,22 @@
 
 #![warn(missing_docs)]
 
+mod chip_emulator;
 mod config;
 /// Digital signal processing utilities (quantization, bitcrushing, etc.).
 pub mod dsp;
 /// Hardware emulators (NES, AY-3-8910, Akai S900).
 pub mod emulators;
 mod error;
-mod lofi_input;
+mod lofi_chip_source;
 mod lofi_processor;
 
 // Re-export core types
+pub use chip_emulator::ChipEmulator;
 pub use config::{ClassicSystem, HardwareEmulation, LofiConfig};
-pub use emulators::{AkaiS900Emulator, Ay38910Backend, Ay38910Chip, NesBackend, NesChip};
+pub use emulators::{AkaiS900Emulator, Ay38910Chip, NesChip};
 pub use error::{LofiError, LofiResult};
-pub use lofi_input::LofiInput;
+pub use lofi_chip_source::LofiChipSource;
 pub use lofi_processor::LofiProcessor;
 
 // Re-export for convenience

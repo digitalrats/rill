@@ -1,7 +1,7 @@
 //! # Tests for macros
 
 #[cfg(test)]
-mod tests {
+mod macro_tests {
     use crate::math::Transcendental;
     use crate::prelude::*;
     use std::f32::consts::PI;
@@ -29,10 +29,10 @@ mod tests {
                 let phase_inc = T::from_f32(freq) / T::from_f32(sr);
 
                 let mut temp = [T::ZERO; BUF_SIZE];
-                for i in 0..BUF_SIZE {
+                for slot in temp.iter_mut() {
                     let phase_rad = this.state().phase * T::from_f32(2.0 * PI);
                     let sample = phase_rad.sin();
-                    temp[i] = sample * amp;
+                    *slot = sample * amp;
 
                     let new_phase = this.state().phase + phase_inc;
                     if new_phase >= T::from_f32(1.0) {

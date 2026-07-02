@@ -1,4 +1,4 @@
-use rill_core::time::RenderContext;
+use rill_core::time::{ClockTick, RenderContext};
 use rill_core::traits::{
     Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
     Source,
@@ -247,6 +247,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Source<T, B
         _ctx: &RenderContext,
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
+        _tick: &ClockTick,
     ) -> ProcessResult<()> {
         let out = self.outputs[0].buffer.as_mut_array();
         self.osc.process(None, &mut out[..])?;
@@ -277,14 +278,15 @@ mod tests {
         let mut osc = WavetableOscNode::<f32, 64, WT>::sine(440.0).with_amplitude(0.5);
         osc.init(44100.0);
         let ctx = RenderContext::new(0, 64, 44100.0);
-        osc.generate(&ctx, &[], &[]).unwrap();
+        let tick = ClockTick::new(0, 64, 44100.0, String::new());
+        osc.generate(&ctx, &[], &[], &tick).unwrap();
         let output = osc.outputs[0].buffer.as_array();
         assert!(
             output.iter().any(|&x| x != 0.0),
             "should produce non-zero output"
         );
         for &s in output.iter() {
-            assert!(s >= -0.5 && s <= 0.5, "amplitude within bounds");
+            assert!((-0.5..=0.5).contains(&s), "amplitude within bounds");
         }
     }
 

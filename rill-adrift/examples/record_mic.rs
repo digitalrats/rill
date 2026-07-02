@@ -9,7 +9,6 @@
 //!   cargo run --example record_mic --features "io,serialization,sampler,pipewire" -- pipewire [file.wav]
 //!   cargo run --example record_mic --features "io,serialization,sampler,alsa" -- alsa [file.wav]
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,8 +19,10 @@ use rill_adrift::rill_core::traits::{
 };
 use rill_adrift::rill_core::Transcendental;
 use rill_adrift::rill_core_actor::ActorSystem;
-use rill_adrift::rill_graph::backend_factory::BackendFactory;
 use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
+use std::collections::HashMap;
+
+use rill_adrift::rill_graph::backend_factory::{BackendFactory, InputBundle};
 
 const BUF: usize = 256;
 const RATE: f32 = 48000.0;
@@ -121,12 +122,13 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
         _control_inputs: &[T],
         _clock_inputs: &[rill_adrift::rill_core::time::RenderContext],
         _feedback_inputs: &[&[T; B]],
+        _tick: &rill_adrift::rill_core::time::ClockTick,
     ) -> ProcessResult<()> {
         let all_received = self.inputs.iter().all(|p| p.data_received);
         if all_received {
             if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
-                let l = lp.buffer.as_array();
-                let r = rp.buffer.as_array();
+                let l = lp.signal_buffer().as_array();
+                let r = rp.signal_buffer().as_array();
                 let mut dst = self.recorded.lock().unwrap();
                 for i in 0..B {
                     dst.push(l[i].to_f32());
@@ -199,8 +201,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
     let rec = recorded.clone();
+    let be_name = backend_name.clone();
     let audio_thread = std::thread::spawn(move || {
-        // ── Register node types and backends ──────────────────
+        // ── 1. Register backends first ──────────────────
+        let mut bf = BackendFactory::new();
+        registration::register_backends(&mut bf);
+        let mut be_params = HashMap::new();
+        be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+        be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+        be_params.insert("input_channels".into(), ParamValue::Int(2));
+        be_params.insert("output_channels".into(), ParamValue::Int(0));
+        let InputBundle { driver, capture } = bf
+            .create_input(&be_name, &be_params)
+            .expect("create input backend");
+
+        // ── 2. Register node types ──────────────────
         let mut factory = NodeFactory::<f32, BUF>::new();
         registration::register_all_nodes::<BUF>(&mut factory);
 
@@ -213,19 +228,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             NodeVariant::Sink(Box::new(sink))
         });
 
-        let mut backends = BackendFactory::new();
-        registration::register_backends(&mut backends);
-
-        // ── Build graph ──────────────────────────────────────────
-        let mut builder = GraphBuilder::new(Arc::new(factory), Arc::new(backends));
-
-        let mut be_params = HashMap::new();
-        be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-        be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-        be_params.insert("input_channels".into(), ParamValue::Int(2));
-        be_params.insert("output_channels".into(), ParamValue::Int(0));
-
-        builder.set_default_backend(backend_name.clone(), be_params);
+        // ── 3. Build graph ──────────────────────────────────────────
+        let mut builder = GraphBuilder::new(Arc::new(factory));
 
         let mic = builder.add_node("rill/input", &Params::new(RATE));
         let recorder = builder.add_node("rill/record_sink", &Params::new(RATE));
@@ -235,9 +239,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ── Build and run ────────────────────────────────────────
         let system = ActorSystem::new();
         match builder.build(&system) {
-            Ok(mut graph) => {
+            Ok(graph) => {
                 eprintln!("Graph built ({} nodes). Recording...", graph.node_count());
-                graph.run(t_run).ok();
+                let mut state = graph.into_processing_state();
+                state.wire_backends(Some(capture), None);
+                if let Err(e) = state.run_with_driver(driver, t_run) {
+                    eprintln!("Backend error: {e}");
+                }
             }
             Err(e) => eprintln!("Build error: {e:?}"),
         }

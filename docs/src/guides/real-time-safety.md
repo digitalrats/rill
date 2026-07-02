@@ -1,6 +1,6 @@
 # Real-Time Safety
 
-The signal graph runs wherever the `AudioIo` process callback fires. The
+The signal graph runs wherever the `IoBackend` process callback fires. The
 constraints depend on the backend model.
 
 ## Two backend models
@@ -33,10 +33,9 @@ Any code reached from the process callback — `generate()`, `process()`,
 
 ## Known issues
 
-1. **CPAL backend** uses `thread::sleep(interval)` in the poll loop.
-   Must be replaced with an event-driven wait (CPAL stream callbacks
-   already fire on their own thread — the processing callback should
-   be driven from the output stream callback, not a timer).
+1. **Poll-driven backends** must not use `thread::sleep()` in the poll loop.
+   Use `poll()`/`epoll()` on audio FDs instead. All current backends
+   (PortAudio, ALSA, PipeWire, JACK) respect this rule.
 2. **Testing RT code** — any new RT path code must be verified with
    `cargo test --release` under `pw-loopback` or similar virtual device
    to detect xruns.

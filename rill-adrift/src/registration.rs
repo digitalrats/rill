@@ -39,17 +39,47 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
 
 #[cfg(feature = "io")]
 fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    node_ctor!(factory, "rill/output", |id: NodeId, params: &Params| {
-        let ch = params.get_f32("channels", 2.0) as usize;
-        let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(ch);
-        Node::set_id(&mut n, id);
-        Node::init(&mut n, params.sample_rate);
-        NodeVariant::Sink(Box::new(n))
-    });
+    use rill_core::io::{IoCapture, IoPlayback};
+    use std::sync::Arc;
 
-    node_ctor!(factory, "rill/input", |id: NodeId, params: &Params| {
+    struct NullCapture;
+    impl IoCapture for NullCapture {
+        fn read_input(&self, _channel: usize, dst: &mut [f32]) -> usize {
+            dst.fill(0.0);
+            dst.len()
+        }
+        fn num_input_channels(&self) -> usize {
+            2
+        }
+    }
+
+    struct NullPlayback;
+    impl IoPlayback for NullPlayback {
+        fn write_output(&self, _channel: usize, _src: &[f32]) -> usize {
+            _src.len()
+        }
+        fn num_output_channels(&self) -> usize {
+            2
+        }
+    }
+
+    node_ctor!(
+        factory,
+        "rill/output",
+        move |id: NodeId, params: &Params| {
+            let ch = params.get_f32("channels", 2.0) as usize;
+            let null_pb = Arc::new(NullPlayback);
+            let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(null_pb, ch);
+            Node::set_id(&mut n, id);
+            Node::init(&mut n, params.sample_rate);
+            NodeVariant::Sink(Box::new(n))
+        }
+    );
+
+    node_ctor!(factory, "rill/input", move |id: NodeId, params: &Params| {
         let ch = params.get_f32("channels", 2.0) as usize;
-        let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(ch);
+        let null_cap = Arc::new(NullCapture);
+        let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(null_cap, ch);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -63,20 +93,11 @@ fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) 
 #[cfg(feature = "sampler")]
 fn register_sampler<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_sampler::player::SamplePlayerNode;
-    use rill_sampler::wav::load_wav;
 
     node_ctor!(factory, "rill/sampler", |id: NodeId, params: &Params| {
         let mut n = SamplePlayerNode::<f32, BUF_SIZE>::new();
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
-        if let Some(path) = params.get("file").and_then(|v| v.as_str()) {
-            if let Ok(sample) = load_wav(path) {
-                n.load(sample);
-                n.play();
-            } else {
-                eprintln!("SamplePlayer: could not load {path}");
-            }
-        }
         NodeVariant::Source(Box::new(n))
     });
 }
@@ -133,15 +154,15 @@ fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         NodeVariant::Processor(Box::new(n))
     });
 
-    node_ctor!(factory, "rill/lofi_input", |id: NodeId, params: &Params| {
-        use rill_lofi::{ClassicSystem, LofiConfig, LofiInput};
+    node_ctor!(factory, "rill/lofi_chip", |id: NodeId, params: &Params| {
+        use rill_lofi::{Ay38910Chip, LofiChipSource, LofiConfig};
         let bit_depth = params.get_i32("bit_depth", 8) as u8;
         let nonlinear = params.get_bool("nonlinear", false);
         let noise_floor = params.get_f32("noise_floor", -48.0);
         let dc_offset = params.get_f32("dc_offset", 0.0);
         let output_gain = params.get_f32("output_gain", 1.0);
         let output_ceiling = params.get_f32("output_ceiling", 1.0);
-        let mut config = LofiConfig::for_system(ClassicSystem::Custom {
+        let mut config = LofiConfig::for_system(rill_lofi::ClassicSystem::Custom {
             bit_depth,
             sample_rate: params.sample_rate,
             nonlinear,
@@ -150,7 +171,8 @@ fn register_lofi<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         config.dc_offset = dc_offset;
         config.output_gain = output_gain;
         config.output_ceiling = output_ceiling;
-        let mut n = LofiInput::<f32, BUF_SIZE>::new(config);
+        let chip = Ay38910Chip::new(1_750_000.0);
+        let mut n = LofiChipSource::<Ay38910Chip, BUF_SIZE>::new(chip, config, 1);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Source(Box::new(n))
@@ -413,6 +435,8 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
     factory.register(rill_patchbay::servo_constructor::ServoConstructor);
     #[cfg(feature = "midi")]
     register_midi_module(factory);
+    #[cfg(feature = "midi")]
+    register_clock_module(factory);
     #[cfg(feature = "osc")]
     register_osc_module(factory);
 }
@@ -420,7 +444,7 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
 #[cfg(feature = "midi")]
 fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
     use rill_core::queues::CommandEnum;
-    use rill_io::midi_backend::MidiBackend;
+    use rill_io::midi_input::MidiInput;
     use rill_patchbay::module_def::{ModuleDef, SensorDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
 
@@ -451,7 +475,7 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
                 }
             };
 
-            let be: Box<dyn MidiBackend> = match backend.as_str() {
+            let be: Box<dyn MidiInput> = match backend.as_str() {
                 "midir" => {
                     let b = rill_io::backends::MidirBackend::new_by_name("rill-midi", port_name)
                         .or_else(|_| rill_io::backends::MidirBackend::new("rill-midi"))
@@ -569,69 +593,168 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
     factory.register(OscConstructor);
 }
 
-/// Deserialise a JSON graph string into a
-/// [rill_graph::serialization::GraphDef].
-///
-/// Use [`ModularSystem::create_builder`](crate::modular::ModularSystem::create_builder)
-/// to build a graph from the definition.
-#[cfg(feature = "serialization")]
-pub fn load_graph_json(
-    json: &str,
-) -> Result<rill_graph::serialization::GraphDef, rill_graph::serialization::SerializationError> {
-    rill_graph::serialization::from_json(json)
+#[cfg(feature = "midi")]
+fn register_clock_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
+    use rill_core::queues::CommandEnum;
+    use rill_core_actor::ActorRef;
+    use rill_io::midi_output::MidiOutput;
+    use rill_patchbay::midi_clock::spawn_midi_clock_output;
+    use rill_patchbay::module_def::{ClockDef, ModuleDef};
+    use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
+
+    struct ClockConstructor;
+
+    impl ModuleConstructor for ClockConstructor {
+        fn type_name(&self) -> &'static str {
+            "clock"
+        }
+
+        fn construct(
+            &self,
+            module: &ModuleDef,
+            _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
+            system: &std::sync::Arc<rill_core_actor::ActorSystem>,
+            _graph_ref: &ActorRef<CommandEnum>,
+        ) -> Result<ActorRef<CommandEnum>, ModuleError> {
+            let (backend, port_name, auto_start) = match module {
+                ModuleDef::Clock(ClockDef {
+                    backend,
+                    port_name,
+                    auto_start,
+                }) => (backend, port_name, auto_start),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(
+                        "ClockConstructor requires ModuleDef::Clock".into(),
+                    ));
+                }
+            };
+
+            let output: Box<dyn MidiOutput> = match backend.as_str() {
+                "midir" => {
+                    let b = rill_io::backends::MidirBackend::new_output_by_name(
+                        "rill-clock",
+                        port_name,
+                    )
+                    .or_else(|_| rill_io::backends::MidirBackend::new_output("rill-clock"))
+                    .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?;
+                    Box::new(b)
+                }
+                #[cfg(feature = "alsa")]
+                "alsa_seq" => Box::new(
+                    rill_io::backends::AlsaSeqBackend::new_output(port_name)
+                        .map_err(|e| ModuleError::ConstructionFailed(e.to_string()))?,
+                ),
+                _ => {
+                    return Err(ModuleError::ConstructionFailed(format!(
+                        "unknown MIDI output backend '{backend}'"
+                    )));
+                }
+            };
+
+            let clock_ref = spawn_midi_clock_output(system, output);
+
+            if *auto_start {
+                use rill_core::queues::control_event::{ControlEvent, MidiTransportKind};
+                clock_ref.send(CommandEnum::Control(ControlEvent::MidiTransport {
+                    kind: MidiTransportKind::Start,
+                }));
+            }
+
+            Ok(clock_ref)
+        }
+
+        fn clone_box(&self) -> Box<dyn ModuleConstructor> {
+            Box::new(ClockConstructor)
+        }
+    }
+
+    factory.register(ClockConstructor);
 }
 
-/// Register all built‑in backends into a [`BackendFactory<f32>`](rill_graph::backend_factory::BackendFactory).
+/// Register all built-in backends into a [`BackendFactory`](rill_graph::backend_factory::BackendFactory).
 #[cfg(feature = "io")]
-pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
+pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
+    use std::sync::Arc;
+
     factory.register("null", |p| {
-        Ok(Box::new(crate::io::backends::NullBackend::new(
-            cfg_from_params(p),
-        )))
+        let b = Arc::new(crate::io::backends::NullBackend::new(cfg_from_params(p)));
+        Ok((b as Arc<dyn rill_core::io::IoDriver>, None, None))
     });
 
     #[cfg(feature = "alsa")]
     factory.register("alsa", |p| {
-        let b = crate::io::backends::AlsaBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("alsa: {e}"))?;
-        Ok(Box::new(b))
+        let cfg = cfg_from_params(p);
+        let out_ch = cfg.output_channels > 0;
+        let b =
+            Arc::new(crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?);
+        Ok((
+            b.clone() as Arc<dyn rill_core::io::IoDriver>,
+            None,
+            if out_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 
     #[cfg(feature = "pipewire")]
     factory.register("pipewire", |p| {
-        let b = crate::io::backends::PipewireBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("pipewire: {e}"))?;
-        Ok(Box::new(b))
+        let cfg = cfg_from_params(p);
+        let in_ch = cfg.input_channels > 0;
+        let out_ch = cfg.output_channels > 0;
+        let be = Arc::new(
+            crate::io::backends::PipewireBackend::new(cfg).map_err(|e| format!("pipewire: {e}"))?,
+        );
+        Ok((
+            be.clone() as Arc<dyn rill_core::io::IoDriver>,
+            if in_ch {
+                Some(be.clone() as Arc<dyn rill_core::io::IoCapture>)
+            } else {
+                None
+            },
+            if out_ch {
+                Some(be.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 
     #[cfg(feature = "jack")]
     factory.register("jack", |p| {
-        let b = crate::io::backends::JackBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("jack: {e}"))?;
-        Ok(Box::new(b))
+        let cfg = cfg_from_params(p);
+        let out_ch = cfg.output_channels > 0;
+        let b =
+            Arc::new(crate::io::backends::JackBackend::new(cfg).map_err(|e| format!("jack: {e}"))?);
+        Ok((
+            b.clone() as Arc<dyn rill_core::io::IoDriver>,
+            None,
+            if out_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 
     #[cfg(feature = "portaudio")]
     factory.register("portaudio", |p| {
-        let b = crate::io::backends::PortAudioBackend::new(cfg_from_params(p))
-            .map_err(|e| format!("portaudio: {e}"))?;
-        Ok(Box::new(b))
-    });
-}
-
-/// Register lo‑fi chip emulation backends.
-#[cfg(feature = "lofi")]
-pub fn register_lofi_backends(factory: &mut rill_graph::backend_factory::BackendFactory<f32>) {
-    factory.register("ay38910", |p| {
-        let sr = p
-            .get("sample_rate")
-            .and_then(|v| v.as_f32())
-            .unwrap_or(44100.0);
-        let chip_clock = p
-            .get("chip_clock")
-            .and_then(|v| v.as_f32())
-            .unwrap_or(1_750_000.0);
-        Ok(Box::new(rill_lofi::Ay38910Backend::new(chip_clock, sr)))
+        let cfg = cfg_from_params(p);
+        let out_ch = cfg.output_channels > 0;
+        let b = Arc::new(
+            crate::io::backends::PortAudioBackend::new(cfg)
+                .map_err(|e| format!("portaudio: {e}"))?,
+        );
+        Ok((
+            b.clone() as Arc<dyn rill_core::io::IoDriver>,
+            None,
+            if out_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
+            } else {
+                None
+            },
+        ))
     });
 }
 
@@ -646,14 +769,33 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let in_ch = p
         .get("input_channels")
         .and_then(|v| v.as_i32())
-        .unwrap_or(ch as i32) as u32;
+        .unwrap_or(0) as u32;
     let out_ch = p
         .get("output_channels")
         .and_then(|v| v.as_i32())
         .unwrap_or(ch as i32) as u32;
-    crate::io::AudioConfig::new()
+    let mut cfg = crate::io::AudioConfig::new()
         .with_sample_rate(sr)
         .with_buffer_size(bs)
         .with_input_channels(in_ch)
-        .with_output_channels(out_ch)
+        .with_output_channels(out_ch);
+    if let Some(ParamValue::String(ref d)) = p.get("input_device") {
+        cfg = cfg.with_input_device(d.as_str());
+    }
+    if let Some(ParamValue::String(ref d)) = p.get("output_device") {
+        cfg = cfg.with_output_device(d.as_str());
+    }
+    cfg
+}
+
+/// Deserialise a JSON graph string into a
+/// [rill_graph::serialization::GraphDef].
+///
+/// Use [`ModularSystem::create_builder`](crate::modular::ModularSystem::create_builder)
+/// to build a graph from the definition.
+#[cfg(feature = "serialization")]
+pub fn load_graph_json(
+    json: &str,
+) -> Result<rill_graph::serialization::GraphDef, rill_graph::serialization::SerializationError> {
+    rill_graph::serialization::from_json(json)
 }

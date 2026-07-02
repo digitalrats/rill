@@ -109,6 +109,7 @@
 //!         ctx: &RenderContext,
 //!         _control_inputs: &[T],
 //!         _clock_inputs: &[RenderContext],
+//!         _tick: &ClockTick,
 //!     ) -> ProcessResult<()> {
 //!         let two_pi = T::from_f32(2.0 * std::f32::consts::PI);
 //!         let phase_inc = self.frequency / T::from_f32(ctx.sample_rate);
@@ -343,8 +344,10 @@ mod tests {
     #[test]
     fn test_constants() {
         assert!(!VERSION.is_empty());
-        assert!(MAX_SAMPLE_RATE > MIN_SAMPLE_RATE);
-        assert!(MAX_BLOCK_SIZE > MIN_BLOCK_SIZE);
+        const {
+            assert!(MAX_SAMPLE_RATE > MIN_SAMPLE_RATE);
+            assert!(MAX_BLOCK_SIZE > MIN_BLOCK_SIZE);
+        }
         assert_eq!(DEFAULT_BLOCK_SIZE, 64);
         assert_eq!(DEFAULT_SAMPLE_RATE, 44100.0);
         assert_eq!(CACHE_LINE_SIZE, 64);

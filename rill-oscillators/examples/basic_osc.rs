@@ -1,4 +1,5 @@
 //! Basic oscillator example
+use rill_core::time::ClockTick;
 use rill_core::traits::Node;
 use rill_core::traits::Source;
 use rill_core::RenderContext;
@@ -30,11 +31,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     noise.init(sample_rate);
 
     let ctx = RenderContext::new(0, BLOCK_SIZE as u32, sample_rate);
+    let tick = ClockTick::new(0, BLOCK_SIZE as u32, sample_rate, "example".to_string());
 
     // Generate one block each
-    sine.generate(&ctx, &[], &[])?;
-    saw.generate(&ctx, &[], &[])?;
-    noise.generate(&ctx, &[], &[])?;
+    sine.generate(&ctx, &[], &[], &tick)?;
+    saw.generate(&ctx, &[], &[], &tick)?;
+    noise.generate(&ctx, &[], &[], &tick)?;
 
     // Read from output ports
     let sine_output = sine.output_port(0).unwrap().buffer.as_array();

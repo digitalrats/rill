@@ -347,7 +347,7 @@ mod tests {
     fn test_message_int_float() {
         let msg = OscMessage {
             addr: "/test/foo".into(),
-            args: vec![OscType::Int(42), OscType::Float(3.14)],
+            args: vec![OscType::Int(42), OscType::Float(1.5)],
         };
         let packet = OscPacket::Message(msg.clone());
         let bytes = encode(&packet).unwrap();

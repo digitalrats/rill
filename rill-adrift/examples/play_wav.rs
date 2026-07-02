@@ -7,19 +7,19 @@
 //!   cargo run --example play_wav --features "io,sampler,portaudio"
 //!   cargo run --example play_wav --features "io,sampler,portaudio" -- [backend] [wav_path]
 //!   cargo run --example play_wav --features "io,sampler,alsa" -- alsa myfile.wav
-//!
-//! Positional arguments:
-//!   backend   I/O backend (portaudio/alsa/pipewire/jack/null). Default: portaudio.
-//!   wav_path  Path to a WAV file. Default: built-in demo sample.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::registration;
-use rill_adrift::rill_core::traits::Params;
+use rill_adrift::rill_core::{
+    queues::{CommandEnum, SetParameter, SignalOrigin},
+    traits::{Params, SignalSlab},
+    NodeId, ParamValue, ParameterId, PortId,
+};
 use rill_adrift::rill_core_actor::ActorSystem;
-use rill_adrift::rill_graph::backend_factory::BackendFactory;
+use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
 use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
 
 const BUF: usize = 256;
@@ -54,48 +54,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let running = Arc::new(AtomicBool::new(true));
     let t_run = running.clone();
-    let backend = backend_name.clone();
-
     let wav_display = wav_path.clone();
+    let be_name = backend_name.clone();
 
     let audio_thread = std::thread::spawn(move || {
-        // ── Register node types and backends ──────────────────
+        // ── 1. Register backends first ─────────────────
+        let mut bf = BackendFactory::new();
+        registration::register_backends(&mut bf);
+        let mut be_params = HashMap::new();
+        be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+        be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+        be_params.insert("channels".into(), ParamValue::Int(2));
+        let OutputBundle { driver, playback } = bf
+            .create_output(&be_name, &be_params)
+            .expect("create output backend");
+
+        // ── Load WAV on control thread ────
+        let slab: Option<Arc<SignalSlab>> = match rill_adrift::sampler::wav::load_slab(&wav_path) {
+            Ok(s) => {
+                eprintln!("Loaded {wav_path}");
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                eprintln!("Could not load {wav_path}: {e}");
+                None
+            }
+        };
+
+        // ── 2. Register node types ──────────────────
         let mut factory = NodeFactory::<f32, BUF>::new();
         registration::register_all_nodes::<BUF>(&mut factory);
 
-        let mut backends = BackendFactory::new();
-        registration::register_backends(&mut backends);
+        // ── 3. Build graph ──────────────────────────────────────────
+        let mut builder = GraphBuilder::new(Arc::new(factory));
 
-        // ── Build graph ──────────────────────────────────────────
-        let mut builder = GraphBuilder::new(Arc::new(factory), Arc::new(backends));
-
-        let mut be_params = HashMap::new();
-        be_params.insert(
-            "sample_rate".into(),
-            rill_adrift::rill_core::traits::ParamValue::Float(RATE),
-        );
-        be_params.insert(
-            "buffer_size".into(),
-            rill_adrift::rill_core::traits::ParamValue::Int(BUF as i32),
-        );
-        be_params.insert(
-            "input_channels".into(),
-            rill_adrift::rill_core::traits::ParamValue::Int(0),
-        );
-        be_params.insert(
-            "output_channels".into(),
-            rill_adrift::rill_core::traits::ParamValue::Int(2),
-        );
-
-        builder.set_default_backend(backend.clone(), be_params);
-
-        let mut sampler_params = Params::new(RATE);
-        sampler_params.insert(
-            "file",
-            rill_adrift::rill_core::traits::ParamValue::String(wav_path.clone()),
-        );
-
-        let sampler = builder.add_node("rill/sampler", &sampler_params);
+        let sampler = builder.add_node("rill/sampler", &Params::new(RATE));
         let output = builder.add_node("rill/output", &Params::new(RATE));
         builder.connect_signal(sampler, 0, output, 0);
         builder.connect_signal(sampler, 1, output, 1);
@@ -103,9 +96,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ── Build and run ────────────────────────────────────────
         let system = ActorSystem::new();
         match builder.build(&system) {
-            Ok(mut graph) => {
-                eprintln!("Graph built ({}) nodes. Playing...", graph.node_count());
-                graph.run(t_run).ok();
+            Ok(graph) => {
+                // Send slab via actor mailbox for zero-alloc RT swap
+                let handle = graph.handle();
+                if let Some(ref s) = slab {
+                    handle.send(CommandEnum::SetParameter(SetParameter::new(
+                        PortId::signal_out(NodeId(0), 0),
+                        ParameterId::new("source").unwrap(),
+                        ParamValue::SignalSlab(s.clone()),
+                        SignalOrigin::Manual,
+                    )));
+                }
+                drop(slab);
+
+                eprintln!("Graph built ({} nodes). Playing...", graph.node_count());
+                let mut state = graph.into_processing_state();
+                state.wire_backends(None, Some(playback));
+                if let Err(e) = state.run_with_driver(driver, t_run) {
+                    eprintln!("Backend error: {e}");
+                }
             }
             Err(e) => eprintln!("Build error: {e:?}"),
         }
