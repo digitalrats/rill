@@ -1,8 +1,8 @@
-# Rill Architecture (version 0.5.0-beta.6)
+# Rill Architecture (version 0.5.0-beta.7)
 
 ## General Concept
 
-Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.5.0-beta.6, all crates use a unified `rill-core`.
+Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.5.0-beta.7, all crates use a unified `rill-core`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -226,7 +226,7 @@ assert_eq!(mbox.pop(), Some("hello".into()));
 ## Infrastructure crates
 
 
-### `rill-graph` (0.5.0-beta.6)
+### `rill-graph` (0.5.0-beta.7)
 Audio graph with topological sort.
 
 ```rust
@@ -261,7 +261,7 @@ The Rill graph is built on a rigorous mathematical foundation — **category the
 
 **Block processing:** data is transferred in fixed-size blocks, improving performance through cache locality and enabling SIMD optimizations.
 
-### `rill-patchbay` (0.5.0-beta.6, ✅ active)
+### `rill-patchbay` (0.5.0-beta.7, ✅ active)
 Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automatons (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automatons" section for details.
 
 ```rust
@@ -317,7 +317,7 @@ manager.start()?;  // Automatons begin their own life
 
 ## DSP infrastructure
 
-### `rill-core-dsp` (0.5.0-beta.6)
+### `rill-core-dsp` (0.5.0-beta.7)
 Unified DSP infrastructure with vector operations, algorithms, and macros. Includes:
 
 - **Vector abstractions** (`ScalarVector1`, `ScalarVector2`, `ScalarVector4`) — generic numeric types for portable SIMD operations
@@ -356,16 +356,16 @@ osc.process_block(&[], &mut input);
 filter.process_block(&input, &mut output);
 ```
 
-### `rill-oscillators` (0.5.0-beta.6, ✅ active)
+### `rill-oscillators` (0.5.0-beta.7, ✅ active)
 Graph nodes for oscillators (sine, saw, triangle, square, pulse), noise, LFO, and envelopes. Implements `Source`/`Processor` traits from `rill-core`, using DSP algorithms from `rill-core-dsp::generators` and `ScalarVectorN<T>` vector abstractions.
 
-### `rill-digital-filters` (0.5.0-beta.6, ✅ active)
+### `rill-digital-filters` (0.5.0-beta.7, ✅ active)
 Graph nodes for digital filters: biquad, one-pole, SVF, Butterworth, Chebyshev, comb. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp::filters`.
 
-### `rill-digital-effects` (0.5.0-beta.6, ✅ active)
+### `rill-digital-effects` (0.5.0-beta.7, ✅ active)
 Graph nodes for digital effects: Delay, Distortion, Limiter. Implements the `Processor` trait from `rill-core`, using delay algorithms from `rill-core-dsp::delay`. Optional `modulation` feature enables `rill-oscillators` for LFO modulation.
 
-### `rill-router` (0.5.0-beta.6)
+### `rill-router` (0.5.0-beta.7)
 Router combining equalizer (`rill-eq`) and mixer (`rill-mixer`) functionality with matrix routing capabilities. Includes `eq` (graphic and parametric equalizers) and `mixer` (mixer with channels, sends, master) modules. A `matrix` module is planned for flexible signal routing.
 
 ```rust
@@ -382,7 +382,7 @@ mixer.set_channel_volume(1, 0.8)?;
 
 ## Specialized crates
 
-### `rill-lofi` (0.5.0-beta.6, ✅ active)
+### `rill-lofi` (0.5.0-beta.7, ✅ active)
 Lo-Fi emulation of classic systems (NES, AY-3-8910, Akai S900). Implements graph nodes (`Node`) based on `rill-core`, using internal DSP algorithms to emulate bit depth, sample rate, and characteristic noise of retro systems.
 
 ```rust
@@ -394,10 +394,10 @@ let akai_config = LofiConfig::for_system(ClassicSystem::AkaiS900);
 let mut akai = LofiProcessor::new(akai_config);
 ```
 
-### `rill-telemetry` (0.5.0-beta.6, ✅ active)
+### `rill-telemetry` (0.5.0-beta.7, ✅ active)
 Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
 
-### `rill-core-model` (0.5.0-beta.6, ✅ active)
+### `rill-core-model` (0.5.0-beta.7, ✅ active)
 WDF core + physical modeling — elements (Resistor, Capacitor, Inductor, Diode, OpAmp), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion), WDF filters (MoogLadder, DiodeClipper), tape models (RecordHead, PlaybackHead), and resonant physical models (StringModel — 1D waveguide, PlateModel — 2D FDTD mesh, ModalModel — parallel filter bank, HelmholtzCavity + CavityArray). Generic over `rill_core::Transcendental` — supports `f32` and `f64`.
 
 ```rust
@@ -415,7 +415,7 @@ ladder.set_resonance(0.7.into());
 let y = ladder.process_sample(0.5.into());
 ```
 
-### `rill-analog-filters` (0.5.0-beta.6, ✅ active)
+### `rill-analog-filters` (0.5.0-beta.7, ✅ active)
 WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::wdf::MoogLadder<f64>`. Provides graph nodes for the processor.
 
 ```rust
@@ -425,7 +425,7 @@ let mut processor = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
 processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(5000.0));
 ```
 
-### `rill-analog-effects` (0.5.0-beta.6, ✅ active)
+### `rill-analog-effects` (0.5.0-beta.7, ✅ active)
 Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-model`.
 
 ```rust
@@ -436,7 +436,7 @@ opamp.set_slew_rate(0.5);
 let output = opamp.process(0.3);
 ```
 
-### `rill-io` (0.5.0-beta.6, active)
+### `rill-io` (0.5.0-beta.7, active)
 Audio input/output. Pure I/O backends — no engine, no processors.
 
 Single trait:
@@ -488,7 +488,7 @@ I/O callback thread (hard or soft RT) + control thread (tokio, patchbay).
 5. **Performance** — zero-cost abstractions, real-time safety
 6. **Testability** — all components are tested in isolation
 
-## Crate dependencies (version 0.5.0-beta.6)
+## Crate dependencies (version 0.5.0-beta.7)
 
 Dependency diagram between crates (solid arrows — mandatory dependencies, dashed — optional):
 
