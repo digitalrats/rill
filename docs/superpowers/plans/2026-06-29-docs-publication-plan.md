@@ -677,7 +677,7 @@ Current:
 - 📦 **rill-sampler** — WAV loading, time-series playback, streaming from disk
 ```
 
-- [ ] **Step 9: `docs/architecture.md` — remove outdated "0.5.0-beta.6 refactoring is complete" language (lines 810-811)**
+- [ ] **Step 9: `docs/architecture.md` — remove outdated "0.5.0-beta.7 refactoring is complete" language (lines 810-811)**
 
 This section reads like a changelog entry rather than an architecture overview. Update to present-tense description:
 
@@ -685,7 +685,7 @@ oldString (lines 800-811):
 ```
 ## Conclusion
 
-Rill architecture version 0.5.0-beta.6 provides:
+Rill architecture version 0.5.0-beta.7 provides:
 
 - ✅ **Stable core** — unified \`rill-core\` crate with a clear API
 - ✅ **DSP algorithms** — \`rill-core-dsp\` contains the \`Algorithm\` trait and DSP algorithm implementations (generators, filters, delay) with vector operations; specialized crates (\`rill-oscillators\`, \`rill-digital-filters\`, \`rill-digital-effects\`) provide graph nodes (\`Node\`) based on them
@@ -695,9 +695,9 @@ Rill architecture version 0.5.0-beta.6 provides:
 - ✅ **Reliability** — all components thoroughly tested (487 unit tests across the entire workspace)
 - ✅ **Extensibility** — easy to add new algorithms via macros and the \`Algorithm\` trait
 - ✅ **Consistency** — all crates use the same core version
-- ✅ **Feature unification** — \`rill-eq\` and \`rill-mixer\` crates merged into \`rill-router\` (0.5.0-beta.6) with equalizer and mixer modules
+- ✅ **Feature unification** — \`rill-eq\` and \`rill-mixer\` crates merged into \`rill-router\` (0.5.0-beta.7) with equalizer and mixer modules
 
-The 0.5.0-beta.6 refactoring is complete: all crates have been migrated to a unified \`rill-core\` and block processing. DSP algorithms are collected in \`rill-core-dsp\` (the \`Algorithm\` trait, generators, filters, delays, vector operations). Specialized crates (\`rill-oscillators\`, \`rill-digital-filters\`, \`rill-digital-effects\`) provide graph nodes (\`Node\`) using these algorithms. \`rill-router\` has been added as a single entry point for routing, mixing, and equalization of audio signals. The core is stabilized and ready for the next phase of development.
+The 0.5.0-beta.7 refactoring is complete: all crates have been migrated to a unified \`rill-core\` and block processing. DSP algorithms are collected in \`rill-core-dsp\` (the \`Algorithm\` trait, generators, filters, delays, vector operations). Specialized crates (\`rill-oscillators\`, \`rill-digital-filters\`, \`rill-digital-effects\`) provide graph nodes (\`Node\`) using these algorithms. \`rill-router\` has been added as a single entry point for routing, mixing, and equalization of audio signals. The core is stabilized and ready for the next phase of development.
 ```
 
 newString:
