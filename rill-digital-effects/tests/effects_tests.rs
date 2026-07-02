@@ -151,7 +151,7 @@ fn test_distortion_types() {
             let output = dist.process_sample(input);
             assert!(!output.is_nan(), "Output should not be NaN");
             assert!(
-                output >= -2.0 && output <= 2.0,
+                (-2.0..=2.0).contains(&output),
                 "Output out of range: {}",
                 output
             );

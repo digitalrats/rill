@@ -497,7 +497,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         fm.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -1.0 && sample <= 1.0);
+        assert!((-1.0..=1.0).contains(&sample));
     }
 
     #[test]
@@ -510,7 +510,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         fm.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -1.0 && sample <= 1.0);
+        assert!((-1.0..=1.0).contains(&sample));
     }
 
     #[test]
@@ -541,7 +541,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         fm.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -1.0 && sample <= 1.0);
+        assert!((-1.0..=1.0).contains(&sample));
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         fm.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -1.0 && sample <= 1.0);
+        assert!((-1.0..=1.0).contains(&sample));
     }
 
     #[test]
@@ -570,7 +570,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         fm.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -1.0 && sample <= 1.0);
+        assert!((-1.0..=1.0).contains(&sample));
     }
 
     #[test]
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(fm.amplitude(), 0.5);
 
         let phase = fm.phase();
-        assert!(phase >= 0.0 && phase <= 1.0);
+        assert!((0.0..=1.0).contains(&phase));
     }
 
     #[test]
@@ -622,7 +622,7 @@ mod tests {
     fn test_clone_copy() {
         let fm1 = SimpleFmSynth::<f32>::new(440.0, 2.0, 1.5);
         let fm2 = fm1; // Copy
-        let fm3 = fm1.clone(); // Explicit clone
+        let fm3 = Clone::clone(&fm1); // Explicit clone
 
         assert_eq!(fm1.frequency(), fm2.frequency());
         assert_eq!(fm1.frequency(), fm3.frequency());

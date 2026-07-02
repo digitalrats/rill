@@ -481,7 +481,7 @@ mod tests {
 
         let bpm = tracker.bpm().unwrap();
         assert!(
-            bpm <= 300.0 && bpm >= 20.0,
+            (20.0..=300.0).contains(&bpm),
             "BPM {:.1} out of clamp range",
             bpm
         );

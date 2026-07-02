@@ -62,7 +62,7 @@ impl JackMidiBackend {
             .map_err(|e| format!("JACK MIDI output client new: {e:?}"))?;
 
         let midi_out: Port<MidiOut> = client
-            .register_port("midi_out", MidiOut::default())
+            .register_port("midi_out", MidiOut)
             .map_err(|e| format!("JACK MIDI output port: {e:?}"))?;
 
         let (tx_write, rx) = sync_channel(CHANNEL_CAPACITY);
@@ -92,7 +92,7 @@ impl JackMidiBackend {
             .map_err(|e| format!("JACK MIDI client new: {e:?}"))?;
 
         let midi_in: Port<MidiIn> = client
-            .register_port("midi_in", MidiIn::default())
+            .register_port("midi_in", MidiIn)
             .map_err(|e| format!("JACK MIDI port: {e:?}"))?;
 
         let (tx, rx) = sync_channel(CHANNEL_CAPACITY);

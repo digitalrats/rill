@@ -426,6 +426,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 // Graph (Static DAG)
 // ============================================================================
 
+/// Owned parts of a [`Graph`] returned by `into_parts` (test only).
+#[cfg(test)]
+type GraphParts<T, const BUF_SIZE: usize> = (
+    Vec<NodeVariant<T, BUF_SIZE>>,
+    Vec<usize>,
+    ClockTick,
+    Vec<Box<dyn Buffer<T> + Send>>,
+);
+
 /// Immutable signal graph with static DAG topology.
 ///
 /// Once built the graph cannot be modified. The graph owns no processing
@@ -525,15 +534,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
             let nv = &mut *self.nodes.get();
             for node in nv.iter_mut() {
                 if let Some(ref c) = capture {
-                    match node {
-                        NodeVariant::Source(src) => src.set_capture(c.clone()),
-                        _ => {}
+                    if let NodeVariant::Source(src) = node {
+                        src.set_capture(c.clone())
                     }
                 }
                 if let Some(ref p) = playback {
-                    match node {
-                        NodeVariant::Sink(sink) => sink.set_playback(p.clone()),
-                        _ => {}
+                    if let NodeVariant::Sink(sink) = node {
+                        sink.set_playback(p.clone())
                     }
                 }
             }
@@ -664,14 +671,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
 
     /// Consume the graph and return its owned parts (test only).
     #[cfg(test)]
-    pub fn into_parts(
-        self,
-    ) -> (
-        Vec<NodeVariant<T, BUF_SIZE>>,
-        Vec<usize>,
-        ClockTick,
-        Vec<Box<dyn Buffer<T> + Send>>,
-    ) {
+    pub fn into_parts(self) -> GraphParts<T, BUF_SIZE> {
         let Self {
             nodes,
             topo_order,

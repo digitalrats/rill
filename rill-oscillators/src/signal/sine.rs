@@ -405,7 +405,7 @@ mod tests {
 
         // All samples should be within amplitude range
         for &sample in output.iter() {
-            assert!(sample >= -0.5 && sample <= 0.5);
+            assert!((-0.5..=0.5).contains(&sample));
         }
     }
 
@@ -428,7 +428,7 @@ mod tests {
 
         // All samples should be within amplitude range
         for &sample in output.iter() {
-            assert!(sample >= -0.5 && sample <= 0.5);
+            assert!((-0.5..=0.5).contains(&sample));
         }
     }
 

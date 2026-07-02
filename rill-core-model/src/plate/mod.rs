@@ -210,7 +210,7 @@ mod tests {
     fn test_plate_algorithm_process() {
         let params = PlateParams::<f64>::default();
         let mut model = PlateModel::<f64>::new(params);
-        model.strike(1.0.into());
+        model.strike(1.0);
         let mut output = [0.0f64; 64];
         model.process(None, &mut output).unwrap();
         let max_abs = output.iter().map(|x| x.abs()).fold(0.0, f64::max);
@@ -219,15 +219,17 @@ mod tests {
 
     #[test]
     fn test_plate_boundary() {
-        let mut params = PlateParams::<f64>::default();
-        params.boundary = 0.0.into();
-        params.decay = 0.95.into();
-        params.grid_width = 8;
-        params.grid_height = 8;
-        params.excitation_x = 0.5.into();
-        params.excitation_y = 0.5.into();
+        let params = PlateParams::<f64> {
+            boundary: 0.0,
+            decay: 0.95,
+            grid_width: 8,
+            grid_height: 8,
+            excitation_x: 0.5,
+            excitation_y: 0.5,
+            ..Default::default()
+        };
         let mut model = PlateModel::<f64>::new(params);
-        model.strike(1.0.into());
+        model.strike(1.0);
         for _ in 0..200 {
             let mut out = [0.0f64; 1];
             model.process(None, &mut out).unwrap();
@@ -242,7 +244,7 @@ mod tests {
         let params = PlateParams::<f64>::default();
         let mut model = PlateModel::<f64>::new(params);
         let new_params = PlateParams {
-            wave_speed: 0.125.into(),
+            wave_speed: 0.125,
             ..PlateParams::default()
         };
         model.set_params(new_params);
@@ -254,7 +256,7 @@ mod tests {
     fn test_plate_reset() {
         let params = PlateParams::<f64>::default();
         let mut model = PlateModel::<f64>::new(params);
-        model.strike(1.0.into());
+        model.strike(1.0);
         model.reset();
         let mut out = [0.0f64; 1];
         model.process(None, &mut out).unwrap();

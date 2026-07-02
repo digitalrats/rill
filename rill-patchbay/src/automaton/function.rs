@@ -167,10 +167,10 @@ mod tests {
     #[test]
     fn test_function_automaton() {
         let automaton = FunctionAutomaton::new("Test", |t| (t * 2.0).sin());
-        let mut internal = automaton.initial_internal();
+        automaton.initial_internal();
         let current = ParamValue::Float(0.0);
 
-        let value = automaton.step(&mut internal, &current, 1.0, &NoAction);
+        let value = automaton.step(&mut (), &current, 1.0, &NoAction);
         assert!(value.as_f32().is_some());
     }
 

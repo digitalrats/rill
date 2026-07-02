@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|| cfg.backend.as_ref().map(|b| b.name.clone()))
         .unwrap_or_else(|| "null".into());
 
-    let wav_path = wav_arg.map(|s| resolve_wav_path(s, &crate_dir));
+    let wav_path = wav_arg.map(|s| resolve_wav_path(s, crate_dir));
 
     let running = Arc::new(AtomicBool::new(true));
 

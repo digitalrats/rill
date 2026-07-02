@@ -150,14 +150,14 @@ impl ProcessHandler for JackProcessHandler {
             let mut out_ptrs: [*mut f32; 8] = [std::ptr::null_mut(); 8];
 
             unsafe {
-                for ch in 0..self.in_ch {
+                for (ch, slot) in in_ptrs.iter_mut().enumerate().take(self.in_ch) {
                     if ch < self.in_ports.len() {
-                        in_ptrs[ch] = self.in_ports[ch].as_slice(ps).as_ptr().add(offset);
+                        *slot = self.in_ports[ch].as_slice(ps).as_ptr().add(offset);
                     }
                 }
-                for ch in 0..self.out_ch {
+                for (ch, slot) in out_ptrs.iter_mut().enumerate().take(self.out_ch) {
                     if ch < self.out_ports.len() {
-                        out_ptrs[ch] = self.out_ports[ch].as_mut_slice(ps).as_mut_ptr().add(offset);
+                        *slot = self.out_ports[ch].as_mut_slice(ps).as_mut_ptr().add(offset);
                     }
                 }
             }

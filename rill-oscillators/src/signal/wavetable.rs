@@ -286,7 +286,7 @@ mod tests {
             "should produce non-zero output"
         );
         for &s in output.iter() {
-            assert!(s >= -0.5 && s <= 0.5, "amplitude within bounds");
+            assert!((-0.5..=0.5).contains(&s), "amplitude within bounds");
         }
     }
 

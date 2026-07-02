@@ -344,8 +344,10 @@ mod tests {
     #[test]
     fn test_constants() {
         assert!(!VERSION.is_empty());
-        assert!(MAX_SAMPLE_RATE > MIN_SAMPLE_RATE);
-        assert!(MAX_BLOCK_SIZE > MIN_BLOCK_SIZE);
+        const {
+            assert!(MAX_SAMPLE_RATE > MIN_SAMPLE_RATE);
+            assert!(MAX_BLOCK_SIZE > MIN_BLOCK_SIZE);
+        }
         assert_eq!(DEFAULT_BLOCK_SIZE, 64);
         assert_eq!(DEFAULT_SAMPLE_RATE, 44100.0);
         assert_eq!(CACHE_LINE_SIZE, 64);

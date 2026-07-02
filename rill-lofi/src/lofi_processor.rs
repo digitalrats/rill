@@ -470,8 +470,8 @@ mod tests {
         processor.init(44100.0);
 
         let mut input = [0.0f32; 64];
-        for i in 0..64 {
-            input[i] = (i as f32 / 64.0 * std::f32::consts::TAU).sin() * 0.5;
+        for (i, slot) in input.iter_mut().enumerate() {
+            *slot = (i as f32 / 64.0 * std::f32::consts::TAU).sin() * 0.5;
         }
 
         let ctx = RenderContext::new(0, 64, 44100.0);
@@ -520,7 +520,7 @@ mod tests {
         let output = *processor.outputs[0].buffer.as_array();
         for &sample in output.iter() {
             assert!(
-                sample >= 0.49 && sample <= 0.51,
+                (0.49..=0.51).contains(&sample),
                 "Bitcrush should not radically change value 0.5"
             );
         }
@@ -657,13 +657,15 @@ mod tests {
 
     #[test]
     fn test_dc_offset_removal() {
-        let mut config = LofiConfig::default();
-        config.enable_bitcrush = false;
-        config.enable_sr_reduction = false;
-        config.enable_noise = false;
-        config.dc_offset = 0.5;
-        config.dry_wet = 1.0;
-        config.output_gain = 1.0;
+        let config = LofiConfig {
+            enable_bitcrush: false,
+            enable_sr_reduction: false,
+            enable_noise: false,
+            dc_offset: 0.5,
+            dry_wet: 1.0,
+            output_gain: 1.0,
+            ..Default::default()
+        };
         let mut processor = LofiProcessor::<1>::new(config);
 
         // Feed constant 1.0 — with offset 0.5 applied, output should be reduced by ~0.5
@@ -684,13 +686,15 @@ mod tests {
 
     #[test]
     fn test_output_ceiling_clamp() {
-        let mut config = LofiConfig::default();
-        config.enable_bitcrush = false;
-        config.enable_sr_reduction = false;
-        config.enable_noise = false;
-        config.output_ceiling = 0.8;
-        config.dry_wet = 1.0;
-        config.output_gain = 2.0; // 1.0 * 2.0 = 2.0 → clamp to 0.8
+        let config = LofiConfig {
+            enable_bitcrush: false,
+            enable_sr_reduction: false,
+            enable_noise: false,
+            output_ceiling: 0.8,
+            dry_wet: 1.0,
+            output_gain: 2.0, // 1.0 * 2.0 = 2.0 → clamp to 0.8
+            ..Default::default()
+        };
         let mut processor = LofiProcessor::<1>::new(config);
 
         let sample = processor.process_sample(1.0);
@@ -700,14 +704,16 @@ mod tests {
 
     #[test]
     fn test_dc_offset_and_ceiling_combined() {
-        let mut config = LofiConfig::default();
-        config.enable_bitcrush = false;
-        config.enable_sr_reduction = false;
-        config.enable_noise = false;
-        config.dc_offset = 0.5;
-        config.output_gain = 2.0;
-        config.output_ceiling = 0.5;
-        config.dry_wet = 1.0;
+        let config = LofiConfig {
+            enable_bitcrush: false,
+            enable_sr_reduction: false,
+            enable_noise: false,
+            dc_offset: 0.5,
+            output_gain: 2.0,
+            output_ceiling: 0.5,
+            dry_wet: 1.0,
+            ..Default::default()
+        };
         let mut processor = LofiProcessor::<1>::new(config);
 
         // Input 1.0 → max gain 2.0 + offset 0.5 should exceed ceiling 0.5 → clamped

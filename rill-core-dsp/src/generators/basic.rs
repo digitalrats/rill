@@ -548,7 +548,7 @@ mod tests {
         osc.process(None, &mut output).unwrap();
         let sample2 = output[0];
         assert!(sample2 != 0.0);
-        assert!(sample2 >= -0.5 && sample2 <= 0.5);
+        assert!((-0.5..=0.5).contains(&sample2));
     }
 
     #[test]
@@ -559,7 +559,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         osc.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -0.5 && sample <= 0.5);
+        assert!((-0.5..=0.5).contains(&sample));
     }
 
     #[test]
@@ -581,7 +581,7 @@ mod tests {
         let mut output = [0.0f32; 1];
         osc.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -0.5 && sample <= 0.5);
+        assert!((-0.5..=0.5).contains(&sample));
     }
 
     #[test]
@@ -641,14 +641,14 @@ mod tests {
         let mut output = [0.0f32; 1];
         osc.process(None, &mut output).unwrap();
         let sample = output[0];
-        assert!(sample >= -1.0 && sample <= 1.0);
+        assert!((-1.0..=1.0).contains(&sample));
     }
 
     #[test]
     fn test_clone_copy() {
         let osc1 = BasicOscillator::<f32>::new(Waveform::Sine, 440.0, 0.5);
         let osc2 = osc1; // Copy via Copy trait
-        let osc3 = osc1.clone(); // Explicit clone
+        let osc3 = Clone::clone(&osc1); // Explicit clone
 
         assert_eq!(osc1.frequency(), osc2.frequency());
         assert_eq!(osc1.frequency(), osc3.frequency());

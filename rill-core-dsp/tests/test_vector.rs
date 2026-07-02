@@ -119,11 +119,11 @@ fn test_scalar_vector_math_functions() {
     let vec_exp_res = vec_exp.exp();
     vec_exp_res.store(&mut result);
     assert!((result[0] - 1.0).abs() < 1e-6);
-    assert!((result[1] - 2.718281828459045).abs() < 1e-6);
-    assert!((result[2] - 7.38905609893065).abs() < 1e-6);
+    assert!((result[1] - std::f32::consts::E).abs() < 1e-6);
+    assert!((result[2] - 7.389_056).abs() < 1e-6);
 
     // Natural logarithm
-    let data_ln = [1.0f32, 2.718281828459045, 7.38905609893065, 1.0];
+    let data_ln = [1.0f32, std::f32::consts::E, 7.389_056, 1.0];
     let vec_ln = ScalarVector4::load(&data_ln);
     let vec_ln_res = vec_ln.ln();
     vec_ln_res.store(&mut result);
@@ -168,11 +168,11 @@ fn test_vector_splat() {
     vec.store(&mut result);
     assert_eq!(result, [42.0; 4]);
 
-    let scalar = 3.14f64;
+    let scalar = 2.5f64;
     let vec = ScalarVector2::splat(scalar);
     let mut result = [0.0f64; 2];
     vec.store(&mut result);
-    assert_eq!(result, [3.14; 2]);
+    assert_eq!(result, [2.5; 2]);
 }
 
 #[test]
@@ -247,7 +247,7 @@ fn test_vector_copy_clone() {
     assert_eq!(result1, result2);
 
     // Clone
-    let vec_clone = vec.clone();
+    let vec_clone = Clone::clone(&vec);
     let mut result3 = [0.0f32; 4];
     vec_clone.store(&mut result3);
     assert_eq!(result1, result3);

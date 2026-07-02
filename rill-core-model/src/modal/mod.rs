@@ -195,7 +195,7 @@ mod tests {
     fn test_modal_algorithm_process() {
         let params = ModalParams::<f64, 8>::default();
         let mut model = ModalModel::<f64, 8>::new(params, 44100.0);
-        model.strike(1.0.into());
+        model.strike(1.0);
         let mut output = [0.0f64; 64];
         model.process(None, &mut output).unwrap();
         let max_abs = output.iter().map(|x| x.abs()).fold(0.0, f64::max);
@@ -206,19 +206,18 @@ mod tests {
     fn test_modal_decay() {
         let params = ModalParams::<f64, 8> {
             modes: {
-                let arr = [ModeParams {
-                    freq_ratio: 1.0.into(),
-                    amplitude: 1.0.into(),
-                    decay_time: 0.002.into(),
-                }; 8];
-                arr
+                [ModeParams {
+                    freq_ratio: 1.0,
+                    amplitude: 1.0,
+                    decay_time: 0.002,
+                }; 8]
             },
             num_modes: 1,
-            fundamental: 440.0.into(),
-            damping: 1.0.into(),
+            fundamental: 440.0,
+            damping: 1.0,
         };
         let mut model = ModalModel::<f64, 8>::new(params, 44100.0);
-        model.strike(1.0.into());
+        model.strike(1.0);
         let mut blocks = Vec::new();
         for _ in 0..10 {
             let mut out = [0.0f64; 64];
@@ -247,7 +246,7 @@ mod tests {
         let params = ModalParams::<f64, 8>::default();
         let mut model = ModalModel::<f64, 8>::new(params.clone(), 44100.0);
         let mut new_params = params.clone();
-        new_params.fundamental = 220.0.into();
+        new_params.fundamental = 220.0;
         model.set_params(new_params);
         assert!((model.params.fundamental - 220.0).abs() < 1e-10);
     }

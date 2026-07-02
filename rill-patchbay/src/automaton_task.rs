@@ -95,7 +95,7 @@ mod tests {
             let val = tokio::time::timeout(Duration::from_millis(50), value_rx.recv()).await;
             assert!(val.is_ok(), "task should produce values");
             let v = val.unwrap().unwrap();
-            assert!(v >= -1.0 && v <= 1.0, "value {} out of range", v);
+            assert!((-1.0..=1.0).contains(&v), "value {} out of range", v);
         }
 
         let _ = cancel_tx.send(true);

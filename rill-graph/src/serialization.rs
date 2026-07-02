@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn test_json_roundtrip() {
         let reg = empty_factory();
-        let graph = build_small_graph(&*reg);
+        let graph = build_small_graph(&reg);
 
         let json = to_json(&graph).expect("to_json");
         assert!(json.contains("rill/test"));
@@ -1003,7 +1003,7 @@ mod tests {
     #[test]
     fn test_cbor_roundtrip() {
         let reg = empty_factory();
-        let graph = build_small_graph(&*reg);
+        let graph = build_small_graph(&reg);
 
         let cbor = to_cbor(&graph).expect("to_cbor");
         assert!(!cbor.is_empty());

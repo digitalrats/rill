@@ -213,7 +213,7 @@ mod tests {
     fn test_string_algorithm_process() {
         let params = StringParams::default();
         let mut model = StringModel::<f64>::new(params, 44100.0, 4096);
-        model.pluck(0.5.into());
+        model.pluck(0.5);
         let mut output = [0.0f64; 64];
         model.process(None, &mut output).unwrap();
         let max_abs = output.iter().map(|x| x.abs()).fold(0.0, f64::max);
@@ -223,11 +223,11 @@ mod tests {
     #[test]
     fn test_string_decay() {
         let params = StringParams {
-            decay: 0.5.into(),
+            decay: 0.5,
             ..Default::default()
         };
         let mut model = StringModel::<f64>::new(params, 44100.0, 4096);
-        model.pluck(1.0.into());
+        model.pluck(1.0);
         let mut blocks = Vec::new();
         for _ in 0..20 {
             let mut out = [0.0f64; 64];
@@ -243,7 +243,7 @@ mod tests {
         let params = StringParams::default();
         let mut model = StringModel::<f64>::new(params, 44100.0, 4096);
         let new_params = StringParams {
-            frequency: 220.0.into(),
+            frequency: 220.0,
             ..StringParams::default()
         };
         model.set_params(new_params);

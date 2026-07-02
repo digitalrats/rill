@@ -594,8 +594,8 @@ impl IoCapture for PipewireBackend {
         unsafe {
             if let Some((ptr, channels, frames)) = self.input_window.get() {
                 let n = dst.len().min(frames);
-                for i in 0..n {
-                    dst[i] = *ptr.add(i * channels + channel);
+                for (i, d) in dst.iter_mut().enumerate().take(n) {
+                    *d = *ptr.add(i * channels + channel);
                 }
                 if n < dst.len() {
                     dst[n..].fill(0.0);
@@ -622,8 +622,8 @@ impl IoPlayback for PipewireBackend {
         unsafe {
             if let Some((ptr, channels, frames)) = self.output_window.get() {
                 let n = src.len().min(frames);
-                for i in 0..n {
-                    *ptr.add(i * channels + channel) = src[i];
+                for (i, s) in src.iter().enumerate().take(n) {
+                    *ptr.add(i * channels + channel) = *s;
                 }
                 n
             } else {

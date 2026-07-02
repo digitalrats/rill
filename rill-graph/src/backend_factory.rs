@@ -6,17 +6,15 @@ use std::sync::Arc;
 use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::traits::ParamValue;
 
+/// Raw backend construction result: `(driver, capture?, playback?)`.
+pub type BackendParts = (
+    Arc<dyn IoDriver>,
+    Option<Arc<dyn IoCapture>>,
+    Option<Arc<dyn IoPlayback>>,
+);
+
 /// Constructor signature. Returns `(driver, capture?, playback?)`.
-pub type BackendCtor = fn(
-    params: &HashMap<String, ParamValue>,
-) -> Result<
-    (
-        Arc<dyn IoDriver>,
-        Option<Arc<dyn IoCapture>>,
-        Option<Arc<dyn IoPlayback>>,
-    ),
-    String,
->;
+pub type BackendCtor = fn(params: &HashMap<String, ParamValue>) -> Result<BackendParts, String>;
 
 /// Output-only backend bundle.
 pub struct OutputBundle {
@@ -48,14 +46,7 @@ pub struct DuplexBundle {
 #[derive(Clone)]
 pub struct BackendFactory {
     ctors: HashMap<&'static str, BackendCtor>,
-    cache: HashMap<
-        String,
-        (
-            Arc<dyn IoDriver>,
-            Option<Arc<dyn IoCapture>>,
-            Option<Arc<dyn IoPlayback>>,
-        ),
-    >,
+    cache: HashMap<String, BackendParts>,
 }
 
 impl BackendFactory {
@@ -77,14 +68,7 @@ impl BackendFactory {
         &mut self,
         name: &str,
         params: &HashMap<String, ParamValue>,
-    ) -> Result<
-        (
-            Arc<dyn IoDriver>,
-            Option<Arc<dyn IoCapture>>,
-            Option<Arc<dyn IoPlayback>>,
-        ),
-        String,
-    > {
+    ) -> Result<BackendParts, String> {
         if let Some(cached) = self.cache.get(name) {
             return Ok(cached.clone());
         }
@@ -103,14 +87,7 @@ impl BackendFactory {
         &mut self,
         name: &str,
         params: &HashMap<String, ParamValue>,
-    ) -> Result<
-        (
-            Arc<dyn IoDriver>,
-            Option<Arc<dyn IoCapture>>,
-            Option<Arc<dyn IoPlayback>>,
-        ),
-        String,
-    > {
+    ) -> Result<BackendParts, String> {
         self.get_or_create(name, params)
     }
 

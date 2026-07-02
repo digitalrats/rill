@@ -124,8 +124,8 @@ impl BufferView for DirectView {
         } else {
             let stride = self.num_in;
             unsafe {
-                for i in 0..n {
-                    dst[i] = *self.in_ptr.add(i * stride + channel);
+                for (i, d) in dst.iter_mut().enumerate().take(n) {
+                    *d = *self.in_ptr.add(i * stride + channel);
                 }
             }
         }
@@ -148,8 +148,8 @@ impl BufferView for DirectView {
         } else {
             let stride = self.num_out;
             unsafe {
-                for i in 0..n {
-                    *self.out_ptr.add(i * stride + channel) = src[i];
+                for (i, s) in src.iter().enumerate().take(n) {
+                    *self.out_ptr.add(i * stride + channel) = *s;
                 }
             }
         }

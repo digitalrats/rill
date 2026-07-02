@@ -120,7 +120,7 @@ mod tests {
             let t = 1.0 + i as f64 / 10.0;
             let v = buf.interpolate_cubic(t);
             assert!(
-                v >= -0.1 && v <= 1.1,
+                (-0.1..=1.1).contains(&v),
                 "cubic range violated at t={}: got {}",
                 t,
                 v

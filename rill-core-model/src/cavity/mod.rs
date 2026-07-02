@@ -350,10 +350,10 @@ mod tests {
     fn test_helmholtz_frequency_known_bottle() {
         // 1L bottle with 2cm neck, 1 cm² area → ~120 Hz resonance
         let params = HelmholtzParams {
-            volume: 0.001.into(),
-            neck_area: 0.0001.into(),
-            neck_length: 0.02.into(),
-            sound_speed: 343.0.into(),
+            volume: 0.001,
+            neck_area: 0.0001,
+            neck_length: 0.02,
+            sound_speed: 343.0,
             ..Default::default()
         };
         let cavity = HelmholtzCavity::<f64>::new(params, 44100.0);
@@ -385,7 +385,7 @@ mod tests {
     fn test_helmholtz_reed_self_oscillation() {
         // With pressure and excitation=1, should produce non-zero output
         let params = HelmholtzParams {
-            pressure: 0.5.into(),
+            pressure: 0.5,
             excitation: 1,
             ..Default::default()
         };
@@ -401,7 +401,7 @@ mod tests {
         let params = HelmholtzParams::<f64>::default();
         let mut cavity = HelmholtzCavity::<f64>::new(params, 44100.0);
         let new_params = HelmholtzParams {
-            volume: 0.002.into(),
+            volume: 0.002,
             ..HelmholtzParams::default()
         };
         cavity.set_params(new_params);
@@ -422,7 +422,7 @@ mod tests {
         // Input at cavity 0, output at cavity 3 with coupling — should see signal
         let params = CavityArrayParams {
             num_cavities: 4,
-            coupling: 0.3.into(),
+            coupling: 0.3,
             input_index: 0,
             output_index: 3,
             ..Default::default()
@@ -445,7 +445,7 @@ mod tests {
         // Zero coupling — no propagation, output should be near zero
         let params = CavityArrayParams {
             num_cavities: 4,
-            coupling: 0.0.into(),
+            coupling: 0.0,
             input_index: 0,
             output_index: 3,
             ..Default::default()

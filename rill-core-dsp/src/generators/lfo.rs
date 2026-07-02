@@ -250,7 +250,7 @@ mod tests {
             lfo.process(None, &mut output).unwrap();
             let val = output[0];
             assert!(
-                val >= -1.0 && val <= 1.0,
+                (-1.0..=1.0).contains(&val),
                 "Value {} out of range [-1,1]",
                 val
             );
@@ -267,7 +267,11 @@ mod tests {
         for _ in 0..100 {
             lfo.process(None, &mut output).unwrap();
             let val = output[0];
-            assert!(val >= 0.0 && val <= 1.0, "Value {} out of range [0,1]", val);
+            assert!(
+                (0.0..=1.0).contains(&val),
+                "Value {} out of range [0,1]",
+                val
+            );
         }
     }
 
@@ -315,7 +319,7 @@ mod tests {
             lfo.process(None, &mut output).unwrap();
             let val = output[0];
             assert!(
-                val >= -1.0 && val <= 1.0,
+                (-1.0..=1.0).contains(&val),
                 "Waveform {:?} produced {}",
                 wav,
                 val
@@ -338,7 +342,7 @@ mod tests {
         assert_eq!(lfo.amplitude(), 0.5);
 
         let phase = lfo.phase();
-        assert!(phase >= 0.0 && phase <= 1.0);
+        assert!((0.0..=1.0).contains(&phase));
     }
 
     #[test]
@@ -417,7 +421,7 @@ mod tests {
     fn test_lfo_clone_copy() {
         let lfo1 = LFO::<f32>::new(5.0, Waveform::Sine, true);
         let lfo2 = lfo1; // Copy
-        let lfo3 = lfo1.clone(); // Explicit clone
+        let lfo3 = Clone::clone(&lfo1); // Explicit clone
 
         assert_eq!(lfo1.frequency(), lfo2.frequency());
         assert_eq!(lfo1.frequency(), lfo3.frequency());
