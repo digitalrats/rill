@@ -5,8 +5,8 @@
 //! (the STC player) that receives ClockTick via the rack actor.
 //!
 //! Usage:
-//!   cargo run --example chiptune_stc --features "io,lofi,portaudio,serialization" -- [backend]
-//!   cargo run --example chiptune_stc --features "io,lofi,alsa,serialization" -- alsa
+//!   cargo run --example chiptune_stc --features "io,lofi,portaudio,serialization" -- --file <file.stc> [backend]
+//!   cargo run --example chiptune_stc --features "io,lofi,alsa,serialization" -- --file <file.stc> alsa
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -379,24 +379,43 @@ impl StcPlayer {
 }
 
 // ============================================================================
-// Embedded STC data
-// ============================================================================
-
-const STC_DATA: &[u8] = include_bytes!("../../../Bonysoft - Popcorn (1993).stc");
-
-// ============================================================================
 // Main
 // ============================================================================
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+
+    let stc_file = args
+        .iter()
+        .position(|a| a == "--file")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let stc_file = match stc_file {
+        Some(f) => f,
+        None => {
+            eprintln!("Usage: chiptune_stc --file <file.stc> [--normalize] [backend]");
+            eprintln!("  --file <path>    Path to .stc (Sound Tracker Compiled) file (required)");
+            eprintln!("  --normalize      Apply DC offset, gain, and ceiling normalization");
+            eprintln!("  [backend]        I/O backend name (default: portaudio)");
+            std::process::exit(1);
+        }
+    };
+
+    let stc_data = match std::fs::read(&stc_file) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Error reading STC file '{}': {}", stc_file, e);
+            std::process::exit(1);
+        }
+    };
+
     let normalize = args.iter().any(|a| a == "--normalize");
 
     // Backend name: first positional argument that doesn't start with `--`
     let backend_name = args
         .iter()
         .skip(1)
-        .find(|a| !a.starts_with("--"))
+        .find(|a| !a.starts_with("--") && !a.starts_with('-'))
         .cloned()
         .unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
@@ -427,7 +446,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "stc_player",
         Drain::OsThread { interval_ms: 1 },
         move |_id, _params, graph_ref| {
-            let player = RefCell::new(StcPlayer::new(STC_DATA.to_vec()));
+            let player = RefCell::new(StcPlayer::new(stc_data.clone()));
             let gr = graph_ref.clone();
             let playing = playing_flag.clone();
             let done = melody_done_flag.clone();
