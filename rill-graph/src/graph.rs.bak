@@ -455,10 +455,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         let allocated = self.resources.clone();
 
         // Compute node pointers for branch-chain processing
-        let rec_ptrs: Vec<_> = recording_roots
-            .iter()
-            .map(|&i| &mut nodes[i] as *mut _)
-            .collect();
+        let rec_ptrs: Vec<_> = recording_roots.iter().map(|&i| &mut nodes[i] as *mut _).collect();
         let sink_ptr = if has_split_chain {
             let sink_idx = topo.last().copied().unwrap_or(0);
             &mut nodes[sink_idx] as *mut _
@@ -570,6 +567,136 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
+    #[allow(unsafe_code)]
+    fn process_chain(&mut self, tick: &ClockTick, roots: &[usize]) -> ProcessResult<()> {
+        if roots.is_empty() {
+            return Ok(());
+        }
+        let mut ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        ctx.speed_ratio = tick.speed_ratio;
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            for &root in roots {
+                let _ = nv[root].process_block(&ctx, tick);
+                for po in 0..nv[root].num_signal_outputs() {
+                    if let Some(port) = nv[root].output_port(po) {
+                        let _ = port.propagate(port.buffer(), &ctx, tick);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn process_recording_chain(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        self.actor.drain();
+        let roots = std::mem::take(&mut self.recording_roots);
+        self.process_chain(tick, &roots)?;
+        self.recording_roots = roots;
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    pub fn process_playback_chain(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        if self.playback_roots.is_empty() {
+            return Ok(());
+        }
+        let mut ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        ctx.speed_ratio = tick.speed_ratio;
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            // Find leaf nodes in the playback chain (Sink, with no outputs)
+            // and pull recursively from each one.
+            for idx in 0..nv.len() {
+                if self.playback_roots.contains(&idx) {
+                    continue; // roots are processed via pull from Sink
+                }
+                // A playback-chain node with no outputs IS the sink
+                if nv[idx].num_signal_outputs() == 0 && !self.playback_roots.contains(&idx) {
+                    Self::pull_ensure(nv, idx, &ctx, tick);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Recursively ensure upstream nodes are processed (pull model).
+    #[allow(unsafe_code)]
+    fn pull_ensure(
+        nv: &mut Vec<NodeVariant<T, BUF_SIZE>>,
+        idx: usize,
+        ctx: &RenderContext,
+        tick: &ClockTick,
+    ) {
+        // Pre-process input ports (feedback mix-in)
+        for pi in 0..nv[idx].num_signal_inputs() {
+            if let Some(p) = nv[idx].input_port_mut(pi) {
+                p.pre_process();
+            }
+        }
+
+        // Recursively pull from upstream (same-chain only)
+        for pi in 0..nv[idx].num_signal_inputs() {
+            if let Some(p) = nv[idx].input_port(pi) {
+                let src = p.upstream_node;
+                if !src.is_null() {
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        // Find src index in the vec (raw pointer → index)
+                        let base = nv.as_ptr();
+                        let src_idx =
+                            (src as *const NodeVariant<T, BUF_SIZE>).offset_from(base) as usize;
+                        Self::pull_ensure(nv, src_idx, ctx, tick);
+                    }
+                }
+            }
+        }
+
+        // Process this node
+        let _ = nv[idx].process_block(ctx, tick);
+
+        // Snapshot feedback on output ports
+        for po in 0..nv[idx].num_signal_outputs() {
+            if let Some(p) = nv[idx].output_port_mut(po) {
+                p.snapshot_feedback();
+            }
+        }
+
+        // Copy output buffers to downstream input ports (propagate step 1)
+        for po in 0..nv[idx].num_signal_outputs() {
+            if let Some(port) = nv[idx].output_port(po) {
+                let buf = port.buffer();
+                for &in_ptr in &port.downstream_input_ptrs {
+                    unsafe {
+                        if (*in_ptr).upstream_buffer.is_none() {
+                            (*in_ptr).buffer.copy_from(buf.as_array());
+                        }
+                        let _ = (*in_ptr).run_action(Some(buf.as_array()));
+                        (*in_ptr).data_received = true;
+                    }
+                }
+            }
+        }
+    }
+
     /// Process one block of signal data driven by an external [`ClockTick`].
     ///
     /// Processes all root nodes (recording + playback) — used when there's no
@@ -590,11 +717,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         ctx.speed_ratio = tick.speed_ratio;
         unsafe {
             let nv = &mut *self.nodes.get();
-            for &root in self
-                .recording_roots
-                .iter()
-                .chain(self.playback_roots.iter())
-            {
+            for &root in self.recording_roots.iter().chain(self.playback_roots.iter()) {
                 let _ = nv[root].process_block(&ctx, tick);
                 for po in 0..nv[root].num_signal_outputs() {
                     if let Some(port) = nv[root].output_port(po) {
@@ -669,38 +792,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
             driver.set_input_process_callback(Box::new(move |tick: &ClockTick| {
                 actor.drain();
                 if let Some(ref c) = clock_rec {
-                    let ctx = RenderContext::with_tempo(
-                        tick.sample_pos,
-                        tick.samples_since_last,
-                        tick.sample_rate,
-                        c.bpm() as f32,
-                    );
+                    let ctx = RenderContext::with_tempo(tick.sample_pos, tick.samples_since_last, tick.sample_rate, c.bpm() as f32);
                     p_forward(&rec_ptrs, &ctx, tick);
                 } else {
-                    let ctx = RenderContext::new(
-                        tick.sample_pos,
-                        tick.samples_since_last,
-                        tick.sample_rate,
-                    );
+                    let ctx = RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate);
                     p_forward(&rec_ptrs, &ctx, tick);
                 }
             }));
             driver.set_process_callback(Box::new(move |tick: &ClockTick| {
                 if let Some(ref c) = clock {
-                    let mut ctx = RenderContext::with_tempo(
-                        tick.sample_pos,
-                        tick.samples_since_last,
-                        tick.sample_rate,
-                        c.bpm() as f32,
-                    );
+                    let mut ctx = RenderContext::with_tempo(tick.sample_pos, tick.samples_since_last, tick.sample_rate, c.bpm() as f32);
                     ctx.speed_ratio = tick.speed_ratio;
                     p_pull(sink, &ctx, tick);
                 } else {
-                    let mut ctx = RenderContext::new(
-                        tick.sample_pos,
-                        tick.samples_since_last,
-                        tick.sample_rate,
-                    );
+                    let mut ctx = RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate);
                     ctx.speed_ratio = tick.speed_ratio;
                     p_pull(sink, &ctx, tick);
                 }
@@ -780,9 +885,7 @@ fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
         if let Some(p) = node.input_port(pi) {
             let src = p.upstream_node;
             if !src.is_null() {
-                unsafe {
-                    p_pull_recurse(&mut *src, ctx, tick);
-                }
+                unsafe { p_pull_recurse(&mut *src, ctx, tick); }
             }
         }
     }
@@ -874,11 +977,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         self.current_tick = tick.clone();
         unsafe {
             let nv = &mut *self.nodes.get();
-            for &root in self
-                .recording_roots
-                .iter()
-                .chain(self.playback_roots.iter())
-            {
+            for &root in self.recording_roots.iter().chain(self.playback_roots.iter()) {
                 let _ = nv[root].process_block(&ctx, tick);
                 for po in 0..nv[root].num_signal_outputs() {
                     if let Some(port) = nv[root].output_port(po) {
@@ -1337,12 +1436,7 @@ mod tests {
         builder.connect_signal(src_idx, 0, snk_idx, 0);
 
         let graph = builder.build(&system).unwrap();
-        let source_idx = graph
-            .recording_roots
-            .first()
-            .or(graph.playback_roots.first())
-            .copied()
-            .unwrap_or(0);
+        let source_idx = graph.recording_roots.first().or(graph.playback_roots.first()).copied().unwrap_or(0);
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
         let tick = ClockTick::new(0, BUF as u32, 44100.0, String::new());
@@ -1382,12 +1476,7 @@ mod tests {
         builder.connect_signal(proc_idx, 0, snk_idx, 0);
 
         let graph = builder.build(&system).unwrap();
-        let source_idx = graph
-            .recording_roots
-            .first()
-            .or(graph.playback_roots.first())
-            .copied()
-            .unwrap_or(0);
+        let source_idx = graph.recording_roots.first().or(graph.playback_roots.first()).copied().unwrap_or(0);
 
         eprintln!("topo: {:?}", graph.topo_order);
         eprintln!("source_idx: {source_idx}, src_idx: {src_idx}, proc_idx: {proc_idx}, snk_idx: {snk_idx}");
