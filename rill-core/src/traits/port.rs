@@ -359,6 +359,11 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Consumer nodes (esp. Sinks) check this flag to decide whether all
     /// input channels are fresh before producing output.
     pub data_received: bool,
+
+    /// Pull-model: pointer to the upstream node that feeds this input port.
+    /// Only set for same-chain edges (recording→recording or playback→playback).
+    /// Used by the pull traversal in `process_playback_chain`.
+    pub upstream_node: *mut crate::traits::NodeVariant<T, BUF_SIZE>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
@@ -392,6 +397,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            upstream_node: std::ptr::null_mut(),
             data_received: false,
         }
     }
@@ -413,6 +419,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            upstream_node: std::ptr::null_mut(),
             data_received: false,
         }
     }
@@ -434,6 +441,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            upstream_node: std::ptr::null_mut(),
             data_received: false,
         }
     }
@@ -460,6 +468,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            upstream_node: std::ptr::null_mut(),
             data_received: false,
         }
     }
@@ -481,6 +490,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             downstream_nodes: Vec::new(),
             parent: std::ptr::null_mut(),
             upstream_buffer: None,
+            upstream_node: std::ptr::null_mut(),
             data_received: false,
         }
     }

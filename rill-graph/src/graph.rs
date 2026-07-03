@@ -10,8 +10,8 @@ use rill_core::traits::port::Port;
 use rill_core::traits::processable::Processable;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params, ProcessResult};
 use rill_core_actor::{Actor, ActorRef, ActorSystem};
-use std::cell::UnsafeCell;
-use std::collections::VecDeque;
+use std::cell::{RefCell, UnsafeCell};
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 
@@ -264,6 +264,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             out_edges[from_n].push((from_p, to_n, to_p));
         }
 
+        // Collect all root nodes (in_degree == 0) before Kahn consumes in_degree
+        let root_indices: Vec<usize> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|(_, &d)| d == 0)
+            .map(|(i, _)| i)
+            .collect();
+
         // --- Kahn's algorithm ---
         let mut queue: VecDeque<usize> = in_degree
             .iter()
@@ -315,14 +323,89 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        // --- downstream_nodes ---
+        // --- chain membership (recording vs playback) ---
+        //
+        // Recording roots are I/O input nodes (type "rill/input").
+        // Playback roots are generator-style nodes (read_heads, lofi_chip,
+        // samplers, etc.) that have no signal inputs.
+        // Nodes reachable from both are assigned to playback (playback wins).
+        let recording_roots: Vec<usize> = root_indices
+            .iter()
+            .filter(|&&idx| self.recipes[idx].type_name == "rill/input")
+            .copied()
+            .collect();
+        let playback_roots: Vec<usize> = root_indices
+            .iter()
+            .filter(|&&idx| self.recipes[idx].type_name != "rill/input")
+            .copied()
+            .collect();
+
+        let has_split_chain = !recording_roots.is_empty() && !playback_roots.is_empty();
+
+        let mut recording_set: HashSet<usize> = HashSet::new();
+        let mut playback_set: HashSet<usize> = HashSet::new();
+
+        if has_split_chain {
+            recording_set = recording_roots.iter().copied().collect();
+            let mut queue: VecDeque<usize> = recording_roots.iter().copied().collect();
+            while let Some(node) = queue.pop_front() {
+                for &(_, to_n, _) in &out_edges[node] {
+                    if recording_set.insert(to_n) {
+                        queue.push_back(to_n);
+                    }
+                }
+            }
+
+            playback_set = playback_roots.iter().copied().collect();
+            let mut queue: VecDeque<usize> = playback_roots.iter().copied().collect();
+            while let Some(node) = queue.pop_front() {
+                for &(_, to_n, _) in &out_edges[node] {
+                    if playback_set.insert(to_n) {
+                        queue.push_back(to_n);
+                    }
+                }
+            }
+
+            // Intersection → playback wins
+            for node in recording_set.clone() {
+                if playback_set.contains(&node) && !recording_roots.contains(&node) {
+                    recording_set.remove(&node);
+                }
+            }
+        }
+
+        // --- downstream_nodes (chain-filtered) ---
         for &(from_n, from_p, to_n, _) in &self.signal_edges {
             let parent: *mut NodeVariant<T, BUF_SIZE> = &mut nodes[to_n];
             if let Some(port) = nodes[from_n].output_port_mut(from_p) {
+                if has_split_chain {
+                    let same_chain = (recording_set.contains(&from_n)
+                        && recording_set.contains(&to_n))
+                        || (playback_set.contains(&from_n) && playback_set.contains(&to_n));
+                    if !same_chain {
+                        continue;
+                    }
+                }
                 let ptr_val = parent as usize;
                 let already = port.downstream_nodes.iter().any(|&p| p as usize == ptr_val);
                 if !already {
                     port.downstream_nodes.push(parent);
+                }
+            }
+        }
+
+        // --- upstream_node (pull-model, same-chain only) ---
+        for &(from_n, _from_p, to_n, to_p) in &self.signal_edges {
+            let same_chain = if has_split_chain {
+                (recording_set.contains(&from_n) && recording_set.contains(&to_n))
+                    || (playback_set.contains(&from_n) && playback_set.contains(&to_n))
+            } else {
+                true
+            };
+            if same_chain {
+                let src: *mut NodeVariant<T, BUF_SIZE> = &mut nodes[from_n];
+                if let Some(port) = nodes[to_n].input_port_mut(to_p) {
+                    port.upstream_node = src;
                 }
             }
         }
@@ -376,8 +459,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             entry.resolve_resources(&buffers);
         }
 
-        let source_idx = topo.first().copied().unwrap_or(0);
-
         let owned_buffers = buffers.into_inner();
         let allocated = self.resources.clone();
 
@@ -413,7 +494,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 String::new(),
             ),
             buffers: owned_buffers,
-            source_idx,
+            root_indices: root_indices.clone(),
+            recording_roots: recording_roots.clone(),
+            playback_roots: playback_roots.clone(),
             actor: Some(actor),
             actor_ref,
             parent_ref: self.parent_ref.clone(),
@@ -445,7 +528,9 @@ type GraphParts<T, const BUF_SIZE: usize> = (
 pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
     topo_order: Vec<usize>,
-    source_idx: usize,
+    root_indices: Vec<usize>,
+    recording_roots: Vec<usize>,
+    playback_roots: Vec<usize>,
     current_tick: ClockTick,
     pub(crate) resources: Vec<GraphResource>,
     #[allow(dead_code)]
@@ -468,7 +553,9 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
 pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     actor: Actor<CommandEnum>,
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
-    source_idx: usize,
+    root_indices: Vec<usize>,
+    recording_roots: Vec<usize>,
+    playback_roots: Vec<usize>,
     parent_ref: Option<ActorRef<CommandEnum>>,
     system_clock: Option<Arc<SystemClock>>,
     #[allow(dead_code)]
@@ -476,10 +563,140 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
+    #[allow(unsafe_code)]
+    fn process_chain(&mut self, tick: &ClockTick, roots: &[usize]) -> ProcessResult<()> {
+        if roots.is_empty() {
+            return Ok(());
+        }
+        let mut ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        ctx.speed_ratio = tick.speed_ratio;
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            for &root in roots {
+                let _ = nv[root].process_block(&ctx, tick);
+                for po in 0..nv[root].num_signal_outputs() {
+                    if let Some(port) = nv[root].output_port(po) {
+                        let _ = port.propagate(port.buffer(), &ctx, tick);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn process_recording_chain(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        self.actor.drain();
+        let roots = std::mem::take(&mut self.recording_roots);
+        self.process_chain(tick, &roots)?;
+        self.recording_roots = roots;
+        Ok(())
+    }
+
+    #[allow(unsafe_code)]
+    pub fn process_playback_chain(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        if self.playback_roots.is_empty() {
+            return Ok(());
+        }
+        let mut ctx = if let Some(ref clock) = self.system_clock {
+            RenderContext::with_tempo(
+                tick.sample_pos,
+                tick.samples_since_last,
+                tick.sample_rate,
+                clock.bpm() as f32,
+            )
+        } else {
+            RenderContext::new(tick.sample_pos, tick.samples_since_last, tick.sample_rate)
+        };
+        ctx.speed_ratio = tick.speed_ratio;
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            // Find leaf nodes in the playback chain (Sink, with no outputs)
+            // and pull recursively from each one.
+            for idx in 0..nv.len() {
+                if self.playback_roots.contains(&idx) {
+                    continue; // roots are processed via pull from Sink
+                }
+                // A playback-chain node with no outputs IS the sink
+                if nv[idx].num_signal_outputs() == 0 && !self.playback_roots.contains(&idx) {
+                    Self::pull_ensure(nv, idx, &ctx, tick);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Recursively ensure upstream nodes are processed (pull model).
+    #[allow(unsafe_code)]
+    fn pull_ensure(
+        nv: &mut Vec<NodeVariant<T, BUF_SIZE>>,
+        idx: usize,
+        ctx: &RenderContext,
+        tick: &ClockTick,
+    ) {
+        // Pre-process input ports (feedback mix-in)
+        for pi in 0..nv[idx].num_signal_inputs() {
+            if let Some(p) = nv[idx].input_port_mut(pi) {
+                p.pre_process();
+            }
+        }
+
+        // Recursively pull from upstream (same-chain only)
+        for pi in 0..nv[idx].num_signal_inputs() {
+            if let Some(p) = nv[idx].input_port(pi) {
+                let src = p.upstream_node;
+                if !src.is_null() {
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        // Find src index in the vec (raw pointer → index)
+                        let base = nv.as_ptr();
+                        let src_idx =
+                            (src as *const NodeVariant<T, BUF_SIZE>).offset_from(base) as usize;
+                        Self::pull_ensure(nv, src_idx, ctx, tick);
+                    }
+                }
+            }
+        }
+
+        // Process this node
+        let _ = nv[idx].process_block(ctx, tick);
+
+        // Snapshot feedback on output ports
+        for po in 0..nv[idx].num_signal_outputs() {
+            if let Some(p) = nv[idx].output_port_mut(po) {
+                p.snapshot_feedback();
+            }
+        }
+
+        // Copy output buffers to downstream input ports (propagate step 1)
+        for po in 0..nv[idx].num_signal_outputs() {
+            if let Some(port) = nv[idx].output_port(po) {
+                let buf = port.buffer();
+                for &in_ptr in &port.downstream_input_ptrs {
+                    unsafe {
+                        if (*in_ptr).upstream_buffer.is_none() {
+                            (*in_ptr).buffer.copy_from(buf.as_array());
+                        }
+                        let _ = (*in_ptr).run_action(Some(buf.as_array()));
+                        (*in_ptr).data_received = true;
+                    }
+                }
+            }
+        }
+    }
+
     /// Process one block of signal data driven by an external [`ClockTick`].
     ///
-    /// Same logic as [`Graph::process_block`] but operates on independently
-    /// owned state (no borrow of the original `Graph`).
+    /// Processes all root nodes (recording + playback) — used when there's no
+    /// split between input and output streams (single-stream backends).
     #[allow(unsafe_code)]
     pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
         self.actor.drain();
@@ -496,10 +713,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         ctx.speed_ratio = tick.speed_ratio;
         unsafe {
             let nv = &mut *self.nodes.get();
-            let _ = nv[self.source_idx].process_block(&ctx, tick);
-            for po in 0..nv[self.source_idx].num_signal_outputs() {
-                if let Some(port) = nv[self.source_idx].output_port(po) {
-                    let _ = port.propagate(port.buffer(), &ctx, tick);
+            for &root in &self.root_indices {
+                let _ = nv[root].process_block(&ctx, tick);
+                for po in 0..nv[root].num_signal_outputs() {
+                    if let Some(port) = nv[root].output_port(po) {
+                        let _ = port.propagate(port.buffer(), &ctx, tick);
+                    }
                 }
             }
         }
@@ -557,11 +776,27 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
         running: Arc<AtomicBool>,
     ) -> Result<(), String> {
         self.actor.drain();
-        driver.set_process_callback(Box::new(move |tick: &ClockTick| {
-            let _ = self.process_block(tick);
-            self.send_clock_tick(tick);
-        }));
-        driver.run(running.clone())?;
+        let use_split = !self.recording_roots.is_empty() && !self.playback_roots.is_empty();
+        if use_split {
+            let state = Rc::new(RefCell::new(self));
+            let s1 = state.clone();
+            driver.set_input_process_callback(Box::new(move |tick: &ClockTick| {
+                let _ = s1.borrow_mut().process_recording_chain(tick);
+            }));
+            let s2 = state;
+            driver.set_process_callback(Box::new(move |tick: &ClockTick| {
+                let mut st = s2.borrow_mut();
+                let _ = st.process_playback_chain(tick);
+                st.send_clock_tick(tick);
+            }));
+            driver.run(running.clone())?;
+        } else {
+            driver.set_process_callback(Box::new(move |tick: &ClockTick| {
+                let _ = self.process_block(tick);
+                self.send_clock_tick(tick);
+            }));
+            driver.run(running.clone())?;
+        }
         while running.load(std::sync::atomic::Ordering::Acquire) {
             std::thread::park();
         }
@@ -614,9 +849,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     ///
     /// 1. Drains the graph's actor mailbox (applies queued `SetParameter`s).
     /// 2. Creates a [`RenderContext`] from the tick.
-    /// 3. Calls `process_block` on the source node and recursively
+    /// 3. Calls `process_block` on each root node and recursively
     ///    propagates through the DAG via [`Port::propagate`].
-    /// 4. Sends the tick to the parent [`ActorRef`] (if any).
     ///
     /// The graph is `!Send + !Sync` — it stays on the I/O callback thread.
     #[allow(unsafe_code)]
@@ -637,10 +871,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         self.current_tick = tick.clone();
         unsafe {
             let nv = &mut *self.nodes.get();
-            let _ = nv[self.source_idx].process_block(&ctx, tick);
-            for po in 0..nv[self.source_idx].num_signal_outputs() {
-                if let Some(port) = nv[self.source_idx].output_port(po) {
-                    let _ = port.propagate(port.buffer(), &ctx, tick);
+            for &root in &self.root_indices {
+                let _ = nv[root].process_block(&ctx, tick);
+                for po in 0..nv[root].num_signal_outputs() {
+                    if let Some(port) = nv[root].output_port(po) {
+                        let _ = port.propagate(port.buffer(), &ctx, tick);
+                    }
                 }
             }
         }
@@ -657,7 +893,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         ProcessingState {
             actor,
             nodes: self.nodes,
-            source_idx: self.source_idx,
+            root_indices: self.root_indices,
+            recording_roots: self.recording_roots,
+            playback_roots: self.playback_roots,
             parent_ref: self.parent_ref,
             system_clock: self.system_clock,
             buffers: self.buffers,
@@ -678,7 +916,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             current_tick,
             resources: _,
             buffers,
-            source_idx: _,
+            root_indices: _,
+            recording_roots: _,
+            playback_roots: _,
             actor,
             actor_ref: _,
             parent_ref: _,
@@ -1088,7 +1328,7 @@ mod tests {
         builder.connect_signal(src_idx, 0, snk_idx, 0);
 
         let graph = builder.build(&system).unwrap();
-        let source_idx = graph.source_idx;
+        let source_idx = graph.root_indices[0];
 
         let ctx = RenderContext::new(0, BUF as u32, 44100.0);
         let tick = ClockTick::new(0, BUF as u32, 44100.0, String::new());
@@ -1128,7 +1368,7 @@ mod tests {
         builder.connect_signal(proc_idx, 0, snk_idx, 0);
 
         let graph = builder.build(&system).unwrap();
-        let source_idx = graph.source_idx;
+        let source_idx = graph.root_indices[0];
 
         eprintln!("topo: {:?}", graph.topo_order);
         eprintln!("source_idx: {source_idx}, src_idx: {src_idx}, proc_idx: {proc_idx}, snk_idx: {snk_idx}");

@@ -34,6 +34,15 @@ pub trait IoDriver: Send + Sync {
     /// (sample position, rate, speed_ratio, etc.).
     fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>);
 
+    /// Register an optional input-stream callback for split-chain backends
+    /// (e.g. PipeWire full-duplex).
+    ///
+    /// When both input and output streams exist, the recording chain
+    /// (Source → WriteHead) is driven from this callback, while the
+    /// playback chain (ReadHeads → Sink) is driven from
+    /// [`set_process_callback`]. Default no-op for single-stream backends.
+    fn set_input_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
+
     /// Enter the I/O lifecycle. Called on the pre-created signal thread.
     ///
     /// For poll-driven backends (ALSA, PipeWire) this blocks inside the
