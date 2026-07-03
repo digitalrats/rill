@@ -411,12 +411,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let normalize = args.iter().any(|a| a == "--normalize");
 
-    // Backend name: first positional argument that doesn't start with `--`
+    // Backend name: first positional argument that is not a known flag value
     let backend_name = args
         .iter()
+        .enumerate()
         .skip(1)
-        .find(|a| !a.starts_with("--") && !a.starts_with('-'))
-        .cloned()
+        .find(|(i, a)| {
+            // Skip --file and its value
+            if *i > 0 && args[*i - 1] == "--file" {
+                return false;
+            }
+            !a.starts_with('-')
+        })
+        .map(|(_, a)| a.clone())
         .unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
 
