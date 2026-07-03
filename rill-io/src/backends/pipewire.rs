@@ -320,8 +320,12 @@ impl IoDriver for PipewireBackend {
                         let pos = out_spos.fetch_add(block_size as u64, Ordering::Relaxed);
 
                         // Build tick (timing only, no view)
-                        let mut tick =
-                            ClockTick::new(pos, block_size as u32, out_sr as f32, "pipewire".into());
+                        let mut tick = ClockTick::new(
+                            pos,
+                            block_size as u32,
+                            out_sr as f32,
+                            "pipewire".into(),
+                        );
                         let nrate = out_nrate_proc.load(Ordering::Relaxed) as f64;
                         let config_rate = out_sr as f64;
                         tick.speed_ratio = if nrate > 0.0 && (config_rate - nrate).abs() > 1.0 {
@@ -350,7 +354,10 @@ impl IoDriver for PipewireBackend {
                     // Unfilled DMA remainder — unreachable when n_frames % block_size == 0
                     // (guaranteed by power-of-2 constraint on both values).
                     let filled_samps = offset * out_chan as usize;
-                    debug_assert_eq!(filled_samps, total_samps, "PW quantum not aligned to block_size");
+                    debug_assert_eq!(
+                        filled_samps, total_samps,
+                        "PW quantum not aligned to block_size"
+                    );
                     if filled_samps < total_samps {
                         let samples: &mut [f32] =
                             unsafe { std::slice::from_raw_parts_mut(out_ptr, total_samps) };
@@ -532,8 +539,12 @@ impl IoDriver for PipewireBackend {
                         let mut offset = 0usize;
                         while offset < n_frames {
                             let pos = sample_pos.fetch_add(block_size as u64, Ordering::Relaxed);
-                            let mut tick =
-                                ClockTick::new(pos, block_size as u32, effective_sr, "pipewire".into());
+                            let mut tick = ClockTick::new(
+                                pos,
+                                block_size as u32,
+                                effective_sr,
+                                "pipewire".into(),
+                            );
                             tick.speed_ratio = speed_ratio;
                             unsafe {
                                 input_window.as_ref().unwrap().set(
@@ -564,8 +575,12 @@ impl IoDriver for PipewireBackend {
                         let mut offset = 0usize;
                         while offset < n_frames {
                             let pos = sample_pos.fetch_add(block_size as u64, Ordering::Relaxed);
-                            let mut tick =
-                                ClockTick::new(pos, block_size as u32, effective_sr, "pipewire".into());
+                            let mut tick = ClockTick::new(
+                                pos,
+                                block_size as u32,
+                                effective_sr,
+                                "pipewire".into(),
+                            );
                             tick.speed_ratio = speed_ratio;
                             unsafe {
                                 input_window.as_ref().unwrap().set(
