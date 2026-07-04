@@ -676,7 +676,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
                 let _ = nv[root].process_block(&ctx, tick);
                 for po in 0..nv[root].num_signal_outputs() {
                     if let Some(port) = nv[root].output_port(po) {
-                        let _ = port.propagate(port.buffer(), &ctx, tick);
+                        let _ = port.propagate(&ctx, tick);
                     }
                 }
             }
@@ -824,7 +824,7 @@ fn p_forward<T: Transcendental, const BUF_SIZE: usize>(
             let _ = nv.process_block(ctx, tick);
             for po in 0..nv.num_signal_outputs() {
                 if let Some(port) = nv.output_port(po) {
-                    let _ = port.propagate(port.buffer(), ctx, tick);
+                    let _ = port.propagate(ctx, tick);
                 }
             }
         }
@@ -1007,7 +1007,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
                 let _ = nv[root].process_block(&ctx, tick);
                 for po in 0..nv[root].num_signal_outputs() {
                     if let Some(port) = nv[root].output_port(po) {
-                        let _ = port.propagate(port.buffer(), &ctx, tick);
+                        let _ = port.propagate(&ctx, tick);
                     }
                 }
             }
@@ -1531,7 +1531,7 @@ mod tests {
             let nv = &mut *nodes.get();
             nv[source_idx].process_block(&ctx, &tick).unwrap();
             if let Some(port) = nv[source_idx].output_port(0) {
-                port.propagate(port.buffer(), &ctx, &tick).unwrap();
+                port.propagate(&ctx, &tick).unwrap();
             }
         }
         unsafe {
@@ -1638,7 +1638,7 @@ mod tests {
             );
             // --- END DEBUG ---
 
-            out_port.propagate(out_port.buffer(), &ctx, &tick).unwrap();
+            out_port.propagate(&ctx, &tick).unwrap();
 
             // --- AFTER PROPAGATE: debug buffer values ---
             {

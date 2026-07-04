@@ -640,7 +640,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         }
     }
 
-    /// Propagate this port's buffer to all downstream input ports.
+    /// Propagate this port's own buffer to all downstream input ports.
     ///
     /// For each downstream input port that is **not** a zero-copy passthrough
     /// (fan-in, feedback, or a port with its own `action`/`pending_command`),
@@ -654,15 +654,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     #[allow(unsafe_code)]
     pub fn propagate(
         &self,
-        buffer: &FixedBuffer<T, BUF_SIZE>,
         ctx: &RenderContext,
         tick: &crate::time::ClockTick,
     ) -> ProcessResult<()> {
+        let buffer = self.buffer.as_array();
         for &ptr in &self.downstream_input_ptrs {
             unsafe {
                 let p = &mut *ptr;
                 if !p.is_zero_copy() {
-                    p.run_action(Some(buffer.as_array()))?;
+                    p.run_action(Some(buffer))?;
                 }
                 p.data_received = true;
             }
@@ -683,7 +683,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
                 }
                 for po in 0..nv.num_signal_outputs() {
                     if let Some(p) = nv.output_port(po) {
-                        p.propagate(p.buffer(), ctx, tick)?;
+                        p.propagate(ctx, tick)?;
                     }
                 }
             }
