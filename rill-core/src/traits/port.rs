@@ -13,7 +13,6 @@ use crate::time::RenderContext;
 use crate::traits::algorithm::Algorithm;
 use crate::traits::node::NodeId;
 use crate::traits::processable::Processable;
-use crate::traits::PortError;
 use crate::traits::{Node, ProcessResult};
 use std::fmt;
 
@@ -303,7 +302,9 @@ impl fmt::Display for PortId {
 /// - `downstream` lists signal connections from this output port to input ports
 ///   of other nodes, populated at build time by the graph builder.
 /// - `upstream_buffer` on input ports: direct pointer to the upstream output
-///   port's buffer for zero-copy routing. `None` for fan-in/feedback ports.
+///   port's buffer for zero-copy routing on **exclusive 1:1** edges only.
+///   `None` for fan-in, fan-out, and feedback ports (each materializes an
+///   independent copy).
 ///
 /// # Safety
 /// `upstream_buffer` is safe because the graph topology is immutable and
@@ -321,8 +322,13 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     pub action: Option<Box<dyn Algorithm<T>>>,
     /// Pending command value from the control path
     pub pending_command: Option<T>,
-    /// Owned signal buffer (for output ports and input ports without upstream)
-    pub buffer: FixedBuffer<T, BUF_SIZE>,
+    /// Owned signal buffer (for output ports and input ports without upstream).
+    ///
+    /// Private: nodes access signal data through [`read`](Self::read) /
+    /// [`write`](Self::write) / [`write_from`](Self::write_from) /
+    /// [`feedback`](Self::feedback), which encapsulate the zero-copy routing.
+    /// The engine uses [`buffer`](Self::buffer) / `buffer_mut`.
+    buffer: FixedBuffer<T, BUF_SIZE>,
     /// Delayed feedback state (None if not on a feedback edge)
     pub feedback_buffer: Option<FixedBuffer<T, BUF_SIZE>>,
     /// Downstream signal connections: (target_node_index, target_port_index).
@@ -340,8 +346,10 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// signal propagation without a `nodes` slice.
     pub parent: *mut crate::traits::NodeVariant<T, BUF_SIZE>,
     /// Direct pointer to upstream output buffer for zero-copy routing.
-    /// `Some` for input ports in 1:1 or fan-out connections (first upstream).
-    /// `None` for output ports, fan-in (second+ upstream), or unconnected.
+    /// `Some` only for an **exclusive 1:1** input port (its upstream output
+    /// has a single consumer and this input has a single producer).
+    /// `None` for output ports, fan-in, fan-out branches, or unconnected —
+    /// those materialize an independent copy.
     /// Valid for the engine's lifetime.
     pub upstream_buffer: Option<*const FixedBuffer<T, BUF_SIZE>>,
     /// Feedback edge targets from this output port (for serialization)
@@ -515,25 +523,76 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
         self.direction.is_output()
     }
 
-    /// Get a reference to the buffer
+    /// Low-level access to the port's own buffer (engine / I-O boundary).
+    ///
+    /// Nodes should prefer [`read`](Self::read): for a signal **input** this
+    /// returns the port's own buffer, which is *not* the effective input on a
+    /// zero-copy edge.
     pub fn buffer(&self) -> &FixedBuffer<T, BUF_SIZE> {
         &self.buffer
     }
 
-    /// Get a mutable reference to the buffer
-    pub fn buffer_mut(&mut self) -> &mut FixedBuffer<T, BUF_SIZE> {
+    /// Low-level mutable access to the port's own buffer (crate-internal).
+    ///
+    /// Nodes should prefer [`write`](Self::write) / [`write_from`](Self::write_from).
+    pub(crate) fn buffer_mut(&mut self) -> &mut FixedBuffer<T, BUF_SIZE> {
         &mut self.buffer
+    }
+
+    /// Read the effective input block for this port (zero-copy aware).
+    ///
+    /// On an exclusive 1:1 edge this is the upstream output buffer; otherwise
+    /// it is the port's own (materialized) buffer. This is the correct way for
+    /// a node to read a signal input.
+    #[inline]
+    pub fn read(&self) -> &[T; BUF_SIZE] {
+        self.signal_buffer().as_array()
+    }
+
+    /// Mutable access to this port's output block. The canonical way for a
+    /// node to write its output samples.
+    #[inline]
+    pub fn write(&mut self) -> &mut [T; BUF_SIZE] {
+        self.buffer_mut().as_mut_array()
+    }
+
+    /// Write this port's output block from a source array.
+    #[inline]
+    pub fn write_from(&mut self, src: &[T; BUF_SIZE]) {
+        self.write().copy_from_slice(src);
+    }
+
+    /// The delayed feedback block, if this port is on a feedback edge.
+    #[inline]
+    pub fn feedback(&self) -> Option<&[T; BUF_SIZE]> {
+        self.feedback_buffer.as_ref().map(|b| b.as_array())
+    }
+
+    /// Whether this input port is a pure zero-copy passthrough.
+    ///
+    /// True when it aliases a single upstream output buffer
+    /// (`upstream_buffer` is set) and performs no per-port processing —
+    /// no `action`, no `pending_command`, and no feedback mixing. Such a
+    /// port is never materialized into its own `buffer`: the consumer reads
+    /// the upstream buffer directly through [`signal_buffer`](Self::signal_buffer).
+    #[inline]
+    pub fn is_zero_copy(&self) -> bool {
+        self.upstream_buffer.is_some()
+            && self.action.is_none()
+            && self.pending_command.is_none()
+            && self.feedback_buffer.is_none()
     }
 
     /// Get the effective signal buffer for this port.
     ///
-    /// For zero-copy input ports returns the upstream output buffer.
-    /// For output ports and copy-based input ports returns the local buffer.
+    /// For a zero-copy input port returns the upstream output buffer directly.
+    /// Otherwise returns the local buffer (materialized by `run_action` /
+    /// feedback `pre_process`).
     #[allow(unsafe_code)]
     pub fn signal_buffer(&self) -> &FixedBuffer<T, BUF_SIZE> {
         match self.upstream_buffer {
-            Some(ptr) => unsafe { &*ptr },
-            None => &self.buffer,
+            Some(ptr) if self.is_zero_copy() => unsafe { &*ptr },
+            _ => &self.buffer,
         }
     }
 
@@ -583,13 +642,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
 
     /// Propagate this port's buffer to all downstream input ports.
     ///
-    /// Iterates over `downstream` and copies `buffer` into each target
-    /// input port's buffer. The caller must ensure no aliasing between
-    /// this port's node and any target node (guaranteed by DAG topology).
-    ///
-    /// Copy `buffer` into every downstream input port (unless zero-copy),
-    /// run each port's algorithm, then process the downstream node and
-    /// recurse through its output ports.
+    /// For each downstream input port that is **not** a zero-copy passthrough
+    /// (fan-in, feedback, or a port with its own `action`/`pending_command`),
+    /// materialize the data into that port's buffer via `run_action`.
+    /// Zero-copy passthrough ports are left untouched — their consumer reads
+    /// this output buffer directly through [`signal_buffer`](Self::signal_buffer),
+    /// so no copy is performed. Then process each downstream node and recurse
+    /// through its output ports.
     ///
     /// No heap allocations — `downstream_nodes` is pre‑filled at build time.
     #[allow(unsafe_code)]
@@ -601,11 +660,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     ) -> ProcessResult<()> {
         for &ptr in &self.downstream_input_ptrs {
             unsafe {
-                if (*ptr).upstream_buffer.is_none() {
-                    (*ptr).buffer.copy_from(buffer.as_array());
+                let p = &mut *ptr;
+                if !p.is_zero_copy() {
+                    p.run_action(Some(buffer.as_array()))?;
                 }
-                (*ptr).run_action(Some(buffer.as_array()))?;
-                (*ptr).data_received = true;
+                p.data_received = true;
             }
         }
         for &parent in &self.downstream_nodes {
@@ -678,52 +737,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
 }
 
 // ============================================================================
-// Active Port Trait
+// Send / Sync
 // ============================================================================
-
-/// Trait for ports that can actively pull/push data.
-pub trait ActivePort<T: Transcendental, const BUF_SIZE: usize> {
-    /// Pull data from the port (for input ports).
-    fn pull(&mut self) -> Option<[T; BUF_SIZE]>;
-
-    /// Push data into the port (for output ports).
-    fn push(&mut self, data: [T; BUF_SIZE]) -> Result<(), PortError>;
-
-    /// Check if the port is connected.
-    fn is_connected(&self) -> bool;
-
-    /// Called on each clock tick (optional).
-    fn on_tick(&mut self, _ctx: &RenderContext) {}
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> ActivePort<T, BUF_SIZE> for Port<T, BUF_SIZE> {
-    #[inline]
-    fn pull(&mut self) -> Option<[T; BUF_SIZE]> {
-        if self.is_input() {
-            Some(*self.buffer.as_array())
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn push(&mut self, data: [T; BUF_SIZE]) -> Result<(), PortError> {
-        if self.is_output() {
-            self.buffer = FixedBuffer::from_array(data);
-            Ok(())
-        } else {
-            Err(PortError::NotFound(self.id.to_string()))
-        }
-    }
-
-    #[inline]
-    fn is_connected(&self) -> bool {
-        self.action.is_some()
-    }
-
-    #[inline]
-    fn on_tick(&mut self, _ctx: &RenderContext) {}
-}
 
 // SAFETY: `upstream_buffer` is a raw pointer to a buffer owned by another
 // Port in the same static graph. The graph is immutable during processing

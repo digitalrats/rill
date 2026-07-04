@@ -214,7 +214,7 @@ impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE>
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
         for i in 0..BUF_SIZE {
-            self.outputs[0].buffer.as_mut_array()[i] = self.generate_sample();
+            self.outputs[0].write()[i] = self.generate_sample();
         }
         Ok(())
     }

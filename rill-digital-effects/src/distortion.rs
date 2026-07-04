@@ -297,8 +297,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distor
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let inp = self.inputs[0].buffer.as_array();
-        let out = self.outputs[0].buffer.as_mut_array();
+        let inp = self.inputs[0].read();
+        let out = self.outputs[0].write();
         let drive_t = T::from_f32(self.drive);
         let gain_t = T::from_f32(self.output_gain);
         let chunks = BUF_SIZE / 4;

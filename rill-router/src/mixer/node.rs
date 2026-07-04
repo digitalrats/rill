@@ -511,7 +511,7 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
             if ch_idx >= self.input_ports.len() {
                 continue;
             }
-            let input_buf = self.input_ports[ch_idx].buffer.as_array();
+            let input_buf = self.input_ports[ch_idx].read();
 
             let channel_volume = channel.config().volume;
 
@@ -550,8 +550,8 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
         // Output master
         if self.output_ports.len() >= 2 {
             let (first, rest) = self.output_ports.split_at_mut(1);
-            let out_l = first[0].buffer.as_mut_array();
-            let out_r = rest[0].buffer.as_mut_array();
+            let out_l = first[0].write();
+            let out_r = rest[0].write();
             for ((master_l, master_r), (out_l, out_r)) in master_left
                 .iter()
                 .zip(master_right.iter())
@@ -566,7 +566,7 @@ impl<const BUF_SIZE: usize> rill_core::traits::Router<f32, BUF_SIZE> for MixerNo
         for (bus_idx, bus) in self.buses.iter().enumerate() {
             let out_idx = 2 + bus_idx;
             if out_idx < self.output_ports.len() {
-                let out_buf = self.output_ports[out_idx].buffer.as_mut_array();
+                let out_buf = self.output_ports[out_idx].write();
                 out_buf.copy_from_slice(&bus[..buffer_size]);
             }
         }

@@ -214,7 +214,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SawOsc<T,
         _clock_inputs: &[RenderContext],
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
-        let out = self.outputs[0].buffer.as_mut_array();
+        let out = self.outputs[0].write();
         self.osc.set_frequency(self.frequency.to_f32());
         self.osc.process(None, &mut out[..])?;
         for o in out.iter_mut() {

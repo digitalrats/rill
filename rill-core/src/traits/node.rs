@@ -306,8 +306,9 @@ pub trait Node<T: crate::math::Transcendental, const BUF_SIZE: usize> {
     /// Get node ID
     fn id(&self) -> NodeId;
 
-    /// Resolve named resource buffers (tape loops, etc.) from the registry.
-    fn resolve_resources(&mut self, _buffers: &crate::buffer::BufferRegistry<T>) {}
+    /// Resolve named shared resources (tape loops, etc.) from the registry,
+    /// acquiring the capability handle matching this node's role.
+    fn resolve_resources(&mut self, _resources: &mut crate::buffer::ResourceRegistry<T>) {}
 
     /// Set node ID
     fn set_id(&mut self, id: NodeId);

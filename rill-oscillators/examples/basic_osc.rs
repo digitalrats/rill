@@ -39,9 +39,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     noise.generate(&ctx, &[], &[], &tick)?;
 
     // Read from output ports
-    let sine_output = sine.output_port(0).unwrap().buffer.as_array();
-    let saw_output = saw.output_port(0).unwrap().buffer.as_array();
-    let noise_output = noise.output_port(0).unwrap().buffer.as_array();
+    let sine_output = sine.output_port(0).unwrap().read();
+    let saw_output = saw.output_port(0).unwrap().read();
+    let noise_output = noise.output_port(0).unwrap().read();
 
     // Print first few samples
     println!("Sine first 5 samples: {:?}", &sine_output[..5]);

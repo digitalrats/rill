@@ -157,9 +157,9 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
             return Ok(());
         }
         let nch = self.inputs.len();
-        let ch0 = self.inputs[0].buffer.as_array();
+        let ch0 = self.inputs[0].read();
         let ch1 = if nch > 1 {
-            Some(self.inputs[1].buffer.as_array())
+            Some(self.inputs[1].read())
         } else {
             None
         };

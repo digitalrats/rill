@@ -1,5 +1,5 @@
 use rill_core::{
-    buffer::{BufferRegistry, TapeLoop},
+    buffer::{ResourceRegistry, TapeReader},
     math::Transcendental,
     traits::{Node, NodeCategory, NodeMetadata, NodeState, Source},
     ClockTick, NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
@@ -22,7 +22,7 @@ pub struct ReadHead<T: Transcendental, const BUF_SIZE: usize> {
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
-    tape: *const TapeLoop<T>,
+    tape: Option<TapeReader<T>>,
     resource_name: String,
     delay: f32,
     sample_rate: f32,
@@ -43,7 +43,8 @@ fn delay_smoothing_coeff(sample_rate: f64) -> f64 {
     1.0 - (-1.0 / (DELAY_SMOOTH_SECONDS * sample_rate)).exp()
 }
 
-// Raw pointer — safe, graph is single-threaded.
+// Holds an `Rc`-based tape handle — the graph is single-threaded and moved
+// to the signal thread once; `Send`/`Sync` are asserted for that pattern.
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Send for ReadHead<T, B> {}
 #[allow(unsafe_code)]
@@ -79,7 +80,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
             metadata,
             outputs,
             state: NodeState::new(44100.0),
-            tape: std::ptr::null(),
+            tape: None,
             resource_name: resource_name.to_string(),
             delay: 0.5,
             sample_rate: 44100.0,
@@ -88,9 +89,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
         }
     }
 
-    /// Set the tape pointer (called during resource resolution).
-    pub fn set_tape_ptr(&mut self, tape: *const TapeLoop<T>) {
-        self.tape = tape;
+    /// Set the tape read handle (used by tests; the graph uses
+    /// [`resolve_resources`](Node::resolve_resources)).
+    pub fn set_reader(&mut self, reader: TapeReader<T>) {
+        self.tape = Some(reader);
     }
 }
 
@@ -103,12 +105,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ReadHead<
         _clock_inputs: &[RenderContext],
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
-        debug_assert!(!self.tape.is_null(), "ReadHead: tape not set");
-        let tape = unsafe { &*self.tape };
+        let Some(tape) = self.tape.as_ref() else {
+            debug_assert!(false, "ReadHead: tape not set");
+            return Ok(());
+        };
         let target = (self.delay as f64) * (self.sample_rate as f64);
         let glide = self.delay_smoothing;
         let mut current = self.current_delay_samples;
-        let out = self.outputs[0].buffer.as_mut_array();
+        let out = self.outputs[0].write();
         let n = BUF_SIZE;
         for i in 0..n {
             // Earlier samples in the block sit further back on the tape.
@@ -154,13 +158,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ReadHead<T,
         self.state.blocks_processed = 0;
         self.current_delay_samples = (self.delay as f64) * (self.sample_rate as f64);
     }
-    fn resolve_resources(&mut self, buffers: &BufferRegistry<T>) {
-        if !self.tape.is_null() {
+    fn resolve_resources(&mut self, resources: &mut ResourceRegistry<T>) {
+        if self.tape.is_some() {
             return;
         }
-        if let Some(ptr) = buffers.get_ptr(&self.resource_name) {
-            self.tape = ptr as *const TapeLoop<T>;
-        }
+        self.tape = resources.reader(&self.resource_name);
     }
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
         match id.as_str() {
@@ -220,6 +222,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ReadHead<T,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::buffer::{tape_handles, TapeLoop};
 
     /// Build a tape pre-filled with a rising ramp `0.0, 1.0, .. (n-1)`.
     /// After writing, `read(0)` returns `n-1`, `read(d)` returns `n-1-d`.
@@ -252,13 +255,14 @@ mod tests {
         let (id, v) = delay_param(0.1);
         rh.set_parameter(&id, v).unwrap();
         rh.init(100.0);
-        rh.set_tape_ptr(&tape as *const _);
+        let (_writer, reader) = tape_handles(tape);
+        rh.set_reader(reader);
 
         let ctx = RenderContext::new(0, 4, 100.0);
         let tick = ClockTick::new(0, 4, 100.0, String::new());
         rh.generate(&ctx, &[], &[], &tick).unwrap();
 
-        let out = rh.outputs[0].buffer.as_array();
+        let out = rh.outputs[0].read();
         assert_eq!(out[0], 26.0);
         assert_eq!(out[3], 29.0);
     }
@@ -273,13 +277,14 @@ mod tests {
         let (id, v) = delay_param(0.105);
         rh.set_parameter(&id, v).unwrap();
         rh.init(100.0);
-        rh.set_tape_ptr(&tape as *const _);
+        let (_writer, reader) = tape_handles(tape);
+        rh.set_reader(reader);
 
         let ctx = RenderContext::new(0, 4, 100.0);
         let tick = ClockTick::new(0, 4, 100.0, String::new());
         rh.generate(&ctx, &[], &[], &tick).unwrap();
 
-        let out = rh.outputs[0].buffer.as_array();
+        let out = rh.outputs[0].read();
         assert!(
             out[0] > 25.0 && out[0] < 26.0,
             "expected interpolated ~25.5, got {}",
@@ -299,7 +304,8 @@ mod tests {
         let (id, v) = delay_param(0.1);
         rh.set_parameter(&id, v).unwrap();
         rh.init(100.0);
-        rh.set_tape_ptr(&tape as *const _);
+        let (_writer, reader) = tape_handles(tape);
+        rh.set_reader(reader);
 
         let (id2, v2) = delay_param(0.3);
         rh.set_parameter(&id2, v2).unwrap();
@@ -308,7 +314,7 @@ mod tests {
         let tick = ClockTick::new(0, 4, 100.0, String::new());
         rh.generate(&ctx, &[], &[], &tick).unwrap();
 
-        let out = rh.outputs[0].buffer.as_array();
+        let out = rh.outputs[0].read();
         assert!(
             out[0] > 20.0,
             "delay jumped instead of gliding: out[0]={}",

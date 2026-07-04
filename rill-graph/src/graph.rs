@@ -1,7 +1,7 @@
 use crate::factory::NodeFactory;
 use std::sync::Arc;
 
-use rill_core::buffer::{Buffer, BufferRegistry, FixedBuffer, TapeLoop};
+use rill_core::buffer::{FixedBuffer, ResourceRegistry, TapeLoop};
 use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
@@ -402,17 +402,34 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        // --- upstream_buffer ---
+        // --- upstream_buffer (zero-copy alias, exclusive 1:1 edges only) ---
+        //
+        // An input port may read its upstream output buffer directly (no copy)
+        // ONLY when the edge is exclusive: the source output has exactly one
+        // consumer AND the input has exactly one producer. Fan-out branches
+        // must each receive an independent copy so downstream processing is
+        // isolated (per the zero-copy rules); fan-in ports need their own
+        // buffer too. Both leave `upstream_buffer` as `None` → materialized.
+        let mut out_degree: std::collections::HashMap<(usize, usize), usize> =
+            std::collections::HashMap::new();
+        let mut in_degree_port: std::collections::HashMap<(usize, usize), usize> =
+            std::collections::HashMap::new();
         for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
-            let upstream = nodes[from_n]
-                .output_port(from_p)
-                .map(|p| &p.buffer as *const FixedBuffer<T, BUF_SIZE>);
+            *out_degree.entry((from_n, from_p)).or_insert(0) += 1;
+            *in_degree_port.entry((to_n, to_p)).or_insert(0) += 1;
+        }
+        for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
+            let exclusive = out_degree.get(&(from_n, from_p)) == Some(&1)
+                && in_degree_port.get(&(to_n, to_p)) == Some(&1);
+            let upstream = if exclusive {
+                nodes[from_n]
+                    .output_port(from_p)
+                    .map(|p| p.buffer() as *const FixedBuffer<T, BUF_SIZE>)
+            } else {
+                None
+            };
             if let Some(port) = nodes[to_n].input_port_mut(to_p) {
-                if port.upstream_buffer.is_none() {
-                    port.upstream_buffer = upstream;
-                } else {
-                    port.upstream_buffer = None;
-                }
+                port.upstream_buffer = upstream;
             }
         }
 
@@ -438,20 +455,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             }
         }
 
-        // Allocate named buffers
-        let mut buffers = BufferRegistry::new();
+        // Allocate named shared resources (tape loops) and hand out capability
+        // handles. The registry is build-time only: nodes keep their handles,
+        // which reference-count the resource, so it is dropped after resolution.
+        let mut registry = ResourceRegistry::new();
         for r in &self.resources {
             if r.kind == "tape" {
                 if let Some(tape) = TapeLoop::<T>::new(r.capacity) {
-                    buffers.register(&r.name, Box::new(tape));
+                    registry.register_tape(&r.name, tape);
                 }
             }
         }
         for entry in nodes.iter_mut() {
-            entry.resolve_resources(&buffers);
+            entry.resolve_resources(&mut registry);
         }
 
-        let owned_buffers = buffers.into_inner();
         let allocated = self.resources.clone();
 
         // Compute node pointers for branch-chain processing
@@ -564,7 +582,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 self.sample_rate.unwrap_or(44100.0),
                 String::new(),
             ),
-            buffers: owned_buffers,
             recording_roots: recording_roots.clone(),
             playback_roots: playback_roots.clone(),
             recording_ptrs: rec_ptrs,
@@ -584,12 +601,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
 /// Owned parts of a [`Graph`] returned by `into_parts` (test only).
 #[cfg(test)]
-type GraphParts<T, const BUF_SIZE: usize> = (
-    Vec<NodeVariant<T, BUF_SIZE>>,
-    Vec<usize>,
-    ClockTick,
-    Vec<Box<dyn Buffer<T> + Send>>,
-);
+type GraphParts<T, const BUF_SIZE: usize> = (Vec<NodeVariant<T, BUF_SIZE>>, Vec<usize>, ClockTick);
 
 /// Immutable signal graph with static DAG topology.
 ///
@@ -608,8 +620,6 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     feedback_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>>,
     current_tick: ClockTick,
     pub(crate) resources: Vec<GraphResource>,
-    #[allow(dead_code)]
-    buffers: Vec<Box<dyn Buffer<T> + Send>>,
     actor: Option<Actor<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
     parent_ref: Option<ActorRef<CommandEnum>>,
@@ -635,8 +645,6 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     feedback_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>>,
     parent_ref: Option<ActorRef<CommandEnum>>,
     system_clock: Option<Arc<SystemClock>>,
-    #[allow(dead_code)]
-    buffers: Vec<Box<dyn Buffer<T> + Send>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
@@ -870,11 +878,11 @@ fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
             let buf = port.buffer();
             for &in_ptr in &port.downstream_input_ptrs {
                 unsafe {
-                    if (*in_ptr).upstream_buffer.is_none() {
-                        (*in_ptr).buffer.copy_from(buf.as_array());
+                    let ip = &mut *in_ptr;
+                    if !ip.is_zero_copy() {
+                        let _ = ip.run_action(Some(buf.as_array()));
                     }
-                    let _ = (*in_ptr).run_action(Some(buf.as_array()));
-                    (*in_ptr).data_received = true;
+                    ip.data_received = true;
                 }
             }
         }
@@ -913,11 +921,11 @@ fn p_process_branch<T: Transcendental, const BUF_SIZE: usize>(
                 if let Some(port) = node.output_port(po) {
                     let buf = port.buffer();
                     for &in_ptr in &port.downstream_input_ptrs {
-                        if (*in_ptr).upstream_buffer.is_none() {
-                            (*in_ptr).buffer.copy_from(buf.as_array());
+                        let ip = &mut *in_ptr;
+                        if !ip.is_zero_copy() {
+                            let _ = ip.run_action(Some(buf.as_array()));
                         }
-                        let _ = (*in_ptr).run_action(Some(buf.as_array()));
-                        (*in_ptr).data_received = true;
+                        ip.data_received = true;
                     }
                 }
             }
@@ -1024,7 +1032,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             feedback_ptrs: self.feedback_ptrs,
             parent_ref: self.parent_ref,
             system_clock: self.system_clock,
-            buffers: self.buffers,
         }
     }
 
@@ -1041,7 +1048,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             topo_order,
             current_tick,
             resources: _,
-            buffers,
             recording_roots: _,
             playback_roots: _,
             recording_ptrs: _,
@@ -1054,7 +1060,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         } = self;
         drop(actor);
         let nodes = Rc::try_unwrap(nodes).unwrap().into_inner();
-        (nodes, topo_order, current_tick, buffers)
+        (nodes, topo_order, current_tick)
     }
 }
 
@@ -1125,8 +1131,7 @@ mod tests {
     impl<T: Transcendental, const B: usize> ConstantSource<T, B> {
         pub fn new(id: NodeId, value: T, sample_rate: f32) -> Self {
             let state = NodeState::new(sample_rate);
-            let mut output = Port::output(id, 0, "out");
-            output.buffer = FixedBuffer::new();
+            let output = Port::output(id, 0, "out");
             Self {
                 id,
                 value,
@@ -1214,7 +1219,7 @@ mod tests {
             _: &[RenderContext],
             _: &ClockTick,
         ) -> ProcessResult<()> {
-            self.output.buffer.as_mut_array().fill(self.value);
+            self.output.write().fill(self.value);
             Ok(())
         }
     }
@@ -1336,8 +1341,8 @@ mod tests {
             _: &[RenderContext],
             _: &[&[T; B]],
         ) -> ProcessResult<()> {
-            let src = self.input.buffer.as_array();
-            let buf = self.output.buffer.as_mut_array();
+            let src = self.input.read();
+            let buf = self.output.write();
             for i in 0..B {
                 buf[i] = src[i] * self.gain;
             }
@@ -1454,6 +1459,53 @@ mod tests {
     const BUF: usize = 64;
 
     #[test]
+    fn test_fanout_branches_are_independent_not_zero_copy() {
+        // One source output feeding two consumers is a fan-out: each branch
+        // must own an independent buffer so downstream processing is isolated.
+        let factory = test_factory::<BUF>();
+        let mut builder = test_builder::<BUF>(&factory);
+        let system = test_system();
+
+        let src = builder.add_node("test/const", &test_params(44100.0));
+        let a = builder.add_node("test/gain", &test_params(44100.0));
+        let b = builder.add_node("test/gain", &test_params(44100.0));
+        builder.connect_signal(src, 0, a, 0);
+        builder.connect_signal(src, 0, b, 0);
+
+        let graph = builder.build(&system).unwrap();
+        let nodes = graph.nodes();
+        assert!(
+            !nodes[a].input_port(0).unwrap().is_zero_copy(),
+            "fan-out branch A must not alias the shared source buffer"
+        );
+        assert!(
+            !nodes[b].input_port(0).unwrap().is_zero_copy(),
+            "fan-out branch B must not alias the shared source buffer"
+        );
+        assert!(nodes[a].input_port(0).unwrap().upstream_buffer.is_none());
+        assert!(nodes[b].input_port(0).unwrap().upstream_buffer.is_none());
+    }
+
+    #[test]
+    fn test_linear_chain_edge_is_zero_copy() {
+        // An exclusive 1:1 edge is safe to alias (single consumer).
+        let factory = test_factory::<BUF>();
+        let mut builder = test_builder::<BUF>(&factory);
+        let system = test_system();
+
+        let src = builder.add_node("test/const", &test_params(44100.0));
+        let g = builder.add_node("test/gain", &test_params(44100.0));
+        builder.connect_signal(src, 0, g, 0);
+
+        let graph = builder.build(&system).unwrap();
+        let nodes = graph.nodes();
+        assert!(
+            nodes[g].input_port(0).unwrap().is_zero_copy(),
+            "exclusive 1:1 edge should be zero-copy"
+        );
+    }
+
+    #[test]
     #[allow(unsafe_code)]
     fn test_graph_source_to_sink() {
         let factory = test_factory::<BUF>();
@@ -1484,7 +1536,11 @@ mod tests {
         }
         unsafe {
             let nv = &*nodes.get();
-            let val = nv[snk_idx].input_port(0).unwrap().buffer.as_array()[0];
+            let val = nv[snk_idx]
+                .input_port(0)
+                .unwrap()
+                .signal_buffer()
+                .as_array()[0];
             assert!(val != 0.0, "signal should have propagated, got {}", val);
         }
     }
@@ -1533,7 +1589,7 @@ mod tests {
             );
 
             let _ = nv[source_idx].process_block(&ctx, &tick);
-            let src_val = nv[source_idx].output_port(0).unwrap().buffer.as_array()[0];
+            let src_val = nv[source_idx].output_port(0).unwrap().read()[0];
             eprintln!("source output: {src_val}");
 
             let out_port = nv[source_idx].output_port(0).unwrap();
@@ -1568,19 +1624,10 @@ mod tests {
             let proc_out = nv[proc_idx].output_port(0).unwrap();
             let snk_in = nv[snk_idx].input_port(0).unwrap();
             eprintln!("BUFFER ADDRESSES:");
-            eprintln!(
-                "  src output buf:  {:p}",
-                src_out.buffer.as_array().as_ptr()
-            );
-            eprintln!(
-                "  proc input buf:  {:p}",
-                proc_in.buffer.as_array().as_ptr()
-            );
-            eprintln!(
-                "  proc output buf: {:p}",
-                proc_out.buffer.as_array().as_ptr()
-            );
-            eprintln!("  snk input buf:   {:p}", snk_in.buffer.as_array().as_ptr());
+            eprintln!("  src output buf:  {:p}", src_out.read().as_ptr());
+            eprintln!("  proc input buf:  {:p}", proc_in.read().as_ptr());
+            eprintln!("  proc output buf: {:p}", proc_out.read().as_ptr());
+            eprintln!("  snk input buf:   {:p}", snk_in.read().as_ptr());
             eprintln!(
                 "  proc_in.upstream_buffer.is_some(): {}",
                 proc_in.upstream_buffer.is_some()
@@ -1599,7 +1646,7 @@ mod tests {
                 let snk_in = nv[snk_idx].input_port(0).unwrap();
                 eprintln!(
                     "AFTER propagate - snk input buf[0] via .buffer: {}",
-                    snk_in.buffer.as_array()[0]
+                    snk_in.read()[0]
                 );
                 if let Some(up) = snk_in.upstream_buffer {
                     eprintln!(
@@ -1609,7 +1656,11 @@ mod tests {
                 }
             }
 
-            let sink_buf = nv[snk_idx].input_port(0).unwrap().buffer.as_array();
+            let sink_buf = nv[snk_idx]
+                .input_port(0)
+                .unwrap()
+                .signal_buffer()
+                .as_array();
             eprintln!("SINK input port buffer first sample: {}", sink_buf[0]);
 
             // Check processor output port propagation
@@ -1624,7 +1675,11 @@ mod tests {
             );
 
             // Sink
-            let sink_val = nv[snk_idx].input_port(0).unwrap().buffer.as_array()[0];
+            let sink_val = nv[snk_idx]
+                .input_port(0)
+                .unwrap()
+                .signal_buffer()
+                .as_array()[0];
             eprintln!("sink input AFTER propagate: {sink_val}");
 
             assert!(
@@ -1699,7 +1754,7 @@ mod tests {
 
         unsafe {
             let nv = &*graph.nodes.get();
-            let branch_out = nv[branch].output_port(0).unwrap().buffer.as_array()[0];
+            let branch_out = nv[branch].output_port(0).unwrap().read()[0];
             assert!(
                 (branch_out - 2.0).abs() < 1e-4,
                 "feedback-branch node was not processed (out={branch_out}, expected 2.0)"

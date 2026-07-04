@@ -195,7 +195,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> Processor
         let silence = [T::ZERO; BUF_SIZE];
         let input = signal_inputs.first().copied().unwrap_or(&silence);
         if let Some(port) = self.outputs.first_mut() {
-            port.buffer.as_mut_array().copy_from_slice(input);
+            port.write().copy_from_slice(input);
         }
 
         // ── Telemetry capture (every N blocks) ──────────────────────────
