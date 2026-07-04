@@ -319,9 +319,9 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// Port direction (input/output)
     pub direction: PortDirection,
     /// Per-port processing algorithm (None for simple input ports)
-    pub action: Option<Box<dyn Algorithm<T>>>,
+    action: Option<Box<dyn Algorithm<T>>>,
     /// Pending command value from the control path
-    pub pending_command: Option<T>,
+    pending_command: Option<T>,
     /// Owned signal buffer (for output ports and input ports without upstream).
     ///
     /// Private: nodes access signal data through [`read`](Self::read) /
@@ -330,48 +330,44 @@ pub struct Port<T: Transcendental, const BUF_SIZE: usize> {
     /// The engine uses [`buffer`](Self::buffer) / `buffer_mut`.
     buffer: FixedBuffer<T, BUF_SIZE>,
     /// Delayed feedback state (None if not on a feedback edge)
-    pub feedback_buffer: Option<FixedBuffer<T, BUF_SIZE>>,
+    feedback_buffer: Option<FixedBuffer<T, BUF_SIZE>>,
     /// Downstream signal connections: (target_node_index, target_port_index).
     /// Used for serialization and by `GraphBuilder::build()`.
-    pub downstream: Vec<(usize, usize)>,
+    downstream: Vec<(usize, usize)>,
     /// Direct pointers to downstream input ports. Filled by
     /// `GraphBuilder::build()`. Used by `propagate` to copy data.
-    pub downstream_input_ptrs: Vec<*mut Port<T, BUF_SIZE>>,
+    downstream_input_ptrs: Vec<*mut Port<T, BUF_SIZE>>,
     /// Unique downstream nodes (one per target, deduplicated at build time).
     /// Filled by `GraphBuilder::build()`. Used by `propagate` to recurse
     /// into downstream nodes — no runtime deduplication needed.
-    pub downstream_nodes: Vec<*mut crate::traits::NodeVariant<T, BUF_SIZE>>,
-    /// Pointer to the [`NodeVariant`](crate::traits::NodeVariant) that
-    /// owns this port. Set after graph construction. Enables recursive
-    /// signal propagation without a `nodes` slice.
-    pub parent: *mut crate::traits::NodeVariant<T, BUF_SIZE>,
+    downstream_nodes: Vec<*mut crate::traits::NodeVariant<T, BUF_SIZE>>,
     /// Direct pointer to upstream output buffer for zero-copy routing.
     /// `Some` only for an **exclusive 1:1** input port (its upstream output
     /// has a single consumer and this input has a single producer).
     /// `None` for output ports, fan-in, fan-out branches, or unconnected —
     /// those materialize an independent copy.
     /// Valid for the engine's lifetime.
-    pub upstream_buffer: Option<*const FixedBuffer<T, BUF_SIZE>>,
+    upstream_buffer: Option<*const FixedBuffer<T, BUF_SIZE>>,
     /// Feedback edge targets from this output port (for serialization)
-    pub feedback_downstream: Vec<(usize, usize)>,
+    feedback_downstream: Vec<(usize, usize)>,
 
     /// Direct pointers to `feedback_buffer` on downstream input ports.
     ///
     /// Set by `GraphBuilder::build()` for feedback edges.
     /// `snapshot_feedback()` copies its buffer into each target.
-    pub feedback_ptrs: Vec<*mut Option<FixedBuffer<T, BUF_SIZE>>>,
+    feedback_ptrs: Vec<*mut Option<FixedBuffer<T, BUF_SIZE>>>,
 
     /// Whether this input port has received new data in the current graph cycle.
     ///
     /// Set by `propagate` when a downstream input port receives a buffer copy.
     /// Consumer nodes (esp. Sinks) check this flag to decide whether all
     /// input channels are fresh before producing output.
-    pub data_received: bool,
+    data_received: bool,
 
     /// Pull-model: pointer to the upstream node that feeds this input port.
     /// Only set for same-chain edges (recording→recording or playback→playback).
     /// Used by the pull traversal in `process_playback_chain`.
-    pub upstream_node: *mut crate::traits::NodeVariant<T, BUF_SIZE>,
+    upstream_node: *mut crate::traits::NodeVariant<T, BUF_SIZE>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> fmt::Debug for Port<T, BUF_SIZE> {
@@ -403,7 +399,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             downstream_nodes: Vec::new(),
-            parent: std::ptr::null_mut(),
             upstream_buffer: None,
             upstream_node: std::ptr::null_mut(),
             data_received: false,
@@ -425,7 +420,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             downstream_nodes: Vec::new(),
-            parent: std::ptr::null_mut(),
             upstream_buffer: None,
             upstream_node: std::ptr::null_mut(),
             data_received: false,
@@ -447,7 +441,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             downstream_nodes: Vec::new(),
-            parent: std::ptr::null_mut(),
             upstream_buffer: None,
             upstream_node: std::ptr::null_mut(),
             data_received: false,
@@ -474,7 +467,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             downstream_nodes: Vec::new(),
-            parent: std::ptr::null_mut(),
             upstream_buffer: None,
             upstream_node: std::ptr::null_mut(),
             data_received: false,
@@ -496,7 +488,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
             feedback_ptrs: Vec::new(),
             downstream_input_ptrs: Vec::new(),
             downstream_nodes: Vec::new(),
-            parent: std::ptr::null_mut(),
             upstream_buffer: None,
             upstream_node: std::ptr::null_mut(),
             data_received: false,
@@ -566,6 +557,123 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     #[inline]
     pub fn feedback(&self) -> Option<&[T; BUF_SIZE]> {
         self.feedback_buffer.as_ref().map(|b| b.as_array())
+    }
+
+    // ========================================================================
+    // Sink-facing status
+    // ========================================================================
+
+    /// Whether this input port received fresh data in the current graph cycle.
+    #[inline]
+    pub fn data_received(&self) -> bool {
+        self.data_received
+    }
+
+    /// Set the `data_received` flag (sinks reset it after consuming).
+    #[inline]
+    pub fn set_data_received(&mut self, value: bool) {
+        self.data_received = value;
+    }
+
+    // ========================================================================
+    // Graph construction API (used by `GraphBuilder::build`)
+    //
+    // These wire the immutable topology once at build time. They are not
+    // intended for node authors — signal data flows through `read`/`write`.
+    // ========================================================================
+
+    /// Downstream signal connections `(target_node, target_port)` (serialization).
+    #[inline]
+    pub fn downstream(&self) -> &[(usize, usize)] {
+        &self.downstream
+    }
+
+    /// Feedback edge targets from this output port (serialization).
+    #[inline]
+    pub fn feedback_downstream(&self) -> &[(usize, usize)] {
+        &self.feedback_downstream
+    }
+
+    /// Direct pointers to downstream input ports (engine propagation).
+    #[inline]
+    pub fn downstream_input_ptrs(&self) -> &[*mut Port<T, BUF_SIZE>] {
+        &self.downstream_input_ptrs
+    }
+
+    /// Unique downstream nodes fed by this output port (engine propagation).
+    #[inline]
+    pub fn downstream_nodes(&self) -> &[*mut crate::traits::NodeVariant<T, BUF_SIZE>] {
+        &self.downstream_nodes
+    }
+
+    /// The upstream node feeding this input port (pull model), or null.
+    #[inline]
+    pub fn upstream_node(&self) -> *mut crate::traits::NodeVariant<T, BUF_SIZE> {
+        self.upstream_node
+    }
+
+    /// Whether this input port aliases an upstream buffer (exclusive 1:1 edge).
+    #[inline]
+    pub fn has_upstream_buffer(&self) -> bool {
+        self.upstream_buffer.is_some()
+    }
+
+    /// Record a downstream signal connection `(target_node, target_port)`.
+    #[inline]
+    pub fn add_downstream(&mut self, target_node: usize, target_port: usize) {
+        self.downstream.push((target_node, target_port));
+    }
+
+    /// Record a feedback edge target `(target_node, target_port)`.
+    #[inline]
+    pub fn add_feedback_downstream(&mut self, target_node: usize, target_port: usize) {
+        self.feedback_downstream.push((target_node, target_port));
+    }
+
+    /// Append a direct pointer to a downstream input port.
+    #[inline]
+    pub fn add_downstream_input_ptr(&mut self, ptr: *mut Port<T, BUF_SIZE>) {
+        self.downstream_input_ptrs.push(ptr);
+    }
+
+    /// Append a downstream node pointer, deduplicating on identity.
+    #[inline]
+    pub fn add_downstream_node(&mut self, node: *mut crate::traits::NodeVariant<T, BUF_SIZE>) {
+        let val = node as usize;
+        if !self.downstream_nodes.iter().any(|&p| p as usize == val) {
+            self.downstream_nodes.push(node);
+        }
+    }
+
+    /// Set the pull-model upstream node pointer.
+    #[inline]
+    pub fn set_upstream_node(&mut self, node: *mut crate::traits::NodeVariant<T, BUF_SIZE>) {
+        self.upstream_node = node;
+    }
+
+    /// Set the zero-copy upstream buffer alias (exclusive 1:1 edges only).
+    #[inline]
+    pub fn set_upstream_buffer(&mut self, buffer: Option<*const FixedBuffer<T, BUF_SIZE>>) {
+        self.upstream_buffer = buffer;
+    }
+
+    /// Allocate this port's feedback buffer (feedback edge endpoint).
+    #[inline]
+    pub fn init_feedback_buffer(&mut self) {
+        self.feedback_buffer = Some(FixedBuffer::new());
+    }
+
+    /// Raw pointer to this port's `feedback_buffer`, for wiring `feedback_ptrs`.
+    #[inline]
+    pub fn feedback_buffer_ptr(&self) -> *mut Option<FixedBuffer<T, BUF_SIZE>> {
+        &self.feedback_buffer as *const Option<FixedBuffer<T, BUF_SIZE>>
+            as *mut Option<FixedBuffer<T, BUF_SIZE>>
+    }
+
+    /// Append a pointer to a downstream input port's feedback buffer.
+    #[inline]
+    pub fn add_feedback_ptr(&mut self, ptr: *mut Option<FixedBuffer<T, BUF_SIZE>>) {
+        self.feedback_ptrs.push(ptr);
     }
 
     /// Whether this input port is a pure zero-copy passthrough.

@@ -309,13 +309,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         // --- Phase 5: port pointer wiring on the final nodes Vec ---
         for &(from_n, from_p, to_n, to_p) in &self.signal_edges {
             if let Some(port) = nodes[from_n].output_port_mut(from_p) {
-                port.downstream.push((to_n, to_p));
+                port.add_downstream(to_n, to_p);
             }
             let in_ptr: *mut Port<T, BUF_SIZE> = nodes[to_n]
                 .input_port_mut(to_p)
                 .map(|p| p as *mut Port<T, BUF_SIZE>)
                 .unwrap_or(std::ptr::null_mut());
-            let parent: *mut NodeVariant<T, BUF_SIZE> = &mut nodes[to_n];
             let out_ptr: *mut Port<T, BUF_SIZE> = nodes[from_n]
                 .output_port_mut(from_p)
                 .map(|p| p as *mut Port<T, BUF_SIZE>)
@@ -323,8 +322,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             if !in_ptr.is_null() && !out_ptr.is_null() {
                 #[allow(unsafe_code)]
                 unsafe {
-                    (*in_ptr).parent = parent;
-                    (*out_ptr).downstream_input_ptrs.push(in_ptr);
+                    (*out_ptr).add_downstream_input_ptr(in_ptr);
                 }
             }
         }
@@ -378,11 +376,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                         continue;
                     }
                 }
-                let ptr_val = parent as usize;
-                let already = port.downstream_nodes.iter().any(|&p| p as usize == ptr_val);
-                if !already {
-                    port.downstream_nodes.push(parent);
-                }
+                port.add_downstream_node(parent);
             }
         }
 
@@ -397,7 +391,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             if same_chain {
                 let src: *mut NodeVariant<T, BUF_SIZE> = &mut nodes[from_n];
                 if let Some(port) = nodes[to_n].input_port_mut(to_p) {
-                    port.upstream_node = src;
+                    port.set_upstream_node(src);
                 }
             }
         }
@@ -429,28 +423,27 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 None
             };
             if let Some(port) = nodes[to_n].input_port_mut(to_p) {
-                port.upstream_buffer = upstream;
+                port.set_upstream_buffer(upstream);
             }
         }
 
         // --- feedback buffers ---
         for &(from_n, from_p, to_n, to_p) in &self.feedback_edges {
             if let Some(port) = nodes[from_n].output_port_mut(from_p) {
-                port.feedback_buffer = Some(FixedBuffer::new());
-                port.feedback_downstream.push((to_n, to_p));
+                port.init_feedback_buffer();
+                port.add_feedback_downstream(to_n, to_p);
             }
             if let Some(port) = nodes[to_n].input_port_mut(to_p) {
-                port.feedback_buffer = Some(FixedBuffer::new());
+                port.init_feedback_buffer();
             }
         }
         for &(from_n, from_p, to_n, to_p) in &self.feedback_edges {
             let ptr = nodes[to_n]
                 .input_port(to_p)
-                .map(|p| &p.feedback_buffer as *const Option<FixedBuffer<T, BUF_SIZE>>)
-                .map(|r| r as *mut Option<FixedBuffer<T, BUF_SIZE>>);
+                .map(|p| p.feedback_buffer_ptr());
             if let Some(port) = nodes[from_n].output_port_mut(from_p) {
                 if let Some(p) = ptr {
-                    port.feedback_ptrs.push(p);
+                    port.add_feedback_ptr(p);
                 }
             }
         }
@@ -859,7 +852,7 @@ fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
     }
     for pi in 0..node.num_signal_inputs() {
         if let Some(p) = node.input_port(pi) {
-            let src = p.upstream_node;
+            let src = p.upstream_node();
             if !src.is_null() {
                 unsafe {
                     p_pull_recurse(&mut *src, ctx, tick);
@@ -876,13 +869,13 @@ fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
     for po in 0..node.num_signal_outputs() {
         if let Some(port) = node.output_port(po) {
             let buf = port.buffer();
-            for &in_ptr in &port.downstream_input_ptrs {
+            for &in_ptr in port.downstream_input_ptrs() {
                 unsafe {
                     let ip = &mut *in_ptr;
                     if !ip.is_zero_copy() {
                         let _ = ip.run_action(Some(buf.as_array()));
                     }
-                    ip.data_received = true;
+                    ip.set_data_received(true);
                 }
             }
         }
@@ -920,12 +913,12 @@ fn p_process_branch<T: Transcendental, const BUF_SIZE: usize>(
             for po in 0..node.num_signal_outputs() {
                 if let Some(port) = node.output_port(po) {
                     let buf = port.buffer();
-                    for &in_ptr in &port.downstream_input_ptrs {
+                    for &in_ptr in port.downstream_input_ptrs() {
                         let ip = &mut *in_ptr;
                         if !ip.is_zero_copy() {
                             let _ = ip.run_action(Some(buf.as_array()));
                         }
-                        ip.data_received = true;
+                        ip.set_data_received(true);
                     }
                 }
             }
@@ -1482,8 +1475,8 @@ mod tests {
             !nodes[b].input_port(0).unwrap().is_zero_copy(),
             "fan-out branch B must not alias the shared source buffer"
         );
-        assert!(nodes[a].input_port(0).unwrap().upstream_buffer.is_none());
-        assert!(nodes[b].input_port(0).unwrap().upstream_buffer.is_none());
+        assert!(!nodes[a].input_port(0).unwrap().has_upstream_buffer());
+        assert!(!nodes[b].input_port(0).unwrap().has_upstream_buffer());
     }
 
     #[test]
@@ -1595,11 +1588,11 @@ mod tests {
             let out_port = nv[source_idx].output_port(0).unwrap();
             eprintln!(
                 "source output port downstream_nodes: {}",
-                out_port.downstream_nodes.len()
+                out_port.downstream_nodes().len()
             );
             eprintln!(
                 "source output port downstream_input_ptrs: {}",
-                out_port.downstream_input_ptrs.len()
+                out_port.downstream_input_ptrs().len()
             );
 
             // Check processor output port connections BEFORE propagate
@@ -1607,13 +1600,13 @@ mod tests {
                 let proc_port = nv[proc_idx].output_port(0).unwrap();
                 eprintln!(
                     "PROC OUT port downstream_nodes: {}",
-                    proc_port.downstream_nodes.len()
+                    proc_port.downstream_nodes().len()
                 );
                 eprintln!(
                     "PROC OUT port downstream_input_ptrs: {}",
-                    proc_port.downstream_input_ptrs.len()
+                    proc_port.downstream_input_ptrs().len()
                 );
-                for (i, &dn) in proc_port.downstream.iter().enumerate() {
+                for (i, &dn) in proc_port.downstream().iter().enumerate() {
                     eprintln!("  downstream[{}]: (node={}, port={})", i, dn.0, dn.1);
                 }
             }
@@ -1629,12 +1622,12 @@ mod tests {
             eprintln!("  proc output buf: {:p}", proc_out.read().as_ptr());
             eprintln!("  snk input buf:   {:p}", snk_in.read().as_ptr());
             eprintln!(
-                "  proc_in.upstream_buffer.is_some(): {}",
-                proc_in.upstream_buffer.is_some()
+                "  proc_in.has_upstream_buffer(): {}",
+                proc_in.has_upstream_buffer()
             );
             eprintln!(
-                "  snk_in.upstream_buffer.is_some(): {}",
-                snk_in.upstream_buffer.is_some()
+                "  snk_in.has_upstream_buffer(): {}",
+                snk_in.has_upstream_buffer()
             );
             // --- END DEBUG ---
 
@@ -1644,16 +1637,7 @@ mod tests {
             {
                 let nv = &*nodes.get();
                 let snk_in = nv[snk_idx].input_port(0).unwrap();
-                eprintln!(
-                    "AFTER propagate - snk input buf[0] via .buffer: {}",
-                    snk_in.read()[0]
-                );
-                if let Some(up) = snk_in.upstream_buffer {
-                    eprintln!(
-                        "AFTER propagate - snk input via upstream ptr: {}",
-                        (*up).as_array()[0]
-                    );
-                }
+                eprintln!("AFTER propagate - snk input buf[0]: {}", snk_in.read()[0]);
             }
 
             let sink_buf = nv[snk_idx]
@@ -1667,11 +1651,11 @@ mod tests {
             let proc_out_port = nv[proc_idx].output_port(0).unwrap();
             eprintln!(
                 "proc output port downstream_nodes: {}",
-                proc_out_port.downstream_nodes.len()
+                proc_out_port.downstream_nodes().len()
             );
             eprintln!(
                 "proc output port downstream_input_ptrs: {}",
-                proc_out_port.downstream_input_ptrs.len()
+                proc_out_port.downstream_input_ptrs().len()
             );
 
             // Sink
