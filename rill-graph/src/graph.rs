@@ -459,12 +459,79 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .iter()
             .map(|&i| &mut nodes[i] as *mut _)
             .collect();
-        let sink_ptr = if has_split_chain {
-            let sink_idx = topo.last().copied().unwrap_or(0);
-            &mut nodes[sink_idx] as *mut _
+
+        // Real sink = last Sink node in topological order. Using the actual
+        // Sink (rather than `topo.last()`) is robust against extra signal-DAG
+        // leaves introduced by feedback-source branches (e.g. an effect chain
+        // inside a tape feedback loop terminates on a feedback edge, becoming a
+        // second leaf that could otherwise be mistaken for the sink).
+        let sink_idx = if has_split_chain {
+            topo.iter()
+                .rev()
+                .copied()
+                .find(|&i| matches!(nodes[i], NodeVariant::Sink(_)))
+                .or_else(|| topo.last().copied())
         } else {
-            std::ptr::null_mut()
+            None
         };
+        let sink_ptr = match sink_idx {
+            Some(i) => &mut nodes[i] as *mut _,
+            None => std::ptr::null_mut(),
+        };
+
+        // Feedback-branch nodes: signal-ancestors of feedback-edge sources that
+        // are processed by NEITHER the recording push NOR the playback pull.
+        // In split mode the pull only processes nodes upstream of the sink, so
+        // side-branch nodes feeding a feedback edge (e.g. effects inside a tape
+        // feedback loop) would never run and their `snapshot_feedback` would
+        // never fire. They are processed explicitly, in topological order,
+        // after the pull.
+        let feedback_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>> =
+            if has_split_chain && !self.feedback_edges.is_empty() {
+                let mut rev: Vec<Vec<usize>> = vec![Vec::new(); num_nodes];
+                for &(f, _, t, _) in &self.signal_edges {
+                    rev[t].push(f);
+                }
+                // Nodes that can reach the sink (already processed by the pull).
+                let mut sink_reachable = vec![false; num_nodes];
+                if let Some(si) = sink_idx {
+                    let mut q = VecDeque::new();
+                    q.push_back(si);
+                    sink_reachable[si] = true;
+                    while let Some(n) = q.pop_front() {
+                        for &u in &rev[n] {
+                            if !sink_reachable[u] {
+                                sink_reachable[u] = true;
+                                q.push_back(u);
+                            }
+                        }
+                    }
+                }
+                // Signal-ancestors (inclusive) of feedback-edge sources.
+                let mut in_branch = vec![false; num_nodes];
+                let mut q = VecDeque::new();
+                for &(from_n, _, _, _) in &self.feedback_edges {
+                    if !in_branch[from_n] {
+                        in_branch[from_n] = true;
+                        q.push_back(from_n);
+                    }
+                }
+                while let Some(n) = q.pop_front() {
+                    for &u in &rev[n] {
+                        if !in_branch[u] {
+                            in_branch[u] = true;
+                            q.push_back(u);
+                        }
+                    }
+                }
+                topo.iter()
+                    .copied()
+                    .filter(|&i| in_branch[i] && !sink_reachable[i] && !recording_set.contains(&i))
+                    .map(|i| &mut nodes[i] as *mut _)
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // Wrap nodes in Rc<UnsafeCell<Vec<>>> — port pointers already valid in this Vec.
         let nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>> = Rc::new(UnsafeCell::new(nodes));
@@ -502,6 +569,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             playback_roots: playback_roots.clone(),
             recording_ptrs: rec_ptrs,
             sink_ptr,
+            feedback_ptrs,
             actor: Some(actor),
             actor_ref,
             parent_ref: self.parent_ref.clone(),
@@ -537,6 +605,7 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     playback_roots: Vec<usize>,
     recording_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>>,
     sink_ptr: *mut NodeVariant<T, BUF_SIZE>,
+    feedback_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>>,
     current_tick: ClockTick,
     pub(crate) resources: Vec<GraphResource>,
     #[allow(dead_code)]
@@ -563,6 +632,7 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     playback_roots: Vec<usize>,
     recording_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>>,
     sink_ptr: *mut NodeVariant<T, BUF_SIZE>,
+    feedback_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>>,
     parent_ref: Option<ActorRef<CommandEnum>>,
     system_clock: Option<Arc<SystemClock>>,
     #[allow(dead_code)]
@@ -662,6 +732,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
             let mut actor = self.actor;
             let rec_ptrs = self.recording_ptrs;
             let sink = self.sink_ptr;
+            let fb_ptrs = self.feedback_ptrs;
             let clock = self.system_clock;
             let parent = self.parent_ref;
 
@@ -695,6 +766,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
                     );
                     ctx.speed_ratio = tick.speed_ratio;
                     p_pull(sink, &ctx, tick);
+                    p_process_branch(&fb_ptrs, &ctx, tick);
                 } else {
                     let mut ctx = RenderContext::new(
                         tick.sample_pos,
@@ -703,6 +775,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
                     );
                     ctx.speed_ratio = tick.speed_ratio;
                     p_pull(sink, &ctx, tick);
+                    p_process_branch(&fb_ptrs, &ctx, tick);
                 }
                 if tick.is_final {
                     if let Some(ref p) = parent {
@@ -808,6 +881,50 @@ fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
     }
 }
 
+/// Process a topologically-ordered list of feedback-branch nodes.
+///
+/// These are side-branch nodes (e.g. effects inside a tape feedback loop) that
+/// feed a feedback edge but do not reach the sink, so the playback pull never
+/// processes them. Their inputs were already filled by the pull (their upstream
+/// producers are on the sink path); here each is processed in order so its
+/// output is produced and `snapshot_feedback` captures it into the downstream
+/// feedback buffer for the next block.
+#[allow(unsafe_code)]
+fn p_process_branch<T: Transcendental, const BUF_SIZE: usize>(
+    branch: &[*mut NodeVariant<T, BUF_SIZE>],
+    ctx: &RenderContext,
+    tick: &ClockTick,
+) {
+    for &np in branch {
+        unsafe {
+            let node = &mut *np;
+            for pi in 0..node.num_signal_inputs() {
+                if let Some(p) = node.input_port_mut(pi) {
+                    p.pre_process();
+                }
+            }
+            let _ = node.process_block(ctx, tick);
+            for po in 0..node.num_signal_outputs() {
+                if let Some(p) = node.output_port_mut(po) {
+                    p.snapshot_feedback();
+                }
+            }
+            for po in 0..node.num_signal_outputs() {
+                if let Some(port) = node.output_port(po) {
+                    let buf = port.buffer();
+                    for &in_ptr in &port.downstream_input_ptrs {
+                        if (*in_ptr).upstream_buffer.is_none() {
+                            (*in_ptr).buffer.copy_from(buf.as_array());
+                        }
+                        let _ = (*in_ptr).run_action(Some(buf.as_array()));
+                        (*in_ptr).data_received = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     // ========================================================================
     // Accessors
@@ -904,6 +1021,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             playback_roots: self.playback_roots,
             recording_ptrs: self.recording_ptrs,
             sink_ptr: self.sink_ptr,
+            feedback_ptrs: self.feedback_ptrs,
             parent_ref: self.parent_ref,
             system_clock: self.system_clock,
             buffers: self.buffers,
@@ -928,6 +1046,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             playback_roots: _,
             recording_ptrs: _,
             sink_ptr: _,
+            feedback_ptrs: _,
             actor,
             actor_ref: _,
             parent_ref: _,
@@ -1070,6 +1189,9 @@ mod tests {
                 None
             }
         }
+        fn num_signal_outputs(&self) -> usize {
+            1
+        }
         fn input_port(&self, _: usize) -> Option<&Port<T, B>> {
             None
         }
@@ -1178,6 +1300,9 @@ mod tests {
             }
         }
         fn num_signal_outputs(&self) -> usize {
+            1
+        }
+        fn num_signal_inputs(&self) -> usize {
             1
         }
         fn output_port(&self, i: usize) -> Option<&Port<T, B>> {
@@ -1296,6 +1421,9 @@ mod tests {
             } else {
                 None
             }
+        }
+        fn num_signal_inputs(&self) -> usize {
+            1
         }
         fn state(&self) -> &NodeState<T, B> {
             &self.state
@@ -1503,6 +1631,78 @@ mod tests {
                 (sink_val - 15.0).abs() < 1e-4,
                 "expected 15.0, got {}",
                 sink_val
+            );
+        }
+    }
+
+    /// A feedback-branch node (feeds a feedback edge but does not reach the
+    /// sink) must be processed every block in split mode via `p_process_branch`.
+    /// Before the fix these side-branch nodes were never run, so their
+    /// `snapshot_feedback` never fired and feedback loops stayed silent.
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_split_processes_feedback_branch() {
+        let mut f = NodeFactory::<f32, BUF>::new();
+        f.register_fn("rill/input", |id, params| {
+            let mut n = ConstantSource::<f32, BUF>::new(id, 0.0, params.sample_rate);
+            n.init(params.sample_rate);
+            NodeVariant::Source(Box::new(n))
+        });
+        f.register_fn("test/const", |id, params| {
+            let v = params.get_f32("value", 1.0);
+            let mut n = ConstantSource::<f32, BUF>::new(id, v, params.sample_rate);
+            n.init(params.sample_rate);
+            NodeVariant::Source(Box::new(n))
+        });
+        f.register_fn("test/gain", |id, params| {
+            let g = params.get_f32("gain", 1.0);
+            let mut n = GainProcessor::<f32, BUF>::new(id, params.sample_rate, g);
+            n.init(params.sample_rate);
+            NodeVariant::Processor(Box::new(n))
+        });
+        f.register_fn("test/capture", |id, params| {
+            let mut n = CaptureSink::<f32, BUF>::new(id, params.sample_rate);
+            n.init(params.sample_rate);
+            NodeVariant::Sink(Box::new(n))
+        });
+        let factory = Arc::new(f);
+        let mut builder = test_builder::<BUF>(&factory);
+        let system = test_system();
+
+        let rec_in = builder.add_node("rill/input", &test_params(44100.0)); // 0 (recording root)
+        let mut cparams = test_params(44100.0);
+        cparams.insert("value", ParamValue::Float(2.0));
+        let play = builder.add_node("test/const", &cparams); // 1 (playback root)
+        let sink = builder.add_node("test/capture", &test_params(44100.0)); // 2
+        let branch = builder.add_node("test/gain", &test_params(44100.0)); // 3 (feedback branch)
+        let rec_proc = builder.add_node("test/gain", &test_params(44100.0)); // 4 (recording)
+
+        builder.connect_signal(play, 0, sink, 0); // playback: const -> sink
+        builder.connect_signal(play, 0, branch, 0); // branch: const -> gain(branch)
+        builder.connect_signal(rec_in, 0, rec_proc, 0); // recording: input -> gain
+        builder.connect_feedback(branch, 0, rec_proc, 0); // branch -> recording (feedback)
+
+        let graph = builder.build(&system).unwrap();
+        assert_eq!(
+            graph.feedback_ptrs.len(),
+            1,
+            "the feedback-branch node must be detected at build time"
+        );
+
+        let ctx = RenderContext::new(0, BUF as u32, 44100.0);
+        for i in 0..3u64 {
+            let tick = ClockTick::new(i * BUF as u64, BUF as u32, 44100.0, String::new());
+            p_forward(&graph.recording_ptrs, &ctx, &tick);
+            p_pull(graph.sink_ptr, &ctx, &tick);
+            p_process_branch(&graph.feedback_ptrs, &ctx, &tick);
+        }
+
+        unsafe {
+            let nv = &*graph.nodes.get();
+            let branch_out = nv[branch].output_port(0).unwrap().buffer.as_array()[0];
+            assert!(
+                (branch_out - 2.0).abs() < 1e-4,
+                "feedback-branch node was not processed (out={branch_out}, expected 2.0)"
             );
         }
     }

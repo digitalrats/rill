@@ -341,6 +341,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
     });
 
     node_ctor!(factory, "rill/write_head", |id: NodeId, params: &Params| {
+        use rill_core::traits::ParamValue;
         let resource = params
             .get("tape")
             .and_then(|v| v.as_str())
@@ -348,10 +349,23 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         let mut n = WriteHead::<f32, BUF_SIZE>::with_resource(params.sample_rate, resource);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
+        if let Some(v) = params.get("delay_time").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("delay_time").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
+        if let Some(v) = params.get("feedback").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("feedback").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
         NodeVariant::Processor(Box::new(n))
     });
 
     node_ctor!(factory, "rill/read_head", |id: NodeId, params: &Params| {
+        use rill_core::traits::ParamValue;
         let resource = params
             .get("tape")
             .and_then(|v| v.as_str())
@@ -359,6 +373,12 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         let mut n = ReadHead::<f32, BUF_SIZE>::with_resource(resource);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
+        if let Some(v) = params.get("delay").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("delay").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
         NodeVariant::Source(Box::new(n))
     });
 }

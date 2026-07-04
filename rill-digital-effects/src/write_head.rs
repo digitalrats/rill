@@ -110,7 +110,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteH
         _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
-        feedback_inputs: &[&[T; BUF_SIZE]],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         debug_assert!(!self.tape.is_null(), "WriteHead: tape not set");
         let tape = unsafe { &mut *self.tape };
@@ -118,7 +118,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteH
         let input_buf = self.inputs[0].buffer.as_array();
         let fb_gain = T::from_f32(self.feedback);
         let zero_buf = [T::ZERO; BUF_SIZE];
-        let fb_buf = feedback_inputs.first().copied().unwrap_or(&zero_buf);
+        // Feedback arrives on the `feedback_in` port's delayed feedback buffer
+        // (filled by the upstream node's `snapshot_feedback`), not via the
+        // `feedback_inputs` argument (which the engine leaves empty — nodes read
+        // their own port buffers). Reading `feedback_buffer` directly gives the
+        // fresh 1-block-delayed value without the accumulation that `buffer`
+        // (via `pre_process`) would incur on a feedback-only input.
+        let fb_buf = self.inputs[1]
+            .feedback_buffer
+            .as_ref()
+            .map(|b| b.as_array())
+            .unwrap_or(&zero_buf);
         let chunks = BUF_SIZE / 4;
         let fg = ScalarVector4::splat(fb_gain);
 
