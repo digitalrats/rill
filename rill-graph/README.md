@@ -21,15 +21,21 @@ Processing is driven by `Port::propagate` (not an external engine).
 - **Hard-RT safe** — no heap allocations, no locks, no syscalls in the
   signal path. All `Port::propagate` data structures are pre-allocated at
   graph construction time (`downstream_nodes`, `downstream_input_ptrs`).
-  Communication with the control thread is exclusively through
-  lock-free `MpscQueue<ParameterCommand>`.
+  Communication with the control thread is exclusively through the graph
+  actor mailbox (`ActorRef<CommandEnum>`, lock-free `MpscQueue`).
 - **SIMD-friendly** — fixed buffer position in memory for the graph's lifetime
 - **Port routing** — connections and feedback buffers live on ports
 - **Feedback support** — `port.pre_process` / `port.snapshot_feedback`
 - **Port types** — `Signal`, `Control`, `Clock`, `Feedback`, `Param`
 
-## Top-level processing entry point The processing callback drains the command queue, calls
-`Source::generate`, then `Port::propagate` to cascade through the DAG.
+## Top-level processing entry point
+
+`ProcessingState::process_block(&tick)` drains the graph actor mailbox
+(applying `SetParameter` writes — sample-accurate ones, carrying `sample_pos`,
+are applied during the 256-sample block that contains their target position),
+calls `Source::generate`, then `Port::propagate` to cascade through the DAG.
+The graph runs entirely inside the backend process callback and adopts the
+sample rate carried by each `ClockTick`.
 
 ## Dependencies
 

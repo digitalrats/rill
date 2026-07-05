@@ -173,24 +173,26 @@ The Mutex is **not** contended during runtime because automatons communicate via
 channels, not by locking Patchbay. Only the MidiHub's OS thread locks (briefly,
 to run `handle_event`). One instance is sufficient.
 
-### Option B: actor model via `ActorCell` (cleaner, long‑term)
+### Option B: actor model via `spawn_detached` (cleaner, long‑term)
 
-`Patchbay` implements `ActorCell<ControlEvent>`, runs its own processing loop,
-and MidiHub sends events via `ActorRef<ControlEvent>::send()` — lock‑free.
+`Patchbay` runs its handler inside an actor spawned with
+`ActorSystem::spawn_detached` (handler + `Arc<Mailbox<ControlEvent>>`), and
+MidiHub sends events via `ActorRef<ControlEvent>::send()` — lock‑free.
 
 ```
-MidiHub (OS thread)                Patchbay (tokio task)
+MidiHub (OS thread)                Patchbay (detached actor)
      │                                      │
      │  ActorRef<ControlEvent>::send()     │
      ├──────── lock‑free push ────────────→│
-     │                                      ├─ while let Some(event) = mailbox.pop()
+     │                                      ├─ drain loop: while let Some(event) = mailbox.pop()
      │                                      │    handle_event(event)
-     │                                      └─ → ActorRef<SetParameter>.send()
+     │                                      └─ → ActorRef<CommandEnum>.send()
 ```
 
-This eliminates the Mutex entirely and aligns with `rill-core-actor`. However,
-it requires adding a processing loop to Patchbay and changes the lifecycle
-(Patchbay becomes an async actor spawned on tokio, not a synchronous object).
+This eliminates the Mutex entirely and aligns with `rill-core-actor` (this is
+the pattern already used by `spawn_midi_sensor` / servos). However, it requires
+adding a drain loop to Patchbay and changes the lifecycle (Patchbay becomes a
+detached actor, not a synchronous object).
 
 ### Recommendation
 

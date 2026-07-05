@@ -31,10 +31,14 @@ The process callback is registered via `IoDriver::set_process_callback()`.
 - **`Input`** — `Source` node (push model). Holds `Arc<dyn IoCapture>`.
   Same pattern — `Source::set_capture()` injects the backend.
 
-The process callback (registered by the orchestrator) does:
-1. Drain actor mailbox (`SetParameter` commands) into graph nodes
-2. `ProcessingState::process_block(&tick)` — generates, processes, propagates
-3. `ProcessingState::send_clock_tick(&tick)` — dispatches to control actors
+The process callback (registered by the orchestrator) does, per `block_size`
+chunk of the callback's buffer:
+1. `ProcessingState::process_block(&tick)` — adopts the tick's sample rate
+   (re-initialising nodes if the hardware rate differs), drains the actor
+   mailbox and applies `SetParameter` writes (sample-accurate ones at the block
+   matching their `sample_pos`), then generates/processes/propagates
+2. `ProcessingState::send_clock_tick(&tick)` — forwards the tick to control
+   actors (chunking backends dispatch one tick per block)
 
 ## Backends
 
@@ -47,7 +51,8 @@ The process callback (registered by the orchestrator) does:
 | `NullBackend` | *(always)* | No‑op, for testing |
 
 Sample rate negotiation:
-- **JACK**: reads `client.sample_rate()` after activation
+- **JACK**: reads `client.sample_rate()` after activation and puts the *actual*
+  hardware rate in the `ClockTick`; the graph re-initialises its nodes to it
 - **ALSA**: queries `hw.get_rate()` after `set_rate(Nearest)`, checks `hw.get_period_size() == BUF_SIZE`
 - **PipeWire**: output uses requested rate, input reads negotiated rate atomically
 - **PortAudio**: opens stream with exact requested rate and buffer size
