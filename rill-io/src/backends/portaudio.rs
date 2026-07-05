@@ -18,6 +18,21 @@ use rill_core::time::ClockTick;
 
 use portaudio as pa;
 
+/// Number of rill `block_size` blocks per requested PortAudio DMA buffer.
+///
+/// A single `block_size` (256-frame) period is too small for stable playback
+/// through PortAudio's ALSA host API on virtual devices (PipeWire) — it
+/// underruns and crackles. Empirically ~8 blocks is the stability floor on
+/// common hardware, which is exactly why PipeWire itself defaults to a large
+/// quantum. We request a buffer this many blocks big and chunk it back into
+/// `block_size` pieces in the callback (one `ClockTick` per block).
+///
+/// Trade-off: this buffer is also the async-control look-ahead
+/// (`ClockTick.io_quantum`), so latency ≈ `PA_BUFFER_BLOCKS × block_size /
+/// sample_rate` (16 × 256 / 44100 ≈ 93 ms). Raise for more stability on weaker
+/// hardware, lower for tighter control latency.
+const PA_BUFFER_BLOCKS: usize = 16;
+
 /// Callback slot — stores the process callback via raw pointer for `Send`-safe
 /// single-threaded access from the PortAudio RT callbacks.
 #[derive(Copy, Clone)]
@@ -129,12 +144,11 @@ impl IoDriver for PortAudioBackend {
             let block_size = buf_frames;
             let output_slot = self.output_slot.clone();
 
-            // Request a large DMA buffer (48 × rill block_size) so the
-            // hardware / ALSA plugin has a stable quantum — like PipeWire's
-            // default 12288-frame buffer.  The multi-block loop below chunks
-            // it back into `block_size` pieces, sending one `ClockTick` per
-            // rill block.
-            let pa_frames = (buf_frames * 48) as u32;
+            // Request a large DMA buffer so the hardware / ALSA plugin has a
+            // stable quantum (a single 256-frame period crackles through
+            // PipeWire). The multi-block loop below chunks it back into
+            // `block_size` pieces, one `ClockTick` per rill block.
+            let pa_frames = (buf_frames * PA_BUFFER_BLOCKS) as u32;
             let settings = pa
                 .default_output_stream_settings::<f32>(
                     out_channels as i32,

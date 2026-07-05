@@ -43,13 +43,17 @@ and now adopts the rate carried by each `ClockTick`.
 - **JACK backend** — the `ClockTick` now carries the *actual* JACK hardware rate
   (was `config_rate`), fixing playback running `hw_rate / config_rate` too fast
   (e.g. +8.8 % at 48 kHz vs 44.1 kHz) with no resampling.
-- **PortAudio backend** — request a large DMA buffer (48 × `block_size` = 12288
-  frames, the same size PipeWire uses) instead of a single 256-frame period,
-  then chunk it back into `block_size` pieces in the callback, sending one
-  `ClockTick` per rill block. The small 256-frame period was unstable through
-  the PipeWire ALSA plugin (crackling); a large period fixed stability but, when
-  driven as one tick, starved the sequencer (~6× slow). The chunk loop gives the
-  sequencer the correct ~172 ticks/s *and* a stable buffer. The old
+- **PortAudio backend** — request a large DMA buffer
+  (`PA_BUFFER_BLOCKS × block_size`, default 16 × 256 = 4096 frames) instead of a
+  single 256-frame period, then chunk it back into `block_size` pieces in the
+  callback, sending one `ClockTick` per rill block. A single 256-frame period
+  was unstable through the PipeWire ALSA plugin (crackling); a large buffer
+  fixes stability but, when driven as one tick, starved the sequencer (~6×
+  slow). The chunk loop gives the sequencer the correct ~172 ticks/s *and* a
+  stable buffer. `PA_BUFFER_BLOCKS` is a documented constant — ~8 blocks is the
+  empirical stability floor on common hardware (hence PipeWire's own large
+  default); it also sets the control look-ahead latency
+  (`block_size × PA_BUFFER_BLOCKS / sample_rate` ≈ 93 ms at 16). The old
   forced-duplex workaround is removed.
 
 ### 📦 Version bump and cleanup
