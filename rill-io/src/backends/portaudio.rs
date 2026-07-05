@@ -116,14 +116,6 @@ impl IoDriver for PortAudioBackend {
         // Cast to usize for Send-safe capture in the move closures (follows CbSlot pattern).
         let cap_ptr_usize = self.capture_buf.as_ptr() as usize;
 
-        // PortAudio's ALSA backend cannot start output-only streams on
-        // virtual devices (PipeWire/JACK) — it negotiates buffer parameters
-        // that the virtual device accepts but silently hangs on. Opening a
-        // minimal input stream alongside the output enters duplex mode,
-        // which uses a different parameter negotiation path that works.
-        let force_in = out_channels > 0 && in_channels == 0;
-        let effective_in = if force_in { 1 } else { in_channels };
-
         let pa = pa::PortAudio::new().map_err(|e| format!("PortAudio init: {e}"))?;
 
         // ── Output stream ────────────────────────────────────────────────────
@@ -134,13 +126,20 @@ impl IoDriver for PortAudioBackend {
             let out_ch = out_channels as usize;
             let _in_ch = in_channels as usize;
             let is_output_driver = in_channels == 0;
+            let block_size = buf_frames;
             let output_slot = self.output_slot.clone();
 
+            // Request a large DMA buffer (48 × rill block_size) so the
+            // hardware / ALSA plugin has a stable quantum — like PipeWire's
+            // default 12288-frame buffer.  The multi-block loop below chunks
+            // it back into `block_size` pieces, sending one `ClockTick` per
+            // rill block.
+            let pa_frames = (buf_frames * 48) as u32;
             let settings = pa
                 .default_output_stream_settings::<f32>(
                     out_channels as i32,
                     sample_rate as f64,
-                    buf_frames as u32,
+                    pa_frames,
                 )
                 .map_err(|e| format!("PortAudio output settings: {e}"))?;
 
@@ -154,28 +153,36 @@ impl IoDriver for PortAudioBackend {
                         let buffer = args.buffer;
                         let n_frames = buffer.len() / out_ch.max(1);
 
-                        let pos = ospos.fetch_add(n_frames as u64, Ordering::Relaxed);
-                        let mut tick = ClockTick::new(
-                            pos,
-                            n_frames as u32,
-                            sample_rate as f32,
-                            "portaudio".into(),
-                        );
-                        tick.speed_ratio = 1.0;
-
-                        // Store output DMA window for IoPlayback::write_output
-                        unsafe {
-                            output_slot.set(OutputWindow::new(buffer.as_mut_ptr(), buffer.len()));
-                        }
-
                         if is_output_driver {
-                            unsafe {
-                                oproc.call(&tick);
+                            // Drive the graph once per `block_size` chunk so the
+                            // entire DMA buffer is filled and one `ClockTick` is
+                            // sent per rill block — matching PipeWire's chunking.
+                            let mut offset = 0usize;
+                            while offset < n_frames {
+                                let n = (n_frames - offset).min(block_size);
+                                let pos = ospos.fetch_add(n as u64, Ordering::Relaxed);
+                                let mut tick = ClockTick::new(
+                                    pos,
+                                    n as u32,
+                                    sample_rate as f32,
+                                    "portaudio".into(),
+                                );
+                                tick.speed_ratio = 1.0;
+                                tick.io_quantum = n_frames as u32;
+                                unsafe {
+                                    output_slot.set(OutputWindow::new(
+                                        buffer.as_mut_ptr().add(offset * out_ch),
+                                        n * out_ch,
+                                    ));
+                                    oproc.call(&tick);
+                                    output_slot.clear();
+                                }
+                                offset += n;
                             }
-                        }
-
-                        unsafe {
-                            output_slot.clear();
+                            debug_assert_eq!(
+                                offset, n_frames,
+                                "PortAudio buffer not aligned to block_size"
+                            );
                         }
 
                         pa::Continue
@@ -193,7 +200,7 @@ impl IoDriver for PortAudioBackend {
         }
 
         // ── Input stream ─────────────────────────────────────────────────────
-        if effective_in > 0 {
+        if in_channels > 0 {
             let iproc = process_cb;
             let ispos = sample_pos;
             let irun = running.clone();
@@ -201,7 +208,7 @@ impl IoDriver for PortAudioBackend {
 
             let settings = pa
                 .default_input_stream_settings::<f32>(
-                    effective_in as i32,
+                    in_channels as i32,
                     sample_rate as f64,
                     buf_frames as u32,
                 )
@@ -214,7 +221,7 @@ impl IoDriver for PortAudioBackend {
                             return pa::Complete;
                         }
 
-                        let in_ch = effective_in as usize;
+                        let in_ch = in_channels as usize;
                         let n_frames = args.buffer.len() / in_ch.max(1);
 
                         // Always fire the process tick from the input callback
@@ -226,7 +233,7 @@ impl IoDriver for PortAudioBackend {
                             let n = args
                                 .buffer
                                 .len()
-                                .min(buf_frames * effective_in.max(1) as usize);
+                                .min(buf_frames * in_channels.max(1) as usize);
                             unsafe {
                                 std::ptr::copy_nonoverlapping(
                                     args.buffer.as_ptr(),
