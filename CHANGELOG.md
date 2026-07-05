@@ -28,8 +28,10 @@ dragged. Correct playback on ALSA / debug PipeWire was incidental timing.
   *N+1*, producers stamp `sample_pos = tick.sample_pos + tick.io_quantum`. The
   `chiptune_stc` example and the ClockTick-driven `Servo` writes do this;
   MIDI/UI-driven `Servo` writes stay immediate (no latency on live input).
-- Cost: ~one I/O quantum of control latency (PipeWire ≈ 278 ms, ALSA ≈ 5.8 ms) —
-  acceptable for playback, reducible with a smaller backend buffer.
+- Cost: ~one I/O quantum of control latency, i.e. the negotiated buffer
+  duration. Both the PipeWire and PortAudio backends now bound this to
+  `BUFFER_BLOCKS × block_size` (16 × 256 = 4096 frames ≈ 93 ms at 44.1 kHz);
+  ALSA ≈ 5.8 ms (one period). Reducible further with a smaller backend buffer.
 
 ### 🎛️ Graph adopts the backend's hardware sample rate
 
@@ -55,6 +57,12 @@ and now adopts the rate carried by each `ClockTick`.
   default); it also sets the control look-ahead latency
   (`block_size × PA_BUFFER_BLOCKS / sample_rate` ≈ 93 ms at 16). The old
   forced-duplex workaround is removed.
+- **PipeWire backend** — negotiate a bounded DMA buffer via a `SPA_PARAM_Buffers`
+  object on stream connect (`BUFFER_BLOCKS × block_size` = 16 × 256 = 4096
+  frames) instead of accepting PipeWire's large default (~12288 frames). The
+  per-chunk loop still emits one `ClockTick` per 256-frame block, so tempo is
+  unchanged while the async-control look-ahead latency drops from ~278 ms to
+  ~93 ms. `BUFFER_BLOCKS` is a documented one-line tunable.
 
 ### 📦 Version bump and cleanup
 

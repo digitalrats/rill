@@ -457,6 +457,17 @@ Single trait:
 A single backend struct (e.g. `PipewireBackend`) implements `IoDriver` and
 optionally `IoCapture` / `IoPlayback`.  The driver owns the timing loop.
 
+**Buffer sizing.** Callback-driven backends request a DMA buffer of
+`BUFFER_BLOCKS × block_size` (16 × 256 = 4096 frames) and chunk it back into
+`block_size` pieces in the callback, driving `process_block` once per piece and
+emitting one `ClockTick` per rill block. A single 256-frame period is unstable
+through PipeWire (crackling / xruns), so PipeWire negotiates the bounded size
+via a `SPA_PARAM_Buffers` object on connect (instead of its ~12288-frame
+default) and PortAudio passes it as `frames_per_buffer`. The buffer duration is
+also the async-control look-ahead (`ClockTick.io_quantum` ≈ 93 ms at 16 blocks),
+so `BUFFER_BLOCKS` is a documented tunable balancing control latency against
+stability.
+
 Two graph nodes:
 
 - **`Input`** (Source) — holds `Arc<dyn IoCapture>`, calls `read_input()` directly

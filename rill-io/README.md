@@ -45,10 +45,28 @@ chunk of the callback's buffer:
 | Backend | Feature | Thread model |
 |---------|---------|-------------|
 | `PortAudioBackend` | `portaudio` (default) | RT callback, large buffer chunked into `block_size` pieces |
-| `PipewireBackend` | `pipewire` | RT callback (PW thread) |
+| `PipewireBackend` | `pipewire` | RT callback (PW thread), buffer negotiated via `SPA_PARAM_Buffers`, chunked into `block_size` pieces |
 | `JackBackend` | `jack` | RT callback (JACK thread) |
 | `AlsaBackend` | `alsa` | `snd_pcm_wait()` — poll‑driven, exact period required |
 | `NullBackend` | *(always)* | No‑op, for testing |
+
+### Buffer sizing (callback-driven backends)
+
+A single `block_size` (256-frame) period is unstable through PipeWire (crackling
+via the ALSA plugin, xruns), so callback-driven backends request a larger DMA
+buffer and chunk it back into `block_size` pieces in the callback, emitting one
+`ClockTick` per rill block (the same model PipeWire uses internally):
+
+- **PipeWire** negotiates `BUFFER_BLOCKS × block_size` (16 × 256 = 4096 frames)
+  via a `SPA_PARAM_Buffers` object on connect, instead of PipeWire's large
+  default (~12288 frames).
+- **PortAudio** requests `PA_BUFFER_BLOCKS × block_size` (16 × 256 = 4096) as
+  `frames_per_buffer`.
+
+Because the whole buffer is one I/O callback, its duration is also the
+async-control look-ahead (`ClockTick.io_quantum`); both constants are documented
+one-line tunables trading control latency (~93 ms at 16 blocks) against
+stability (~8 blocks is the empirical floor on common hardware).
 
 Sample rate negotiation:
 - **JACK**: reads `client.sample_rate()` after activation and puts the *actual*
