@@ -29,6 +29,16 @@ use crate::error::IoError;
 use rill_core::io::{IoCapture, IoDriver, IoPlayback, IoResult};
 use rill_core::time::ClockTick;
 
+/// Number of rill `block_size` blocks per negotiated PipeWire DMA buffer.
+///
+/// Without an explicit `SPA_PARAM_Buffers` negotiation PipeWire hands out a
+/// large default buffer (e.g. 12288 frames = 48 × 256). Since the whole buffer
+/// is one I/O callback, that size is also the async-control look-ahead
+/// (`ClockTick.io_quantum`), i.e. control latency ≈ buffer duration. We request
+/// a smaller buffer (16 × `block_size` = 4096 frames ≈ 93 ms at 44.1 kHz) which
+/// the chunk loop still splits into `block_size` pieces (one `ClockTick` each).
+const BUFFER_BLOCKS: usize = 16;
+
 // ============================================================================
 // CbSlot — stores the process callback
 // ============================================================================
@@ -400,7 +410,45 @@ impl IoDriver for PipewireBackend {
             .unwrap()
             .0
             .into_inner();
-            let mut out_params = [spa::pod::Pod::from_bytes(&params_bytes).unwrap()];
+
+            // Negotiate a bounded DMA buffer size (BUFFER_BLOCKS × block_size)
+            // instead of PipeWire's large default, to cap control look-ahead
+            // latency. `size`/`stride` are in bytes (f32 = 4 bytes/sample).
+            let stride = out_chan as i32 * 4;
+            let buf_bytes = (block_size * BUFFER_BLOCKS) as i32 * stride;
+            let buffers_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+                std::io::Cursor::new(Vec::new()),
+                &spa::pod::Value::Object(spa::pod::Object {
+                    type_: spa_sys::SPA_TYPE_OBJECT_ParamBuffers,
+                    id: spa_sys::SPA_PARAM_Buffers,
+                    properties: vec![
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_buffers,
+                            spa::pod::Value::Int(2),
+                        ),
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_blocks,
+                            spa::pod::Value::Int(1),
+                        ),
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_size,
+                            spa::pod::Value::Int(buf_bytes),
+                        ),
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_stride,
+                            spa::pod::Value::Int(stride),
+                        ),
+                    ],
+                }),
+            )
+            .unwrap()
+            .0
+            .into_inner();
+
+            let mut out_params = [
+                spa::pod::Pod::from_bytes(&params_bytes).unwrap(),
+                spa::pod::Pod::from_bytes(&buffers_bytes).unwrap(),
+            ];
 
             if let Err(e) = stream.connect(
                 spa::utils::Direction::Output,
