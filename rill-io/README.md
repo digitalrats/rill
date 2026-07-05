@@ -57,16 +57,16 @@ via the ALSA plugin, xruns), so callback-driven backends request a larger DMA
 buffer and chunk it back into `block_size` pieces in the callback, emitting one
 `ClockTick` per rill block (the same model PipeWire uses internally):
 
-- **PipeWire** negotiates `BUFFER_BLOCKS × block_size` (16 × 256 = 4096 frames)
-  via a `SPA_PARAM_Buffers` object on connect, instead of PipeWire's large
-  default (~12288 frames).
-- **PortAudio** requests `PA_BUFFER_BLOCKS × block_size` (16 × 256 = 4096) as
-  `frames_per_buffer`.
+- **PipeWire** negotiates `buffer_size × buffer_blocks` frames via a
+  `SPA_PARAM_Buffers` object on connect, instead of PipeWire's large default
+  (~12288 frames).
+- **PortAudio** requests `buffer_size × buffer_blocks` as `frames_per_buffer`.
 
-Because the whole buffer is one I/O callback, its duration is also the
-async-control look-ahead (`ClockTick.io_quantum`); both constants are documented
-one-line tunables trading control latency (~93 ms at 16 blocks) against
-stability (the stable minimum is hardware/config dependent).
+The multiplier is `AudioConfig::buffer_blocks` (default 16 → 4096 frames;
+`"buffer_blocks"` backend param). Because the whole buffer is one I/O callback,
+its duration is also the async-control look-ahead (`ClockTick.io_quantum`), so
+it trades control latency (~93 ms at 16 blocks) against stability (the stable
+minimum is hardware/config dependent). Poll-driven ALSA and JACK ignore it.
 
 Sample rate negotiation:
 - **JACK**: reads `client.sample_rate()` after activation and puts the *actual*

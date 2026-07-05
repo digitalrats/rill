@@ -785,6 +785,12 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
         .and_then(|v| v.as_i32())
         .unwrap_or(44100) as u32;
     let bs = p.get("buffer_size").and_then(|v| v.as_i32()).unwrap_or(256) as u32;
+    let blocks = p
+        .get("buffer_blocks")
+        .and_then(|v| v.as_i32())
+        .filter(|&v| v > 0)
+        .map(|v| v as usize)
+        .unwrap_or(16);
     let ch = p.get("channels").and_then(|v| v.as_i32()).unwrap_or(2) as u32;
     let in_ch = p
         .get("input_channels")
@@ -797,6 +803,7 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let mut cfg = crate::io::AudioConfig::new()
         .with_sample_rate(sr)
         .with_buffer_size(bs)
+        .with_buffer_blocks(blocks)
         .with_input_channels(in_ch)
         .with_output_channels(out_ch);
     if let Some(ParamValue::String(ref d)) = p.get("input_device") {

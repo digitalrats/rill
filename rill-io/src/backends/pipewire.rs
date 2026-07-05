@@ -29,22 +29,6 @@ use crate::error::IoError;
 use rill_core::io::{IoCapture, IoDriver, IoPlayback, IoResult};
 use rill_core::time::ClockTick;
 
-/// Number of rill `block_size` blocks per negotiated PipeWire DMA buffer.
-///
-/// Without an explicit `SPA_PARAM_Buffers` negotiation PipeWire hands out a
-/// large default buffer (e.g. 12288 frames = 48 × 256). Since the whole buffer
-/// is one I/O callback, that size is also the async-control look-ahead
-/// (`ClockTick.io_quantum`), i.e. control latency ≈ buffer duration. We request
-/// a smaller buffer (16 × `block_size` = 4096 frames ≈ 93 ms at 44.1 kHz) which
-/// the chunk loop still splits into `block_size` pieces (one `ClockTick` each).
-///
-/// The value is chosen for the target hardware (smaller = lower latency, larger
-/// = more robust on constrained/untuned systems).
-///
-/// TODO: make this configurable via `AudioConfig` instead of a compile-time
-/// constant.
-const BUFFER_BLOCKS: usize = 16;
-
 // ============================================================================
 // CbSlot — stores the process callback
 // ============================================================================
@@ -215,6 +199,7 @@ impl IoDriver for PipewireBackend {
         let out_device = self.config.output_device.clone();
         let in_device = self.config.input_device.clone();
         let block_size = self.config.buffer_size as usize;
+        let buffer_blocks = self.config.buffer_blocks.max(1);
         let input_window = &self.input_window as *const InputWindowSlot;
         let output_window = &self.output_window as *const OutputWindowSlot;
         let out_spos = self.sample_pos.clone();
@@ -417,11 +402,11 @@ impl IoDriver for PipewireBackend {
             .0
             .into_inner();
 
-            // Negotiate a bounded DMA buffer size (BUFFER_BLOCKS × block_size)
+            // Negotiate a bounded DMA buffer size (buffer_blocks × block_size)
             // instead of PipeWire's large default, to cap control look-ahead
             // latency. `size`/`stride` are in bytes (f32 = 4 bytes/sample).
             let stride = out_chan as i32 * 4;
-            let buf_bytes = (block_size * BUFFER_BLOCKS) as i32 * stride;
+            let buf_bytes = (block_size * buffer_blocks) as i32 * stride;
             let buffers_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
                 std::io::Cursor::new(Vec::new()),
                 &spa::pod::Value::Object(spa::pod::Object {

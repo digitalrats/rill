@@ -2,6 +2,11 @@
 
 use crate::backend::BackendType;
 
+/// Default number of `buffer_size` blocks per I/O callback DMA buffer.
+fn default_buffer_blocks() -> usize {
+    16
+}
+
 /// Audio device configuration
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde-config", derive(serde::Serialize, serde::Deserialize))]
@@ -11,6 +16,20 @@ pub struct AudioConfig {
 
     /// Buffer size (in samples)
     pub buffer_size: u32,
+
+    /// Number of `buffer_size` blocks per I/O callback DMA buffer.
+    ///
+    /// Only used by callback-driven backends that can size their DMA buffer
+    /// (PipeWire via `SPA_PARAM_Buffers`, PortAudio via `frames_per_buffer`).
+    /// A single `buffer_size` (256-frame) period is unstable through PipeWire
+    /// (crackling), so the backend requests `buffer_size × buffer_blocks` frames
+    /// and chunks it back into `buffer_size` pieces (one `ClockTick` per block).
+    /// The buffer duration is also the async-control look-ahead
+    /// (`ClockTick.io_quantum`), so larger values are more robust on
+    /// constrained/untuned systems but add control latency; the stable minimum
+    /// is hardware/config dependent. Poll-driven ALSA and JACK ignore this.
+    #[cfg_attr(feature = "serde-config", serde(default = "default_buffer_blocks"))]
+    pub buffer_blocks: usize,
 
     /// Number of input channels
     pub input_channels: u32,
@@ -36,6 +55,7 @@ impl Default for AudioConfig {
         Self {
             sample_rate: 48000,
             buffer_size: 256,
+            buffer_blocks: default_buffer_blocks(),
             input_channels: 2,
             output_channels: 2,
             target_latency_ms: 10,
@@ -61,6 +81,13 @@ impl AudioConfig {
     /// Set the buffer size
     pub fn with_buffer_size(mut self, buffer_size: u32) -> Self {
         self.buffer_size = buffer_size;
+        self
+    }
+
+    /// Set the number of `buffer_size` blocks per I/O callback DMA buffer
+    /// (callback-driven backends only; see [`Self::buffer_blocks`]).
+    pub fn with_buffer_blocks(mut self, buffer_blocks: usize) -> Self {
+        self.buffer_blocks = buffer_blocks;
         self
     }
 

@@ -18,25 +18,6 @@ use rill_core::time::ClockTick;
 
 use portaudio as pa;
 
-/// Number of rill `block_size` blocks per requested PortAudio DMA buffer.
-///
-/// A single `block_size` (256-frame) period is too small for stable playback
-/// through PortAudio's ALSA host API on virtual devices (PipeWire) — it
-/// underruns and crackles. A larger buffer is stable; PipeWire itself defaults
-/// to a large quantum for the same reason. We request a buffer this many blocks
-/// big and chunk it back into `block_size` pieces in the callback (one
-/// `ClockTick` per block).
-///
-/// Trade-off: this buffer is also the async-control look-ahead
-/// (`ClockTick.io_quantum`), so latency ≈ `PA_BUFFER_BLOCKS × block_size /
-/// sample_rate` (16 × 256 / 44100 ≈ 93 ms). The value is chosen for the target
-/// hardware — the stable minimum is hardware/config dependent; raise for more
-/// stability, lower for tighter control latency.
-///
-/// TODO: make this configurable via `AudioConfig` instead of a compile-time
-/// constant.
-const PA_BUFFER_BLOCKS: usize = 16;
-
 /// Callback slot — stores the process callback via raw pointer for `Send`-safe
 /// single-threaded access from the PortAudio RT callbacks.
 #[derive(Copy, Clone)]
@@ -128,6 +109,7 @@ impl IoDriver for PortAudioBackend {
         let out_channels = self.config.output_channels;
         let in_channels = self.config.input_channels;
         let buf_frames = self.config.buffer_size as usize;
+        let buffer_blocks = self.config.buffer_blocks.max(1);
         let has_output = out_channels > 0;
         let has_input = in_channels > 0;
 
@@ -152,7 +134,7 @@ impl IoDriver for PortAudioBackend {
             // stable quantum (a single 256-frame period crackles through
             // PipeWire). The multi-block loop below chunks it back into
             // `block_size` pieces, one `ClockTick` per rill block.
-            let pa_frames = (buf_frames * PA_BUFFER_BLOCKS) as u32;
+            let pa_frames = (buf_frames * buffer_blocks) as u32;
             let settings = pa
                 .default_output_stream_settings::<f32>(
                     out_channels as i32,

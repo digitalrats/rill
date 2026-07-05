@@ -30,8 +30,9 @@ dragged. Correct playback on ALSA / debug PipeWire was incidental timing.
   MIDI/UI-driven `Servo` writes stay immediate (no latency on live input).
 - Cost: ~one I/O quantum of control latency, i.e. the negotiated buffer
   duration. Both the PipeWire and PortAudio backends now bound this to
-  `BUFFER_BLOCKS × block_size` (16 × 256 = 4096 frames ≈ 93 ms at 44.1 kHz);
-  ALSA ≈ 5.8 ms (one period). Reducible further with a smaller backend buffer.
+  `buffer_size × AudioConfig::buffer_blocks` (default 16 × 256 = 4096 frames
+  ≈ 93 ms at 44.1 kHz); ALSA ≈ 5.8 ms (one period). Tunable via
+  `buffer_blocks`.
 
 ### 🎛️ Graph adopts the backend's hardware sample rate
 
@@ -46,22 +47,27 @@ and now adopts the rate carried by each `ClockTick`.
   (was `config_rate`), fixing playback running `hw_rate / config_rate` too fast
   (e.g. +8.8 % at 48 kHz vs 44.1 kHz) with no resampling.
 - **PortAudio backend** — request a large DMA buffer
-  (`PA_BUFFER_BLOCKS × block_size`, default 16 × 256 = 4096 frames) instead of a
-  single 256-frame period, then chunk it back into `block_size` pieces in the
-  callback, sending one `ClockTick` per rill block. A single 256-frame period
-  was unstable through the PipeWire ALSA plugin (crackling); a large buffer
-  fixes stability but, when driven as one tick, starved the sequencer (~6×
-  slow). The chunk loop gives the sequencer the correct ~172 ticks/s *and* a
-  stable buffer. `PA_BUFFER_BLOCKS` is a documented constant (the stable minimum
-  is hardware/config dependent); it also sets the control look-ahead latency
-  (`block_size × PA_BUFFER_BLOCKS / sample_rate` ≈ 93 ms at 16). The old
+  (`buffer_size × AudioConfig::buffer_blocks`, default 16 × 256 = 4096 frames)
+  instead of a single 256-frame period, then chunk it back into `block_size`
+  pieces in the callback, sending one `ClockTick` per rill block. A single
+  256-frame period was unstable through the PipeWire ALSA plugin (crackling); a
+  large buffer fixes stability but, when driven as one tick, starved the
+  sequencer (~6× slow). The chunk loop gives the sequencer the correct ~172
+  ticks/s *and* a stable buffer; the size also sets the control look-ahead
+  latency (`buffer_size × buffer_blocks / sample_rate` ≈ 93 ms at 16). The old
   forced-duplex workaround is removed.
 - **PipeWire backend** — negotiate a bounded DMA buffer via a `SPA_PARAM_Buffers`
-  object on stream connect (`BUFFER_BLOCKS × block_size` = 16 × 256 = 4096
-  frames) instead of accepting PipeWire's large default (~12288 frames). The
-  per-chunk loop still emits one `ClockTick` per 256-frame block, so tempo is
-  unchanged while the async-control look-ahead latency drops from ~278 ms to
-  ~93 ms. `BUFFER_BLOCKS` is a documented one-line tunable.
+  object on stream connect (`buffer_size × buffer_blocks` = 16 × 256 = 4096
+  frames by default) instead of accepting PipeWire's large default (~12288
+  frames). The per-chunk loop still emits one `ClockTick` per 256-frame block,
+  so tempo is unchanged while the async-control look-ahead latency drops from
+  ~278 ms to ~93 ms.
+- **`AudioConfig::buffer_blocks`** — new field (default 16) exposing the DMA
+  buffer size as a multiple of `buffer_size` for callback-driven backends
+  (PipeWire, PortAudio). Set via `with_buffer_blocks()` or the `"buffer_blocks"`
+  backend param. Larger = more robust on constrained/untuned systems, higher
+  control latency; the stable minimum is hardware/config dependent. Poll-driven
+  ALSA and JACK ignore it.
 
 ### 📦 Version bump and cleanup
 
