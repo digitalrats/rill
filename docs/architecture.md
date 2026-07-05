@@ -465,8 +465,9 @@ period is unstable through PipeWire (crackling / xruns), so PipeWire negotiates
 the bounded size via a `SPA_PARAM_Buffers` object on connect (instead of its
 ~12288-frame default) and PortAudio passes it as `frames_per_buffer`. The buffer
 duration is also the async-control look-ahead (`ClockTick.io_quantum` ≈ 93 ms at
-16 blocks), so `buffer_blocks` trades control latency against stability
-(poll-driven ALSA and JACK ignore it).
+16 blocks), so `buffer_blocks` trades control latency against stability (ALSA
+uses a period fixed to `buffer_size`, and JACK's size is set by the server, so
+both ignore it).
 
 Two graph nodes:
 

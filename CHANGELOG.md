@@ -66,8 +66,9 @@ and now adopts the rate carried by each `ClockTick`.
   buffer size as a multiple of `buffer_size` for callback-driven backends
   (PipeWire, PortAudio). Set via `with_buffer_blocks()` or the `"buffer_blocks"`
   backend param. Larger = more robust on constrained/untuned systems, higher
-  control latency; the stable minimum is hardware/config dependent. Poll-driven
-  ALSA and JACK ignore it.
+  control latency; the stable minimum is hardware/config dependent. ALSA (period
+  fixed to `buffer_size`) and JACK (buffer size set by the JACK server) ignore
+  it.
 
 ### 📦 Version bump and cleanup
 

@@ -27,7 +27,8 @@ pub struct AudioConfig {
     /// The buffer duration is also the async-control look-ahead
     /// (`ClockTick.io_quantum`), so larger values are more robust on
     /// constrained/untuned systems but add control latency; the stable minimum
-    /// is hardware/config dependent. Poll-driven ALSA and JACK ignore this.
+    /// is hardware/config dependent. ALSA (period fixed to `buffer_size`) and
+    /// JACK (buffer size set by the JACK server) ignore this.
     #[cfg_attr(feature = "serde-config", serde(default = "default_buffer_blocks"))]
     pub buffer_blocks: usize,
 

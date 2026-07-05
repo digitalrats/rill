@@ -46,8 +46,8 @@ chunk of the callback's buffer:
 |---------|---------|-------------|
 | `PortAudioBackend` | `portaudio` (default) | RT callback, large buffer chunked into `block_size` pieces |
 | `PipewireBackend` | `pipewire` | RT callback (PW thread), buffer negotiated via `SPA_PARAM_Buffers`, chunked into `block_size` pieces |
-| `JackBackend` | `jack` | RT callback (JACK thread) |
-| `AlsaBackend` | `alsa` | `snd_pcm_wait()` — poll‑driven, exact period required |
+| `JackBackend` | `jack` | RT callback (JACK thread); buffer size set by the JACK server |
+| `AlsaBackend` | `alsa` | RT callback intended; currently a `snd_pcm_wait()` loop (exact period required) — a deviation from the all-callback design |
 | `NullBackend` | *(always)* | No‑op, for testing |
 
 ### Buffer sizing (callback-driven backends)
@@ -66,7 +66,8 @@ The multiplier is `AudioConfig::buffer_blocks` (default 16 → 4096 frames;
 `"buffer_blocks"` backend param). Because the whole buffer is one I/O callback,
 its duration is also the async-control look-ahead (`ClockTick.io_quantum`), so
 it trades control latency (~93 ms at 16 blocks) against stability (the stable
-minimum is hardware/config dependent). Poll-driven ALSA and JACK ignore it.
+minimum is hardware/config dependent). ALSA (period fixed to `buffer_size`) and
+JACK (buffer size set by the JACK server) ignore it.
 
 Sample rate negotiation:
 - **JACK**: reads `client.sample_rate()` after activation and puts the *actual*
