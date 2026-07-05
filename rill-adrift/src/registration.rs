@@ -704,12 +704,17 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     #[cfg(feature = "alsa")]
     factory.register("alsa", |p| {
         let cfg = cfg_from_params(p);
+        let in_ch = cfg.input_channels > 0;
         let out_ch = cfg.output_channels > 0;
         let b =
             Arc::new(crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?);
         Ok((
             b.clone() as Arc<dyn rill_core::io::IoDriver>,
-            None,
+            if in_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoCapture>)
+            } else {
+                None
+            },
             if out_ch {
                 Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
             } else {
