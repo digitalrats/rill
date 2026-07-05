@@ -44,7 +44,7 @@ chunk of the callback's buffer:
 
 | Backend | Feature | Thread model |
 |---------|---------|-------------|
-| `PortAudioBackend` | `portaudio` (default) | RT callback, exact buffer size |
+| `PortAudioBackend` | `portaudio` (default) | RT callback, large buffer chunked into `block_size` pieces |
 | `PipewireBackend` | `pipewire` | RT callback (PW thread) |
 | `JackBackend` | `jack` | RT callback (JACK thread) |
 | `AlsaBackend` | `alsa` | `snd_pcm_wait()` — poll‑driven, exact period required |
