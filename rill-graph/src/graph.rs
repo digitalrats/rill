@@ -5,12 +5,13 @@ use rill_core::buffer::{FixedBuffer, ResourceRegistry, TapeLoop};
 use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
+use rill_core::queues::SetParameter;
 use rill_core::time::{ClockTick, RenderContext, SystemClock};
 use rill_core::traits::port::Port;
 use rill_core::traits::processable::Processable;
 use rill_core::traits::{Node, NodeId, NodeVariant, Params, ProcessResult};
 use rill_core_actor::{Actor, ActorRef, ActorSystem};
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
@@ -547,11 +548,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         // Wrap nodes in Rc<UnsafeCell<Vec<>>> — port pointers already valid in this Vec.
         let nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>> = Rc::new(UnsafeCell::new(nodes));
 
+        let pending_params: PendingParams = Rc::new(RefCell::new(Vec::new()));
+
         let actor = system.spawn("graph", {
             let n = nodes.clone();
+            let pending = pending_params.clone();
             #[allow(unsafe_code)]
             move |msg: CommandEnum| {
                 if let CommandEnum::SetParameter(param) = msg {
+                    if param.sample_pos.is_some() {
+                        // Sample-accurate: defer to the block containing sample_pos.
+                        pending.borrow_mut().push(param);
+                        return;
+                    }
                     let idx = param.port.node_id().inner() as usize;
                     unsafe {
                         let nv = &mut *n.get();
@@ -584,6 +593,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             actor_ref,
             parent_ref: self.parent_ref.clone(),
             system_clock: None,
+            pending_params,
         })
     }
 }
@@ -591,6 +601,45 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 // ============================================================================
 // Graph (Static DAG)
 // ============================================================================
+
+/// Shared queue of sample-accurate parameter changes awaiting application.
+///
+/// Populated by the graph actor handler when a [`SetParameter`] carries a
+/// `sample_pos`; drained per processing block by [`apply_due_params`].
+type PendingParams = Rc<RefCell<Vec<SetParameter>>>;
+
+/// Apply all pending sample-accurate parameter changes that are due by
+/// `chunk_end` (the absolute sample position just past the current block).
+///
+/// Changes are applied in ascending `sample_pos` order; anything scheduled for
+/// a later block stays queued. This is what makes parameter automation land at
+/// the right sample position regardless of how the backend batches blocks into
+/// I/O callbacks.
+#[allow(unsafe_code)]
+fn apply_due_params<T: Transcendental, const BUF_SIZE: usize>(
+    nodes: &UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>,
+    pending: &RefCell<Vec<SetParameter>>,
+    chunk_end: u64,
+) {
+    let mut pend = pending.borrow_mut();
+    if pend.is_empty() {
+        return;
+    }
+    pend.sort_by_key(|p| p.sample_pos.unwrap_or(0));
+    let split = pend.partition_point(|p| p.sample_pos.is_none_or(|sp| sp < chunk_end));
+    if split == 0 {
+        return;
+    }
+    unsafe {
+        let nv = &mut *nodes.get();
+        for p in pend.drain(0..split) {
+            let idx = p.port.node_id().inner() as usize;
+            if idx < nv.len() {
+                let _ = nv[idx].set_parameter(&p.parameter, p.value);
+            }
+        }
+    }
+}
 
 /// Owned parts of a [`Graph`] returned by `into_parts` (test only).
 #[cfg(test)]
@@ -619,6 +668,8 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     /// Optional shared system clock, updated by external sync sources (MIDI, JACK transport).
     /// When set, the I/O callback reads BPM from it and creates `ClockTick::with_tempo`.
     pub system_clock: Option<Arc<SystemClock>>,
+    /// Sample-accurate parameter changes awaiting application (shared with the actor handler).
+    pending_params: PendingParams,
 }
 
 /// Owned processing state extracted from a [`Graph`].
@@ -638,16 +689,51 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     feedback_ptrs: Vec<*mut NodeVariant<T, BUF_SIZE>>,
     parent_ref: Option<ActorRef<CommandEnum>>,
     system_clock: Option<Arc<SystemClock>>,
+    /// Sample rate the graph nodes are currently initialised for.
+    ///
+    /// The graph has no clock of its own — it runs entirely inside the backend
+    /// process callback and adopts the rate carried by each [`ClockTick`]. When
+    /// a backend reports a hardware rate that differs from the rate the nodes
+    /// were built with (e.g. JACK locked to 48 kHz while the graph was
+    /// configured for 44.1 kHz), the nodes are re-initialised on the first tick
+    /// so DSP (chip clocks, filter coefficients, …) matches the real rate.
+    sample_rate: f32,
+    /// Sample-accurate parameter changes awaiting application (shared with the actor handler).
+    pending_params: PendingParams,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
+    /// Re-initialise every node for a new sample rate.
+    ///
+    /// Called from [`process_block`](Self::process_block) when the driving
+    /// [`ClockTick`] reports a rate different from the one the graph is
+    /// currently initialised for.
+    #[allow(unsafe_code)]
+    fn reinit_sample_rate(&mut self, sample_rate: f32) {
+        unsafe {
+            let nv = &mut *self.nodes.get();
+            for node in nv.iter_mut() {
+                node.init(sample_rate);
+            }
+        }
+        self.sample_rate = sample_rate;
+    }
+
     /// Process one block of signal data driven by an external [`ClockTick`].
     ///
     /// Processes all root nodes (recording + playback) — used when there's no
     /// split between input and output streams (single-stream backends).
     #[allow(unsafe_code)]
     pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
+        if tick.sample_rate > 0.0 && (tick.sample_rate - self.sample_rate).abs() > 0.5 {
+            self.reinit_sample_rate(tick.sample_rate);
+        }
         self.actor.drain();
+        apply_due_params(
+            &self.nodes,
+            &self.pending_params,
+            tick.sample_pos + tick.samples_since_last as u64,
+        );
         let mut ctx = if let Some(ref clock) = self.system_clock {
             RenderContext::with_tempo(
                 tick.sample_pos,
@@ -979,6 +1065,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
         if let Some(ref mut actor) = self.actor {
             actor.drain();
         }
+        apply_due_params(
+            &self.nodes,
+            &self.pending_params,
+            tick.sample_pos + tick.samples_since_last as u64,
+        );
         let ctx = if let Some(ref clock) = self.system_clock {
             RenderContext::with_tempo(
                 tick.sample_pos,
@@ -1025,6 +1116,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             feedback_ptrs: self.feedback_ptrs,
             parent_ref: self.parent_ref,
             system_clock: self.system_clock,
+            sample_rate: self.current_tick.sample_rate,
+            pending_params: self.pending_params,
         }
     }
 
@@ -1050,6 +1143,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
             actor_ref: _,
             parent_ref: _,
             system_clock: _,
+            pending_params: _,
         } = self;
         drop(actor);
         let nodes = Rc::try_unwrap(nodes).unwrap().into_inner();

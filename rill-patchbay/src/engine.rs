@@ -521,12 +521,15 @@ impl<A: Automaton + 'static> Servo<A> {
                             }
                             state.last_sent_index = idx;
                             let pid = ParameterId::new(&param).unwrap();
-                            gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                PortId::param(nid, 0),
-                                pid,
-                                table[index].clone(),
-                                SignalOrigin::Automaton(serv_id.clone()),
-                            )));
+                            gr.send(CommandEnum::SetParameter(
+                                SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid,
+                                    table[index].clone(),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )
+                                .with_sample_pos(clock.sample_pos + clock.io_quantum as u64),
+                            ));
                             return;
                         }
 
@@ -550,12 +553,15 @@ impl<A: Automaton + 'static> Servo<A> {
                         }
 
                         let pid = ParameterId::new(&param).unwrap();
-                        gr.send(CommandEnum::SetParameter(SetParameter::new(
-                            PortId::param(nid, 0),
-                            pid,
-                            ParamValue::Float(value as f32),
-                            SignalOrigin::Automaton(serv_id.clone()),
-                        )));
+                        gr.send(CommandEnum::SetParameter(
+                            SetParameter::new(
+                                PortId::param(nid, 0),
+                                pid,
+                                ParamValue::Float(value as f32),
+                                SignalOrigin::Automaton(serv_id.clone()),
+                            )
+                            .with_sample_pos(clock.sample_pos + clock.io_quantum as u64),
+                        ));
                     }
                     CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
                         s.lock().unwrap().enabled = enabled;

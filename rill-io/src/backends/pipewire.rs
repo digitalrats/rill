@@ -333,6 +333,9 @@ impl IoDriver for PipewireBackend {
                         } else {
                             1.0
                         };
+                        // Whole DMA buffer is one I/O callback: async control must
+                        // look ahead by the full quantum, not a single chunk.
+                        tick.io_quantum = n_frames as u32;
 
                         // Store output DMA window for write_output()
                         unsafe {

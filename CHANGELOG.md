@@ -2,6 +2,48 @@
 
 ## [0.5.0-beta.7] — In Progress
 
+### ⏱️ Sample-accurate parameter automation (`rill-core`, `rill-graph`, `rill-io`, `rill-patchbay`)
+
+Fixes tick-driven control (sequencers, servos) collapsing under backends that
+batch many `block_size` chunks into a single I/O callback (e.g. PipeWire's
+12288-frame buffer = 48 × 256 chunks). Previously all parameter writes for a
+callback were applied at the first chunk, so the AY chip in `chiptune_stc`
+rendered ~4 register states/s instead of ~48.8 in release builds — the melody
+dragged. Correct playback on ALSA / debug PipeWire was incidental timing.
+
+- **`SetParameter.sample_pos: Option<u64>`** — optional absolute sample position
+  at which a parameter change should take effect. `None` = apply on drain
+  (legacy behaviour, unchanged for UI/MIDI-driven writes). Builder:
+  `SetParameter::new(...).with_sample_pos(pos)`.
+- **`ClockTick.io_quantum: u32`** — frames the backend processes per I/O
+  callback (its quantum). Defaults to `samples_since_last`; chunking backends
+  set the whole callback size. Builder: `ClockTick::with_io_quantum(n)`.
+- **Graph applies parameters per block** — the graph actor now queues writes
+  that carry a `sample_pos` and applies each during the 256-sample block whose
+  range contains it (`ProcessingState::process_block` / `Graph::process_block`),
+  instead of flushing everything at drain time. Writes without `sample_pos`
+  still apply immediately (preserves duplex/legacy paths).
+- **Producers look ahead by one quantum** — because an asynchronous control
+  module reacting to a tick in callback *N* can only be rendered in callback
+  *N+1*, producers stamp `sample_pos = tick.sample_pos + tick.io_quantum`. The
+  `chiptune_stc` example and the ClockTick-driven `Servo` writes do this;
+  MIDI/UI-driven `Servo` writes stay immediate (no latency on live input).
+- Cost: ~one I/O quantum of control latency (PipeWire ≈ 278 ms, ALSA ≈ 5.8 ms) —
+  acceptable for playback, reducible with a smaller backend buffer.
+
+### 🎛️ Graph adopts the backend's hardware sample rate
+
+The graph has no clock of its own — it runs inside the backend process callback
+and now adopts the rate carried by each `ClockTick`.
+
+- **`ProcessingState` re-initialises nodes on rate change** — when the driving
+  `ClockTick.sample_rate` differs from the rate the nodes were built with (e.g.
+  JACK locked to 48 kHz while the graph was configured for 44.1 kHz), every node
+  is re-`init`ed so chip clocks and filter coefficients match the real rate.
+- **JACK backend** — the `ClockTick` now carries the *actual* JACK hardware rate
+  (was `config_rate`), fixing playback running `hw_rate / config_rate` too fast
+  (e.g. +8.8 % at 48 kHz vs 44.1 kHz) with no resampling.
+
 ### 📦 Version bump and cleanup
 
 - All 18 crates bumped to `0.5.0-beta.7`.
@@ -43,14 +85,17 @@ hardware interaction lives in `ProcessingState` + backend traits.
   buffers — no copies between graph and backend.
 - **`OutputWindow`** — adapter for backends that need partial buffer
   writes. Wraps `IoPlayback` + `DirectView`, handles multi-chunk DMA.
-- **`ClockTick.is_final`** — for chunking backends (PipeWire):
-  `is_final = true` only on the last chunk of a DMA buffer.
-  `send_clock_tick()` is gated on `is_final` — prevents duplicate
-  `ClockTick` broadcasts mid-buffer.
+- **`ClockTick.is_final`** — flag for chunking backends, gating
+  `send_clock_tick()`. Note: current chunking backends (PipeWire, JACK) leave it
+  `true` on every chunk, so control modules receive **one `ClockTick` per
+  `block_size` block**; sample-accurate placement is handled by
+  `SetParameter.sample_pos` + `ClockTick.io_quantum` (see the entry at the top
+  of this file), not by coalescing ticks per buffer.
 - **PipeWire backend** — major rewrite for chunk processing. DMA buffer
   split into chunks of `block_size`, per-chunk parameter updates via
-  `ParameterWrite`, `is_final` timing. Buffer size negotiation via
-  `SPA_PARAM_Buffers`. Zero-fill DMA remainder after chunk loop.
+  `ParameterWrite`. Zero-fill DMA remainder after chunk loop. (Buffer size is
+  whatever PipeWire allocates — the backend does not yet negotiate
+  `SPA_PARAM_Buffers`.)
 - **JACK backend** — chunk processing by `block_size`, uses orchestrator
   `running` flag for shutdown. `run()` returns immediately
   (callback-driven), `stop()` coordinates with JACK thread.

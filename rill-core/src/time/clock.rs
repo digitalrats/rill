@@ -45,6 +45,7 @@ impl SystemClock {
             source: String::new(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: samples,
         }
     }
 
