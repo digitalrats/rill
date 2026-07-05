@@ -37,6 +37,12 @@ use rill_core::time::ClockTick;
 /// (`ClockTick.io_quantum`), i.e. control latency ≈ buffer duration. We request
 /// a smaller buffer (16 × `block_size` = 4096 frames ≈ 93 ms at 44.1 kHz) which
 /// the chunk loop still splits into `block_size` pieces (one `ClockTick` each).
+///
+/// The value is chosen for the target hardware (smaller = lower latency, larger
+/// = more robust on constrained/untuned systems).
+///
+/// TODO: make this configurable via `AudioConfig` instead of a compile-time
+/// constant.
 const BUFFER_BLOCKS: usize = 16;
 
 // ============================================================================

@@ -29,9 +29,12 @@ use portaudio as pa;
 ///
 /// Trade-off: this buffer is also the async-control look-ahead
 /// (`ClockTick.io_quantum`), so latency ≈ `PA_BUFFER_BLOCKS × block_size /
-/// sample_rate` (16 × 256 / 44100 ≈ 93 ms). The stable minimum is
-/// hardware/config dependent — raise for more stability, lower for tighter
-/// control latency.
+/// sample_rate` (16 × 256 / 44100 ≈ 93 ms). The value is chosen for the target
+/// hardware — the stable minimum is hardware/config dependent; raise for more
+/// stability, lower for tighter control latency.
+///
+/// TODO: make this configurable via `AudioConfig` instead of a compile-time
+/// constant.
 const PA_BUFFER_BLOCKS: usize = 16;
 
 /// Callback slot — stores the process callback via raw pointer for `Send`-safe
