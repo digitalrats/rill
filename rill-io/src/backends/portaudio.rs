@@ -22,15 +22,16 @@ use portaudio as pa;
 ///
 /// A single `block_size` (256-frame) period is too small for stable playback
 /// through PortAudio's ALSA host API on virtual devices (PipeWire) — it
-/// underruns and crackles. Empirically ~8 blocks is the stability floor on
-/// common hardware, which is exactly why PipeWire itself defaults to a large
-/// quantum. We request a buffer this many blocks big and chunk it back into
-/// `block_size` pieces in the callback (one `ClockTick` per block).
+/// underruns and crackles. A larger buffer is stable; PipeWire itself defaults
+/// to a large quantum for the same reason. We request a buffer this many blocks
+/// big and chunk it back into `block_size` pieces in the callback (one
+/// `ClockTick` per block).
 ///
 /// Trade-off: this buffer is also the async-control look-ahead
 /// (`ClockTick.io_quantum`), so latency ≈ `PA_BUFFER_BLOCKS × block_size /
-/// sample_rate` (16 × 256 / 44100 ≈ 93 ms). Raise for more stability on weaker
-/// hardware, lower for tighter control latency.
+/// sample_rate` (16 × 256 / 44100 ≈ 93 ms). The stable minimum is
+/// hardware/config dependent — raise for more stability, lower for tighter
+/// control latency.
 const PA_BUFFER_BLOCKS: usize = 16;
 
 /// Callback slot — stores the process callback via raw pointer for `Send`-safe

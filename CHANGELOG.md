@@ -52,9 +52,8 @@ and now adopts the rate carried by each `ClockTick`.
   was unstable through the PipeWire ALSA plugin (crackling); a large buffer
   fixes stability but, when driven as one tick, starved the sequencer (~6×
   slow). The chunk loop gives the sequencer the correct ~172 ticks/s *and* a
-  stable buffer. `PA_BUFFER_BLOCKS` is a documented constant — ~8 blocks is the
-  empirical stability floor on common hardware (hence PipeWire's own large
-  default); it also sets the control look-ahead latency
+  stable buffer. `PA_BUFFER_BLOCKS` is a documented constant (the stable minimum
+  is hardware/config dependent); it also sets the control look-ahead latency
   (`block_size × PA_BUFFER_BLOCKS / sample_rate` ≈ 93 ms at 16). The old
   forced-duplex workaround is removed.
 - **PipeWire backend** — negotiate a bounded DMA buffer via a `SPA_PARAM_Buffers`

@@ -66,7 +66,7 @@ buffer and chunk it back into `block_size` pieces in the callback, emitting one
 Because the whole buffer is one I/O callback, its duration is also the
 async-control look-ahead (`ClockTick.io_quantum`); both constants are documented
 one-line tunables trading control latency (~93 ms at 16 blocks) against
-stability (~8 blocks is the empirical floor on common hardware).
+stability (the stable minimum is hardware/config dependent).
 
 Sample rate negotiation:
 - **JACK**: reads `client.sample_rate()` after activation and puts the *actual*
