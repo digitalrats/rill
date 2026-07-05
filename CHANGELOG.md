@@ -69,6 +69,15 @@ and now adopts the rate carried by each `ClockTick`.
   control latency; the stable minimum is hardware/config dependent. ALSA (period
   fixed to `buffer_size`) and JACK (buffer size set by the JACK server) ignore
   it.
+- **ALSA backend — callback-driven capture *and* playback.** The audio thread
+  now fires the rill process callbacks per period — the capture chain
+  (`set_input_process_callback`) then the playback chain
+  (`set_process_callback`) — matching the split-chain model of PipeWire/JACK,
+  and implements a real `read_input` (previously stubbed to silence, so capture
+  never reached the graph) by publishing each just-read period as an input
+  window. The backend now advertises `IoCapture` when `input_channels > 0`, so
+  full-duplex graphs work. Still event-driven via `snd_pcm_wait` (no
+  `thread::sleep`).
 
 ### 📦 Version bump and cleanup
 

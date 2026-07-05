@@ -47,7 +47,7 @@ chunk of the callback's buffer:
 | `PortAudioBackend` | `portaudio` (default) | RT callback, large buffer chunked into `block_size` pieces |
 | `PipewireBackend` | `pipewire` | RT callback (PW thread), buffer negotiated via `SPA_PARAM_Buffers`, chunked into `block_size` pieces |
 | `JackBackend` | `jack` | RT callback (JACK thread); buffer size set by the JACK server |
-| `AlsaBackend` | `alsa` | RT callback intended; currently a `snd_pcm_wait()` loop (exact period required) — a deviation from the all-callback design |
+| `AlsaBackend` | `alsa` | Callback-driven on the audio thread, event-driven via `snd_pcm_wait` (no `thread::sleep`); fires the capture then playback callbacks per period (exact period required) |
 | `NullBackend` | *(always)* | No‑op, for testing |
 
 ### Buffer sizing (callback-driven backends)
