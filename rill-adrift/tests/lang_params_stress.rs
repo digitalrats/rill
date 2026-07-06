@@ -181,7 +181,7 @@ fn dynamic_cutoff_moog_changes_output() {
     // Use a 2 kHz signal: cutoff 500 attenuates it, cutoff 12000 passes it.
     let freq = 2000.0;
     let block: Vec<f32> = (0..128)
-        .map(|i| ((2.0 * std::f32::consts::PI * freq * i as f32 / sr) as f32).sin())
+        .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin())
         .collect();
 
     let mut prog = compile_with::<f32>(
@@ -256,7 +256,7 @@ fn dynamic_cutoff_lowpass_changes_output_across_blocks() {
     // Use a 2 kHz signal: cutoff 500 attenuates it, cutoff 8000 passes it.
     let freq = 2000.0;
     let block: Vec<f32> = (0..128)
-        .map(|i| ((2.0 * std::f32::consts::PI * freq * i as f32 / sr) as f32).sin())
+        .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin())
         .collect();
 
     let mut prog = compile_with::<f32>(

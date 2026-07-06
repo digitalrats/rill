@@ -11,6 +11,13 @@ documentation = "https://docs.rs/rill-adrift"
 [dev-dependencies]
 parking_lot = "0.12"
 hound = "3.5"
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "lang_dsp_bench"
+harness = false
+path = "benches/lang_dsp_bench.rs"
+required-features = ["lang"]
 
 [dependencies]
 rill-core = { workspace = true }

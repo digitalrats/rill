@@ -20,3 +20,9 @@ serde = ["dep:serde"]
 [dev-dependencies]
 float-cmp = "0.9"
 serde_json = "1.0"
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "lang_bench"
+harness = false
+path = "benches/lang_bench.rs"
