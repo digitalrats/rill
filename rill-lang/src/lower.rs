@@ -81,16 +81,7 @@ impl<'a> Lowerer<'a> {
                     } else {
                         (f64::NEG_INFINITY, f64::INFINITY)
                     };
-                    let idx = *self.param_names.entry(pname.clone()).or_insert_with(|| {
-                        let i = self.params.len();
-                        self.params.push(ParamDef {
-                            name: pname.clone(),
-                            default,
-                            min,
-                            max,
-                        });
-                        i
-                    });
+                    let idx = self.intern_param(pname, default, min, max, *span)?;
                     let dst = self.fresh_reg();
                     self.emit(Instr::ReadParam { dst, idx });
                     return Ok(vec![dst]);
@@ -169,17 +160,7 @@ impl<'a> Lowerer<'a> {
                                 } else {
                                     (f64::NEG_INFINITY, f64::INFINITY)
                                 };
-                                let idx =
-                                    *self.param_names.entry(pname.clone()).or_insert_with(|| {
-                                        let i = self.params.len();
-                                        self.params.push(ParamDef {
-                                            name: pname.clone(),
-                                            default,
-                                            min,
-                                            max,
-                                        });
-                                        i
-                                    });
+                                let idx = self.intern_param(pname, default, min, max, a.span())?;
                                 params.push(default);
                                 param_bindings.push((pos, idx));
                                 continue;
@@ -229,6 +210,43 @@ impl<'a> Lowerer<'a> {
                 span: *span,
             }),
             Expr::Bin { op, lhs, rhs, span } => self.lower_bin(*op, lhs, rhs, inputs, *span),
+        }
+    }
+
+    /// Intern a named parameter, returning its slot index. Repeated uses of the
+    /// same name share one slot but must declare an identical default and range —
+    /// a conflicting redeclaration is a compile error (avoids silent first-wins).
+    #[allow(clippy::float_cmp)]
+    fn intern_param(
+        &mut self,
+        name: String,
+        default: f64,
+        min: f64,
+        max: f64,
+        span: Span,
+    ) -> Result<usize, CompileError> {
+        if let Some(&idx) = self.param_names.get(&name) {
+            let existing = &self.params[idx];
+            if existing.default != default || existing.min != min || existing.max != max {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "parameter `{name}` is redeclared with a different default/range; \
+                         all uses of the same name must match"
+                    ),
+                    span,
+                });
+            }
+            Ok(idx)
+        } else {
+            let idx = self.params.len();
+            self.params.push(ParamDef {
+                name: name.clone(),
+                default,
+                min,
+                max,
+            });
+            self.param_names.insert(name, idx);
+            Ok(idx)
         }
     }
 

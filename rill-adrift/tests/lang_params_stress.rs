@@ -285,33 +285,37 @@ fn dynamic_cutoff_lowpass_changes_output_across_blocks() {
 // — shared param name with conflicting defaults ——————————
 
 #[test]
-fn shared_param_name_first_default_wins() {
+fn shared_param_name_conflicting_defaults_is_rejected() {
     let reg = full_registry::<f32>();
-    let prog = compile_with::<f32>(
+    // The same name `k` is declared with two different defaults (0.5 vs 1000.0).
+    // This is rejected at compile time rather than silently taking the first.
+    let err = compile_with::<f32>(
         "process = _ * param(\"k\", 0.5) : lowpass(param(\"k\", 1000.0), 0.7);",
+        &reg,
+        48_000.0,
+    );
+    assert!(
+        err.is_err(),
+        "conflicting param defaults must be a compile error"
+    );
+}
+
+#[test]
+fn shared_param_name_matching_defaults_shares_one_slot() {
+    let reg = full_registry::<f32>();
+    // Identical declarations of `k` share a single slot.
+    let prog = compile_with::<f32>(
+        "process = _ * param(\"k\", 0.5) + param(\"k\", 0.5);",
         &reg,
         48_000.0,
     )
     .unwrap();
-
-    // There should be exactly one "k" slot.
     assert_eq!(
         prog.params_meta().len(),
         1,
-        "shared param name should deduplicate to one slot"
+        "matching param names should deduplicate to one slot"
     );
-
-    // The default comes from the first occurrence (0.5), not the second (1000.0).
-    let meta = &prog.params_meta()[0];
-    assert_eq!(meta.name, "k");
-    assert!(
-        (meta.default - 0.5).abs() < 1e-6,
-        "first-wins default: expected 0.5, got {}",
-        meta.default
-    );
-    // The second occurrence's default (1000.0) is silently discarded —
-    // this is a foot-gun: `lowpass(param("k", 1000.0), 0.7)` silently gets cutoff=0.5.
-    // See report below.
+    assert_eq!(prog.params_meta()[0].name, "k");
 }
 
 // — LangNode automation ————————————————————————————————

@@ -194,6 +194,11 @@ new value takes effect at the next block boundary. The optional `min` and `max`
 arguments constrain the range (`0.0` ≤ `param("gain", 0.5, 0.0, 1.0)` ≤ `1.0`);
 the runtime clamps writes to this range.
 
+Reusing the same name refers to the **same slot** — every `param("gain", …)` in a
+program shares one value. All uses of a name must declare an **identical** default
+and range; a conflicting redeclaration is a compile error (this prevents a name
+from silently meaning two different things).
+
 Parameters have arity `0 → 1` — they are zero-input signal sources — so they
 can appear anywhere a float literal would: in arithmetic expressions and also as
 a built-in argument, which lets you dynamically drive filter cutoffs, resonance,
