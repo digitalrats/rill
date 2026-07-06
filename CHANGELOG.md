@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## [0.5.0-beta.7] — In Progress
+## [0.5.0] — 2026-07-06
 
 ### 🧬 New crate: `rill-lang` — Faust-style signal DSL
 
