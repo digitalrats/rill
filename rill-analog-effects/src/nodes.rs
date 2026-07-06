@@ -201,8 +201,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let input_buf = *self.inputs[0].buffer.as_array();
-        let output_buf = self.outputs[0].buffer.as_mut_array();
+        let input_buf = *self.inputs[0].read();
+        let output_buf = self.outputs[0].write();
         for i in 0..BUF_SIZE {
             let x = input_buf[i].to_f64();
             let y = self.algorithm.process(x);

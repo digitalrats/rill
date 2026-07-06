@@ -1,8 +1,8 @@
-# Rill Architecture (version 0.5.0-beta.7)
+# Rill Architecture (version 0.5.0)
 
 ## General Concept
 
-Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.5.0-beta.7, all crates use a unified `rill-core`.
+Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.5.0, all crates use a unified `rill-core`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@ Rill is a **modular ecosystem** built around a minimal core with traits. Each cr
 │  │  │   traits    │  │   queues    │                  │    │
 │  │  │(Node,etc.)  │  │(MpscQueue) │                  │    │
 │  │  └─────────────┘  └─────────────┘                  │    │
-│  │  rill-core-actor (ActorRef, ActorCell, ActorSystem) │    │
+│  │  rill-core-actor (Actor, ActorRef, ActorSystem)   │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -85,10 +85,13 @@ rill-core/
 │   │   └── functions.rs       # Functions
 │   ├── buffer/
 │   │   ├── mod.rs             # Buffers (PipeBuffer, FanOutBuffer, etc.)
-│   │   ├── pipe.rs            # Direct connections
-│   │   ├── fan.rs             # Fan-out and summing
-│   │   ├── delay.rs           # Delay line
-│   │   ├── ring.rs            # Ring buffer
+│   │   ├── buffer_trait.rs    # Buffer trait + FixedBuffer
+│   │   ├── pipe.rs            # Direct connections (PipeBuffer)
+│   │   ├── fan.rs             # Fan-out and summing (FanOutBuffer/FanInBuffer)
+│   │   ├── delay.rs           # Delay line (DelayLine)
+│   │   ├── ring.rs            # Ring buffer (RingBuffer)
+│   │   ├── tape.rs            # Tape loop (TapeLoop — delay/feedback)
+│   │   ├── registry.rs        # ResourceRegistry (shared graph resources)
 │   │   ├── storage.rs         # AtomicCell
 │   │   └── pool.rs            # Buffer pool
 │   ├── queues/
@@ -107,7 +110,7 @@ rill-core/
 │   │   ├── mod.rs             # Time and clock signals
 │   │   ├── clock.rs           # Clock and ClockSource traits
 │   │   ├── source.rs          # Time source implementations
-│   │   ├── tick.rs            # ClockTick (legacy)
+│   │   ├── tick.rs            # ClockTick (per-block timing)
 │   │   ├── render.rs          # RenderContext + TransportState
 │   │   └── error.rs           # Time errors
 │   ├── macros/
@@ -126,14 +129,18 @@ rill-core/
 
 #### buffer (buffers)
 
-Provides buffer types for transferring signal data between nodes: `PipeBuffer` (single-threaded channel), `FanOutBuffer` (fan-out), `FanInBuffer` (summing), `DelayLine` (delay line), `RingBuffer` (ring buffer). All buffers implement the `Buffer` trait and support usage statistics.
+Provides buffer types for transferring signal data between nodes: `PipeBuffer` (single-threaded 1:1 channel), `FanOutBuffer` (fan-out), `FanInBuffer` (summing), `DelayLine` (delay line), `RingBuffer` (ring buffer), `TapeLoop` (delay/feedback tape), and `FixedBuffer` / `ResourceRegistry` (fixed blocks + shared graph resources). Buffers are fixed-size (`const N` block size) and support usage statistics.
 
 ```rust
-use rill_core::buffer::{PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer};
+use rill_core::buffer::PipeBuffer;
 
-let mut pipe = PipeBuffer::new(1024);
-pipe.write(&[1.0, 2.0, 3.0]);
-let read = pipe.read(3);
+// Block size is a const generic (here 4 samples per block).
+let mut pipe = PipeBuffer::<f32, 4>::new();
+pipe.write(&[1.0, 2.0, 3.0, 4.0]);
+if let Some(block) = pipe.read() {
+    // consume one [f32; 4] block
+    let _ = block;
+}
 ```
 
 #### macros
@@ -176,7 +183,7 @@ queue.send(CommandEnum::SetParameter(SetParameter {
 
 #### time
 
-Time, tempo, and transport abstractions: `RenderContext` (unified per-block context — sample clock, `TransportState` with BPM/playing flag/time signature, `speed_ratio` for hardware clock correction), `SystemClock` (atomic BPM + position), `ClockTick` (legacy), `ClockSource` trait. `RenderContext` is built by the I/O backend once per block, passed through the entire DAG via `process_block(&ctx)`. Transport state flows from JACK/PipeWire transport or MIDI clock sync into `SystemClock`, which feeds BPM into the context.
+Time, tempo, and transport abstractions: `RenderContext` (unified per-block context — sample clock, `TransportState` with BPM/playing flag/time signature, `speed_ratio` for hardware clock correction), `SystemClock` (atomic BPM + position), `ClockTick` (per-block timing carried from the backend, including `io_quantum` and `sample_pos`), `ClockSource` trait. `RenderContext` is built by the I/O backend once per block, passed through the entire DAG via `process_block(&ctx)`. Transport state flows from JACK/PipeWire transport or MIDI clock sync into `SystemClock`, which feeds BPM into the context.
 
 File: `rill-core/src/time/render.rs`.
 
@@ -211,22 +218,23 @@ use rill_core::prelude::*;
 
 ### `rill-core-actor` ( actor model)
 
-Domain-agnostic actor model infrastructure for lock-free message passing. Provides `ActorRef<M>` (thread-safe message handle), `ActorCell` (message processing trait), `MessageDispatcher<M>` (actor ref + dead letters), and `ActorSystem<M>` (named mailbox registry with routing). Generic over any `M: Send + 'static` with no coupling to audio or signal processing.
+Domain-agnostic actor model infrastructure for lock-free message passing. Provides `Actor<M>` (handler + mailbox, drained in place), `ActorRef<M>` (thread-safe send-only handle), and `ActorSystem` (named registry with `spawn` / `spawn_detached` / `spawn_detached_tokio`, `route`, `broadcast`, dead letters). Generic over any `M: Send + 'static` with no coupling to audio or signal processing.
 
-The mailbox (`Arc<MpscQueue<M>>`) is the hard RT boundary — `send()` is lock-free and safe from any thread, while `receive()` runs on the consumer's thread and inherits its RT constraints.
+The mailbox (`Arc<Mailbox<M>>` wrapping a lock-free `MpscQueue<M>`) is the hard RT boundary — `send()` is lock-free and safe from any thread, while `drain()` runs on the consumer's thread and inherits its RT constraints.
 
 ```rust
-use rill_core_actor::ActorRef;
+use rill_core_actor::ActorSystem;
 
-let (ar, mbox) = ActorRef::<String>::new_pair();
-ar.send("hello".into());
-assert_eq!(mbox.pop(), Some("hello".into()));
+let system = ActorSystem::new();
+let mut actor = system.spawn("echo", |msg: String| println!("got: {msg}"));
+actor.actor_ref().send("hello".into());
+actor.drain(); // processes "hello"
 ```
 
 ## Infrastructure crates
 
 
-### `rill-graph` (0.5.0-beta.7)
+### `rill-graph` (0.5.0)
 Audio graph with topological sort.
 
 ```rust
@@ -261,7 +269,7 @@ The Rill graph is built on a rigorous mathematical foundation — **category the
 
 **Block processing:** data is transferred in fixed-size blocks, improving performance through cache locality and enabling SIMD optimizations.
 
-### `rill-patchbay` (0.5.0-beta.7, ✅ active)
+### `rill-patchbay` (0.5.0, ✅ active)
 Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automatons (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automatons" section for details.
 
 ```rust
@@ -317,7 +325,7 @@ manager.start()?;  // Automatons begin their own life
 
 ## DSP infrastructure
 
-### `rill-core-dsp` (0.5.0-beta.7)
+### `rill-core-dsp` (0.5.0)
 Unified DSP infrastructure with vector operations, algorithms, and macros. Includes:
 
 - **Vector abstractions** (`ScalarVector1`, `ScalarVector2`, `ScalarVector4`) — generic numeric types for portable SIMD operations
@@ -356,16 +364,16 @@ osc.process_block(&[], &mut input);
 filter.process_block(&input, &mut output);
 ```
 
-### `rill-oscillators` (0.5.0-beta.7, ✅ active)
+### `rill-oscillators` (0.5.0, ✅ active)
 Graph nodes for oscillators (sine, saw, triangle, square, pulse), noise, LFO, and envelopes. Implements `Source`/`Processor` traits from `rill-core`, using DSP algorithms from `rill-core-dsp::generators` and `ScalarVectorN<T>` vector abstractions.
 
-### `rill-digital-filters` (0.5.0-beta.7, ✅ active)
+### `rill-digital-filters` (0.5.0, ✅ active)
 Graph nodes for digital filters: biquad, one-pole, SVF, Butterworth, Chebyshev, comb. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp::filters`.
 
-### `rill-digital-effects` (0.5.0-beta.7, ✅ active)
+### `rill-digital-effects` (0.5.0, ✅ active)
 Graph nodes for digital effects: Delay, Distortion, Limiter. Implements the `Processor` trait from `rill-core`, using delay algorithms from `rill-core-dsp::delay`. Optional `modulation` feature enables `rill-oscillators` for LFO modulation.
 
-### `rill-router` (0.5.0-beta.7)
+### `rill-router` (0.5.0)
 Router combining equalizer (`rill-eq`) and mixer (`rill-mixer`) functionality with matrix routing capabilities. Includes `eq` (graphic and parametric equalizers) and `mixer` (mixer with channels, sends, master) modules. A `matrix` module is planned for flexible signal routing.
 
 ```rust
@@ -382,7 +390,7 @@ mixer.set_channel_volume(1, 0.8)?;
 
 ## Specialized crates
 
-### `rill-lofi` (0.5.0-beta.7, ✅ active)
+### `rill-lofi` (0.5.0, ✅ active)
 Lo-Fi emulation of classic systems (NES, AY-3-8910, Akai S900). Implements graph nodes (`Node`) based on `rill-core`, using internal DSP algorithms to emulate bit depth, sample rate, and characteristic noise of retro systems.
 
 ```rust
@@ -394,10 +402,10 @@ let akai_config = LofiConfig::for_system(ClassicSystem::AkaiS900);
 let mut akai = LofiProcessor::new(akai_config);
 ```
 
-### `rill-telemetry` (0.5.0-beta.7, ✅ active)
+### `rill-telemetry` (0.5.0, ✅ active)
 Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
 
-### `rill-core-model` (0.5.0-beta.7, ✅ active)
+### `rill-core-model` (0.5.0, ✅ active)
 WDF core + physical modeling — elements (Resistor, Capacitor, Inductor, Diode, OpAmp), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion), WDF filters (MoogLadder, DiodeClipper), tape models (RecordHead, PlaybackHead), and resonant physical models (StringModel — 1D waveguide, PlateModel — 2D FDTD mesh, ModalModel — parallel filter bank, HelmholtzCavity + CavityArray). Generic over `rill_core::Transcendental` — supports `f32` and `f64`.
 
 ```rust
@@ -415,7 +423,7 @@ ladder.set_resonance(0.7.into());
 let y = ladder.process_sample(0.5.into());
 ```
 
-### `rill-analog-filters` (0.5.0-beta.7, ✅ active)
+### `rill-analog-filters` (0.5.0, ✅ active)
 WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::wdf::MoogLadder<f64>`. Provides graph nodes for the processor.
 
 ```rust
@@ -425,7 +433,7 @@ let mut processor = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
 processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(5000.0));
 ```
 
-### `rill-analog-effects` (0.5.0-beta.7, ✅ active)
+### `rill-analog-effects` (0.5.0, ✅ active)
 Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-model`.
 
 ```rust
@@ -436,7 +444,7 @@ opamp.set_slew_rate(0.5);
 let output = opamp.process(0.3);
 ```
 
-### `rill-io` (0.5.0-beta.7, active)
+### `rill-io` (0.5.0, active)
 Audio input/output. Pure I/O backends — no engine, no processors.
 
 Single trait:
@@ -448,6 +456,18 @@ Single trait:
 
 A single backend struct (e.g. `PipewireBackend`) implements `IoDriver` and
 optionally `IoCapture` / `IoPlayback`.  The driver owns the timing loop.
+
+**Buffer sizing.** Callback-driven backends request a DMA buffer of
+`buffer_size × AudioConfig::buffer_blocks` (default 16 × 256 = 4096 frames) and
+chunk it back into `block_size` pieces in the callback, driving `process_block`
+once per piece and emitting one `ClockTick` per rill block. A single 256-frame
+period is unstable through PipeWire (crackling / xruns), so PipeWire negotiates
+the bounded size via a `SPA_PARAM_Buffers` object on connect (instead of its
+~12288-frame default) and PortAudio passes it as `frames_per_buffer`. The buffer
+duration is also the async-control look-ahead (`ClockTick.io_quantum` ≈ 93 ms at
+16 blocks), so `buffer_blocks` trades control latency against stability (ALSA
+uses a period fixed to `buffer_size`, and JACK's size is set by the server, so
+both ignore it).
 
 Two graph nodes:
 
@@ -467,14 +487,17 @@ The graph is `!Send + !Sync` — it stays on the I/O callback thread.
 
 The graph has no external engine. `ProcessingState::process_block(&tick)`:
 
-1. Drains the actor mailbox (applies queued `SetParameter` commands)
-2. Calls `source.process_block(&ctx, &tick)` — Source fills output ports
-3. `Port::propagate()` — recursive DAG traversal, zero-copy for 1:1 connections
-4. `send_clock_tick(&tick)` — dispatches timing to modules (gated by `tick.is_final`)
-
-For chunking backends (PipeWire), `process_block` is called multiple times
-per DMA buffer.  Only the final chunk has `is_final = true`, ensuring
-control-path modules receive one `ClockTick` per I/O cycle.
+1. Re-initialises nodes if the backend's hardware rate differs (chip clocks,
+   filter coefficients etc.)
+2. Drains the actor mailbox (applies queued `SetParameter` commands — writes
+   with `sample_pos` are deferred and applied during the block that contains
+   their target position; writes without it apply immediately for live UI/MIDI)
+3. Calls `source.process_block(&ctx, &tick)` — Source fills output ports
+4. `Port::propagate()` — recursive DAG traversal, zero-copy for 1:1 connections
+5. `send_clock_tick(&tick)` — forwards the tick to modules (gated by
+   `tick.is_final`; chunking backends leave `is_final = true` on every
+   `block_size` chunk, so modules receive one tick per block — sample-accurate
+   downstream placement uses `SetParameter.sample_pos` + `ClockTick.io_quantum`)
 
 No external loop. Two-thread architecture:
 I/O callback thread (hard or soft RT) + control thread (tokio, patchbay).
@@ -488,7 +511,7 @@ I/O callback thread (hard or soft RT) + control thread (tokio, patchbay).
 5. **Performance** — zero-cost abstractions, real-time safety
 6. **Testability** — all components are tested in isolation
 
-## Crate dependencies (version 0.5.0-beta.7)
+## Crate dependencies (version 0.5.0)
 
 Dependency diagram between crates (solid arrows — mandatory dependencies, dashed — optional):
 

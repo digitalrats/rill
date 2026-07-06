@@ -321,7 +321,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T
         _clock_inputs: &[RenderContext],
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
-        let out = self.outputs[0].buffer.as_mut_array();
+        let out = self.outputs[0].write();
         self.osc.set_frequency(self.frequency.to_f32());
         self.osc.process(None, &mut out[..])?;
         if self.stop_pending {
@@ -398,7 +398,7 @@ mod tests {
         let tick = ClockTick::new(0, 64, 44100.0, String::new());
         osc.generate(&ctx, &[], &[], &tick).unwrap();
 
-        let output = osc.outputs[0].buffer.as_array();
+        let output = osc.outputs[0].read();
 
         // First sample should be near 0 (sine with phase 0)
         assert!(approx_eq!(f32, output[0], 0.0, epsilon = 1e-4));
@@ -421,7 +421,7 @@ mod tests {
         let tick = ClockTick::new(0, 64, 44100.0, String::new());
         osc.generate(&ctx, &[], &[], &tick).unwrap();
 
-        let output = osc.outputs[0].buffer.as_array();
+        let output = osc.outputs[0].read();
 
         // First sample should be near 0
         assert!((output[0]).abs() < 1e-10);
@@ -442,7 +442,7 @@ mod tests {
         let tick = ClockTick::new(0, 64, 44100.0, String::new());
         osc.generate(&ctx, &[], &[], &tick).unwrap();
 
-        let output = osc.outputs[0].buffer.as_array();
+        let output = osc.outputs[0].read();
 
         // Should produce valid output
         assert!(output.iter().any(|&x| x != 0.0));

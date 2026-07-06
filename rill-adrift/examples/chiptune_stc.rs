@@ -411,12 +411,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let normalize = args.iter().any(|a| a == "--normalize");
 
-    // Backend name: first positional argument that doesn't start with `--`
+    // Backend name: first positional argument that is not a known flag value
     let backend_name = args
         .iter()
+        .enumerate()
         .skip(1)
-        .find(|a| !a.starts_with("--") && !a.starts_with('-'))
-        .cloned()
+        .find(|(i, a)| {
+            // Skip --file and its value
+            if *i > 0 && args[*i - 1] == "--file" {
+                return false;
+            }
+            !a.starts_with('-')
+        })
+        .map(|(_, a)| a.clone())
         .unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
 
@@ -458,12 +465,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
                     if let Some(regs) = player.borrow_mut().step_ms(ms) {
                         let pid = ParameterId::new("register_write").unwrap();
-                        gr.send(CommandEnum::SetParameter(SetParameter::new(
-                            PortId::param(NodeId(0), 0),
-                            pid,
-                            ParamValue::Bytes(regs.to_vec()),
-                            SignalOrigin::Manual,
-                        )));
+                        // Schedule the register write sample-accurately. The graph
+                        // applies it during the block whose sample range contains
+                        // this position. We look ahead by one I/O quantum because
+                        // this module runs asynchronously: a change reacting to a
+                        // tick in the current callback can only be rendered in the
+                        // next one, so `sample_pos` targets the matching block of
+                        // the next callback instead of collapsing onto block 0.
+                        let apply_at = tick.sample_pos + tick.io_quantum as u64;
+                        gr.send(CommandEnum::SetParameter(
+                            SetParameter::new(
+                                PortId::param(NodeId(0), 0),
+                                pid,
+                                ParamValue::Bytes(regs.to_vec()),
+                                SignalOrigin::Manual,
+                            )
+                            .with_sample_pos(apply_at),
+                        ));
                     }
                     if player.borrow().finished {
                         done.store(true, Ordering::Release);

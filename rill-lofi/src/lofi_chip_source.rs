@@ -173,14 +173,14 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> S
         self.chip.process(None, &mut raw)?;
 
         // Apply lofi processing and write to output ports
-        let out0 = self.outputs[0].buffer.as_mut_array();
+        let out0 = self.outputs[0].write();
         for (j, s) in out0.iter_mut().enumerate() {
             *s = self.lofi.process_sample(raw[j]);
         }
         // Copy channel 0 to additional output channels
-        let out0_copy = *self.outputs[0].buffer.as_array();
+        let out0_copy = *self.outputs[0].read();
         for port in self.outputs.iter_mut().skip(1) {
-            port.buffer_mut().as_mut_array().copy_from_slice(&out0_copy);
+            port.write().copy_from_slice(&out0_copy);
         }
 
         self.state.advance();

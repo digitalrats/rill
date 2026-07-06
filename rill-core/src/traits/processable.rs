@@ -159,12 +159,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for NodeVariant
             NodeVariant::Sink(sink) => sink.init(sample_rate),
         }
     }
-    fn resolve_resources(&mut self, buffers: &crate::buffer::BufferRegistry<T>) {
+    fn resolve_resources(&mut self, resources: &mut crate::buffer::ResourceRegistry<T>) {
         match self {
-            NodeVariant::Source(src) => src.resolve_resources(buffers),
-            NodeVariant::Processor(proc) => proc.resolve_resources(buffers),
-            NodeVariant::Router(rt) => rt.resolve_resources(buffers),
-            NodeVariant::Sink(sink) => sink.resolve_resources(buffers),
+            NodeVariant::Source(src) => src.resolve_resources(resources),
+            NodeVariant::Processor(proc) => proc.resolve_resources(resources),
+            NodeVariant::Router(rt) => rt.resolve_resources(resources),
+            NodeVariant::Sink(sink) => sink.resolve_resources(resources),
         }
     }
     fn reset(&mut self) {

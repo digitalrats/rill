@@ -124,7 +124,7 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
         _feedback_inputs: &[&[T; B]],
         _tick: &rill_adrift::rill_core::time::ClockTick,
     ) -> ProcessResult<()> {
-        let all_received = self.inputs.iter().all(|p| p.data_received);
+        let all_received = self.inputs.iter().all(|p| p.data_received());
         if all_received {
             if let (Some(lp), Some(rp)) = (self.inputs.first(), self.inputs.get(1)) {
                 let l = lp.signal_buffer().as_array();
@@ -136,7 +136,7 @@ impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
                 }
             }
             for p in &mut self.inputs {
-                p.data_received = false;
+                p.set_data_received(false);
             }
             self.state.advance();
         }

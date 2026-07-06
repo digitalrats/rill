@@ -180,8 +180,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         _clock_inputs: &[rill_core::RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let inp = self.inputs[0].buffer.as_array();
-        let out = self.outputs[0].buffer.as_mut_array();
+        let inp = self.inputs[0].read();
+        let out = self.outputs[0].write();
         self.algorithm.process(Some(&inp[..]), &mut out[..])?;
         self.state.advance();
         Ok(())

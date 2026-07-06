@@ -110,6 +110,15 @@ pub struct SetParameter {
     pub source: SignalOrigin,
     /// Unix timestamp (microseconds).
     pub timestamp: u64,
+    /// Optional sample-accurate application time (absolute sample position).
+    ///
+    /// When `Some(pos)`, the graph applies this change during the processing
+    /// block whose sample range contains `pos`, rather than immediately on
+    /// drain. This lets tick-driven producers (sequencers, servos) place
+    /// parameter changes at exact sample positions instead of being subject to
+    /// how the backend batches blocks per I/O callback. `None` = apply as soon
+    /// as it is drained (legacy behaviour).
+    pub sample_pos: Option<u64>,
 }
 
 impl SetParameter {
@@ -126,6 +135,7 @@ impl SetParameter {
             value,
             source,
             timestamp: Self::now(),
+            sample_pos: None,
         }
     }
 
@@ -143,7 +153,14 @@ impl SetParameter {
             value,
             source,
             timestamp,
+            sample_pos: None,
         }
+    }
+
+    /// Set the sample-accurate application time (absolute sample position).
+    pub fn with_sample_pos(mut self, sample_pos: u64) -> Self {
+        self.sample_pos = Some(sample_pos);
+        self
     }
 
     /// Return the current Unix time in microseconds.

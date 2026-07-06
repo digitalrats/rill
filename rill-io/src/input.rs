@@ -127,7 +127,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for Input<T, 
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
         for (ch, port) in self.outputs.iter_mut().enumerate() {
-            let buf = port.buffer_mut();
+            let buf = port.write();
             #[allow(unsafe_code)]
             unsafe {
                 let buf_f32: &mut [f32] =

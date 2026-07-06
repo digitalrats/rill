@@ -35,6 +35,8 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
     register_lofi::<BUF_SIZE>(factory);
     #[cfg(feature = "analog")]
     register_analog::<BUF_SIZE>(factory);
+    #[cfg(feature = "lang")]
+    register_lang::<BUF_SIZE>(factory);
 }
 
 #[cfg(feature = "io")]
@@ -218,9 +220,32 @@ fn register_analog<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
 }
 
 // ============================================================================
-// Rill Oscillators
+// Rill Lang (DSL graph node)
 // ============================================================================
 
+#[cfg(feature = "lang")]
+fn register_lang<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    node_ctor!(factory, "rill/lang", |id: NodeId, params: &Params| {
+        let source = params
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("process = _;");
+        let reg = std::sync::Arc::new(crate::lang_builtins::full_registry::<f32>());
+        let mut n = crate::lang_node::LangNode::<f32, BUF_SIZE>::from_source_with(
+            source,
+            reg,
+            params.sample_rate,
+        )
+        .unwrap_or_else(|_| crate::lang_node::LangNode::identity());
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
+}
+
+// ============================================================================
+// Rill Oscillators
+// ============================================================================
 fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_oscillators::signal::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 
@@ -341,6 +366,7 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
     });
 
     node_ctor!(factory, "rill/write_head", |id: NodeId, params: &Params| {
+        use rill_core::traits::ParamValue;
         let resource = params
             .get("tape")
             .and_then(|v| v.as_str())
@@ -348,10 +374,23 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         let mut n = WriteHead::<f32, BUF_SIZE>::with_resource(params.sample_rate, resource);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
+        if let Some(v) = params.get("delay_time").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("delay_time").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
+        if let Some(v) = params.get("feedback").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("feedback").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
         NodeVariant::Processor(Box::new(n))
     });
 
     node_ctor!(factory, "rill/read_head", |id: NodeId, params: &Params| {
+        use rill_core::traits::ParamValue;
         let resource = params
             .get("tape")
             .and_then(|v| v.as_str())
@@ -359,6 +398,12 @@ fn register_digital_effects<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         let mut n = ReadHead::<f32, BUF_SIZE>::with_resource(resource);
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
+        if let Some(v) = params.get("delay").and_then(|v| v.as_f32()) {
+            let _ = n.set_parameter(
+                &rill_core::traits::ParameterId::new("delay").unwrap(),
+                ParamValue::Float(v),
+            );
+        }
         NodeVariant::Source(Box::new(n))
     });
 }
@@ -684,12 +729,17 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     #[cfg(feature = "alsa")]
     factory.register("alsa", |p| {
         let cfg = cfg_from_params(p);
+        let in_ch = cfg.input_channels > 0;
         let out_ch = cfg.output_channels > 0;
         let b =
             Arc::new(crate::io::backends::AlsaBackend::new(cfg).map_err(|e| format!("alsa: {e}"))?);
         Ok((
             b.clone() as Arc<dyn rill_core::io::IoDriver>,
-            None,
+            if in_ch {
+                Some(b.clone() as Arc<dyn rill_core::io::IoCapture>)
+            } else {
+                None
+            },
             if out_ch {
                 Some(b.clone() as Arc<dyn rill_core::io::IoPlayback>)
             } else {
@@ -765,6 +815,12 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
         .and_then(|v| v.as_i32())
         .unwrap_or(44100) as u32;
     let bs = p.get("buffer_size").and_then(|v| v.as_i32()).unwrap_or(256) as u32;
+    let blocks = p
+        .get("buffer_blocks")
+        .and_then(|v| v.as_i32())
+        .filter(|&v| v > 0)
+        .map(|v| v as usize)
+        .unwrap_or(16);
     let ch = p.get("channels").and_then(|v| v.as_i32()).unwrap_or(2) as u32;
     let in_ch = p
         .get("input_channels")
@@ -777,6 +833,7 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
     let mut cfg = crate::io::AudioConfig::new()
         .with_sample_rate(sr)
         .with_buffer_size(bs)
+        .with_buffer_blocks(blocks)
         .with_input_channels(in_ch)
         .with_output_channels(out_ch);
     if let Some(ParamValue::String(ref d)) = p.get("input_device") {

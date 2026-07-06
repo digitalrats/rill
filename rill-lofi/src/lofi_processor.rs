@@ -422,7 +422,7 @@ impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE>
 
         let input = signal_inputs[0];
         for (i, sample) in input.iter().enumerate() {
-            self.outputs[0].buffer.as_mut_array()[i] = self.process_sample(*sample);
+            self.outputs[0].write()[i] = self.process_sample(*sample);
         }
 
         Ok(())
@@ -477,7 +477,7 @@ mod tests {
         let ctx = RenderContext::new(0, 64, 44100.0);
         processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
 
-        let output = *processor.outputs[0].buffer.as_array();
+        let output = *processor.outputs[0].read();
         for i in 0..64 {
             let expected = input[i] * 0.8;
             assert!(
@@ -517,7 +517,7 @@ mod tests {
         let ctx = RenderContext::new(0, 64, 44100.0);
         processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
 
-        let output = *processor.outputs[0].buffer.as_array();
+        let output = *processor.outputs[0].read();
         for &sample in output.iter() {
             assert!(
                 (0.49..=0.51).contains(&sample),
@@ -552,7 +552,7 @@ mod tests {
         let ctx = RenderContext::new(0, 64, 44100.0);
         processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
 
-        let output = *processor.outputs[0].buffer.as_array();
+        let output = *processor.outputs[0].read();
         assert!(
             approx_eq(output[0], input_val, 0.001),
             "With dry_wet=0, output should equal input"
@@ -578,7 +578,7 @@ mod tests {
         let input = [0.0f32; 64];
         let ctx = RenderContext::new(0, 64, 44100.0);
         processor.process(&ctx, &[&input], &[], &[], &[]).unwrap();
-        let output = *processor.outputs[0].buffer.as_array();
+        let output = *processor.outputs[0].read();
         for &sample in output.iter() {
             assert!(approx_eq(sample, 0.0, 0.001));
         }

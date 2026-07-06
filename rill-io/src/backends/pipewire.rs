@@ -114,6 +114,7 @@ unsafe impl Sync for OutputWindowSlot {}
 pub struct PipewireBackend {
     config: AudioConfig,
     process_cb: CbSlot,
+    input_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     sample_pos: Arc<AtomicU64>,
@@ -147,6 +148,7 @@ impl PipewireBackend {
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
+            input_cb: CbSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             sample_pos: Arc::new(AtomicU64::new(0)),
@@ -181,8 +183,15 @@ impl IoDriver for PipewireBackend {
         }
     }
 
+    fn set_input_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+        unsafe {
+            self.input_cb.set(cb);
+        }
+    }
+
     fn run(&self, running: Arc<AtomicBool>) -> IoResult<()> {
         let process_cb = self.process_cb;
+        let input_cb = self.input_cb;
         let xruns = self.xruns.clone();
         let sample_rate = self.config.sample_rate;
         let out_channels = self.config.output_channels;
@@ -190,6 +199,7 @@ impl IoDriver for PipewireBackend {
         let out_device = self.config.output_device.clone();
         let in_device = self.config.input_device.clone();
         let block_size = self.config.buffer_size as usize;
+        let buffer_blocks = self.config.buffer_blocks.max(1);
         let input_window = &self.input_window as *const InputWindowSlot;
         let output_window = &self.output_window as *const OutputWindowSlot;
         let out_spos = self.sample_pos.clone();
@@ -231,6 +241,10 @@ impl IoDriver for PipewireBackend {
                 *pw::keys::NODE_DESCRIPTION => out_desc.as_str(),
             };
             out_props.insert("audio.channels", out_chan.to_string());
+            out_props.insert(
+                *pw::keys::NODE_LATENCY,
+                format!("{}/{}", block_size, sample_rate),
+            );
 
             let stream =
                 pw::stream::StreamBox::new(&core, &format!("{out_node}-output"), out_props)
@@ -301,13 +315,18 @@ impl IoDriver for PipewireBackend {
                     let out_ptr = slice.as_mut_ptr() as *mut f32;
 
                     let mut offset = 0usize;
+                    // Quantum (n_frames) and buffer_size (block_size) are both powers of 2
+                    // by design, so the DMA buffer divides evenly into full 256-frame chunks.
                     while offset < n_frames {
-                        let chunk = (n_frames - offset).min(block_size);
-                        let pos = out_spos.fetch_add(chunk as u64, Ordering::Relaxed);
+                        let pos = out_spos.fetch_add(block_size as u64, Ordering::Relaxed);
 
                         // Build tick (timing only, no view)
-                        let mut tick =
-                            ClockTick::new(pos, chunk as u32, out_sr as f32, "pipewire".into());
+                        let mut tick = ClockTick::new(
+                            pos,
+                            block_size as u32,
+                            out_sr as f32,
+                            "pipewire".into(),
+                        );
                         let nrate = out_nrate_proc.load(Ordering::Relaxed) as f64;
                         let config_rate = out_sr as f64;
                         tick.speed_ratio = if nrate > 0.0 && (config_rate - nrate).abs() > 1.0 {
@@ -315,26 +334,34 @@ impl IoDriver for PipewireBackend {
                         } else {
                             1.0
                         };
+                        // Whole DMA buffer is one I/O callback: async control must
+                        // look ahead by the full quantum, not a single chunk.
+                        tick.io_quantum = n_frames as u32;
 
                         // Store output DMA window for write_output()
                         unsafe {
                             output_window.as_ref().unwrap().set(
                                 out_ptr.add(offset * out_chan as usize),
                                 out_chan as usize,
-                                chunk,
+                                block_size,
                             );
                             process_cb.call(&tick);
                             output_window.as_ref().unwrap().clear();
                             if has_input {
-                                input_window.as_ref().unwrap().advance(chunk);
+                                input_window.as_ref().unwrap().advance(block_size);
                             }
                         }
 
-                        offset += chunk;
+                        offset += block_size;
                     }
 
-                    // Zero-fill remainder
+                    // Unfilled DMA remainder — unreachable when n_frames % block_size == 0
+                    // (guaranteed by power-of-2 constraint on both values).
                     let filled_samps = offset * out_chan as usize;
+                    debug_assert_eq!(
+                        filled_samps, total_samps,
+                        "PW quantum not aligned to block_size"
+                    );
                     if filled_samps < total_samps {
                         let samples: &mut [f32] =
                             unsafe { std::slice::from_raw_parts_mut(out_ptr, total_samps) };
@@ -374,7 +401,45 @@ impl IoDriver for PipewireBackend {
             .unwrap()
             .0
             .into_inner();
-            let mut out_params = [spa::pod::Pod::from_bytes(&params_bytes).unwrap()];
+
+            // Negotiate a bounded DMA buffer size (buffer_blocks × block_size)
+            // instead of PipeWire's large default, to cap control look-ahead
+            // latency. `size`/`stride` are in bytes (f32 = 4 bytes/sample).
+            let stride = out_chan as i32 * 4;
+            let buf_bytes = (block_size * buffer_blocks) as i32 * stride;
+            let buffers_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+                std::io::Cursor::new(Vec::new()),
+                &spa::pod::Value::Object(spa::pod::Object {
+                    type_: spa_sys::SPA_TYPE_OBJECT_ParamBuffers,
+                    id: spa_sys::SPA_PARAM_Buffers,
+                    properties: vec![
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_buffers,
+                            spa::pod::Value::Int(2),
+                        ),
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_blocks,
+                            spa::pod::Value::Int(1),
+                        ),
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_size,
+                            spa::pod::Value::Int(buf_bytes),
+                        ),
+                        spa::pod::Property::new(
+                            spa_sys::SPA_PARAM_BUFFERS_stride,
+                            spa::pod::Value::Int(stride),
+                        ),
+                    ],
+                }),
+            )
+            .unwrap()
+            .0
+            .into_inner();
+
+            let mut out_params = [
+                spa::pod::Pod::from_bytes(&params_bytes).unwrap(),
+                spa::pod::Pod::from_bytes(&buffers_bytes).unwrap(),
+            ];
 
             if let Err(e) = stream.connect(
                 spa::utils::Direction::Output,
@@ -515,27 +580,61 @@ impl IoDriver for PipewireBackend {
 
                         let mut offset = 0usize;
                         while offset < n_frames {
-                            let chunk = (n_frames - offset).min(block_size);
-                            let pos = sample_pos.fetch_add(chunk as u64, Ordering::Relaxed);
-                            let mut tick =
-                                ClockTick::new(pos, chunk as u32, effective_sr, "pipewire".into());
+                            let pos = sample_pos.fetch_add(block_size as u64, Ordering::Relaxed);
+                            let mut tick = ClockTick::new(
+                                pos,
+                                block_size as u32,
+                                effective_sr,
+                                "pipewire".into(),
+                            );
                             tick.speed_ratio = speed_ratio;
                             unsafe {
                                 input_window.as_ref().unwrap().set(
                                     in_ptr.add(offset * actual_channels),
                                     actual_channels,
-                                    chunk,
+                                    block_size,
                                 );
                                 process_cb.call(&tick);
                             }
-                            offset += chunk;
+                            offset += block_size;
                         }
                         unsafe {
                             input_window.as_ref().unwrap().clear();
                         }
+                    } else {
+                        // Split-chain: output exists, process recording chain
+                        // from the input callback.
+                        let sr = in_nrate_proc.load(Ordering::Relaxed) as f32;
+                        let effective_sr = if sr > 0.0 { sr } else { sample_rate as f32 };
+                        let config_rate = sample_rate as f64;
+                        let actual_rate = effective_sr as f64;
+                        let speed_ratio = if (config_rate - actual_rate).abs() > 1.0 {
+                            config_rate / actual_rate
+                        } else {
+                            1.0
+                        };
+
+                        let mut offset = 0usize;
+                        while offset < n_frames {
+                            let pos = sample_pos.fetch_add(block_size as u64, Ordering::Relaxed);
+                            let mut tick = ClockTick::new(
+                                pos,
+                                block_size as u32,
+                                effective_sr,
+                                "pipewire".into(),
+                            );
+                            tick.speed_ratio = speed_ratio;
+                            unsafe {
+                                input_window.as_ref().unwrap().set(
+                                    in_ptr.add(offset * actual_channels),
+                                    actual_channels,
+                                    block_size,
+                                );
+                                input_cb.call(&tick);
+                            }
+                            offset += block_size;
+                        }
                     }
-                    // When output exists, leave the input window set —
-                    // the output callback will read it and clear it.
                 })
                 .register()
                 .map_err(|e| format!("PW input listener: {e}"))?;
@@ -642,6 +741,7 @@ impl Drop for PipewireBackend {
         self.running.store(false, Ordering::Release);
         unsafe {
             self.process_cb.drop_box();
+            self.input_cb.drop_box();
         }
     }
 }

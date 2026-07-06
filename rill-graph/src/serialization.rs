@@ -480,7 +480,7 @@ fn extract_connections<T: Transcendental, const B: usize>(
 
         for from_port in 0..signal_outs {
             if let Some(port) = variant.output_port(from_port) {
-                for &(to_idx, to_port) in &port.downstream {
+                for &(to_idx, to_port) in port.downstream() {
                     let to_id = nodes[to_idx].id().inner();
                     conns.push(ConnectionDef {
                         kind: SignalKind::Signal,
@@ -490,7 +490,7 @@ fn extract_connections<T: Transcendental, const B: usize>(
                         to_port,
                     });
                 }
-                for &(to_idx, to_port) in &port.feedback_downstream {
+                for &(to_idx, to_port) in port.feedback_downstream() {
                     let to_id = nodes[to_idx].id().inner();
                     conns.push(ConnectionDef {
                         kind: SignalKind::Feedback,

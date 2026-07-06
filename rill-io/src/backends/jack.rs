@@ -163,10 +163,19 @@ impl ProcessHandler for JackProcessHandler {
             }
 
             let pos = self.sample_pos.fetch_add(n as u64, Ordering::Relaxed);
-            let mut tick = ClockTick::new(pos, n as u32, self.config_rate, "jack".into());
-            if self.sample_rate > 0.0 && (self.sample_rate - self.config_rate).abs() > 1.0 {
-                tick.speed_ratio = self.config_rate as f64 / self.sample_rate as f64;
-            }
+            // JACK runs at its own hardware rate and does not resample. Label the
+            // tick with the *actual* rate so tick-driven consumers compute real
+            // time correctly, and so the graph re-initialises its nodes to the
+            // hardware rate (see `ProcessingState::reinit_sample_rate`). The old
+            // code used `config_rate` here, which made playback run at
+            // `hw_rate / config_rate` speed (e.g. +8.8% at 48 kHz vs 44.1 kHz).
+            let rate = if self.sample_rate > 0.0 {
+                self.sample_rate
+            } else {
+                self.config_rate
+            };
+            let tick =
+                ClockTick::new(pos, n as u32, rate, "jack".into()).with_io_quantum(nframes as u32);
 
             if self.out_ch > 0 {
                 let len = n * self.out_ch;

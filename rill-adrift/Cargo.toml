@@ -1,6 +1,6 @@
 [package]
 name = "rill-adrift"
-version = "0.5.0-beta.7"
+version = "0.5.0"
 edition = "2021"
 description = "Umbrella crate re-exporting all rill crates for signal processing application development"
 license.workspace = true
@@ -11,6 +11,13 @@ documentation = "https://docs.rs/rill-adrift"
 [dev-dependencies]
 parking_lot = "0.12"
 hound = "3.5"
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "lang_dsp_bench"
+harness = false
+path = "benches/lang_dsp_bench.rs"
+required-features = ["lang"]
 
 [dependencies]
 rill-core = { workspace = true }
@@ -35,6 +42,7 @@ rill-core-model = { workspace = true, optional = true }
 rill-analog-filters = { workspace = true, optional = true }
 rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
+rill-lang = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
 tokio = { workspace = true, optional = true, features = ["signal", "rt", "rt-multi-thread", "macros"] }
@@ -79,6 +87,7 @@ telemetry = ["dep:rill-telemetry"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects"]
 sampler = ["dep:rill-sampler"]
+lang = ["dep:rill-lang"]
 serialization = [
     "rill-graph/serialization",
     "rill-patchbay/serialization",

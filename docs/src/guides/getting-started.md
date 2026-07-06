@@ -4,14 +4,14 @@ Add `rill-adrift` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.7"
+rill-adrift = "0.5.0"
 ```
 
 For individual crates (if you don't need the full ecosystem):
 
 ```toml
 [dependencies]
-rill-core-dsp = "0.5.0-beta.7"
+rill-core-dsp = "0.5.0"
 ```
 
 ## Example: Signal graph with sine oscillator
@@ -77,7 +77,7 @@ delay.process_block(&input, &mut output)?;
 Enable the `io` feature on `rill-adrift` (default):
 
 ```toml
-rill-adrift = { version = "0.5.0-beta.7", features = ["io", "alsa"] }
+rill-adrift = { version = "0.5.0", features = ["io", "alsa"] }
 ```
 
 Available backends: `portaudio` (default), `alsa` (Linux), `pipewire` (Linux), `jack` (Linux).
@@ -105,7 +105,7 @@ state.run_with_driver(output.driver, Arc::new(AtomicBool::new(true)))?;
   No heap allocs, no locks, no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay`
   with automatons (LFO, envelopes, sequencers). Communicates via
-  lock-free `MpscQueue<ParameterCommand>`.
+  lock‑free `MpscQueue` (via the graph actor mailbox, `ActorRef<CommandEnum>`).
 
 ## Next steps
 
