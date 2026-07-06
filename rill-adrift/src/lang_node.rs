@@ -10,10 +10,13 @@
 
 use rill_core::{
     math::Transcendental,
-    traits::{Algorithm, Node, NodeCategory, NodeMetadata, NodeState, Processor},
-    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
+    traits::{
+        Algorithm, Node, NodeCategory, NodeMetadata, NodeState, ParamMetadata, ParamType,
+        ParamValue, Processor,
+    },
+    NodeId, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
 };
-use rill_lang::{compile, CompileError, RillProgram};
+use rill_lang::{compile, compile_with, CompileError, RillProgram};
 
 /// A graph node whose per-block math is defined by rill-lang source.
 pub struct LangNode<T: Transcendental, const BUF_SIZE: usize> {
@@ -25,6 +28,8 @@ pub struct LangNode<T: Transcendental, const BUF_SIZE: usize> {
     state: NodeState<T, BUF_SIZE>,
     source: String,
     program: RillProgram<T>,
+    registry: Option<std::sync::Arc<rill_lang::builtin::Registry<T>>>,
+    sample_rate: f32,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
@@ -47,6 +52,35 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
             state: NodeState::new(44_100.0),
             source: source.to_string(),
             program,
+            registry: None,
+            sample_rate: 44_100.0,
+        })
+    }
+
+    /// Build a node from rill-lang source with a built-in registry and sample rate.
+    pub fn from_source_with(
+        source: &str,
+        registry: std::sync::Arc<rill_lang::builtin::Registry<T>>,
+        sample_rate: f32,
+    ) -> Result<Self, CompileError> {
+        let program = compile_with::<T>(source, &registry, sample_rate)?;
+        let mut metadata = NodeMetadata::new("RillLang", NodeCategory::Processor);
+        metadata.type_name = Some("rill/lang".to_string());
+
+        let inputs = vec![Port::input(NodeId(0), 0, "signal_in")];
+        let outputs = vec![Port::output(NodeId(0), 0, "signal_out")];
+
+        Ok(Self {
+            id: NodeId(0),
+            metadata,
+            inputs,
+            outputs,
+            controls: Vec::new(),
+            state: NodeState::new(sample_rate),
+            source: source.to_string(),
+            program,
+            registry: Some(registry),
+            sample_rate,
         })
     }
 
@@ -64,11 +98,29 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
 
 impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LangNode<T, BUF_SIZE> {
     fn metadata(&self) -> NodeMetadata {
-        self.metadata.clone()
+        let mut md = self.metadata.clone();
+        md.parameters = self
+            .program
+            .params_meta()
+            .iter()
+            .map(|p| {
+                let mut pm = ParamMetadata::new(
+                    &p.name,
+                    ParamType::Float,
+                    ParamValue::Float(p.default as f32),
+                );
+                if p.min.is_finite() && p.max.is_finite() {
+                    pm = pm.with_range(p.min as f32, p.max as f32, 0.0);
+                }
+                pm
+            })
+            .collect();
+        md
     }
 
     fn init(&mut self, sample_rate: f32) {
         self.state.sample_rate = sample_rate;
+        self.sample_rate = sample_rate;
     }
 
     fn reset(&mut self) {
@@ -79,7 +131,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LangNode<T,
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
         match id.as_str() {
             "source" => Some(ParamValue::String(self.source.clone())),
-            _ => None,
+            _ => self
+                .program
+                .param_index(id.as_str())
+                .map(|idx| ParamValue::Float(self.program.param(idx) as f32)),
         }
     }
 
@@ -90,14 +145,29 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LangNode<T,
                     ParamValue::String(s) => s,
                     _ => return Err(ProcessError::parameter("`source` must be a string")),
                 };
-                let program = compile::<T>(&src).map_err(|e| {
-                    ProcessError::parameter(format!("rill-lang compile error: {e}"))
-                })?;
+                let program = if let Some(ref reg) = self.registry {
+                    compile_with::<T>(&src, reg, self.sample_rate)
+                } else {
+                    compile::<T>(&src)
+                }
+                .map_err(|e| ProcessError::parameter(format!("rill-lang compile error: {e}")))?;
                 self.program = program;
                 self.source = src;
                 Ok(())
             }
-            _ => Err(ProcessError::parameter("unknown parameter")),
+            _ => {
+                if let Some(idx) = self.program.param_index(id.as_str()) {
+                    match value {
+                        ParamValue::Float(v) => {
+                            self.program.set_param(idx, v as f64);
+                            Ok(())
+                        }
+                        _ => Err(ProcessError::parameter("lang param value must be Float")),
+                    }
+                } else {
+                    Err(ProcessError::parameter("unknown parameter"))
+                }
+            }
         }
     }
 
