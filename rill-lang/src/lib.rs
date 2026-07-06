@@ -13,7 +13,30 @@ pub mod ir;
 pub mod lexer;
 pub mod lower;
 pub mod parser;
+pub mod prelude;
 pub mod program;
 pub mod types;
 
 pub use error::{CompileError, Span};
+pub use program::RillProgram;
+
+use rill_core::math::Transcendental;
+
+/// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
+///
+/// ```
+/// use rill_lang::compile;
+/// use rill_core::traits::Algorithm;
+///
+/// let mut prog = compile::<f32>("process = _ * 0.5;").unwrap();
+/// let mut out = [0.0f32; 2];
+/// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
+/// assert_eq!(out, [1.0, 2.0]);
+/// ```
+pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T>, CompileError> {
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens)?;
+    let typed = types::infer::infer_program(&program)?;
+    let ir = lower::lower(&typed)?;
+    Ok(RillProgram::<T>::new(ir))
+}
