@@ -64,6 +64,17 @@ pub fn compile_with<T: Transcendental>(
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
     use crate::ir::Instr;
     use crate::schedule::{build_schedule, Step};
+    for instr in &ir.instrs {
+        if let Instr::CallSample { srcs, .. } = instr {
+            if srcs.len() > backend::interp::MAX_SAMPLE_BUILTIN_INS {
+                return Err(CompileError::Unsupported(format!(
+                    "sample built-in has {} signal inputs; the maximum is {}",
+                    srcs.len(),
+                    backend::interp::MAX_SAMPLE_BUILTIN_INS,
+                )));
+            }
+        }
+    }
     let sched = build_schedule(ir);
     for step in &sched.steps {
         if let Step::Sample(instrs) = step {

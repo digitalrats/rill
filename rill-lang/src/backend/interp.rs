@@ -8,6 +8,11 @@ use crate::ir::{BinArith, Instr, UnOp};
 use crate::program::RillProgram;
 use crate::schedule::Step;
 
+/// Maximum number of signal inputs a [`crate::builtin::SampleBuiltin`] may take.
+/// Inputs are gathered into a fixed stack buffer on the RT path; `compile_with`
+/// rejects any sample built-in exceeding this.
+pub(crate) const MAX_SAMPLE_BUILTIN_INS: usize = 4;
+
 // ============================================================================
 // Reference (per-sample) interpreter — numerical oracle, MVP behavior.
 // ============================================================================
@@ -58,9 +63,9 @@ fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) ->
                 srcs,
                 instance,
             } => {
-                let mut buf = [T::ZERO; 4];
-                let k = srcs.len().min(4);
-                for (j, &s) in srcs.iter().take(4).enumerate() {
+                let mut buf = [T::ZERO; MAX_SAMPLE_BUILTIN_INS];
+                let k = srcs.len().min(MAX_SAMPLE_BUILTIN_INS);
+                for (j, &s) in srcs.iter().take(MAX_SAMPLE_BUILTIN_INS).enumerate() {
                     buf[j] = T::from_f64(prog.regs_scalar[s]);
                 }
                 prog.regs_scalar[dst] = match &mut prog.builtins[instance] {
@@ -277,9 +282,9 @@ fn exec_sample_region<T: Transcendental>(
                     srcs,
                     instance,
                 } => {
-                    let mut buf = [T::ZERO; 4];
-                    let k = srcs.len().min(4);
-                    for (j, &s) in srcs.iter().take(4).enumerate() {
+                    let mut buf = [T::ZERO; MAX_SAMPLE_BUILTIN_INS];
+                    let k = srcs.len().min(MAX_SAMPLE_BUILTIN_INS);
+                    for (j, &s) in srcs.iter().take(MAX_SAMPLE_BUILTIN_INS).enumerate() {
                         buf[j] = prog.block_regs[s][i];
                     }
                     let y = match &mut prog.builtins[instance] {
