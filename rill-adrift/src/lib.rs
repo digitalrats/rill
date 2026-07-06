@@ -42,6 +42,10 @@ pub use rill_lang as lang;
 #[cfg(feature = "lang")]
 pub mod lang_node;
 
+/// rill-lang DSP/model built-in bindings, available with the `lang` feature.
+#[cfg(feature = "lang")]
+pub mod lang_builtins;
+
 /// Centralised node type registration for the Rill ecosystem.
 pub mod registration;
 
