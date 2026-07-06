@@ -11,6 +11,8 @@ pub enum Tok {
     Int(i64),
     /// Identifier / keyword (`sin`, `min`, `process`, user names).
     Ident(String),
+    /// String literal, e.g. `"cutoff"`.
+    Str(String),
     /// `_`
     Wire,
     /// `!`
@@ -148,6 +150,25 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             out.push(Token { tok, span });
             continue;
         }
+        if c == b'"' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                return Err(CompileError::Lex {
+                    msg: "unterminated string literal".into(),
+                    span: Span::new(start, bytes.len()),
+                });
+            }
+            i += 1;
+            let text = src[start + 1..i - 1].to_string();
+            out.push(Token {
+                tok: Tok::Str(text),
+                span: Span::new(start, i),
+            });
+            continue;
+        }
         let single = match c {
             b':' => Tok::Colon,
             b'~' => Tok::Tilde,
@@ -246,5 +267,18 @@ mod tests {
     #[test]
     fn rejects_unknown_char() {
         assert!(tokenize("$").is_err());
+    }
+
+    #[test]
+    fn lexes_string_literal() {
+        assert_eq!(
+            kinds(r#""cutoff""#),
+            vec![Tok::Str("cutoff".into()), Tok::Eof]
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_string() {
+        assert!(tokenize(r#""abc"#).is_err());
     }
 }

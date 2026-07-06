@@ -169,6 +169,10 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
             Ok(t)
         }
         Expr::Apply { name, args, span } => infer_apply(ctx, name, args, *span),
+        Expr::Str(_, span) => Err(CompileError::Type {
+            msg: "string literal is only valid as a `param` name".into(),
+            span: *span,
+        }),
         Expr::Bin { op, lhs, rhs, span } => {
             let a = infer_expr(ctx, lhs)?;
             let b = infer_expr(ctx, rhs)?;

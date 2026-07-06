@@ -168,6 +168,7 @@ impl<'a> Parser<'a> {
             Tok::Float(v) => Ok(Expr::Float(v, t.span)),
             Tok::Wire => Ok(Expr::Wire(t.span)),
             Tok::Cut => Ok(Expr::Cut(t.span)),
+            Tok::Str(s) => Ok(Expr::Str(s, t.span)),
             Tok::Plus => Ok(Expr::Ref("+".into(), t.span)),
             Tok::Minus => Ok(Expr::Ref("-".into(), t.span)),
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
@@ -329,5 +330,19 @@ mod tests {
     #[test]
     fn rejects_missing_semicolon() {
         assert!(parse(&tokenize("process = _").unwrap()).is_err());
+    }
+
+    #[test]
+    fn parses_string_arg() {
+        let p = parse(&tokenize(r#"process = f("x");"#).unwrap()).unwrap();
+        let call = p.defs.iter().find(|d| d.name == "process").unwrap();
+        match &call.body {
+            Expr::Apply { name, args, .. } => {
+                assert_eq!(name, "f");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0], Expr::Str(s, _) if s == "x"));
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
     }
 }

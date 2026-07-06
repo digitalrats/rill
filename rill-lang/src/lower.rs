@@ -106,6 +106,10 @@ impl<'a> Lowerer<'a> {
                 }
                 self.lower_ref(name, &arg_regs, *span)
             }
+            Expr::Str(_, span) => Err(CompileError::Type {
+                msg: "string literal is only valid as a `param` name".into(),
+                span: *span,
+            }),
             Expr::Bin { op, lhs, rhs, span } => self.lower_bin(*op, lhs, rhs, inputs, *span),
         }
     }
@@ -356,6 +360,7 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
     let unsupported = |m: &str| CompileError::Unsupported(m.to_string());
     Ok(match e {
         Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
+        Expr::Str(_, _) => (0, 1),
         Expr::Wire(_) => (1, 1),
         Expr::Cut(_) => (1, 0),
         Expr::Neg(inner, _) => arity(inner, sigs)?,

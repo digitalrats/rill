@@ -40,6 +40,8 @@ pub enum Expr {
     Wire(Span),
     /// Cut `!` (arity 1→0).
     Cut(Span),
+    /// String literal, e.g. `"cutoff"`.
+    Str(String, Span),
     /// A reference to a definition or a bound parameter.
     Ref(String, Span),
     /// Application `name(arg, ...)`.
@@ -74,6 +76,7 @@ impl Expr {
             | Expr::Float(_, s)
             | Expr::Wire(s)
             | Expr::Cut(s)
+            | Expr::Str(_, s)
             | Expr::Ref(_, s)
             | Expr::Neg(_, s) => *s,
             Expr::Apply { span, .. } | Expr::Bin { span, .. } => *span,
