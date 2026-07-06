@@ -148,9 +148,12 @@ rill-lang block by giving it a `source` parameter:
 }
 ```
 
-Setting the node's `source` parameter at runtime recompiles the program on the
-control thread and hot-swaps it — the seed of the runtime code-synthesis loop
-described in the project's architecture notes.
+Setting the node's `source` parameter at runtime recompiles the program and
+hot-swaps it — the seed of the runtime code-synthesis loop described in the
+project's architecture notes. Note that compilation allocates, so a `source`
+swap applied through the graph's `SetParameter` path runs inside the I/O
+callback; treat it as a control-time operation to be performed when the graph is
+not under hard real-time load, not as an every-block action.
 
 ## Execution model and performance
 

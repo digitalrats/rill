@@ -299,7 +299,13 @@ fn arity(e: &Expr) -> Result<(usize, usize), CompileError> {
                 ))
             }
         },
-        Expr::Apply { .. } => (0, 1),
+        Expr::Apply { args, .. } => {
+            let mut ins = 0;
+            for a in args {
+                ins += arity(a)?.0;
+            }
+            (ins, 1)
+        }
         Expr::Bin { op, lhs, rhs, .. } => {
             let (ai, ao) = arity(lhs)?;
             let (bi, bo) = arity(rhs)?;

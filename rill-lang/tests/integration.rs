@@ -35,6 +35,18 @@ fn math_builtin_abs() {
 }
 
 #[test]
+fn application_in_fanout_lowers_correctly() {
+    // `g(_)` in parallel fan-out branches: each half sums back to identity.
+    assert_eq!(
+        run(
+            "g(x) = x * 0.5; process = _ <: (g(_) , g(_)) :> +;",
+            &[2.0, 4.0, 8.0]
+        ),
+        vec![2.0, 4.0, 8.0]
+    );
+}
+
+#[test]
 fn type_error_is_reported() {
     assert!(compile::<f32>("process = _ , _;").is_err());
 }
