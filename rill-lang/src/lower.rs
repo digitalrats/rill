@@ -219,7 +219,7 @@ impl<'a> Lowerer<'a> {
                 self.lower(rhs, &mid)
             }
             BinOp::Par => {
-                let li = arity_in(lhs)?;
+                let li = arity_in(lhs, self.sigs)?;
                 let (a_in, b_in) = inputs.split_at(li.min(inputs.len()));
                 let mut out = self.lower(lhs, a_in)?;
                 out.extend(self.lower(rhs, b_in)?);
@@ -227,7 +227,7 @@ impl<'a> Lowerer<'a> {
             }
             BinOp::Split => {
                 let a_out = self.lower(lhs, inputs)?;
-                let bi = arity_in(rhs)?;
+                let bi = arity_in(rhs, self.sigs)?;
                 let reps = bi / a_out.len().max(1);
                 let mut fanned = Vec::with_capacity(bi);
                 for _ in 0..reps {
@@ -237,7 +237,7 @@ impl<'a> Lowerer<'a> {
             }
             BinOp::Merge => {
                 let a_out = self.lower(lhs, inputs)?;
-                let bi = arity_in(rhs)?;
+                let bi = arity_in(rhs, self.sigs)?;
                 let groups = a_out.len() / bi.max(1);
                 let mut merged = Vec::with_capacity(bi);
                 for k in 0..bi {
@@ -288,7 +288,7 @@ impl<'a> Lowerer<'a> {
         inputs: &[usize],
         _span: Span,
     ) -> Result<Vec<usize>, CompileError> {
-        let bo = arity_out(rhs)?;
+        let bo = arity_out(rhs, self.sigs)?;
         let mut fb_regs = Vec::with_capacity(bo);
         let mut slots = Vec::with_capacity(bo);
         for _ in 0..bo {
@@ -302,7 +302,7 @@ impl<'a> Lowerer<'a> {
         let mut a_in = fb_regs.clone();
         a_in.extend_from_slice(inputs);
         let a_out = self.lower(lhs, &a_in)?;
-        let bi = arity_in(rhs)?;
+        let bi = arity_in(rhs, self.sigs)?;
         let b_in: Vec<usize> = a_out.iter().copied().take(bi).collect();
         let b_out = self.lower(rhs, &b_in)?;
         for (k, slot) in slots.iter().enumerate() {
@@ -345,39 +345,47 @@ impl<'a> Lowerer<'a> {
     }
 }
 
-fn arity_out(e: &Expr) -> Result<usize, CompileError> {
-    Ok(arity(e)?.1)
+fn arity_out(e: &Expr, sigs: &dyn SignatureSource) -> Result<usize, CompileError> {
+    Ok(arity(e, sigs)?.1)
 }
-fn arity_in(e: &Expr) -> Result<usize, CompileError> {
-    Ok(arity(e)?.0)
+fn arity_in(e: &Expr, sigs: &dyn SignatureSource) -> Result<usize, CompileError> {
+    Ok(arity(e, sigs)?.0)
 }
 
-fn arity(e: &Expr) -> Result<(usize, usize), CompileError> {
+fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), CompileError> {
     let unsupported = |m: &str| CompileError::Unsupported(m.to_string());
     Ok(match e {
         Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
         Expr::Wire(_) => (1, 1),
         Expr::Cut(_) => (1, 0),
-        Expr::Neg(inner, _) => arity(inner)?,
+        Expr::Neg(inner, _) => arity(inner, sigs)?,
         Expr::Ref(name, _) => match name.as_str() {
             "+" | "-" | "*" | "/" | "%" | "min" | "max" => (2, 1),
             "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
             _ => {
-                return Err(unsupported(
-                    "arity of bare user-def ref; wrap in application",
-                ))
+                if let Some(sig) = sigs.builtin_sig(name) {
+                    (sig.signal_ins, sig.signal_outs)
+                } else {
+                    return Err(unsupported(
+                        "arity of bare user-def ref; wrap in application",
+                    ));
+                }
             }
         },
-        Expr::Apply { args, .. } => {
-            let mut ins = 0;
-            for a in args {
-                ins += arity(a)?.0;
+        Expr::Apply { name, args, .. } => {
+            if let Some(sig) = sigs.builtin_sig(name) {
+                (sig.signal_ins, sig.signal_outs)
+            } else {
+                let mut ins = 0;
+                for a in args {
+                    ins += arity(a, sigs)?.0;
+                }
+                (ins, 1)
             }
-            (ins, 1)
         }
         Expr::Bin { op, lhs, rhs, .. } => {
-            let (ai, ao) = arity(lhs)?;
-            let (bi, bo) = arity(rhs)?;
+            let (ai, ao) = arity(lhs, sigs)?;
+            let (bi, bo) = arity(rhs, sigs)?;
             match op {
                 BinOp::Seq => (ai, bo),
                 BinOp::Par => (ai + bi, ao + bo),

@@ -24,6 +24,8 @@ pub use error::{CompileError, Span};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
+pub use builtin::{BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
+
 use rill_core::math::Transcendental;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
@@ -43,4 +45,36 @@ pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T>, CompileEr
     let typed = types::infer::infer_program(&program)?;
     let ir = lower::lower(&typed)?;
     Ok(RillProgram::<T>::new(ir))
+}
+
+/// Compile with a built-in registry and a sample rate.
+pub fn compile_with<T: Transcendental>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+) -> Result<RillProgram<T>, CompileError> {
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens)?;
+    let typed = types::infer::infer_program_with(&program, registry)?;
+    let ir = lower::lower_with(&typed, registry)?;
+    validate_block_builtins(&ir)?;
+    RillProgram::<T>::new_with(ir, registry, sample_rate)
+}
+
+fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
+    use crate::ir::Instr;
+    use crate::schedule::{build_schedule, Step};
+    let sched = build_schedule(ir);
+    for step in &sched.steps {
+        if let Step::Sample(instrs) = step {
+            for &idx in instrs {
+                if matches!(ir.instrs[idx], Instr::CallBlock { .. }) {
+                    return Err(CompileError::Unsupported(
+                        "block built-in cannot be used inside a feedback loop (`~`)".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }

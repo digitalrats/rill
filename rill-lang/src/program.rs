@@ -5,8 +5,18 @@
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ProcessResult};
 
+use crate::builtin::SampleBuiltin;
+use crate::error::CompileError;
 use crate::ir::Ir;
 use crate::schedule::{build_schedule, Schedule};
+
+/// A runtime built-in instance, indexed directly by IR `instance` fields.
+pub(crate) enum BuiltinInst<T: Transcendental> {
+    /// A per-sample stateful built-in.
+    Sample(Box<dyn SampleBuiltin<T>>),
+    /// An opaque whole-buffer built-in.
+    Block(Box<dyn Algorithm<T>>),
+}
 
 /// A compiled program ready to run inside the rill graph.
 pub struct RillProgram<T: Transcendental> {
@@ -22,6 +32,8 @@ pub struct RillProgram<T: Transcendental> {
     pub(crate) block_regs: Vec<Vec<T>>,
     /// Scalar register file for the reference (per-sample) path.
     pub(crate) regs_scalar: Vec<f64>,
+    /// Runtime built-in instances (indexed by `ir.builtins` indices).
+    pub(crate) builtins: Vec<BuiltinInst<T>>,
 }
 
 /// A fixed-length ring buffer for one `@` delay site.
@@ -67,7 +79,58 @@ impl<T: Transcendental> RillProgram<T> {
             delays,
             block_regs,
             regs_scalar,
+            builtins: Vec::new(),
         }
+    }
+
+    pub(crate) fn new_with(
+        ir: Ir,
+        registry: &crate::builtin::Registry<T>,
+        sample_rate: f32,
+    ) -> Result<Self, CompileError> {
+        let mut builtins = Vec::with_capacity(ir.builtins.len());
+        for bi in &ir.builtins {
+            let entry = registry.get(&bi.name).ok_or_else(|| {
+                CompileError::Unsupported(format!("unknown built-in '{}'", bi.name))
+            })?;
+            match bi.kind {
+                crate::builtin::BuiltinKind::Sample => {
+                    let mut b = entry
+                        .build_sample(&bi.params, sample_rate)
+                        .expect("registry build_sample failed for sample builtin");
+                    b.init(sample_rate);
+                    builtins.push(BuiltinInst::Sample(b));
+                }
+                crate::builtin::BuiltinKind::Block => {
+                    let mut b = entry
+                        .build_block(&bi.params, sample_rate)
+                        .expect("registry build_block failed for block builtin");
+                    Algorithm::init(b.as_mut(), sample_rate);
+                    builtins.push(BuiltinInst::Block(b));
+                }
+            }
+        }
+        let state = vec![0.0; ir.state.state_slots];
+        let state_next = state.clone();
+        let delays = ir
+            .state
+            .delay_lens
+            .iter()
+            .map(|&l| DelayRing::new(l))
+            .collect();
+        let block_regs = vec![Vec::new(); ir.num_regs];
+        let regs_scalar = vec![0.0; ir.num_regs];
+        let schedule = build_schedule(&ir);
+        Ok(Self {
+            ir,
+            schedule,
+            state,
+            state_next,
+            delays,
+            block_regs,
+            regs_scalar,
+            builtins,
+        })
     }
 
     /// Ensure every block register can hold `n` samples (grows + reuses).
@@ -89,6 +152,16 @@ impl<T: Transcendental> RillProgram<T> {
         crate::backend::interp::run_block_reference(self, input, output);
         Ok(())
     }
+
+    /// Forward initialisation to all built-in instances.
+    pub fn init(&mut self, sample_rate: f32) {
+        for b in &mut self.builtins {
+            match b {
+                BuiltinInst::Sample(inst) => inst.init(sample_rate),
+                BuiltinInst::Block(inst) => Algorithm::init(inst.as_mut(), sample_rate),
+            }
+        }
+    }
 }
 
 impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
@@ -109,6 +182,12 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
                 *v = 0.0;
             }
             d.head = 0;
+        }
+        for b in &mut self.builtins {
+            match b {
+                BuiltinInst::Sample(inst) => inst.reset(),
+                BuiltinInst::Block(inst) => Algorithm::reset(inst.as_mut()),
+            }
         }
     }
 }

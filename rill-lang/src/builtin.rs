@@ -10,7 +10,7 @@ use rill_core::math::Transcendental;
 use rill_core::traits::Algorithm;
 
 /// A stateful per-sample built-in: `signal_ins` inputs → 1 output.
-pub trait SampleBuiltin<T: Transcendental>: Send {
+pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
     /// Process one sample. `inputs.len() == signal_ins`.
     fn process_sample(&mut self, inputs: &[T]) -> T;
     /// Re-initialise for a sample rate (default no-op).
