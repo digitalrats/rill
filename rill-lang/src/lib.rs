@@ -15,6 +15,7 @@ pub mod lower;
 pub mod parser;
 pub mod prelude;
 pub mod program;
+pub mod schedule;
 pub mod serde_def;
 pub mod types;
 
