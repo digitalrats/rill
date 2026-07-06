@@ -13,16 +13,16 @@ modelling.
 ┌─────────────────────────────────────────────────────────────┐
 │  rill-osc  │  rill-graph  │  rill-patchbay  │  rill-sampler │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-core-dsp  (Algorithm trait, filters, generators, FX)  │
+│  rill-core-dsp  (Algorithm trait, filters, generators, FX)   │
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
-│  -effects  │  rill-router  │  rill-lofi                     │
-│  rill-core-model  │  rill-analog-filters  │  rill-analog      │
-│  -effects  │  rill-lang  │                                    │
+│  -effects  │  rill-router  │  rill-lofi                       │
+│  rill-core-model  │  rill-analog-filters  │  rill-analog     │
+│  -effects  │  rill-lang  │                                   │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-core (traits, math, buffers, queues, time, macros)   │
-│  rill-core-actor  (ActorRef, ActorCell, ActorSystem)       │
+│  rill-core (traits, math, buffers, queues, time, macros)     │
+│  rill-core-actor  (ActorRef, ActorCell, ActorSystem)        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
