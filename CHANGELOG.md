@@ -2,6 +2,28 @@
 
 ## [0.5.0-beta.7] — In Progress
 
+### 🧬 New crate: `rill-lang` — Faust-style signal DSL
+
+A new workspace crate that compiles a small, functional block-diagram language
+into a `rill_core::Algorithm<T>`. Programs describe the internal math of a graph
+node as source text; the compiler runs a hand-written lexer + Pratt parser, a
+Hindley-Milner type checker (scalar unification + let-polymorphism, with
+bottom-up arity synthesis), lowers to a flat linear IR, and runs it on a safe,
+allocation-free sample-by-sample interpreter.
+
+- **Combinators** `:` (sequential), `,` (parallel), `<:` (split), `:>` (merge),
+  `~` (feedback), `@` (integer delay); arithmetic, math builtins, named
+  functions, and top-level `process` with arity `(0|1) → 1`.
+- **`compile::<T>(src)`** → `RillProgram<T>: Algorithm<T>`.
+- **`serde` feature** — `RillLangDef { source }` + `compile_def` (the source
+  string is the canonical serialized form).
+- **`rill-adrift` `lang` feature** — re-exports `rill-lang` and registers a
+  `rill/lang` factory node (reads a `source` parameter; recompiles on
+  `set_parameter`).
+- Backend is trait-based; a Cranelift JIT backend is planned behind a future
+  `jit` feature and will reuse the same IR.
+
+
 ### ⏱️ Sample-accurate parameter automation (`rill-core`, `rill-graph`, `rill-io`, `rill-patchbay`)
 
 Fixes tick-driven control (sequencers, servos) collapsing under backends that
