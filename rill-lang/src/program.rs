@@ -5,7 +5,7 @@
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ProcessResult};
 
-use crate::builtin::SampleBuiltin;
+use crate::builtin::{BlockBuiltin, SampleBuiltin};
 use crate::error::CompileError;
 use crate::ir::{Ir, ParamDef};
 use crate::schedule::{build_schedule, Schedule};
@@ -15,7 +15,7 @@ pub(crate) enum BuiltinInst<T: Transcendental> {
     /// A per-sample stateful built-in.
     Sample(Box<dyn SampleBuiltin<T>>),
     /// An opaque whole-buffer built-in.
-    Block(Box<dyn Algorithm<T>>),
+    Block(Box<dyn BlockBuiltin<T>>),
 }
 
 /// A compiled program ready to run inside the rill graph.

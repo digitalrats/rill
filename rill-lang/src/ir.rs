@@ -176,6 +176,8 @@ pub struct BuiltinInstance {
     pub params: Vec<f64>,
     /// Sample vs block.
     pub kind: BuiltinKind,
+    /// (arg_position, param_idx) dynamic param drivers.
+    pub param_bindings: Vec<(usize, usize)>,
 }
 
 /// A named runtime parameter definition (a mutable control slot).

@@ -13,6 +13,21 @@ use crate::schedule::Step;
 /// rejects any sample built-in exceeding this.
 pub(crate) const MAX_SAMPLE_BUILTIN_INS: usize = 4;
 
+fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
+    let n = prog.ir.builtins.len();
+    for instance in 0..n {
+        let blen = prog.ir.builtins[instance].param_bindings.len();
+        for k in 0..blen {
+            let (arg_pos, param_idx) = prog.ir.builtins[instance].param_bindings[k];
+            let v = T::from_f64(prog.params[param_idx]);
+            match &mut prog.builtins[instance] {
+                crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, v),
+                crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, v),
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Reference (per-sample) interpreter — numerical oracle, MVP behavior.
 // ============================================================================
@@ -23,6 +38,7 @@ pub fn run_block_reference<T: Transcendental>(
     input: Option<&[T]>,
     output: &mut [T],
 ) {
+    push_builtin_params(prog);
     let n = output.len();
     for i in 0..n {
         let in_sample = match input {
@@ -130,6 +146,7 @@ pub fn run_block_hybrid<T: Transcendental>(
     input: Option<&[T]>,
     output: &mut [T],
 ) {
+    push_builtin_params(prog);
     let n = output.len();
     prog.ensure_block_len(n);
 
@@ -442,6 +459,8 @@ mod tests {
         fn reset(&mut self) {}
     }
 
+    impl<T: Transcendental> crate::builtin::BlockBuiltin<T> for GainBlock<T> {}
+
     fn test_registry() -> Registry<f32> {
         let mut reg = Registry::new();
         reg.register_sample(
@@ -692,5 +711,71 @@ mod tests {
         prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
         // output = x * 2.0 + 2.0
         assert_eq!(out, [4.0, 6.0, 8.0, 10.0]);
+    }
+
+    // --- dynamic built-in param tests ---
+
+    struct Gain {
+        k: f32,
+    }
+    impl SampleBuiltin<f32> for Gain {
+        fn process_sample(&mut self, inputs: &[f32]) -> f32 {
+            inputs[0] * self.k
+        }
+        fn set_param(&mut self, index: usize, value: f32) {
+            if index == 0 {
+                self.k = value;
+            }
+        }
+        fn reset(&mut self) {}
+    }
+
+    fn gain_registry() -> Registry<f32> {
+        let mut reg = Registry::new();
+        reg.register_sample(
+            BuiltinSig {
+                name: "gain",
+                signal_ins: 1,
+                signal_outs: 1,
+                num_params: 1,
+                kind: BuiltinKind::Sample,
+            },
+            |p, _sr| Box::new(Gain { k: p[0] as f32 }),
+        );
+        reg
+    }
+
+    #[test]
+    fn dynamic_param_drives_builtin() {
+        let reg = gain_registry();
+        let mut prog =
+            compile_with::<f32>("process = _ : gain(param(\"g\", 1.0));", &reg, 48000.0).unwrap();
+        let mut out = [0.0f32; 4];
+        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+        assert_eq!(out, [1.0, 2.0, 4.0, 8.0]); // k=1.0 identity
+        let i = prog.param_index("g").unwrap();
+        prog.set_param(i, 0.5);
+        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+        assert_eq!(out, [0.5, 1.0, 2.0, 4.0]); // k=0.5 halves
+    }
+
+    #[test]
+    fn dynamic_param_hybrid_matches_reference() {
+        let reg = gain_registry();
+        let mut a =
+            compile_with::<f32>("process = _ : gain(param(\"g\", 2.0));", &reg, 48000.0).unwrap();
+        let mut b =
+            compile_with::<f32>("process = _ : gain(param(\"g\", 2.0));", &reg, 48000.0).unwrap();
+        let i = a.param_index("g").unwrap();
+        a.set_param(i, 3.0);
+        b.set_param(i, 3.0);
+        let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
+        let mut oa = vec![0.0f32; input.len()];
+        let mut ob = vec![0.0f32; input.len()];
+        a.process(Some(&input), &mut oa).unwrap();
+        b.process_reference(Some(&input), &mut ob).unwrap();
+        for (x, y) in oa.iter().zip(ob.iter()) {
+            assert!((x - y).abs() < 1e-5, "hybrid {x} vs reference {y}");
+        }
     }
 }

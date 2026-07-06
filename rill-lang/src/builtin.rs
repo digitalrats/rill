@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use rill_core::math::Transcendental;
-use rill_core::traits::Algorithm;
 
 /// A stateful per-sample built-in: `signal_ins` inputs → 1 output.
 pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
@@ -17,6 +16,14 @@ pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
     fn init(&mut self, _sample_rate: f32) {}
     /// Clear internal state.
     fn reset(&mut self);
+    /// Set a parameter by index (default no-op).
+    fn set_param(&mut self, _index: usize, _value: T) {}
+}
+
+/// A whole-buffer built-in with settable params.
+pub trait BlockBuiltin<T: Transcendental>: rill_core::traits::Algorithm<T> {
+    /// Set a parameter by index (default no-op).
+    fn set_param(&mut self, _index: usize, _value: T) {}
 }
 
 /// Whether a built-in is per-sample or whole-buffer.
@@ -45,7 +52,7 @@ pub struct BuiltinSig {
 
 /// A boxed factory building an instance from folded params + a sample rate.
 type SampleFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn SampleBuiltin<T>> + Send + Sync>;
-type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn Algorithm<T>> + Send + Sync>;
+type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
 
 enum Factory<T: Transcendental> {
     Sample(SampleFactory<T>),
@@ -73,7 +80,11 @@ impl<T: Transcendental> Entry<T> {
         }
     }
     /// Build a block instance.
-    pub fn build_block(&self, params: &[f64], sample_rate: f32) -> Option<Box<dyn Algorithm<T>>> {
+    pub fn build_block(
+        &self,
+        params: &[f64],
+        sample_rate: f32,
+    ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match &self.factory {
             Factory::Block(f) => Some(f(params, sample_rate)),
             Factory::Sample(_) => None,
@@ -120,7 +131,7 @@ impl<T: Transcendental> Registry<T> {
     pub fn register_block(
         &mut self,
         sig: BuiltinSig,
-        factory: impl Fn(&[f64], f32) -> Box<dyn Algorithm<T>> + Send + Sync + 'static,
+        factory: impl Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync + 'static,
     ) {
         debug_assert_eq!(sig.kind, BuiltinKind::Block);
         self.entries.insert(

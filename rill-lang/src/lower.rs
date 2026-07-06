@@ -142,9 +142,51 @@ impl<'a> Lowerer<'a> {
                 if let Some(sig) = self.sigs.builtin_sig(name) {
                     let sig = sig.clone();
                     let mut params = Vec::with_capacity(args.len());
-                    for a in args {
+                    let mut param_bindings = Vec::new();
+                    for (pos, a) in args.iter().enumerate() {
+                        if let Expr::Apply {
+                            name: pn,
+                            args: pargs,
+                            ..
+                        } = a
+                        {
+                            if pn == "param" {
+                                let pname = match &pargs[0] {
+                                    Expr::Str(s, _) => s.clone(),
+                                    _ => {
+                                        return Err(CompileError::Type {
+                                            msg: "param name must be a string literal".into(),
+                                            span: pargs[0].span(),
+                                        });
+                                    }
+                                };
+                                let default = const_f64(&pargs[1]).unwrap_or(0.0);
+                                let (min, max) = if pargs.len() == 4 {
+                                    (
+                                        const_f64(&pargs[2]).unwrap_or(f64::NEG_INFINITY),
+                                        const_f64(&pargs[3]).unwrap_or(f64::INFINITY),
+                                    )
+                                } else {
+                                    (f64::NEG_INFINITY, f64::INFINITY)
+                                };
+                                let idx =
+                                    *self.param_names.entry(pname.clone()).or_insert_with(|| {
+                                        let i = self.params.len();
+                                        self.params.push(ParamDef {
+                                            name: pname.clone(),
+                                            default,
+                                            min,
+                                            max,
+                                        });
+                                        i
+                                    });
+                                params.push(default);
+                                param_bindings.push((pos, idx));
+                                continue;
+                            }
+                        }
                         let v = const_f64(a).ok_or_else(|| CompileError::Type {
-                            msg: format!("param to `{name}` must be a constant"),
+                            msg: format!("param to `{name}` must be a constant or a param(...)"),
                             span: a.span(),
                         })?;
                         params.push(v);
@@ -154,6 +196,7 @@ impl<'a> Lowerer<'a> {
                         name: name.clone(),
                         params,
                         kind: sig.kind,
+                        param_bindings,
                     });
                     let dst = self.fresh_reg();
                     match sig.kind {
@@ -203,6 +246,7 @@ impl<'a> Lowerer<'a> {
                     name: name.to_string(),
                     params: Vec::new(),
                     kind: sig.kind,
+                    param_bindings: Vec::new(),
                 });
                 let dst = self.fresh_reg();
                 match sig.kind {
