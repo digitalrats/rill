@@ -35,6 +35,7 @@ rill-core-model = { workspace = true, optional = true }
 rill-analog-filters = { workspace = true, optional = true }
 rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
+rill-lang = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
 tokio = { workspace = true, optional = true, features = ["signal", "rt", "rt-multi-thread", "macros"] }
@@ -79,6 +80,7 @@ telemetry = ["dep:rill-telemetry"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects"]
 sampler = ["dep:rill-sampler"]
+lang = ["dep:rill-lang"]
 serialization = [
     "rill-graph/serialization",
     "rill-patchbay/serialization",

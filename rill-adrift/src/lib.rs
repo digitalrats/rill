@@ -35,6 +35,13 @@ pub use rill_analog_effects as analog_effects;
 #[cfg(feature = "sampler")]
 pub use rill_sampler as sampler;
 
+#[cfg(feature = "lang")]
+pub use rill_lang as lang;
+
+/// rill-lang graph node adapter (`LangNode`), available with the `lang` feature.
+#[cfg(feature = "lang")]
+pub mod lang_node;
+
 /// Centralised node type registration for the Rill ecosystem.
 pub mod registration;
 
