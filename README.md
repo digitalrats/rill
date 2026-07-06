@@ -5,7 +5,7 @@
 [![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
-Modular signal-processing ecosystem for Rust. 18 crates, from lock-free
+Modular signal-processing ecosystem for Rust. 19 crates, from lock-free
 queues and generic vector math to real-time audio I/O and analog circuit
 modelling.
 
