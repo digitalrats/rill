@@ -148,6 +148,13 @@ pub enum Instr {
         /// Index into [`Ir::builtins`].
         instance: usize,
     },
+    /// Read a named parameter slot. Value is constant within a block.
+    ReadParam {
+        /// Destination register.
+        dst: Reg,
+        /// Index into [`Ir::params`].
+        idx: usize,
+    },
 }
 
 /// Layout describing pre-allocated persistent storage.
@@ -171,6 +178,19 @@ pub struct BuiltinInstance {
     pub kind: BuiltinKind,
 }
 
+/// A named runtime parameter definition (a mutable control slot).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamDef {
+    /// Parameter name.
+    pub name: String,
+    /// Initial/default value.
+    pub default: f64,
+    /// Minimum (clamp lower bound).
+    pub min: f64,
+    /// Maximum (clamp upper bound).
+    pub max: f64,
+}
+
 /// A complete lowered program.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ir {
@@ -187,4 +207,6 @@ pub struct Ir {
     /// Built-in call-site descriptors, indexed by the `instance` field of
     /// [`Instr::CallSample`]/[`Instr::CallBlock`].
     pub builtins: Vec<BuiltinInstance>,
+    /// Named parameter definitions, indexed by [`Instr::ReadParam::idx`].
+    pub params: Vec<ParamDef>,
 }

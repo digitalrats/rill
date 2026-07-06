@@ -84,6 +84,7 @@ fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) ->
                 }
                 prog.regs_scalar[dst] = o[0].to_f64();
             }
+            Instr::ReadParam { dst, idx } => prog.regs_scalar[dst] = prog.params[idx],
         }
     }
     for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
@@ -203,6 +204,10 @@ fn exec_block_op<T: Transcendental>(
             prog.block_regs[dst] = out;
         }
         // Stateful instrs never appear as a Block step.
+        Instr::ReadParam { dst, idx } => {
+            let v = T::from_f64(prog.params[idx]);
+            prog.block_regs[dst][..n].fill(v);
+        }
         Instr::ReadState { .. }
         | Instr::WriteState { .. }
         | Instr::ReadDelay { .. }
@@ -296,6 +301,9 @@ fn exec_sample_region<T: Transcendental>(
                 Instr::CallBlock { .. } => {
                     unreachable!("block builtin scheduled into a sample region")
                 }
+                Instr::ReadParam { dst, idx } => {
+                    prog.block_regs[dst][i] = T::from_f64(prog.params[idx]);
+                }
             }
         }
         for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
@@ -380,6 +388,7 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
 #[cfg(test)]
 mod tests {
     use crate::builtin::{BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
+    use crate::compile;
     use crate::compile_with;
     use crate::lexer::tokenize;
     use crate::lower::lower;
@@ -638,5 +647,50 @@ mod tests {
         let reg = test_registry();
         let err = compile_with::<f32>("process = _ : nosuch(1.0);", &reg, 44100.0);
         assert!(err.is_err());
+    }
+
+    // --- param() tests ---
+
+    #[test]
+    fn param_default_applies() {
+        let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5);").unwrap();
+        let mut out = [0.0f32; 4];
+        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+        assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn set_param_changes_output() {
+        let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5);").unwrap();
+        let i = prog.param_index("g").unwrap();
+        prog.set_param(i, 2.0);
+        let mut out = [0.0f32; 4];
+        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+        assert_eq!(out, [2.0, 4.0, 8.0, 16.0]);
+    }
+
+    #[test]
+    fn param_range_clamps() {
+        let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5, 0.0, 1.0);").unwrap();
+        let i = prog.param_index("g").unwrap();
+        prog.set_param(i, 5.0);
+        let mut out = [0.0f32; 4];
+        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+        assert_eq!(out, [1.0, 2.0, 4.0, 8.0]); // clamped to 1.0 = identity
+    }
+
+    #[test]
+    fn param_shared_slot() {
+        let mut prog =
+            compile::<f32>("process = _ * param(\"k\", 2.0) + param(\"k\", 2.0);").unwrap();
+        assert_eq!(
+            prog.params_meta().len(),
+            1,
+            "repeated param name should share a slot"
+        );
+        let mut out = [0.0f32; 4];
+        prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
+        // output = x * 2.0 + 2.0
+        assert_eq!(out, [4.0, 6.0, 8.0, 10.0]);
     }
 }

@@ -223,6 +223,33 @@ fn infer_apply(
     args: &[Expr],
     span: Span,
 ) -> Result<Type, CompileError> {
+    if name == "param" {
+        if args.len() != 2 && args.len() != 4 {
+            return Err(CompileError::Type {
+                msg: "param expects (name, default[, min, max])".into(),
+                span,
+            });
+        }
+        if !matches!(args[0], Expr::Str(_, _)) {
+            return Err(CompileError::Type {
+                msg: "param name must be a string literal".into(),
+                span: args[0].span(),
+            });
+        }
+        for a in &args[1..] {
+            let at = infer_expr(ctx, a)?;
+            if at.arity_in() != 0 || at.arity_out() != 1 {
+                return Err(CompileError::Type {
+                    msg: "param default/min/max must be constants".into(),
+                    span: a.span(),
+                });
+            }
+        }
+        return Ok(Type {
+            ins: vec![],
+            outs: vec![Scalar::Float],
+        });
+    }
     if let Some(sig) = ctx.sigs.builtin_sig(name) {
         let sig = sig.clone();
         if args.len() != sig.num_params {

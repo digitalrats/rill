@@ -7,7 +7,7 @@ use rill_core::traits::{Algorithm, ProcessResult};
 
 use crate::builtin::SampleBuiltin;
 use crate::error::CompileError;
-use crate::ir::Ir;
+use crate::ir::{Ir, ParamDef};
 use crate::schedule::{build_schedule, Schedule};
 
 /// A runtime built-in instance, indexed directly by IR `instance` fields.
@@ -34,6 +34,10 @@ pub struct RillProgram<T: Transcendental> {
     pub(crate) regs_scalar: Vec<f64>,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
     pub(crate) builtins: Vec<BuiltinInst<T>>,
+    /// Current parameter values, indexed by [`Ir::params`].
+    pub(crate) params: Vec<f64>,
+    /// Parameter metadata (name, default, range).
+    pub(crate) params_meta: Vec<ParamDef>,
 }
 
 /// A fixed-length ring buffer for one `@` delay site.
@@ -71,6 +75,8 @@ impl<T: Transcendental> RillProgram<T> {
         let block_regs = vec![Vec::new(); ir.num_regs];
         let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
+        let params_meta = ir.params.clone();
+        let params = ir.params.iter().map(|p| p.default).collect();
         Self {
             ir,
             schedule,
@@ -80,6 +86,8 @@ impl<T: Transcendental> RillProgram<T> {
             block_regs,
             regs_scalar,
             builtins: Vec::new(),
+            params,
+            params_meta,
         }
     }
 
@@ -121,6 +129,8 @@ impl<T: Transcendental> RillProgram<T> {
         let block_regs = vec![Vec::new(); ir.num_regs];
         let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
+        let params_meta = ir.params.clone();
+        let params = ir.params.iter().map(|p| p.default).collect();
         Ok(Self {
             ir,
             schedule,
@@ -130,6 +140,8 @@ impl<T: Transcendental> RillProgram<T> {
             block_regs,
             regs_scalar,
             builtins,
+            params,
+            params_meta,
         })
     }
 
@@ -140,6 +152,28 @@ impl<T: Transcendental> RillProgram<T> {
                 r.resize(n, T::ZERO);
             }
         }
+    }
+
+    /// Index of a named parameter, if present.
+    pub fn param_index(&self, name: &str) -> Option<usize> {
+        self.params_meta.iter().position(|p| p.name == name)
+    }
+
+    /// Set a parameter by index (clamped to its range). RT-safe (plain store).
+    pub fn set_param(&mut self, idx: usize, value: f64) {
+        if let Some(def) = self.params_meta.get(idx) {
+            self.params[idx] = value.clamp(def.min, def.max);
+        }
+    }
+
+    /// Current value of a parameter by index.
+    pub fn param(&self, idx: usize) -> f64 {
+        self.params.get(idx).copied().unwrap_or(0.0)
+    }
+
+    /// Metadata for all parameters (name, default, range).
+    pub fn params_meta(&self) -> &[ParamDef] {
+        &self.params_meta
     }
 
     /// Reference implementation: the MVP per-sample interpreter. Used by tests

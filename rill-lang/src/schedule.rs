@@ -37,7 +37,8 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
         | Instr::Bin { dst, .. }
         | Instr::Move { dst, .. }
         | Instr::CallSample { dst, .. }
-        | Instr::CallBlock { dst, .. } => Some(dst),
+        | Instr::CallBlock { dst, .. }
+        | Instr::ReadParam { dst, .. } => Some(dst),
         Instr::WriteState { .. } | Instr::WriteDelay { .. } => None,
     }
 }

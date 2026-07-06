@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::ast::{BinOp, Def, Expr, Program};
 use crate::builtin::{BuiltinKind, SignatureSource};
 use crate::error::{CompileError, Span};
-use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, StateLayout, UnOp};
+use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
 use crate::types::infer::TypedProgram;
 
 struct Lowerer<'a> {
@@ -17,6 +17,8 @@ struct Lowerer<'a> {
     delay_lens: Vec<usize>,
     locals: Vec<HashMap<String, Vec<usize>>>,
     builtins: Vec<BuiltinInstance>,
+    params: Vec<ParamDef>,
+    param_names: HashMap<String, usize>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -64,6 +66,34 @@ impl<'a> Lowerer<'a> {
                     .collect())
             }
             Expr::Apply { name, args, span } => {
+                if name == "param" {
+                    let pname = match &args[0] {
+                        Expr::Str(s, _) => s.clone(),
+                        _ => unreachable!("checked in infer"),
+                    };
+                    let default = const_f64(&args[1]).unwrap_or(0.0);
+                    let (min, max) = if args.len() == 4 {
+                        (
+                            const_f64(&args[2]).unwrap_or(f64::NEG_INFINITY),
+                            const_f64(&args[3]).unwrap_or(f64::INFINITY),
+                        )
+                    } else {
+                        (f64::NEG_INFINITY, f64::INFINITY)
+                    };
+                    let idx = *self.param_names.entry(pname.clone()).or_insert_with(|| {
+                        let i = self.params.len();
+                        self.params.push(ParamDef {
+                            name: pname.clone(),
+                            default,
+                            min,
+                            max,
+                        });
+                        i
+                    });
+                    let dst = self.fresh_reg();
+                    self.emit(Instr::ReadParam { dst, idx });
+                    return Ok(vec![dst]);
+                }
                 if let Some(sig) = self.sigs.builtin_sig(name) {
                     let sig = sig.clone();
                     let mut params = Vec::with_capacity(args.len());
@@ -468,6 +498,8 @@ pub fn lower_with(tp: &TypedProgram, sigs: &dyn SignatureSource) -> Result<Ir, C
         delay_lens: Vec::new(),
         locals: Vec::new(),
         builtins: Vec::new(),
+        params: Vec::new(),
+        param_names: HashMap::new(),
     };
     let mut input_regs = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
@@ -492,6 +524,7 @@ pub fn lower_with(tp: &TypedProgram, sigs: &dyn SignatureSource) -> Result<Ir, C
             delay_lens: lw.delay_lens,
         },
         builtins: lw.builtins,
+        params: lw.params,
     })
 }
 
