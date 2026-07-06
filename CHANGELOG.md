@@ -28,6 +28,13 @@ allocation-free sample-by-sample interpreter.
   per-sample. The block path computes in `T`. The per-sample interpreter is
   retained as a reference oracle (`RillProgram::process_reference`). Foundation
   for whole-graph-as-one-program lowering and the future JIT.
+- **DSP/model built-ins (FFI registry).** rill-lang programs can call stateful
+  built-ins from `rill-core-dsp`/`rill-core-model` via `compile_with(src,
+  &registry, sample_rate)`: per-sample built-ins (`onepole`, `moog` — feedback-
+  legal) and whole-buffer built-ins (`lowpass`, `highpass`, `analog_moog`). Params
+  are constants (`_ : lowpass(1000.0, 0.7)`); signals flow via combinators.
+  Bindings live in `rill-adrift` (`lang_builtins::full_registry`, `analog_moog`
+  behind the `analog` feature). rill-lang core stays `rill-core`-only.
 
 
 ### ⏱️ Sample-accurate parameter automation (`rill-core`, `rill-graph`, `rill-io`, `rill-patchbay`)

@@ -102,6 +102,16 @@ eDSL, while feedback (`~`) and delay (`@`) recurrences run per-sample. The block
 path computes in `T` with zero heap allocation on the hot path. A Cranelift JIT
 backend is still planned and will reuse the same IR.
 
+## Built-in functions
+
+rill-lang supports calling stateful DSP/model built-ins from
+`rill-core-dsp`/`rill-core-model` via `compile_with(src, &registry, sample_rate)`.
+Parameters are compile-time constants (`_ : lowpass(1000.0, 0.7)`), signals flow
+via combinators. Per-sample built-ins (`onepole`, `moog`) are feedback-legal;
+whole-buffer built-ins (`lowpass`, `highpass`, `analog_moog`) are opaque block
+steps and cannot appear inside `~`. Bindings live in `rill-adrift`
+(`lang_builtins::full_registry`, `analog_moog` behind the `analog` feature).
+
 ## Status
 
 MVP. Deferred to follow-on work: the Cranelift `jit` feature, foreign references

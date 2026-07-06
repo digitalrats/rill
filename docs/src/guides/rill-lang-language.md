@@ -120,6 +120,60 @@ use rill_lang::compile;
 assert!(compile::<f32>("process = _ , _;").is_err());
 ```
 
+## Built-in functions
+
+rill-lang programs can call stateful DSP/model built-ins from
+`rill-core-dsp`/`rill-core-model` via an extensible FFI registry. Built-ins are
+**not** compiled into the interpreter core — bindings live in the umbrella crate
+`rill-adrift`, keeping `rill-lang` dependent only on `rill-core`.
+
+### Calling convention
+
+A built-in is called like a function with constant-parameter arguments; the
+signal wire connects from the left via the sequential combinator `:`:
+
+```faust
+process = _ : lowpass(1000.0, 0.7);
+```
+
+Parameters are **compile-time constants** (float or integer literals, optionally
+with arithmetic). They are folded to `f64` during lowering and passed to the
+built-in constructor. A built-in has arity `(signal_ins → signal_outs)`; in this
+release `signal_outs` is always 1.
+
+### Sample built-ins vs block built-ins
+
+| Kind | Names | Behaviour | Inside `~` |
+|---|---|---|---|
+| **Sample** | `onepole`, `moog` | Per-sample state; the built-in's `process_sample` runs inside the sample-level recurrence loop. | Allowed |
+| **Block** | `lowpass`, `highpass`, `analog_moog` | Opaque whole-buffer step; the built-in implements `Algorithm<T>` and processes all samples at once. | Compile error |
+
+Sample built-ins are composed from the feedback combinator just like hand-rolled
+recurrences:
+
+```faust
+process = + ~ moog(500.0, 0.5);   // feedback-legal per-sample filter
+```
+
+Block built-ins cannot appear inside `~` — the compiler rejects them with an
+error (`block built-in cannot be used inside a feedback loop`).
+
+### Using built-ins from Rust
+
+```rust,no_run
+use rill_lang::compile_with;
+use rill_adrift::lang_builtins::full_registry;
+
+let reg = full_registry::<f32>();
+let mut prog = compile_with::<f32>("process = _ : onepole(200.0, 0.7);", &reg, 48_000.0).unwrap();
+let mut out = [0.0f32; 4];
+prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+```
+
+The `full_registry()` includes all DSP built-ins. `analog_moog` requires
+`rill-adrift`'s `analog` feature. The default `compile()` function has no
+built-ins — it uses an empty registry and is unchanged.
+
 ## Serialization
 
 With the `serde` feature enabled, a program round-trips through
