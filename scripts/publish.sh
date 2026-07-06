@@ -25,7 +25,8 @@
 #  15  rill-analog-filters
 #  16  rill-analog-effects
 #  17  rill-sampler
-#  18  rill-adrift
+#  18  rill-lang
+#  19  rill-adrift
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -48,6 +49,7 @@ CRATES=(
     rill-analog-filters
     rill-analog-effects
     rill-sampler
+    rill-lang
     rill-adrift
 )
 

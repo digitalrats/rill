@@ -21,6 +21,7 @@
 - [Real-Time Safety](guides/real-time-safety.md)
 - [The World of Automatons](guides/world-of-automatons.md)
 - [eDSL: Embedded Domain-Specific Languages](guides/dsl.md)
+- [rill-lang: the Signal DSL](guides/rill-lang.md)
 - [Graph Serialization](guides/serialization.md)
 - [Git Flow & Contribution Workflow](guides/git-flow.md)
 

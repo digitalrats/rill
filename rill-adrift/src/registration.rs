@@ -35,6 +35,8 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
     register_lofi::<BUF_SIZE>(factory);
     #[cfg(feature = "analog")]
     register_analog::<BUF_SIZE>(factory);
+    #[cfg(feature = "lang")]
+    register_lang::<BUF_SIZE>(factory);
 }
 
 #[cfg(feature = "io")]
@@ -218,9 +220,32 @@ fn register_analog<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
 }
 
 // ============================================================================
-// Rill Oscillators
+// Rill Lang (DSL graph node)
 // ============================================================================
 
+#[cfg(feature = "lang")]
+fn register_lang<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    node_ctor!(factory, "rill/lang", |id: NodeId, params: &Params| {
+        let source = params
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("process = _;");
+        let reg = std::sync::Arc::new(crate::lang_builtins::full_registry::<f32>());
+        let mut n = crate::lang_node::LangNode::<f32, BUF_SIZE>::from_source_with(
+            source,
+            reg,
+            params.sample_rate,
+        )
+        .unwrap_or_else(|_| crate::lang_node::LangNode::identity());
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
+}
+
+// ============================================================================
+// Rill Oscillators
+// ============================================================================
 fn register_oscillators<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_oscillators::signal::{NoiseOsc, NoiseType, SawOsc, SineOsc};
 

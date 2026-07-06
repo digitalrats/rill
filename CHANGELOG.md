@@ -2,6 +2,46 @@
 
 ## [0.5.0-beta.7] — In Progress
 
+### 🧬 New crate: `rill-lang` — Faust-style signal DSL
+
+A new workspace crate that compiles a small, functional block-diagram language
+into a `rill_core::Algorithm<T>`. Programs describe the internal math of a graph
+node as source text; the compiler runs a hand-written lexer + Pratt parser, a
+Hindley-Milner type checker (scalar unification + let-polymorphism, with
+bottom-up arity synthesis), lowers to a flat linear IR, and runs it on a safe,
+allocation-free sample-by-sample interpreter.
+
+- **Combinators** `:` (sequential), `,` (parallel), `<:` (split), `:>` (merge),
+  `~` (feedback), `@` (integer delay); arithmetic, math builtins, named
+  functions, and top-level `process` with arity `(0|1) → 1`.
+- **`compile::<T>(src)`** → `RillProgram<T>: Algorithm<T>`.
+- **`serde` feature** — `RillLangDef { source }` + `compile_def` (the source
+  string is the canonical serialized form).
+- **`rill-adrift` `lang` feature** — re-exports `rill-lang` and registers a
+  `rill/lang` factory node (reads a `source` parameter; recompiles on
+  `set_parameter`).
+- Backend is trait-based; a Cranelift JIT backend is planned behind a future
+  `jit` feature and will reuse the same IR.
+- **Hybrid block processing.** The interpreter compiles the IR into an execution
+  schedule via SCC analysis: feedforward regions run whole-buffer through the
+  `rill_core::math::vector` SIMD eDSL, while feedback/delay recurrences run
+  per-sample. The block path computes in `T`. The per-sample interpreter is
+  retained as a reference oracle (`RillProgram::process_reference`). Foundation
+  for whole-graph-as-one-program lowering and the future JIT.
+- **DSP/model built-ins (FFI registry).** rill-lang programs can call stateful
+  built-ins from `rill-core-dsp`/`rill-core-model` via `compile_with(src,
+  &registry, sample_rate)`: per-sample built-ins (`onepole`, `moog` — feedback-
+  legal) and whole-buffer built-ins (`lowpass`, `highpass`, `analog_moog`). Params
+  are constants (`_ : lowpass(1000.0, 0.7)`); signals flow via combinators.
+  Bindings live in `rill-adrift` (`lang_builtins::full_registry`, `analog_moog`
+  behind the `analog` feature). rill-lang core stays `rill-core`-only.
+- **Named parameters + smoothing.** `param("cutoff", 1000.0)` exposes RT-safe
+  control-rate parameter slots (settable via `RillProgram::set_param` and, on the
+  `rill/lang` graph node, by name — so servos/LFO/MIDI automate them for free);
+  `smooth(x, ms)` is a native one-pole for zipper-free changes; built-in args may
+  be `param(...)` for dynamic parameterization (`lowpass(param("cutoff"), 0.7)`).
+
+
 ### ⏱️ Sample-accurate parameter automation (`rill-core`, `rill-graph`, `rill-io`, `rill-patchbay`)
 
 Fixes tick-driven control (sequencers, servos) collapsing under backends that
