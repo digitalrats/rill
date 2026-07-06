@@ -8,6 +8,7 @@
 
 pub mod ast;
 pub mod backend;
+pub mod builtin;
 pub mod error;
 pub mod ir;
 pub mod lexer;
