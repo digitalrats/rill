@@ -33,7 +33,9 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
         | Instr::ReadDelay { dst, .. }
         | Instr::Un { dst, .. }
         | Instr::Bin { dst, .. }
-        | Instr::Move { dst, .. } => Some(dst),
+        | Instr::Move { dst, .. }
+        | Instr::CallSample { dst, .. }
+        | Instr::CallBlock { dst, .. } => Some(dst),
         Instr::WriteState { .. } | Instr::WriteDelay { .. } => None,
     }
 }
@@ -57,6 +59,7 @@ fn is_stateful(instr: &Instr) -> bool {
             | Instr::WriteState { .. }
             | Instr::ReadDelay { .. }
             | Instr::WriteDelay { .. }
+            | Instr::CallSample { .. }
     )
 }
 

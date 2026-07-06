@@ -382,6 +382,7 @@ pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
             state_slots: lw.state_slots,
             delay_lens: lw.delay_lens,
         },
+        builtins: Vec::new(),
     })
 }
 

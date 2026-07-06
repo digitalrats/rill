@@ -2,11 +2,13 @@
 //!
 //! The IR computes the program's single output sample from its input sample(s)
 //! using a scratch register file (`Vec<f64>`, cleared per sample) plus a
-//! persistent state vector for feedback and `@` delays. Instructions are in
-//! evaluation order; each writes exactly one register (SSA-like).
+//! persistent state vector for feedback, `@` delays, and built-in calls.
+//! Instructions are in evaluation order; each writes exactly one register (SSA-like).
 //!
 //! The interpreter executes this per sample. The future Cranelift backend
 //! consumes the same structure.
+
+use crate::builtin::BuiltinKind;
 
 /// A register index into the per-sample scratch file.
 pub type Reg = usize;
@@ -128,6 +130,24 @@ pub enum Instr {
         /// Source register.
         src: Reg,
     },
+    /// Call a per-sample built-in: `srcs` inputs → `dst`, instance index.
+    CallSample {
+        /// Destination register.
+        dst: Reg,
+        /// Source registers.
+        srcs: Vec<Reg>,
+        /// Index into [`Ir::builtins`].
+        instance: usize,
+    },
+    /// Call a whole-buffer built-in (1→1): `src` → `dst`, instance index.
+    CallBlock {
+        /// Destination register.
+        dst: Reg,
+        /// Source register.
+        src: Reg,
+        /// Index into [`Ir::builtins`].
+        instance: usize,
+    },
 }
 
 /// Layout describing pre-allocated persistent storage.
@@ -137,6 +157,18 @@ pub struct StateLayout {
     pub state_slots: usize,
     /// Length (in samples) of each delay line.
     pub delay_lens: Vec<usize>,
+}
+
+/// A resolved built-in call site: its name, folded constant params, and kind.
+/// Runtime instances are built from these by `RillProgram::new_with`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltinInstance {
+    /// Registered built-in name.
+    pub name: String,
+    /// Folded constant params.
+    pub params: Vec<f64>,
+    /// Sample vs block.
+    pub kind: BuiltinKind,
 }
 
 /// A complete lowered program.
@@ -152,4 +184,7 @@ pub struct Ir {
     pub num_inputs: usize,
     /// Persistent state layout.
     pub state: StateLayout,
+    /// Built-in call-site descriptors, indexed by the `instance` field of
+    /// [`Instr::CallSample`]/[`Instr::CallBlock`].
+    pub builtins: Vec<BuiltinInstance>,
 }

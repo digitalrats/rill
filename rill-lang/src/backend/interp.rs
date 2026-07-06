@@ -53,6 +53,9 @@ fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) ->
                 let v = prog.regs_scalar[src];
                 prog.delays[line].write(v);
             }
+            Instr::CallSample { .. } | Instr::CallBlock { .. } => {
+                unreachable!("built-in instr — added in D3/D4")
+            }
         }
     }
     for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
@@ -174,8 +177,10 @@ fn exec_block_op<T: Transcendental>(
         Instr::ReadState { .. }
         | Instr::WriteState { .. }
         | Instr::ReadDelay { .. }
-        | Instr::WriteDelay { .. } => {
-            unreachable!("stateful instruction scheduled as a block op")
+        | Instr::WriteDelay { .. }
+        | Instr::CallSample { .. }
+        | Instr::CallBlock { .. } => {
+            unreachable!("stateful or built-in instruction scheduled as a block op")
         }
     }
 }
@@ -227,6 +232,9 @@ fn exec_sample_region<T: Transcendental>(
                 Instr::WriteDelay { line, src } => {
                     let v = prog.block_regs[src][i].to_f64();
                     prog.delays[line].write(v);
+                }
+                Instr::CallSample { .. } | Instr::CallBlock { .. } => {
+                    unreachable!("built-in instr — added in D3/D4")
                 }
             }
         }
