@@ -94,6 +94,14 @@ The `rill-adrift` umbrella crate exposes `rill-lang` behind its `lang` feature,
 including a `rill/lang` factory node that reads a `source` parameter — so a
 serialized graph can embed a rill-lang block directly.
 
+## Execution model
+
+The interpreter compiles the linear IR into a hybrid schedule via SCC analysis:
+feedforward regions run whole-buffer through the `rill_core::math::vector` SIMD
+eDSL, while feedback (`~`) and delay (`@`) recurrences run per-sample. The block
+path computes in `T` with zero heap allocation on the hot path. A Cranelift JIT
+backend is still planned and will reuse the same IR.
+
 ## Status
 
 MVP. Deferred to follow-on work: the Cranelift `jit` feature, foreign references

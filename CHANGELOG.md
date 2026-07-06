@@ -22,6 +22,12 @@ allocation-free sample-by-sample interpreter.
   `set_parameter`).
 - Backend is trait-based; a Cranelift JIT backend is planned behind a future
   `jit` feature and will reuse the same IR.
+- **Hybrid block processing.** The interpreter compiles the IR into an execution
+  schedule via SCC analysis: feedforward regions run whole-buffer through the
+  `rill_core::math::vector` SIMD eDSL, while feedback/delay recurrences run
+  per-sample. The block path computes in `T`. The per-sample interpreter is
+  retained as a reference oracle (`RillProgram::process_reference`). Foundation
+  for whole-graph-as-one-program lowering and the future JIT.
 
 
 ### ⏱️ Sample-accurate parameter automation (`rill-core`, `rill-graph`, `rill-io`, `rill-patchbay`)

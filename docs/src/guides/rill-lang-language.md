@@ -157,12 +157,34 @@ not under hard real-time load, not as an every-block action.
 
 ## Execution model and performance
 
-Because feedback has a one-sample dependency, the interpreter evaluates the IR
-sample by sample, threading a fixed set of pre-allocated state slots (feedback
-registers and delay lines). The hot `process()` path performs no heap
-allocation, no locks, and no syscalls, honoring rill's real-time rules. Expect
-the interpreter to be several times slower than the planned JIT; it exists to
-get the language correct and to iterate quickly on design.
+The interpreter compiles the linear IR into an **execution schedule** via SCC
+(strongly-connected component) analysis of the data-dependency graph. Each step
+in the schedule is classified as either a whole-buffer block op or a per-sample
+recurrent region:
+
+- **Feedforward regions** — all combinational instructions (arithmetic, math
+  builtins, fan-out/fan-in) — are `Step::Block` and run **whole-buffer** through
+  the `rill_core::math::vector` SIMD eDSL (`ScalarVector4`). The block path
+  computes directly in `T` (the runtime scalar, e.g. `f32`), letting LLVM
+  auto-vectorize the hot loop.
+- **Recurrent regions** — anything containing `~` (feedback) or `@` (delay)
+  operators that introduce a cross-sample dependency — are `Step::Sample` and
+  run as a tight per-sample loop over the instructions in their original IR
+  order. Only the recurrence itself goes sample-by-sample; all upstream
+  feedforward math stays block-wise.
+
+The whole-buffer register store is a flat `Vec<Vec<T>>` grown once to the block
+length and reused across calls. The hot `process()` path performs no heap
+allocation, no locks, and no syscalls, honoring rill's real-time rules.
+
+A fully-combinational program (e.g. `_ * 0.5`) compiles to all block steps. A
+pure feedback program (e.g. `+ ~ _`) degenerates to a single per-sample region.
+Mixed programs (e.g. `(_ * 0.5) : (+ ~ _)`) schedule the feedforward block
+steps first, then the recurrent sample region.
+
+The per-sample interpreter is retained as `RillProgram::process_reference` — a
+numerical oracle used by tests to validate the hybrid path. A Cranelift JIT
+backend is still planned and will reuse the same IR.
 
 ## Status
 
