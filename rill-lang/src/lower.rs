@@ -19,6 +19,7 @@ struct Lowerer<'a> {
     builtins: Vec<BuiltinInstance>,
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
+    sample_rate: f32,
 }
 
 impl<'a> Lowerer<'a> {
@@ -93,6 +94,50 @@ impl<'a> Lowerer<'a> {
                     let dst = self.fresh_reg();
                     self.emit(Instr::ReadParam { dst, idx });
                     return Ok(vec![dst]);
+                }
+                if name == "smooth" {
+                    let x_regs = self.lower(&args[0], inputs)?;
+                    let x = x_regs[0];
+                    let ms = const_f64(&args[1]).unwrap_or(0.0);
+                    let sr = self.sample_rate as f64;
+                    let a = if ms <= 0.0 {
+                        1.0
+                    } else {
+                        let tau = ms / 1000.0;
+                        1.0 - (-1.0 / (tau * sr)).exp()
+                    };
+                    let slot = self.state_slots;
+                    self.state_slots += 1;
+                    let prev = self.fresh_reg();
+                    self.emit(Instr::ReadState { dst: prev, slot });
+                    let diff = self.fresh_reg();
+                    self.emit(Instr::Bin {
+                        dst: diff,
+                        op: BinArith::Sub,
+                        a: x,
+                        b: prev,
+                    });
+                    let acoef = self.fresh_reg();
+                    self.emit(Instr::Const {
+                        dst: acoef,
+                        value: a,
+                    });
+                    let scaled = self.fresh_reg();
+                    self.emit(Instr::Bin {
+                        dst: scaled,
+                        op: BinArith::Mul,
+                        a: acoef,
+                        b: diff,
+                    });
+                    let y = self.fresh_reg();
+                    self.emit(Instr::Bin {
+                        dst: y,
+                        op: BinArith::Add,
+                        a: prev,
+                        b: scaled,
+                    });
+                    self.emit(Instr::WriteState { slot, src: y });
+                    return Ok(vec![y]);
                 }
                 if let Some(sig) = self.sigs.builtin_sig(name) {
                     let sig = sig.clone();
@@ -474,13 +519,17 @@ fn const_int(e: &Expr) -> Option<i64> {
     }
 }
 
-/// Back-compat: lower with no built-ins.
+/// Back-compat: lower with no built-ins and a default sample rate of 44.1 kHz.
 pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
-    lower_with(tp, &crate::builtin::NoSigs)
+    lower_with(tp, &crate::builtin::NoSigs, 44_100.0)
 }
 
-/// Lower a fully type-checked program into IR with a signature source for built-ins.
-pub fn lower_with(tp: &TypedProgram, sigs: &dyn SignatureSource) -> Result<Ir, CompileError> {
+/// Lower a fully type-checked program into IR with a signature source and sample rate.
+pub fn lower_with(
+    tp: &TypedProgram,
+    sigs: &dyn SignatureSource,
+    sample_rate: f32,
+) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
     let defs: HashMap<String, &Def> = program.defs.iter().map(|d| (d.name.clone(), d)).collect();
     let process = *defs.get("process").ok_or_else(|| CompileError::Type {
@@ -500,6 +549,7 @@ pub fn lower_with(tp: &TypedProgram, sigs: &dyn SignatureSource) -> Result<Ir, C
         builtins: Vec::new(),
         params: Vec::new(),
         param_names: HashMap::new(),
+        sample_rate,
     };
     let mut input_regs = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
@@ -568,7 +618,7 @@ mod tests {
     fn ir_with(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap()).unwrap();
         let tp = infer_program_with(&p, &TestSigs).unwrap();
-        lower_with(&tp, &TestSigs).unwrap()
+        lower_with(&tp, &TestSigs, 44_100.0).unwrap()
     }
 
     #[test]
@@ -636,5 +686,19 @@ mod tests {
         let bi = &ir.builtins[0];
         assert_eq!(bi.kind, BuiltinKind::Block);
         assert_eq!(bi.params, vec![1000.0, 0.7]);
+    }
+
+    #[test]
+    fn smooth_allocates_state() {
+        let ir = ir_of("process = smooth(_, 10.0);");
+        assert_eq!(ir.state.state_slots, 1);
+        assert!(ir
+            .instrs
+            .iter()
+            .any(|i| matches!(i, Instr::ReadState { .. })));
+        assert!(ir
+            .instrs
+            .iter()
+            .any(|i| matches!(i, Instr::WriteState { .. })));
     }
 }

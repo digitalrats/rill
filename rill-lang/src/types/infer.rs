@@ -250,6 +250,33 @@ fn infer_apply(
             outs: vec![Scalar::Float],
         });
     }
+    if name == "smooth" {
+        if args.len() != 2 {
+            return Err(CompileError::Type {
+                msg: "smooth expects exactly 2 arguments: smooth(signal, ms)".into(),
+                span,
+            });
+        }
+        let sig_ty = infer_expr(ctx, &args[0])?;
+        if sig_ty.arity_out() != 1 {
+            return Err(CompileError::Type {
+                msg: "smooth first argument must produce exactly one wire".into(),
+                span: args[0].span(),
+            });
+        }
+        let ms_ty = infer_expr(ctx, &args[1])?;
+        if ms_ty.arity_in() != 0 || ms_ty.arity_out() != 1 {
+            return Err(CompileError::Type {
+                msg: "smooth second argument (ms) must be a constant expression".into(),
+                span: args[1].span(),
+            });
+        }
+        unify_scalar(&ms_ty.outs[0], &Scalar::Float, &mut ctx.subst, span)?;
+        return Ok(Type {
+            ins: sig_ty.ins.clone(),
+            outs: vec![Scalar::Float],
+        });
+    }
     if let Some(sig) = ctx.sigs.builtin_sig(name) {
         let sig = sig.clone();
         if args.len() != sig.num_params {

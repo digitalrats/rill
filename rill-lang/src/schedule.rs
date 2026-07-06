@@ -243,7 +243,7 @@ mod tests {
     fn schedule_of_with(src: &str) -> (Ir, Schedule) {
         let p = parse(&tokenize(src).unwrap()).unwrap();
         let tp = infer_program_with(&p, &TestSigs).unwrap();
-        let ir = lower_with(&tp, &TestSigs).unwrap();
+        let ir = lower_with(&tp, &TestSigs, 44_100.0).unwrap();
         let sched = build_schedule(&ir);
         (ir, sched)
     }

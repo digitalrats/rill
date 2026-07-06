@@ -56,7 +56,7 @@ pub fn compile_with<T: Transcendental>(
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens)?;
     let typed = types::infer::infer_program_with(&program, registry)?;
-    let ir = lower::lower_with(&typed, registry)?;
+    let ir = lower::lower_with(&typed, registry, sample_rate)?;
     validate_block_builtins(&ir)?;
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
