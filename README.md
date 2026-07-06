@@ -1,7 +1,7 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests|68](https://img.shields.io/badge/tests-603-green)](https://github.com/DigitalRats/rill)
+[![tests|68](https://img.shields.io/badge/tests-604-green)](https://github.com/DigitalRats/rill)
 [![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
 
@@ -17,7 +17,7 @@ modelling.
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                     │
 │  rill-core-model  │  rill-analog-filters  │  rill-analog      │
-│  -effects                                                  │
+│  -effects  │  rill-lang  │                                    │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
 ├─────────────────────────────────────────────────────────────┤
@@ -86,7 +86,7 @@ Key performance drivers:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0-beta.5"
+rill-adrift = "0.5.0"
 ```
 
 Enable optional features as needed (see table below).
@@ -160,6 +160,7 @@ topology definition.
 | **rill-core-actor** | Actor model: ActorRef, ActorCell, ActorSystem for lock-free message passing |
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
 | **rill-core-model** | WDF elements, adapters, physical modeling (string, plate, modal, cavity) |
+| **rill-lang** | Faust-style signal DSL — compiles to `Algorithm<T>` |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
 | **rill-oscillators** | Sine, saw, noise, LFO, envelope graph nodes |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
@@ -190,7 +191,7 @@ topology definition.
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
 `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,
-`rill-router`, `rill-patchbay`.
+`rill-router`, `rill-patchbay`, `rill-lang`.
 
 ## Dependencies
 
@@ -212,6 +213,7 @@ graph TD
     CORE_WDF --> ANALOG_EFFECTS[rill-analog-effects]
     CORE --> SAMPLER[rill-sampler]
     CORE_DSP --> SAMPLER
+    CORE --> LANG[rill-lang]
 ```
 
 ## Documentation
@@ -224,14 +226,14 @@ graph TD
 ## Testing
 
 ```bash
-cargo test --workspace    # 544 tests, all passing
+cargo test --workspace    # 604 tests, all passing
 cargo clippy --workspace  # lint
 cargo fmt                 # format (max_width=100)
 ```
 
 ## Publications
 
-All 18 crates publish to [crates.io](https://crates.io) in dependency order.
+All 19 crates publish to [crates.io](https://crates.io) in dependency order.
 Use the publish script:
 
 ```bash
