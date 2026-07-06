@@ -174,6 +174,90 @@ The `full_registry()` includes all DSP built-ins. `analog_moog` requires
 `rill-adrift`'s `analog` feature. The default `compile()` function has no
 built-ins — it uses an empty registry and is unchanged.
 
+## Parameters
+
+rill-lang programs can expose **named control-rate parameters** — mutable slots
+that stay constant for one signal block and change only between blocks (at
+control rate). Parameters are RT-safe because the compiled program bakes them
+into a flat array indexed by integer handle; no allocation, no locking, and no
+variable lookup occurs on the hot path.
+
+### `param(name, default[, min, max])`
+
+```faust
+process = _ * param("gain", 0.5);
+```
+
+`param("gain", 0.5)` creates a named control-rate slot that evaluates to `0.5`
+initially. At runtime the value can be modified from the control thread, and the
+new value takes effect at the next block boundary. The optional `min` and `max`
+arguments constrain the range (`0.0` ≤ `param("gain", 0.5, 0.0, 1.0)` ≤ `1.0`);
+the runtime clamps writes to this range.
+
+Parameters have arity `0 → 1` — they are zero-input signal sources — so they
+can appear anywhere a float literal would: in arithmetic expressions and also as
+a built-in argument, which lets you dynamically drive filter cutoffs, resonance,
+and mixer gains:
+
+```faust
+process = _ : lowpass(param("cutoff", 1000.0, 20.0, 20000.0), 0.7);
+```
+
+### `smooth(x, ms)` — zipper-free smoothing
+
+When a parameter changes abruptly at a block boundary, the step creates an
+audible "zipper" click. `smooth(x, ms)` is a native one-pole low-pass pair
+(one per call site) that slides its input value toward its output with the
+specified time constant:
+
+```faust
+process = _ * smooth(param("gain", 0.5, 0.0, 1.0), 10.0);
+```
+
+Here `gain` is ramped with a 10 ms time constant — the output sample moves
+smoothly even when the control thread snaps the parameter from 0 to 1.
+`smooth` bakes the sample rate at compile time; if the sample rate changes,
+the program must be recompiled for the time constant to match.
+
+### Setting parameters from Rust
+
+The `RillProgram` API exposes parameter slots by index:
+
+```rust,no_run
+use rill_lang::compile;
+
+let mut prog = compile::<f32>("process = _ * param(\"gain\", 0.5);").unwrap();
+
+let idx = prog.param_index("gain").unwrap();
+prog.set_param(idx, 0.8);
+```
+
+### Setting parameters on a `rill/lang` graph node
+
+When the program runs inside a `rill/lang` factory node (via `rill-adrift`'s
+`lang` feature), parameters are also accessible by **name** from the control
+side — the node's `NodeMetadata` advertises them, and you can write a value
+with `Node::set_parameter(name, value)`. Because the parameter name is
+stable (the same string you wrote in the DSL), servos, LFOs, envelopes, and
+MIDI mappings can target it directly (target by `NodeId` + parameter name).
+
+```rust,no_run
+// conceptual: a servo targets the "cutoff" parameter of node 0
+node_ref.set_parameter("cutoff", 2000.0);
+```
+
+### Control-rate semantics
+
+Parameters and `smooth` are control-rate constructs. The compiled program
+stores one scalar per parameter slot; `process()` reads the current value once
+per call and re-uses it for the entire block. The control thread (`set_param` /
+`set_parameter`) writes a new value, and the read is observed at the next
+`process()` call — i.e. at the next block boundary. This model is efficient
+(the hot path is a simple load + multiply / load + onepole) and safe (no locks,
+no atomics).
+
+For more on the automation plumbing, see the [Automaton guide](world-of-automatons.md).
+
 ## Serialization
 
 With the `serde` feature enabled, a program round-trips through

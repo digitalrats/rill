@@ -112,6 +112,17 @@ whole-buffer built-ins (`lowpass`, `highpass`, `analog_moog`) are opaque block
 steps and cannot appear inside `~`. Bindings live in `rill-adrift`
 (`lang_builtins::full_registry`, `analog_moog` behind the `analog` feature).
 
+## Parameters
+
+rill-lang programs can expose named control-rate parameter slots with
+`param("name", default[, min, max])`. Parameters are RT-safe — stored in a flat
+array indexed by integer handle — and settable via `RillProgram::set_param` /
+`param_index(name)`. On a `rill/lang` graph node they are advertised in
+`NodeMetadata` and writable by name via `Node::set_parameter`, so servos, LFOs,
+and MIDI mappings can automate them directly. The native `smooth(x, ms)`
+one-pole provides zipper-free interpolation when parameters change at block
+boundaries.
+
 ## Status
 
 MVP. Deferred to follow-on work: the Cranelift `jit` feature, foreign references

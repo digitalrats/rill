@@ -35,6 +35,11 @@ allocation-free sample-by-sample interpreter.
   are constants (`_ : lowpass(1000.0, 0.7)`); signals flow via combinators.
   Bindings live in `rill-adrift` (`lang_builtins::full_registry`, `analog_moog`
   behind the `analog` feature). rill-lang core stays `rill-core`-only.
+- **Named parameters + smoothing.** `param("cutoff", 1000.0)` exposes RT-safe
+  control-rate parameter slots (settable via `RillProgram::set_param` and, on the
+  `rill/lang` graph node, by name — so servos/LFO/MIDI automate them for free);
+  `smooth(x, ms)` is a native one-pole for zipper-free changes; built-in args may
+  be `param(...)` for dynamic parameterization (`lowpass(param("cutoff"), 0.7)`).
 
 
 ### ⏱️ Sample-accurate parameter automation (`rill-core`, `rill-graph`, `rill-io`, `rill-patchbay`)
