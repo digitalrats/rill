@@ -15,10 +15,12 @@ pub mod lower;
 pub mod parser;
 pub mod prelude;
 pub mod program;
+pub mod serde_def;
 pub mod types;
 
 pub use error::{CompileError, Span};
 pub use program::RillProgram;
+pub use serde_def::{compile_def, RillLangDef};
 
 use rill_core::math::Transcendental;
 
