@@ -7,5 +7,6 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod lexer;
 
 pub use error::{CompileError, Span};
