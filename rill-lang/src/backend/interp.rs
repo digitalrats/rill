@@ -101,16 +101,17 @@ pub fn run_block_hybrid<T: Transcendental>(
     let n = output.len();
     prog.ensure_block_len(n);
 
-    // Steps are stored by value; clone the small schedule step list to avoid
-    // borrowing `prog` while mutating its registers.
-    #[allow(clippy::clone_on_copy)]
-    let steps = prog.schedule.steps.clone();
-    for step in steps {
+    // Move the step list out of `prog` so we can borrow `prog`'s registers
+    // mutably while iterating. `mem::take` leaves an empty `Vec` behind — no
+    // allocation on the RT path — and we move the list back at the end.
+    let steps = std::mem::take(&mut prog.schedule.steps);
+    for step in &steps {
         match step {
-            Step::Block(idx) => exec_block_op(prog, idx, input, n),
-            Step::Sample(instrs) => exec_sample_region(prog, &instrs, input, n),
+            Step::Block(idx) => exec_block_op(prog, *idx, input, n),
+            Step::Sample(instrs) => exec_sample_region(prog, instrs, input, n),
         }
     }
+    prog.schedule.steps = steps;
 
     let out_reg = prog.ir.output_reg;
     output[..n].copy_from_slice(&prog.block_regs[out_reg][..n]);
