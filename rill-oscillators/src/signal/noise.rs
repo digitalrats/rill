@@ -304,7 +304,7 @@ impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     ) -> ProcessResult<()> {
         let mut temp = [0.0f32; BUF_SIZE];
         self.generate_block(&mut temp);
-        *self.outputs[0].buffer.as_mut_array() = temp;
+        *self.outputs[0].write() = temp;
         Ok(())
     }
 }
@@ -348,7 +348,7 @@ mod tests {
 
             noise.generate(&ctx, &[], &[], &tick).unwrap();
 
-            let output = noise.outputs[0].buffer.as_array();
+            let output = noise.outputs[0].read();
 
             // All types should produce valid output
             assert!(output.iter().any(|&x| x != 0.0));

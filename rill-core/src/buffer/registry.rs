@@ -1,74 +1,73 @@
-//! # Buffer registry — named buffers
+//! # Resource registry — named shared resources
 //!
-//! [`BufferRegistry`] — a temporary registry used during graph assembly.
-//! Each node that requires a resource buffer receives a pointer through
-//! the registry during `GraphBuilder::build()`.
-//! After assembly the registry is retained in `Graph` to manage
-//! buffer lifetimes.
+//! [`ResourceRegistry`] — a build-time registry that owns named resources
+//! (currently [`TapeLoop`](super::TapeLoop)s) and hands out capability handles
+//! to graph nodes during `GraphBuilder::build()`.
+//!
+//! Each registered tape yields a [`TapeWriter`] (unique) and a [`TapeReader`]
+//! (shared, cloneable). Nodes acquire the capability matching their role. The
+//! handles keep the underlying resource alive via reference counting, so the
+//! registry itself is only needed during assembly — it is dropped once every
+//! node has resolved its resources.
 
 use std::collections::HashMap;
 
-use super::Buffer;
+use super::tape::{tape_handles, TapeReader, TapeWriter};
+use super::TapeLoop;
 
-/// Registry of named buffers.
+/// Registry of named shared resources.
 ///
 /// Used in `GraphBuilder::build()` to allocate resources and distribute
-/// pointers to graph nodes.
-pub struct BufferRegistry<T> {
-    buffers: HashMap<String, Box<dyn Buffer<T> + Send>>,
+/// capability handles to graph nodes.
+pub struct ResourceRegistry<T> {
+    /// Unique writer handles, removed on first acquisition (single-writer).
+    writers: HashMap<String, TapeWriter<T>>,
+    /// Reader handles, cloned on each acquisition (many read taps).
+    readers: HashMap<String, TapeReader<T>>,
 }
 
-impl<T> BufferRegistry<T> {
+impl<T> ResourceRegistry<T> {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
-            buffers: HashMap::new(),
+            writers: HashMap::new(),
+            readers: HashMap::new(),
         }
     }
 
-    /// Register a named buffer.
-    pub fn register(&mut self, name: impl Into<String>, buffer: Box<dyn Buffer<T> + Send>) {
-        self.buffers.insert(name.into(), buffer);
+    /// Register a named tape loop, creating its writer/reader capability pair.
+    pub fn register_tape(&mut self, name: impl Into<String>, tape: TapeLoop<T>) {
+        let name = name.into();
+        let (writer, reader) = tape_handles(tape);
+        self.writers.insert(name.clone(), writer);
+        self.readers.insert(name, reader);
     }
 
-    /// Get a raw pointer to a buffer by name.
+    /// Acquire a read capability for the named tape (cloneable, many taps).
+    pub fn reader(&self, name: &str) -> Option<TapeReader<T>> {
+        self.readers.get(name).cloned()
+    }
+
+    /// Acquire the unique write capability for the named tape.
     ///
-    /// Used to distribute pointers to graph nodes during build.
-    pub fn get_ptr(&self, name: &str) -> Option<*const (dyn Buffer<T> + Send)> {
-        self.buffers
-            .get(name)
-            .map(|b| &**b as *const (dyn Buffer<T> + Send))
+    /// Returns `Some` only on the first call for a given name; subsequent
+    /// calls return `None`. This enforces the single-writer invariant.
+    pub fn writer(&mut self, name: &str) -> Option<TapeWriter<T>> {
+        self.writers.remove(name)
     }
 
-    /// Take ownership of a buffer by name, removing it from the registry.
-    pub fn take(&mut self, name: &str) -> Option<Box<dyn Buffer<T> + Send>> {
-        self.buffers.remove(name)
-    }
-
-    /// Leak a buffer by name, returning a raw mutable pointer.
-    /// The leaked buffer will live for the remainder of the program
-    /// (or until manually re‑boxed and dropped).
-    pub fn leak(&mut self, name: &str) -> Option<*mut (dyn Buffer<T> + Send)> {
-        self.buffers.remove(name).map(Box::into_raw)
-    }
-
-    /// Consume the registry and return all owned buffers.
-    pub fn into_inner(self) -> Vec<Box<dyn Buffer<T> + Send>> {
-        self.buffers.into_values().collect()
-    }
-
-    /// Number of registered buffers.
+    /// Number of registered resources.
     pub fn len(&self) -> usize {
-        self.buffers.len()
+        self.readers.len()
     }
 
-    /// Whether no buffers are registered.
+    /// Whether no resources are registered.
     pub fn is_empty(&self) -> bool {
-        self.buffers.is_empty()
+        self.readers.is_empty()
     }
 }
 
-impl<T> Default for BufferRegistry<T> {
+impl<T> Default for ResourceRegistry<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -77,14 +76,29 @@ impl<T> Default for BufferRegistry<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::HeapBuffer;
 
     #[test]
-    fn test_registry() {
-        let mut reg = BufferRegistry::<f32>::new();
-        reg.register("tape_0", Box::new(HeapBuffer::new(1024)));
+    fn test_registry_writer_is_unique() {
+        let mut reg = ResourceRegistry::<f32>::new();
+        reg.register_tape("tape_0", TapeLoop::new(1024).unwrap());
         assert_eq!(reg.len(), 1);
-        assert!(reg.get_ptr("tape_0").is_some());
-        assert!(reg.get_ptr("nonexistent").is_none());
+        assert!(reg.reader("tape_0").is_some());
+        assert!(reg.reader("nonexistent").is_none());
+
+        // First writer succeeds, second is denied (single-writer invariant).
+        assert!(reg.writer("tape_0").is_some());
+        assert!(reg.writer("tape_0").is_none());
+    }
+
+    #[test]
+    fn test_registry_reader_writer_share_tape() {
+        let mut reg = ResourceRegistry::<f32>::new();
+        reg.register_tape("t", TapeLoop::new(64).unwrap());
+        let mut writer = reg.writer("t").unwrap();
+        let reader = reg.reader("t").unwrap();
+        writer.write(1.0);
+        writer.write(2.0);
+        assert_eq!(reader.read(0), 2.0);
+        assert_eq!(reader.read(1), 1.0);
     }
 }

@@ -50,10 +50,10 @@ pub use buffer_trait::{Buffer, FixedBuffer, HeapBuffer};
 pub use delay::DelayLine;
 pub use fan::{FanInBuffer, FanOutBuffer};
 pub use pipe::PipeBuffer;
-pub use registry::BufferRegistry;
+pub use registry::ResourceRegistry;
 pub use ring::RingBuffer;
 pub use storage::{AtomicCell, AtomicCellError};
-pub use tape::TapeLoop;
+pub use tape::{tape_handles, TapeLoop, TapeReader, TapeWriter};
 
 // ============================================================================
 // Constants

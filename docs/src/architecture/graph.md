@@ -38,13 +38,21 @@ state.run_with_driver(driver, running)?;
 ### Processing flow
 
 `ProcessingState::process_block(&tick)`:
-1. `actor.drain()` — applies queued `SetParameter` commands
-2. Creates `RenderContext` from the tick
-3. `source.process_block(&ctx, &tick)` — fills output ports
-4. `Port::propagate()` — recursive DAG traversal
+1. Adopt `tick.sample_rate` — re-`init` all nodes if it differs from the rate
+   they were built with (the graph has no clock of its own; it runs at whatever
+   rate the backend's `ClockTick` carries — e.g. JACK at 48 kHz)
+2. `actor.drain()` — queues/applies `SetParameter` commands
+3. Apply sample-accurate parameter changes due for this 256-sample block
+   (writes carrying `sample_pos`; writes without one are applied immediately)
+4. Creates `RenderContext` from the tick
+5. `source.process_block(&ctx, &tick)` — fills output ports
+6. `Port::propagate()` — recursive DAG traversal
 
-`send_clock_tick(&tick)` dispatches a single `ClockTick` per I/O cycle
-to the rack actor (gated by `tick.is_final`).
+`send_clock_tick(&tick)` forwards the `ClockTick` to the rack actor (gated by
+`tick.is_final`). Chunking backends (PipeWire, JACK) leave `is_final = true` on
+every `block_size` chunk, so control modules receive **one tick per block**;
+sample-accurate placement of their resulting parameter writes is handled by
+`SetParameter.sample_pos` + `ClockTick.io_quantum`, not by coalescing ticks.
 
 ## Serialized graphs (GraphDef)
 
@@ -74,21 +82,27 @@ let graph = builder.build()?;
 
 ## Actor interface
 
-`Graph` implements `ActorCell<Msg = SetParameter>` so that control-side
-code can send parameter changes through `ActorRef<SetParameter>`:
+The graph spawns an inline actor (`Actor<CommandEnum>`) whose handler applies
+parameter changes to nodes. Control-side code sends `CommandEnum::SetParameter`
+through `ActorRef<CommandEnum>` obtained from `graph.handle()`:
 
 ```rust
-impl ActorCell for Graph {
-    type Msg = SetParameter;
-    fn receive(&mut self, msg: SetParameter) {
-        let idx = msg.port.node_id().inner() as usize;
-        self.nodes[idx].set_parameter(&msg.parameter, msg.value);
+// Simplified graph actor handler (rill-graph/src/graph.rs)
+system.spawn("graph", move |msg: CommandEnum| {
+    if let CommandEnum::SetParameter(param) = msg {
+        if param.sample_pos.is_some() {
+            pending.borrow_mut().push(param);      // sample-accurate: defer
+        } else {
+            let idx = param.port.node_id().inner() as usize;
+            nodes[idx].set_parameter(&param.parameter, param.value); // ASAP
+        }
     }
-}
+});
 ```
 
-The command queue is drained from the process callback via
-`ProcessingState::process_block()`.
+The mailbox is drained from the process callback via
+`ProcessingState::process_block()`, which then applies any deferred
+sample-accurate writes due for the current block.
 
 ## Key components
 
@@ -104,6 +118,6 @@ The command queue is drained from the process callback via
 ## Integration
 
 - `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`
-- `rill-core-actor` — `ActorRef<SetParameter>`, `ActorCell` (mailbox infrastructure)
+- `rill-core-actor` — `Actor<CommandEnum>` / `ActorRef<CommandEnum>` (mailbox infrastructure)
 - `rill-io` — `Input`/`Output` nodes, `IoBackend` trait
 - `rill-patchbay` — automation via parameter commands through the actor mailbox

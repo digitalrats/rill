@@ -16,8 +16,7 @@
 //! ├── io/               # Generic I/O backend trait (IoBackend)
 //! ├── macros/           # Node creation macros (source_node!, processor_node!, etc.)
 //! ├── prelude           # Convenience prelude for common imports
-//! ├── interpolate       # Fractional-index interpolation trait
-//! └── executor/         # Graph executor for driving signal processing
+//! └── interpolate       # Fractional-index interpolation trait
 //! ```
 //!
 //! ## Key Concepts
@@ -124,7 +123,7 @@
 //!                 self.phase = self.phase - T::from_f32(1.0);
 //!             }
 //!         }
-//!         *self.output_port_mut(0).unwrap().buffer.as_mut_array() = temp;
+//!         *self.output_port_mut(0).unwrap().write() = temp;
 //!         Ok(())
 //!     }
 //!     
@@ -175,9 +174,6 @@ pub mod interpolate;
 
 /// Generic multi-channel signal I/O abstraction
 pub mod io;
-
-/// Graph executor for driving signal processing
-pub mod executor;
 
 // ============================================================================
 // Error Types

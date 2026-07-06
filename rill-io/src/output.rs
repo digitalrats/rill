@@ -132,7 +132,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Sink<T, BUF_SIZE> for Output<T, B
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
         for (ch, port) in self.inputs.iter().enumerate() {
-            if port.data_received {
+            if port.data_received() {
                 let buf = port.signal_buffer();
                 #[allow(unsafe_code)]
                 unsafe {

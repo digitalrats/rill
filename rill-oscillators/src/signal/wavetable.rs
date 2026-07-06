@@ -249,7 +249,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Source<T, B
         _clock_inputs: &[RenderContext],
         _tick: &ClockTick,
     ) -> ProcessResult<()> {
-        let out = self.outputs[0].buffer.as_mut_array();
+        let out = self.outputs[0].write();
         self.osc.process(None, &mut out[..])?;
         for o in out.iter_mut() {
             *o *= self.amplitude;
@@ -280,7 +280,7 @@ mod tests {
         let ctx = RenderContext::new(0, 64, 44100.0);
         let tick = ClockTick::new(0, 64, 44100.0, String::new());
         osc.generate(&ctx, &[], &[], &tick).unwrap();
-        let output = osc.outputs[0].buffer.as_array();
+        let output = osc.outputs[0].read();
         assert!(
             output.iter().any(|&x| x != 0.0),
             "should produce non-zero output"

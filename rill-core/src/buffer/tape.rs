@@ -1,5 +1,7 @@
 use crate::buffer::Buffer;
 use crate::math::Transcendental;
+use std::cell::UnsafeCell;
+use std::rc::Rc;
 
 /// Heap-allocated ring buffer for tape delay — single-threaded.
 ///
@@ -155,6 +157,145 @@ impl<T: Transcendental> Buffer<T> for TapeLoop<T> {
             *slot = T::ZERO;
         }
         self.write_pos = 0;
+    }
+}
+
+// ── Capability-split shared handles ────────────────────────────────
+//
+// A `TapeLoop` is private shared state between one write head and any number
+// of read heads. It is orthogonal to signal propagation, so it is shared
+// directly between the participating nodes rather than routed through the
+// graph. Ownership is reference-counted; the two capabilities encode the
+// domain invariant "exactly one writer, many readers" in the type system.
+
+/// Shared, single-threaded cell holding a [`TapeLoop`].
+struct TapeCell<T> {
+    inner: Rc<UnsafeCell<TapeLoop<T>>>,
+}
+
+impl<T> Clone for TapeCell<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> TapeCell<T> {
+    fn new(tape: TapeLoop<T>) -> Self {
+        Self {
+            inner: Rc::new(UnsafeCell::new(tape)),
+        }
+    }
+}
+
+/// Unique write capability over a shared [`TapeLoop`].
+///
+/// Not `Clone` — at most one `TapeWriter` exists per tape (enforced by the
+/// resource registry). Held by the single write head.
+pub struct TapeWriter<T> {
+    cell: TapeCell<T>,
+}
+
+/// Shared read capability over a [`TapeLoop`]. `Clone` — one per read tap.
+///
+/// Exposes only read operations; readers cannot mutate the tape, so the
+/// single-writer invariant is checked at compile time.
+pub struct TapeReader<T> {
+    cell: TapeCell<T>,
+}
+
+impl<T> Clone for TapeReader<T> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: self.cell.clone(),
+        }
+    }
+}
+
+/// Wrap a [`TapeLoop`] into a writer + reader capability pair sharing one cell.
+///
+/// The returned `TapeWriter` is unique; clone the `TapeReader` for additional
+/// read taps. The tape stays alive while any handle exists.
+pub fn tape_handles<T>(tape: TapeLoop<T>) -> (TapeWriter<T>, TapeReader<T>) {
+    let cell = TapeCell::new(tape);
+    (TapeWriter { cell: cell.clone() }, TapeReader { cell })
+}
+
+impl<T: Transcendental> TapeWriter<T> {
+    /// SAFETY: the graph is single-threaded; at most one `TapeWriter` exists
+    /// per cell (the registry hands the writer out once) and the writer is
+    /// never active at the same instant as any reader — nodes are processed
+    /// sequentially in topological order.
+    #[allow(unsafe_code)]
+    #[inline(always)]
+    fn tape_mut(&mut self) -> &mut TapeLoop<T> {
+        unsafe { &mut *self.cell.inner.get() }
+    }
+
+    /// Write a single sample and advance the write cursor.
+    #[inline(always)]
+    pub fn write(&mut self, sample: T) {
+        self.tape_mut().write(sample);
+    }
+
+    /// Write a full block of samples.
+    #[inline(always)]
+    pub fn write_block(&mut self, block: &[T]) {
+        self.tape_mut().write_block(block);
+    }
+
+    /// Fill the entire buffer with a constant value.
+    pub fn fill(&mut self, value: T) {
+        self.tape_mut().fill(value);
+    }
+
+    /// Reset write position and zero the buffer.
+    pub fn clear(&mut self) {
+        self.tape_mut().clear();
+    }
+
+    /// Maximum capacity in samples.
+    pub fn capacity(&self) -> usize {
+        // SAFETY: see `tape_mut`; a shared read for a scalar field is sound.
+        #[allow(unsafe_code)]
+        unsafe {
+            (*self.cell.inner.get()).capacity()
+        }
+    }
+}
+
+impl<T: Transcendental> TapeReader<T> {
+    /// SAFETY: the graph is single-threaded; no `&mut` to the tape is live
+    /// while a reader is active — nodes are processed sequentially in
+    /// topological order and readers hold shared refs only.
+    #[allow(unsafe_code)]
+    #[inline(always)]
+    fn tape(&self) -> &TapeLoop<T> {
+        unsafe { &*self.cell.inner.get() }
+    }
+
+    /// Read a sample at `delay` samples behind the write position.
+    #[inline(always)]
+    pub fn read(&self, delay: usize) -> T {
+        self.tape().read(delay)
+    }
+
+    /// Read with linear interpolation between samples.
+    #[inline(always)]
+    pub fn read_interpolated(&self, delay: f64) -> T {
+        self.tape().read_interpolated(delay)
+    }
+
+    /// Read a full block starting at `delay` samples behind write position.
+    #[inline(always)]
+    pub fn read_block(&self, delay: usize, output: &mut [T]) {
+        self.tape().read_block(delay, output);
+    }
+
+    /// Maximum capacity in samples.
+    pub fn capacity(&self) -> usize {
+        self.tape().capacity()
     }
 }
 

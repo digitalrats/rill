@@ -31,23 +31,47 @@ The process callback is registered via `IoDriver::set_process_callback()`.
 - **`Input`** — `Source` node (push model). Holds `Arc<dyn IoCapture>`.
   Same pattern — `Source::set_capture()` injects the backend.
 
-The process callback (registered by the orchestrator) does:
-1. Drain actor mailbox (`SetParameter` commands) into graph nodes
-2. `ProcessingState::process_block(&tick)` — generates, processes, propagates
-3. `ProcessingState::send_clock_tick(&tick)` — dispatches to control actors
+The process callback (registered by the orchestrator) does, per `block_size`
+chunk of the callback's buffer:
+1. `ProcessingState::process_block(&tick)` — adopts the tick's sample rate
+   (re-initialising nodes if the hardware rate differs), drains the actor
+   mailbox and applies `SetParameter` writes (sample-accurate ones at the block
+   matching their `sample_pos`), then generates/processes/propagates
+2. `ProcessingState::send_clock_tick(&tick)` — forwards the tick to control
+   actors (chunking backends dispatch one tick per block)
 
 ## Backends
 
 | Backend | Feature | Thread model |
 |---------|---------|-------------|
-| `PortAudioBackend` | `portaudio` (default) | RT callback, exact buffer size |
-| `PipewireBackend` | `pipewire` | RT callback (PW thread) |
-| `JackBackend` | `jack` | RT callback (JACK thread) |
-| `AlsaBackend` | `alsa` | `snd_pcm_wait()` — poll‑driven, exact period required |
+| `PortAudioBackend` | `portaudio` (default) | RT callback, large buffer chunked into `block_size` pieces |
+| `PipewireBackend` | `pipewire` | RT callback (PW thread), buffer negotiated via `SPA_PARAM_Buffers`, chunked into `block_size` pieces |
+| `JackBackend` | `jack` | RT callback (JACK thread); buffer size set by the JACK server |
+| `AlsaBackend` | `alsa` | Callback-driven on the audio thread, event-driven via `snd_pcm_wait` (no `thread::sleep`); fires the capture then playback callbacks per period (exact period required) |
 | `NullBackend` | *(always)* | No‑op, for testing |
 
+### Buffer sizing (callback-driven backends)
+
+A single `block_size` (256-frame) period is unstable through PipeWire (crackling
+via the ALSA plugin, xruns), so callback-driven backends request a larger DMA
+buffer and chunk it back into `block_size` pieces in the callback, emitting one
+`ClockTick` per rill block (the same model PipeWire uses internally):
+
+- **PipeWire** negotiates `buffer_size × buffer_blocks` frames via a
+  `SPA_PARAM_Buffers` object on connect, instead of PipeWire's large default
+  (~12288 frames).
+- **PortAudio** requests `buffer_size × buffer_blocks` as `frames_per_buffer`.
+
+The multiplier is `AudioConfig::buffer_blocks` (default 16 → 4096 frames;
+`"buffer_blocks"` backend param). Because the whole buffer is one I/O callback,
+its duration is also the async-control look-ahead (`ClockTick.io_quantum`), so
+it trades control latency (~93 ms at 16 blocks) against stability (the stable
+minimum is hardware/config dependent). ALSA (period fixed to `buffer_size`) and
+JACK (buffer size set by the JACK server) ignore it.
+
 Sample rate negotiation:
-- **JACK**: reads `client.sample_rate()` after activation
+- **JACK**: reads `client.sample_rate()` after activation and puts the *actual*
+  hardware rate in the `ClockTick`; the graph re-initialises its nodes to it
 - **ALSA**: queries `hw.get_rate()` after `set_rate(Nearest)`, checks `hw.get_period_size() == BUF_SIZE`
 - **PipeWire**: output uses requested rate, input reads negotiated rate atomically
 - **PortAudio**: opens stream with exact requested rate and buffer size

@@ -416,7 +416,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
     ) -> ProcessResult<()> {
         let amp = self.amplitude;
 
-        let left_out = self.outputs[0].buffer.as_mut_array();
+        let left_out = self.outputs[0].write();
         self.left.process(None, &mut left_out[..])?;
         if amp != T::from_f32(1.0) {
             for s in left_out.iter_mut() {
@@ -426,7 +426,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 
         if let Some(ref mut right_player) = self.right {
             if self.outputs.len() > 1 {
-                let right_out = self.outputs[1].buffer.as_mut_array();
+                let right_out = self.outputs[1].write();
                 right_player.process(None, &mut right_out[..])?;
                 if amp != T::from_f32(1.0) {
                     for s in right_out.iter_mut() {

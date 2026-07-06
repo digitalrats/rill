@@ -259,8 +259,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Delay<
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let inp = self.inputs[0].buffer.as_array();
-        let out = self.outputs[0].buffer.as_mut_array();
+        let inp = self.inputs[0].read();
+        let out = self.outputs[0].write();
         let mix = T::from_f32(self.mix);
         let one_minus_mix = T::ONE - mix;
         let feedback = T::from_f32(self.feedback);

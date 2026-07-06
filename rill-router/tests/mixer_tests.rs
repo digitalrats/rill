@@ -20,22 +20,20 @@ fn test_mixer_basic_processing() {
     mixer
         .input_port_mut(0)
         .unwrap()
-        .buffer
-        .as_mut_array()
+        .write()
         .copy_from_slice(&input1);
     mixer
         .input_port_mut(1)
         .unwrap()
-        .buffer
-        .as_mut_array()
+        .write()
         .copy_from_slice(&input2);
 
     let ctx = RenderContext::new(0, 64, 44100.0);
 
     mixer.route(&ctx, &[]).unwrap();
 
-    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
-    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
+    let output_left = mixer.output_port(0).unwrap().read();
+    let output_right = mixer.output_port(1).unwrap().read();
 
     // Both channels are mono, so they are summed to both left and right outputs
     let expected = input1[0] + input2[0];
@@ -69,16 +67,15 @@ fn test_mixer_pan() {
     mixer
         .input_port_mut(0)
         .unwrap()
-        .buffer
-        .as_mut_array()
+        .write()
         .copy_from_slice(&input);
 
     let ctx = RenderContext::new(0, 64, 44100.0);
 
     mixer.route(&ctx, &[]).unwrap();
 
-    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
-    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
+    let output_left = mixer.output_port(0).unwrap().read();
+    let output_right = mixer.output_port(1).unwrap().read();
 
     // For pan -0.5: left gain 1.0, right gain 0.5
     // For now, let's just check that left and right are different
@@ -99,16 +96,15 @@ fn test_mixer_mute() {
     mixer
         .input_port_mut(0)
         .unwrap()
-        .buffer
-        .as_mut_array()
+        .write()
         .copy_from_slice(&input);
 
     let ctx = RenderContext::new(0, 64, 44100.0);
 
     mixer.route(&ctx, &[]).unwrap();
 
-    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
-    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
+    let output_left = mixer.output_port(0).unwrap().read();
+    let output_right = mixer.output_port(1).unwrap().read();
 
     for i in 0..64 {
         assert_eq!(output_left[i], 0.0);
@@ -156,18 +152,17 @@ fn test_mixer_sends() {
     mixer
         .input_port_mut(0)
         .unwrap()
-        .buffer
-        .as_mut_array()
+        .write()
         .copy_from_slice(&input);
 
     let ctx = RenderContext::new(0, 64, 44100.0);
 
     mixer.route(&ctx, &[]).unwrap();
 
-    let output_left = mixer.output_port(0).unwrap().buffer.as_array();
-    let output_right = mixer.output_port(1).unwrap().buffer.as_array();
-    let bus0_out = mixer.output_port(2).unwrap().buffer.as_array();
-    let bus1_out = mixer.output_port(3).unwrap().buffer.as_array();
+    let output_left = mixer.output_port(0).unwrap().read();
+    let output_right = mixer.output_port(1).unwrap().read();
+    let bus0_out = mixer.output_port(2).unwrap().read();
+    let bus1_out = mixer.output_port(3).unwrap().read();
 
     // Skip first few samples due to smoothing
     let start = 10;

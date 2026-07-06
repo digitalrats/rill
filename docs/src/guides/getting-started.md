@@ -105,7 +105,7 @@ state.run_with_driver(output.driver, Arc::new(AtomicBool::new(true)))?;
   No heap allocs, no locks, no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay`
   with automatons (LFO, envelopes, sequencers). Communicates via
-  lock-free `MpscQueue<ParameterCommand>`.
+  lock‑free `MpscQueue` (via the graph actor mailbox, `ActorRef<CommandEnum>`).
 
 ## Next steps
 

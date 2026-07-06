@@ -66,6 +66,20 @@ pub struct ClockTick {
     /// for intermediate chunks and `true` only for the final chunk of the
     /// DMA buffer — avoiding 48 ClockTick dispatches per PW callback.
     pub is_final: bool,
+
+    /// Number of frames the I/O backend processes per callback (its quantum).
+    ///
+    /// The graph processes one `block_size` chunk per pass, but a backend may
+    /// batch many chunks into a single I/O callback (e.g. PipeWire delivers a
+    /// 12288-frame buffer = 48 × 256 chunks). Tick-driven control producers
+    /// (sequencers/servos) that run asynchronously only see the results of a
+    /// callback *after* it returns, so a change reacting to a tick in the
+    /// current callback can only be rendered in the next one. Producers use
+    /// `io_quantum` as the sample look-ahead when stamping
+    /// [`SetParameter::sample_pos`](crate::queues::SetParameter) so the change
+    /// lands on the correct block of the next callback instead of collapsing
+    /// onto block 0. Defaults to `samples_since_last` (one chunk per callback).
+    pub io_quantum: u32,
 }
 
 impl PartialEq for ClockTick {
@@ -113,6 +127,7 @@ impl ClockTick {
             source,
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: samples_since_last,
         }
     }
 
@@ -140,7 +155,18 @@ impl ClockTick {
             source,
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: samples_since_last,
         }
+    }
+
+    /// Set the I/O backend's per-callback quantum (frames processed per callback).
+    ///
+    /// Backends that batch multiple `block_size` chunks into one callback set
+    /// this so asynchronous control producers know how far ahead to schedule
+    /// sample-accurate parameter changes. See [`io_quantum`](Self::io_quantum).
+    pub fn with_io_quantum(mut self, io_quantum: u32) -> Self {
+        self.io_quantum = io_quantum;
+        self
     }
 
     /// Get the time since the last tick in seconds
@@ -238,6 +264,7 @@ impl Default for ClockTick {
             source: String::new(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 0,
         }
     }
 }

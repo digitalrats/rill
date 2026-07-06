@@ -1,5 +1,5 @@
 use rill_core::{
-    buffer::{BufferRegistry, TapeLoop},
+    buffer::{ResourceRegistry, TapeWriter},
     math::vector::scalar::ScalarVector4,
     math::vector::traits::Vector as VecTrait,
     math::Transcendental,
@@ -7,7 +7,8 @@ use rill_core::{
     NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
 };
 
-// Raw pointer to TapeLoop — safe because the graph is single-threaded.
+// Holds an `Rc`-based tape handle — the graph is single-threaded and moved
+// to the signal thread once; `Send`/`Sync` are asserted for that pattern.
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Send for WriteHead<T, B> {}
 #[allow(unsafe_code)]
@@ -35,7 +36,7 @@ pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
     outputs: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
 
-    tape: *mut TapeLoop<T>,
+    tape: Option<TapeWriter<T>>,
     resource_name: String,
     delay_time: f32,
     feedback: f32,
@@ -81,23 +82,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
             inputs,
             outputs,
             state: NodeState::new(sample_rate),
-            tape: std::ptr::null_mut(),
+            tape: None,
             resource_name: resource_name.to_string(),
             delay_time: 0.5,
             feedback: 0.3,
             sample_rate,
         }
-    }
-
-    /// Set the tape pointer (called during resource resolution).
-    pub fn set_tape_ptr(&mut self, tape: *mut TapeLoop<T>) {
-        self.tape = tape;
-    }
-
-    /// Return a raw pointer to the tape loop for read heads.
-    #[inline(always)]
-    pub fn tape_ptr(&self) -> *const TapeLoop<T> {
-        self.tape as *const TapeLoop<T>
     }
 }
 
@@ -110,15 +100,23 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteH
         _signal_inputs: &[&[T; BUF_SIZE]],
         _control_inputs: &[T],
         _clock_inputs: &[RenderContext],
-        feedback_inputs: &[&[T; BUF_SIZE]],
+        _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        debug_assert!(!self.tape.is_null(), "WriteHead: tape not set");
-        let tape = unsafe { &mut *self.tape };
+        let Some(tape) = self.tape.as_mut() else {
+            debug_assert!(false, "WriteHead: tape not set");
+            return Ok(());
+        };
 
-        let input_buf = self.inputs[0].buffer.as_array();
+        let input_buf = self.inputs[0].read();
         let fb_gain = T::from_f32(self.feedback);
         let zero_buf = [T::ZERO; BUF_SIZE];
-        let fb_buf = feedback_inputs.first().copied().unwrap_or(&zero_buf);
+        // Feedback arrives on the `feedback_in` port's delayed feedback buffer
+        // (filled by the upstream node's `snapshot_feedback`), not via the
+        // `feedback_inputs` argument (which the engine leaves empty — nodes read
+        // their own port buffers). Reading `feedback_buffer` directly gives the
+        // fresh 1-block-delayed value without the accumulation that `buffer`
+        // (via `pre_process`) would incur on a feedback-only input.
+        let fb_buf = self.inputs[1].feedback().unwrap_or(&zero_buf);
         let chunks = BUF_SIZE / 4;
         let fg = ScalarVector4::splat(fb_gain);
 
@@ -138,10 +136,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteH
             tape.write(input_buf[i] + fb_buf[i] * fb_gain);
         }
 
-        self.outputs[0]
-            .buffer
-            .as_mut_array()
-            .copy_from_slice(input_buf);
+        self.outputs[0].write_from(input_buf);
         self.state.advance();
         Ok(())
     }
@@ -178,13 +173,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for WriteHead<T
         self.state.blocks_processed = 0;
     }
 
-    fn resolve_resources(&mut self, buffers: &BufferRegistry<T>) {
-        if !self.tape.is_null() {
+    fn resolve_resources(&mut self, resources: &mut ResourceRegistry<T>) {
+        if self.tape.is_some() {
             return;
         }
-        if let Some(ptr) = buffers.get_ptr(&self.resource_name) {
-            self.tape = ptr as *mut TapeLoop<T>;
-        }
+        self.tape = resources.writer(&self.resource_name);
     }
 
     fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {

@@ -361,8 +361,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         _clock_inputs: &[rill_core::RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let input_buf = *self.inputs[0].buffer.as_array();
-        let output_buf = self.outputs[0].buffer.as_mut_array();
+        let input_buf = *self.inputs[0].read();
+        let output_buf = self.outputs[0].write();
 
         let mut input_f32 = [0.0f32; BUF_SIZE];
         for (dest, &src) in input_f32.iter_mut().zip(input_buf.iter()) {
@@ -686,8 +686,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
         _clock_inputs: &[rill_core::RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let input_buf = *self.inputs[0].buffer.as_array();
-        let output_buf = self.outputs[0].buffer.as_mut_array();
+        let input_buf = *self.inputs[0].read();
+        let output_buf = self.outputs[0].write();
 
         let mut input_f32 = [0.0f32; BUF_SIZE];
         for (dest, &src) in input_f32.iter_mut().zip(input_buf.iter()) {

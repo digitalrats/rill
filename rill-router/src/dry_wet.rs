@@ -181,11 +181,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for DryWet
         _clock_inputs: &[RenderContext],
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
-        let dry_buf = self.inputs[0].buffer.as_array();
-        let wet_buf = self.inputs[1].buffer.as_array();
+        let dry_buf = self.inputs[0].read();
+        let wet_buf = self.inputs[1].read();
         let (out_left, out_right) = self.outputs.split_at_mut(1);
-        let out_l = out_left[0].buffer.as_mut_array();
-        let out_r = out_right[0].buffer.as_mut_array();
+        let out_l = out_left[0].write();
+        let out_r = out_right[0].write();
 
         let dg = ScalarVector4::splat(T::from_f32(self.dry));
         let wg = ScalarVector4::splat(T::from_f32(self.wet));

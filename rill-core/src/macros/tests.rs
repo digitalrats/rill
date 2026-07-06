@@ -41,7 +41,7 @@ mod macro_tests {
                         this.state_mut().phase = new_phase;
                     }
                 }
-                *this.outputs[0].buffer.as_mut_array() = temp;
+                *this.outputs[0].write() = temp;
                 Ok(())
             }
         }
@@ -63,12 +63,12 @@ mod macro_tests {
 
             process: |this: &mut TestGain<T, BUF_SIZE>| -> crate::ProcessResult<()> {
                 if let (Some(input), Some(output)) = (this.inputs.first_mut(), this.outputs.first_mut()) {
-                    let input_buf = *input.buffer.as_array();
+                    let input_buf = *input.read();
                     let mut output_buf = [T::ZERO; BUF_SIZE];
                     for i in 0..BUF_SIZE {
                         output_buf[i] = input_buf[i] * this.gain;
                     }
-                    output.buffer.copy_from(&output_buf);
+                    output.write_from(&output_buf);
                 }
                 Ok(())
             }

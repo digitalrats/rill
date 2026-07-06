@@ -448,8 +448,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limite
         _feedback_inputs: &[&[T; BUF_SIZE]],
     ) -> ProcessResult<()> {
         for i in 0..BUF_SIZE {
-            let sample = self.inputs[0].buffer.as_array()[i];
-            self.outputs[0].buffer.as_mut_array()[i] = self.process_sample(sample);
+            let sample = self.inputs[0].read()[i];
+            self.outputs[0].write()[i] = self.process_sample(sample);
         }
         self.state.advance();
         Ok(())

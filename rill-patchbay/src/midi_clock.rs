@@ -508,6 +508,7 @@ mod tests {
             source: "test".into(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 256,
         };
         let events = gen.tick(&tick);
         assert!(events.is_empty());
@@ -526,6 +527,7 @@ mod tests {
             source: "test".into(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 256,
         };
         let events = gen.tick(&tick);
         // 48kHz @ 120bpm = 1000 samples/tick. Block 0..2048 → ticks at 0, 1000, 2000.
@@ -548,6 +550,7 @@ mod tests {
             source: "test".into(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 256,
         };
         let events1 = gen.tick(&tick1);
         // Block 0..1200 → ticks at 0, 1000.
@@ -561,6 +564,7 @@ mod tests {
             source: "test".into(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 256,
         };
         let events2 = gen.tick(&tick2);
         // Block 1200..2400 → next_tick_at was 2000, one tick at 2000.
@@ -580,6 +584,7 @@ mod tests {
             source: "test".into(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 256,
         };
         let events = gen.tick(&tick);
         assert_eq!(events.len(), 5);
@@ -593,6 +598,7 @@ mod tests {
             source: "test".into(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 256,
         };
         let events2 = gen.tick(&tick2);
         assert!(events2.is_empty());
@@ -611,6 +617,7 @@ mod tests {
             source: "test".into(),
             speed_ratio: 1.0,
             is_final: true,
+            io_quantum: 256,
         };
         let events = gen.tick(&tick);
         // Start resets next_tick_at to 48000. Block 48000..50048 → ticks at 48000, 49000, 50000.

@@ -450,7 +450,7 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Source<T, BUF_SIZE>
     ) -> ProcessResult<()> {
         if !self.playing || self.reader.num_channels() == 0 {
             for port in self.outputs.iter_mut() {
-                port.buffer.as_mut_array().fill(T::ZERO);
+                port.write().fill(T::ZERO);
             }
             return Ok(());
         }
@@ -461,7 +461,7 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 
         // Planar per-channel writes
         for (ch_idx, port) in self.outputs.iter_mut().enumerate().take(nch) {
-            let buf = port.buffer.as_mut_array();
+            let buf = port.write();
             for (i, v) in buf.iter_mut().enumerate() {
                 let t = self.time + i as f64 * dt;
                 *v = self.reader.at_time(ch_idx, t);
@@ -675,7 +675,7 @@ t,channel,value
         node.generate(&ctx, &[], &[], &tick).unwrap();
 
         let port = node.output_port(0).unwrap();
-        let buf = port.buffer.as_array();
+        let buf = port.read();
         assert!(ae(buf[0], 1.0));
         assert!(ae(buf[1], 1.5));
         assert!(ae(buf[2], 2.0));

@@ -106,8 +106,10 @@ impl ProcessingState<T, BUF_SIZE> {
 ```
 
 `process_block()` is the per-block entry point called from the I/O callback.
-It drains the actor mailbox, runs sources/processors/sinks, triggers port
-propagation, and dispatches `ClockTick` to the control rack.
+It first adopts the tick's sample rate (re-initialising nodes if the backend's
+hardware rate differs from the built rate — the graph has no clock of its own),
+drains the actor mailbox, applies any sample-accurate parameter changes due for
+this block, runs sources/processors/sinks, and triggers port propagation.
 
 ### `ParamValue`
 
@@ -142,7 +144,7 @@ while let Some(cmd) = cmd_queue.pop() {
 
 ## `ClockTick`
 
-Sample-accurate timing sent from driver to control thread.
+Per-block timing sent from the driver into the graph and to control modules.
 Carries only timing metadata — I/O access is through `IoCapture`/`IoPlayback`
 traits held by graph nodes.
 
@@ -156,8 +158,38 @@ pub struct ClockTick {
     pub source: String,
     pub speed_ratio: f64,
     pub is_final: bool,
+    pub io_quantum: u32,   // frames the backend processes per I/O callback
 }
 ```
+
+`io_quantum` lets asynchronous control producers schedule sample-accurate
+parameter changes correctly under backends that batch many `block_size` chunks
+into one callback. It defaults to `samples_since_last` (one chunk per callback)
+and is set to the full callback size by chunking backends (PipeWire, JACK).
+
+## Sample-accurate parameter changes
+
+`SetParameter` carries an optional `sample_pos: Option<u64>`:
+
+```rust
+pub struct SetParameter {
+    pub port: PortId,
+    pub parameter: ParameterId,
+    pub value: ParamValue,
+    pub source: SignalOrigin,
+    pub timestamp: u64,        // wall-clock, for ordering/telemetry
+    pub sample_pos: Option<u64>, // absolute sample to apply at; None = ASAP
+}
+```
+
+- `None` — applied immediately when the graph actor drains it (legacy; used by
+  live UI/MIDI writes so there is no added latency).
+- `Some(pos)` — queued and applied by the graph during the 256-sample block
+  whose range `[block_start, block_start + block)` contains `pos`.
+
+Because an async control module reacting to a tick in I/O callback *N* is only
+rendered in callback *N+1*, producers look ahead by one quantum:
+`SetParameter::new(..).with_sample_pos(tick.sample_pos + tick.io_quantum as u64)`.
 
 ## Module tree
 
@@ -165,9 +197,9 @@ pub struct ClockTick {
 rill-core/
 ├── traits/   — Node, Source, Processor, Sink, ParamValue, Port
 ├── math/     — Scalar, Transcendental, Vector
-├── buffer/   — PipeBuffer, DelayLine, RingBuffer, FixedBuffer
-├── queues/   — MpscQueue, SetParameter, Telemetry
-├── time/     — ClockTick, SystemClock
+├── buffer/   — PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer, TapeLoop, FixedBuffer, ResourceRegistry
+├── queues/   — MpscQueue, SetParameter, CommandEnum, Telemetry
+├── time/     — ClockTick, RenderContext, SystemClock
 ├── io/       — IoDriver, IoCapture, IoPlayback, IoControl, IoResult
 └── macros/   — source_node!, processor_node!, sink_node!
 ```
