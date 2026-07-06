@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use super::ty::{Scalar, Scheme, Subst, Type, TypeVarId};
 use super::unify::unify_scalar;
 use crate::ast::{BinOp, Expr, Program};
+use crate::builtin::SignatureSource;
 use crate::error::{CompileError, Span};
 
 /// The typed result of inference: the program's definitions plus the resolved
@@ -18,15 +19,17 @@ pub struct TypedProgram {
     pub process_ty: Type,
 }
 
-/// Inference context: fresh var supply, definition schemes, and local bindings.
-struct Ctx {
+/// Inference context: fresh var supply, definition schemes, local bindings,
+/// and a signature source for built-in resolution.
+struct Ctx<'a> {
     next: TypeVarId,
     subst: Subst,
     defs: HashMap<String, Scheme>,
     locals: HashMap<String, Type>,
+    sigs: &'a dyn SignatureSource,
 }
 
-impl Ctx {
+impl Ctx<'_> {
     fn fresh(&mut self) -> Scalar {
         let v = self.next;
         self.next += 1;
@@ -62,15 +65,22 @@ impl Ctx {
     }
 }
 
-/// Type-check a program. Every definition is inferred and generalized in source
-/// order (so later defs may reference earlier ones). `process` must exist and
-/// have output arity 1 and input arity 0 or 1.
+/// Back-compat: infer with no built-ins.
 pub fn infer_program(program: &Program) -> Result<TypedProgram, CompileError> {
+    infer_program_with(program, &crate::builtin::NoSigs)
+}
+
+/// Infer with a signature source for built-in resolution.
+pub fn infer_program_with(
+    program: &Program,
+    sigs: &dyn SignatureSource,
+) -> Result<TypedProgram, CompileError> {
     let mut ctx = Ctx {
         next: 0,
         subst: Subst::default(),
         defs: HashMap::new(),
         locals: HashMap::new(),
+        sigs,
     };
 
     let mut process_ty: Option<Type> = None;
@@ -131,7 +141,7 @@ fn process_span(program: &Program) -> Span {
 }
 
 /// Infer the diagram type of an expression, synthesizing concrete arities.
-fn infer_expr(ctx: &mut Ctx, e: &Expr) -> Result<Type, CompileError> {
+fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
     match e {
         Expr::Int(_, _) => Ok(Type {
             ins: vec![],
@@ -167,7 +177,7 @@ fn infer_expr(ctx: &mut Ctx, e: &Expr) -> Result<Type, CompileError> {
     }
 }
 
-fn infer_ref(ctx: &mut Ctx, name: &str, span: Span) -> Result<Type, CompileError> {
+fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<Type, CompileError> {
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
         let s = ctx.fresh();
         return Ok(Type::uniform(2, 1, s));
@@ -182,6 +192,15 @@ fn infer_ref(ctx: &mut Ctx, name: &str, span: Span) -> Result<Type, CompileError
         let s = ctx.fresh();
         return Ok(Type::uniform(2, 1, s));
     }
+    if let Some(sig) = ctx.sigs.builtin_sig(name) {
+        if sig.num_params == 0 {
+            return Ok(Type::uniform(
+                sig.signal_ins,
+                sig.signal_outs,
+                Scalar::Float,
+            ));
+        }
+    }
     if let Some(t) = ctx.locals.get(name) {
         return Ok(t.clone());
     }
@@ -194,7 +213,39 @@ fn infer_ref(ctx: &mut Ctx, name: &str, span: Span) -> Result<Type, CompileError
     })
 }
 
-fn infer_apply(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<Type, CompileError> {
+fn infer_apply(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    args: &[Expr],
+    span: Span,
+) -> Result<Type, CompileError> {
+    if let Some(sig) = ctx.sigs.builtin_sig(name) {
+        let sig = sig.clone();
+        if args.len() != sig.num_params {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "built-in `{name}` expects {} param(s), got {}",
+                    sig.num_params,
+                    args.len()
+                ),
+                span,
+            });
+        }
+        for a in args {
+            let at = infer_expr(ctx, a)?;
+            if at.arity_in() != 0 || at.arity_out() != 1 {
+                return Err(CompileError::Type {
+                    msg: format!("param to `{name}` must be a constant expression"),
+                    span: a.span(),
+                });
+            }
+        }
+        return Ok(Type::uniform(
+            sig.signal_ins,
+            sig.signal_outs,
+            Scalar::Float,
+        ));
+    }
     let mut combined: Option<Type> = None;
     for arg in args {
         let at = infer_expr(ctx, arg)?;
@@ -211,7 +262,7 @@ fn infer_apply(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<T
 }
 
 fn infer_bin(
-    ctx: &mut Ctx,
+    ctx: &mut Ctx<'_>,
     op: BinOp,
     a: &Type,
     b: &Type,
@@ -236,7 +287,7 @@ fn par(a: &Type, b: &Type) -> Type {
     Type { ins, outs }
 }
 
-fn seq(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn seq(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
     if a.arity_out() != b.arity_in() {
         return Err(CompileError::Type {
             msg: format!(
@@ -256,7 +307,7 @@ fn seq(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileErr
     })
 }
 
-fn split(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn split(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
     let (ao, bi) = (a.arity_out(), b.arity_in());
     if ao == 0 || bi % ao != 0 {
         return Err(CompileError::Type {
@@ -278,7 +329,7 @@ fn split(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileE
     })
 }
 
-fn merge(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn merge(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
     let (ao, bi) = (a.arity_out(), b.arity_in());
     if bi == 0 || ao % bi != 0 {
         return Err(CompileError::Type {
@@ -300,7 +351,7 @@ fn merge(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileE
     })
 }
 
-fn feedback(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn feedback(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
     let (ai, ao, bi, bo) = (a.arity_in(), a.arity_out(), b.arity_in(), b.arity_out());
     if bi > ao || bo > ai {
         return Err(CompileError::Type {
@@ -322,7 +373,7 @@ fn feedback(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, Compi
     })
 }
 
-fn delay(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn delay(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
     if a.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: format!(
@@ -345,7 +396,7 @@ fn delay(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileE
     })
 }
 
-fn arith(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn arith(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
     if a.arity_out() != 1 || b.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: "arithmetic operands must each produce exactly one wire".into(),
@@ -361,7 +412,7 @@ fn arith(ctx: &mut Ctx, a: &Type, b: &Type, span: Span) -> Result<Type, CompileE
     })
 }
 
-fn check_all_numeric(_ctx: &mut Ctx, _t: &Type, _span: Span) -> Result<(), CompileError> {
+fn check_all_numeric(_ctx: &mut Ctx<'_>, _t: &Type, _span: Span) -> Result<(), CompileError> {
     Ok(())
 }
 
@@ -425,5 +476,54 @@ mod tests {
     fn function_application_ok() {
         let t = ty_of("g(x) = x * 0.5; process = g(_);").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+    }
+
+    struct TestSigs;
+    impl crate::builtin::SignatureSource for TestSigs {
+        fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
+            use crate::builtin::{BuiltinKind, BuiltinSig};
+            match name {
+                "lowpass" => Some(Box::leak(Box::new(BuiltinSig {
+                    name: "lowpass",
+                    signal_ins: 1,
+                    signal_outs: 1,
+                    num_params: 2,
+                    kind: BuiltinKind::Block,
+                }))),
+                "onepole" => Some(Box::leak(Box::new(BuiltinSig {
+                    name: "onepole",
+                    signal_ins: 1,
+                    signal_outs: 1,
+                    num_params: 2,
+                    kind: BuiltinKind::Sample,
+                }))),
+                _ => None,
+            }
+        }
+    }
+
+    fn ty_with(src: &str) -> Result<TypedProgram, CompileError> {
+        infer_program_with(&parse(&tokenize(src).unwrap()).unwrap(), &TestSigs)
+    }
+
+    #[test]
+    fn builtin_call_is_1_to_1() {
+        let t = ty_with("process = _ : lowpass(1000.0, 0.7);").unwrap();
+        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+    }
+
+    #[test]
+    fn builtin_wrong_param_count_errors() {
+        assert!(ty_with("process = _ : lowpass(1000.0);").is_err());
+    }
+
+    #[test]
+    fn builtin_non_const_param_errors() {
+        assert!(ty_with("process = _ : lowpass(_, 0.7);").is_err());
+    }
+
+    #[test]
+    fn sample_builtin_in_feedback_typechecks() {
+        assert!(ty_with("process = + ~ onepole(200.0, 0.5);").is_ok());
     }
 }

@@ -3,17 +3,20 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, Def, Expr, Program};
+use crate::builtin::{BuiltinKind, SignatureSource};
 use crate::error::{CompileError, Span};
-use crate::ir::{BinArith, Instr, Ir, StateLayout, UnOp};
+use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, StateLayout, UnOp};
 use crate::types::infer::TypedProgram;
 
 struct Lowerer<'a> {
     defs: HashMap<String, &'a Def>,
+    sigs: &'a dyn SignatureSource,
     instrs: Vec<Instr>,
     next_reg: usize,
     state_slots: usize,
     delay_lens: Vec<usize>,
     locals: Vec<HashMap<String, Vec<usize>>>,
+    builtins: Vec<BuiltinInstance>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -61,6 +64,42 @@ impl<'a> Lowerer<'a> {
                     .collect())
             }
             Expr::Apply { name, args, span } => {
+                if let Some(sig) = self.sigs.builtin_sig(name) {
+                    let sig = sig.clone();
+                    let mut params = Vec::with_capacity(args.len());
+                    for a in args {
+                        let v = const_f64(a).ok_or_else(|| CompileError::Type {
+                            msg: format!("param to `{name}` must be a constant"),
+                            span: a.span(),
+                        })?;
+                        params.push(v);
+                    }
+                    let instance = self.builtins.len();
+                    self.builtins.push(BuiltinInstance {
+                        name: name.clone(),
+                        params,
+                        kind: sig.kind,
+                    });
+                    let dst = self.fresh_reg();
+                    match sig.kind {
+                        BuiltinKind::Sample => {
+                            let srcs = inputs.to_vec();
+                            self.emit(Instr::CallSample {
+                                dst,
+                                srcs,
+                                instance,
+                            });
+                        }
+                        BuiltinKind::Block => {
+                            self.emit(Instr::CallBlock {
+                                dst,
+                                src: inputs[0],
+                                instance,
+                            });
+                        }
+                    }
+                    return Ok(vec![dst]);
+                }
                 let mut arg_regs = Vec::new();
                 for a in args {
                     arg_regs.extend(self.lower(a, inputs)?);
@@ -77,6 +116,36 @@ impl<'a> Lowerer<'a> {
         inputs: &[usize],
         span: Span,
     ) -> Result<Vec<usize>, CompileError> {
+        if let Some(sig) = self.sigs.builtin_sig(name) {
+            if sig.clone().num_params == 0 {
+                let sig = sig.clone();
+                let instance = self.builtins.len();
+                self.builtins.push(BuiltinInstance {
+                    name: name.to_string(),
+                    params: Vec::new(),
+                    kind: sig.kind,
+                });
+                let dst = self.fresh_reg();
+                match sig.kind {
+                    BuiltinKind::Sample => {
+                        let srcs = inputs.to_vec();
+                        self.emit(Instr::CallSample {
+                            dst,
+                            srcs,
+                            instance,
+                        });
+                    }
+                    BuiltinKind::Block => {
+                        self.emit(Instr::CallBlock {
+                            dst,
+                            src: inputs[0],
+                            instance,
+                        });
+                    }
+                }
+                return Ok(vec![dst]);
+            }
+        }
         let bin = match name {
             "+" => Some(BinArith::Add),
             "-" => Some(BinArith::Sub),
@@ -322,6 +391,26 @@ fn arity(e: &Expr) -> Result<(usize, usize), CompileError> {
     })
 }
 
+fn const_f64(e: &Expr) -> Option<f64> {
+    match e {
+        Expr::Float(v, _) => Some(*v),
+        Expr::Int(v, _) => Some(*v as f64),
+        Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
+        Expr::Bin { op, lhs, rhs, .. } => {
+            let a = const_f64(lhs)?;
+            let b = const_f64(rhs)?;
+            Some(match op {
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::Mul => a * b,
+                BinOp::Div => a / b,
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
 fn const_int(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int(v, _) => Some(*v),
@@ -342,8 +431,13 @@ fn const_int(e: &Expr) -> Option<i64> {
     }
 }
 
-/// Lower a fully type-checked program into IR.
+/// Back-compat: lower with no built-ins.
 pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
+    lower_with(tp, &crate::builtin::NoSigs)
+}
+
+/// Lower a fully type-checked program into IR with a signature source for built-ins.
+pub fn lower_with(tp: &TypedProgram, sigs: &dyn SignatureSource) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
     let defs: HashMap<String, &Def> = program.defs.iter().map(|d| (d.name.clone(), d)).collect();
     let process = *defs.get("process").ok_or_else(|| CompileError::Type {
@@ -354,11 +448,13 @@ pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
     let num_inputs = tp.process_ty.arity_in();
     let mut lw = Lowerer {
         defs,
+        sigs,
         instrs: Vec::new(),
         next_reg: 0,
         state_slots: 0,
         delay_lens: Vec::new(),
         locals: Vec::new(),
+        builtins: Vec::new(),
     };
     let mut input_regs = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
@@ -382,7 +478,7 @@ pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
             state_slots: lw.state_slots,
             delay_lens: lw.delay_lens,
         },
-        builtins: Vec::new(),
+        builtins: lw.builtins,
     })
 }
 
@@ -391,12 +487,42 @@ mod tests {
     use super::*;
     use crate::lexer::tokenize;
     use crate::parser::parse;
-    use crate::types::infer::infer_program;
+    use crate::types::infer::{infer_program, infer_program_with};
 
     fn ir_of(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap()).unwrap();
         let tp = infer_program(&p).unwrap();
         lower(&tp).unwrap()
+    }
+
+    struct TestSigs;
+    impl crate::builtin::SignatureSource for TestSigs {
+        fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
+            use crate::builtin::{BuiltinKind, BuiltinSig};
+            match name {
+                "lowpass" => Some(Box::leak(Box::new(BuiltinSig {
+                    name: "lowpass",
+                    signal_ins: 1,
+                    signal_outs: 1,
+                    num_params: 2,
+                    kind: BuiltinKind::Block,
+                }))),
+                "onepole" => Some(Box::leak(Box::new(BuiltinSig {
+                    name: "onepole",
+                    signal_ins: 1,
+                    signal_outs: 1,
+                    num_params: 2,
+                    kind: BuiltinKind::Sample,
+                }))),
+                _ => None,
+            }
+        }
+    }
+
+    fn ir_with(src: &str) -> Ir {
+        let p = parse(&tokenize(src).unwrap()).unwrap();
+        let tp = infer_program_with(&p, &TestSigs).unwrap();
+        lower_with(&tp, &TestSigs).unwrap()
     }
 
     #[test]
@@ -434,5 +560,35 @@ mod tests {
     fn delay_allocates_line() {
         let ir = ir_of("process = _ @ 3;");
         assert_eq!(ir.state.delay_lens, vec![3]);
+    }
+
+    #[test]
+    fn sample_builtin_lowers_to_callsample() {
+        let ir = ir_with("process = _ : onepole(200.0, 0.5);");
+        assert!(
+            ir.instrs
+                .iter()
+                .any(|i| matches!(i, Instr::CallSample { .. })),
+            "expected a CallSample instruction"
+        );
+        assert_eq!(ir.builtins.len(), 1);
+        let bi = &ir.builtins[0];
+        assert_eq!(bi.kind, BuiltinKind::Sample);
+        assert_eq!(bi.params, vec![200.0, 0.5]);
+    }
+
+    #[test]
+    fn block_builtin_lowers_to_callblock() {
+        let ir = ir_with("process = _ : lowpass(1000.0, 0.7);");
+        assert!(
+            ir.instrs
+                .iter()
+                .any(|i| matches!(i, Instr::CallBlock { .. })),
+            "expected a CallBlock instruction"
+        );
+        assert_eq!(ir.builtins.len(), 1);
+        let bi = &ir.builtins[0];
+        assert_eq!(bi.kind, BuiltinKind::Block);
+        assert_eq!(bi.params, vec![1000.0, 0.7]);
     }
 }
