@@ -3,16 +3,39 @@
 `rill-lang` is a small, Faust-style functional streaming language for describing
 the internal math of a signal-graph node. You write a block diagram as source
 text; `rill-lang` compiles it — lexer, parser, Hindley-Milner type checker,
-linear IR, interpreter — into a value implementing
+linear IR, and an execution scheduler — into a value implementing
 [`rill_core::Algorithm`](../architecture/core.md), ready to run in the graph.
 
-The current backend is a safe, allocation-free **interpreter** that evaluates
-the program one sample at a time. A Cranelift JIT backend is planned behind a
-future `jit` feature; it will consume the same intermediate representation, so
-nothing in the language front-end changes when it arrives.
+The current backend is a safe, allocation-free **interpreter**. A Cranelift JIT
+backend is planned behind a future `jit` feature; it will consume the same
+intermediate representation, so nothing in the language front-end changes when it
+arrives.
 
-> This page is the *language* reference. For the broader idea of embedding
-> domain-specific languages in rill, see the [eDSL guide](dsl.md).
+> This page is the canonical language reference. For the broader idea of
+> embedding domain-specific languages in rill, see the [eDSL guide](dsl.md).
+
+## Overview
+
+rill-lang exists so that a node's DSP can be **authored — and, in time,
+machine-synthesised — at runtime** rather than hand-written in Rust and compiled
+ahead of time. A program is compiled on the fly (no `rustc`, no external
+toolchain) to a `rill_core::Algorithm<T>` that plugs straight into the signal
+graph. The compiler is tiny and self-contained, and the compiled program obeys
+rill's real-time rules: no heap allocation, no locks, and no syscalls on the hot
+path.
+
+Three properties define the language:
+
+- **Block-diagram algebra (Faust-style).** Programs are compositions of signal
+  processors via geometric combinators (`:` `,` `<:` `:>` `~`), not imperative
+  statements. There are no runtime variables — only signals flowing through
+  blocks.
+- **Hybrid block/sample execution.** The compiler analyses the data-dependency
+  graph and runs feedforward regions **whole-buffer** (SIMD) while only true
+  recurrences (feedback, delay) run sample-by-sample. See
+  [Execution model](#execution-model-and-performance).
+- **RT-safe control.** Named parameters and smoothing give control-rate
+  automation without recompilation or locks.
 
 ## A first program
 
@@ -137,7 +160,8 @@ process = _ : lowpass(1000.0, 0.7);
 ```
 
 Parameters are **compile-time constants** (float or integer literals, optionally
-with arithmetic). They are folded to `f64` during lowering and passed to the
+with arithmetic) or a [`param(...)`](#parameters) reference for dynamic control.
+Constant parameters are folded to `f64` during lowering and passed to the
 built-in constructor. A built-in has arity `(signal_ins → signal_outs)`; in this
 release `signal_outs` is always 1.
 
@@ -211,9 +235,9 @@ process = _ : lowpass(param("cutoff", 1000.0, 20.0, 20000.0), 0.7);
 ### `smooth(x, ms)` — zipper-free smoothing
 
 When a parameter changes abruptly at a block boundary, the step creates an
-audible "zipper" click. `smooth(x, ms)` is a native one-pole low-pass pair
-(one per call site) that slides its input value toward its output with the
-specified time constant:
+audible "zipper" click. `smooth(x, ms)` is a native one-pole low-pass (one per
+call site) that slides its input value toward its output with the specified time
+constant:
 
 ```faust
 process = _ * smooth(param("gain", 0.5, 0.0, 1.0), 10.0);
@@ -329,9 +353,87 @@ The per-sample interpreter is retained as `RillProgram::process_reference` — a
 numerical oracle used by tests to validate the hybrid path. A Cranelift JIT
 backend is still planned and will reuse the same IR.
 
+## Benchmarks
+
+`rill-lang` ships [criterion](https://github.com/bheisler/criterion.rs)
+benchmarks:
+
+```bash
+cargo bench -p rill-lang   --bench lang_bench
+cargo bench -p rill-adrift --features lang --bench lang_dsp_bench
+```
+
+The figures below are representative (256-sample blocks, `f32`, one core).
+**Absolute times are machine- and build-dependent — read the ratios, not the
+nanoseconds.**
+
+### Compilation (full pipeline: lex → parse → HM → lower → schedule)
+
+| Program | Compile |
+|---|---|
+| `_ * 0.5` | ~1.4 µs |
+| `_ * 0.5 : abs : (_ * 2.0)` | ~2.1 µs |
+| `+ ~ (_ * 0.5)` | ~1.9 µs |
+| mixed fan-out + feedback | ~3.8 µs |
+
+Compilation is microseconds — cheap enough to recompile a node's source on the
+control thread when its `source` parameter changes.
+
+### Runtime — one 256-sample block
+
+| Program | Time | Kind |
+|---|---|---|
+| `_ * 0.5` | ~63 ns | feedforward (block) |
+| `_ * 0.5 : abs : (_ * 2.0)` | ~111 ns | feedforward (block) |
+| `_ <: (_ , _ * 0.5) :> +` | ~88 ns | feedforward (block) |
+| `_ * param("g", 0.5)` | ~61 ns | feedforward (block) |
+| `_ @ 4` | ~1.6 µs | recurrent (sample) |
+| `+ ~ (_ * 0.5)` | ~3.4 µs | recurrent (sample) |
+| `_ * smooth(param("g", 0.5), 10.0)` | ~4.5 µs | recurrent (sample) |
+
+### Hybrid vs. the per-sample reference — the block-processing win
+
+Comparing `process` (the hybrid block/sample executor) with
+`process_reference` (the per-sample oracle) on the same program:
+
+| Program | Hybrid | Reference | Speedup |
+|---|---|---|---|
+| feedforward chain | ~165 ns | ~5.5 µs | **~33×** |
+| feedback | ~3.4 µs | ~4.2 µs | ~1.2× |
+
+Feedforward programs run whole-buffer through the SIMD eDSL and are an order of
+magnitude faster than sample-by-sample evaluation. Feedback programs are near
+parity, because the recurrence forces both paths to go sample-by-sample — which
+is exactly why the scheduler isolates recurrences and blocks everything else.
+
+### Built-ins (via `rill-adrift`)
+
+| Program | Time |
+|---|---|
+| `_ : lowpass(1000.0, 0.7)` (block Biquad) | ~275 ns |
+| `_ : lowpass(param("cutoff", 1000.0), 0.7)` (dynamic) | ~306 ns |
+| `_ : onepole(1200.0, 0.5)` (sample) | ~3.5 µs |
+| `_ : moog(800.0, 0.6)` (sample) | ~4.0 µs |
+| DSL-wrapped biquad vs. raw `Biquad` | ~264 ns vs. ~234 ns (~13% overhead) |
+
+Wrapping a `rill-core-dsp` filter in the DSL costs about 13% over calling the raw
+`Algorithm` — the price of the schedule dispatch and the register store. Driving
+a filter parameter with `param(...)` adds only the per-block coefficient update.
+
 ## Status
 
-MVP. Deferred to follow-on work: the Cranelift `jit` backend, foreign references
-to existing rill DSP primitives (biquads, oscillators), and a SIMD-aware IR.
+The language is feature-complete for signal authoring: block-diagram
+combinators, feedback and delay, Hindley-Milner types, hybrid block/sample
+execution, a DSP/model built-in registry, and RT-safe named parameters with
+smoothing.
+
+Deferred to follow-on work:
+
+- the **Cranelift `jit`** backend (the linear IR is the shared lowering target);
+- **whole-graph-as-one-program** lowering (fusing a multi-node graph into one
+  schedule);
+- **audio-rate** (per-sample) modulation of imported built-in parameters
+  (current parameter modulation is control-rate/per-block);
+- composed expressions as built-in arguments and multi-output built-ins.
 
 [`RillLangDef`]: https://docs.rs/rill-lang
