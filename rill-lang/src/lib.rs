@@ -7,11 +7,13 @@
 #![warn(missing_docs)]
 
 pub mod ast;
+pub mod backend;
 pub mod error;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
 pub mod parser;
+pub mod program;
 pub mod types;
 
 pub use error::{CompileError, Span};
