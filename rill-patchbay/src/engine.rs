@@ -394,6 +394,9 @@ pub struct Servo<A: Automaton> {
     pitch_bend_semis: f64,
     /// MIDI CC number for mod wheel (default 1).
     mod_wheel_cc: Option<u8>,
+    /// String anchor name for rill-lang graph nodes. When set, parameter
+    /// commands use `GraphSetParameter` instead of PortId-based `SetParameter`.
+    target_anchor: Option<String>,
 }
 
 impl<A: Automaton + 'static> Servo<A> {
@@ -446,6 +449,7 @@ impl<A: Automaton + 'static> Servo<A> {
             pitch_bend_cc: None,
             pitch_bend_semis: 2.0,
             mod_wheel_cc: None,
+            target_anchor: None,
         }
     }
 
@@ -471,6 +475,7 @@ impl<A: Automaton + 'static> Servo<A> {
             pitch_bend_cc,
             pitch_bend_semis,
             mod_wheel_cc,
+            target_anchor,
         } = self;
 
         let a = automaton;
@@ -520,16 +525,25 @@ impl<A: Automaton + 'static> Servo<A> {
                                 return;
                             }
                             state.last_sent_index = idx;
-                            let pid = ParameterId::new(&param).unwrap();
-                            gr.send(CommandEnum::SetParameter(
-                                SetParameter::new(
-                                    PortId::param(nid, 0),
-                                    pid,
-                                    table[index].clone(),
-                                    SignalOrigin::Automaton(serv_id.clone()),
-                                )
-                                .with_sample_pos(clock.sample_pos + clock.io_quantum as u64),
-                            ));
+                            let sp = clock.sample_pos + clock.io_quantum as u64;
+                            if let Some(ref anchor) = target_anchor {
+                                gr.send(CommandEnum::GraphSetParameter {
+                                    anchor: anchor.clone(),
+                                    param: param.clone(),
+                                    value: table[index].clone(),
+                                });
+                            } else {
+                                let pid = ParameterId::new(&param).unwrap();
+                                gr.send(CommandEnum::SetParameter(
+                                    SetParameter::new(
+                                        PortId::param(nid, 0),
+                                        pid,
+                                        table[index].clone(),
+                                        SignalOrigin::Automaton(serv_id.clone()),
+                                    )
+                                    .with_sample_pos(sp),
+                                ));
+                            }
                             return;
                         }
 
@@ -552,16 +566,25 @@ impl<A: Automaton + 'static> Servo<A> {
                             return;
                         }
 
-                        let pid = ParameterId::new(&param).unwrap();
-                        gr.send(CommandEnum::SetParameter(
-                            SetParameter::new(
-                                PortId::param(nid, 0),
-                                pid,
-                                ParamValue::Float(value as f32),
-                                SignalOrigin::Automaton(serv_id.clone()),
-                            )
-                            .with_sample_pos(clock.sample_pos + clock.io_quantum as u64),
-                        ));
+                        let sp = clock.sample_pos + clock.io_quantum as u64;
+                        if let Some(ref anchor) = target_anchor {
+                            gr.send(CommandEnum::GraphSetParameter {
+                                anchor: anchor.clone(),
+                                param: param.clone(),
+                                value: ParamValue::Float(value as f32),
+                            });
+                        } else {
+                            let pid = ParameterId::new(&param).unwrap();
+                            gr.send(CommandEnum::SetParameter(
+                                SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid,
+                                    ParamValue::Float(value as f32),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )
+                                .with_sample_pos(sp),
+                            ));
+                        }
                     }
                     CommandEnum::Automaton(AutomatonCommand::SetEnabled { enabled, .. }) => {
                         s.lock().unwrap().enabled = enabled;
@@ -571,24 +594,33 @@ impl<A: Automaton + 'static> Servo<A> {
                     }
                     CommandEnum::Automaton(AutomatonCommand::UiValue { value, .. }) => {
                         let mut state = s.lock().unwrap();
-                        let pid = ParameterId::new(&param).unwrap();
-                        let cmd = SetParameter::new(
-                            PortId::param(nid, 0),
-                            pid,
-                            ParamValue::Float(value as f32),
-                            SignalOrigin::Automaton(serv_id.clone()),
-                        );
-                        match confl {
+                        let should_send = match confl {
                             ConflictStrategy::TouchOverride => {
                                 state.base = value;
                                 state.frozen = true;
-                                gr.send(CommandEnum::SetParameter(cmd));
+                                true
                             }
                             ConflictStrategy::BasePlusModulation => {
                                 state.base = value;
+                                false
                             }
-                            ConflictStrategy::LastWriteWins => {
-                                gr.send(CommandEnum::SetParameter(cmd));
+                            ConflictStrategy::LastWriteWins => true,
+                        };
+                        if should_send {
+                            if let Some(ref anchor) = target_anchor {
+                                gr.send(CommandEnum::GraphSetParameter {
+                                    anchor: anchor.clone(),
+                                    param: param.clone(),
+                                    value: ParamValue::Float(value as f32),
+                                });
+                            } else {
+                                let pid = ParameterId::new(&param).unwrap();
+                                gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid,
+                                    ParamValue::Float(value as f32),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )));
                             }
                         }
                     }
@@ -788,6 +820,15 @@ impl<A: Automaton + 'static> Servo<A> {
     /// - `BasePlusModulation`: HID input sets the base value; automaton modulates around it.
     pub fn with_conflict(mut self, strategy: ConflictStrategy) -> Self {
         self.conflict = strategy;
+        self
+    }
+
+    /// Set the string anchor for rill-lang graph targeting.
+    ///
+    /// When set, parameter commands use `GraphSetParameter` with this anchor
+    /// instead of PortId-based `SetParameter`.
+    pub fn with_anchor(mut self, anchor: String) -> Self {
+        self.target_anchor = Some(anchor);
         self
     }
 
