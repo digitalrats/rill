@@ -308,6 +308,16 @@ impl Algorithm<f32> for Ay38910Chip {
 
 impl ChipEmulator for Ay38910Chip {
     fn write_registers(&mut self, regs: &[u8]) {
+        if regs.len() >= 8 {
+            eprintln!(
+                "[AY:chip] write_registers R0={:02x} R1={:02x} R7={:02x} R8={:02x} len={}",
+                regs[0],
+                regs[1],
+                regs[7],
+                regs[8],
+                regs.len()
+            );
+        }
         for (i, &v) in regs.iter().enumerate().take(16) {
             self.write_register(i, v);
         }
