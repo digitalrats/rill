@@ -97,10 +97,24 @@ mdbook serve docs/                # dev server at localhost:3000
 ## Code conventions
 
 - **Safety & Unsafe Policy:**
-    - `#![deny(unsafe_code)]` set in 7 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`.
+    - `#![deny(unsafe_code)]` set in 9 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`, `rill-lang`, `rill-fft`.
     - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.
+
+- **SIMD & auto-vectorization:**
+    - **Prefer simple scalar code.** LLVM aggressively auto-vectorises loops with
+      predictable contiguous memory access. The scalar ComplexFft `butterfly()`
+      is auto-vectorised to SSE (`mulps`, `shufps`) in release builds —
+      interleaved `Complex<f32>` maps directly to XMM registers.
+    - **Do NOT manually SIMD‑ify** radix‑2 FFT butterflies or similar data‑parallel
+      kernels — manual `ScalarVector4` / `F32x4` breaks LLVM's ability to see
+      the full loop pattern. Verified: 3 failed SIMD attempts (−36 %, −34 %, −120 %).
+    - **When manual SIMD helps:** irregular access patterns, fused multiply‑add
+      intrinsics, gather/scatter, horizontal reductions.
+    - **If a bottleneck is suspected:** profile with `perf` / `objdump` first.
+      Check whether LLVM is already generating SIMD instructions before writing
+      manual vector code.
 
 - **Documentation language:**
     - All crate-level docs (`README.md`, module doc comments, API docs) must be in **English**.
