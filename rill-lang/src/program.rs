@@ -78,7 +78,7 @@ impl<T: Transcendental> RillProgram<T> {
         let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
-        let params = ir
+        let params: Vec<ParamValue> = ir
             .params
             .iter()
             .map(|p| ParamValue::Float(p.default as f32))
@@ -138,7 +138,7 @@ impl<T: Transcendental> RillProgram<T> {
         let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
-        let params = ir
+        let params: Vec<ParamValue> = ir
             .params
             .iter()
             .map(|p| ParamValue::Float(p.default as f32))
