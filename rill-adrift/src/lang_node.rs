@@ -19,7 +19,7 @@ use rill_core::{
 use rill_lang::{compile, compile_with, CompileError, RillProgram};
 
 /// Detect whether a rill-lang source string uses graph DSL syntax (contains
-/// `param` keyword definitions that create a multi-node graph).
+/// `param` keyword definitions).
 pub fn is_graph_dsl(src: &str) -> bool {
     src.lines().any(|line| {
         let trimmed = line.trim_start();
@@ -29,25 +29,8 @@ pub fn is_graph_dsl(src: &str) -> bool {
     })
 }
 
-/// A graph node whose per-block math is defined by rill-lang source.
-pub struct LangNode<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
-    metadata: NodeMetadata,
-    inputs: Vec<Port<T, BUF_SIZE>>,
-    outputs: Vec<Port<T, BUF_SIZE>>,
-    controls: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
-    source: String,
-    program: RillProgram<T>,
-    registry: Option<std::sync::Arc<rill_lang::builtin::Registry<T>>>,
-    sample_rate: f32,
-}
-
-/// A graph node driven by a compiled [`rill_lang::graph_engine::RillGraphEngine`].
-///
-/// Unlike [`LangNode`], which wraps a single [`RillProgram`], this node
-/// manages a full graph engine with multiple sub-programs, parameter routing,
-/// and a mailbox for inter-thread parameter updates.
+/// A graph node driven by a compiled rill-lang engine with anchor-based
+/// parameter routing. Wraps a flat [`RillProgram`] + anchor map + mailbox.
 pub struct GraphLangNode<T: Transcendental, const BUF_SIZE: usize> {
     id: NodeId,
     metadata: NodeMetadata,
@@ -56,22 +39,20 @@ pub struct GraphLangNode<T: Transcendental, const BUF_SIZE: usize> {
     controls: Vec<Port<T, BUF_SIZE>>,
     state: NodeState<T, BUF_SIZE>,
     source: String,
-    engine: rill_lang::graph_engine::RillGraphEngine<T, BUF_SIZE>,
+    engine: rill_lang::graph_engine::RillGraphEngine<T>,
     sample_rate: f32,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
     /// Build a node from rill-lang source with a built-in registry and sample
-    /// rate. Uses [`rill_lang::compile_graph`] which automatically falls back
-    /// to single-algorithm mode if the source has no `param` definitions.
+    /// rate. Uses [`rill_lang::compile_graph`] which inlines all `param` bodies
+    /// into a single flat program and builds anchor→param mappings.
     pub fn from_source_with(
         source: &str,
         registry: std::sync::Arc<rill_lang::builtin::Registry<T>>,
         sample_rate: f32,
     ) -> Result<Self, CompileError> {
-        let system = rill_core_actor::ActorSystem::new();
-        let engine =
-            rill_lang::compile_graph::<T, BUF_SIZE>(source, &registry, sample_rate, &system)?;
+        let engine = rill_lang::compile_graph::<T>(source, &registry, sample_rate)?;
         let mut metadata = NodeMetadata::new("RillGraphLang", NodeCategory::Processor);
         metadata.type_name = Some("rill/graph_lang".to_string());
 
@@ -106,6 +87,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
     pub fn source(&self) -> &str {
         &self.source
     }
+
+    /// The underlying graph engine.
+    pub fn engine(&self) -> &rill_lang::graph_engine::RillGraphEngine<T> {
+        &self.engine
+    }
+
+    /// The engine's actor ref for sending GraphSetParameter commands.
+    pub fn handle(&self) -> rill_core_actor::ActorRef<rill_core::queues::CommandEnum> {
+        self.engine.handle()
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for GraphLangNode<T, BUF_SIZE> {
@@ -138,12 +129,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for GraphLangNo
                     _ => return Err(ProcessError::parameter("`source` must be a string")),
                 };
                 let reg = std::sync::Arc::new(rill_lang::builtin::Registry::new());
-                let system = rill_core_actor::ActorSystem::new();
                 let engine =
-                    rill_lang::compile_graph::<T, BUF_SIZE>(&src, &reg, self.sample_rate, &system)
-                        .map_err(|e| {
-                            ProcessError::parameter(format!("rill-lang compile error: {e}"))
-                        })?;
+                    rill_lang::compile_graph::<T>(&src, &reg, self.sample_rate).map_err(|e| {
+                        ProcessError::parameter(format!("rill-lang compile error: {e}"))
+                    })?;
                 self.engine = engine;
                 self.source = src;
                 Ok(())
@@ -214,10 +203,24 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     ) -> ProcessResult<()> {
         let inp = self.inputs[0].read();
         let out = self.outputs[0].write();
-        self.engine.process(Some(&inp[..]), &mut out[..])?;
+        Algorithm::process(&mut self.engine, Some(&inp[..]), &mut out[..])?;
         self.state.advance();
         Ok(())
     }
+}
+
+/// A graph node whose per-block math is defined by rill-lang source.
+pub struct LangNode<T: Transcendental, const BUF_SIZE: usize> {
+    id: NodeId,
+    metadata: NodeMetadata,
+    inputs: Vec<Port<T, BUF_SIZE>>,
+    outputs: Vec<Port<T, BUF_SIZE>>,
+    controls: Vec<Port<T, BUF_SIZE>>,
+    state: NodeState<T, BUF_SIZE>,
+    source: String,
+    program: RillProgram<T>,
+    registry: Option<std::sync::Arc<rill_lang::builtin::Registry<T>>>,
+    sample_rate: f32,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {

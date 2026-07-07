@@ -10,12 +10,7 @@ pub mod ast;
 pub mod backend;
 pub mod builtin;
 pub mod error;
-pub mod graph_build;
 pub mod graph_engine;
-pub mod graph_ir;
-pub mod graph_lower;
-pub mod graph_optimize;
-pub mod graph_schedule;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
@@ -33,7 +28,7 @@ pub use serde_def::{compile_def, RillLangDef};
 pub use builtin::{BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
 
 use rill_core::math::Transcendental;
-use rill_core_actor::ActorSystem;
+use std::collections::HashMap;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
@@ -68,69 +63,89 @@ pub fn compile_with<T: Transcendental>(
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
 
-/// Compile a rill-lang source that may contain `param`/`keep param`/`inline param`
-/// graph-node definitions into a `RillGraphEngine`.
+/// Compile rill-lang source containing `param` anchor definitions into an
+/// engine that supports [`GraphSetParameter`] commands via mailbox.
 ///
-/// If the source has no `param`-annotated definitions, falls back to single-algorithm
-/// mode (wrapping `compile_with` in a graph engine with one inline step).
+/// `param`-annotated definitions are **inlined** into the `process` body —
+/// they do not create separate graph nodes. The `param` keyword creates a
+/// **named anchor** that maps to the parameter slots in the flat compiled
+/// program. At runtime, [`GraphSetParameter`] commands with `anchor` matching
+/// the `param` name are routed to the correct parameter slot before `process()`
+/// executes.
 ///
-/// The `BUF` const generic must match the block size of the I/O backend.
-pub fn compile_graph<T: Transcendental, const BUF: usize>(
+/// [`GraphSetParameter`]: rill_core::queues::CommandEnum::GraphSetParameter
+pub fn compile_graph<T: Transcendental>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-    _system: &ActorSystem,
-) -> Result<graph_engine::RillGraphEngine<T, BUF>, CompileError> {
+) -> Result<graph_engine::RillGraphEngine<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens)?;
     let typed = types::infer::infer_program_with(&program, registry)?;
-    let mut graph_ir = graph_build::build_graph_ir(&typed)?;
 
-    // Single-algorithm fallback: no param nodes
-    if graph_ir.nodes.is_empty() {
-        let ir = lower::lower_with(&typed, registry, sample_rate)?;
-        validate_block_builtins(&ir)?;
-        let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
-        let param_count = prog.params_meta().len();
+    // Build the flat IR (param bodies are just alias references — they get
+    // resolved during lowering of the `process` expression which calls them).
+    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    validate_block_builtins(&ir)?;
+    let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
 
-        let schedule = graph_schedule::ScheduledGraph {
-            inputs: 1,
-            outputs: 1,
-            steps: vec![graph_schedule::Step::InlineProgram {
-                node_idx: 0,
-                input_bufs: vec![0],
-                output_bufs: vec![1],
-                param_indices: (0..param_count).collect(),
-            }],
-            buffers: 2,
-            delay_slots: 0,
-            output_mapping: vec![1],
-        };
+    // Build anchor_map: for each `param`/`keep param`/`inline param` def,
+    // map anchor_name → {param_name → param_index}.
+    // We find param indices by scanning prog.params_meta() and matching
+    // the param names declared inside the param def's body.
+    let mut anchor_map: graph_engine::AnchorMap = HashMap::new();
 
-        return Ok(graph_engine::RillGraphEngine::new(
-            schedule,
-            vec![prog],
-            vec!["process".to_string()],
-        ));
+    for def in &program.defs {
+        use crate::ast::DefKind;
+        if matches!(
+            def.kind,
+            DefKind::Param | DefKind::KeepParam | DefKind::InlineParam
+        ) {
+            let anchor = def.name.clone();
+            let mut inner = HashMap::new();
+            // Collect `param("name", ...)` calls from the def's body
+            collect_param_refs(&def.body, &mut inner, prog.params_meta());
+            anchor_map.insert(anchor, inner);
+        }
     }
 
-    // Graph path: optimize → lower → schedule → build engine
-    graph_optimize::optimize(&mut graph_ir);
-    let order = graph_lower::lower_graph(&graph_ir)?;
-    let schedule = graph_schedule::build_scheduled_graph(&graph_ir, &order);
+    Ok(graph_engine::RillGraphEngine::new(prog, anchor_map))
+}
 
-    // Compile each node into a RillProgram
-    let node_names: Vec<String> = graph_ir.nodes.keys().cloned().collect();
-    let mut programs = Vec::with_capacity(graph_ir.nodes.len());
-    for name in &node_names {
-        let node = &graph_ir.nodes[name];
-        let prog = RillProgram::<T>::new_with(node.ir.clone(), registry, sample_rate)?;
-        programs.push(prog);
+/// Walk an expression and collect `param("name", ...)` references,
+/// mapping param_name → param_index by matching against the compiled
+/// program's params_meta().
+fn collect_param_refs(
+    expr: &crate::ast::Expr,
+    out: &mut HashMap<String, usize>,
+    params_meta: &[crate::ir::ParamDef],
+) {
+    match expr {
+        crate::ast::Expr::Apply { name, args, .. } => {
+            if name == "param" {
+                if let Some(crate::ast::Expr::Str(param_name, _)) = args.first() {
+                    if let Some(idx) = params_meta.iter().position(|p| &p.name == param_name) {
+                        out.insert(param_name.clone(), idx);
+                    }
+                }
+            } else {
+                for arg in args {
+                    collect_param_refs(arg, out, params_meta);
+                }
+            }
+        }
+        crate::ast::Expr::Bin { lhs, rhs, .. } => {
+            collect_param_refs(lhs, out, params_meta);
+            collect_param_refs(rhs, out, params_meta);
+        }
+        crate::ast::Expr::Ref(name, _) => {
+            // If this ref matches an anchor name with params, we'd need to
+            // look up the def body. But at this point we only need to find
+            // param() calls — they're already in the program's params_meta.
+            // The anchor_map is built from the def body, not from references.
+        }
+        _ => {}
     }
-
-    Ok(graph_engine::RillGraphEngine::new(
-        schedule, programs, node_names,
-    ))
 }
 
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
