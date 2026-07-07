@@ -358,7 +358,6 @@ impl StcPlayer {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("=== lang_chiptune DEBUG BUILD ===");
     let args: Vec<String> = std::env::args().collect();
     let stc_file = args
         .iter()

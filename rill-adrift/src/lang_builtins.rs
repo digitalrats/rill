@@ -821,16 +821,11 @@ pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
 #[cfg(feature = "lofi")]
 struct Ay38910Builtin {
     chip: rill_lofi::Ay38910Chip,
-    pending_regs: std::collections::VecDeque<Vec<u8>>,
 }
 
 #[cfg(feature = "lofi")]
 impl Algorithm<f32> for Ay38910Builtin {
     fn process(&mut self, _input: Option<&[f32]>, output: &mut [f32]) -> ProcessResult<()> {
-        if let Some(regs) = self.pending_regs.pop_front() {
-            use rill_lofi::ChipEmulator;
-            self.chip.write_registers(&regs);
-        }
         self.chip.process(None, output)
     }
     fn init(&mut self, sr: f32) {
@@ -846,7 +841,8 @@ impl BlockBuiltin<f32> for Ay38910Builtin {
     fn set_param(&mut self, index: usize, value: &ParamValue) {
         if index == 1 {
             if let ParamValue::Bytes(regs) = value {
-                self.pending_regs.push_back(regs.clone());
+                use rill_lofi::ChipEmulator;
+                self.chip.write_registers(regs);
             }
         }
     }

@@ -53,6 +53,9 @@ impl<T: Transcendental> RillGraphEngine<T> {
         &self.anchor_map
     }
 
+    /// Drain at most one GraphSetParameter per process() call.
+    /// This prevents overwriting when multiple param updates arrive
+    /// between callbacks — each update is applied in a separate tick.
     fn drain_mailbox(&mut self) {
         while let Some(cmd) = self.mailbox.pop() {
             if let CommandEnum::GraphSetParameter {
@@ -63,16 +66,9 @@ impl<T: Transcendental> RillGraphEngine<T> {
             {
                 if let Some(inner) = self.anchor_map.get(&anchor) {
                     if let Some(&param_idx) = inner.get(&param) {
-                        eprintln!("[Engine] drain: anchor={anchor} param={param} idx={param_idx}");
                         self.program.set_param(param_idx, value);
-                    } else {
-                        eprintln!(
-                            "[Engine] drain: anchor={anchor} param={param} NOT FOUND in {:?}",
-                            inner.keys().collect::<Vec<_>>()
-                        );
+                        return; // one per tick
                     }
-                } else {
-                    eprintln!("[Engine] drain: anchor={anchor} NOT in anchor_map");
                 }
             }
         }
