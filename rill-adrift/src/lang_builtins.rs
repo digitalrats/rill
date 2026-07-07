@@ -2,10 +2,27 @@
 
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
-use rill_core::traits::ProcessResult;
+use rill_core::traits::{ParamValue, ProcessResult};
 use rill_lang::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
 
 // --- sample built-ins ---
+
+fn pv_f32(v: &ParamValue) -> f32 {
+    match v {
+        ParamValue::Float(f) => *f,
+        ParamValue::Int(i) => *i as f32,
+        _ => 0.0,
+    }
+}
+
+fn pv_bool(v: &ParamValue) -> bool {
+    match v {
+        ParamValue::Bool(b) => *b,
+        ParamValue::Float(f) => *f > 0.5,
+        ParamValue::Int(i) => *i != 0,
+        _ => false,
+    }
+}
 
 struct OnePoleBuiltin<T: Transcendental> {
     inner: rill_core_dsp::filters::OnePole<T>,
@@ -20,8 +37,8 @@ impl<T: Transcendental> SampleBuiltin<T> for OnePoleBuiltin<T> {
     fn reset(&mut self) {
         Algorithm::reset(&mut self.inner);
     }
-    fn set_param(&mut self, index: usize, value: T) {
-        let v = value.to_f32();
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        let v = pv_f32(value);
         match index {
             0 => rill_core_dsp::filters::Filter::set_cutoff(&mut self.inner, v),
             1 => rill_core_dsp::filters::Filter::set_q(&mut self.inner, v),
@@ -43,8 +60,8 @@ impl<T: Transcendental> SampleBuiltin<T> for MoogBuiltin<T> {
     fn reset(&mut self) {
         Algorithm::reset(&mut self.inner);
     }
-    fn set_param(&mut self, index: usize, value: T) {
-        let v = value.to_f32();
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        let v = pv_f32(value);
         match index {
             0 => self.inner.set_cutoff(v),
             1 => self.inner.set_resonance(v),
@@ -75,8 +92,8 @@ impl<T: Transcendental> Algorithm<T> for BiquadBuiltin<T> {
 }
 
 impl<T: Transcendental> BlockBuiltin<T> for BiquadBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
-        let v = value.to_f32();
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        let v = pv_f32(value);
         match index {
             0 => rill_core_dsp::filters::Filter::set_cutoff(&mut self.inner, v),
             1 => rill_core_dsp::filters::Filter::set_q(&mut self.inner, v),
@@ -108,10 +125,11 @@ impl<T: Transcendental> Algorithm<T> for AnalogMoogBuiltin<T> {
 
 #[cfg(feature = "analog")]
 impl<T: Transcendental> BlockBuiltin<T> for AnalogMoogBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        let v = T::from_f32(pv_f32(value));
         match index {
-            0 => self.inner.set_cutoff(value),
-            1 => self.inner.set_resonance(value),
+            0 => self.inner.set_cutoff(v),
+            1 => self.inner.set_resonance(v),
             _ => {}
         }
     }
@@ -240,10 +258,11 @@ impl<T: Transcendental> Algorithm<T> for SpectralGateBuiltin<T> {
 
 #[cfg(feature = "fft")]
 impl<T: Transcendental> BlockBuiltin<T> for SpectralGateBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        let v = T::from_f32(pv_f32(value));
         match index {
-            0 => self.inner.set_threshold(value),
-            1 => self.inner.set_ratio(value.to_f32()),
+            0 => self.inner.set_threshold(v),
+            1 => self.inner.set_ratio(pv_f32(value)),
             _ => {}
         }
     }
@@ -266,10 +285,11 @@ impl<T: Transcendental> Algorithm<T> for SpectralDelayBuiltin<T> {
 
 #[cfg(feature = "fft")]
 impl<T: Transcendental> BlockBuiltin<T> for SpectralDelayBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        let v = pv_f32(value);
         match index {
-            0 => self.inner.set_mix(value.to_f32()),
-            1 => self.inner.set_feedback(value.to_f32()),
+            0 => self.inner.set_mix(v),
+            1 => self.inner.set_feedback(v),
             _ => {}
         }
     }
@@ -577,12 +597,12 @@ impl<T: Transcendental> Algorithm<T> for OscBuiltin<T> {
 }
 
 impl<T: Transcendental> BlockBuiltin<T> for OscBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
         use rill_core_dsp::Generator;
         match index {
-            0 => self.osc.set_frequency(value.to_f32()),
-            1 => self.osc.set_amplitude(value),
-            2 => self.osc.set_phase(value),
+            0 => self.osc.set_frequency(pv_f32(value)),
+            1 => self.osc.set_amplitude(T::from_f32(pv_f32(value))),
+            2 => self.osc.set_phase(T::from_f32(pv_f32(value))),
             _ => {}
         }
     }
@@ -605,10 +625,10 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenBuiltin<T> {
 }
 
 impl<T: Transcendental> BlockBuiltin<T> for NoiseGenBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
         use rill_core_dsp::Generator;
         if index == 1 {
-            self.gen.set_amplitude(value);
+            self.gen.set_amplitude(T::from_f32(pv_f32(value)));
         }
     }
 }
@@ -735,20 +755,20 @@ impl Algorithm<f32> for LofiBuiltin {
 
 #[cfg(feature = "lofi")]
 impl BlockBuiltin<f32> for LofiBuiltin {
-    fn set_param(&mut self, index: usize, value: f32) {
-        use rill_core::traits::{Node, ParamValue};
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        use rill_core::traits::Node;
         use rill_core::ParameterId;
         let (name, pv) = match index {
-            0 => ("bit_depth", ParamValue::Int(value.round() as i32)),
+            0 => ("bit_depth", ParamValue::Int(pv_f32(value).round() as i32)),
             1 => (
                 "sample_rate",
-                ParamValue::Float(value.clamp(8000.0, 192000.0)),
+                ParamValue::Float(pv_f32(value).clamp(8000.0, 192000.0)),
             ),
-            2 => ("dry_wet", ParamValue::Float(value.clamp(0.0, 1.0))),
-            3 => ("output_gain", ParamValue::Float(value.max(0.0))),
-            4 => ("enable_bitcrush", ParamValue::Bool(value > 0.5)),
-            5 => ("enable_sr_reduction", ParamValue::Bool(value > 0.5)),
-            6 => ("enable_noise", ParamValue::Bool(value > 0.5)),
+            2 => ("dry_wet", ParamValue::Float(pv_f32(value).clamp(0.0, 1.0))),
+            3 => ("output_gain", ParamValue::Float(pv_f32(value).max(0.0))),
+            4 => ("enable_bitcrush", ParamValue::Bool(pv_bool(value))),
+            5 => ("enable_sr_reduction", ParamValue::Bool(pv_bool(value))),
+            6 => ("enable_noise", ParamValue::Bool(pv_bool(value))),
             _ => return,
         };
         let _ = self

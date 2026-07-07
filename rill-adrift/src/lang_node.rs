@@ -325,7 +325,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LangNode<T,
             _ => self
                 .program
                 .param_index(id.as_str())
-                .map(|idx| ParamValue::Float(self.program.param(idx) as f32)),
+                .map(|idx| self.program.param(idx).clone()),
         }
     }
 
@@ -348,13 +348,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LangNode<T,
             }
             _ => {
                 if let Some(idx) = self.program.param_index(id.as_str()) {
-                    match value {
-                        ParamValue::Float(v) => {
-                            self.program.set_param(idx, v as f64);
-                            Ok(())
-                        }
-                        _ => Err(ProcessError::parameter("lang param value must be Float")),
-                    }
+                    self.program.set_param(idx, value);
+                    Ok(())
                 } else {
                     Err(ProcessError::parameter("unknown parameter"))
                 }

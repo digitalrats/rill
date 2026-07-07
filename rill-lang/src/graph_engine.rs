@@ -63,13 +63,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
             {
                 if let Some(inner) = self.anchor_map.get(&anchor) {
                     if let Some(&param_idx) = inner.get(&param) {
-                        let v = match value {
-                            ParamValue::Float(f) => f as f64,
-                            ParamValue::Int(i) => i as f64,
-                            ParamValue::Bool(_) => return,
-                            _ => return,
-                        };
-                        self.program.set_param(param_idx, v);
+                        self.program.set_param(param_idx, value);
                     }
                 }
             }

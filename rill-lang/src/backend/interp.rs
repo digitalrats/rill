@@ -13,16 +13,24 @@ use crate::schedule::Step;
 /// rejects any sample built-in exceeding this.
 pub(crate) const MAX_SAMPLE_BUILTIN_INS: usize = 4;
 
+fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
+    match pv {
+        rill_core::traits::ParamValue::Float(v) => *v as f64,
+        rill_core::traits::ParamValue::Int(v) => *v as f64,
+        _ => 0.0,
+    }
+}
+
 fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
     let n = prog.ir.builtins.len();
     for instance in 0..n {
         let blen = prog.ir.builtins[instance].param_bindings.len();
         for k in 0..blen {
             let (arg_pos, param_idx) = prog.ir.builtins[instance].param_bindings[k];
-            let v = T::from_f64(prog.params[param_idx]);
+            let v = prog.params[param_idx].clone();
             match &mut prog.builtins[instance] {
-                crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, v),
-                crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, v),
+                crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, &v),
+                crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),
             }
         }
     }
@@ -100,7 +108,9 @@ fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) ->
                 }
                 prog.regs_scalar[dst] = o[0].to_f64();
             }
-            Instr::ReadParam { dst, idx } => prog.regs_scalar[dst] = prog.params[idx],
+            Instr::ReadParam { dst, idx } => {
+                prog.regs_scalar[dst] = param_to_f64(&prog.params[idx])
+            }
         }
     }
     for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
@@ -222,7 +232,7 @@ fn exec_block_op<T: Transcendental>(
         }
         // Stateful instrs never appear as a Block step.
         Instr::ReadParam { dst, idx } => {
-            let v = T::from_f64(prog.params[idx]);
+            let v = T::from_f64(param_to_f64(&prog.params[idx]));
             prog.block_regs[dst][..n].fill(v);
         }
         Instr::ReadState { .. }
@@ -354,7 +364,7 @@ fn exec_sample_region<T: Transcendental>(
                     unreachable!("block builtin scheduled into a sample region")
                 }
                 Instr::ReadParam { dst, idx } => {
-                    prog.block_regs[dst][i] = T::from_f64(prog.params[idx]);
+                    prog.block_regs[dst][i] = T::from_f64(param_to_f64(&prog.params[idx]));
                 }
             }
         }
@@ -713,7 +723,7 @@ mod tests {
     fn set_param_changes_output() {
         let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5);").unwrap();
         let i = prog.param_index("g").unwrap();
-        prog.set_param(i, 2.0);
+        prog.set_param(i, ParamValue::Float(2.0));
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
         assert_eq!(out, [2.0, 4.0, 8.0, 16.0]);
@@ -723,7 +733,7 @@ mod tests {
     fn param_range_clamps() {
         let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5, 0.0, 1.0);").unwrap();
         let i = prog.param_index("g").unwrap();
-        prog.set_param(i, 5.0);
+        prog.set_param(i, ParamValue::Float(5.0));
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
         assert_eq!(out, [1.0, 2.0, 4.0, 8.0]); // clamped to 1.0 = identity
@@ -785,7 +795,7 @@ mod tests {
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
         assert_eq!(out, [1.0, 2.0, 4.0, 8.0]); // k=1.0 identity
         let i = prog.param_index("g").unwrap();
-        prog.set_param(i, 0.5);
+        prog.set_param(i, ParamValue::Float(0.5));
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
         assert_eq!(out, [0.5, 1.0, 2.0, 4.0]); // k=0.5 halves
     }
@@ -798,8 +808,8 @@ mod tests {
         let mut b =
             compile_with::<f32>("process = _ : gain(param(\"g\", 2.0));", &reg, 48000.0).unwrap();
         let i = a.param_index("g").unwrap();
-        a.set_param(i, 3.0);
-        b.set_param(i, 3.0);
+        a.set_param(i, ParamValue::Float(3.0));
+        b.set_param(i, ParamValue::Float(3.0));
         let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
         let mut oa = vec![0.0f32; input.len()];
         let mut ob = vec![0.0f32; input.len()];

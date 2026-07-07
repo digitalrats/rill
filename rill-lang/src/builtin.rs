@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use rill_core::math::Transcendental;
+use rill_core::traits::ParamValue;
 
 /// A stateful per-sample built-in: `signal_ins` inputs → 1 output.
 pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
@@ -16,14 +17,14 @@ pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
     fn init(&mut self, _sample_rate: f32) {}
     /// Clear internal state.
     fn reset(&mut self);
-    /// Set a parameter by index (default no-op).
-    fn set_param(&mut self, _index: usize, _value: T) {}
+    /// Set a parameter by index.
+    fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
 }
 
 /// A whole-buffer built-in with settable params.
 pub trait BlockBuiltin<T: Transcendental>: rill_core::traits::Algorithm<T> {
-    /// Set a parameter by index (default no-op).
-    fn set_param(&mut self, _index: usize, _value: T) {}
+    /// Set a parameter by index.
+    fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
 }
 
 /// Whether a built-in is per-sample or whole-buffer.
