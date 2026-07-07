@@ -5,6 +5,7 @@
 //! For very long IRs, use `PartitionedConvolver`.
 
 use num_complex::Complex;
+use rill_core::prelude::{ComplexSoa, ScalarVector4, Vector};
 use rill_core::Transcendental;
 use rill_core_dsp::complex_mat::mul_complex;
 
@@ -92,8 +93,49 @@ impl<T: Transcendental, const BUF_SIZE: usize> OverlapAddConvolver<T, BUF_SIZE> 
 
         self.fft.forward(&self.fft_in, &mut self.fft_out);
 
-        for i in 0..self.fft_out.len() {
+        // 4‑bin batch complex multiply via ComplexSoa
+        let len = self.fft_out.len();
+        let mut i = 0usize;
+        while i + 3 < len {
+            let s = ComplexSoa::<T, ScalarVector4<T>>::load(
+                &[
+                    self.ir_spectrum[i].re,
+                    self.ir_spectrum[i + 1].re,
+                    self.ir_spectrum[i + 2].re,
+                    self.ir_spectrum[i + 3].re,
+                ],
+                &[
+                    self.ir_spectrum[i].im,
+                    self.ir_spectrum[i + 1].im,
+                    self.ir_spectrum[i + 2].im,
+                    self.ir_spectrum[i + 3].im,
+                ],
+            );
+            let f = ComplexSoa::<T, ScalarVector4<T>>::load(
+                &[
+                    self.fft_out[i].re,
+                    self.fft_out[i + 1].re,
+                    self.fft_out[i + 2].re,
+                    self.fft_out[i + 3].re,
+                ],
+                &[
+                    self.fft_out[i].im,
+                    self.fft_out[i + 1].im,
+                    self.fft_out[i + 2].im,
+                    self.fft_out[i + 3].im,
+                ],
+            );
+            let prod = s.cmul(&f);
+            self.product[i] = Complex::new(prod.re.extract(0), prod.im.extract(0));
+            self.product[i + 1] = Complex::new(prod.re.extract(1), prod.im.extract(1));
+            self.product[i + 2] = Complex::new(prod.re.extract(2), prod.im.extract(2));
+            self.product[i + 3] = Complex::new(prod.re.extract(3), prod.im.extract(3));
+            i += 4;
+        }
+        // Scalar remainder
+        while i < len {
             self.product[i] = mul_complex(self.ir_spectrum[i], self.fft_out[i]);
+            i += 1;
         }
 
         self.fft.inverse(&self.product, &mut self.ifft_out);
