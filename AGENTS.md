@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 18 active crates:
+Cargo workspace — 20 active crates:
 
 | Crate | Status |
 |---|---|
@@ -23,6 +23,8 @@ Cargo workspace — 18 active crates:
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
 | `rill-sampler` | Active — sample playback, time-series reader, WAV loading |
+| `rill-fft` | Active — FFT, frequency-domain convolution, spectrum analysis, spectral effects |
+| `rill-lang` | Active — Faust-style functional DSL for signal processing, compiles to `Algorithm<T>` |
 | `rill-adrift` | Active — umbrella crate for signal processing applications |
 
 Dependency tree:
@@ -33,12 +35,14 @@ Dependency tree:
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
-  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`
+  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-fft`
 - **`rill-core-model`** — WDF + physical modeling, depends on `rill-core`
 - **`rill-analog-filters`** — depends on `rill-core` + `rill-core-model`
 - **`rill-analog-effects`** — depends on `rill-core` + `rill-core-model`
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
-- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`
+- **`rill-lang`** — signal processing DSL, depends on `rill-core` only
+- **`rill-fft`** — FFT and frequency-domain processing, depends on `rill-core` + `rill-core-dsp`
+- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`, `fft`, `lang`
 
 ## History
 
@@ -70,7 +74,7 @@ cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
 
 # publish order (leaf to root):
-./scripts/publish.sh              # all 18 crates to crates.io
+./scripts/publish.sh              # all 20 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
 ## crates.io publication rules

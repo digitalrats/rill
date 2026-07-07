@@ -1,3 +1,4 @@
+// rill-core-dsp/src/direct_conv.rs
 //! Direct (time-domain) convolution.
 //!
 //! Efficient for short impulse responses where FFT-based convolution

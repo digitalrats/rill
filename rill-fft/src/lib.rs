@@ -1,3 +1,4 @@
+// rill-fft/src/lib.rs
 //! # Rill FFT
 //!
 //! Fast Fourier Transform and frequency-domain signal processing for the Rill ecosystem.
@@ -24,14 +25,25 @@
 //!
 //! | Operation | Size | Time | Throughput |
 //! |---|---|---|---|
-//! | `ComplexFft::forward` | 1024 | 6.7 µs | 153 Melem/s |
-//! | `RealFft::forward` | 1024 | 6.2 µs | 165 Melem/s |
-//! | `ComplexFft::forward` | 16384 | 177 µs | 92 Melem/s |
-//! | `OverlapAddConvolver` | IR 2048, BUF 128 | 61 µs/block | ~2100 blocks/s |
-//! | `PartitionedConvolver` | IR 65536, BUF 128 | 104 µs/block | ~9600 blocks/s |
-//! | `DirectConvolver` | 128 taps, BUF 128 | 10 µs/block | 12.7 Melem/s |
+//! | `ComplexFft::forward` | 1024 | 6.7 µs | 153 Melem/s |
+//! | `RealFft::forward` | 1024 | 6.2 µs | 165 Melem/s |
+//! | `ComplexFft::forward` | 16384 | 177 µs | 92 Melem/s |
+//! | `OverlapAddConvolver` | IR 2048, BUF 128 | 61 µs/block | ~2100 blocks/s |
+//! | `PartitionedConvolver` | IR 65536, BUF 128 | 104 µs/block | ~9600 blocks/s |
+//! | `DirectConvolver` | 128 taps, BUF 128 | 10 µs/block | 12.7 Melem/s |
 //!
-//! At 44.1 kHz with block size 128 the per‑block budget is ~2.9 ms.
+//! ### f64 precision
+//!
+//! | Operation | Size | Time | Throughput |
+//! |---|---|---|---|
+//! | `ComplexFft::forward` | 1024 | 7.9 µs | 129 Melem/s |
+//! | `ComplexFft::forward` | 4096 | 39.7 µs | 103 Melem/s |
+//! | `ComplexFft::forward` | 8192 | 93.5 µs | 88 Melem/s |
+//!
+//! f64 is ~15–20 % slower than f32, consistent with double‑width memory and cache pressure.
+//! 64‑bit transforms are still well within the real‑time budget for typical block sizes.
+//!
+//! At 44.1 kHz with block size 128 the per‑block budget is ~2.9 ms.
 //! All operations fit comfortably within the real‑time budget.
 //!
 //! ## Examples

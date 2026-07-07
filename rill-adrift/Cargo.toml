@@ -68,6 +68,10 @@ name = "record_mic"
 required-features = ["io", "serialization", "sampler"]
 
 [[example]]
+name = "convolver"
+required-features = ["fft"]
+
+[[example]]
 name = "chiptune"
 required-features = ["io", "lofi"]
 

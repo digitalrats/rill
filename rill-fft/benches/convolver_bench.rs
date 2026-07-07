@@ -1,3 +1,4 @@
+// rill-fft/benches/convolver_bench.rs
 //! Benchmarks for convolution methods comparison.
 //!
 //! Run with: `cargo bench -p rill-fft --bench convolver_bench`

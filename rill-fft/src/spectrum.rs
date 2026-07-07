@@ -1,3 +1,4 @@
+// rill-fft/src/spectrum.rs
 //! FFT-based spectrum analyzer.
 //!
 //! Implements `SpectrumAnalyzer` from `rill-core-dsp` using `RealFft`.

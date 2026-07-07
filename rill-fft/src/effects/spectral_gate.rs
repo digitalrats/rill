@@ -1,3 +1,4 @@
+// rill-fft/src/effects/spectral_gate.rs
 //! Spectral gate — frequency-domain noise gate.
 //!
 //! Transforms the signal into the frequency domain, silences bins whose

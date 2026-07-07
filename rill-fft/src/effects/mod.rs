@@ -1,3 +1,4 @@
+// rill-fft/src/effects/mod.rs
 //! Frequency-domain effects built on real FFT.
 //!
 //! These effects transform the signal into the frequency domain via

@@ -1,3 +1,4 @@
+// rill-fft/src/nodes/convolver_node.rs
 //! Convolution node for the signal graph.
 //!
 //! Wraps `PartitionedConvolver` as a `Processor` node, enabling impulse response

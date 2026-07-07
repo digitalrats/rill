@@ -1,3 +1,4 @@
+// rill-fft/src/effects/spectral_delay.rs
 //! Spectral delay — frequency-dependent delay with feedback.
 //!
 //! Each frequency bin can be delayed independently, creating metallic

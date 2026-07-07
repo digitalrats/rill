@@ -1,3 +1,4 @@
+// rill-fft/src/overlap_add.rs
 //! Overlap-add convolution using real FFT.
 //!
 //! Efficient for medium-length impulse responses (up to ~16384 samples).

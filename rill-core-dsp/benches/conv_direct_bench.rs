@@ -1,3 +1,4 @@
+// rill-core-dsp/benches/conv_direct_bench.rs
 //! Benchmarks for direct convolution.
 //!
 //! Run with: `cargo bench -p rill-core-dsp --bench conv_direct_bench`

@@ -1,3 +1,4 @@
+// rill-fft/src/partitioned_conv.rs
 //! Partitioned frequency-domain convolution for long impulse responses.
 //!
 //! Splits the IR into equal-sized partitions and processes each partition

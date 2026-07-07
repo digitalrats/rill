@@ -1,3 +1,4 @@
+// rill-fft/src/complex_fft.rs
 //! Radix-2 complex FFT (forward and inverse) using Decimation-In-Time (DIT).
 //!
 //! All twiddle factors and bit-reversal tables are pre-computed in the constructor

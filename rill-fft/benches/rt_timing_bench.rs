@@ -1,3 +1,4 @@
+// rill-fft/benches/rt_timing_bench.rs
 //! RT timing benchmarks for worst-case latency analysis.
 //!
 //! Run with: `cargo bench -p rill-fft --bench rt_timing_bench`
