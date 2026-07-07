@@ -411,7 +411,7 @@ process = chip;
     let stc_finished = finished.clone();
     let stc_handle = engine.handle();
     let stc_thread = std::thread::spawn(move || loop {
-        while let Some(msg) = stc_mailbox.pop() {
+        if let Some(msg) = stc_mailbox.pop() {
             if let CommandEnum::ClockTick(tick) = msg {
                 if !stc_playing.load(Ordering::Acquire) {
                     continue;
