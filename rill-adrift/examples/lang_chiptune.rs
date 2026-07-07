@@ -368,21 +368,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stc_data = std::fs::read(stc_file)?;
 
     // ── Compile rill-lang DSL ──────────────────────────────────────────────
-    // AY-3-8910 produces [0.0, 1.0] all-positive output — needs DC offset
-    // correction (dc_offset=0.5) to center around zero, plus gain and ceiling.
-    // Original chiptune_stc does this via LofiChipSource with:
-    //   bit_depth=8, dc_offset=0.5, output_gain=1.0, output_ceiling=0.8
     let src = r#"
 param chip = ay38910(1750000.0, param("regs", 0));
-process = chip : lofi(
-    8.0,    // bit_depth
-    44100.0, // sample_rate (no reduction)
-    1.0,    // dry_wet (fully wet)
-    1.0,    // output_gain
-    1.0,    // enable_bitcrush
-    0.0,    // enable_sr_reduction
-    1.0     // enable_noise
-);
+process = chip;
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
