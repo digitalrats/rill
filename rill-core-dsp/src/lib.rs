@@ -51,7 +51,9 @@ pub use generators::{
 /// Prelude for convenient imports
 pub mod prelude {
     pub use crate::algorithm::ParameterizedAlgorithm;
-    pub use crate::complex_mat::{ComplexMat2, ComplexMat3};
+    pub use crate::complex_mat::{
+        mul_complex, mul_complex_4, mul_complex_add, mul_complex_add_4, ComplexMat2, ComplexMat3,
+    };
     pub use crate::context::DspContext;
     pub use crate::direct_conv::DirectConvolver;
     pub use crate::filters::{Filter, FilterParams, FilterType};

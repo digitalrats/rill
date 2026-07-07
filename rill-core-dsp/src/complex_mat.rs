@@ -12,6 +12,27 @@
 //! - Complex‑coefficient biquad filters (Hilbert transformer, analytic signals)
 //! - 2×2 rotation/scattering matrices in frequency‑domain processing
 //! - Oversampled IIR stages with complex modulation
+//!
+//! # Batch processing via ComplexSoa
+//!
+//! For bulk complex arithmetic (e.g. per‑bin FFT convolution), the
+//! `mul_complex_4` helper processes 4 complex multiplications at once
+//! via the `ComplexSoa` eDSL from `rill‑core`:
+//!
+//! ```rust,no_run
+//! use rill_core_dsp::complex_mat::mul_complex_4;
+//!
+//! let a_re = [1.0f32, 0.0, 0.5, -0.5];
+//! let a_im = [0.0f32, 1.0, 0.5,  0.5];
+//! let b_re = [2.0f32, 0.0, 1.0,  1.0];
+//! let b_im = [3.0f32, 1.0, 1.0, -1.0];
+//!
+//! let mut out_re = [0.0f32; 4];
+//! let mut out_im = [0.0f32; 4];
+//! mul_complex_4(&a_re, &a_im, &b_re, &b_im, &mut out_re, &mut out_im);
+//! // out_re[0] = 2.0, out_im[0] = 3.0  (1+0i)*(2+3i)
+//! // out_re[1] = -1.0, out_im[1] = 0.0 (0+1i)*(0+1i)
+//! ```
 
 use num_complex::Complex;
 use num_complex::Complex64;
