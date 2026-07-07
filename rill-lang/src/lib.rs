@@ -10,6 +10,7 @@ pub mod ast;
 pub mod backend;
 pub mod builtin;
 pub mod error;
+pub mod graph_build;
 pub mod graph_ir;
 pub mod ir;
 pub mod lexer;
