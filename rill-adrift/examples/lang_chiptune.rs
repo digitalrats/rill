@@ -389,10 +389,21 @@ process = chip : lofi(
     let engine_handle = engine.handle();
 
     // ── Backend ────────────────────────────────────────────────────────────
-    #[cfg(not(feature = "alsa"))]
-    let backend_name = "portaudio";
-    #[cfg(all(feature = "alsa", not(feature = "portaudio")))]
-    let backend_name = "alsa";
+    // Backend name: first positional argument that is not a known flag value.
+    // Default: portaudio.
+    let backend_name = args
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(i, a)| {
+            if *i > 0 && args[*i - 1] == "--file" {
+                return false;
+            }
+            !a.starts_with('-')
+        })
+        .map(|(_, a)| a.clone())
+        .unwrap_or_else(|| "portaudio".into());
+    let backend_display = backend_name.clone();
 
     use rill_adrift::rill_graph::backend_factory::BackendFactory;
     let mut be: rill_adrift::rill_graph::backend_factory::BackendFactory = Default::default();
@@ -402,7 +413,7 @@ process = chip : lofi(
     be_params.insert("block_size".into(), ParamValue::Int(256));
     be_params.insert("channels".into(), ParamValue::Int(1));
     let output = be
-        .create_output(backend_name, &be_params)
+        .create_output(&backend_name, &be_params)
         .map_err(|e| format!("backend: {e}"))?;
     let backend_display = backend_name;
 
