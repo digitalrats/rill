@@ -450,13 +450,16 @@ process = chip;
     let signal_thread = std::thread::spawn(move || {
         let mut runner = ProgramRunner::new(engine, Some(stc_ref), 512);
         runner.wire_backends(None, Some(playback));
-        runner.run_with_driver(driver, runner_running).ok();
+        if let Err(e) = runner.run_with_driver(driver, runner_running) {
+            eprintln!("[Runner] error: {e}");
+        }
     });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");
     println!("Press Enter to start playback...\n");
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).ok();
+    playing.store(true, Ordering::Release);
 
     while !finished.load(Ordering::Acquire) {
         std::thread::sleep(std::time::Duration::from_millis(100));
