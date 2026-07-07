@@ -113,8 +113,15 @@ impl<T: Transcendental, const BUF: usize> RillGraphEngine<T, BUF> {
 }
 
 impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillGraphEngine<T, BUF> {
-    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         self.drain_mailbox();
+
+        if let Some(inp) = input {
+            let n = inp.len().min(BUF);
+            if self.schedule.inputs > 0 {
+                self.buffers[0].as_mut_slice()[..n].copy_from_slice(&inp[..n]);
+            }
+        }
 
         for i in 0..self.schedule.steps.len() {
             let step = self.schedule.steps[i].clone();

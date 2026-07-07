@@ -94,17 +94,17 @@ pub fn compile_graph<T: Transcendental, const BUF: usize>(
         let param_count = prog.params_meta().len();
 
         let schedule = graph_schedule::ScheduledGraph {
-            inputs: 0,
+            inputs: 1,
             outputs: 1,
             steps: vec![graph_schedule::Step::InlineProgram {
                 node_idx: 0,
-                input_bufs: vec![],
-                output_bufs: vec![0],
+                input_bufs: vec![0],
+                output_bufs: vec![1],
                 param_indices: (0..param_count).collect(),
             }],
-            buffers: 1,
+            buffers: 2,
             delay_slots: 0,
-            output_mapping: vec![0],
+            output_mapping: vec![1],
         };
 
         return Ok(graph_engine::RillGraphEngine::new(
