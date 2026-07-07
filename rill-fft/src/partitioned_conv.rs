@@ -143,34 +143,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE>
 
             let mut i = 0usize;
             while i + 3 < self.half_plus_one {
-                let s = ComplexSoa::<T, ScalarVector4<T>>::load(
-                    &[
-                        ir_spec[i].re,
-                        ir_spec[i + 1].re,
-                        ir_spec[i + 2].re,
-                        ir_spec[i + 3].re,
-                    ],
-                    &[
-                        ir_spec[i].im,
-                        ir_spec[i + 1].im,
-                        ir_spec[i + 2].im,
-                        ir_spec[i + 3].im,
-                    ],
-                );
-                let f = ComplexSoa::<T, ScalarVector4<T>>::load(
-                    &[
-                        inp_spec[i].re,
-                        inp_spec[i + 1].re,
-                        inp_spec[i + 2].re,
-                        inp_spec[i + 3].re,
-                    ],
-                    &[
-                        inp_spec[i].im,
-                        inp_spec[i + 1].im,
-                        inp_spec[i + 2].im,
-                        inp_spec[i + 3].im,
-                    ],
-                );
+                let s = ComplexSoa::<T, ScalarVector4<T>>::from_pairs([
+                    (ir_spec[i].re, ir_spec[i].im),
+                    (ir_spec[i + 1].re, ir_spec[i + 1].im),
+                    (ir_spec[i + 2].re, ir_spec[i + 2].im),
+                    (ir_spec[i + 3].re, ir_spec[i + 3].im),
+                ]);
+                let f = ComplexSoa::<T, ScalarVector4<T>>::from_pairs([
+                    (inp_spec[i].re, inp_spec[i].im),
+                    (inp_spec[i + 1].re, inp_spec[i + 1].im),
+                    (inp_spec[i + 2].re, inp_spec[i + 2].im),
+                    (inp_spec[i + 3].re, inp_spec[i + 3].im),
+                ]);
                 let prod = s.cmul(&f);
                 let c = prod.to_complexes();
                 self.product[i].re += c[0].0;

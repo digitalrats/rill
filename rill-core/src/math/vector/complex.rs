@@ -143,6 +143,11 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         let c1 = f(self.to_complex1());
         Self::from_two(c0, c1)
     }
+
+    /// Iterate over the two complex elements as `(re, im)` pairs.
+    pub fn iter_complex(&self) -> impl Iterator<Item = (T, T)> {
+        [self.to_complex0(), self.to_complex1()].into_iter()
+    }
 }
 
 /// Four complex numbers, separate re/im arrays. For SIMD‑heavy operations.
@@ -198,6 +203,11 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
     {
         let c = self.to_complexes();
         Self::from_pairs([f(c[0]), f(c[1]), f(c[2]), f(c[3])])
+    }
+
+    /// Iterate over the four complex elements as `(re, im)` pairs.
+    pub fn iter_complex(&self) -> impl Iterator<Item = (T, T)> {
+        self.to_complexes().into_iter()
     }
 
     pub fn cmul(&self, other: &Self) -> Self {

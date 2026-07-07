@@ -25,6 +25,11 @@ impl<T: Scalar> ScalarVector4<T> {
     pub fn from_fn<F: FnMut(usize) -> T>(f: F) -> Self {
         Self(core::array::from_fn(f))
     }
+
+    /// Apply a function to each lane without changing the element type.
+    pub fn map<F: FnMut(T) -> T>(&self, mut f: F) -> Self {
+        Self::from_fn(|i| f(self.0[i]))
+    }
 }
 
 /// Scalar vector of 8 elements

@@ -97,34 +97,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> OverlapAddConvolver<T, BUF_SIZE> 
         let len = self.fft_out.len();
         let mut i = 0usize;
         while i + 3 < len {
-            let s = ComplexSoa::<T, ScalarVector4<T>>::load(
-                &[
-                    self.ir_spectrum[i].re,
-                    self.ir_spectrum[i + 1].re,
-                    self.ir_spectrum[i + 2].re,
-                    self.ir_spectrum[i + 3].re,
-                ],
-                &[
-                    self.ir_spectrum[i].im,
-                    self.ir_spectrum[i + 1].im,
-                    self.ir_spectrum[i + 2].im,
-                    self.ir_spectrum[i + 3].im,
-                ],
-            );
-            let f = ComplexSoa::<T, ScalarVector4<T>>::load(
-                &[
-                    self.fft_out[i].re,
-                    self.fft_out[i + 1].re,
-                    self.fft_out[i + 2].re,
-                    self.fft_out[i + 3].re,
-                ],
-                &[
-                    self.fft_out[i].im,
-                    self.fft_out[i + 1].im,
-                    self.fft_out[i + 2].im,
-                    self.fft_out[i + 3].im,
-                ],
-            );
+            let s = ComplexSoa::<T, ScalarVector4<T>>::from_pairs([
+                (self.ir_spectrum[i].re, self.ir_spectrum[i].im),
+                (self.ir_spectrum[i + 1].re, self.ir_spectrum[i + 1].im),
+                (self.ir_spectrum[i + 2].re, self.ir_spectrum[i + 2].im),
+                (self.ir_spectrum[i + 3].re, self.ir_spectrum[i + 3].im),
+            ]);
+            let f = ComplexSoa::<T, ScalarVector4<T>>::from_pairs([
+                (self.fft_out[i].re, self.fft_out[i].im),
+                (self.fft_out[i + 1].re, self.fft_out[i + 1].im),
+                (self.fft_out[i + 2].re, self.fft_out[i + 2].im),
+                (self.fft_out[i + 3].re, self.fft_out[i + 3].im),
+            ]);
             let prod = s.cmul(&f);
             let c = prod.to_complexes();
             self.product[i] = Complex::new(c[0].0, c[0].1);
