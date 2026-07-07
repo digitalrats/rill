@@ -36,6 +36,15 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         Self::splat_pair(c.0, c.1)
     }
 
+    /// Create from two possibly-different complex pairs.
+    /// Pairs go to lanes (0,1) and (2,3) respectively.
+    pub fn from_two(c0: (T, T), c1: (T, T)) -> Self {
+        Self {
+            data: V::load(&[c0.0, c0.1, c1.0, c1.1]),
+            _phantom: PhantomData,
+        }
+    }
+
     pub fn inner(&self) -> &V {
         &self.data
     }
@@ -124,6 +133,16 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
     pub fn to_complex1(&self) -> (T, T) {
         (self.data.extract(2), self.data.extract(3))
     }
+
+    /// Apply a closure to each of the two complex elements.
+    pub fn map_complex<F>(&self, f: F) -> Self
+    where
+        F: Fn((T, T)) -> (T, T),
+    {
+        let c0 = f(self.to_complex0());
+        let c1 = f(self.to_complex1());
+        Self::from_two(c0, c1)
+    }
 }
 
 /// Four complex numbers, separate re/im arrays. For SIMD‑heavy operations.
@@ -170,6 +189,15 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
             (self.re.extract(2), self.im.extract(2)),
             (self.re.extract(3), self.im.extract(3)),
         ]
+    }
+
+    /// Apply a closure to each of the four complex elements.
+    pub fn map_complex<F>(&self, f: F) -> Self
+    where
+        F: Fn((T, T)) -> (T, T),
+    {
+        let c = self.to_complexes();
+        Self::from_pairs([f(c[0]), f(c[1]), f(c[2]), f(c[3])])
     }
 
     pub fn cmul(&self, other: &Self) -> Self {
@@ -310,5 +338,30 @@ mod tests {
         assert!(approx_eq(c[2].1, 0.0));
         assert!(approx_eq(c[3].0, 0.0));
         assert!(approx_eq(c[3].1, -1.0));
+    }
+
+    #[test]
+    fn test_map_complex_soa() {
+        type CS = ComplexSoa<f32, ScalarVector4<f32>>;
+        let soa = CS::from_pairs([(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]);
+        // Scale each element by 2
+        let scaled = soa.map_complex(|(re, im)| (re * 2.0, im * 2.0));
+        let c = scaled.to_complexes();
+        assert!(approx_eq(c[0].0, 2.0));
+        assert!(approx_eq(c[1].0, 4.0));
+        assert!(approx_eq(c[2].0, 6.0));
+        assert!(approx_eq(c[3].0, 8.0));
+    }
+
+    #[test]
+    fn test_map_complex_vector() {
+        type CV = ComplexVector<f32, ScalarVector4<f32>>;
+        let cv = CV::from_two((1.0, 2.0), (3.0, 4.0));
+        // Negate both
+        let neg = cv.map_complex(|(re, im)| (-re, -im));
+        assert!(approx_eq(neg.to_complex0().0, -1.0));
+        assert!(approx_eq(neg.to_complex0().1, -2.0));
+        assert!(approx_eq(neg.to_complex1().0, -3.0));
+        assert!(approx_eq(neg.to_complex1().1, -4.0));
     }
 }
