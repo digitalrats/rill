@@ -15,6 +15,8 @@
 
 use num_complex::Complex;
 use num_complex::Complex64;
+use rill_core::prelude::{ComplexSoa, ScalarVector4};
+use rill_core::Transcendental;
 
 // ============================================================================
 // Filter design helpers
@@ -91,6 +93,54 @@ where
 {
     acc.re = acc.re + (a.re * b.re - a.im * b.im);
     acc.im = acc.im + (a.re * b.im + a.im * b.re);
+}
+
+/// Batch complex multiply: processes 4 consecutive complex numbers at once.
+///
+/// Uses `ComplexSoa` for 4‑wide SIMD‑friendly arithmetic.
+/// `re`/`im` slices must each have at least 4 elements.
+/// `out_re`/`out_im` each receive the 4 results.
+///
+/// This is the vectorised equivalent of calling `mul_complex()` 4 times.
+#[inline(always)]
+pub fn mul_complex_4<T>(
+    a_re: &[T],
+    a_im: &[T],
+    b_re: &[T],
+    b_im: &[T],
+    out_re: &mut [T],
+    out_im: &mut [T],
+) where
+    T: Transcendental + 'static,
+{
+    use rill_core::prelude::{ComplexSoa, ScalarVector4};
+    let a = ComplexSoa::<T, ScalarVector4<T>>::load(a_re, a_im);
+    let b = ComplexSoa::<T, ScalarVector4<T>>::load(b_re, b_im);
+    let prod = a.cmul(&b);
+    prod.store(out_re, out_im);
+}
+
+/// Batch complex multiply-accumulate: `acc += a * b` for 4 elements at once.
+///
+/// The four accumulator slots in `acc_re`/`acc_im` are read, incremented by
+/// the product, and written back.
+#[inline(always)]
+pub fn mul_complex_add_4<T>(
+    acc_re: &mut [T],
+    acc_im: &mut [T],
+    a_re: &[T],
+    a_im: &[T],
+    b_re: &[T],
+    b_im: &[T],
+) where
+    T: Transcendental + 'static,
+{
+    use rill_core::prelude::{ComplexSoa, ScalarVector4};
+    let mut acc = ComplexSoa::<T, ScalarVector4<T>>::load(acc_re, acc_im);
+    let a = ComplexSoa::<T, ScalarVector4<T>>::load(a_re, a_im);
+    let b = ComplexSoa::<T, ScalarVector4<T>>::load(b_re, b_im);
+    acc.cmul_add(&a, &b);
+    acc.store(acc_re, acc_im);
 }
 
 /// Complex-valued 2×2 matrix stored on the stack.
@@ -468,5 +518,43 @@ mod tests {
             all_finite &= y_n.re.is_finite() && y_n.im.is_finite();
         }
         assert!(all_finite, "complex biquad f64 produced NaN/Inf");
+    }
+
+    #[test]
+    fn test_mul_complex_4() {
+        let a_re = [1.0f32, 0.0, 0.5, -0.5];
+        let a_im = [0.0f32, 1.0, 0.5, 0.5];
+        let b_re = [2.0f32, 0.0, 1.0, 1.0];
+        let b_im = [3.0f32, 1.0, 1.0, -1.0];
+        let mut out_re = [0.0f32; 4];
+        let mut out_im = [0.0f32; 4];
+
+        mul_complex_4(&a_re, &a_im, &b_re, &b_im, &mut out_re, &mut out_im);
+
+        // (1+0i)*(2+3i) = 2+3i
+        assert!((out_re[0] - 2.0).abs() < 1e-4);
+        assert!((out_im[0] - 3.0).abs() < 1e-4);
+        // (0+1i)*(0+1i) = -1+0i
+        assert!((out_re[1] + 1.0).abs() < 1e-4);
+        assert!((out_im[1] - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_mul_complex_add_4() {
+        let mut acc_re = [1.0f32; 4];
+        let mut acc_im = [0.0f32; 4];
+        let a_re = [1.0f32, 0.0, 2.0, 0.0];
+        let a_im = [0.0f32, 1.0, 0.0, 0.0];
+        let b_re = [2.0f32, 0.0, 3.0, 0.0];
+        let b_im = [3.0f32, 1.0, 0.0, 0.0];
+
+        mul_complex_add_4(&mut acc_re, &mut acc_im, &a_re, &a_im, &b_re, &b_im);
+
+        // [1+0i] + (1+0i)*(2+3i) = 1 + (2+3i) = 3+3i
+        assert!((acc_re[0] - 3.0).abs() < 1e-4);
+        assert!((acc_im[0] - 3.0).abs() < 1e-4);
+        // [1+0i] + (0+1i)*(0+1i) = 1 + (-1+0i) = 0+0i
+        assert!((acc_re[1] - 0.0).abs() < 1e-4);
+        assert!((acc_im[1] - 0.0).abs() < 1e-4);
     }
 }
