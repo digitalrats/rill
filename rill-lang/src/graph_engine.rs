@@ -58,6 +58,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
     }
 
     fn drain_mailbox(&mut self) {
+        let mut count = 0u32;
         while let Some(cmd) = self.mailbox.pop() {
             if let CommandEnum::GraphSetParameter {
                 anchor,
@@ -67,12 +68,20 @@ impl<T: Transcendental> RillGraphEngine<T> {
             {
                 if let Some(inner) = self.anchor_map.get(&anchor) {
                     if let Some(&param_idx) = inner.get(&param) {
-                        // Queue to prevent overwriting when multiple updates arrive
-                        // between callbacks. Applied one per process().
+                        eprintln!(
+                            "[Engine:drain] anchor={anchor} param={param} idx={param_idx} n={count}"
+                        );
                         self.pending_params.push_back((param_idx, value));
+                        count += 1;
                     }
                 }
             }
+        }
+        if count > 0 {
+            eprintln!(
+                "[Engine:drain] total={count} pending={}",
+                self.pending_params.len()
+            );
         }
     }
 }
