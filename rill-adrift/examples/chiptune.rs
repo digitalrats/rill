@@ -153,6 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 control_strategy: None,
                 conflict_strategy: None,
                 table: Some(register_table),
+                target_anchor: None,
             })],
             mappings: vec![],
             description: None,

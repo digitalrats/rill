@@ -106,6 +106,7 @@ mod tests {
                 control_strategy: None,
                 conflict_strategy: None,
                 table: None,
+                target_anchor: None,
             })],
             mappings: vec![],
             osc_surface: vec![],

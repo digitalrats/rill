@@ -159,14 +159,14 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillGraphEngine<T, BU
                     if add {
                         let src = self.buffers[from].as_slice().to_vec();
                         for (j, sample) in self.buffers[to].as_mut_slice().iter_mut().enumerate() {
-                            *sample = *sample + src[j] * gain_t;
+                            *sample += src[j] * gain_t;
                         }
                     } else {
                         let src = self.buffers[from].as_slice().to_vec();
                         self.buffers[to].copy_from(&src);
                         if (gain - 1.0f32).abs() > f32::EPSILON {
                             for sample in self.buffers[to].as_mut_slice().iter_mut() {
-                                *sample = *sample * gain_t;
+                                *sample *= gain_t;
                             }
                         }
                     }
