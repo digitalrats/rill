@@ -16,6 +16,7 @@
 
 use num_complex::Complex;
 use rill_core::Transcendental;
+use rill_core_dsp::complex_mat::mul_complex_add;
 
 use crate::real_fft::RealFft;
 
@@ -140,10 +141,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE>
             let inp_spec = &self.input_fft_ring[history_idx];
 
             for i in 0..self.half_plus_one {
-                let s = ir_spec[i];
-                let f = inp_spec[i];
-                self.product[i].re += s.re * f.re - s.im * f.im;
-                self.product[i].im += s.re * f.im + s.im * f.re;
+                mul_complex_add(&mut self.product[i], ir_spec[i], inp_spec[i]);
             }
         }
 

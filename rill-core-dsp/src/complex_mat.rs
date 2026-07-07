@@ -62,6 +62,37 @@ pub fn single_pole_to_coeffs(z: Complex64) -> (f64, f64) {
     (-z.re, 0.0)
 }
 
+// ============================================================================
+// Complex multiplication helpers (RT-safe, generic over T)
+// ============================================================================
+
+/// Complex multiplication: `a * b`.
+///
+/// `(a.re + i·a.im) · (b.re + i·b.im) = (a.re·b.re − a.im·b.im) + i·(a.re·b.im + a.im·b.re)`
+///
+/// Used in frequency‑domain convolution and spectral processing.
+/// RT‑safe: pure arithmetic, zero allocations.
+#[inline(always)]
+pub fn mul_complex<T>(a: Complex<T>, b: Complex<T>) -> Complex<T>
+where
+    T: Copy + std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+{
+    Complex::new(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re)
+}
+
+/// Complex multiply-accumulate: `acc += a * b`.
+///
+/// Used in partitioned convolution where spectra from multiple partitions
+/// are accumulated.
+#[inline(always)]
+pub fn mul_complex_add<T>(acc: &mut Complex<T>, a: Complex<T>, b: Complex<T>)
+where
+    T: Copy + std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+{
+    acc.re = acc.re + (a.re * b.re - a.im * b.im);
+    acc.im = acc.im + (a.re * b.im + a.im * b.re);
+}
+
 /// Complex-valued 2×2 matrix stored on the stack.
 ///
 /// Row-major layout: `[[m00, m01], [m10, m11]]`.

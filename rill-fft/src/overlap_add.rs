@@ -6,6 +6,7 @@
 
 use num_complex::Complex;
 use rill_core::Transcendental;
+use rill_core_dsp::complex_mat::mul_complex;
 
 use crate::real_fft::RealFft;
 
@@ -92,9 +93,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> OverlapAddConvolver<T, BUF_SIZE> 
         self.fft.forward(&self.fft_in, &mut self.fft_out);
 
         for i in 0..self.fft_out.len() {
-            let s = self.ir_spectrum[i];
-            let f = self.fft_out[i];
-            self.product[i] = Complex::new(s.re * f.re - s.im * f.im, s.re * f.im + s.im * f.re);
+            self.product[i] = mul_complex(self.ir_spectrum[i], self.fft_out[i]);
         }
 
         self.fft.inverse(&self.product, &mut self.ifft_out);
