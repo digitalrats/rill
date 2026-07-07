@@ -14,6 +14,7 @@ pub mod graph_build;
 pub mod graph_ir;
 pub mod graph_lower;
 pub mod graph_optimize;
+pub mod graph_schedule;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
