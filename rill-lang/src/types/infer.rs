@@ -151,6 +151,10 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
             ins: vec![],
             outs: vec![Scalar::Float],
         }),
+        Expr::Imag(_, _) => Ok(Type {
+            ins: vec![],
+            outs: vec![Scalar::Float, Scalar::Float],
+        }),
         Expr::Wire(_) => {
             let s = ctx.fresh();
             Ok(Type::uniform(1, 1, s))

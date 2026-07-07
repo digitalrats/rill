@@ -36,6 +36,8 @@ pub enum Expr {
     Int(i64, Span),
     /// Float literal.
     Float(f64, Span),
+    /// Imaginary literal, e.g. `3i`, `2.5i`.
+    Imag(f64, Span),
     /// Identity wire `_` (arity 1→1).
     Wire(Span),
     /// Cut `!` (arity 1→0).
@@ -74,6 +76,7 @@ impl Expr {
         match self {
             Expr::Int(_, s)
             | Expr::Float(_, s)
+            | Expr::Imag(_, s)
             | Expr::Wire(s)
             | Expr::Cut(s)
             | Expr::Str(_, s)
