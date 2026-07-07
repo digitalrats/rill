@@ -814,6 +814,61 @@ pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
     );
 }
 
+// ============================================================================
+// AY-3-8910 chip emulator built-in
+// ============================================================================
+
+#[cfg(feature = "lofi")]
+struct Ay38910Builtin {
+    chip: rill_lofi::Ay38910Chip,
+}
+
+#[cfg(feature = "lofi")]
+impl Algorithm<f32> for Ay38910Builtin {
+    fn process(&mut self, _input: Option<&[f32]>, output: &mut [f32]) -> ProcessResult<()> {
+        self.chip.process(None, output)
+    }
+    fn init(&mut self, sr: f32) {
+        Algorithm::init(&mut self.chip, sr);
+    }
+    fn reset(&mut self) {
+        Algorithm::reset(&mut self.chip);
+    }
+}
+
+#[cfg(feature = "lofi")]
+impl BlockBuiltin<f32> for Ay38910Builtin {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        if index == 0 {
+            if let ParamValue::Bytes(regs) = value {
+                use rill_lofi::ChipEmulator;
+                self.chip.write_registers(regs);
+            }
+        }
+    }
+}
+
+/// Register AY-3-8910 chip built-in: `ay38910(chip_clock_hz)`.
+#[cfg(feature = "lofi")]
+pub fn register_chip_builtins(reg: &mut Registry<f32>) {
+    use rill_core::traits::Algorithm;
+    reg.register_block(
+        BuiltinSig {
+            name: "ay38910",
+            signal_ins: 0,
+            signal_outs: 1,
+            num_params: 1,
+            kind: BuiltinKind::Block,
+        },
+        |p, sr| {
+            let clock = p[0] as f32;
+            let mut chip = rill_lofi::Ay38910Chip::new(clock);
+            Algorithm::init(&mut chip, sr);
+            Box::new(Ay38910Builtin { chip })
+        },
+    );
+}
+
 /// Build a complete builtin registry: DSP primitives, oscillators, complex
 /// arithmetic, and optionally analog models, FFT nodes, lo-fi, and chip emulators.
 pub fn full_registry<T: Transcendental>() -> Registry<T> {
@@ -833,5 +888,6 @@ pub fn full_registry<T: Transcendental>() -> Registry<T> {
 pub fn full_registry_f32() -> Registry<f32> {
     let mut reg = full_registry::<f32>();
     register_lofi_builtins(&mut reg);
+    register_chip_builtins(&mut reg);
     reg
 }
