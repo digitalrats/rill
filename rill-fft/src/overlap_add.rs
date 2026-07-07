@@ -98,7 +98,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> OverlapAddConvolver<T, BUF_SIZE> 
         while i + 3 < len {
             let s = soa_from_interleaved(&self.ir_spectrum[i..i + 4]);
             let f = soa_from_interleaved(&self.fft_out[i..i + 4]);
-            let prod = s.cmul(&f);
+            let prod = s * f;
             let c = prod.to_complexes();
             self.product[i] = Complex::new(c[0].0, c[0].1);
             self.product[i + 1] = Complex::new(c[1].0, c[1].1);

@@ -166,6 +166,41 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
     }
 }
 
+// ============================================================================
+// Operator overloads — natural `a + b`, `a - b`, `a * b`, `-a` syntax
+// ============================================================================
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::Add for ComplexVector<T, V> {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        self.cadd(&rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::Sub for ComplexVector<T, V> {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        self.csub(&rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::Mul for ComplexVector<T, V> {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        self.cmul(&rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::Neg for ComplexVector<T, V> {
+    type Output = Self;
+    fn neg(self) -> Self {
+        Self {
+            data: -self.data,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 /// Four complex numbers, separate re/im arrays. For SIMD‑heavy operations.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ComplexSoa<T: Transcendental, V: Vector<T, 4>> {
@@ -276,6 +311,42 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         Self {
             re: self.re * scalar,
             im: self.im * scalar,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+// ============================================================================
+// Operator overloads for ComplexSoa — natural formula syntax
+// ============================================================================
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::Add for ComplexSoa<T, V> {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        self.cadd(&rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::Sub for ComplexSoa<T, V> {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        self.csub(&rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::Mul for ComplexSoa<T, V> {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        self.cmul(&rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::Neg for ComplexSoa<T, V> {
+    type Output = Self;
+    fn neg(self) -> Self {
+        Self {
+            re: -self.re,
+            im: -self.im,
             _phantom: PhantomData,
         }
     }
@@ -418,5 +489,32 @@ mod tests {
         let (n0, n1) = cv.norm_sqr();
         assert!(approx_eq(n0, 25.0)); // 3²+4²
         assert!(approx_eq(n1, 2.0)); // 1²+1²
+    }
+
+    #[test]
+    fn test_operators_complex_vector() {
+        type CV = ComplexVector<f32, ScalarVector4<f32>>;
+        let a = CV::from_two((1.0, 2.0), (3.0, 4.0));
+        let b = CV::from_two((0.5, 1.0), (1.0, 0.0));
+        let sum = a + b;
+        assert!(approx_eq(sum.to_complex0().0, 1.5));
+        assert!(approx_eq(sum.to_complex0().1, 3.0));
+        let diff = a - b;
+        assert!(approx_eq(diff.to_complex0().0, 0.5));
+        assert!(approx_eq(diff.to_complex0().1, 1.0));
+        let neg = -a;
+        assert!(approx_eq(neg.to_complex0().0, -1.0));
+        assert!(approx_eq(neg.to_complex0().1, -2.0));
+    }
+
+    #[test]
+    fn test_operators_complex_soa() {
+        type CS = ComplexSoa<f32, ScalarVector4<f32>>;
+        let a = CS::load(&[1.0, 2.0, 3.0, 4.0], &[0.0; 4]);
+        let b = CS::load(&[5.0, 6.0, 7.0, 8.0], &[0.0; 4]);
+        let sum = a + b;
+        assert!(approx_eq(sum.re.extract(0), 6.0));
+        let neg = -a;
+        assert!(approx_eq(neg.re.extract(0), -1.0));
     }
 }

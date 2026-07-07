@@ -134,7 +134,7 @@ pub fn mul_complex_4<T>(
     use rill_core::prelude::{ComplexSoa, ScalarVector4};
     let a = ComplexSoa::<T, ScalarVector4<T>>::load(a_re, a_im);
     let b = ComplexSoa::<T, ScalarVector4<T>>::load(b_re, b_im);
-    let prod = a.cmul(&b);
+    let prod = a * b;
     prod.store(out_re, out_im);
 }
 
@@ -342,7 +342,7 @@ where
             &[x.re, y.re, x.re, y.re],
             &[x.im, y.im, x.im, y.im],
         );
-        let prod = m.cmul(&vec);
+        let prod = m * vec;
         let c0 = prod.extract_complex(0);
         let c1 = prod.extract_complex(1);
         let c2 = prod.extract_complex(2);
@@ -379,7 +379,7 @@ where
     fn add(self, rhs: Self) -> Self {
         let a = self.pack_soa();
         let b = rhs.pack_soa();
-        let sum = a.cadd(&b);
+        let sum = a + b;
         Self::unpack_soa(&sum)
     }
 }
@@ -400,7 +400,7 @@ where
     fn sub(self, rhs: Self) -> Self {
         let a = self.pack_soa();
         let b = rhs.pack_soa();
-        let diff = a.csub(&b);
+        let diff = a - b;
         Self::unpack_soa(&diff)
     }
 }
