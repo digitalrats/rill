@@ -454,6 +454,7 @@ mod tests {
     use crate::program::RillProgram;
     use crate::types::infer::infer_program;
     use rill_core::math::Transcendental;
+    use rill_core::traits::ParamValue;
     use rill_core::traits::{Algorithm, ProcessResult};
 
     fn build(src: &str) -> RillProgram<f32> {
@@ -763,9 +764,9 @@ mod tests {
         fn process_sample(&mut self, inputs: &[f32]) -> f32 {
             inputs[0] * self.k
         }
-        fn set_param(&mut self, index: usize, value: f32) {
+        fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
             if index == 0 {
-                self.k = value;
+                self.k = super::param_to_f64(value) as f32;
             }
         }
         fn reset(&mut self) {}

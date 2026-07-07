@@ -1,4 +1,4 @@
-use rill_core::traits::Algorithm;
+use rill_core::traits::{Algorithm, ParamValue};
 use rill_lang::builtin::Registry;
 use rill_lang::compile_with;
 
@@ -10,7 +10,7 @@ fn smooth_ramps_toward_target() {
         48_000.0,
     )
     .unwrap();
-    p.set_param(p.param_index("t").unwrap(), 1.0);
+    p.set_param(p.param_index("t").unwrap(), ParamValue::Float(1.0));
     let mut out = [0.0f32; 64];
     p.process(Some(&[0.0f32; 64]), &mut out).unwrap();
     assert!(
@@ -33,8 +33,8 @@ fn smooth_hybrid_matches_reference() {
     let mut p_process = compile_with::<f32>(src, &Registry::new(), 48_000.0).unwrap();
     let mut p_ref = compile_with::<f32>(src, &Registry::new(), 48_000.0).unwrap();
     let ti = p_process.param_index("in").unwrap();
-    p_process.set_param(ti, 1.0);
-    p_ref.set_param(ti, 1.0);
+    p_process.set_param(ti, ParamValue::Float(1.0));
+    p_ref.set_param(ti, ParamValue::Float(1.0));
     let mut out_process = [0.0f32; 64];
     let mut out_ref = [0.0f32; 64];
     let dummy = [0.0f32; 64];
