@@ -196,7 +196,7 @@ rendered in callback *N+1*, producers look ahead by one quantum:
 ```
 rill-core/
 ├── traits/   — Node, Source, Processor, Sink, ParamValue, Port
-├── math/     — Scalar, Transcendental, Vector
+├── math/     — Scalar, Transcendental, Vector, glam re-export (Mat2/3/4, Vec2/3/4)
 ├── buffer/   — PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer, TapeLoop, FixedBuffer, ResourceRegistry
 ├── queues/   — MpscQueue, SetParameter, CommandEnum, Telemetry
 ├── time/     — ClockTick, RenderContext, SystemClock

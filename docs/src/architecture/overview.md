@@ -14,11 +14,14 @@ independently.
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                     │
 │  rill-core-model  │  rill-analog-filters  │  rill-analog      │
-│  -effects                                                  │
+│  -effects  │  rill-lang  │  rill-fft                         │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-io (PortAudio / ALSA / PipeWire / JACK)                    │
+│  rill-io (PortAudio / ALSA / PipeWire / JACK)               │
+├─────────────────────────────────────────────────────────────┤
+│  rill-telemetry                                            │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)   │
+│  rill-core-actor  (ActorRef, ActorCell, ActorSystem)       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
