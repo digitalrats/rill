@@ -24,6 +24,7 @@
 
 pub mod algorithm;
 pub mod analyzer;
+pub mod complex_mat;
 pub mod context;
 pub mod direct_conv;
 pub mod effect;
@@ -50,6 +51,7 @@ pub use generators::{
 /// Prelude for convenient imports
 pub mod prelude {
     pub use crate::algorithm::ParameterizedAlgorithm;
+    pub use crate::complex_mat::{ComplexMat2, ComplexMat3};
     pub use crate::context::DspContext;
     pub use crate::direct_conv::DirectConvolver;
     pub use crate::filters::{Filter, FilterParams, FilterType};
