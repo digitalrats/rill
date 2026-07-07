@@ -69,9 +69,25 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.peek().span.start;
+
+        let mut kind = DefKind::Def;
+        if matches!(self.peek().tok, Tok::Keep) {
+            self.bump();
+            self.eat(&Tok::Param)?;
+            kind = DefKind::KeepParam;
+        } else if matches!(self.peek().tok, Tok::Inline) {
+            self.bump();
+            self.eat(&Tok::Param)?;
+            kind = DefKind::InlineParam;
+        } else if matches!(self.peek().tok, Tok::Param) {
+            self.bump();
+            kind = DefKind::Param;
+        }
+
         let name_tok = self.peek().clone();
-        let (name, start) = match &name_tok.tok {
-            Tok::Ident(n) => (n.clone(), name_tok.span.start),
+        let name = match &name_tok.tok {
+            Tok::Ident(n) => n.clone(),
             _ => {
                 return Err(CompileError::Parse {
                     msg: format!("expected definition name, found {:?}", name_tok.tok),
@@ -119,7 +135,7 @@ impl<'a> Parser<'a> {
             params,
             body,
             span: Span::new(start, semi.span.end),
-            kind: DefKind::Def,
+            kind,
         })
     }
 
