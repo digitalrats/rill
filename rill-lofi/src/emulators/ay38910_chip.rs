@@ -136,15 +136,7 @@ impl Ay38910Chip {
             }
             let tone_enabled = (self.mixer.channel_modes[i] & 0x01) == 0;
             let noise_enabled = (self.mixer.channel_modes[i] & 0x02) == 0;
-            let tone_bit = if tone_enabled && channel.tone_period > 0 {
-                if channel.phase < 0.5 {
-                    1.0
-                } else {
-                    0.0
-                }
-            } else {
-                1.0
-            };
+            let tone_bit = 1.0; // DEBUG: tones disabled, noise only
             let noise_bit = if noise_enabled {
                 if self.noise.output {
                     1.0
