@@ -35,6 +35,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+/// Complex vector abstractions (ComplexVector, ComplexSoa).
+pub mod complex;
 /// Vector construction macros.
 pub mod macros;
 /// Vector math functions (sin, cos, etc.).
@@ -59,6 +61,7 @@ pub use traits::*;
 
 /// Convenience prelude for importing all vector types and traits.
 pub mod prelude {
+    pub use crate::math::vector::complex::{ComplexSoa, ComplexVector};
     pub use crate::math::vector::macros::*;
     pub use crate::math::vector::math::*;
     pub use crate::math::vector::ops::*;
