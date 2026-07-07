@@ -368,9 +368,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stc_data = std::fs::read(stc_file)?;
 
     // ── Compile rill-lang DSL ──────────────────────────────────────────────
+    // AY-3-8910 produces [0.0, 1.0] all-positive output — needs DC offset
+    // correction (dc_offset=0.5) to center around zero, plus gain and ceiling.
+    // Original chiptune_stc does this via LofiChipSource with:
+    //   bit_depth=8, dc_offset=0.5, output_gain=1.0, output_ceiling=0.8
     let src = r#"
 param chip = ay38910(1750000.0, param("regs", 0));
-process = chip;
+process = chip : lofi(
+    8.0,    // bit_depth
+    44100.0, // sample_rate (no reduction)
+    1.0,    // dry_wet (fully wet)
+    1.0,    // output_gain
+    1.0,    // enable_bitcrush
+    0.0,    // enable_sr_reduction
+    1.0     // enable_noise
+);
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
@@ -383,12 +395,12 @@ process = chip;
     let backend_name = "alsa";
 
     use rill_adrift::rill_graph::backend_factory::BackendFactory;
-    let mut be = BackendFactory::new();
+    let mut be: rill_adrift::rill_graph::backend_factory::BackendFactory = Default::default();
     rill_adrift::registration::register_backends(&mut be);
-    let mut be_params = HashMap::new();
-    be_params.insert("sample_rate".into(), 44100.0_f64);
-    be_params.insert("block_size".into(), 256.0_f64);
-    be_params.insert("channels".into(), 1.0_f64);
+    let mut be_params: HashMap<String, ParamValue> = HashMap::new();
+    be_params.insert("sample_rate".into(), ParamValue::Float(44100.0));
+    be_params.insert("block_size".into(), ParamValue::Int(256));
+    be_params.insert("channels".into(), ParamValue::Int(1));
     let output = be
         .create_output(backend_name, &be_params)
         .map_err(|e| format!("backend: {e}"))?;
@@ -433,29 +445,20 @@ process = chip;
 
     // ── ProgramRunner — signal thread ──────────────────────────────────────
     let running = Arc::new(AtomicBool::new(true));
-    let mut runner = ProgramRunner::new(
-        engine, None, // no parent_ref needed — STC player sends directly
-        512,
-    );
+    let runner_running = running.clone();
 
-    if let Some(cap) = output.capture {
-        runner.wire_backends(Some(cap), output.playback);
-    } else {
-        runner.wire_backends(None, output.playback);
-    }
+    let driver = output.driver.clone();
+    let playback = output.playback.clone();
+    let signal_thread = std::thread::spawn(move || {
+        let mut runner = ProgramRunner::new(engine, None, 512);
+        runner.wire_backends(None, Some(playback));
+        runner.run_with_driver(driver, runner_running).ok();
+    });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");
     println!("Press Enter to start playback...\n");
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).ok();
-
-    playing.store(true, Ordering::Release);
-    println!("Playing...\n");
-
-    let runner_running = running.clone();
-    let signal_thread = std::thread::spawn(move || {
-        runner.run_with_driver(output.driver, runner_running).ok();
-    });
 
     while !finished.load(Ordering::Acquire) {
         std::thread::sleep(std::time::Duration::from_millis(100));
