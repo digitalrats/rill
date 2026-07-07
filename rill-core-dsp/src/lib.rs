@@ -24,7 +24,9 @@
 
 pub mod algorithm;
 pub mod analyzer;
+pub mod complex_mat;
 pub mod context;
+pub mod direct_conv;
 pub mod effect;
 pub mod filters;
 pub mod generators;
@@ -39,6 +41,7 @@ pub mod macros;
 // Re-exports
 pub use algorithm::ParameterizedAlgorithm;
 pub use context::DspContext;
+pub use direct_conv::DirectConvolver;
 pub use filters::{Filter, FilterParams, FilterType};
 pub use generators::{
     EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator, Resampler,
@@ -48,7 +51,9 @@ pub use generators::{
 /// Prelude for convenient imports
 pub mod prelude {
     pub use crate::algorithm::ParameterizedAlgorithm;
+    pub use crate::complex_mat::{ComplexMat2, ComplexMat3};
     pub use crate::context::DspContext;
+    pub use crate::direct_conv::DirectConvolver;
     pub use crate::filters::{Filter, FilterParams, FilterType};
     pub use crate::generators::{
         EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator, Resampler,

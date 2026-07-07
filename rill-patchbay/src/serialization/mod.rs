@@ -14,13 +14,13 @@ pub use crate::module_def::{
 // PatchbayDef
 // ============================================================================
 
-/// Serializable patchbay configuration — automata + modules without a signal graph.
-/// For full rack configuration (graph + automata + modules), use
+/// Serializable patchbay configuration — automatons + modules without a signal graph.
+/// For full rack configuration (graph + automatons + modules), use
 /// [`rill_adrift::modular::serialization::RackDef`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct PatchbayDef {
-    pub automata: Vec<AutomatonDef>,
+    pub automatons: Vec<AutomatonDef>,
     /// Unified modules — servos and sensors.
     pub modules: Vec<ModuleDef>,
     pub mappings: Vec<MappingDef>,
@@ -37,7 +37,7 @@ pub struct PatchbayDef {
 impl PatchbayDef {
     pub fn new() -> Self {
         Self {
-            automata: Vec::new(),
+            automatons: Vec::new(),
             modules: Vec::new(),
             mappings: Vec::new(),
             osc_surface: Vec::new(),
@@ -87,7 +87,7 @@ mod tests {
 
     fn sample_doc() -> PatchbayDef {
         PatchbayDef {
-            automata: vec![AutomatonDef::Lfo {
+            automatons: vec![AutomatonDef::Lfo {
                 id: "lfo1".into(),
                 frequency: 0.3,
                 amplitude: 1.0,
@@ -119,7 +119,7 @@ mod tests {
         let doc = sample_doc();
         let json = to_json(&doc).unwrap();
         let restored = from_json(&json).unwrap();
-        assert_eq!(restored.automata.len(), 1);
+        assert_eq!(restored.automatons.len(), 1);
         assert_eq!(restored.modules.len(), 1);
         match &restored.modules[0] {
             ModuleDef::Servo(s) => assert_eq!(s.target_param, "delay_time"),
@@ -133,7 +133,7 @@ mod tests {
         let doc = sample_doc();
         let cbor = to_cbor(&doc).unwrap();
         let restored = from_cbor(&cbor).unwrap();
-        assert_eq!(restored.automata.len(), 1);
-        assert_eq!(restored.automata[0].id(), "lfo1");
+        assert_eq!(restored.automatons.len(), 1);
+        assert_eq!(restored.automatons[0].id(), "lfo1");
     }
 }

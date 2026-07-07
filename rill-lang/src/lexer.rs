@@ -49,6 +49,8 @@ pub enum Tok {
     Semi,
     /// End of input.
     Eof,
+    /// Imaginary literal, e.g. `3i`, `2.5i`.
+    Imag(f64),
 }
 
 /// A token plus its source span.
@@ -115,7 +117,18 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             }
             let text = &src[start..i];
             let span = Span::new(start, i);
-            if is_float {
+            if i < bytes.len() && bytes[i] == b'i' {
+                i += 1;
+                let span = Span::new(start, i);
+                let v: f64 = text.parse().map_err(|_| CompileError::Lex {
+                    msg: format!("invalid imaginary literal `{text}i`"),
+                    span,
+                })?;
+                out.push(Token {
+                    tok: Tok::Imag(v),
+                    span,
+                });
+            } else if is_float {
                 let v: f64 = text.parse().map_err(|_| CompileError::Lex {
                     msg: format!("invalid float literal `{text}`"),
                     span,

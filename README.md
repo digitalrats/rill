@@ -1,13 +1,13 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests|68](https://img.shields.io/badge/tests-604-green)](https://github.com/DigitalRats/rill)
+[![tests|68](https://img.shields.io/badge/tests-650-green)](https://github.com/DigitalRats/rill)
 [![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
-[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Modular signal-processing ecosystem for Rust. 19 crates, from lock-free
-queues and generic vector math to real-time audio I/O and analog circuit
-modelling.
+Modular signal-processing ecosystem for Rust. 20 crates, from lock-free
+queues and generic vector math to real-time FFT, convolution, frequency‑domain
+effects, and analog circuit modelling.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -17,7 +17,7 @@ modelling.
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                       │
 │  rill-core-model  │  rill-analog-filters  │  rill-analog     │
-│  -effects  │  rill-lang  │                                   │
+│  -effects  │  rill-lang  │  rill-fft                          │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
 ├─────────────────────────────────────────────────────────────┤
@@ -72,6 +72,22 @@ lock-free queues, and SIMD-optimised block processing. Benchmarks on
 | Cubic read | 1.06 µs | 4.16 ns |
 | Resampler 44.1→48k | 1.11 µs | 4.32 ns |
 
+### FFT and convolution
+
+| Operation | Size | Time | Throughput |
+|---|---|---|---|
+| ComplexFFT forward | 1024 | 6.7 µs | 153 Melem/s |
+| ComplexFFT forward | 16384 | 177 µs | 92 Melem/s |
+| RealFFT forward | 1024 | 6.2 µs | 165 Melem/s |
+| OverlapAdd convolver | IR 2048, BUF 128 | 61 µs/block | ~2100 blocks/s |
+| Partitioned convolver | IR 65536, BUF 128 | 104 µs/block | ~9600 blocks/s |
+| DirectConvolver | 128 taps, BUF 128 | 10 µs/block | 12.7 Melem/s |
+| DirectConvolver | 64 taps, BUF 128 | 10 µs/block | 12.7 Melem/s |
+
+All FFT operations are allocation‑free in the RT path, verified by
+panic‑on‑alloc tests. At 44.1 kHz (BUF 128), budget is 2.9 ms — the
+partitioned convolver uses only ~3.6 % of that budget.
+
 †Theoretical maximum single-core voice count. Full block bench results and
 hardware SIMD comparison in
 [docs/superpowers/specs/2026-05-10-simd-benchmark-results.md](docs/superpowers/specs/2026-05-10-simd-benchmark-results.md).
@@ -115,7 +131,44 @@ Run from the workspace root (`rill/`). All examples are in `rill-adrift/examples
 cargo run -p rill-adrift --example play_wav --features "portaudio,sampler" -- [backend] [wav_path]
 ```
 
-Plays a WAV file through a biquad low-pass filter (600 Hz). Defaults to built-in demo sample.
+Plays a WAV file through a biquad low-pass filter (600 Hz). Defaults to built-in demo sample.
+
+### Convolution reverb
+
+```bash
+cargo run -p rill-adrift --example convolver --features fft [-- --ir path/to/ir.wav]
+```
+
+Demonstrates `PartitionedConvolver` and `ConvolverNode` — applies an impulse
+response (reverb cabinet, room) to a signal. If no IR file is provided, a
+synthetic exponential-decay IR is generated.
+
+### Spectral effects
+
+```bash
+cargo run -p rill-adrift --example spectral_effects --features fft
+```
+
+Frequency‑domain noise gate and shimmer delay via `SpectralGate` and
+`SpectralDelay`. Shows standalone DSP usage, passthrough, and gate‑delay chaining.
+
+### Complex numbers in the DSL
+
+```bash
+cargo run -p rill-adrift --example complex_dsl --features lang
+```
+
+Six demonstrations of complex arithmetic builtins: generator, conjugate,
+magnitude, phase, multiplication, and chained operations.
+
+### Spectral effects in the DSL
+
+```bash
+cargo run -p rill-adrift --example dsl_spectral --features "lang,fft"
+```
+
+`spectralgate` and `spectraldelay` builtins in the rill‑lang DSL, combined
+with complex arithmetic and chained gate‑delay processing.
 
 ### Load graph from JSON + config TOML
 
@@ -161,6 +214,7 @@ topology definition.
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
 | **rill-core-model** | WDF elements, adapters, physical modeling (string, plate, modal, cavity) |
 | **rill-lang** | Faust-style signal DSL — compiles to `Algorithm<T>` |
+| **rill-fft** | FFT, frequency‑domain convolution, spectrum analysis, spectral effects |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
 | **rill-oscillators** | Sine, saw, noise, LFO, envelope graph nodes |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
@@ -185,13 +239,15 @@ topology definition.
 | `telemetry` | `rill-telemetry` | yes |
 | `osc` | `rill-osc` (tokio) | yes |
 | `sampler` | `rill-sampler` | yes |
+| `fft` | `rill-fft` (FFT, convolution, spectral effects) | yes |
+| `lang` | `rill-lang` (signal DSL, complex builtins) | no |
 | `analog` | WDF + analog filters + effects | no |
 | `serialization` | Graph/patchbay JSON/CBOR | no |
 | `alsa` / `portaudio` / `jack` / `pipewire` | I/O backends (implies `io`) | no |
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
 `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,
-`rill-router`, `rill-patchbay`, `rill-lang`.
+`rill-router`, `rill-patchbay`.
 
 ## Dependencies
 
@@ -204,6 +260,7 @@ graph TD
     CORE_DSP --> FILTERS[rill-digital-filters]
     CORE_DSP --> EFFECTS[rill-digital-effects]
     CORE_DSP --> ROUTER[rill-router]
+    CORE_DSP --> FFT[rill-fft]
     CORE --> PATCHBAY[rill-patchbay]
     CORE --> IO[rill-io]
     CORE --> LOFI[rill-lofi]
@@ -233,7 +290,7 @@ cargo fmt                 # format (max_width=100)
 
 ## Publications
 
-All 19 crates publish to [crates.io](https://crates.io) in dependency order.
+All 20 crates publish to [crates.io](https://crates.io) in dependency order.
 Use the publish script:
 
 ```bash

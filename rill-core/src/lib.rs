@@ -198,6 +198,9 @@ pub use traits::{
 // Re-export math abstractions
 pub use math::{Scalar, Transcendental};
 
+/// Re-export `glam` for real-valued matrix and vector operations.
+pub use glam;
+
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{
     AtomicCell, AtomicCellError, AtomicStats, Buffer, BufferError, BufferResult, BufferStats,

@@ -19,6 +19,7 @@ members = [
     "rill-sampler",
     "rill-adrift",
     "rill-lang",
+    "rill-fft",
 ]
 resolver = "2"
 
@@ -41,6 +42,7 @@ rand = "0.8"
 log = "0.4"
 tokio = "1.0"
 criterion = { version = "0.5", features = ["html_reports"] }
+glam = { version = "0.33", default-features = false, features = ["libm"] }
 
 # Internal workspace crates
 rill-core = { path = "rill-core", version = "0.5.0" }
@@ -62,3 +64,4 @@ rill-osc = { path = "rill-osc", version = "0.5.0" }
 rill-sampler = { path = "rill-sampler", version = "0.5.0" }
 rill-adrift = { path = "rill-adrift", version = "0.5.0" }
 rill-lang = { path = "rill-lang", version = "0.5.0" }
+rill-fft = { path = "rill-fft", version = "0.5.0" }

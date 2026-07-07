@@ -238,16 +238,51 @@ fn exec_block_op<T: Transcendental>(
 
 /// Execute a whole-buffer foreign built-in (opaque `Algorithm`).
 fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, n: usize) {
-    if let Instr::CallBlock { dst, src, instance } = prog.ir.instrs[idx].clone() {
-        let mut out = std::mem::take(&mut prog.block_regs[dst]);
-        let src_data = &prog.block_regs[src][..n];
-        match &mut prog.builtins[instance] {
-            crate::program::BuiltinInst::Block(b) => {
-                let _ = b.process(Some(src_data), &mut out[..n]);
+    if let Instr::CallBlock {
+        dst: first_dst,
+        src: first_src,
+        instance,
+    } = prog.ir.instrs[idx].clone()
+    {
+        let bi = &prog.ir.builtins[instance];
+        let n_in = bi.signal_ins;
+        let n_out = bi.signal_outs;
+
+        if n_in == 1 && n_out == 1 {
+            // Fast path: single-channel, no heap allocation
+            let mut out = std::mem::take(&mut prog.block_regs[first_dst]);
+            let src_data = &prog.block_regs[first_src][..n];
+            match &mut prog.builtins[instance] {
+                crate::program::BuiltinInst::Block(b) => {
+                    let _ = b.process(Some(src_data), &mut out[..n]);
+                }
+                _ => unreachable!("ForeignBlock step with non-block builtin"),
             }
-            _ => unreachable!("ForeignBlock step with non-block builtin"),
+            prog.block_regs[first_dst] = out;
+        } else {
+            // Multi-channel: interleave inputs, process, deinterleave outputs
+            let inp: Vec<T> = (0..n_in)
+                .flat_map(|ch| {
+                    let reg_idx = first_src + ch;
+                    prog.block_regs[reg_idx][..n].iter().copied()
+                })
+                .collect();
+
+            let mut out_buf = vec![T::ZERO; n_out * n];
+
+            match &mut prog.builtins[instance] {
+                crate::program::BuiltinInst::Block(b) => {
+                    let _ = b.process(Some(&inp), &mut out_buf);
+                }
+                _ => unreachable!("ForeignBlock step with non-block builtin"),
+            }
+
+            for ch in 0..n_out {
+                let reg_idx = first_dst + ch;
+                let start = ch * n;
+                prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[start..start + n]);
+            }
         }
-        prog.block_regs[dst] = out;
     }
 }
 

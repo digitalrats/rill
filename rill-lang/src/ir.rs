@@ -176,6 +176,10 @@ pub struct BuiltinInstance {
     pub params: Vec<f64>,
     /// Sample vs block.
     pub kind: BuiltinKind,
+    /// Number of signal input channels.
+    pub signal_ins: usize,
+    /// Number of signal output channels.
+    pub signal_outs: usize,
     /// (arg_position, param_idx) dynamic param drivers.
     pub param_bindings: Vec<(usize, usize)>,
 }

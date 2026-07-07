@@ -17,6 +17,7 @@
 
 - [Getting Started](guides/getting-started.md)
 - [Two-Thread Architecture](guides/two-thread-arch.md)
+- [FFT and Convolution](guides/fft-convolution.md)
 - [Chip Emulators](guides/chip-emulators.md)
 - [Real-Time Safety](guides/real-time-safety.md)
 - [The World of Automatons](guides/world-of-automatons.md)

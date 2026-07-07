@@ -48,6 +48,36 @@ impl<'a> Lowerer<'a> {
                 self.emit(Instr::Const { dst, value: *v });
                 Ok(vec![dst])
             }
+            Expr::Imag(v, _) => {
+                // Desugar `vi` → complex(0, v)
+                let name = "complex".to_string();
+                if let Some(sig) = self.sigs.builtin_sig(&name) {
+                    let sig = sig.clone();
+                    let instance = self.builtins.len();
+                    self.builtins.push(BuiltinInstance {
+                        name,
+                        params: vec![0.0, *v],
+                        kind: sig.kind,
+                        signal_ins: sig.signal_ins,
+                        signal_outs: sig.signal_outs,
+                        param_bindings: Vec::new(),
+                    });
+                    let fst = self.fresh_reg();
+                    for _ in 1..sig.signal_outs {
+                        self.fresh_reg();
+                    }
+                    self.emit(Instr::CallBlock {
+                        dst: fst,
+                        src: 0,
+                        instance,
+                    });
+                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
+                }
+                // Fallback: if complex builtin not registered, output constant 0 (real)
+                let dst = self.fresh_reg();
+                self.emit(Instr::Const { dst, value: 0.0 });
+                Ok(vec![dst])
+            }
             Expr::Wire(_) => Ok(vec![inputs[0]]),
             Expr::Cut(_) => Ok(vec![]),
             Expr::Ref(name, span) => self.lower_ref(name, inputs, *span),
@@ -177,27 +207,35 @@ impl<'a> Lowerer<'a> {
                         name: name.clone(),
                         params,
                         kind: sig.kind,
+                        signal_ins: sig.signal_ins,
+                        signal_outs: sig.signal_outs,
                         param_bindings,
                     });
-                    let dst = self.fresh_reg();
                     match sig.kind {
                         BuiltinKind::Sample => {
+                            let dst = self.fresh_reg();
                             let srcs = inputs.to_vec();
                             self.emit(Instr::CallSample {
                                 dst,
                                 srcs,
                                 instance,
                             });
+                            return Ok(vec![dst]);
                         }
                         BuiltinKind::Block => {
+                            let fst = self.fresh_reg();
+                            for _ in 1..sig.signal_outs {
+                                self.fresh_reg();
+                            }
+                            let src = if inputs.is_empty() { 0 } else { inputs[0] };
                             self.emit(Instr::CallBlock {
-                                dst,
-                                src: inputs[0],
+                                dst: fst,
+                                src,
                                 instance,
                             });
+                            return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                         }
                     }
-                    return Ok(vec![dst]);
                 }
                 let mut arg_regs = Vec::new();
                 for a in args {
@@ -264,27 +302,35 @@ impl<'a> Lowerer<'a> {
                     name: name.to_string(),
                     params: Vec::new(),
                     kind: sig.kind,
+                    signal_ins: sig.signal_ins,
+                    signal_outs: sig.signal_outs,
                     param_bindings: Vec::new(),
                 });
-                let dst = self.fresh_reg();
                 match sig.kind {
                     BuiltinKind::Sample => {
+                        let dst = self.fresh_reg();
                         let srcs = inputs.to_vec();
                         self.emit(Instr::CallSample {
                             dst,
                             srcs,
                             instance,
                         });
+                        return Ok(vec![dst]);
                     }
                     BuiltinKind::Block => {
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        let src = if inputs.is_empty() { 0 } else { inputs[0] };
                         self.emit(Instr::CallBlock {
-                            dst,
-                            src: inputs[0],
+                            dst: fst,
+                            src,
                             instance,
                         });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
                 }
-                return Ok(vec![dst]);
             }
         }
         let bin = match name {
@@ -400,6 +446,43 @@ impl<'a> Lowerer<'a> {
             BinOp::Feedback => self.lower_feedback(lhs, rhs, inputs, span),
             BinOp::Delay => self.lower_delay(lhs, rhs, inputs, span),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+                // Desugar `Float + Imag` / `Int + Imag` → complex(re, im)
+                if matches!(op, BinOp::Add | BinOp::Sub) {
+                    let re = match lhs {
+                        Expr::Float(v, _) => Some(*v),
+                        Expr::Int(v, _) => Some(*v as f64),
+                        _ => None,
+                    };
+                    let im = match rhs {
+                        Expr::Imag(v, _) => Some(if matches!(op, BinOp::Sub) { -*v } else { *v }),
+                        _ => None,
+                    };
+                    if let (Some(re), Some(im)) = (re, im) {
+                        let name = "complex".to_string();
+                        if let Some(sig) = self.sigs.builtin_sig(&name) {
+                            let sig = sig.clone();
+                            let instance = self.builtins.len();
+                            self.builtins.push(BuiltinInstance {
+                                name,
+                                params: vec![re, im],
+                                kind: sig.kind,
+                                signal_ins: sig.signal_ins,
+                                signal_outs: sig.signal_outs,
+                                param_bindings: Vec::new(),
+                            });
+                            let fst = self.fresh_reg();
+                            for _ in 1..sig.signal_outs {
+                                self.fresh_reg();
+                            }
+                            self.emit(Instr::CallBlock {
+                                dst: fst,
+                                src: 0,
+                                instance,
+                            });
+                            return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
+                        }
+                    }
+                }
                 let a = self.lower(lhs, inputs)?;
                 let b = self.lower(rhs, inputs)?;
                 let arith = match op {
@@ -497,6 +580,7 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
     let unsupported = |m: &str| CompileError::Unsupported(m.to_string());
     Ok(match e {
         Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
+        Expr::Imag(_, _) => (0, 2),
         Expr::Str(_, _) => (0, 1),
         Expr::Wire(_) => (1, 1),
         Expr::Cut(_) => (1, 0),

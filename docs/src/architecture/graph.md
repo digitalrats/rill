@@ -121,3 +121,5 @@ sample-accurate writes due for the current block.
 - `rill-core-actor` — `Actor<CommandEnum>` / `ActorRef<CommandEnum>` (mailbox infrastructure)
 - `rill-io` — `Input`/`Output` nodes, `IoBackend` trait
 - `rill-patchbay` — automation via parameter commands through the actor mailbox
+- `rill-fft` — `ConvolverNode` graph node (IR convolution)
+- `rill-lang` — `rill/lang` factory node (DSL‑compiled signal processors)

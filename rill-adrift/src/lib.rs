@@ -38,6 +38,9 @@ pub use rill_sampler as sampler;
 #[cfg(feature = "lang")]
 pub use rill_lang as lang;
 
+#[cfg(feature = "fft")]
+pub use rill_fft as fft;
+
 /// rill-lang graph node adapter (`LangNode`), available with the `lang` feature.
 #[cfg(feature = "lang")]
 pub mod lang_node;

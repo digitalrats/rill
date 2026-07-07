@@ -14,6 +14,7 @@ thiserror = "1.0"
 rand = "0.8"
 wide = { version = "0.7", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
+glam = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

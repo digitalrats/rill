@@ -43,6 +43,7 @@ rill-analog-filters = { workspace = true, optional = true }
 rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
 rill-lang = { workspace = true, optional = true }
+rill-fft = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
 tokio = { workspace = true, optional = true, features = ["signal", "rt", "rt-multi-thread", "macros"] }
@@ -67,6 +68,22 @@ name = "record_mic"
 required-features = ["io", "serialization", "sampler"]
 
 [[example]]
+name = "convolver"
+required-features = ["fft"]
+
+[[example]]
+name = "complex_dsl"
+required-features = ["lang"]
+
+[[example]]
+name = "spectral_effects"
+required-features = ["fft"]
+
+[[example]]
+name = "dsl_spectral"
+required-features = ["lang", "fft"]
+
+[[example]]
 name = "chiptune"
 required-features = ["io", "lofi"]
 
@@ -79,7 +96,7 @@ name = "midi_synth_serial"
 required-features = ["midi", "io", "serialization"]
 
 [features]
-default = ["io", "lofi", "telemetry", "osc", "sampler", "portaudio", "serialization"]
+default = ["io", "lofi", "telemetry", "osc", "sampler", "fft", "portaudio", "serialization"]
 
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi"]
@@ -88,6 +105,7 @@ osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects"]
 sampler = ["dep:rill-sampler"]
 lang = ["dep:rill-lang"]
+fft = ["dep:rill-fft"]
 serialization = [
     "rill-graph/serialization",
     "rill-patchbay/serialization",

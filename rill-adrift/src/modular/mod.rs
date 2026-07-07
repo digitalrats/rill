@@ -60,7 +60,7 @@ pub enum ModularError {
 
 /// A modular signal processing host that manages one or more [`RackCase`] instances.
 ///
-/// Each rack has its own signal graph and control modules (automata, servos, sensors).
+/// Each rack has its own signal graph and control modules (automatons, servos, sensors).
 /// The system provides shared infrastructure: actor system, node factory, backend factory,
 /// and a module factory for custom rack modules.
 pub struct ModularSystem<const BUF: usize = 64> {
@@ -238,7 +238,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
 
             // 4. Build modules via ModuleFactory
-            let automaton_defs = &rd.automata;
+            let automaton_defs = &rd.automatons;
             let mut servos = HashMap::new();
             for module_def in &rd.modules {
                 match module_def {

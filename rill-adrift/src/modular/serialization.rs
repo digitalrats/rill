@@ -52,9 +52,9 @@ pub struct RackDef {
     pub name: String,
     /// Signal graph topology.
     pub graph: GraphDef,
-    /// Control automata (LFO, envelope, sequencer) powering servos.
+    /// Control automatons (LFO, envelope, sequencer) powering servos.
     #[serde(default)]
-    pub automata: Vec<AutomatonDef>,
+    pub automatons: Vec<AutomatonDef>,
     /// Rack modules — servos, sensors, and custom modules.
     #[serde(default)]
     pub modules: Vec<ModuleDef>,
@@ -71,7 +71,7 @@ impl RackDef {
         Self {
             name: name.into(),
             graph,
-            automata: Vec::new(),
+            automatons: Vec::new(),
             modules: Vec::new(),
             mappings: Vec::new(),
             description: None,

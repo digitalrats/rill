@@ -137,6 +137,32 @@ impl<'a> Parser<'a> {
             }
             self.bump();
             let rhs = self.parse_expr(r_bp, no_comma)?;
+
+            // Desugar `Float + Imag` / `Int + Imag` / `Float - Imag` → complex(re, im)
+            if matches!(op, BinOp::Add | BinOp::Sub) {
+                let re = match &lhs {
+                    Expr::Float(v, _) => Some(*v),
+                    Expr::Int(v, _) => Some(*v as f64),
+                    _ => None,
+                };
+                let im = match &rhs {
+                    Expr::Imag(v, _) => Some(if matches!(op, BinOp::Sub) { -*v } else { *v }),
+                    _ => None,
+                };
+                if let (Some(re), Some(im)) = (re, im) {
+                    let span = lhs.span().merge(rhs.span());
+                    lhs = Expr::Apply {
+                        name: "complex".to_string(),
+                        args: vec![
+                            Expr::Float(re, Span::new(0, 0)),
+                            Expr::Float(im, Span::new(0, 0)),
+                        ],
+                        span,
+                    };
+                    continue;
+                }
+            }
+
             let span = lhs.span().merge(rhs.span());
             lhs = Expr::Bin {
                 op,
@@ -166,6 +192,7 @@ impl<'a> Parser<'a> {
         match t.tok {
             Tok::Int(v) => Ok(Expr::Int(v, t.span)),
             Tok::Float(v) => Ok(Expr::Float(v, t.span)),
+            Tok::Imag(v) => Ok(Expr::Imag(v, t.span)),
             Tok::Wire => Ok(Expr::Wire(t.span)),
             Tok::Cut => Ok(Expr::Cut(t.span)),
             Tok::Str(s) => Ok(Expr::Str(s, t.span)),

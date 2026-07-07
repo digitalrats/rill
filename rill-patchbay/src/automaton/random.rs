@@ -1,6 +1,6 @@
 //! # Random processes
 //!
-//! Automata for generating random and pseudo-random sequences:
+//! Automatons for generating random and pseudo-random sequences:
 //! - Random Walk
 //! - Chaos (deterministic chaos)
 //! - Noise (white, pink, brown noise)

@@ -538,7 +538,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }],
                 description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
             },
-            automata: vec![],
+            automatons: vec![],
             modules: vec![ModuleDef::Custom {
                 type_name: "stc_player".into(),
                 params: HashMap::new(),

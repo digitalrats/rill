@@ -38,6 +38,11 @@ name = "reader_bench"
 harness = false
 path = "benches/reader_bench.rs"
 
+[[bench]]
+name = "conv_direct_bench"
+harness = false
+path = "benches/conv_direct_bench.rs"
+
 [features]
 default = []
 simd = ["rill-core/simd"]  # SIMD оптимизации через rill-core

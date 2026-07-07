@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 18 active crates:
+Cargo workspace — 20 active crates:
 
 | Crate | Status |
 |---|---|
@@ -23,6 +23,8 @@ Cargo workspace — 18 active crates:
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
 | `rill-sampler` | Active — sample playback, time-series reader, WAV loading |
+| `rill-fft` | Active — FFT, frequency-domain convolution, spectrum analysis, spectral effects |
+| `rill-lang` | Active — Faust-style functional DSL for signal processing, compiles to `Algorithm<T>` |
 | `rill-adrift` | Active — umbrella crate for signal processing applications |
 
 Dependency tree:
@@ -33,12 +35,14 @@ Dependency tree:
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
-  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`
+  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-fft`
 - **`rill-core-model`** — WDF + physical modeling, depends on `rill-core`
 - **`rill-analog-filters`** — depends on `rill-core` + `rill-core-model`
 - **`rill-analog-effects`** — depends on `rill-core` + `rill-core-model`
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
-- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`
+- **`rill-lang`** — signal processing DSL, depends on `rill-core` only
+- **`rill-fft`** — FFT and frequency-domain processing, depends on `rill-core` + `rill-core-dsp`
+- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`, `fft`, `lang`
 
 ## History
 
@@ -70,7 +74,7 @@ cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
 
 # publish order (leaf to root):
-./scripts/publish.sh              # all 18 crates to crates.io
+./scripts/publish.sh              # all 20 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
 ## crates.io publication rules
@@ -93,10 +97,24 @@ mdbook serve docs/                # dev server at localhost:3000
 ## Code conventions
 
 - **Safety & Unsafe Policy:**
-    - `#![deny(unsafe_code)]` set in 7 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`.
+    - `#![deny(unsafe_code)]` set in 9 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`, `rill-lang`, `rill-fft`.
     - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.
+
+- **SIMD & auto-vectorization:**
+    - **Prefer simple scalar code.** LLVM aggressively auto-vectorises loops with
+      predictable contiguous memory access. The scalar ComplexFft `butterfly()`
+      is auto-vectorised to SSE (`mulps`, `shufps`) in release builds —
+      interleaved `Complex<f32>` maps directly to XMM registers.
+    - **Do NOT manually SIMD‑ify** radix‑2 FFT butterflies or similar data‑parallel
+      kernels — manual `ScalarVector4` / `F32x4` breaks LLVM's ability to see
+      the full loop pattern. Verified: 3 failed SIMD attempts (−36 %, −34 %, −120 %).
+    - **When manual SIMD helps:** irregular access patterns, fused multiply‑add
+      intrinsics, gather/scatter, horizontal reductions.
+    - **If a bottleneck is suspected:** profile with `perf` / `objdump` first.
+      Check whether LLVM is already generating SIMD instructions before writing
+      manual vector code.
 
 - **Documentation language:**
     - All crate-level docs (`README.md`, module doc comments, API docs) must be in **English**.
@@ -153,11 +171,19 @@ Rill is a **universal signal processing platform**, not exclusively audio. The t
 | `automata` (plural) | `automatons` | All crates — code identifiers, field names, variable names, docs |
 | `Automata` (type/generic) | `Automaton` | Trait names, type parameters, enum variants |
 
+> **Exception:** «cellular automata» is a well-established mathematical term (Conway, Wolfram).
+> The compound phrase `cellular automata` (both words together) is exempt from the rule above.
+> Standalone uses of `automata` as a generic plural are still forbidden.
+
 **Concrete type names** (`AudioInput`, `AudioOutput`, `AudioConfig` in `rill-io`, `PortAudio`) are **exempt** — they are code identifiers, not prose. Renaming them requires a separate API-breaking change.
 
 **«Hearing» / acoustic sensors** — the `hearing` module name and «acoustic» are domain-level concepts. Doc comments describing signal analysis algorithms should use «signal» (not «audio») for the generic processing path.
 
-**«Automaton» vs «automata»** — the singular "automaton" and plural **"automatons"** are the only acceptable forms. The incorrect plural "automata" exists in legacy public API (`RackDef.automata`, `PatchbayDef.automata`) and is a known issue pending an API-breaking rename. All **new** code identifiers, variable names, and documentation MUST use `automatons`.
+**«Automaton» vs «automata»** — the singular "automaton" and plural **"automatons"** are the only acceptable forms. The legacy plural "automata" has been removed from both public API and documentation. All code identifiers, variable names, and docs use `automatons`.
+
+> **Exception:** «cellular automata» is a well-established mathematical term (Conway, Wolfram).
+> The compound phrase `cellular automata` (both words together) is exempt.
+> Standalone `automata` as a generic plural is still forbidden.
 
 ## Real-time safety
 
