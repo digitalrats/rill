@@ -19,6 +19,7 @@ members = [
     "rill-sampler",
     "rill-adrift",
     "rill-lang",
+    "rill-fft",
 ]
 resolver = "2"
 
@@ -62,3 +63,4 @@ rill-osc = { path = "rill-osc", version = "0.5.0" }
 rill-sampler = { path = "rill-sampler", version = "0.5.0" }
 rill-adrift = { path = "rill-adrift", version = "0.5.0" }
 rill-lang = { path = "rill-lang", version = "0.5.0" }
+rill-fft = { path = "rill-fft", version = "0.5.0" }

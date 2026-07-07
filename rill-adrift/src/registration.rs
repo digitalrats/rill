@@ -37,6 +37,8 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
     register_analog::<BUF_SIZE>(factory);
     #[cfg(feature = "lang")]
     register_lang::<BUF_SIZE>(factory);
+    #[cfg(feature = "fft")]
+    register_fft::<BUF_SIZE>(factory);
 }
 
 #[cfg(feature = "io")]
@@ -843,6 +845,24 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
         cfg = cfg.with_output_device(d.as_str());
     }
     cfg
+}
+
+// ============================================================================
+// FFT — frequency-domain processing
+// ============================================================================
+
+#[cfg(feature = "fft")]
+fn register_fft<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
+    use rill_core::traits::Node;
+    use rill_fft::nodes::convolver_node::ConvolverNode;
+
+    node_ctor!(factory, "rill/convolver", |id: NodeId, params: &Params| {
+        let ir_len = params.get_f32("ir_len", 4096.0) as usize;
+        let mut n = ConvolverNode::<f32, BUF_SIZE>::new(ir_len, params.sample_rate);
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
 }
 
 /// Deserialise a JSON graph string into a
