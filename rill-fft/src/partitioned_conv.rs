@@ -39,17 +39,6 @@ pub struct PartitionedConvolver<T: Transcendental, const BUF_SIZE: usize> {
     overlap: Vec<T>,
 }
 
-fn next_power_of_two(n: usize) -> usize {
-    if n <= 2 {
-        return 2;
-    }
-    let mut p = 1usize;
-    while p < n {
-        p <<= 1;
-    }
-    p
-}
-
 impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE> {
     /// Create a new partitioned convolver.
     ///
@@ -59,7 +48,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE>
     ///
     /// Panics if `fft_size < 4` or if `ir_len` is such that `fft_size < BUF_SIZE`.
     pub fn new(ir_len: usize) -> Self {
-        let fft_size = next_power_of_two(2 * BUF_SIZE);
+        let fft_size = rill_core::utils::next_power_of_two(2 * BUF_SIZE).max(4);
         assert!(fft_size >= 4, "FFT size must be at least 4");
         assert!(fft_size >= BUF_SIZE, "FFT size must be >= BUF_SIZE");
 

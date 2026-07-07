@@ -12,17 +12,6 @@ use rill_core::Transcendental;
 
 use crate::real_fft::RealFft;
 
-fn next_power_of_two(n: usize) -> usize {
-    if n <= 2 {
-        return 2;
-    }
-    let mut p = 1usize;
-    while p < n {
-        p <<= 1;
-    }
-    p
-}
-
 /// Spectral gate effect using overlap-add FFT processing.
 ///
 /// # Type parameters
@@ -44,7 +33,7 @@ pub struct SpectralGate<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> SpectralGate<T, BUF_SIZE> {
     /// Create a new spectral gate.
     pub fn new() -> Self {
-        let fft_size = next_power_of_two(2 * BUF_SIZE);
+        let fft_size = rill_core::utils::next_power_of_two(2 * BUF_SIZE).max(4);
         let half_plus_one = fft_size / 2 + 1;
         let fft = RealFft::new(fft_size);
         let overlap_len = fft_size - BUF_SIZE;

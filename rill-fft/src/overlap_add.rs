@@ -30,17 +30,6 @@ pub struct OverlapAddConvolver<T: Transcendental, const BUF_SIZE: usize> {
     overlap: Vec<T>,
 }
 
-fn next_power_of_two(n: usize) -> usize {
-    if n <= 2 {
-        return 2;
-    }
-    let mut p = 1usize;
-    while p < n {
-        p <<= 1;
-    }
-    p
-}
-
 impl<T: Transcendental, const BUF_SIZE: usize> OverlapAddConvolver<T, BUF_SIZE> {
     /// Create a new overlap-add convolver.
     ///
@@ -51,7 +40,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> OverlapAddConvolver<T, BUF_SIZE> 
     ///
     /// Panics if the resulting FFT size is less than 4.
     pub fn new(ir_len: usize) -> Self {
-        let fft_size = next_power_of_two(BUF_SIZE + ir_len - 1);
+        let fft_size = rill_core::utils::next_power_of_two(BUF_SIZE + ir_len - 1).max(4);
         assert!(fft_size >= 4, "FFT size must be at least 4");
 
         let fft = RealFft::new(fft_size);

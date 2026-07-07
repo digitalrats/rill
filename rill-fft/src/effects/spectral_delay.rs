@@ -12,17 +12,6 @@ use rill_core::Transcendental;
 
 use crate::real_fft::RealFft;
 
-fn next_power_of_two(n: usize) -> usize {
-    if n <= 2 {
-        return 2;
-    }
-    let mut p = 1usize;
-    while p < n {
-        p <<= 1;
-    }
-    p
-}
-
 /// Spectral delay effect — applies different delay times to different frequency bins.
 ///
 /// Stores a circular buffer of past FFT frames. Each bin's output is a mix
@@ -58,7 +47,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const MAX_DELAY: usize>
     pub fn new() -> Self {
         assert!(MAX_DELAY > 0, "MAX_DELAY must be at least 1");
 
-        let fft_size = next_power_of_two(2 * BUF_SIZE);
+        let fft_size = rill_core::utils::next_power_of_two(2 * BUF_SIZE).max(4);
         let half_plus_one = fft_size / 2 + 1;
         let fft = RealFft::new(fft_size);
         let overlap_len = fft_size - BUF_SIZE;

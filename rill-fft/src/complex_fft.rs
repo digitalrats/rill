@@ -3,6 +3,14 @@
 //!
 //! All twiddle factors and bit-reversal tables are pre-computed in the constructor
 //! for RT-safe processing. The FFT operates in-place on a mutable slice of `Complex<T>`.
+//!
+//! ## SIMD potential
+//!
+//! The current interleaved `Complex<T>` layout is not SIMD‑friendly. A future
+//! `simd`‑enabled path would internally convert to a SoA (Structure of Arrays)
+//! layout — separate `re` and `im` arrays — then process 4 butterflies at once
+//! using `F32x4` / `F64x2` from the `wide` crate. The conversion cost (~2·N copies
+//! per transform) is amortised over the O(N log N) butterfly work for N ≥ 256.
 
 use num_complex::Complex;
 use rill_core::Transcendental;
@@ -147,7 +155,6 @@ mod tests {
             Complex::new(1.0, 0.0),
         ];
         fft.forward(&mut data);
-        // DFT of [1,1,1,1]: [4, 0, 0, 0]
         assert!((data[0].re - 4.0).abs() < 1e-4);
         assert!((data[1].re - 0.0).abs() < 1e-4);
         assert!((data[2].re - 0.0).abs() < 1e-4);
