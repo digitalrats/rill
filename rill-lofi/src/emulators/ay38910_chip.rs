@@ -309,8 +309,13 @@ impl Algorithm<f32> for Ay38910Chip {
 impl ChipEmulator for Ay38910Chip {
     fn write_registers(&mut self, regs: &[u8]) {
         if regs.len() >= 8 {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
             eprintln!(
-                "[AY:chip] write_registers R0={:02x} R1={:02x} R7={:02x} R8={:02x} len={}",
+                "[AY:chip] ts={} R0={:02x} R1={:02x} R7={:02x} R8={:02x} len={}",
+                t,
                 regs[0],
                 regs[1],
                 regs[7],
