@@ -35,13 +35,16 @@ fn plain_process_half_input() {
 
 #[test]
 fn param_graph_accepts_graph_set_parameter() {
-    let src = "process = _ * param(\"gain\", 0.5);";
+    let src = r#"
+param myGain = _ * param("gain", 0.5);
+process = _ : myGain : _;
+"#;
     let mut engine = compile_graph::<f32>(src, &rill_lang::builtin::Registry::new(), 44100.0)
         .expect("should compile");
 
     let handle = engine.handle();
     handle.send(CommandEnum::GraphSetParameter {
-        anchor: "process".into(),
+        anchor: "myGain".into(),
         param: "gain".into(),
         value: ParamValue::Float(0.25),
     });

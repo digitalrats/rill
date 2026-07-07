@@ -556,15 +556,211 @@ pub fn register_complex_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         |_p, _sr| Box::new(ComplexAddBuiltin),
     );
 }
-/// Build a complete builtin registry: DSP primitives, complex arithmetic,
-/// and optionally analog models (`analog` feature) and FFT nodes (`fft` feature).
+// ============================================================================
+// Oscillator built-ins (generators)
+// ============================================================================
+
+struct OscBuiltin<T: Transcendental> {
+    osc: rill_core_dsp::BasicOscillator<T>,
+}
+
+impl<T: Transcendental> Algorithm<T> for OscBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        self.osc.process(input, output)
+    }
+    fn init(&mut self, sr: f32) {
+        Algorithm::init(&mut self.osc, sr);
+    }
+    fn reset(&mut self) {
+        Algorithm::reset(&mut self.osc);
+    }
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for OscBuiltin<T> {
+    fn set_param(&mut self, index: usize, value: T) {
+        use rill_core_dsp::Generator;
+        if index == 0 {
+            self.osc.set_frequency(value.to_f32());
+        }
+    }
+}
+
+struct NoiseGenBuiltin<T: Transcendental> {
+    gen: rill_core_dsp::NoiseGenerator<T>,
+}
+
+impl<T: Transcendental> Algorithm<T> for NoiseGenBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        self.gen.process(input, output)
+    }
+    fn init(&mut self, sr: f32) {
+        Algorithm::init(&mut self.gen, sr);
+    }
+    fn reset(&mut self) {
+        Algorithm::reset(&mut self.gen);
+    }
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for NoiseGenBuiltin<T> {
+    fn set_param(&mut self, _index: usize, _value: T) {
+        // Noise type is fixed at construction time
+    }
+}
+
+/// Register oscillator built-ins: `sine`, `saw`, `square`, `triangle`, `noise`.
+pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
+    use rill_core_dsp::{BasicOscillator, NoiseGenerator, NoiseType, Waveform};
+
+    reg.register_block(
+        BuiltinSig {
+            name: "sine",
+            signal_ins: 0,
+            signal_outs: 1,
+            num_params: 1,
+            kind: BuiltinKind::Block,
+        },
+        |p, sr| {
+            let freq = p[0] as f32;
+            let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, T::ONE);
+            Algorithm::init(&mut osc, sr);
+            Box::new(OscBuiltin { osc })
+        },
+    );
+    reg.register_block(
+        BuiltinSig {
+            name: "saw",
+            signal_ins: 0,
+            signal_outs: 1,
+            num_params: 1,
+            kind: BuiltinKind::Block,
+        },
+        |p, sr| {
+            let freq = p[0] as f32;
+            let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, T::ONE);
+            Algorithm::init(&mut osc, sr);
+            Box::new(OscBuiltin { osc })
+        },
+    );
+    reg.register_block(
+        BuiltinSig {
+            name: "square",
+            signal_ins: 0,
+            signal_outs: 1,
+            num_params: 1,
+            kind: BuiltinKind::Block,
+        },
+        |p, sr| {
+            let freq = p[0] as f32;
+            let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, T::ONE);
+            Algorithm::init(&mut osc, sr);
+            Box::new(OscBuiltin { osc })
+        },
+    );
+    reg.register_block(
+        BuiltinSig {
+            name: "triangle",
+            signal_ins: 0,
+            signal_outs: 1,
+            num_params: 1,
+            kind: BuiltinKind::Block,
+        },
+        |p, sr| {
+            let freq = p[0] as f32;
+            let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, T::ONE);
+            Algorithm::init(&mut osc, sr);
+            Box::new(OscBuiltin { osc })
+        },
+    );
+    reg.register_block(
+        BuiltinSig {
+            name: "noise",
+            signal_ins: 0,
+            signal_outs: 1,
+            num_params: 1,
+            kind: BuiltinKind::Block,
+        },
+        |p, _sr| {
+            let mut gen = NoiseGenerator::<T>::new(
+                match p[0].round() as i32 {
+                    1 => NoiseType::Pink,
+                    2 => NoiseType::Brown,
+                    _ => NoiseType::White,
+                },
+                T::ONE,
+            );
+            Box::new(NoiseGenBuiltin { gen })
+        },
+    );
+}
+
+// ============================================================================
+// Lo-fi built-ins (feature-gated)
+// ============================================================================
+
+#[cfg(feature = "lofi")]
+struct LofiBuiltin {
+    inner: rill_lofi::LofiProcessor<64>,
+}
+
+#[cfg(feature = "lofi")]
+impl Algorithm<f32> for LofiBuiltin {
+    fn process(&mut self, input: Option<&[f32]>, output: &mut [f32]) -> ProcessResult<()> {
+        match input {
+            Some(inp) => {
+                for (i, out) in output.iter_mut().enumerate() {
+                    *out = self.inner.process_sample(inp[i.min(inp.len() - 1)]);
+                }
+            }
+            None => output.fill(0.0),
+        }
+        Ok(())
+    }
+    fn reset(&mut self) {}
+}
+
+#[cfg(feature = "lofi")]
+impl BlockBuiltin<f32> for LofiBuiltin {
+    fn set_param(&mut self, _index: usize, _value: f32) {}
+}
+
+/// Register lo-fi built-in: `lofi()`.
+#[cfg(feature = "lofi")]
+pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
+    use rill_core::traits::Node;
+    reg.register_block(
+        BuiltinSig {
+            name: "lofi",
+            signal_ins: 1,
+            signal_outs: 1,
+            num_params: 0,
+            kind: BuiltinKind::Block,
+        },
+        |_p, sr| {
+            let mut inner = rill_lofi::LofiProcessor::<64>::new(rill_lofi::LofiConfig::default());
+            Node::init(&mut inner, sr);
+            Box::new(LofiBuiltin { inner })
+        },
+    );
+}
+
+/// Build a complete builtin registry: DSP primitives, oscillators, complex
+/// arithmetic, and optionally analog models, FFT nodes, lo-fi, and chip emulators.
 pub fn full_registry<T: Transcendental>() -> Registry<T> {
     let mut reg = Registry::new();
     register_dsp_builtins(&mut reg);
+    register_oscillator_builtins(&mut reg);
     register_complex_builtins(&mut reg);
     #[cfg(feature = "analog")]
     register_model_builtins(&mut reg);
     #[cfg(feature = "fft")]
     register_fft_builtins(&mut reg);
+    reg
+}
+
+/// Build a lofi-capable registry (concrete `f32`).
+#[cfg(feature = "lofi")]
+pub fn full_registry_f32() -> Registry<f32> {
+    let mut reg = full_registry::<f32>();
+    register_lofi_builtins(&mut reg);
     reg
 }
