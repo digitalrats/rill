@@ -87,6 +87,21 @@ impl Expr {
     }
 }
 
+/// Whether a definition is a plain `def`, a graph-node `param`,
+/// a `keep param`, or an `inline param`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DefKind {
+    /// `def name = expr;` or plain `name = expr;` — always inlined.
+    #[default]
+    Def,
+    /// `param name = expr;` — may be a graph node (optimizer decides).
+    Param,
+    /// `keep param name = expr;` — NEVER inlined.
+    KeepParam,
+    /// `inline param name = expr;` — ALWAYS inlined.
+    InlineParam,
+}
+
 /// A top-level definition: `name(params) = body;` (params may be empty).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Def {
@@ -98,6 +113,8 @@ pub struct Def {
     pub body: Expr,
     /// Span of the whole definition.
     pub span: Span,
+    /// How this definition should be treated in graph IR.
+    pub kind: DefKind,
 }
 
 /// A whole program: an ordered list of definitions. One MUST be named `process`.

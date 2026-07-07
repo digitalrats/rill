@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{BinOp, Def, DefKind, Expr, Program};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 
@@ -119,6 +119,7 @@ impl<'a> Parser<'a> {
             params,
             body,
             span: Span::new(start, semi.span.end),
+            kind: DefKind::Def,
         })
     }
 
