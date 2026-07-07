@@ -398,12 +398,10 @@ where
 {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        Self {
-            m00: self.m00 - rhs.m00,
-            m01: self.m01 - rhs.m01,
-            m10: self.m10 - rhs.m10,
-            m11: self.m11 - rhs.m11,
-        }
+        let a = self.pack_soa();
+        let b = rhs.pack_soa();
+        let diff = a.csub(&b);
+        Self::unpack_soa(&diff)
     }
 }
 

@@ -264,6 +264,14 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         }
     }
 
+    pub fn csub(&self, other: &Self) -> Self {
+        Self {
+            re: self.re - other.re,
+            im: self.im - other.im,
+            _phantom: PhantomData,
+        }
+    }
+
     pub fn scale_real(&self, scalar: V) -> Self {
         Self {
             re: self.re * scalar,
