@@ -165,7 +165,7 @@ pub fn mul_complex_add_4<T>(
 ///
 /// This is the canonical way to batch-load `Complex<T>` data for SIMD processing.
 /// Equivalent to calling `from_pairs` with individually extracted fields.
-pub fn soa_from_interleaved<T: Transcendental>(
+pub fn soa_from_interleaved<T: Transcendental + 'static>(
     slice: &[Complex<T>],
 ) -> rill_core::prelude::ComplexSoa<T, rill_core::prelude::ScalarVector4<T>> {
     use rill_core::prelude::ComplexSoa;
