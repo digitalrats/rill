@@ -419,13 +419,20 @@ process = chip;
             "[STC] thread started, stc_len={}",
             player.borrow().data.len()
         );
+        let mut start: Option<std::time::Instant> = None;
         let mut last_ms = 0.0;
+        let mut regs_sent: u64 = 0;
         loop {
             if !player_playing.load(Ordering::Acquire) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 continue;
             }
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            if start.is_none() {
+                start = Some(std::time::Instant::now());
+                last_ms = 0.0;
+                eprintln!("[STC] playback started");
+            }
+            let elapsed = start.as_ref().unwrap().elapsed().as_secs_f64() * 1000.0;
             let ms_since_last = elapsed - last_ms;
             last_ms = elapsed;
             if let Some(regs) = { player.borrow_mut().step_ms(ms_since_last) } {
