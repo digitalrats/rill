@@ -864,7 +864,10 @@ pub fn register_chip_builtins(reg: &mut Registry<f32>) {
             let clock = p[0] as f32;
             let mut chip = rill_lofi::Ay38910Chip::new(clock);
             Algorithm::init(&mut chip, sr);
-            Box::new(Ay38910Builtin { chip })
+            Box::new(Ay38910Builtin {
+                chip,
+                pending_regs: Default::default(),
+            })
         },
     );
 }

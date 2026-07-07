@@ -4,12 +4,12 @@
 //! commands, maps anchor+param_name to program parameter indices, and then
 //! executes the flat RillProgram.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
-use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
+use rill_core::traits::{Algorithm, ProcessResult};
 use rill_core_actor::{ActorRef, Mailbox};
 
 use crate::program::RillProgram;
@@ -21,6 +21,9 @@ pub type AnchorMap = HashMap<String, HashMap<String, usize>>;
 pub struct RillGraphEngine<T: Transcendental> {
     program: RillProgram<T>,
     anchor_map: AnchorMap,
+    /// Pending param updates: (param_index, value). Populated by drain_mailbox,
+    /// applied one per process() call to prevent overwriting intermediate states.
+    pending_params: VecDeque<(usize, rill_core::traits::ParamValue)>,
     mailbox: Arc<Mailbox<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
 }
@@ -33,6 +36,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
         Self {
             program,
             anchor_map,
+            pending_params: VecDeque::new(),
             mailbox,
             actor_ref,
         }
@@ -53,9 +57,6 @@ impl<T: Transcendental> RillGraphEngine<T> {
         &self.anchor_map
     }
 
-    /// Drain at most one GraphSetParameter per process() call.
-    /// This prevents overwriting when multiple param updates arrive
-    /// between callbacks — each update is applied in a separate tick.
     fn drain_mailbox(&mut self) {
         while let Some(cmd) = self.mailbox.pop() {
             if let CommandEnum::GraphSetParameter {
@@ -66,8 +67,9 @@ impl<T: Transcendental> RillGraphEngine<T> {
             {
                 if let Some(inner) = self.anchor_map.get(&anchor) {
                     if let Some(&param_idx) = inner.get(&param) {
-                        self.program.set_param(param_idx, value);
-                        return; // one per tick
+                        // Queue to prevent overwriting when multiple updates arrive
+                        // between callbacks. Applied one per process().
+                        self.pending_params.push_back((param_idx, value));
                     }
                 }
             }
@@ -78,6 +80,13 @@ impl<T: Transcendental> RillGraphEngine<T> {
 impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         self.drain_mailbox();
+        // Apply one pending param update per tick.
+        // Each tick = one audio block. Multiple updates queued by STC
+        // sequencer are spread across multiple ticks — same timing as
+        // rill-graph's apply_due_params without sample_pos.
+        if let Some((param_idx, value)) = self.pending_params.pop_front() {
+            self.program.set_param(param_idx, value);
+        }
         self.program.process(input, output)
     }
 
