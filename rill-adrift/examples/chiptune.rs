@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }],
                 description: None,
             },
-            automata: vec![AutomatonDef::Sequencer {
+            automatons: vec![AutomatonDef::Sequencer {
                 id: "melody".into(),
                 steps: step_defs,
                 play_mode: PlayMode::Loop,

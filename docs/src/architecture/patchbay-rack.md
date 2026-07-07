@@ -54,7 +54,7 @@ All modules produce `ControlEvent`s that flow through **mappings** →
 ```rust
 pub struct PatchbayDef {
     /// Modulation generators (LFO, envelope, named functions)
-    pub automata: Vec<AutomatonDef>,
+    pub automatons: Vec<AutomatonDef>,
 
     /// Generator → graph parameter wiring
     pub servos: Vec<ServoDef>,

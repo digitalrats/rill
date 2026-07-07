@@ -42,7 +42,7 @@ See `strategy.rs`.
   buttons), MIDI, OSC (UDP-based address/argument sensors).
 - **Event mapping** — MIDI CC → parameter, OSC address → parameter,
   with transforms.
-- **`Engine`** — centralised API for adding automata, servos, and
+- **`Engine`** — centralised API for adding automatons, servos, and
   mappings (fka `PatchbayControl`).
 
 ## Usage

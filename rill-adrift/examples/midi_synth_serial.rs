@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ],
                 description: None,
             },
-            automata: vec![],
+            automatons: vec![],
             modules: vec![
                 // MIDI sensor with declarative mappings
                 ModuleDef::Sensor(SensorDef::Midi {

@@ -238,7 +238,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
 
             // 4. Build modules via ModuleFactory
-            let automaton_defs = &rd.automata;
+            let automaton_defs = &rd.automatons;
             let mut servos = HashMap::new();
             for module_def in &rd.modules {
                 match module_def {
