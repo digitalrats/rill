@@ -82,7 +82,7 @@ impl StcPlayer {
         let mut sample_ptrs = [None; 16];
         for n in 0..16 {
             let off = 27 + n * 99;
-            if off + 99 <= data.len() && data[off] > 0 {
+            if off + 99 <= data.len() && data[off] > 0 && (data[off] as usize) < 16 {
                 sample_ptrs[data[off] as usize] = Some(off + 1);
             }
         }
