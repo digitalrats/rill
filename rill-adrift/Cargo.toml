@@ -76,6 +76,14 @@ name = "complex_dsl"
 required-features = ["lang"]
 
 [[example]]
+name = "spectral_effects"
+required-features = ["fft"]
+
+[[example]]
+name = "dsl_spectral"
+required-features = ["lang", "fft"]
+
+[[example]]
 name = "chiptune"
 required-features = ["io", "lofi"]
 
