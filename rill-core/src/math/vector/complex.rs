@@ -31,6 +31,11 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         }
     }
 
+    /// Create from a single `(re, im)` pair, duplicated to both lane pairs.
+    pub fn from_pair(c: (T, T)) -> Self {
+        Self::splat_pair(c.0, c.1)
+    }
+
     pub fn inner(&self) -> &V {
         &self.data
     }
@@ -134,6 +139,15 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         Self {
             re: V::load(re_slice),
             im: V::load(im_slice),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create from four `(re, im)` pairs.
+    pub fn from_pairs(p: [(T, T); 4]) -> Self {
+        Self {
+            re: V::load(&[p[0].0, p[1].0, p[2].0, p[3].0]),
+            im: V::load(&[p[0].1, p[1].1, p[2].1, p[3].1]),
             _phantom: PhantomData,
         }
     }
@@ -271,5 +285,30 @@ mod tests {
         assert!(approx_eq(acc.im.extract(0), 3.0));
         assert!(approx_eq(acc.re.extract(1), 6.0));
         assert!(approx_eq(acc.im.extract(1), 0.0));
+    }
+
+    #[test]
+    fn test_from_pair() {
+        type CV = ComplexVector<f32, ScalarVector4<f32>>;
+        let cv = CV::from_pair((1.0, 2.0));
+        assert!(approx_eq(cv.to_complex0().0, 1.0));
+        assert!(approx_eq(cv.to_complex0().1, 2.0));
+        assert!(approx_eq(cv.to_complex1().0, 1.0));
+        assert!(approx_eq(cv.to_complex1().1, 2.0));
+    }
+
+    #[test]
+    fn test_from_pairs() {
+        type CS = ComplexSoa<f32, ScalarVector4<f32>>;
+        let soa = CS::from_pairs([(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]);
+        let c = soa.to_complexes();
+        assert!(approx_eq(c[0].0, 1.0));
+        assert!(approx_eq(c[0].1, 0.0));
+        assert!(approx_eq(c[1].0, 0.0));
+        assert!(approx_eq(c[1].1, 1.0));
+        assert!(approx_eq(c[2].0, -1.0));
+        assert!(approx_eq(c[2].1, 0.0));
+        assert!(approx_eq(c[3].0, 0.0));
+        assert!(approx_eq(c[3].1, -1.0));
     }
 }

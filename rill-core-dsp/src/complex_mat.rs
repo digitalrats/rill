@@ -98,7 +98,7 @@ pub fn mul_complex<T>(a: Complex<T>, b: Complex<T>) -> Complex<T>
 where
     T: Transcendental + 'static,
 {
-    use rill_core::prelude::{ComplexVector, ScalarVector4, Vector};
+    use rill_core::prelude::{ComplexVector, ScalarVector4};
     let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
     let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
     let prod = av.cmul(&bv);
@@ -112,7 +112,7 @@ pub fn mul_complex_add<T>(acc: &mut Complex<T>, a: Complex<T>, b: Complex<T>)
 where
     T: Transcendental + 'static,
 {
-    use rill_core::prelude::{ComplexVector, ScalarVector4, Vector};
+    use rill_core::prelude::{ComplexVector, ScalarVector4};
     let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
     let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
     let prod = av.cmul(&bv);
@@ -235,11 +235,12 @@ where
     where
         T: Transcendental + 'static,
     {
-        use rill_core::prelude::{ComplexSoa, ScalarVector4};
-        ComplexSoa::load(
-            &[self.m00.re, self.m01.re, self.m10.re, self.m11.re],
-            &[self.m00.im, self.m01.im, self.m10.im, self.m11.im],
-        )
+        rill_core::prelude::ComplexSoa::from_pairs([
+            (self.m00.re, self.m00.im),
+            (self.m01.re, self.m01.im),
+            (self.m10.re, self.m10.im),
+            (self.m11.re, self.m11.im),
+        ])
     }
 
     /// Unpack from `ComplexSoa` after vectorised operations.
