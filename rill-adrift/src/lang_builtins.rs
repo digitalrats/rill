@@ -735,23 +735,59 @@ impl Algorithm<f32> for LofiBuiltin {
 
 #[cfg(feature = "lofi")]
 impl BlockBuiltin<f32> for LofiBuiltin {
-    fn set_param(&mut self, _index: usize, _value: f32) {}
+    fn set_param(&mut self, index: usize, value: f32) {
+        use rill_core::traits::{Node, ParamValue};
+        use rill_core::ParameterId;
+        let (name, pv) = match index {
+            0 => ("bit_depth", ParamValue::Int(value.round() as i32)),
+            1 => (
+                "sample_rate",
+                ParamValue::Float(value.clamp(8000.0, 192000.0)),
+            ),
+            2 => ("dry_wet", ParamValue::Float(value.clamp(0.0, 1.0))),
+            3 => ("output_gain", ParamValue::Float(value.max(0.0))),
+            4 => ("enable_bitcrush", ParamValue::Bool(value > 0.5)),
+            5 => ("enable_sr_reduction", ParamValue::Bool(value > 0.5)),
+            6 => ("enable_noise", ParamValue::Bool(value > 0.5)),
+            _ => return,
+        };
+        let _ = self
+            .inner
+            .set_parameter(&ParameterId::new(name).unwrap(), pv);
+    }
 }
 
-/// Register lo-fi built-in: `lofi()`.
+/// Register lo-fi built-in: `lofi(bit_depth, sr, dry_wet, gain, bitcrush, sr_reduce, noise)`.
 #[cfg(feature = "lofi")]
 pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
     use rill_core::traits::Node;
+    use rill_lofi::ClassicSystem;
     reg.register_block(
         BuiltinSig {
             name: "lofi",
             signal_ins: 1,
             signal_outs: 1,
-            num_params: 0,
+            num_params: 7,
             kind: BuiltinKind::Block,
         },
-        |_p, sr| {
-            let mut inner = rill_lofi::LofiProcessor::<64>::new(rill_lofi::LofiConfig::default());
+        |p, sr| {
+            let config = rill_lofi::LofiConfig {
+                system: ClassicSystem::Custom {
+                    bit_depth: p[0].round() as u8,
+                    sample_rate: p[1].clamp(8000.0, 192000.0) as f32,
+                    nonlinear: false,
+                    noise_floor: -48.0,
+                },
+                hardware: rill_lofi::HardwareEmulation::default(),
+                enable_bitcrush: p[4] > 0.5,
+                enable_sr_reduction: p[5] > 0.5,
+                enable_noise: p[6] > 0.5,
+                output_gain: p[3].max(0.0) as f32,
+                dc_offset: 0.0,
+                output_ceiling: 1.0,
+                dry_wet: p[2].clamp(0.0, 1.0) as f32,
+            };
+            let mut inner = rill_lofi::LofiProcessor::<64>::new(config);
             Node::init(&mut inner, sr);
             Box::new(LofiBuiltin { inner })
         },
