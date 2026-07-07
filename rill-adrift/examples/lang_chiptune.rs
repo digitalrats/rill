@@ -16,7 +16,7 @@ use std::sync::Arc;
 use rill_adrift::rill_core::io::IoDriver;
 use rill_adrift::rill_core::queues::CommandEnum;
 use rill_adrift::rill_core::time::ClockTick;
-use rill_adrift::rill_core::traits::ParamValue;
+use rill_adrift::rill_core::traits::{Algorithm, ParamValue};
 use rill_lang::program_runner::ProgramRunner;
 
 // ============================================================================
@@ -373,13 +373,9 @@ param chip = ay38910(1750000.0, param("regs", 0));
 process = chip;
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
-    let engine_handle = engine.handle();
-    let engine_handle = engine.handle();
+    let mut engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
 
     // ── Backend ────────────────────────────────────────────────────────────
-    // Backend name: first positional argument that is not a known flag value.
-    // Default: portaudio.
     let backend_name = args
         .iter()
         .enumerate()
@@ -404,8 +400,6 @@ process = chip;
     let output = be
         .create_output(&backend_name, &be_params)
         .map_err(|e| format!("backend: {e}"))?;
-    let backend_display = backend_name;
-
     // ── STC module (ClockTick-driven via ProgramRunner parent_ref) ─────────
     let playing = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
@@ -415,49 +409,32 @@ process = chip;
 
     let stc_playing = playing.clone();
     let stc_finished = finished.clone();
-    let stc_thread = std::thread::spawn(move || {
-        let mut tick_count: u64 = 0;
-        loop {
-            if let Some(msg) = stc_mailbox.pop() {
-                if let CommandEnum::ClockTick(tick) = msg {
-                    tick_count += 1;
-                    let playing = stc_playing.load(Ordering::Acquire);
-                    if tick_count <= 3 || tick_count % 100 == 0 {
-                        let t = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis();
-                        eprintln!(
-                            "[STC:tick] ts={t} n={tick_count} playing={playing} samples={}",
-                            tick.samples_since_last
-                        );
-                    }
-                    if !playing {
-                        continue;
-                    }
-                    let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
-                    if let Some(regs) = stc_player.borrow_mut().step_ms(ms) {
-                        if regs[7] != 0 {
-                            let t = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis();
-                            eprintln!("[STC] ts={t} send regs[7]={:02x}", regs[7]);
-                            engine_handle.send(CommandEnum::GraphSetParameter {
-                                anchor: "chip".into(),
-                                param: "regs".into(),
-                                value: ParamValue::Bytes(regs.to_vec()),
-                            });
-                        }
-                    }
-                    if stc_player.borrow().finished {
-                        stc_finished.store(true, Ordering::Release);
-                        return;
+    let stc_handle = engine.handle();
+    let stc_thread = std::thread::spawn(move || loop {
+        while let Some(msg) = stc_mailbox.pop() {
+            if let CommandEnum::ClockTick(tick) = msg {
+                if !stc_playing.load(Ordering::Acquire) {
+                    continue;
+                }
+                let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+                if let Some(regs) = stc_player.borrow_mut().step_ms(ms) {
+                    if regs[7] != 0 {
+                        let apply_at = tick.sample_pos + tick.io_quantum as u64;
+                        stc_handle.send(CommandEnum::GraphSetParameter {
+                            anchor: "chip".into(),
+                            param: "regs".into(),
+                            value: ParamValue::Bytes(regs.to_vec()),
+                            sample_pos: Some(apply_at),
+                        });
                     }
                 }
+                if stc_player.borrow().finished {
+                    stc_finished.store(true, Ordering::Release);
+                    return;
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        std::thread::sleep(std::time::Duration::from_millis(1));
     });
 
     // ── ProgramRunner — signal thread ──────────────────────────────────────
@@ -469,9 +446,7 @@ process = chip;
     let signal_thread = std::thread::spawn(move || {
         let mut runner = ProgramRunner::new(engine, Some(stc_ref), 512);
         runner.wire_backends(None, Some(playback));
-        if let Err(e) = runner.run_with_driver(driver, runner_running) {
-            eprintln!("[Runner] error: {e}");
-        }
+        runner.run_with_driver(driver, runner_running).ok();
     });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");

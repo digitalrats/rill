@@ -47,6 +47,7 @@ process = _ : myGain : _;
         anchor: "myGain".into(),
         param: "gain".into(),
         value: ParamValue::Float(0.25),
+        sample_pos: None,
     });
 
     let mut output = [0.0f32; 64];

@@ -634,6 +634,10 @@ pub enum CommandEnum {
         param: String,
         /// New parameter value.
         value: ParamValue,
+        /// Optional sample-accurate application time (absolute sample position).
+        /// When `Some(pos)`, the engine applies this change during the block
+        /// whose sample range contains `pos`, rather than immediately.
+        sample_pos: Option<u64>,
     },
 }
 
@@ -733,6 +737,7 @@ impl fmt::Display for CommandEnum {
                 anchor,
                 param,
                 value,
+                ..
             } => {
                 write!(f, "GraphSetParameter({anchor}::{param} = {value:?})")
             }

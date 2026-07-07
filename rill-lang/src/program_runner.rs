@@ -97,6 +97,9 @@ impl ProgramRunner {
                 cap.read_input(ch, in_slice);
             }
 
+            let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
+            self.engine.apply_due_params(chunk_end);
+
             let _ = self.engine.process(
                 if self.capture.is_some() {
                     Some(in_slice as &[f32])

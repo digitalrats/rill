@@ -221,6 +221,7 @@ fn ay38910_generates_sound_with_register_write() {
             anchor: "chip".into(),
             param: "regs".into(),
             value: ParamValue::Bytes(regs),
+            sample_pos: None,
         });
 
     let mut output = [0.0f32; 64];
@@ -276,6 +277,7 @@ fn ay38910_set_param_reaches_builtin() {
             anchor: "chip".into(),
             param: "regs".into(),
             value: ParamValue::Bytes(regs.clone()),
+            sample_pos: None,
         });
 
     // First process: should drain and apply

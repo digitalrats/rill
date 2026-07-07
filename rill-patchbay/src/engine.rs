@@ -531,6 +531,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                     anchor: anchor.clone(),
                                     param: param.clone(),
                                     value: table[index].clone(),
+                                    sample_pos: None,
                                 });
                             } else {
                                 let pid = ParameterId::new(&param).unwrap();
@@ -572,6 +573,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                 anchor: anchor.clone(),
                                 param: param.clone(),
                                 value: ParamValue::Float(value as f32),
+                                sample_pos: None,
                             });
                         } else {
                             let pid = ParameterId::new(&param).unwrap();
@@ -612,6 +614,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                     anchor: anchor.clone(),
                                     param: param.clone(),
                                     value: ParamValue::Float(value as f32),
+                                    sample_pos: None,
                                 });
                             } else {
                                 let pid = ParameterId::new(&param).unwrap();
