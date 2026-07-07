@@ -1,7 +1,7 @@
 //! rill-lang built-in bindings for rill-core-dsp / rill-core-model blocks.
 
 use rill_core::math::Transcendental;
-use rill_core::traits::algorithm::{Algorithm, AlgorithmMetadata};
+use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::ProcessResult;
 use rill_lang::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
 

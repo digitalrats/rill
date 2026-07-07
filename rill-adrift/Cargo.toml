@@ -72,6 +72,10 @@ name = "convolver"
 required-features = ["fft"]
 
 [[example]]
+name = "complex_dsl"
+required-features = ["lang"]
+
+[[example]]
 name = "chiptune"
 required-features = ["io", "lofi"]
 
