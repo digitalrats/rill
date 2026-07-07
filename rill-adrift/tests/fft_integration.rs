@@ -160,3 +160,149 @@ fn test_fft_builtins_compile_and_run() {
         assert!(o.is_finite());
     }
 }
+
+// ============================================================================
+// Complex built-in DSL tests
+// ============================================================================
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_builtins_in_registry() {
+    use rill_adrift::lang_builtins::full_registry;
+
+    let reg = full_registry::<f32>();
+
+    for name in &["complex", "conj", "re", "im", "norm", "arg", "cmul", "cadd"] {
+        let entry = reg.get(name);
+        assert!(entry.is_some(), "complex builtin '{name}' not registered");
+    }
+}
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_gen_compile_and_run() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
+    use rill_lang::compile_with;
+
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+
+    // complex → extract re to satisfy process arity 1 requirement
+    let src = "process = complex(3.0, 4.0) : re();";
+    let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
+    let mut output = [0.0f32; 1];
+    Algorithm::process(&mut prog, None, &mut output).unwrap();
+
+    assert!(
+        (output[0] - 3.0).abs() < 1e-4,
+        "re should be 3.0, got {}",
+        output[0]
+    );
+}
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_conj_compile_and_run() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
+    use rill_lang::compile_with;
+
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+
+    let src = "process = complex(3.0, 4.0) : conj() : im();";
+    let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
+    let mut output = [0.0f32; 1];
+    Algorithm::process(&mut prog, None, &mut output).unwrap();
+
+    assert!(
+        (output[0] + 4.0).abs() < 1e-4,
+        "conj.im should be -4.0, got {}",
+        output[0]
+    );
+}
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_re_extract() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
+    use rill_lang::compile_with;
+
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+
+    let src = "process = complex(3.0, 4.0) : re();";
+    let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
+    let mut output = [0.0f32; 1];
+    Algorithm::process(&mut prog, None, &mut output).unwrap();
+    assert!((output[0] - 3.0).abs() < 1e-4);
+}
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_im_extract() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
+    use rill_lang::compile_with;
+
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+
+    let src = "process = complex(5.0, 7.0) : im();";
+    let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
+    let mut output = [0.0f32; 1];
+    Algorithm::process(&mut prog, None, &mut output).unwrap();
+    assert!((output[0] - 7.0).abs() < 1e-4);
+}
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_norm_compile_and_run() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
+    use rill_lang::compile_with;
+
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+
+    let src = "process = complex(3.0, 4.0) : norm();";
+    let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
+    let mut output = [0.0f32; 1];
+    Algorithm::process(&mut prog, None, &mut output).unwrap();
+
+    assert!(
+        (output[0] - 5.0).abs() < 1e-2,
+        "norm(3+4i) = 5, got {}",
+        output[0]
+    );
+}
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_cmul_compile_and_run() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
+    use rill_lang::compile_with;
+
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+
+    // cmul → re: (1+0i)*(2+3i) = 2+3i → extract re=2
+    let src = "process = complex(1.0, 0.0), complex(2.0, 3.0) : cmul() : re();";
+    let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
+    let mut output = [0.0f32; 1];
+    Algorithm::process(&mut prog, None, &mut output).unwrap();
+
+    assert!(
+        (output[0] - 2.0).abs() < 1e-3,
+        "re should be 2.0, got {}",
+        output[0]
+    );
+}
+
+#[cfg(feature = "lang")]
+#[test]
+fn test_complex_cadd_compile_and_run() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
+    use rill_lang::compile_with;
+
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+
+    // cadd → re: (1+2i)+(3+4i) = 4+6i → extract re=4
+    let src = "process = complex(1.0, 2.0), complex(3.0, 4.0) : cadd() : re();";
+    let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
+    let mut output = [0.0f32; 1];
+    Algorithm::process(&mut prog, None, &mut output).unwrap();
+
+    assert!((output[0] - 4.0).abs() < 1e-3, "re should be 4.0");
+}

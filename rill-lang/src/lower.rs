@@ -177,27 +177,35 @@ impl<'a> Lowerer<'a> {
                         name: name.clone(),
                         params,
                         kind: sig.kind,
+                        signal_ins: sig.signal_ins,
+                        signal_outs: sig.signal_outs,
                         param_bindings,
                     });
-                    let dst = self.fresh_reg();
                     match sig.kind {
                         BuiltinKind::Sample => {
+                            let dst = self.fresh_reg();
                             let srcs = inputs.to_vec();
                             self.emit(Instr::CallSample {
                                 dst,
                                 srcs,
                                 instance,
                             });
+                            return Ok(vec![dst]);
                         }
                         BuiltinKind::Block => {
+                            let fst = self.fresh_reg();
+                            for _ in 1..sig.signal_outs {
+                                self.fresh_reg();
+                            }
+                            let src = if inputs.is_empty() { 0 } else { inputs[0] };
                             self.emit(Instr::CallBlock {
-                                dst,
-                                src: inputs[0],
+                                dst: fst,
+                                src,
                                 instance,
                             });
+                            return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                         }
                     }
-                    return Ok(vec![dst]);
                 }
                 let mut arg_regs = Vec::new();
                 for a in args {
@@ -264,27 +272,35 @@ impl<'a> Lowerer<'a> {
                     name: name.to_string(),
                     params: Vec::new(),
                     kind: sig.kind,
+                    signal_ins: sig.signal_ins,
+                    signal_outs: sig.signal_outs,
                     param_bindings: Vec::new(),
                 });
-                let dst = self.fresh_reg();
                 match sig.kind {
                     BuiltinKind::Sample => {
+                        let dst = self.fresh_reg();
                         let srcs = inputs.to_vec();
                         self.emit(Instr::CallSample {
                             dst,
                             srcs,
                             instance,
                         });
+                        return Ok(vec![dst]);
                     }
                     BuiltinKind::Block => {
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        let src = if inputs.is_empty() { 0 } else { inputs[0] };
                         self.emit(Instr::CallBlock {
-                            dst,
-                            src: inputs[0],
+                            dst: fst,
+                            src,
                             instance,
                         });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
                 }
-                return Ok(vec![dst]);
             }
         }
         let bin = match name {
