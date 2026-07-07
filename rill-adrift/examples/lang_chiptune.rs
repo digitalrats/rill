@@ -376,6 +376,7 @@ process = chip;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
     let engine_handle = engine.handle();
+    let engine_handle = engine.handle();
 
     // ── Backend ────────────────────────────────────────────────────────────
     // Backend name: first positional argument that is not a known flag value.
@@ -406,55 +407,38 @@ process = chip;
         .map_err(|e| format!("backend: {e}"))?;
     let backend_display = backend_name;
 
-    // ── STC sequencer thread ──────────────────────────────────────────────
+    // ── STC module (ClockTick-driven via ProgramRunner parent_ref) ─────────
     let playing = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
-    let player = RefCell::new(StcPlayer::new(stc_data.clone()));
-    let player_playing = playing.clone();
-    let player_finished = finished.clone();
-    let start = std::time::Instant::now();
+    let stc_mailbox = Arc::new(rill_core_actor::Mailbox::<CommandEnum>::new(64));
+    let stc_ref = stc_mailbox.actor_ref();
+    let stc_player = RefCell::new(StcPlayer::new(stc_data.clone()));
 
-    let seq_thread = std::thread::spawn(move || {
-        eprintln!(
-            "[STC] thread started, stc_len={}",
-            player.borrow().data.len()
-        );
-        let mut start: Option<std::time::Instant> = None;
-        let mut last_ms = 0.0;
-        let mut regs_sent: u64 = 0;
-        loop {
-            if !player_playing.load(Ordering::Acquire) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-                continue;
-            }
-            if start.is_none() {
-                start = Some(std::time::Instant::now());
-                last_ms = 0.0;
-                eprintln!("[STC] playback started");
-            }
-            let elapsed = start.as_ref().unwrap().elapsed().as_secs_f64() * 1000.0;
-            let ms_since_last = elapsed - last_ms;
-            last_ms = elapsed;
-            if let Some(regs) = { player.borrow_mut().step_ms(ms_since_last) } {
-                if regs[7] == 0 {
+    let stc_playing = playing.clone();
+    let stc_finished = finished.clone();
+    let stc_thread = std::thread::spawn(move || loop {
+        while let Some(msg) = stc_mailbox.pop() {
+            if let CommandEnum::ClockTick(tick) = msg {
+                if !stc_playing.load(Ordering::Acquire) {
                     continue;
                 }
-                eprintln!(
-                    "[STC] sending regs[0..2]=[{:02x},{:02x}] mixer={:02x}",
-                    regs[0], regs[1], regs[7]
-                );
-                engine_handle.send(CommandEnum::GraphSetParameter {
-                    anchor: "chip".into(),
-                    param: "regs".into(),
-                    value: ParamValue::Bytes(regs.to_vec()),
-                });
+                let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+                if let Some(regs) = stc_player.borrow_mut().step_ms(ms) {
+                    if regs[7] != 0 {
+                        engine_handle.send(CommandEnum::GraphSetParameter {
+                            anchor: "chip".into(),
+                            param: "regs".into(),
+                            value: ParamValue::Bytes(regs.to_vec()),
+                        });
+                    }
+                }
+                if stc_player.borrow().finished {
+                    stc_finished.store(true, Ordering::Release);
+                    return;
+                }
             }
-            if player.borrow().finished {
-                player_finished.store(true, Ordering::Release);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        std::thread::sleep(std::time::Duration::from_millis(1));
     });
 
     // ── ProgramRunner — signal thread ──────────────────────────────────────
@@ -464,7 +448,7 @@ process = chip;
     let driver = output.driver.clone();
     let playback = output.playback.clone();
     let signal_thread = std::thread::spawn(move || {
-        let mut runner = ProgramRunner::new(engine, None, 512);
+        let mut runner = ProgramRunner::new(engine, Some(stc_ref), 512);
         runner.wire_backends(None, Some(playback));
         runner.run_with_driver(driver, runner_running).ok();
     });
@@ -481,7 +465,7 @@ process = chip;
     running.store(false, Ordering::SeqCst);
     output.driver.stop().ok();
     signal_thread.join().ok();
-    seq_thread.join().ok();
+    stc_thread.join().ok();
     println!("Done.");
     Ok(())
 }
