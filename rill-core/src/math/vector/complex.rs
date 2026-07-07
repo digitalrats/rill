@@ -1,0 +1,250 @@
+// rill-core/src/math/vector/complex.rs
+//! Complex vector abstractions over the `Vector<T, 4>` eDSL.
+//!
+//! - `ComplexVector<T,V>` — 2 complex numbers in interleaved `[re0,im0,re1,im1]`
+//! - `ComplexSoa<V>` — 4 complex numbers, separate re/im arrays. For FFT/convolution.
+
+use core::marker::PhantomData;
+
+use crate::math::vector::traits::{Vector, VectorMask};
+use crate::Transcendental;
+
+/// Two complex numbers: `[re0, im0, re1, im1]` in one 4‑lane vector.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ComplexVector<T: Transcendental, V: Vector<T, 4>> {
+    data: V,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
+    pub fn from_raw(data: V) -> Self {
+        Self {
+            data,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn splat_pair(re: T, im: T) -> Self {
+        Self {
+            data: V::load(&[re, im, re, im]),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn inner(&self) -> &V {
+        &self.data
+    }
+
+    pub fn extract(&self, i: usize) -> T {
+        self.data.extract(i)
+    }
+    pub fn re0(&self) -> T {
+        self.data.extract(0)
+    }
+    pub fn im0(&self) -> T {
+        self.data.extract(1)
+    }
+
+    pub fn conj(&self) -> Self {
+        let v = V::load(&[
+            self.data.extract(0),
+            -self.data.extract(1),
+            self.data.extract(2),
+            -self.data.extract(3),
+        ]);
+        Self {
+            data: v,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn cmul(&self, other: &Self) -> Self {
+        let a_re = V::load(&[
+            self.data.extract(0),
+            self.data.extract(0),
+            self.data.extract(2),
+            self.data.extract(2),
+        ]);
+        let a_im = V::load(&[
+            self.data.extract(1),
+            self.data.extract(1),
+            self.data.extract(3),
+            self.data.extract(3),
+        ]);
+        let b_re = V::load(&[
+            other.data.extract(0),
+            other.data.extract(0),
+            other.data.extract(2),
+            other.data.extract(2),
+        ]);
+        let b_im = V::load(&[
+            other.data.extract(1),
+            other.data.extract(1),
+            other.data.extract(3),
+            other.data.extract(3),
+        ]);
+        let out_re = a_re * b_re - a_im * b_im;
+        let out_im = a_re * b_im + a_im * b_re;
+        Self {
+            data: V::load(&[
+                out_re.extract(0),
+                out_im.extract(0),
+                out_re.extract(2),
+                out_im.extract(2),
+            ]),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn cadd(&self, other: &Self) -> Self {
+        Self {
+            data: self.data + other.data,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn scale_real(&self, scalar: T) -> Self {
+        Self {
+            data: self.data * V::splat(scalar),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Four complex numbers, separate re/im arrays. For SIMD‑heavy operations.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ComplexSoa<T: Transcendental, V: Vector<T, 4>> {
+    pub re: V,
+    pub im: V,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
+    pub fn load(re_slice: &[T], im_slice: &[T]) -> Self {
+        Self {
+            re: V::load(re_slice),
+            im: V::load(im_slice),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn store(&self, re_slice: &mut [T], im_slice: &mut [T]) {
+        self.re.store(re_slice);
+        self.im.store(im_slice);
+    }
+
+    pub fn cmul(&self, other: &Self) -> Self {
+        Self {
+            re: self.re * other.re - self.im * other.im,
+            im: self.re * other.im + self.im * other.re,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn cmul_add(&mut self, a: &Self, b: &Self) {
+        self.re = self.re + (a.re * b.re - a.im * b.im);
+        self.im = self.im + (a.re * b.im + a.im * b.re);
+    }
+
+    pub fn conj(&self) -> Self {
+        Self {
+            re: self.re,
+            im: -self.im,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn norm_sqr(&self) -> V {
+        self.re * self.re + self.im * self.im
+    }
+
+    pub fn all_norm_sqr_lt(&self, threshold_sq: T) -> bool {
+        let t = V::splat(threshold_sq);
+        V::all(&self.norm_sqr().lt(&t))
+    }
+
+    pub fn cadd(&self, other: &Self) -> Self {
+        Self {
+            re: self.re + other.re,
+            im: self.im + other.im,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn scale_real(&self, scalar: V) -> Self {
+        Self {
+            re: self.re * scalar,
+            im: self.im * scalar,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math::vector::scalar::ScalarVector4;
+
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn test_complex_vector_conj() {
+        type CV = ComplexVector<f32, ScalarVector4<f32>>;
+        let cv = CV::splat_pair(1.0, 2.0);
+        assert!(approx_eq(cv.re0(), 1.0));
+        assert!(approx_eq(cv.im0(), 2.0));
+        let conj = cv.conj();
+        assert!(approx_eq(conj.re0(), 1.0));
+        assert!(approx_eq(conj.im0(), -2.0));
+    }
+
+    #[test]
+    fn test_complex_vector_cmul() {
+        type CV = ComplexVector<f32, ScalarVector4<f32>>;
+        let a = CV::splat_pair(1.0, 2.0);
+        let b = CV::splat_pair(3.0, 4.0);
+        let prod = a.cmul(&b);
+        assert!(approx_eq(prod.re0(), -5.0));
+        assert!(approx_eq(prod.im0(), 10.0));
+    }
+
+    #[test]
+    fn test_complex_soa_cmul() {
+        type CS = ComplexSoa<f32, ScalarVector4<f32>>;
+        let a = CS::load(&[1.0, 0.0, 0.5, -0.5], &[0.0, 1.0, 0.5, 0.5]);
+        let b = CS::load(&[2.0, 0.0, 1.0, 1.0], &[3.0, 1.0, 1.0, -1.0]);
+        let prod = a.cmul(&b);
+        assert!(approx_eq(prod.re.extract(0), 2.0));
+        assert!(approx_eq(prod.im.extract(0), 3.0));
+        assert!(approx_eq(prod.re.extract(1), -1.0));
+        assert!(approx_eq(prod.im.extract(1), 0.0));
+    }
+
+    #[test]
+    fn test_complex_soa_conj_norm() {
+        type CS = ComplexSoa<f32, ScalarVector4<f32>>;
+        let a = CS::load(&[3.0, 1.0, 0.0, 2.0], &[4.0, 1.0, 1.0, 3.0]);
+        let conj = a.conj();
+        assert!(approx_eq(conj.im.extract(0), -4.0));
+        let mag2 = a.norm_sqr();
+        assert!(approx_eq(mag2.extract(0), 25.0));
+        assert!(approx_eq(mag2.extract(1), 2.0));
+        assert!(approx_eq(mag2.extract(2), 1.0));
+        assert!(approx_eq(mag2.extract(3), 13.0));
+    }
+
+    #[test]
+    fn test_complex_soa_cmul_add() {
+        type CS = ComplexSoa<f32, ScalarVector4<f32>>;
+        let a = CS::load(&[1.0, 2.0, 0.0, 4.0], &[0.0, 0.0, 1.0, 0.0]);
+        let b = CS::load(&[2.0, 3.0, 0.0, 0.0], &[3.0, 0.0, 1.0, 0.0]);
+        let mut acc = CS::load(&[0.0; 4], &[0.0; 4]);
+        acc.cmul_add(&a, &b);
+        assert!(approx_eq(acc.re.extract(0), 2.0));
+        assert!(approx_eq(acc.im.extract(0), 3.0));
+        assert!(approx_eq(acc.re.extract(1), 6.0));
+        assert!(approx_eq(acc.im.extract(1), 0.0));
+    }
+}

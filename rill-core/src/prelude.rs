@@ -111,6 +111,7 @@ pub use crate::math::Transcendental;
 // Vector Types (SIMD abstractions)
 // ============================================================================
 
+pub use crate::math::vector::complex::{ComplexSoa, ComplexVector};
 pub use crate::math::vector::math::{
     abs_slice, clamp_slice, cos_slice, exp_slice, ln_slice, max_slice, min_slice, sin_slice,
     sqrt_slice, tan_slice,

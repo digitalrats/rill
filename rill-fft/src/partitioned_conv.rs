@@ -15,6 +15,7 @@
 //! 5. Overlap-add to produce the output block
 
 use num_complex::Complex;
+use rill_core::prelude::{ComplexSoa, ScalarVector4, Vector};
 use rill_core::Transcendental;
 use rill_core_dsp::complex_mat::mul_complex_add;
 
@@ -140,8 +141,50 @@ impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE>
             let ir_spec = &self.ir_spectra[ir_idx];
             let inp_spec = &self.input_fft_ring[history_idx];
 
-            for i in 0..self.half_plus_one {
+            let mut i = 0usize;
+            while i + 3 < self.half_plus_one {
+                let s = ComplexSoa::<T, ScalarVector4<T>>::load(
+                    &[
+                        ir_spec[i].re,
+                        ir_spec[i + 1].re,
+                        ir_spec[i + 2].re,
+                        ir_spec[i + 3].re,
+                    ],
+                    &[
+                        ir_spec[i].im,
+                        ir_spec[i + 1].im,
+                        ir_spec[i + 2].im,
+                        ir_spec[i + 3].im,
+                    ],
+                );
+                let f = ComplexSoa::<T, ScalarVector4<T>>::load(
+                    &[
+                        inp_spec[i].re,
+                        inp_spec[i + 1].re,
+                        inp_spec[i + 2].re,
+                        inp_spec[i + 3].re,
+                    ],
+                    &[
+                        inp_spec[i].im,
+                        inp_spec[i + 1].im,
+                        inp_spec[i + 2].im,
+                        inp_spec[i + 3].im,
+                    ],
+                );
+                let prod = s.cmul(&f);
+                self.product[i].re += prod.re.extract(0);
+                self.product[i].im += prod.im.extract(0);
+                self.product[i + 1].re += prod.re.extract(1);
+                self.product[i + 1].im += prod.im.extract(1);
+                self.product[i + 2].re += prod.re.extract(2);
+                self.product[i + 2].im += prod.im.extract(2);
+                self.product[i + 3].re += prod.re.extract(3);
+                self.product[i + 3].im += prod.im.extract(3);
+                i += 4;
+            }
+            while i < self.half_plus_one {
                 mul_complex_add(&mut self.product[i], ir_spec[i], inp_spec[i]);
+                i += 1;
             }
         }
 
