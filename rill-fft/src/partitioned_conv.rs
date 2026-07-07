@@ -16,7 +16,7 @@
 
 use num_complex::Complex;
 use rill_core::Transcendental;
-use rill_core_dsp::complex_mat::{mul_complex_add, soa_from_interleaved};
+use rill_core_dsp::complex_mat::mul_complex_add;
 
 use crate::real_fft::RealFft;
 
@@ -140,25 +140,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE>
             let ir_spec = &self.ir_spectra[ir_idx];
             let inp_spec = &self.input_fft_ring[history_idx];
 
-            let mut i = 0usize;
-            while i + 3 < self.half_plus_one {
-                let s = soa_from_interleaved(&ir_spec[i..i + 4]);
-                let f = soa_from_interleaved(&inp_spec[i..i + 4]);
-                let prod = s.cmul(&f);
-                let c = prod.to_complexes();
-                self.product[i].re += c[0].0;
-                self.product[i].im += c[0].1;
-                self.product[i + 1].re += c[1].0;
-                self.product[i + 1].im += c[1].1;
-                self.product[i + 2].re += c[2].0;
-                self.product[i + 2].im += c[2].1;
-                self.product[i + 3].re += c[3].0;
-                self.product[i + 3].im += c[3].1;
-                i += 4;
-            }
-            while i < self.half_plus_one {
+            for i in 0..self.half_plus_one {
                 mul_complex_add(&mut self.product[i], ir_spec[i], inp_spec[i]);
-                i += 1;
             }
         }
 

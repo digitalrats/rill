@@ -91,34 +91,26 @@ pub fn single_pole_to_coeffs(z: Complex64) -> (f64, f64) {
 
 /// Complex multiplication: `a * b`.
 ///
-/// Implemented via the `ComplexVector` eDSL for consistency with batch paths.
-/// RT‑safe: pure arithmetic, zero allocations.
+/// Scalar primitive. For batch processing (4+ elements), prefer
+/// `mul_complex_4` or `soa_from_interleaved` which use `ComplexSoa`.
 #[inline(always)]
 pub fn mul_complex<T>(a: Complex<T>, b: Complex<T>) -> Complex<T>
 where
-    T: Transcendental + 'static,
+    T: Copy + std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
 {
-    use rill_core::prelude::{ComplexVector, ScalarVector4};
-    let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
-    let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
-    let prod = av.cmul(&bv);
-    let (re, im) = prod.to_complex0();
-    Complex::new(re, im)
+    Complex::new(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re)
 }
 
 /// Complex multiply-accumulate: `acc += a * b`.
+///
+/// Scalar primitive. For batch processing, prefer `mul_complex_add_4`.
 #[inline(always)]
 pub fn mul_complex_add<T>(acc: &mut Complex<T>, a: Complex<T>, b: Complex<T>)
 where
-    T: Transcendental + 'static,
+    T: Copy + std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
 {
-    use rill_core::prelude::{ComplexVector, ScalarVector4};
-    let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
-    let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
-    let prod = av.cmul(&bv);
-    let (re, im) = prod.to_complex0();
-    acc.re = acc.re + re;
-    acc.im = acc.im + im;
+    acc.re = acc.re + (a.re * b.re - a.im * b.im);
+    acc.im = acc.im + (a.re * b.im + a.im * b.re);
 }
 
 /// Batch complex multiply: processes 4 consecutive complex numbers at once.
