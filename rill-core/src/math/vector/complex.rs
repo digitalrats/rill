@@ -109,6 +109,16 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
             _phantom: PhantomData,
         }
     }
+
+    /// Extract the first complex value as `(re, im)`.
+    pub fn to_complex0(&self) -> (T, T) {
+        (self.data.extract(0), self.data.extract(1))
+    }
+
+    /// Extract the second complex value as `(re, im)`.
+    pub fn to_complex1(&self) -> (T, T) {
+        (self.data.extract(2), self.data.extract(3))
+    }
 }
 
 /// Four complex numbers, separate re/im arrays. For SIMD‑heavy operations.
@@ -131,6 +141,21 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
     pub fn store(&self, re_slice: &mut [T], im_slice: &mut [T]) {
         self.re.store(re_slice);
         self.im.store(im_slice);
+    }
+
+    /// Extract a single complex value at lane `i`: returns `(re, im)`.
+    pub fn extract_complex(&self, i: usize) -> (T, T) {
+        (self.re.extract(i), self.im.extract(i))
+    }
+
+    /// Extract all four complex values as an array of `(re, im)` pairs.
+    pub fn to_complexes(&self) -> [(T, T); 4] {
+        [
+            (self.re.extract(0), self.im.extract(0)),
+            (self.re.extract(1), self.im.extract(1)),
+            (self.re.extract(2), self.im.extract(2)),
+            (self.re.extract(3), self.im.extract(3)),
+        ]
     }
 
     pub fn cmul(&self, other: &Self) -> Self {

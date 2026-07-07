@@ -126,10 +126,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> OverlapAddConvolver<T, BUF_SIZE> 
                 ],
             );
             let prod = s.cmul(&f);
-            self.product[i] = Complex::new(prod.re.extract(0), prod.im.extract(0));
-            self.product[i + 1] = Complex::new(prod.re.extract(1), prod.im.extract(1));
-            self.product[i + 2] = Complex::new(prod.re.extract(2), prod.im.extract(2));
-            self.product[i + 3] = Complex::new(prod.re.extract(3), prod.im.extract(3));
+            let c = prod.to_complexes();
+            self.product[i] = Complex::new(c[0].0, c[0].1);
+            self.product[i + 1] = Complex::new(c[1].0, c[1].1);
+            self.product[i + 2] = Complex::new(c[2].0, c[2].1);
+            self.product[i + 3] = Complex::new(c[3].0, c[3].1);
             i += 4;
         }
         // Scalar remainder

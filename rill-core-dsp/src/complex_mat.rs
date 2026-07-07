@@ -102,7 +102,8 @@ where
     let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
     let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
     let prod = av.cmul(&bv);
-    Complex::new(prod.extract(0), prod.extract(1))
+    let (re, im) = prod.to_complex0();
+    Complex::new(re, im)
 }
 
 /// Complex multiply-accumulate: `acc += a * b`.
@@ -115,8 +116,9 @@ where
     let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
     let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
     let prod = av.cmul(&bv);
-    acc.re = acc.re + prod.extract(0);
-    acc.im = acc.im + prod.extract(1);
+    let (re, im) = prod.to_complex0();
+    acc.re = acc.re + re;
+    acc.im = acc.im + im;
 }
 
 /// Batch complex multiply: processes 4 consecutive complex numbers at once.
@@ -247,12 +249,12 @@ where
     where
         T: Transcendental + 'static,
     {
-        use rill_core::prelude::Vector;
+        let c = soa.to_complexes();
         Self {
-            m00: Complex::new(soa.re.extract(0), soa.im.extract(0)),
-            m01: Complex::new(soa.re.extract(1), soa.im.extract(1)),
-            m10: Complex::new(soa.re.extract(2), soa.im.extract(2)),
-            m11: Complex::new(soa.re.extract(3), soa.im.extract(3)),
+            m00: Complex::new(c[0].0, c[0].1),
+            m01: Complex::new(c[1].0, c[1].1),
+            m10: Complex::new(c[2].0, c[2].1),
+            m11: Complex::new(c[3].0, c[3].1),
         }
     }
 
@@ -320,16 +322,13 @@ where
             &[x.im, y.im, x.im, y.im],
         );
         let prod = m.cmul(&vec);
-        use rill_core::prelude::Vector;
+        let c0 = prod.extract_complex(0);
+        let c1 = prod.extract_complex(1);
+        let c2 = prod.extract_complex(2);
+        let c3 = prod.extract_complex(3);
         [
-            Complex::new(
-                prod.re.extract(0) + prod.re.extract(1),
-                prod.im.extract(0) + prod.im.extract(1),
-            ),
-            Complex::new(
-                prod.re.extract(2) + prod.re.extract(3),
-                prod.im.extract(2) + prod.im.extract(3),
-            ),
+            Complex::new(c0.0 + c1.0, c0.1 + c1.1),
+            Complex::new(c2.0 + c3.0, c2.1 + c3.1),
         ]
     }
 

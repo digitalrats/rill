@@ -172,14 +172,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE>
                     ],
                 );
                 let prod = s.cmul(&f);
-                self.product[i].re += prod.re.extract(0);
-                self.product[i].im += prod.im.extract(0);
-                self.product[i + 1].re += prod.re.extract(1);
-                self.product[i + 1].im += prod.im.extract(1);
-                self.product[i + 2].re += prod.re.extract(2);
-                self.product[i + 2].im += prod.im.extract(2);
-                self.product[i + 3].re += prod.re.extract(3);
-                self.product[i + 3].im += prod.im.extract(3);
+                let c = prod.to_complexes();
+                self.product[i].re += c[0].0;
+                self.product[i].im += c[0].1;
+                self.product[i + 1].re += c[1].0;
+                self.product[i + 1].im += c[1].1;
+                self.product[i + 2].re += c[2].0;
+                self.product[i + 2].im += c[2].1;
+                self.product[i + 3].re += c[3].0;
+                self.product[i + 3].im += c[3].1;
                 i += 4;
             }
             while i < self.half_plus_one {
