@@ -425,9 +425,12 @@ process = chip;
             last_ms = elapsed;
             if let Some(regs) = { player.borrow_mut().step_ms(ms_since_last) } {
                 if regs[7] == 0 {
-                    // All channels mute — skip
                     continue;
                 }
+                eprintln!(
+                    "[STC] sending regs[0..2]=[{:02x},{:02x}] mixer={:02x}",
+                    regs[0], regs[1], regs[7]
+                );
                 engine_handle.send(CommandEnum::GraphSetParameter {
                     anchor: "chip".into(),
                     param: "regs".into(),

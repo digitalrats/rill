@@ -106,13 +106,9 @@ impl ProgramRunner {
                 out_slice,
             );
 
-            // Debug: log if output is non-zero
-            if tick.sample_pos == 0 {
-                let peak = out_slice.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
-                eprintln!(
-                    "[ProgramRunner] tick sample_pos={}, output_peak={}",
-                    tick.sample_pos, peak
-                );
+            let peak = out_slice.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+            if peak > 0.0 {
+                eprintln!("[Runner] tick pos={}, peak={peak}", tick.sample_pos,);
             }
 
             if let Some(ref pb) = self.playback {

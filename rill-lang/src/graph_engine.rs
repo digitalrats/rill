@@ -63,8 +63,16 @@ impl<T: Transcendental> RillGraphEngine<T> {
             {
                 if let Some(inner) = self.anchor_map.get(&anchor) {
                     if let Some(&param_idx) = inner.get(&param) {
+                        eprintln!("[Engine] drain: anchor={anchor} param={param} idx={param_idx}");
                         self.program.set_param(param_idx, value);
+                    } else {
+                        eprintln!(
+                            "[Engine] drain: anchor={anchor} param={param} NOT FOUND in {:?}",
+                            inner.keys().collect::<Vec<_>>()
+                        );
                     }
+                } else {
+                    eprintln!("[Engine] drain: anchor={anchor} NOT in anchor_map");
                 }
             }
         }
