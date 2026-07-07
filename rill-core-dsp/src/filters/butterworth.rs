@@ -2,6 +2,9 @@
 
 use super::{FilterParams, FilterType};
 use crate::algorithm::ParameterizedAlgorithm;
+use crate::complex_mat::{
+    bilinear_transform, conjugate_pair_to_coeffs, prewarp_frequency, single_pole_to_coeffs,
+};
 use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
 use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
@@ -166,7 +169,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
         let sample_rate_f64 = self.sample_rate as f64;
 
         // Frequency pre-warping
-        let warp_cutoff = 2.0 * (PI64 * cutoff / sample_rate_f64).tan();
+        let warp_cutoff = prewarp_frequency(cutoff, sample_rate_f64);
 
         // Get analog filter poles
         let analog_poles = butterworth_analog_poles(n);
@@ -189,11 +192,10 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
                 let sp1 = p1 * warp_cutoff;
                 let sp2 = p2 * warp_cutoff;
 
-                let zp1 = (Complex64::new(2.0, 0.0) + sp1) / (Complex64::new(2.0, 0.0) - sp1);
-                let zp2 = (Complex64::new(2.0, 0.0) + sp2) / (Complex64::new(2.0, 0.0) - sp2);
+                let zp1 = bilinear_transform(sp1);
+                let zp2 = bilinear_transform(sp2);
 
-                let a1 = -(zp1 + zp2).re;
-                let a2 = (zp1 * zp2).re;
+                let (a1, a2) = conjugate_pair_to_coeffs(zp1, zp2);
 
                 let (b0, b1, b2) = self.numerator_coeffs(i);
 
@@ -202,10 +204,9 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> Butterworth<T, MAX_SECTIONS> 
                 let p = analog_poles[idx1];
 
                 let sp = p * warp_cutoff;
-                let zp = (Complex64::new(2.0, 0.0) + sp) / (Complex64::new(2.0, 0.0) - sp);
+                let zp = bilinear_transform(sp);
 
-                let a1 = -zp.re;
-                let a2 = 0.0;
+                let (a1, a2) = single_pole_to_coeffs(zp);
 
                 let (b0, b1, b2) = self.numerator_coeffs(i);
 

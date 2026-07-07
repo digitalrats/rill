@@ -1,11 +1,58 @@
 // rill-core-dsp/src/complex_mat.rs
-//! Complex-valued 2×2 and 3×3 matrices for filter analysis.
+//! Complex-valued 2×2 and 3×3 matrices and filter design helpers.
 //!
-//! Closed-form determinant, inverse, and eigenvalues for small matrices
-//! — used in Butterworth/Chebyshev pole design. All operations are
-//! stack-allocated and allocation-free.
+//! Closed-form determinant, inverse, and eigenvalues for small matrices.
+//! Also provides bilinear transform and pole-to-coefficient conversion
+//! utilities used in Butterworth/Chebyshev/elliptic filter design.
 
 use num_complex::Complex;
+use num_complex::Complex64;
+
+// ============================================================================
+// Filter design helpers
+// ============================================================================
+
+/// Bilinear transform from s-domain to z-domain.
+///
+/// Maps a continuous-time pole/zero `s` to the discrete-time domain:
+/// `z = (2 + s) / (2 - s)`
+///
+/// Used in Butterworth, Chebyshev, and elliptic filter design.
+#[inline(always)]
+pub fn bilinear_transform(s: Complex64) -> Complex64 {
+    let two = Complex64::new(2.0, 0.0);
+    (two + s) / (two - s)
+}
+
+/// Pre-warp an s-plane frequency for the bilinear transform.
+///
+/// Returns `2·tan(π·freq / sr)` — the warped cutoff frequency.
+#[inline(always)]
+pub fn prewarp_frequency(freq: f64, sample_rate: f64) -> f64 {
+    2.0 * (std::f64::consts::PI * freq / sample_rate).tan()
+}
+
+/// Convert a complex-conjugate z-domain pole pair to biquad coefficients.
+///
+/// Given two poles `z1, z2` (which should be complex conjugates),
+/// returns the denominator coefficients `(a1, a2)` for a Direct Form II biquad:
+/// `H(z) = 1 / (1 + a1·z⁻¹ + a2·z⁻²)` where `a1 = -(z1+z2)`, `a2 = z1·z2`.
+///
+/// Since `z1` and `z2` are conjugates, both `a1` and `a2` are real.
+#[inline(always)]
+pub fn conjugate_pair_to_coeffs(z1: Complex64, z2: Complex64) -> (f64, f64) {
+    let a1 = -(z1 + z2).re;
+    let a2 = (z1 * z2).re;
+    (a1, a2)
+}
+
+/// Convert a single real z-domain pole to biquad coefficients.
+///
+/// For odd-order filters, the unpaired real pole contributes `a1 = -z.re`, `a2 = 0`.
+#[inline(always)]
+pub fn single_pole_to_coeffs(z: Complex64) -> (f64, f64) {
+    (-z.re, 0.0)
+}
 
 /// Complex-valued 2×2 matrix stored on the stack.
 ///
