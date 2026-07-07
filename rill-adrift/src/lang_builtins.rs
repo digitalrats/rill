@@ -579,8 +579,11 @@ impl<T: Transcendental> Algorithm<T> for OscBuiltin<T> {
 impl<T: Transcendental> BlockBuiltin<T> for OscBuiltin<T> {
     fn set_param(&mut self, index: usize, value: T) {
         use rill_core_dsp::Generator;
-        if index == 0 {
-            self.osc.set_frequency(value.to_f32());
+        match index {
+            0 => self.osc.set_frequency(value.to_f32()),
+            1 => self.osc.set_amplitude(value),
+            2 => self.osc.set_phase(value),
+            _ => {}
         }
     }
 }
@@ -602,26 +605,31 @@ impl<T: Transcendental> Algorithm<T> for NoiseGenBuiltin<T> {
 }
 
 impl<T: Transcendental> BlockBuiltin<T> for NoiseGenBuiltin<T> {
-    fn set_param(&mut self, _index: usize, _value: T) {
-        // Noise type is fixed at construction time
+    fn set_param(&mut self, index: usize, value: T) {
+        use rill_core_dsp::Generator;
+        if index == 1 {
+            self.gen.set_amplitude(value);
+        }
     }
 }
 
 /// Register oscillator built-ins: `sine`, `saw`, `square`, `triangle`, `noise`.
 pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    use rill_core_dsp::{BasicOscillator, NoiseGenerator, NoiseType, Waveform};
+    use rill_core_dsp::{BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform};
 
     reg.register_block(
         BuiltinSig {
             name: "sine",
             signal_ins: 0,
             signal_outs: 1,
-            num_params: 1,
+            num_params: 3,
             kind: BuiltinKind::Block,
         },
         |p, sr| {
             let freq = p[0] as f32;
-            let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, T::ONE);
+            let amp = T::from_f64(p[1]);
+            let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, amp);
+            osc.set_phase(T::from_f64(p[2]));
             Algorithm::init(&mut osc, sr);
             Box::new(OscBuiltin { osc })
         },
@@ -631,12 +639,14 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
             name: "saw",
             signal_ins: 0,
             signal_outs: 1,
-            num_params: 1,
+            num_params: 3,
             kind: BuiltinKind::Block,
         },
         |p, sr| {
             let freq = p[0] as f32;
-            let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, T::ONE);
+            let amp = T::from_f64(p[1]);
+            let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, amp);
+            osc.set_phase(T::from_f64(p[2]));
             Algorithm::init(&mut osc, sr);
             Box::new(OscBuiltin { osc })
         },
@@ -646,12 +656,14 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
             name: "square",
             signal_ins: 0,
             signal_outs: 1,
-            num_params: 1,
+            num_params: 3,
             kind: BuiltinKind::Block,
         },
         |p, sr| {
             let freq = p[0] as f32;
-            let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, T::ONE);
+            let amp = T::from_f64(p[1]);
+            let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, amp);
+            osc.set_phase(T::from_f64(p[2]));
             Algorithm::init(&mut osc, sr);
             Box::new(OscBuiltin { osc })
         },
@@ -661,12 +673,14 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
             name: "triangle",
             signal_ins: 0,
             signal_outs: 1,
-            num_params: 1,
+            num_params: 3,
             kind: BuiltinKind::Block,
         },
         |p, sr| {
             let freq = p[0] as f32;
-            let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, T::ONE);
+            let amp = T::from_f64(p[1]);
+            let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, amp);
+            osc.set_phase(T::from_f64(p[2]));
             Algorithm::init(&mut osc, sr);
             Box::new(OscBuiltin { osc })
         },
@@ -676,17 +690,18 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
             name: "noise",
             signal_ins: 0,
             signal_outs: 1,
-            num_params: 1,
+            num_params: 2,
             kind: BuiltinKind::Block,
         },
         |p, _sr| {
+            let amp = T::from_f64(p[1]);
             let mut gen = NoiseGenerator::<T>::new(
                 match p[0].round() as i32 {
                     1 => NoiseType::Pink,
                     2 => NoiseType::Brown,
                     _ => NoiseType::White,
                 },
-                T::ONE,
+                amp,
             );
             Box::new(NoiseGenBuiltin { gen })
         },
