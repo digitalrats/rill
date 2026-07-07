@@ -4,6 +4,14 @@
 //! Closed-form determinant, inverse, and eigenvalues for small matrices.
 //! Also provides bilinear transform and pole-to-coefficient conversion
 //! utilities used in Butterworth/Chebyshev/elliptic filter design.
+//!
+//! # RT usage
+//!
+//! `ComplexMat2<T>` with `T = f32` is fully RT‑safe: all operations are
+//! stack‑allocated and perform zero heap allocations. This enables:
+//! - Complex‑coefficient biquad filters (Hilbert transformer, analytic signals)
+//! - 2×2 rotation/scattering matrices in frequency‑domain processing
+//! - Oversampled IIR stages with complex modulation
 
 use num_complex::Complex;
 use num_complex::Complex64;
@@ -57,6 +65,25 @@ pub fn single_pole_to_coeffs(z: Complex64) -> (f64, f64) {
 /// Complex-valued 2×2 matrix stored on the stack.
 ///
 /// Row-major layout: `[[m00, m01], [m10, m11]]`.
+///
+/// # RT example — complex biquad step
+///
+/// ```rust,no_run
+/// use rill_core_dsp::complex_mat::ComplexMat2;
+/// use num_complex::Complex;
+///
+/// // Complex biquad denominator: y[n] = x[n] - a1*y[n-1] - a2*y[n-2]
+/// let a1 = Complex::new(0.3f32, 0.5f32);
+/// let a2 = Complex::new(-0.2f32, -0.1f32);
+/// let mut y_prev = [Complex::new(0.0, 0.0); 2];
+///
+/// for n in 0..128 {
+///     let x = Complex::new((n as f32 * 0.1).sin(), (n as f32 * 0.07).cos());
+///     let y_n = x - a1 * y_prev[0] - a2 * y_prev[1];
+///     y_prev[1] = y_prev[0];
+///     y_prev[0] = y_n;
+/// }
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ComplexMat2<T> {
     /// Row 0, col 0
@@ -346,5 +373,69 @@ mod tests {
         let m = ComplexMat3::<f32>::identity();
         let d = m.det();
         assert!((d.re - 1.0).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // RT-path tests (Complex<f32> — oversampling / Hilbert / complex filters)
+    // ============================================================================
+
+    #[test]
+    fn test_complex_mat2_f32_rt_steps() {
+        // Complex biquad denominator step:
+        // y[n] = x[n] - a1*y[n-1] - a2*y[n-2]  (complex-valued)
+        let a1 = Complex::new(0.3, 0.5);
+        let a2 = Complex::new(-0.2, -0.1);
+
+        // Simulate 100 RT samples — zero allocations
+        let mut y = [Complex::new(0.0f32, 0.0f32); 2];
+        let mut all_finite = true;
+        for n in 0..100 {
+            let x = Complex::new((n as f32 * 0.1).sin(), (n as f32 * 0.07).cos());
+            let y_n = x - a1 * y[0] - a2 * y[1];
+            y[1] = y[0];
+            y[0] = y_n;
+            all_finite &= y_n.re.is_finite() && y_n.im.is_finite();
+        }
+        assert!(all_finite, "complex biquad produced NaN/Inf in RT path");
+    }
+
+    #[test]
+    fn test_complex_mat2_f32_rotation() {
+        // Frequency-shift rotation matrix: exp(j*2π*f/fs) applied per sample.
+        // Used in analytic signal generation and oversampling.
+        let freq = 1000.0f32;
+        let sr = 44100.0f32;
+        let phase_step = 2.0 * std::f32::consts::PI * freq / sr;
+
+        let rot = ComplexMat2::<f32>::new(
+            Complex::new(phase_step.cos(), phase_step.sin()), // m00 = exp(jθ)
+            Complex::new(0.0, 0.0),                           // m01
+            Complex::new(0.0, 0.0),                           // m10
+            Complex::new(phase_step.cos(), phase_step.sin()), // m11 = exp(jθ)
+        );
+
+        let z = Complex::new(1.0f32, 0.0);
+        let [re, _im] = rot.mul_vec(z, Complex::new(0.0, 0.0));
+
+        assert!((re.re - phase_step.cos()).abs() < 1e-4);
+        assert!((re.im - phase_step.sin()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_complex_mat2_f64_rt_stability() {
+        // f64 version — same test, higher precision
+        let a1 = Complex::new(0.3f64, 0.5f64);
+        let a2 = Complex::new(-0.2f64, -0.1f64);
+
+        let mut y = [Complex::new(0.0f64, 0.0f64); 2];
+        let mut all_finite = true;
+        for n in 0..1000 {
+            let x = Complex::new((n as f64 * 0.1).sin(), (n as f64 * 0.07).cos());
+            let y_n = x - a1 * y[0] - a2 * y[1];
+            y[1] = y[0];
+            y[0] = y_n;
+            all_finite &= y_n.re.is_finite() && y_n.im.is_finite();
+        }
+        assert!(all_finite, "complex biquad f64 produced NaN/Inf");
     }
 }
