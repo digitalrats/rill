@@ -89,10 +89,6 @@ impl<T: Transcendental> RillGraphEngine<T> {
 impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         self.drain_mailbox();
-        // Apply one pending param update per tick.
-        // Each tick = one audio block. Multiple updates queued by STC
-        // sequencer are spread across multiple ticks — same timing as
-        // rill-graph's apply_due_params without sample_pos.
         if let Some((param_idx, value)) = self.pending_params.pop_front() {
             self.program.set_param(param_idx, value);
         }
