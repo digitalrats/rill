@@ -91,29 +91,32 @@ pub fn single_pole_to_coeffs(z: Complex64) -> (f64, f64) {
 
 /// Complex multiplication: `a * b`.
 ///
-/// `(a.re + i·a.im) · (b.re + i·b.im) = (a.re·b.re − a.im·b.im) + i·(a.re·b.im + a.im·b.re)`
-///
-/// Used in frequency‑domain convolution and spectral processing.
+/// Implemented via the `ComplexVector` eDSL for consistency with batch paths.
 /// RT‑safe: pure arithmetic, zero allocations.
 #[inline(always)]
 pub fn mul_complex<T>(a: Complex<T>, b: Complex<T>) -> Complex<T>
 where
-    T: Copy + std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+    T: Transcendental + 'static,
 {
-    Complex::new(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re)
+    use rill_core::prelude::{ComplexVector, ScalarVector4, Vector};
+    let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
+    let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
+    let prod = av.cmul(&bv);
+    Complex::new(prod.extract(0), prod.extract(1))
 }
 
 /// Complex multiply-accumulate: `acc += a * b`.
-///
-/// Used in partitioned convolution where spectra from multiple partitions
-/// are accumulated.
 #[inline(always)]
 pub fn mul_complex_add<T>(acc: &mut Complex<T>, a: Complex<T>, b: Complex<T>)
 where
-    T: Copy + std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+    T: Transcendental + 'static,
 {
-    acc.re = acc.re + (a.re * b.re - a.im * b.im);
-    acc.im = acc.im + (a.re * b.im + a.im * b.re);
+    use rill_core::prelude::{ComplexVector, ScalarVector4, Vector};
+    let av = ComplexVector::<T, ScalarVector4<T>>::splat_pair(a.re, a.im);
+    let bv = ComplexVector::<T, ScalarVector4<T>>::splat_pair(b.re, b.im);
+    let prod = av.cmul(&bv);
+    acc.re = acc.re + prod.extract(0);
+    acc.im = acc.im + prod.extract(1);
 }
 
 /// Batch complex multiply: processes 4 consecutive complex numbers at once.
@@ -206,7 +209,9 @@ where
         + std::ops::Mul<Output = T>
         + std::ops::Div<Output = T>
         + std::ops::Neg<Output = T>
-        + num_traits::Float,
+        + num_traits::Float
+        + Transcendental
+        + 'static,
 {
     /// Create a new 2×2 matrix from four elements.
     pub fn new(m00: Complex<T>, m01: Complex<T>, m10: Complex<T>, m11: Complex<T>) -> Self {
@@ -220,6 +225,34 @@ where
             m01: Complex::new(T::zero(), T::zero()),
             m10: Complex::new(T::zero(), T::zero()),
             m11: Complex::new(T::zero(), T::zero()),
+        }
+    }
+
+    /// Pack into `ComplexSoa` for vectorised operations.
+    fn pack_soa(&self) -> rill_core::prelude::ComplexSoa<T, rill_core::prelude::ScalarVector4<T>>
+    where
+        T: Transcendental + 'static,
+    {
+        use rill_core::prelude::{ComplexSoa, ScalarVector4};
+        ComplexSoa::load(
+            &[self.m00.re, self.m01.re, self.m10.re, self.m11.re],
+            &[self.m00.im, self.m01.im, self.m10.im, self.m11.im],
+        )
+    }
+
+    /// Unpack from `ComplexSoa` after vectorised operations.
+    fn unpack_soa(
+        soa: &rill_core::prelude::ComplexSoa<T, rill_core::prelude::ScalarVector4<T>>,
+    ) -> Self
+    where
+        T: Transcendental + 'static,
+    {
+        use rill_core::prelude::Vector;
+        Self {
+            m00: Complex::new(soa.re.extract(0), soa.im.extract(0)),
+            m01: Complex::new(soa.re.extract(1), soa.im.extract(1)),
+            m10: Complex::new(soa.re.extract(2), soa.im.extract(2)),
+            m11: Complex::new(soa.re.extract(3), soa.im.extract(3)),
         }
     }
 
@@ -241,7 +274,6 @@ where
     }
 
     /// Inverse (closed form for 2×2).
-    /// Returns `None` if the determinant is zero.
     pub fn inv(&self) -> Option<Self> {
         let d = self.det();
         if d.norm_sqr() <= T::epsilon() {
@@ -277,20 +309,37 @@ where
         ])
     }
 
-    /// Multiply matrix by a column vector [x, y]ᵀ.
+    /// Matrix × vector via ComplexSoa.
+    ///
+    /// Computes `[m00*x + m01*y, m10*x + m11*y]` in one SoA pass.
     pub fn mul_vec(&self, x: Complex<T>, y: Complex<T>) -> [Complex<T>; 2] {
-        [self.m00 * x + self.m01 * y, self.m10 * x + self.m11 * y]
+        let m = self.pack_soa();
+        // x at lanes 0,2; y at lanes 1,3
+        let vec = rill_core::prelude::ComplexSoa::<T, rill_core::prelude::ScalarVector4<T>>::load(
+            &[x.re, y.re, x.re, y.re],
+            &[x.im, y.im, x.im, y.im],
+        );
+        let prod = m.cmul(&vec);
+        use rill_core::prelude::Vector;
+        [
+            Complex::new(
+                prod.re.extract(0) + prod.re.extract(1),
+                prod.im.extract(0) + prod.im.extract(1),
+            ),
+            Complex::new(
+                prod.re.extract(2) + prod.re.extract(3),
+                prod.im.extract(2) + prod.im.extract(3),
+            ),
+        ]
     }
 
-    /// Scale all elements by a scalar.
+    /// Scale all elements by a scalar via ComplexSoa::scale_real.
     pub fn scale(&self, s: T) -> Self {
-        let cs = Complex::new(s, T::zero());
-        Self {
-            m00: self.m00 * cs,
-            m01: self.m01 * cs,
-            m10: self.m10 * cs,
-            m11: self.m11 * cs,
-        }
+        use rill_core::prelude::Vector;
+        let soa = self.pack_soa();
+        let s_soa = rill_core::prelude::ScalarVector4::<T>::splat(s);
+        let scaled = soa.scale_real(s_soa);
+        Self::unpack_soa(&scaled)
     }
 }
 
@@ -302,16 +351,16 @@ where
         + std::ops::Mul<Output = T>
         + std::ops::Div<Output = T>
         + std::ops::Neg<Output = T>
-        + num_traits::Float,
+        + num_traits::Float
+        + Transcendental
+        + 'static,
 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self {
-            m00: self.m00 + rhs.m00,
-            m01: self.m01 + rhs.m01,
-            m10: self.m10 + rhs.m10,
-            m11: self.m11 + rhs.m11,
-        }
+        let a = self.pack_soa();
+        let b = rhs.pack_soa();
+        let sum = a.cadd(&b);
+        Self::unpack_soa(&sum)
     }
 }
 
@@ -323,7 +372,9 @@ where
         + std::ops::Mul<Output = T>
         + std::ops::Div<Output = T>
         + std::ops::Neg<Output = T>
-        + num_traits::Float,
+        + num_traits::Float
+        + Transcendental
+        + 'static,
 {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
@@ -344,7 +395,9 @@ where
         + std::ops::Mul<Output = T>
         + std::ops::Div<Output = T>
         + std::ops::Neg<Output = T>
-        + num_traits::Float,
+        + num_traits::Float
+        + Transcendental
+        + 'static,
 {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
