@@ -12,6 +12,7 @@ pub mod builtin;
 pub mod error;
 pub mod graph_build;
 pub mod graph_ir;
+pub mod graph_optimize;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
