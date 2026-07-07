@@ -169,6 +169,34 @@ pub fn mul_complex_add_4<T>(
     acc.store(acc_re, acc_im);
 }
 
+/// Load 4 consecutive complex numbers from an interleaved slice into `ComplexSoa`.
+///
+/// This is the canonical way to batch-load `Complex<T>` data for SIMD processing.
+/// Equivalent to calling `from_pairs` with individually extracted fields.
+pub fn soa_from_interleaved<T: Transcendental + 'static>(
+    slice: &[Complex<T>],
+) -> rill_core::prelude::ComplexSoa<T, rill_core::prelude::ScalarVector4<T>> {
+    use rill_core::prelude::ComplexSoa;
+    ComplexSoa::from_pairs([
+        (slice[0].re, slice[0].im),
+        (slice[1].re, slice[1].im),
+        (slice[2].re, slice[2].im),
+        (slice[3].re, slice[3].im),
+    ])
+}
+
+/// Store a `ComplexSoa` result back to 4 consecutive interleaved `Complex<T>` entries.
+pub fn soa_to_interleaved<T: Transcendental + 'static>(
+    soa: &rill_core::prelude::ComplexSoa<T, rill_core::prelude::ScalarVector4<T>>,
+    slice: &mut [Complex<T>],
+) {
+    let c = soa.to_complexes();
+    slice[0] = Complex::new(c[0].0, c[0].1);
+    slice[1] = Complex::new(c[1].0, c[1].1);
+    slice[2] = Complex::new(c[2].0, c[2].1);
+    slice[3] = Complex::new(c[3].0, c[3].1);
+}
+
 /// Complex-valued 2×2 matrix stored on the stack.
 ///
 /// Row-major layout: `[[m00, m01], [m10, m11]]`.

@@ -15,9 +15,8 @@
 //! 5. Overlap-add to produce the output block
 
 use num_complex::Complex;
-use rill_core::prelude::{ComplexSoa, ScalarVector4, Vector};
 use rill_core::Transcendental;
-use rill_core_dsp::complex_mat::mul_complex_add;
+use rill_core_dsp::complex_mat::{mul_complex_add, soa_from_interleaved};
 
 use crate::real_fft::RealFft;
 
@@ -143,18 +142,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> PartitionedConvolver<T, BUF_SIZE>
 
             let mut i = 0usize;
             while i + 3 < self.half_plus_one {
-                let s = ComplexSoa::<T, ScalarVector4<T>>::from_pairs([
-                    (ir_spec[i].re, ir_spec[i].im),
-                    (ir_spec[i + 1].re, ir_spec[i + 1].im),
-                    (ir_spec[i + 2].re, ir_spec[i + 2].im),
-                    (ir_spec[i + 3].re, ir_spec[i + 3].im),
-                ]);
-                let f = ComplexSoa::<T, ScalarVector4<T>>::from_pairs([
-                    (inp_spec[i].re, inp_spec[i].im),
-                    (inp_spec[i + 1].re, inp_spec[i + 1].im),
-                    (inp_spec[i + 2].re, inp_spec[i + 2].im),
-                    (inp_spec[i + 3].re, inp_spec[i + 3].im),
-                ]);
+                let s = soa_from_interleaved(&ir_spec[i..i + 4]);
+                let f = soa_from_interleaved(&inp_spec[i..i + 4]);
                 let prod = s.cmul(&f);
                 let c = prod.to_complexes();
                 self.product[i].re += c[0].0;
