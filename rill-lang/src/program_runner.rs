@@ -107,8 +107,19 @@ impl ProgramRunner {
             );
 
             let peak = out_slice.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
-            if peak > 0.0 {
-                eprintln!("[Runner] tick pos={}, peak={peak}", tick.sample_pos,);
+            #[cfg(debug_assertions)]
+            {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static TICK: AtomicU64 = AtomicU64::new(0);
+                let n = TICK.fetch_add(1, Ordering::Relaxed);
+                if n < 3 || n % 100 == 0 {
+                    eprintln!(
+                        "[Runner] tick={n} pos={} peak={peak} is_final={} parent={}",
+                        tick.sample_pos,
+                        tick.is_final,
+                        self.parent_ref.is_some()
+                    );
+                }
             }
 
             if let Some(ref pb) = self.playback {
