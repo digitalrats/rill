@@ -1,6 +1,6 @@
-//! # Functional automata
+//! # Functional automatons
 //!
-//! Automata built on arbitrary time functions.
+//! Automatons built on arbitrary time functions.
 //! Allow implementing any mathematical relationship.
 
 use crate::engine::{Automaton, NoAction, Range, Time};

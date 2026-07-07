@@ -5,8 +5,8 @@
 //!
 //! ## Core components
 //!
-//! - **Automata** — generative signal sources (LFO, envelopes, sequencers)
-//! - **Servos** (in the `control` module) — connect automata to node parameters
+//! - **Automatons** — generative signal sources (LFO, envelopes, sequencers)
+//! - **Servos** (in the `control` module) — connect automatons to node parameters
 //! - **Mappings** — connect external events (MIDI/OSC) to parameters
 //! - **Sensors** — event sources from the external world
 //! - **Manager** — central coordinator for dual-thread architecture
@@ -20,7 +20,7 @@
 //! │  ┌─────────────────────────────────────────────────────┐   │
 //! │  │               Manager                         │   │
 //! │  │  ┌────────────┐  ┌────────────┐  ┌────────────┐     │   │
-//! │  │  │  Automata  │  │  Servos    │  │  Mappings  │     │   │
+//! │  │  │  Automatons │  │  Servos    │  │  Mappings  │     │   │
 //! │  │  └────────────┘  └────────────┘  └────────────┘     │   │
 //! │  │                    │                │                │   │
 //! │  │                    ▼                ▼                │   │
@@ -55,7 +55,7 @@ pub use rill_core::{NodeId, ParamValue, ParameterId, PortId};
 // Public modules
 // =============================================================================
 
-/// Automata — generative control sources
+/// Automatons — generative control sources
 pub mod automaton;
 
 /// Control and event mapping

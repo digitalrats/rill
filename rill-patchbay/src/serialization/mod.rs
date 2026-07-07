@@ -14,8 +14,8 @@ pub use crate::module_def::{
 // PatchbayDef
 // ============================================================================
 
-/// Serializable patchbay configuration — automata + modules without a signal graph.
-/// For full rack configuration (graph + automata + modules), use
+/// Serializable patchbay configuration — automatons + modules without a signal graph.
+/// For full rack configuration (graph + automatons + modules), use
 /// [`rill_adrift::modular::serialization::RackDef`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]

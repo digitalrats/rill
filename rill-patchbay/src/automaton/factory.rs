@@ -36,7 +36,7 @@ pub struct ServoTarget {
     pub min: f64,
     /// Maximum output clamp value.
     pub max: f64,
-    /// Optional value table for index-based automata.
+    /// Optional value table for index-based automatons.
     pub table: Option<Vec<ParamValue>>,
 }
 /// Constructs automaton modules from type name, params, and target.
@@ -45,7 +45,7 @@ pub trait AutomatonConstructor: Send + Sync {
     fn type_name(&self) -> &'static str;
     /// Builds a boxed module from the given id, params, and servo target.
     fn construct(&self, id: &str, params: &Params, target: &ServoTarget) -> BoxedModule;
-    /// Optionally spawns an async green-thread for automata that run independently of the graph clock.
+    /// Optionally spawns an async green-thread for automatons that run independently of the graph clock.
     fn spawn_async(
         &self,
         _id: &str,

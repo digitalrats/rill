@@ -196,7 +196,7 @@ impl Command for SetParameter {}
 
 // ===== AutomatonCommand =====
 
-/// Commands for controlling automata (LFOs, envelopes, sequencers).
+/// Commands for controlling automatons (LFOs, envelopes, sequencers).
 #[derive(Debug, Clone)]
 pub enum AutomatonCommand {
     /// Enable or disable an automaton by ID.
@@ -229,7 +229,7 @@ pub enum AutomatonCommand {
         /// Connection gain.
         gain: f32,
     },
-    /// Disconnect two automata.
+    /// Disconnect two automatons.
     Disconnect {
         /// Source automaton identifier.
         from: String,

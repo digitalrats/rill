@@ -131,7 +131,7 @@ pub struct ServoDef {
     #[cfg_attr(feature = "serde", serde(default))]
     pub conflict_strategy: Option<ConflictStrategy>,
 
-    /// Optional value table for index-based automata.
+    /// Optional value table for index-based automatons.
     /// When set, the servo looks up `table[automaton_output]`.
     #[cfg_attr(
         feature = "serde",

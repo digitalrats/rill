@@ -1,4 +1,4 @@
-//! LFO (Low Frequency Oscillator) automata for periodic modulation.
+//! LFO (Low Frequency Oscillator) automatons for periodic modulation.
 //!
 //! Supports various waveform shapes and synchronisation modes.
 

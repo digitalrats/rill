@@ -60,7 +60,7 @@ pub enum ModularError {
 
 /// A modular signal processing host that manages one or more [`RackCase`] instances.
 ///
-/// Each rack has its own signal graph and control modules (automata, servos, sensors).
+/// Each rack has its own signal graph and control modules (automatons, servos, sensors).
 /// The system provides shared infrastructure: actor system, node factory, backend factory,
 /// and a module factory for custom rack modules.
 pub struct ModularSystem<const BUF: usize = 64> {
