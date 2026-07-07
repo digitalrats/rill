@@ -370,7 +370,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Compile rill-lang DSL ──────────────────────────────────────────────
     let src = r#"
 param chip = ay38910(1750000.0, param("regs", 0));
-process = chip;
+process = chip : lofi();
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let mut engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;

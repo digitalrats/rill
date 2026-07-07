@@ -89,6 +89,9 @@ impl ProgramRunner {
             .map(|p| p.num_output_channels())
             .unwrap_or(1);
 
+        let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
+        self.engine.apply_due_params(chunk_end);
+
         for ch in 0..num_outputs {
             let in_slice = &mut self.input_buf[..block_size];
             let out_slice = &mut self.output_buf[..block_size];
@@ -96,9 +99,6 @@ impl ProgramRunner {
             if let Some(ref cap) = self.capture {
                 cap.read_input(ch, in_slice);
             }
-
-            let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
-            self.engine.apply_due_params(chunk_end);
 
             let _ = self.engine.process(
                 if self.capture.is_some() {
