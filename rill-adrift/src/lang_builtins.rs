@@ -839,7 +839,7 @@ impl Algorithm<f32> for Ay38910Builtin {
 #[cfg(feature = "lofi")]
 impl BlockBuiltin<f32> for Ay38910Builtin {
     fn set_param(&mut self, index: usize, value: &ParamValue) {
-        if index == 0 {
+        if index == 1 {
             if let ParamValue::Bytes(regs) = value {
                 use rill_lofi::ChipEmulator;
                 self.chip.write_registers(regs);

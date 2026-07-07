@@ -76,7 +76,7 @@ fn param_in_feedback_changes_with_set_param() {
     let mut out_05 = vec![0.0f32; 64];
     prog.process(Some(&input), &mut out_05).unwrap();
 
-    prog.set_param(fi, 0.9);
+    prog.set_param(fi, ParamValue::Float(0.9));
     let mut out_09 = vec![0.0f32; 64];
     prog.process(Some(&input), &mut out_09).unwrap();
 
@@ -110,7 +110,7 @@ fn smooth_of_param_ramps_not_instant() {
 
     // Set g=1.0 and run. smooth(20ms) at 48kHz → a ≈ 1-exp(-1/(0.02*48000)) = 1-exp(-0.00104) ≈ 0.00104
     // Very slow ramp: first few samples should still be near zero
-    prog.set_param(gi, 1.0);
+    prog.set_param(gi, ParamValue::Float(1.0));
     let mut out2 = vec![0.0f32; 64];
     prog.process(Some(&[1.0f32; 64]), &mut out2).unwrap();
 
@@ -145,7 +145,7 @@ fn smooth_matches_reference() {
     )
     .unwrap();
     let gi = ph.param_index("g").unwrap();
-    ph.set_param(gi, 0.7);
+    ph.set_param(gi, ParamValue::Float(0.7));
 
     let mut pr = compile_with::<f32>(
         "process = _ * smooth(param(\"g\", 1.0), 10.0);",
@@ -153,7 +153,7 @@ fn smooth_matches_reference() {
         48_000.0,
     )
     .unwrap();
-    pr.set_param(pr.param_index("g").unwrap(), 0.7);
+    pr.set_param(pr.param_index("g").unwrap(), ParamValue::Float(0.7));
 
     let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
     let mut oh = vec![0.0f32; input.len()];
@@ -196,7 +196,7 @@ fn dynamic_cutoff_moog_changes_output() {
     prog.process(Some(&block), &mut out_low).unwrap();
     let e_low = rms(&out_low);
 
-    prog.set_param(ci, 12000.0);
+    prog.set_param(ci, ParamValue::Float(12000.0));
     let mut out_high = vec![0.0f32; block.len()];
     prog.process(Some(&block), &mut out_high).unwrap();
     let e_high = rms(&out_high);
@@ -227,8 +227,8 @@ fn dynamic_cutoff_moog_hybrid_matches_reference() {
 
     let ci = ph.param_index("cutoff").unwrap();
     let ci_r = pr.param_index("cutoff").unwrap();
-    ph.set_param(ci, 3000.0);
-    pr.set_param(ci_r, 3000.0);
+    ph.set_param(ci, ParamValue::Float(3000.0));
+    pr.set_param(ci_r, ParamValue::Float(3000.0));
 
     let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
     let mut oh = vec![0.0f32; input.len()];
@@ -271,7 +271,7 @@ fn dynamic_cutoff_lowpass_changes_output_across_blocks() {
     prog.process(Some(&block), &mut out_low).unwrap();
     let e_low = rms(&out_low);
 
-    prog.set_param(ci, 8000.0);
+    prog.set_param(ci, ParamValue::Float(8000.0));
     let mut out_high = vec![0.0f32; block.len()];
     prog.process(Some(&block), &mut out_high).unwrap();
     let e_high = rms(&out_high);
@@ -475,9 +475,9 @@ fn combined_param_smooth_feedback_builtin_runs() {
     assert!(e > 0.0, "combined program silenced output");
     assert!(e < 10.0, "combined program unstable (rms={e})");
 
-    prog.set_param(cut_i, 8000.0);
-    prog.set_param(fb_i, 0.7);
-    prog.set_param(gain_i, 0.1);
+    prog.set_param(cut_i, ParamValue::Float(8000.0));
+    prog.set_param(fb_i, ParamValue::Float(0.7));
+    prog.set_param(gain_i, ParamValue::Float(0.1));
     let mut out2 = vec![0.0f32; input.len()];
     prog.process(Some(&input), &mut out2).unwrap();
 
@@ -529,8 +529,8 @@ fn no_panic_on_multiple_dynamic_params() {
     assert!(rms(&out) > 0.0);
 
     // Change both params mid-run — should not panic
-    prog.set_param(ci, 4000.0);
-    prog.set_param(ri, 0.9);
+    prog.set_param(ci, ParamValue::Float(4000.0));
+    prog.set_param(ri, ParamValue::Float(0.9));
     prog.process(Some(&input), &mut out).unwrap();
     assert!(rms(&out) > 0.0);
 }
