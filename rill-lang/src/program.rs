@@ -36,6 +36,8 @@ pub struct RillProgram<T: Transcendental> {
     pub(crate) builtins: Vec<BuiltinInst<T>>,
     /// Current parameter values, indexed by [`Ir::params`].
     pub(crate) params: Vec<ParamValue>,
+    /// Dirty flags: true when a param was changed since last push.
+    pub(crate) params_dirty: Vec<bool>,
     /// Parameter metadata (name, default, range).
     pub(crate) params_meta: Vec<ParamDef>,
 }
@@ -81,6 +83,7 @@ impl<T: Transcendental> RillProgram<T> {
             .iter()
             .map(|p| ParamValue::Float(p.default as f32))
             .collect();
+        let params_dirty = vec![false; params.len()];
         Self {
             ir,
             schedule,
@@ -91,6 +94,7 @@ impl<T: Transcendental> RillProgram<T> {
             regs_scalar,
             builtins: Vec::new(),
             params,
+            params_dirty,
             params_meta,
         }
     }
@@ -139,6 +143,7 @@ impl<T: Transcendental> RillProgram<T> {
             .iter()
             .map(|p| ParamValue::Float(p.default as f32))
             .collect();
+        let params_dirty = vec![false; params.len()];
         Ok(Self {
             ir,
             schedule,
@@ -149,6 +154,7 @@ impl<T: Transcendental> RillProgram<T> {
             regs_scalar,
             builtins,
             params,
+            params_dirty,
             params_meta,
         })
     }
@@ -178,6 +184,9 @@ impl<T: Transcendental> RillProgram<T> {
                 _ => value,
             };
             self.params[idx] = clamped;
+            if let Some(d) = self.params_dirty.get_mut(idx) {
+                *d = true;
+            }
         }
     }
 

@@ -27,7 +27,11 @@ fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
         let blen = prog.ir.builtins[instance].param_bindings.len();
         for k in 0..blen {
             let (arg_pos, param_idx) = prog.ir.builtins[instance].param_bindings[k];
+            if !prog.params_dirty[param_idx] {
+                continue; // skip unchanged params — same semantics as rill-graph actor.drain
+            }
             let v = prog.params[param_idx].clone();
+            prog.params_dirty[param_idx] = false;
             match &mut prog.builtins[instance] {
                 crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, &v),
                 crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),
