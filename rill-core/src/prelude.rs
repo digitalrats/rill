@@ -117,7 +117,8 @@ pub use crate::math::vector::math::{
     sqrt_slice, tan_slice,
 };
 pub use crate::math::vector::ops::{
-    add_scalar_slice, add_slices, div_slices, mul_scalar_slice, mul_slices, sub_slices,
+    add_scalar_slice, add_slices, div_slices, mul_scalar_slice, mul_slices, sub_slices, SliceMut,
+    SlicePair,
 };
 pub use crate::math::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
 #[cfg(feature = "simd")]

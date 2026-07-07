@@ -17,6 +17,7 @@ pub struct ComplexVector<T: Transcendental, V: Vector<T, 4>> {
 }
 
 impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
+    /// Wrap a raw `Vector<T,4>` in `[re0, im0, re1, im1]` interleaved layout.
     pub fn from_raw(data: V) -> Self {
         Self {
             data,
@@ -24,6 +25,7 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         }
     }
 
+    /// Duplicate a single `(re, im)` pair into both lane pairs.
     pub fn splat_pair(re: T, im: T) -> Self {
         Self {
             data: V::load(&[re, im, re, im]),
@@ -45,20 +47,25 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         }
     }
 
+    /// Return a reference to the raw `Vector<T,4>`.
     pub fn inner(&self) -> &V {
         &self.data
     }
 
+    /// Extract the `i`-th lane from the underlying vector.
     pub fn extract(&self, i: usize) -> T {
         self.data.extract(i)
     }
+    /// Real part of the first complex element (lane 0).
     pub fn re0(&self) -> T {
         self.data.extract(0)
     }
+    /// Imaginary part of the first complex element (lane 1).
     pub fn im0(&self) -> T {
         self.data.extract(1)
     }
 
+    /// Complex conjugate.
     pub fn conj(&self) -> Self {
         let v = V::load(&[
             self.data.extract(0),
@@ -72,6 +79,7 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         }
     }
 
+    /// Complex multiplication: `self * other` (element-wise).
     pub fn cmul(&self, other: &Self) -> Self {
         let a_re = V::load(&[
             self.data.extract(0),
@@ -110,6 +118,7 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         }
     }
 
+    /// Complex addition: `self + other`.
     pub fn cadd(&self, other: &Self) -> Self {
         Self {
             data: self.data + other.data,
@@ -117,6 +126,7 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         }
     }
 
+    /// Complex subtraction: `self - other`.
     pub fn csub(&self, other: &Self) -> Self {
         Self {
             data: self.data - other.data,
@@ -133,6 +143,7 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         (r0 * r0 + i0 * i0, r1 * r1 + i1 * i1)
     }
 
+    /// Multiply both real and imaginary parts by a real scalar.
     pub fn scale_real(&self, scalar: T) -> Self {
         Self {
             data: self.data * V::splat(scalar),
@@ -201,15 +212,76 @@ impl<T: Transcendental, V: Vector<T, 4>> core::ops::Neg for ComplexVector<T, V> 
     }
 }
 
+/// `cv * t` — scale both complex elements by a real scalar.
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::Mul<T> for ComplexVector<T, V> {
+    type Output = Self;
+    fn mul(self, rhs: T) -> Self {
+        self.scale_real(rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::AddAssign for ComplexVector<T, V> {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::SubAssign for ComplexVector<T, V> {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::MulAssign for ComplexVector<T, V> {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::DivAssign for ComplexVector<T, V> {
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+
+/// Complex division: `(a+bi)/(c+di) = (ac+bd)/(c²+d²) + i*(bc-ad)/(c²+d²)`.
+impl<T: Transcendental, V: Vector<T, 4>> core::ops::Div for ComplexVector<T, V> {
+    type Output = Self;
+    fn div(self, rhs: Self) -> Self {
+        let a_re = self.data.extract(0);
+        let a_im = self.data.extract(1);
+        let a2_re = self.data.extract(2);
+        let a2_im = self.data.extract(3);
+        let b_re = rhs.data.extract(0);
+        let b_im = rhs.data.extract(1);
+        let b2_re = rhs.data.extract(2);
+        let b2_im = rhs.data.extract(3);
+        let denom0 = b_re * b_re + b_im * b_im;
+        let denom1 = b2_re * b2_re + b2_im * b2_im;
+        Self {
+            data: V::load(&[
+                (a_re * b_re + a_im * b_im) / denom0,
+                (a_im * b_re - a_re * b_im) / denom0,
+                (a2_re * b2_re + a2_im * b2_im) / denom1,
+                (a2_im * b2_re - a2_re * b2_im) / denom1,
+            ]),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 /// Four complex numbers, separate re/im arrays. For SIMD‑heavy operations.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ComplexSoa<T: Transcendental, V: Vector<T, 4>> {
+    /// Real parts of four complex numbers (one per lane).
     pub re: V,
+    /// Imaginary parts of four complex numbers (one per lane).
     pub im: V,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
+    /// Load four complex numbers from separate re/im slices.
     pub fn load(re_slice: &[T], im_slice: &[T]) -> Self {
         Self {
             re: V::load(re_slice),
@@ -227,6 +299,7 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         }
     }
 
+    /// Store back to separate re/im slices.
     pub fn store(&self, re_slice: &mut [T], im_slice: &mut [T]) {
         self.re.store(re_slice);
         self.im.store(im_slice);
@@ -261,6 +334,7 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         self.to_complexes().into_iter()
     }
 
+    /// Complex multiplication: `self * other` on four numbers at once.
     pub fn cmul(&self, other: &Self) -> Self {
         Self {
             re: self.re * other.re - self.im * other.im,
@@ -269,11 +343,13 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         }
     }
 
+    /// Complex multiply-accumulate: `self += a * b`.
     pub fn cmul_add(&mut self, a: &Self, b: &Self) {
         self.re = self.re + (a.re * b.re - a.im * b.im);
         self.im = self.im + (a.re * b.im + a.im * b.re);
     }
 
+    /// Complex conjugate.
     pub fn conj(&self) -> Self {
         Self {
             re: self.re,
@@ -282,15 +358,18 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         }
     }
 
+    /// Squared magnitude (re² + im²) per lane.
     pub fn norm_sqr(&self) -> V {
         self.re * self.re + self.im * self.im
     }
 
+    /// True if all four norms are below `threshold_sq`.
     pub fn all_norm_sqr_lt(&self, threshold_sq: T) -> bool {
         let t = V::splat(threshold_sq);
         V::all(&self.norm_sqr().lt(&t))
     }
 
+    /// Complex addition: `self + other`.
     pub fn cadd(&self, other: &Self) -> Self {
         Self {
             re: self.re + other.re,
@@ -299,6 +378,7 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         }
     }
 
+    /// Complex subtraction: `self - other`.
     pub fn csub(&self, other: &Self) -> Self {
         Self {
             re: self.re - other.re,
@@ -307,6 +387,7 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> ComplexSoa<T, V> {
         }
     }
 
+    /// Multiply both re and im by a real scalar vector (per-lane).
     pub fn scale_real(&self, scalar: V) -> Self {
         Self {
             re: self.re * scalar,
@@ -347,6 +428,62 @@ impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::Neg for C
         Self {
             re: -self.re,
             im: -self.im,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// `csoa * sv` — scale all four complex numbers by a real vector (per‑lane).
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::Mul<V> for ComplexSoa<T, V> {
+    type Output = Self;
+    fn mul(self, rhs: V) -> Self {
+        self.scale_real(rhs)
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::AddAssign
+    for ComplexSoa<T, V>
+{
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::SubAssign
+    for ComplexSoa<T, V>
+{
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::MulAssign
+    for ComplexSoa<T, V>
+{
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::DivAssign
+    for ComplexSoa<T, V>
+{
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+
+/// Complex division (four at once): `(re+im·i)/(rre+rim·i)` per lane.
+///
+/// `denom = rre² + rim²`, then `re_out = (re·rre + im·rim)/denom`,
+/// `im_out = (im·rre − re·rim)/denom`.
+impl<T: Transcendental, V: Vector<T, 4> + VectorMask<T, 4>> core::ops::Div for ComplexSoa<T, V> {
+    type Output = Self;
+    fn div(self, rhs: Self) -> Self {
+        let denom = rhs.re * rhs.re + rhs.im * rhs.im;
+        Self {
+            re: (self.re * rhs.re + self.im * rhs.im) / denom,
+            im: (self.im * rhs.re - self.re * rhs.im) / denom,
             _phantom: PhantomData,
         }
     }

@@ -421,19 +421,15 @@ fn apply_un_slice<T: Transcendental>(op: UnOp, src: &[T], out: &mut [T]) {
 
 fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut [T]) {
     use rill_core::math::vector::math::{max_slice, min_slice};
-    use rill_core::math::vector::ops::{add_slices, div_slices, mul_slices, sub_slices};
+    use rill_core::math::vector::ops::SlicePair;
     match op {
-        BinArith::Add => add_slices::<T, 4, ScalarVector4<T>>(a, b, out),
-        BinArith::Sub => sub_slices::<T, 4, ScalarVector4<T>>(a, b, out),
-        BinArith::Mul => mul_slices::<T, 4, ScalarVector4<T>>(a, b, out),
-        BinArith::Div => div_slices::<T, 4, ScalarVector4<T>>(a, b, out),
+        BinArith::Add => SlicePair::new(a, b).add_into::<4, ScalarVector4<T>>(out),
+        BinArith::Sub => SlicePair::new(a, b).sub_into::<4, ScalarVector4<T>>(out),
+        BinArith::Mul => SlicePair::new(a, b).mul_into::<4, ScalarVector4<T>>(out),
+        BinArith::Div => SlicePair::new(a, b).div_into::<4, ScalarVector4<T>>(out),
         BinArith::Min => min_slice::<T, 4, ScalarVector4<T>>(a, b, out),
         BinArith::Max => max_slice::<T, 4, ScalarVector4<T>>(a, b, out),
-        BinArith::Rem => {
-            for ((o, &x), &y) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
-                *o = x % y;
-            }
-        }
+        BinArith::Rem => SlicePair::new(a, b).rem_into::<4, ScalarVector4<T>>(out),
     }
 }
 

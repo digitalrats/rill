@@ -36,7 +36,6 @@
 
 use num_complex::Complex;
 use num_complex::Complex64;
-use rill_core::prelude::{ComplexSoa, ScalarVector4};
 use rill_core::Transcendental;
 
 // ============================================================================
@@ -353,12 +352,12 @@ where
         ]
     }
 
-    /// Scale all elements by a scalar via ComplexSoa::scale_real.
+    /// Scale all elements by a scalar via ComplexSoa operator.
     pub fn scale(&self, s: T) -> Self {
         use rill_core::prelude::Vector;
         let soa = self.pack_soa();
         let s_soa = rill_core::prelude::ScalarVector4::<T>::splat(s);
-        let scaled = soa.scale_real(s_soa);
+        let scaled = soa * s_soa;
         Self::unpack_soa(&scaled)
     }
 }

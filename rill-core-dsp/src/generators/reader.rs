@@ -266,7 +266,7 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
                     let f_v = ScalarVector4::load(&[f0, f1, f2, f3]);
 
                     // lerp: a + (b - a) * f
-                    let result = a_v.add(&b_v.sub(&a_v).mul(&f_v));
+                    let result = a_v + (b_v - a_v) * f_v;
                     result.store(&mut output[offset..offset + 4]);
                 }
             }
@@ -313,7 +313,7 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
                 ]);
                 let f_v = ScalarVector4::load(&[f0, f1, f2, f3]);
 
-                let result = a_v.add(&b_v.sub(&a_v).mul(&f_v));
+                let result = a_v + (b_v - a_v) * f_v;
                 result.store(&mut output[offset..offset + 4]);
             }
         }

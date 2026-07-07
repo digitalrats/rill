@@ -80,7 +80,7 @@ impl<T: Transcendental, const MAX_DELAY: usize> Algorithm<T> for CombFilter<T, M
 
                 // SIMD math
                 let input_v = ScalarVector4::load(&input[offset..offset + 4]);
-                let write_v = input_v.add(&delayed_v.mul(&ScalarVector4::splat(fb)));
+                let write_v = input_v + delayed_v * ScalarVector4::splat(fb);
 
                 // Store output
                 delayed_v.store(&mut output[offset..offset + 4]);

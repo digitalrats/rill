@@ -432,7 +432,9 @@ impl<T: Scalar> Default for ScalarVector2<T> {
 // Operator implementations
 // -----------------------------------------------------------------------------
 
-use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
+use std::ops::{
+    Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
+};
 
 impl<T: Scalar> Add for ScalarVector4<T> {
     type Output = Self;
@@ -634,6 +636,38 @@ impl<T: Scalar> Rem<T> for ScalarVector4<T> {
     }
 }
 
+// Compound assignment operators for ScalarVector4
+
+impl<T: Scalar> AddAssign for ScalarVector4<T> {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl<T: Scalar> SubAssign for ScalarVector4<T> {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
+impl<T: Scalar> MulAssign for ScalarVector4<T> {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+impl<T: Scalar> DivAssign for ScalarVector4<T> {
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+
+impl<T: Scalar> RemAssign for ScalarVector4<T> {
+    fn rem_assign(&mut self, rhs: Self) {
+        *self = *self % rhs;
+    }
+}
+
 impl<T: Scalar> Mul<T> for ScalarVector2<T> {
     type Output = Self;
 
@@ -674,6 +708,36 @@ impl<T: Scalar> Rem<T> for ScalarVector2<T> {
     }
 }
 
+impl<T: Scalar> AddAssign for ScalarVector2<T> {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl<T: Scalar> SubAssign for ScalarVector2<T> {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
+impl<T: Scalar> MulAssign for ScalarVector2<T> {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+impl<T: Scalar> DivAssign for ScalarVector2<T> {
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+
+impl<T: Scalar> RemAssign for ScalarVector2<T> {
+    fn rem_assign(&mut self, rhs: Self) {
+        *self = *self % rhs;
+    }
+}
+
 impl<T: Scalar> Mul<T> for ScalarVector1<T> {
     type Output = Self;
 
@@ -711,6 +775,36 @@ impl<T: Scalar> Rem<T> for ScalarVector1<T> {
 
     fn rem(self, rhs: T) -> Self {
         self % Self::splat(rhs)
+    }
+}
+
+impl<T: Scalar> AddAssign for ScalarVector1<T> {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl<T: Scalar> SubAssign for ScalarVector1<T> {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
+impl<T: Scalar> MulAssign for ScalarVector1<T> {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+impl<T: Scalar> DivAssign for ScalarVector1<T> {
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+
+impl<T: Scalar> RemAssign for ScalarVector1<T> {
+    fn rem_assign(&mut self, rhs: Self) {
+        *self = *self % rhs;
     }
 }
 

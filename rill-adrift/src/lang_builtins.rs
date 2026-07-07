@@ -556,6 +556,8 @@ pub fn register_complex_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         |_p, _sr| Box::new(ComplexAddBuiltin),
     );
 }
+/// Build a complete builtin registry: DSP primitives, complex arithmetic,
+/// and optionally analog models (`analog` feature) and FFT nodes (`fft` feature).
 pub fn full_registry<T: Transcendental>() -> Registry<T> {
     let mut reg = Registry::new();
     register_dsp_builtins(&mut reg);
