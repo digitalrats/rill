@@ -415,25 +415,45 @@ process = chip;
 
     let stc_playing = playing.clone();
     let stc_finished = finished.clone();
-    let stc_thread = std::thread::spawn(move || loop {
-        while let Some(msg) = stc_mailbox.pop() {
-            if let CommandEnum::ClockTick(tick) = msg {
-                if !stc_playing.load(Ordering::Acquire) {
-                    continue;
-                }
-                let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
-                if let Some(regs) = stc_player.borrow_mut().step_ms(ms) {
-                    if regs[7] != 0 {
-                        engine_handle.send(CommandEnum::GraphSetParameter {
-                            anchor: "chip".into(),
-                            param: "regs".into(),
-                            value: ParamValue::Bytes(regs.to_vec()),
-                        });
+    let stc_thread = std::thread::spawn(move || {
+        let mut tick_count: u64 = 0;
+        loop {
+            if let Some(msg) = stc_mailbox.pop() {
+                if let CommandEnum::ClockTick(tick) = msg {
+                    tick_count += 1;
+                    let playing = stc_playing.load(Ordering::Acquire);
+                    if tick_count <= 3 || tick_count % 100 == 0 {
+                        let t = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        eprintln!(
+                            "[STC:tick] ts={t} n={tick_count} playing={playing} samples={}",
+                            tick.samples_since_last
+                        );
                     }
-                }
-                if stc_player.borrow().finished {
-                    stc_finished.store(true, Ordering::Release);
-                    return;
+                    if !playing {
+                        continue;
+                    }
+                    let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+                    if let Some(regs) = stc_player.borrow_mut().step_ms(ms) {
+                        if regs[7] != 0 {
+                            let t = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis();
+                            eprintln!("[STC] ts={t} send regs[7]={:02x}", regs[7]);
+                            engine_handle.send(CommandEnum::GraphSetParameter {
+                                anchor: "chip".into(),
+                                param: "regs".into(),
+                                value: ParamValue::Bytes(regs.to_vec()),
+                            });
+                        }
+                    }
+                    if stc_player.borrow().finished {
+                        stc_finished.store(true, Ordering::Release);
+                        return;
+                    }
                 }
             }
         }

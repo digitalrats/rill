@@ -308,6 +308,14 @@ impl Algorithm<f32> for Ay38910Chip {
 
 impl ChipEmulator for Ay38910Chip {
     fn write_registers(&mut self, regs: &[u8]) {
+        if regs.len() >= 14 {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let hex: Vec<String> = regs[..14].iter().map(|b| format!("{b:02x}")).collect();
+            eprintln!("[AY] ts={t} regs=[{}]", hex.join(" "));
+        }
         for (i, &v) in regs.iter().enumerate().take(16) {
             self.write_register(i, v);
         }
