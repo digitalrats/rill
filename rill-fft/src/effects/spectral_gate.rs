@@ -5,6 +5,8 @@
 //! noise reduction and creative spectral effects.
 
 use num_complex::Complex;
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 use crate::real_fft::RealFft;
@@ -123,6 +125,51 @@ impl<T: Transcendental, const BUF_SIZE: usize> SpectralGate<T, BUF_SIZE> {
 impl<T: Transcendental, const BUF_SIZE: usize> Default for SpectralGate<T, BUF_SIZE> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for SpectralGate<T, BUF_SIZE> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        match input {
+            Some(samples) => {
+                assert_eq!(
+                    samples.len(),
+                    BUF_SIZE,
+                    "SpectralGate expects BUF_SIZE={} input",
+                    BUF_SIZE
+                );
+                assert_eq!(
+                    output.len(),
+                    BUF_SIZE,
+                    "SpectralGate expects BUF_SIZE={} output",
+                    BUF_SIZE
+                );
+                self.process(samples, output);
+                Ok(())
+            }
+            None => {
+                output.fill(T::ZERO);
+                Ok(())
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.fft_in.fill(T::ZERO);
+        self.fft_out
+            .fill(num_complex::Complex::new(T::ZERO, T::ZERO));
+        self.ifft_out.fill(T::ZERO);
+        self.overlap.fill(T::ZERO);
+    }
+
+    fn metadata(&self) -> AlgorithmMetadata {
+        AlgorithmMetadata {
+            name: "SpectralGate",
+            category: AlgorithmCategory::Effect,
+            description: "Frequency-domain noise gate via FFT",
+            author: "Rill",
+            version: env!("CARGO_PKG_VERSION"),
+        }
     }
 }
 

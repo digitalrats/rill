@@ -225,11 +225,110 @@ pub fn register_model_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     );
 }
 
+// ============================================================================
+// FFT built-ins (behind `fft` feature)
+// ============================================================================
+
+#[cfg(feature = "fft")]
+struct SpectralGateBuiltin<T: Transcendental> {
+    inner: rill_fft::effects::spectral_gate::SpectralGate<T, 64>,
+}
+
+#[cfg(feature = "fft")]
+impl<T: Transcendental> Algorithm<T> for SpectralGateBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        Algorithm::process(&mut self.inner, input, output)
+    }
+    fn reset(&mut self) {
+        Algorithm::reset(&mut self.inner);
+    }
+    fn metadata(&self) -> AlgorithmMetadata {
+        Algorithm::metadata(&self.inner)
+    }
+}
+
+#[cfg(feature = "fft")]
+impl<T: Transcendental> BlockBuiltin<T> for SpectralGateBuiltin<T> {
+    fn set_param(&mut self, index: usize, value: T) {
+        match index {
+            0 => self.inner.set_threshold(value),
+            1 => self.inner.set_ratio(value.to_f32()),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "fft")]
+struct SpectralDelayBuiltin<T: Transcendental> {
+    inner: rill_fft::effects::spectral_delay::SpectralDelay<T, 64, 16>,
+}
+
+#[cfg(feature = "fft")]
+impl<T: Transcendental> Algorithm<T> for SpectralDelayBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        Algorithm::process(&mut self.inner, input, output)
+    }
+    fn reset(&mut self) {
+        Algorithm::reset(&mut self.inner);
+    }
+    fn metadata(&self) -> AlgorithmMetadata {
+        Algorithm::metadata(&self.inner)
+    }
+}
+
+#[cfg(feature = "fft")]
+impl<T: Transcendental> BlockBuiltin<T> for SpectralDelayBuiltin<T> {
+    fn set_param(&mut self, index: usize, value: T) {
+        match index {
+            0 => self.inner.set_mix(value.to_f32()),
+            1 => self.inner.set_feedback(value.to_f32()),
+            _ => {}
+        }
+    }
+}
+
+/// Register rill-fft built-ins.
+#[cfg(feature = "fft")]
+pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
+    reg.register_block(
+        BuiltinSig {
+            name: "spectralgate",
+            signal_ins: 1,
+            signal_outs: 1,
+            num_params: 2,
+            kind: BuiltinKind::Block,
+        },
+        |p, _sr| {
+            let mut gate = rill_fft::effects::spectral_gate::SpectralGate::<T, 64>::new();
+            gate.set_threshold(T::from_f64(p[0]));
+            gate.set_ratio(p[1] as f32);
+            Box::new(SpectralGateBuiltin { inner: gate })
+        },
+    );
+    reg.register_block(
+        BuiltinSig {
+            name: "spectraldelay",
+            signal_ins: 1,
+            signal_outs: 1,
+            num_params: 2,
+            kind: BuiltinKind::Block,
+        },
+        |p, _sr| {
+            let mut delay = rill_fft::effects::spectral_delay::SpectralDelay::<T, 64, 16>::new();
+            delay.set_mix(p[0] as f32);
+            delay.set_feedback(p[1] as f32);
+            Box::new(SpectralDelayBuiltin { inner: delay })
+        },
+    );
+}
+
 /// A registry populated with all available built-ins.
 pub fn full_registry<T: Transcendental>() -> Registry<T> {
     let mut reg = Registry::new();
     register_dsp_builtins(&mut reg);
     #[cfg(feature = "analog")]
     register_model_builtins(&mut reg);
+    #[cfg(feature = "fft")]
+    register_fft_builtins(&mut reg);
     reg
 }

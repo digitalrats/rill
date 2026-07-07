@@ -5,6 +5,8 @@
 //! is implemented as a circular buffer of FFT frames.
 
 use num_complex::Complex;
+use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
+use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 
 use crate::real_fft::RealFft;
@@ -174,6 +176,57 @@ impl<T: Transcendental, const BUF_SIZE: usize, const MAX_DELAY: usize> Default
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize, const MAX_DELAY: usize> Algorithm<T>
+    for SpectralDelay<T, BUF_SIZE, MAX_DELAY>
+{
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        match input {
+            Some(samples) => {
+                assert_eq!(
+                    samples.len(),
+                    BUF_SIZE,
+                    "SpectralDelay expects BUF_SIZE={} input",
+                    BUF_SIZE
+                );
+                assert_eq!(
+                    output.len(),
+                    BUF_SIZE,
+                    "SpectralDelay expects BUF_SIZE={} output",
+                    BUF_SIZE
+                );
+                self.process(samples, output);
+                Ok(())
+            }
+            None => {
+                output.fill(T::ZERO);
+                Ok(())
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.fft_in.fill(T::ZERO);
+        self.fft_out
+            .fill(num_complex::Complex::new(T::ZERO, T::ZERO));
+        self.ifft_out.fill(T::ZERO);
+        self.overlap.fill(T::ZERO);
+        self.delay_buffer.iter_mut().for_each(|buf| {
+            buf.fill(num_complex::Complex::new(T::ZERO, T::ZERO));
+        });
+        self.write_head = 0;
+    }
+
+    fn metadata(&self) -> AlgorithmMetadata {
+        AlgorithmMetadata {
+            name: "SpectralDelay",
+            category: AlgorithmCategory::Effect,
+            description: "Frequency-dependent delay via FFT",
+            author: "Rill",
+            version: env!("CARGO_PKG_VERSION"),
+        }
     }
 }
 
