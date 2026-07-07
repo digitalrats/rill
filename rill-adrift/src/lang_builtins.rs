@@ -821,6 +821,7 @@ pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
 #[cfg(feature = "lofi")]
 struct Ay38910Builtin {
     chip: rill_lofi::Ay38910Chip,
+    last_regs: Option<Vec<u8>>,
 }
 
 #[cfg(feature = "lofi")]
@@ -841,8 +842,11 @@ impl BlockBuiltin<f32> for Ay38910Builtin {
     fn set_param(&mut self, index: usize, value: &ParamValue) {
         if index == 1 {
             if let ParamValue::Bytes(regs) = value {
-                use rill_lofi::ChipEmulator;
-                self.chip.write_registers(regs);
+                if self.last_regs.as_deref() != Some(regs.as_slice()) {
+                    use rill_lofi::ChipEmulator;
+                    self.chip.write_registers(regs);
+                    self.last_regs = Some(regs.clone());
+                }
             }
         }
     }
@@ -864,7 +868,10 @@ pub fn register_chip_builtins(reg: &mut Registry<f32>) {
             let clock = p[0] as f32;
             let mut chip = rill_lofi::Ay38910Chip::new(clock);
             Algorithm::init(&mut chip, sr);
-            Box::new(Ay38910Builtin { chip })
+            Box::new(Ay38910Builtin {
+                chip,
+                last_regs: None,
+            })
         },
     );
 }
