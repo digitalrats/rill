@@ -15,6 +15,7 @@
 #![deny(unsafe_code)]
 
 pub mod complex_fft;
+pub mod effects;
 pub mod nodes;
 pub mod overlap_add;
 pub mod partitioned_conv;
