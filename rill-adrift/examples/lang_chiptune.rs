@@ -414,6 +414,10 @@ process = chip;
     let start = std::time::Instant::now();
 
     let seq_thread = std::thread::spawn(move || {
+        eprintln!(
+            "[STC] thread started, stc_len={}",
+            player.borrow().data.len()
+        );
         let mut last_ms = 0.0;
         loop {
             if !player_playing.load(Ordering::Acquire) {
