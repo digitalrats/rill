@@ -49,6 +49,12 @@ pub enum Tok {
     Semi,
     /// End of input.
     Eof,
+    /// `param` keyword — declares a named subgraph anchor node.
+    Param,
+    /// `keep` keyword — forbids inlining of a param node.
+    Keep,
+    /// `inline` keyword — forces inlining of a param node.
+    Inline,
     /// Imaginary literal, e.g. `3i`, `2.5i`.
     Imag(f64),
 }
@@ -155,10 +161,21 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             }
             let text = &src[start..i];
             let span = Span::new(start, i);
-            let tok = if text == "_" {
-                Tok::Wire
-            } else {
-                Tok::Ident(text.to_string())
+
+            // peek past whitespace to see if `(` follows — if so,
+            // `param(`, `keep(`, `inline(` are function calls, not keywords
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let followed_by_paren = j < bytes.len() && bytes[j] == b'(';
+
+            let tok = match text {
+                "_" => Tok::Wire,
+                "param" if !followed_by_paren => Tok::Param,
+                "keep" if !followed_by_paren => Tok::Keep,
+                "inline" if !followed_by_paren => Tok::Inline,
+                _ => Tok::Ident(text.to_string()),
             };
             out.push(Token { tok, span });
             continue;
@@ -293,5 +310,35 @@ mod tests {
     #[test]
     fn rejects_unterminated_string() {
         assert!(tokenize(r#""abc"#).is_err());
+    }
+
+    #[test]
+    fn lexes_param_keyword() {
+        assert_eq!(
+            kinds("param keep inline ident"),
+            vec![
+                Tok::Param,
+                Tok::Keep,
+                Tok::Inline,
+                Tok::Ident("ident".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn param_function_is_not_keyword() {
+        assert_eq!(
+            kinds(r#"param("freq", 440)"#),
+            vec![
+                Tok::Ident("param".into()),
+                Tok::LParen,
+                Tok::Str("freq".into()),
+                Tok::Comma,
+                Tok::Int(440),
+                Tok::RParen,
+                Tok::Eof,
+            ]
+        );
     }
 }
