@@ -1,7 +1,7 @@
-//! # Cellular automatons
+//! # Cellular automata
 //!
-//! Signal generation based on cellular automatons.
-//! Supports 1D and 2D cellular automatons with various rules.
+//! Signal generation based on cellular automata.
+//! Supports 1D and 2D cellular automata with various rules.
 
 use crate::engine::{Automaton, NoAction, Range, Time};
 use rill_core::traits::ParamValue;
@@ -244,7 +244,7 @@ impl Automaton for CellularAutomaton {
     }
 }
 
-/// Preset rules for 1D cellular automatons
+/// Preset rules for 1D cellular automata
 pub mod rules {
     /// Rule 30: chaotic behavior
     pub const RULE_30: u8 = 30;

@@ -96,7 +96,7 @@ impl AutomatonComparison {
          │ Sequencer       │ Patterns, steps              │ Rhythmic        │\n\
          │ RandomWalk      │ Random walks                 │ Generative      │\n\
          │ Chaos           │ Deterministic chaos          │ Unpredictable   │\n\
-         │ Cellular        │ Cellular automatons            │ Organic         │\n\
+         │ Cellular        │ Cellular automata             │ Organic         │\n\
          └─────────────────┴─────────────────────────────┴─────────────────┘"
     }
 

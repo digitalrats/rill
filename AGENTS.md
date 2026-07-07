@@ -157,11 +157,19 @@ Rill is a **universal signal processing platform**, not exclusively audio. The t
 | `automata` (plural) | `automatons` | All crates — code identifiers, field names, variable names, docs |
 | `Automata` (type/generic) | `Automaton` | Trait names, type parameters, enum variants |
 
+> **Exception:** «cellular automata» is a well-established mathematical term (Conway, Wolfram).
+> The compound phrase `cellular automata` (both words together) is exempt from the rule above.
+> Standalone uses of `automata` as a generic plural are still forbidden.
+
 **Concrete type names** (`AudioInput`, `AudioOutput`, `AudioConfig` in `rill-io`, `PortAudio`) are **exempt** — they are code identifiers, not prose. Renaming them requires a separate API-breaking change.
 
 **«Hearing» / acoustic sensors** — the `hearing` module name and «acoustic» are domain-level concepts. Doc comments describing signal analysis algorithms should use «signal» (not «audio») for the generic processing path.
 
 **«Automaton» vs «automata»** — the singular "automaton" and plural **"automatons"** are the only acceptable forms. The incorrect plural "automata" exists in legacy public API (`RackDef.automata`, `PatchbayDef.automata`) and is a known issue pending an API-breaking rename. All **new** code identifiers, variable names, and documentation MUST use `automatons`.
+
+> **Exception:** «cellular automata» is a well-established mathematical term (Conway, Wolfram).
+> The compound phrase `cellular automata` (both words together) is exempt.
+> Standalone `automata` as a generic plural is still forbidden.
 
 ## Real-time safety
 
