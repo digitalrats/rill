@@ -287,6 +287,96 @@ Benchmarks show the implementation is competitive with established FFT
 libraries for the target sizes (64…16384), and the RT‑safety guarantees
 are verified at the allocator level.
 
+## Complex number support
+
+### Complex matrix helpers (`rill-core-dsp`)
+
+`ComplexMat2<T>` and `ComplexMat3<T>` provide closed‑form 2×2 and 3×3
+complex matrix operations for filter analysis and RT signal processing:
+
+```rust,no_run
+use rill_core_dsp::complex_mat::ComplexMat2;
+use num_complex::Complex;
+
+let m = ComplexMat2::<f32>::new(
+    Complex::new(2.0, 0.0), Complex::new(1.0, 0.0),
+    Complex::new(1.0, 0.0), Complex::new(3.0, 0.0),
+);
+
+let det = m.det();
+let inv = m.inv().unwrap();
+let ev = m.eigenvalues().unwrap();
+let [re, _im] = m.mul_vec(Complex::new(1.0, 0.0), Complex::new(0.0, 0.0));
+```
+
+Free functions provide canonical complex multiplication:
+
+```rust,no_run
+use rill_core_dsp::complex_mat::{mul_complex, mul_complex_add};
+use num_complex::Complex;
+
+let a = Complex::new(1.0f32, 2.0);
+let b = Complex::new(3.0, 4.0);
+let c = mul_complex(a, b);  // a * b
+
+let mut acc = Complex::new(0.0, 0.0);
+mul_complex_add(&mut acc, a, b);  // acc += a * b
+```
+
+### Real‑valued matrix types (`glam`)
+
+`glam` is re‑exported from `rill-core` — zero dependencies, stack‑only,
+SIMD‑accelerated `Mat2`/`Mat3`/`Mat4` and `Vec2`/`Vec3`/`Vec4`:
+
+```rust,no_run
+use rill_core::glam::{Mat2, Vec2, mat2, vec2};
+
+let rot = mat2([0.866, 0.5], [-0.5, 0.866]);  // 60° rotation
+let v = vec2(1.0, 0.0);
+let r = rot * v;  // ≈ [0.866, 0.5]
+```
+
+## Complex numbers in rill‑lang
+
+Eight built‑ins provide complex arithmetic in the DSL:
+
+| Builtin | I/O channels | Description |
+|---|---|---|
+| `complex(re, im)` | 0 → 2 | Generator |
+| `conj(x)` | 2 → 2 | Conjugate |
+| `re(x)`, `im(x)` | 2 → 1 | Real / imaginary part |
+| `norm(x)` | 2 → 1 | Magnitude |
+| `arg(x)` | 2 → 1 | Phase (`atan2`) |
+| `cmul(a, b)` | 4 → 2 | Complex multiply |
+| `cadd(a, b)` | 4 → 2 | Complex add |
+
+```faust
+// (3+4i) × (2+0i) = 6+8i → extract real part
+process = complex(3.0, 4.0), complex(2.0, 0.0) : cmul() : re();  // → 6.0
+
+// norm of 3+4i
+process = complex(3.0, 4.0) : norm();  // → 5.0
+```
+
+Spectral effects are also available as DSL builtins behind the `fft` feature:
+
+```faust
+process = _ : spectralgate(0.01, 0.0);             // spectral noise gate
+process = _ : spectraldelay(0.5, 0.3);             // shimmer
+process = _ : spectralgate(0.01, 0.0) : spectraldelay(0.5, 0.3);  // chain
+```
+
+## Examples
+
+All examples live in `rill-adrift/examples/`:
+
+```bash
+cargo run --example convolver        --features fft
+cargo run --example spectral_effects --features fft
+cargo run --example complex_dsl      --features lang
+cargo run --example dsl_spectral     --features "lang,fft"
+```
+
 ## Dependencies and features
 
 Add to your `Cargo.toml`:

@@ -45,6 +45,26 @@ process  = gain(_);          // apply it to the input wire
 | `sin cos tan sqrt exp ln tanh abs` | math builtins | 1 → 1 |
 | `min max` | selection | 2 → 1 |
 
+**Complex arithmetic** (builtins, always available):
+
+| Syntax | Meaning | Channels |
+|---|---|---|
+| `complex(re, im)` | complex constant generator | 0 → 2 |
+| `conj(x)` | conjugate: `re + i·im → re − i·im` | 2 → 2 |
+| `re(x)`, `im(x)` | real / imaginary part | 2 → 1 |
+| `norm(x)` | magnitude: `√(re² + im²)` | 2 → 1 |
+| `arg(x)` | phase: `atan2(im, re)` | 2 → 1 |
+| `cmul(a, b)` | complex multiply | 4 → 2 |
+| `cadd(a, b)` | complex add | 4 → 2 |
+
+Complex signals are pairs of wires (re + im). Use the parallel combinator `,` to
+combine two complex sources into a 4-wire input for `cmul`/`cadd`:
+
+```faust
+process = complex(3.0, 4.0), complex(2.0, 0.0) : cmul() : re();  // → 6.0
+process = complex(1.0, 2.0), complex(3.0, 4.0) : cadd() : norm(); // → ≈7.21
+```
+
 ### Combinators (block-diagram algebra)
 
 | Operator | Name | Constraint | Result arity |
@@ -105,12 +125,21 @@ backend is still planned and will reuse the same IR.
 ## Built-in functions
 
 rill-lang supports calling stateful DSP/model built-ins from
-`rill-core-dsp`/`rill-core-model` via `compile_with(src, &registry, sample_rate)`.
+`rill-core-dsp`/`rill-core-model`/`rill-fft` via `compile_with(src, &registry, sample_rate)`.
+
+| Category | Builtins | Feature |
+|---|---|---|
+| Filters | `onepole`, `moog` (sample), `lowpass`, `highpass` (block) | always |
+| Analog | `analog_moog` | `analog` |
+| Spectral | `spectralgate`, `spectraldelay` | `fft` |
+| Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
+
 Parameters are compile-time constants (`_ : lowpass(1000.0, 0.7)`), signals flow
 via combinators. Per-sample built-ins (`onepole`, `moog`) are feedback-legal;
-whole-buffer built-ins (`lowpass`, `highpass`, `analog_moog`) are opaque block
-steps and cannot appear inside `~`. Bindings live in `rill-adrift`
-(`lang_builtins::full_registry`, `analog_moog` behind the `analog` feature).
+whole-buffer built-ins (`lowpass`, `highpass`, `spectralgate`, `complex`, etc.)
+are opaque block steps and cannot appear inside `~`. Bindings live in
+`rill-adrift` (`lang_builtins::full_registry`, `analog_moog` behind the
+`analog` feature, `spectralgate` behind `fft`).
 
 ## Parameters
 
