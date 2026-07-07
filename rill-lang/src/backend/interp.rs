@@ -32,7 +32,6 @@ fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
             }
             let v = prog.params[param_idx].clone();
             prog.params_dirty[param_idx] = false;
-            eprintln!("[push_builtin] instance={instance} arg_pos={arg_pos} param_idx={param_idx}");
             match &mut prog.builtins[instance] {
                 crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, &v),
                 crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),

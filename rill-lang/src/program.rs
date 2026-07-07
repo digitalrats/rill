@@ -186,10 +186,6 @@ impl<T: Transcendental> RillProgram<T> {
             self.params[idx] = clamped;
             if let Some(d) = self.params_dirty.get_mut(idx) {
                 *d = true;
-                eprintln!(
-                    "[Program:set_param] idx={idx} dirty=true value={:?}",
-                    self.params[idx]
-                );
             }
         }
     }
