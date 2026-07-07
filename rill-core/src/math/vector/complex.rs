@@ -117,6 +117,22 @@ impl<T: Transcendental, V: Vector<T, 4>> ComplexVector<T, V> {
         }
     }
 
+    pub fn csub(&self, other: &Self) -> Self {
+        Self {
+            data: self.data - other.data,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Magnitude squared per complex element: `re² + im²` (lane‑pair summed).
+    pub fn norm_sqr(&self) -> (T, T) {
+        let r0 = self.data.extract(0);
+        let i0 = self.data.extract(1);
+        let r1 = self.data.extract(2);
+        let i1 = self.data.extract(3);
+        (r0 * r0 + i0 * i0, r1 * r1 + i1 * i1)
+    }
+
     pub fn scale_real(&self, scalar: T) -> Self {
         Self {
             data: self.data * V::splat(scalar),
@@ -373,5 +389,26 @@ mod tests {
         assert!(approx_eq(neg.to_complex0().1, -2.0));
         assert!(approx_eq(neg.to_complex1().0, -3.0));
         assert!(approx_eq(neg.to_complex1().1, -4.0));
+    }
+
+    #[test]
+    fn test_complex_vector_csub() {
+        type CV = ComplexVector<f32, ScalarVector4<f32>>;
+        let a = CV::from_two((3.0, 5.0), (2.0, 1.0));
+        let b = CV::from_two((1.0, 2.0), (1.0, 0.0));
+        let diff = a.csub(&b);
+        assert!(approx_eq(diff.to_complex0().0, 2.0));
+        assert!(approx_eq(diff.to_complex0().1, 3.0));
+        assert!(approx_eq(diff.to_complex1().0, 1.0));
+        assert!(approx_eq(diff.to_complex1().1, 1.0));
+    }
+
+    #[test]
+    fn test_complex_vector_norm_sqr() {
+        type CV = ComplexVector<f32, ScalarVector4<f32>>;
+        let cv = CV::from_two((3.0, 4.0), (1.0, 1.0));
+        let (n0, n1) = cv.norm_sqr();
+        assert!(approx_eq(n0, 25.0)); // 3²+4²
+        assert!(approx_eq(n1, 2.0)); // 1²+1²
     }
 }
