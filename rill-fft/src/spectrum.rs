@@ -3,10 +3,12 @@
 //!
 //! Implements `SpectrumAnalyzer` from `rill-core-dsp` using `RealFft`.
 
+use rill_core::prelude::Vector;
 use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 use rill_core_dsp::analyzer::{Analyzer, SpectrumAnalyzer};
+use rill_core_dsp::complex_mat::soa_from_interleaved;
 
 use crate::real_fft::RealFft;
 
@@ -79,9 +81,22 @@ impl<T: Transcendental> Algorithm<T> for FftSpectrumAnalyzer<T> {
 
                 self.fft.forward(&self.block_buf, &mut self.scratch);
 
-                for (i, c) in self.scratch.iter().enumerate() {
-                    let mag_sq = c.re * c.re + c.im * c.im;
-                    self.magnitude[i] = mag_sq.to_f64().sqrt() as f32;
+                // 4‑bin batch magnitude via ComplexSoa eDSL
+                let len = self.scratch.len();
+                let mut i = 0usize;
+                while i + 3 < len {
+                    let c = soa_from_interleaved(&self.scratch[i..i + 4]);
+                    let mag_sq = c.norm_sqr();
+                    self.magnitude[i] = mag_sq.extract(0).to_f64().sqrt() as f32;
+                    self.magnitude[i + 1] = mag_sq.extract(1).to_f64().sqrt() as f32;
+                    self.magnitude[i + 2] = mag_sq.extract(2).to_f64().sqrt() as f32;
+                    self.magnitude[i + 3] = mag_sq.extract(3).to_f64().sqrt() as f32;
+                    i += 4;
+                }
+                while i < len {
+                    let c = self.scratch[i];
+                    self.magnitude[i] = (c.re * c.re + c.im * c.im).to_f64().sqrt() as f32;
+                    i += 1;
                 }
 
                 output.fill(T::ZERO);
