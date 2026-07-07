@@ -33,13 +33,13 @@ use rill_core::queues::MpscQueue;
 // Mailbox — private, never visible outside this crate
 // ============================================================================
 
-pub(crate) struct Mailbox<M: Send + 'static> {
+pub struct Mailbox<M: Send + 'static> {
     pub(crate) queue: MpscQueue<M>,
     alive: AtomicBool,
 }
 
 impl<M: Send + 'static> Mailbox<M> {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             queue: MpscQueue::with_capacity(capacity),
             alive: AtomicBool::new(true),
