@@ -857,7 +857,7 @@ pub fn register_chip_builtins(reg: &mut Registry<f32>) {
             name: "ay38910",
             signal_ins: 0,
             signal_outs: 1,
-            num_params: 1,
+            num_params: 2,
             kind: BuiltinKind::Block,
         },
         |p, sr| {
