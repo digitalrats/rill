@@ -128,19 +128,19 @@ impl BuiltinSig {
             .count()
     }
 
-    /// Minimum number of Apply arguments.
+    /// Minimum number of Apply arguments (excludes Signal params).
     pub fn min_args(&self) -> usize {
         let mut count = 0;
         for p in &self.params {
             match p {
-                ParamType::Variadic(_) => {} // zero or more
+                ParamType::Signal | ParamType::Variadic(_) => {}
                 _ => count += 1,
             }
         }
         count
     }
 
-    /// Maximum number of Apply arguments (None if variadic).
+    /// Maximum number of Apply arguments (None if variadic; excludes Signal params).
     pub fn max_args(&self) -> Option<usize> {
         if self
             .params
@@ -149,7 +149,12 @@ impl BuiltinSig {
         {
             None
         } else {
-            Some(self.params.len())
+            Some(
+                self.params
+                    .iter()
+                    .filter(|p| !matches!(p, ParamType::Signal))
+                    .count(),
+            )
         }
     }
 }

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use super::ty::{Scalar, Scheme, Subst, Type, TypeVarId};
 use super::unify::unify_scalar;
 use crate::ast::{BinOp, Def, Expr, Program};
-use crate::builtin::SignatureSource;
+use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 
 /// The typed result of inference: the program's definitions plus the resolved
@@ -271,7 +271,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
             ctx.defs = saved_defs;
             Ok(ty)
         }
-        Expr::Record(..) => unreachable!("Record should be desugared before type inference"),
+        Expr::Record(_, _) => Ok(Type::uniform(0, 1, Scalar::Float)),
     }
 }
 
@@ -329,66 +329,172 @@ fn infer_apply(
     if name == "smooth" {
         if args.len() != 2 {
             return Err(CompileError::Type {
-                msg: "smooth expects exactly 2 arguments: smooth(signal, ms)".into(),
+                msg: format!("smooth expects 2 arguments, got {}", args.len()),
                 span,
             });
         }
         let sig_ty = infer_expr(ctx, &args[0])?;
-        if sig_ty.arity_out() != 1 {
+        if sig_ty.arity_out() == 0 {
             return Err(CompileError::Type {
-                msg: "smooth first argument must produce exactly one wire".into(),
+                msg: "smooth signal argument has no outputs".into(),
                 span: args[0].span(),
             });
         }
-        let ms_ty = infer_expr(ctx, &args[1])?;
-        if ms_ty.arity_in() != 0 || ms_ty.arity_out() != 1 {
+        let st = infer_expr(ctx, &args[1])?;
+        if st.arity_in() != 0 || st.arity_out() != 1 {
             return Err(CompileError::Type {
-                msg: "smooth second argument (ms) must be a constant expression".into(),
+                msg: "smooth time must be a constant".into(),
                 span: args[1].span(),
             });
         }
-        unify_scalar(&ms_ty.outs[0], &Scalar::Float, &mut ctx.subst, span)?;
-        return Ok(Type {
-            ins: sig_ty.ins.clone(),
-            outs: vec![Scalar::Float],
-        });
+        return Ok(Type::uniform(
+            sig_ty.arity_in(),
+            sig_ty.arity_out(),
+            Scalar::Float,
+        ));
     }
     if name == "param" {
         return infer_param(args, span);
     }
-    if let Some(sig) = ctx.sigs.builtin_sig(name) {
-        let sig = sig.clone();
-        if args.len() != sig.params.len() {
+    if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {
+        let min = sig.min_args();
+        let max = sig.max_args();
+        if args.len() < min {
             return Err(CompileError::Type {
                 msg: format!(
-                    "built-in `{name}` expects {} param(s), got {}",
-                    sig.params.len(),
+                    "built-in `{name}` expects at least {min} arg(s), got {}",
                     args.len()
                 ),
                 span,
             });
         }
-        for a in args {
-            if let Expr::Ref(ref_name, _) = a {
-                if ctx.locals.contains_key(ref_name) {
-                    continue;
-                }
-            }
-            let at = infer_expr(ctx, a)?;
-            if at.arity_in() != 0 || at.arity_out() != 1 {
+        if let Some(max) = max {
+            if args.len() > max {
                 return Err(CompileError::Type {
                     msg: format!(
-                        "param to `{name}` must be a constant expression or parameter reference"
+                        "built-in `{name}` expects at most {max} arg(s), got {}",
+                        args.len()
                     ),
-                    span: a.span(),
+                    span,
                 });
             }
         }
-        return Ok(Type::uniform(
-            sig.signal_ins(),
-            sig.signal_outs,
-            Scalar::Float,
-        ));
+
+        let mut signal_ins = 0;
+        let mut pos = 0;
+
+        for ptype in &sig.params {
+            match ptype {
+                ParamType::Signal => {
+                    signal_ins += 1;
+                }
+                ParamType::Float | ParamType::Int => {
+                    if pos >= args.len() {
+                        break;
+                    }
+                    match &args[pos] {
+                        Expr::Ref(ref_name, _) if ctx.locals.contains_key(ref_name) => {}
+                        _ => {
+                            let at = infer_expr(ctx, &args[pos])?;
+                            if at.arity_in() != 0 || at.arity_out() != 1 {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "param at position {pos} of `{name}` must be constant or param reference"
+                                    ),
+                                    span: args[pos].span(),
+                                });
+                            }
+                        }
+                    }
+                    pos += 1;
+                }
+                ParamType::String => {
+                    if pos >= args.len() {
+                        break;
+                    }
+                    match &args[pos] {
+                        Expr::Str(_, _) => {}
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: format!("argument {pos} of `{name}` must be a string literal"),
+                                span: args[pos].span(),
+                            });
+                        }
+                    }
+                    pos += 1;
+                }
+                ParamType::Bool => {
+                    if pos >= args.len() {
+                        break;
+                    }
+                    pos += 1;
+                }
+                ParamType::Enum(variants) => {
+                    if pos >= args.len() {
+                        break;
+                    }
+                    match &args[pos] {
+                        Expr::Ref(v, _) if variants.contains(&v.as_str()) => {}
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "argument {pos} of `{name}` must be one of: {}",
+                                    variants.join(", ")
+                                ),
+                                span: args[pos].span(),
+                            });
+                        }
+                    }
+                    pos += 1;
+                }
+                ParamType::Record(_schema) => {
+                    if pos >= args.len() {
+                        break;
+                    }
+                    match &args[pos] {
+                        Expr::Record(_, _) => {}
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: format!("argument {pos} of `{name}` must be a record literal"),
+                                span: args[pos].span(),
+                            });
+                        }
+                    }
+                    pos += 1;
+                }
+                ParamType::Variadic(inner) => match &**inner {
+                    ParamType::Signal => {
+                        for arg in &args[pos..] {
+                            let ty = infer_expr(ctx, arg)?;
+                            if ty.arity_out() == 0 {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "variadic signal argument of `{name}` has no outputs"
+                                    ),
+                                    span: arg.span(),
+                                });
+                            }
+                            signal_ins += ty.arity_in();
+                        }
+                    }
+                    _ => {
+                        for arg in &args[pos..] {
+                            let at = infer_expr(ctx, arg)?;
+                            if at.arity_in() != 0 || at.arity_out() != 1 {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "variadic param of `{name}` must be constant or param reference"
+                                    ),
+                                    span: arg.span(),
+                                });
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+        return Ok(Type::uniform(signal_ins, sig.signal_outs, Scalar::Float));
     }
     // User-defined function: λ-params are consumed, signal ports remain open
     if let Some(scheme) = ctx.defs.get(name).cloned() {
