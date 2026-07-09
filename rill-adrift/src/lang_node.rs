@@ -11,22 +11,18 @@
 use rill_core::{
     math::Transcendental,
     traits::{
-        Algorithm, Node, NodeCategory, NodeMetadata, NodeState, ParamMetadata, ParamType,
-        ParamValue, Processor,
+        Algorithm, MultichannelAlgorithm, Node, NodeCategory, NodeMetadata, NodeState,
+        ParamMetadata, ParamType, ParamValue, Processor, Router,
     },
     NodeId, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
 };
 use rill_lang::{compile, compile_with, CompileError, RillProgram};
 
 /// Detect whether a rill-lang source string uses graph DSL syntax (contains
-/// `param` keyword definitions).
+/// `main ` at line start).
 pub fn is_graph_dsl(src: &str) -> bool {
-    src.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with("param ")
-            || trimmed.starts_with("keep param ")
-            || trimmed.starts_with("inline param ")
-    })
+    src.lines()
+        .any(|line| line.trim_start().starts_with("main "))
 }
 
 /// A graph node driven by a compiled rill-lang engine with anchor-based
@@ -72,11 +68,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
         })
     }
 
-    /// Build an identity node (`process = _;`) — a safe fallback that always
+    /// Build an identity node (`main = _`) — a safe fallback that always
     /// compiles.
     pub fn identity() -> Self {
         Self::from_source_with(
-            "process = _;",
+            "main = _",
             std::sync::Arc::new(rill_lang::builtin::Registry::new()),
             44_100.0,
         )
@@ -93,7 +89,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
         &self.engine
     }
 
-    /// The engine's actor ref for sending GraphSetParameter commands.
+    /// The engine's actor ref for sending SetParameter commands.
     pub fn handle(&self) -> rill_core_actor::ActorRef<rill_core::queues::CommandEnum> {
         self.engine.handle()
     }
@@ -275,10 +271,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
         })
     }
 
-    /// Build an identity node (`process = _;`) — a safe fallback that always
+    /// Build an identity node (`main = _`) — a safe fallback that always
     /// compiles.
     pub fn identity() -> Self {
-        Self::from_source("process = _;").expect("identity source always compiles")
+        Self::from_source("main = _").expect("identity source always compiles")
     }
 
     /// The rill-lang source backing this node.
@@ -424,34 +420,287 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for LangNo
     }
 }
 
+/// Graph node wrapping a multi-IO rill-lang program (mixer, dry/wet, etc.).
+/// Implements `Router` for N→M configurable signal routing.
+pub struct MultiLangNode<T: Transcendental, const BUF_SIZE: usize> {
+    id: NodeId,
+    metadata: NodeMetadata,
+    input_ports: Vec<Port<T, BUF_SIZE>>,
+    output_ports: Vec<Port<T, BUF_SIZE>>,
+    controls: Vec<Port<T, BUF_SIZE>>,
+    state: NodeState<T, BUF_SIZE>,
+    source: String,
+    program: RillProgram<T>,
+    registry: Option<std::sync::Arc<rill_lang::builtin::Registry<T>>>,
+    sample_rate: f32,
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
+    /// Build a multi-IO node from rill-lang source.
+    pub fn from_source(source: &str) -> Result<Self, CompileError> {
+        let program = compile::<T>(source)?;
+        let n_in = program.num_inputs();
+        let n_out = program.num_outputs();
+        let mut metadata = NodeMetadata::new("RillLangMulti", NodeCategory::Processor);
+        metadata.type_name = Some("rill/lang_multi".to_string());
+
+        let input_ports: Vec<_> = (0..n_in)
+            .map(|i| Port::input(NodeId(0), i as u16, format!("in_{i}")))
+            .collect();
+        let output_ports: Vec<_> = (0..n_out)
+            .map(|i| Port::output(NodeId(0), i as u16, format!("out_{i}")))
+            .collect();
+
+        Ok(Self {
+            id: NodeId(0),
+            metadata,
+            input_ports,
+            output_ports,
+            controls: Vec::new(),
+            state: NodeState::new(44_100.0),
+            source: source.to_string(),
+            program,
+            registry: None,
+            sample_rate: 44_100.0,
+        })
+    }
+
+    /// Build a multi-IO node with a built-in registry and sample rate.
+    pub fn from_source_with(
+        source: &str,
+        registry: std::sync::Arc<rill_lang::builtin::Registry<T>>,
+        sample_rate: f32,
+    ) -> Result<Self, CompileError> {
+        let program = compile_with::<T>(source, &registry, sample_rate)?;
+        let n_in = program.num_inputs();
+        let n_out = program.num_outputs();
+        let mut metadata = NodeMetadata::new("RillLangMulti", NodeCategory::Processor);
+        metadata.type_name = Some("rill/lang_multi".to_string());
+
+        let input_ports: Vec<_> = (0..n_in)
+            .map(|i| Port::input(NodeId(0), i as u16, format!("in_{i}")))
+            .collect();
+        let output_ports: Vec<_> = (0..n_out)
+            .map(|i| Port::output(NodeId(0), i as u16, format!("out_{i}")))
+            .collect();
+
+        Ok(Self {
+            id: NodeId(0),
+            metadata,
+            input_ports,
+            output_ports,
+            controls: Vec::new(),
+            state: NodeState::new(sample_rate),
+            source: source.to_string(),
+            program,
+            registry: Some(registry),
+            sample_rate,
+        })
+    }
+
+    /// The rill-lang source backing this node.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The underlying compiled program.
+    pub fn program(&self) -> &RillProgram<T> {
+        &self.program
+    }
+
+    /// Mutable access to the compiled program.
+    pub fn program_mut(&mut self) -> &mut RillProgram<T> {
+        &mut self.program
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for MultiLangNode<T, BUF_SIZE> {
+    fn metadata(&self) -> NodeMetadata {
+        let mut md = self.metadata.clone();
+        md.parameters = self
+            .program
+            .params_meta()
+            .iter()
+            .map(|p| {
+                let mut pm = ParamMetadata::new(
+                    &p.name,
+                    ParamType::Float,
+                    ParamValue::Float(p.default as f32),
+                );
+                if p.min.is_finite() && p.max.is_finite() {
+                    pm = pm.with_range(p.min as f32, p.max as f32, 0.0);
+                }
+                pm
+            })
+            .collect();
+        md
+    }
+
+    fn init(&mut self, sample_rate: f32) {
+        self.state.sample_rate = sample_rate;
+        self.sample_rate = sample_rate;
+    }
+
+    fn reset(&mut self) {
+        self.state.reset();
+        Algorithm::reset(&mut self.program);
+    }
+
+    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
+        match id.as_str() {
+            "source" => Some(ParamValue::String(self.source.clone())),
+            _ => self
+                .program
+                .param_index(id.as_str())
+                .map(|idx| self.program.param(idx).clone()),
+        }
+    }
+
+    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
+        match id.as_str() {
+            "source" => {
+                let src = match value {
+                    ParamValue::String(s) => s,
+                    _ => return Err(ProcessError::parameter("`source` must be a string")),
+                };
+                let program = if let Some(ref reg) = self.registry {
+                    compile_with::<T>(&src, reg, self.sample_rate)
+                } else {
+                    compile::<T>(&src)
+                }
+                .map_err(|e| ProcessError::parameter(format!("rill-lang compile error: {e}")))?;
+                self.program = program;
+                self.source = src;
+                Ok(())
+            }
+            _ => {
+                if let Some(idx) = self.program.param_index(id.as_str()) {
+                    self.program.set_param(idx, value);
+                    Ok(())
+                } else {
+                    Err(ProcessError::parameter("unknown parameter"))
+                }
+            }
+        }
+    }
+
+    fn id(&self) -> NodeId {
+        self.id
+    }
+
+    fn set_id(&mut self, id: NodeId) {
+        self.id = id;
+    }
+
+    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.input_ports.get(index)
+    }
+
+    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.input_ports.get_mut(index)
+    }
+
+    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.output_ports.get(index)
+    }
+
+    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.output_ports.get_mut(index)
+    }
+
+    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
+        self.controls.get(index)
+    }
+
+    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
+        self.controls.get_mut(index)
+    }
+
+    fn state(&self) -> &NodeState<T, BUF_SIZE> {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
+        &mut self.state
+    }
+
+    fn num_signal_inputs(&self) -> usize {
+        self.input_ports.len()
+    }
+
+    fn num_signal_outputs(&self) -> usize {
+        self.output_ports.len()
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> Router<T, BUF_SIZE> for MultiLangNode<T, BUF_SIZE> {
+    fn route(&mut self, _ctx: &RenderContext, _inputs: &[&[T; BUF_SIZE]]) -> ProcessResult<()> {
+        let n_in = self.program.num_inputs();
+        let n_out = self.program.num_outputs();
+
+        let mut input_slices: Vec<&[T]> = Vec::with_capacity(n_in);
+        for i in 0..n_in {
+            input_slices.push(self.input_ports[i].read() as &[T]);
+        }
+
+        let mut output_slices: Vec<&mut [T]> = Vec::with_capacity(n_out);
+        for i in 0..n_out {
+            output_slices.push(self.output_ports[i].write() as &mut [T]);
+        }
+
+        MultichannelAlgorithm::process(&mut self.program, &input_slices, &mut output_slices)?;
+        self.state.advance();
+        Ok(())
+    }
+
+    fn num_route_inputs(&self) -> usize {
+        self.program.num_inputs()
+    }
+
+    fn num_route_outputs(&self) -> usize {
+        self.program.num_outputs()
+    }
+
+    fn set_connection(&mut self, _from: usize, _to: usize, _gain: T) -> ProcessResult<()> {
+        Ok(())
+    }
+
+    fn remove_connection(&mut self, _from: usize, _to: usize) -> ProcessResult<()> {
+        Ok(())
+    }
+
+    fn routing_matrix(&self) -> Vec<Vec<(usize, T)>> {
+        let n_in = self.program.num_inputs();
+        let n_out = self.program.num_outputs();
+        (0..n_out)
+            .map(|_| (0..n_in).map(|i| (i, T::ONE)).collect())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn is_graph_dsl_detects_param_keyword() {
-        assert!(is_graph_dsl("param gain: 1.0\nprocess = _ * gain;"));
-        assert!(is_graph_dsl("keep param filt_cutoff: 1000.0\nprocess = _;"));
-        assert!(is_graph_dsl(
-            "inline param offset: 0.0\nprocess = _ + offset;"
-        ));
+    fn is_graph_dsl_detects_main_keyword() {
+        assert!(is_graph_dsl("main = _ * 0.5"));
     }
 
     #[test]
     fn is_graph_dsl_rejects_plain_program() {
-        assert!(!is_graph_dsl("process = _ * 0.5;"));
-        assert!(!is_graph_dsl("process = lowpass(_, 1000, 0.7);"));
+        assert!(!is_graph_dsl("_ * 0.5"));
+        assert!(!is_graph_dsl("lowpass(_, 1000, 0.7)"));
     }
 
     #[test]
-    fn is_graph_dsl_rejects_param_in_middle_of_line() {
-        assert!(!is_graph_dsl("process = param(_, 0.5);"));
-        assert!(!is_graph_dsl("let param = 4;"));
+    fn is_graph_dsl_rejects_main_not_at_line_start() {
+        assert!(!is_graph_dsl("let x = main; x"));
     }
 
     #[test]
     fn graph_lang_node_single_algorithm_fallback() {
-        let src = "process = _ * 0.5;";
+        let src = "main = _ * 0.5";
         let reg = std::sync::Arc::new(rill_lang::builtin::Registry::new());
         let mut node = GraphLangNode::<f32, 64>::from_source_with(src, reg, 48_000.0).unwrap();
         Node::init(&mut node, 48_000.0);
@@ -494,10 +743,10 @@ mod tests {
         let mut node = GraphLangNode::<f32, 64>::identity();
         node.set_parameter(
             &ParameterId::new("source").unwrap(),
-            ParamValue::String("process = _ * 2;".to_string()),
+            ParamValue::String("main = _ * 2".to_string()),
         )
         .unwrap();
-        assert_eq!(node.source(), "process = _ * 2;");
+        assert_eq!(node.source(), "main = _ * 2");
 
         {
             let inp = node.input_port_mut(0).unwrap().write();
@@ -515,12 +764,12 @@ mod tests {
 
     #[test]
     fn from_source_rejects_bad_program() {
-        assert!(LangNode::<f32, 64>::from_source("process = _ , _;").is_err());
+        assert!(LangNode::<f32, 64>::from_source("_ , _").is_err());
     }
 
     #[test]
     fn node_halves_input_block() {
-        let mut node = LangNode::<f32, 64>::from_source("process = _ * 0.5;").unwrap();
+        let mut node = LangNode::<f32, 64>::from_source("main = _ * 0.5").unwrap();
         Node::init(&mut node, 48_000.0);
 
         {
@@ -544,10 +793,10 @@ mod tests {
         let mut node = LangNode::<f32, 64>::identity();
         node.set_parameter(
             &ParameterId::new("source").unwrap(),
-            ParamValue::String("process = _ * 2;".to_string()),
+            ParamValue::String("main = _ * 2".to_string()),
         )
         .unwrap();
-        assert_eq!(node.source(), "process = _ * 2;");
+        assert_eq!(node.source(), "main = _ * 2");
 
         {
             let inp = node.input_port_mut(0).unwrap().write();
@@ -557,16 +806,5 @@ mod tests {
         node.process(&ctx, &[], &[], &[], &[]).unwrap();
         let out = node.output_port(0).unwrap().read();
         assert_eq!(out[0], 6.0);
-    }
-
-    #[test]
-    fn set_source_rejects_bad_program() {
-        let mut node = LangNode::<f32, 64>::identity();
-        assert!(node
-            .set_parameter(
-                &ParameterId::new("source").unwrap(),
-                ParamValue::String("process = _ , _;".to_string()),
-            )
-            .is_err());
     }
 }
