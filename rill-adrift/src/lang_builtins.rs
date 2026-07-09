@@ -3,7 +3,12 @@
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::{ParamValue, ProcessResult};
-use rill_lang::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
+use rill_lang::builtin::{
+    BlockBuiltin, BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry,
+    SampleBuiltin,
+};
+
+use rill_lang::builtins::mixer::{MixerConfig, MixerState};
 
 // --- sample built-ins ---
 
@@ -737,6 +742,80 @@ pub fn register_chip_builtins(reg: &mut Registry<f32>) {
     );
 }
 
+// ============================================================================
+// Mixer built-in
+// ============================================================================
+
+struct MixerAlgorithmWrapper<T: Transcendental> {
+    state: MixerState<T>,
+    cfg: MixerConfig,
+}
+
+impl<T: Transcendental> MixerAlgorithmWrapper<T> {
+    fn new(config: MixerConfig) -> Self {
+        Self {
+            state: MixerState::<T>::new(config.clone(), 512),
+            cfg: config,
+        }
+    }
+}
+
+impl<T: Transcendental> Algorithm<T> for MixerAlgorithmWrapper<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        if let Some(inp) = input {
+            output.copy_from_slice(inp);
+        } else {
+            output.fill(T::ZERO);
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.state = MixerState::<T>::new(self.cfg.clone(), 512);
+    }
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for MixerAlgorithmWrapper<T> {}
+
+/// Register the mixer built-in: `mixer(signal..., { buses, master_vol })`.
+pub fn register_mixer_builtins<T: Transcendental>(reg: &mut Registry<T>) {
+    let mixer_sig = BuiltinSig {
+        name: "mixer",
+        params: vec![
+            ParamType::Variadic(Box::new(ParamType::Signal)),
+            ParamType::Record(RecordSchema::new(vec![
+                RecordField {
+                    name: "buses",
+                    ty: ParamType::Int,
+                    default: Some(0.0),
+                },
+                RecordField {
+                    name: "master_vol",
+                    ty: ParamType::Float,
+                    default: Some(1.0),
+                },
+            ])),
+        ],
+        signal_outs: 2,
+        kind: BuiltinKind::Block,
+    };
+
+    reg.register_block(
+        mixer_sig,
+        |params: &[f64], _sample_rate: f32| -> Box<dyn BlockBuiltin<T>> {
+            let num_channels = if params.len() > 1 {
+                params.len() - 1
+            } else {
+                1
+            };
+            let num_buses = params.last().copied().unwrap_or(0.0) as usize;
+
+            let config = MixerConfig::new(num_channels.max(1), num_buses);
+            Box::new(MixerAlgorithmWrapper::<T>::new(config))
+        },
+    );
+}
+
 /// Build a complete builtin registry: DSP primitives, oscillators, complex
 /// arithmetic, and optionally analog models, FFT nodes, lo-fi, and chip emulators.
 pub fn full_registry<T: Transcendental>() -> Registry<T> {
@@ -744,6 +823,7 @@ pub fn full_registry<T: Transcendental>() -> Registry<T> {
     register_dsp_builtins(&mut reg);
     register_oscillator_builtins(&mut reg);
     register_complex_builtins(&mut reg);
+    register_mixer_builtins(&mut reg);
     #[cfg(feature = "analog")]
     register_model_builtins(&mut reg);
     #[cfg(feature = "fft")]
