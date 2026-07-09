@@ -3,7 +3,7 @@
 //! `process()` performs no heap allocation after warm-up.
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
+use rill_core::traits::{Algorithm, MultichannelAlgorithm, ParamValue, ProcessResult};
 
 use crate::builtin::{BlockBuiltin, SampleBuiltin};
 use crate::error::CompileError;
@@ -250,5 +250,44 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
                 BuiltinInst::Block(inst) => Algorithm::reset(inst.as_mut()),
             }
         }
+    }
+}
+
+impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
+    fn num_inputs(&self) -> usize {
+        self.ir.num_inputs
+    }
+
+    fn num_outputs(&self) -> usize {
+        self.ir.num_outputs
+    }
+
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        let n_in = inputs.len();
+        let n_out = outputs.len();
+        let buf_size = if n_out > 0 { outputs[0].len() } else { 0 };
+
+        if n_in <= 1 && n_out == 1 {
+            let input = if n_in == 0 { None } else { Some(inputs[0]) };
+            return Algorithm::process(self, input, outputs[0]);
+        }
+
+        crate::backend::interp::push_builtin_params(self);
+        for sample_idx in 0..buf_size {
+            let in_sample = if n_in > 0 {
+                inputs[0][sample_idx].to_f64()
+            } else {
+                0.0
+            };
+            let y = crate::backend::interp::eval_sample_scalar(self, in_sample);
+            if n_out > 0 {
+                outputs[0][sample_idx] = T::from_f64(y);
+            }
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        Algorithm::reset(self);
     }
 }

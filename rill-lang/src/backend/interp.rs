@@ -21,7 +21,7 @@ fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     }
 }
 
-fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
+pub(crate) fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
     let n = prog.ir.builtins.len();
     for instance in 0..n {
         let blen = prog.ir.builtins[instance].param_bindings.len();
@@ -62,7 +62,7 @@ pub fn run_block_reference<T: Transcendental>(
     }
 }
 
-fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) -> f64 {
+pub(crate) fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) -> f64 {
     for idx in 0..prog.ir.instrs.len() {
         match prog.ir.instrs[idx].clone() {
             Instr::Const { dst, value } => prog.regs_scalar[dst] = value,
