@@ -9,16 +9,16 @@ use rill_lang::compile_with;
 #[test]
 fn param_controls_gain() {
     let reg = full_registry::<f32>();
-    let mut prog = compile_with::<f32>("process = _ * param(\"g\", 1.0);", &reg, 48_000.0).unwrap();
+    let mut prog = compile_with::<f32>("main g = _ * g", &reg, 48_000.0).unwrap();
     let input = vec![1.0f32; 4];
     let mut out = vec![0.0f32; 4];
 
     let g_idx = prog.param_index("g").expect("param 'g' should exist");
-    assert!((prog.param(g_idx).as_f32().unwrap() - 1.0).abs() < 1e-6);
+    assert!((prog.param(g_idx).as_f32().unwrap() - 0.0).abs() < 1e-6);
 
     prog.process(Some(&input), &mut out).unwrap();
     for &v in &out {
-        assert!((v - 1.0).abs() < 1e-5, "expected ~1.0, got {v}");
+        assert!((v - 0.0).abs() < 1e-5, "expected ~0.0, got {v}");
     }
 
     prog.set_param(g_idx, ParamValue::Float(0.25));
@@ -42,21 +42,13 @@ fn dynamic_cutoff_changes_filter() {
         v
     };
 
-    let mut prog_low = compile_with::<f32>(
-        "process = _ : lowpass(param(\"cutoff\", 500.0), 0.7);",
-        &reg,
-        sr,
-    )
-    .unwrap();
+    let mut prog_low =
+        compile_with::<f32>("main cutoff = _ : lowpass cutoff 0.7", &reg, sr).unwrap();
     let mut out_low = vec![0.0f32; block.len()];
     prog_low.process(Some(&block), &mut out_low).unwrap();
 
-    let mut prog_high = compile_with::<f32>(
-        "process = _ : lowpass(param(\"cutoff\", 500.0), 0.7);",
-        &reg,
-        sr,
-    )
-    .unwrap();
+    let mut prog_high =
+        compile_with::<f32>("main cutoff = _ : lowpass cutoff 0.7", &reg, sr).unwrap();
     let ci = prog_high.param_index("cutoff").unwrap();
     prog_high.set_param(ci, ParamValue::Float(8000.0));
     let mut out_high = vec![0.0f32; block.len()];
@@ -87,7 +79,7 @@ fn lang_node_advertises_and_sets_params() {
     use rill_adrift::lang_node::LangNode;
 
     let mut node = LangNode::<f32, 64>::from_source_with(
-        "process = _ * param(\"g\", 1.0);",
+        "main g = _ * g",
         std::sync::Arc::new(full_registry::<f32>()),
         48_000.0,
     )
@@ -101,13 +93,13 @@ fn lang_node_advertises_and_sets_params() {
         .find(|p: &&ParamMetadata| p.name == "g")
         .expect("metadata should contain param 'g'");
     assert_eq!(g_param.typ, ParamType::Float);
-    assert!((g_param.default.as_f32().unwrap() - 1.0).abs() < 1e-6);
+    assert!((g_param.default.as_f32().unwrap() - 0.0).abs() < 1e-6);
 
     let out_default = render_through(&mut node);
     for &v in &out_default {
         assert!(
-            (v - 2.0).abs() < 1e-4,
-            "default gain=1: input 2 → output ~2, got {v}"
+            (v - 0.0).abs() < 1e-4,
+            "default gain=0: input 2 → output ~0, got {v}"
         );
     }
 
@@ -133,7 +125,7 @@ fn lang_node_set_source_preserves_params_then_recompile() {
     use rill_adrift::lang_node::LangNode;
 
     let mut node = LangNode::<f32, 64>::from_source_with(
-        "process = _ * param(\"g\", 1.0);",
+        "main g = _ * g",
         std::sync::Arc::new(full_registry::<f32>()),
         48_000.0,
     )
@@ -158,7 +150,7 @@ fn lang_node_set_source_preserves_params_then_recompile() {
     Node::set_parameter(
         &mut node,
         &ParameterId::new("source").unwrap(),
-        ParamValue::String("process = _ * 3.0;".to_string()),
+        ParamValue::String("main = _ * 3.0".to_string()),
     )
     .unwrap();
 
@@ -176,7 +168,7 @@ fn lang_node_rejects_unknown_param() {
     use rill_adrift::lang_node::LangNode;
 
     let mut node = LangNode::<f32, 64>::from_source_with(
-        "process = _ * param(\"g\", 1.0);",
+        "main g = _ * g",
         std::sync::Arc::new(full_registry::<f32>()),
         48_000.0,
     )
@@ -193,11 +185,12 @@ fn lang_node_rejects_unknown_param() {
 #[test]
 fn ay38910_generates_sound_with_register_write() {
     use rill_adrift::lang_builtins::full_registry_f32;
-    use rill_core::traits::Algorithm;
+    use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+    use rill_core::traits::{Algorithm, NodeId, ParamValue, ParameterId, PortId};
     use rill_lang::compile_graph;
 
     let reg = full_registry_f32();
-    let src = r#"param chip = ay38910(1750000.0, param("regs", 0)); process = chip;"#;
+    let src = r#"main regs = ay38910 1750000.0 regs"#;
     let mut engine = compile_graph::<f32>(src, &reg, 44100.0).unwrap();
 
     // Write AY regs: tone A at ~440Hz, volume 15, mixer tone A on, others off
@@ -217,14 +210,18 @@ fn ay38910_generates_sound_with_register_write() {
     ];
     engine
         .handle()
-        .send(rill_core::queues::CommandEnum::GraphSetParameter {
-            anchor: "chip".into(),
-            param: "regs".into(),
-            value: ParamValue::Bytes(regs),
-            sample_pos: None,
-        });
+        .send(rill_core::queues::CommandEnum::SetParameter(
+            SetParameter::new(
+                PortId::param(NodeId(0), 0),
+                ParameterId::new("regs").unwrap(),
+                ParamValue::Bytes(regs),
+                SignalOrigin::Manual,
+            ),
+        ));
 
     let mut output = [0.0f32; 64];
+    engine.process(None, &mut output).unwrap();
+    engine.apply_due_params(64);
     engine.process(None, &mut output).unwrap();
 
     let has_signal = output.iter().any(|&v| v.abs() > 1e-6);
@@ -240,29 +237,28 @@ fn ay38910_anchor_map_built_correctly() {
     use rill_lang::compile_graph;
 
     let reg = full_registry_f32();
-    let src = r#"param chip = ay38910(1750000.0, param("regs", 0)); process = chip;"#;
+    let src = r#"main regs = ay38910 1750000.0 regs"#;
     let engine = compile_graph::<f32>(src, &reg, 44100.0).unwrap();
 
-    let am = engine.anchor_map();
-    assert!(am.contains_key("chip"), "anchor_map should contain 'chip'");
-    let chip_map = am.get("chip").unwrap();
+    let am = engine.param_map();
     assert!(
-        chip_map.contains_key("regs"),
-        "chip anchor should contain 'regs' param"
+        am.contains_key("regs"),
+        "param_map should contain 'regs' param"
     );
-    let idx = chip_map["regs"];
+    let idx = am["regs"];
     assert_eq!(idx, 0, "regs should be at param index 0");
-    println!("anchor_map: {:?}", am);
+    println!("param_map: {:?}", am);
 }
 
 #[test]
 fn ay38910_set_param_reaches_builtin() {
     use rill_adrift::lang_builtins::full_registry_f32;
-    use rill_core::traits::Algorithm;
+    use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+    use rill_core::traits::{Algorithm, NodeId, ParamValue, ParameterId, PortId};
     use rill_lang::compile_graph;
 
     let reg = full_registry_f32();
-    let src = r#"param chip = ay38910(1750000.0, param("regs", 0)); process = chip;"#;
+    let src = r#"main regs = ay38910 1750000.0 regs"#;
     let mut engine = compile_graph::<f32>(src, &reg, 44100.0).unwrap();
 
     let regs: Vec<u8> = vec![
@@ -273,15 +269,19 @@ fn ay38910_set_param_reaches_builtin() {
     ];
     engine
         .handle()
-        .send(rill_core::queues::CommandEnum::GraphSetParameter {
-            anchor: "chip".into(),
-            param: "regs".into(),
-            value: ParamValue::Bytes(regs.clone()),
-            sample_pos: None,
-        });
+        .send(rill_core::queues::CommandEnum::SetParameter(
+            SetParameter::new(
+                PortId::param(NodeId(0), 0),
+                ParameterId::new("regs").unwrap(),
+                ParamValue::Bytes(regs.clone()),
+                SignalOrigin::Manual,
+            ),
+        ));
 
-    // First process: should drain and apply
+    // First process: drain mailbox, apply pending, then process again
     let mut output = [0.0f32; 64];
+    engine.process(None, &mut output).unwrap();
+    engine.apply_due_params(64);
     engine.process(None, &mut output).unwrap();
 
     // Check param value is stored correctly

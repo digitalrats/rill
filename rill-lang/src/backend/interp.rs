@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn sample_builtin_in_feedback_runs() {
         let reg = test_registry();
-        let mut prog = compile_with::<f32>("main = + ~ onepole(0.5, 0.0)", &reg, 44100.0).unwrap();
+        let mut prog = compile_with::<f32>("main = + ~ onepole 0.5 0.0", &reg, 44100.0).unwrap();
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 0.0, 0.0, 0.0]), &mut out).unwrap();
         // onepole(0.5, 0.0): a=0.5, y = x*(1-0.5) + y_prev*0.5 = 0.5*x + 0.5*y_prev
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn block_builtin_runs() {
         let reg = test_registry();
-        let mut prog = compile_with::<f32>("main = _ : myblock(2.0)", &reg, 44100.0).unwrap();
+        let mut prog = compile_with::<f32>("main = _ : myblock 2.0", &reg, 44100.0).unwrap();
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
         assert_eq!(out, [2.0, 4.0, 6.0, 8.0]);
@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn block_builtin_in_feedback_is_rejected() {
         let reg = test_registry();
-        let err = compile_with::<f32>("main = + ~ myblock(2.0)", &reg, 44100.0);
+        let err = compile_with::<f32>("main = + ~ myblock 2.0", &reg, 44100.0);
         assert!(err.is_err());
     }
 
@@ -689,9 +689,9 @@ mod tests {
     fn sample_builtin_hybrid_matches_reference() {
         let reg = test_registry();
         let mut a =
-            compile_with::<f32>("main = (_ * 0.5) : onepole(0.3, 0.0)", &reg, 44100.0).unwrap();
+            compile_with::<f32>("main = (_ * 0.5) : onepole 0.3 0.0", &reg, 44100.0).unwrap();
         let mut b =
-            compile_with::<f32>("main = (_ * 0.5) : onepole(0.3, 0.0)", &reg, 44100.0).unwrap();
+            compile_with::<f32>("main = (_ * 0.5) : onepole 0.3 0.0", &reg, 44100.0).unwrap();
         let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
         let mut oa = vec![0.0f32; input.len()];
         let mut ob = vec![0.0f32; input.len()];
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn unknown_builtin_is_compile_error() {
         let reg = test_registry();
-        let err = compile_with::<f32>("main = _ : nosuch(1.0)", &reg, 44100.0);
+        let err = compile_with::<f32>("main = _ : nosuch 1.0", &reg, 44100.0);
         assert!(err.is_err());
     }
 

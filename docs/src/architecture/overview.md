@@ -47,7 +47,7 @@ a source node and cascades through the DAG.
   no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay` with
   automatons (LFO, envelopes, sequencers). Communicates with the signal
-  thread via lock‑free `MpscQueue` (the graph actor mailbox, `ActorRef<CommandEnum>`).
+  thread via the graph actor mailbox (`ActorRef<CommandEnum>`).
 
 See [Signal graph (rill-graph)](../architecture/graph.md) for details.
 

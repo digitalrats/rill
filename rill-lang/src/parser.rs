@@ -307,27 +307,7 @@ impl<'a> Parser<'a> {
             }
             Tok::Ident(name) => {
                 self.bump();
-                if self.peek().tok == Tok::LParen {
-                    self.bump();
-                    let mut args = Vec::new();
-                    if self.peek().tok != Tok::RParen {
-                        loop {
-                            args.push(self.parse_expr(0, true)?);
-                            match self.peek().tok {
-                                Tok::Comma => {
-                                    self.bump();
-                                }
-                                _ => break,
-                            }
-                        }
-                    }
-                    let rp = self.eat(&Tok::RParen)?;
-                    Ok(Expr::Apply {
-                        name,
-                        args,
-                        span: t.span.merge(rp.span),
-                    })
-                } else if is_atom_start(&self.peek().tok) {
+                if is_atom_start(&self.peek().tok) {
                     let mut args = Vec::new();
                     while is_atom_start(&self.peek().tok) {
                         args.push(self.parse_atom()?);
@@ -387,31 +367,7 @@ impl<'a> Parser<'a> {
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
             Tok::Slash => Ok(Expr::Ref("/".into(), t.span)),
             Tok::Percent => Ok(Expr::Ref("%".into(), t.span)),
-            Tok::Ident(name) => {
-                if self.peek().tok == Tok::LParen {
-                    self.bump();
-                    let mut args = Vec::new();
-                    if self.peek().tok != Tok::RParen {
-                        loop {
-                            args.push(self.parse_expr(0, true)?);
-                            match self.peek().tok {
-                                Tok::Comma => {
-                                    self.bump();
-                                }
-                                _ => break,
-                            }
-                        }
-                    }
-                    let rp = self.eat(&Tok::RParen)?;
-                    Ok(Expr::Apply {
-                        name,
-                        args,
-                        span: t.span.merge(rp.span),
-                    })
-                } else {
-                    Ok(Expr::Ref(name, t.span))
-                }
-            }
+            Tok::Ident(name) => Ok(Expr::Ref(name, t.span)),
             Tok::LParen => {
                 let inner = self.parse_expr(0, false)?;
                 self.eat(&Tok::RParen)?;
@@ -524,8 +480,8 @@ mod tests {
     }
 
     #[test]
-    fn application_uses_comma_as_arg_separator() {
-        let p = prog("main = gain(_ , 2)");
+    fn application_uses_juxtaposition() {
+        let p = prog("main = gain _ 2");
         let main = p.main_def().unwrap();
         match main.body() {
             Expr::Apply { name, args, .. } => {
@@ -548,14 +504,18 @@ mod tests {
 
     #[test]
     fn application_arg_may_be_a_composed_expression() {
-        let p = prog("main = f(_ : _, 2)");
+        let p = prog("main = let g = _ : _ in f g 2");
         match p.main_def().unwrap().body() {
-            Expr::Apply { name, args, .. } => {
-                assert_eq!(name, "f");
-                assert_eq!(args.len(), 2);
-                assert!(matches!(args[0], Expr::Bin { op: BinOp::Seq, .. }));
-            }
-            other => panic!("expected Apply, got {other:?}"),
+            Expr::Let { body, .. } => match body.as_ref() {
+                Expr::Apply { name, args, .. } => {
+                    assert_eq!(name, "f");
+                    assert_eq!(args.len(), 2);
+                    assert!(matches!(&args[0], Expr::Ref(g, _) if g == "g"));
+                    assert!(matches!(&args[1], Expr::Int(2, _)));
+                }
+                other => panic!("expected Apply, got {other:?}"),
+            },
+            other => panic!("expected Let, got {other:?}"),
         }
     }
 
@@ -571,8 +531,8 @@ mod tests {
     #[test]
     fn parses_string_arg() {
         let p = parse(
-            &tokenize(r#"main = f("x")"#).unwrap(),
-            r#"main = f("x")"#.as_bytes(),
+            &tokenize(r#"main = f "x""#).unwrap(),
+            r#"main = f "x""#.as_bytes(),
         )
         .unwrap();
         match p.main_def().unwrap().body() {

@@ -144,9 +144,9 @@ impl<T: Transcendental> BasicOscillator<T> {
 
                     vals.store(&mut output[offset..offset + 4]);
 
-                    phase = phase + inc4;
+                    phase += inc4;
                     if phase.extract(0) >= one.extract(0) {
-                        phase = phase - one;
+                        phase -= one;
                         self.periods += 1;
                     }
                 }
@@ -176,10 +176,10 @@ impl<T: Transcendental> BasicOscillator<T> {
             Waveform::Triangle => self.scalar_triangle(),
             Waveform::Pulse(width) => self.scalar_pulse(width),
         };
-        self.phase = self.phase + effective_inc;
+        self.phase += effective_inc;
         let one = ScalarVector1::splat(T::ONE);
         if self.phase.extract(0) >= one.extract(0) {
-            self.phase = self.phase - one;
+            self.phase -= one;
             self.periods += 1;
         }
         output_vec.extract(0)
@@ -335,10 +335,10 @@ impl<T: Transcendental> BasicOscillator<T> {
             Waveform::Triangle => self.scalar_triangle(),
             Waveform::Pulse(width) => self.scalar_pulse(width),
         };
-        self.phase = self.phase + effective_inc;
+        self.phase += effective_inc;
         let one = ScalarVector1::splat(T::from_f32(1.0));
         if self.phase.extract(0) >= one.extract(0) {
-            self.phase = self.phase - one;
+            self.phase -= one;
             self.periods += 1;
         }
         output_vec

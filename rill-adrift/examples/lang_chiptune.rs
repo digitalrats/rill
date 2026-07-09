@@ -5,18 +5,16 @@
 //!   cargo run --example lang_chiptune --features "io,lofi,portaudio,lang" -- --file <file.stc>
 //!
 //! Architecture:
-//!   STC file → StcPlayer (control thread) → GraphSetParameter("regs", Bytes)
-//!     → RillGraphEngine → ay38910(1750000.0, param("regs", 0)) → audio
+//!   STC file → StcPlayer (control thread) → SetParameter("regs", Bytes)
+//!     → RillGraphEngine → ay38910(1750000.0, regs) → audio
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rill_adrift::rill_core::io::IoDriver;
-use rill_adrift::rill_core::queues::CommandEnum;
-use rill_adrift::rill_core::time::ClockTick;
-use rill_adrift::rill_core::traits::{Algorithm, ParamValue};
+use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
 use rill_lang::program_runner::ProgramRunner;
 
 // ============================================================================
@@ -49,7 +47,6 @@ struct StcPlayer {
     int_ms: f64,
     last_regs: [u8; 14],
     ch_events: [usize; 3],
-    ch_positions: [usize; 3],
     ch_current_ornament: [Option<usize>; 3],
     ch_current_sample: [Option<usize>; 3],
     ch_sample_repeat_counter: [isize; 3],
@@ -71,27 +68,34 @@ impl StcPlayer {
         let pos_ptr = u16::from_le_bytes([data[1], data[2]]) as usize;
         let orn_ptr = u16::from_le_bytes([data[3], data[4]]) as usize;
         let pat_ptr = u16::from_le_bytes([data[5], data[6]]) as usize;
+
         let song_length = data[pos_ptr];
-        let mut ornament_ptrs = [None; 16];
-        for n in 0..16 {
-            let off = orn_ptr + n * 33;
-            if off + 33 <= data.len() {
-                ornament_ptrs[n] = Some(off);
+
+        let mut sample_ptrs: [Option<usize>; 16] = [None; 16];
+        let mut samp_off: usize = 27;
+        let mut sample_count: usize = 0;
+        while sample_count < 16 && samp_off + 99 <= data.len() && data[samp_off] < 16 {
+            let num = data[samp_off] as usize;
+            if sample_ptrs[num].is_none() {
+                sample_ptrs[num] = Some(samp_off + 1);
             }
+            samp_off += 99;
+            sample_count += 1;
         }
-        let mut sample_ptrs = [None; 16];
-        for n in 0..16 {
-            let off = 27 + n * 99;
-            if off + 99 <= data.len() && data[off] > 0 && (data[off] as usize) < 16 {
-                sample_ptrs[data[off] as usize] = Some(off + 1);
+
+        let mut ornament_ptrs: [Option<usize>; 16] = [None; 16];
+        let mut orn_off = orn_ptr;
+        let mut orn_count: usize = 0;
+        while orn_count < 16 && orn_off + 33 <= data.len() && data[orn_off] < 16 {
+            let num = data[orn_off] as usize;
+            if ornament_ptrs[num].is_none() {
+                ornament_ptrs[num] = Some(orn_off + 1);
             }
+            orn_off += 33;
+            orn_count += 1;
         }
-        let mut last_regs = [0u8; 14];
-        last_regs[7] = 0x38;
-        last_regs[8] = 15;
-        last_regs[9] = 15;
-        last_regs[10] = 15;
-        let mut s = StcPlayer {
+
+        let mut p = Self {
             data,
             delay,
             pos_ptr,
@@ -100,15 +104,14 @@ impl StcPlayer {
             ornament_ptrs,
             sample_ptrs,
             delay_counter: 1,
-            position: 1,
+            position: 0,
             position_height: 0,
             int_ms: 0.0,
-            last_regs,
-            ch_events: [usize::MAX, usize::MAX, usize::MAX],
-            ch_positions: [usize::MAX, usize::MAX, usize::MAX],
-            ch_current_ornament: [ornament_ptrs[0]; 3],
-            ch_current_sample: [sample_ptrs[1]; 3],
-            ch_sample_repeat_counter: [0; 3],
+            last_regs: [0; 14],
+            ch_events: [0; 3],
+            ch_current_ornament: [None; 3],
+            ch_current_sample: [None; 3],
+            ch_sample_repeat_counter: [-1; 3],
             ch_sample_position: [0; 3],
             ch_note_value: [0; 3],
             ch_row_skip: [0; 3],
@@ -116,18 +119,17 @@ impl StcPlayer {
             ch_envelope_state: [ENVELOPE_OFF; 3],
             finished: false,
         };
-        s.read_position(1);
-        s
-    }
 
-    fn read_position(&mut self, pos: usize) {
-        for ch in 0..3 {
-            self.ch_events[ch] = usize::MAX;
-            self.ch_current_ornament[ch] = self.ornament_ptrs[0];
-            self.ch_current_sample[ch] = self.sample_ptrs[1];
+        p.ch_events[0] = usize::MAX;
+        p.ch_current_ornament = [p.ornament_ptrs[0]; 3];
+        p.ch_current_sample = [p.sample_ptrs[1]; 3];
+
+        p.last_regs[7] = 0x38;
+        for i in 8..11 {
+            p.last_regs[i] = 15;
         }
-        self.delay_counter = 1;
-        self.position = pos;
+
+        p
     }
 
     fn get_sample_pos(&mut self, ch: usize) -> usize {
@@ -369,11 +371,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Compile rill-lang DSL ──────────────────────────────────────────────
     let src = r#"
-param chip = ay38910(1750000.0, param("regs", 0));
-process = chip;
+main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let mut engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
+    let engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
 
     // ── Backend ────────────────────────────────────────────────────────────
     let backend_name = args
@@ -391,7 +392,7 @@ process = chip;
     let backend_display = backend_name.clone();
 
     use rill_adrift::rill_graph::backend_factory::BackendFactory;
-    let mut be: rill_adrift::rill_graph::backend_factory::BackendFactory = Default::default();
+    let mut be: BackendFactory = Default::default();
     rill_adrift::registration::register_backends(&mut be);
     let mut be_params: HashMap<String, ParamValue> = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(44100.0));
@@ -411,27 +412,26 @@ process = chip;
     let stc_finished = finished.clone();
     let stc_handle = engine.handle();
     let stc_thread = std::thread::spawn(move || loop {
-        if let Some(msg) = stc_mailbox.pop() {
-            if let CommandEnum::ClockTick(tick) = msg {
-                if !stc_playing.load(Ordering::Acquire) {
-                    continue;
-                }
-                let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
-                if let Some(regs) = stc_player.borrow_mut().step_ms(ms) {
-                    if regs[7] != 0 {
-                        let apply_at = tick.sample_pos + tick.io_quantum as u64;
-                        stc_handle.send(CommandEnum::GraphSetParameter {
-                            anchor: "chip".into(),
-                            param: "regs".into(),
-                            value: ParamValue::Bytes(regs.to_vec()),
-                            sample_pos: Some(apply_at),
-                        });
-                    }
-                }
-                if stc_player.borrow().finished {
-                    stc_finished.store(true, Ordering::Release);
-                    return;
-                }
+        if let Some(CommandEnum::ClockTick(tick)) = stc_mailbox.pop() {
+            if !stc_playing.load(Ordering::Acquire) {
+                continue;
+            }
+            let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+            if let Some(regs) = stc_player.borrow_mut().step_ms(ms) {
+                let apply_at = tick.sample_pos + tick.io_quantum as u64;
+                stc_handle.send(CommandEnum::SetParameter(
+                    SetParameter::new(
+                        PortId::param(NodeId(0), 0),
+                        ParameterId::new("regs").unwrap(),
+                        ParamValue::Bytes(regs.to_vec()),
+                        SignalOrigin::Manual,
+                    )
+                    .with_sample_pos(apply_at),
+                ));
+            }
+            if stc_player.borrow().finished {
+                stc_finished.store(true, Ordering::Release);
+                return;
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(1));

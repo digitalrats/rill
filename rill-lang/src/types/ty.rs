@@ -50,9 +50,16 @@ impl Type {
     }
 }
 
-/// A polymorphic type scheme `∀ vars. ty` (for let-generalized definitions).
+/// A polymorphic type scheme `∀ vars. ty`.
+///
+/// `lam_count` is the number of λ-parameters for this definition
+/// (user-defined function arguments — distinct from signal port inputs).
+/// These appear as the **first** `lam_count` elements of `ty.ins`.
+/// `ty.ins[lam_count..]` are signal port inputs (from `_` references in the body).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scheme {
+    /// Number of λ-parameters.
+    pub lam_count: usize,
     /// Quantified type variables.
     pub vars: Vec<TypeVarId>,
     /// The generalized diagram type.

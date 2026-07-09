@@ -47,14 +47,20 @@ pub enum Tok {
     Eq,
     /// `;`
     Semi,
+    /// `main` keyword — entry point.
+    KwMain,
+    /// `where` keyword — optional definition block.
+    KwWhere,
+    /// `let` keyword — expression-level mutually-recursive bindings.
+    KwLet,
+    /// `in` keyword — separator in `let defs in expr`.
+    KwIn,
+    /// `{`
+    LBrace,
+    /// `}`
+    RBrace,
     /// End of input.
     Eof,
-    /// `param` keyword — declares a named subgraph anchor node.
-    Param,
-    /// `keep` keyword — forbids inlining of a param node.
-    Keep,
-    /// `inline` keyword — forces inlining of a param node.
-    Inline,
     /// Imaginary literal, e.g. `3i`, `2.5i`.
     Imag(f64),
 }
@@ -172,9 +178,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
 
             let tok = match text {
                 "_" => Tok::Wire,
-                "param" if !followed_by_paren => Tok::Param,
-                "keep" if !followed_by_paren => Tok::Keep,
-                "inline" if !followed_by_paren => Tok::Inline,
+                "main" if !followed_by_paren => Tok::KwMain,
+                "where" if !followed_by_paren => Tok::KwWhere,
+                "let" if !followed_by_paren => Tok::KwLet,
+                "in" if !followed_by_paren => Tok::KwIn,
                 _ => Tok::Ident(text.to_string()),
             };
             out.push(Token { tok, span });
@@ -212,6 +219,8 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             b'!' => Tok::Cut,
             b'(' => Tok::LParen,
             b')' => Tok::RParen,
+            b'{' => Tok::LBrace,
+            b'}' => Tok::RBrace,
             b'=' => Tok::Eq,
             b';' => Tok::Semi,
             other => {
@@ -245,7 +254,7 @@ mod tests {
     #[test]
     fn lexes_combinators_and_ops() {
         assert_eq!(
-            kinds("_ : + <: :> ~ @ , * / % ! ( ) = ;"),
+            kinds("_ : + <: :> ~ @ , * / % ! ( ) { } = ;"),
             vec![
                 Tok::Wire,
                 Tok::Colon,
@@ -261,6 +270,8 @@ mod tests {
                 Tok::Cut,
                 Tok::LParen,
                 Tok::RParen,
+                Tok::LBrace,
+                Tok::RBrace,
                 Tok::Eq,
                 Tok::Semi,
                 Tok::Eof,
@@ -313,29 +324,60 @@ mod tests {
     }
 
     #[test]
-    fn lexes_param_keyword() {
+    fn lexes_main_keyword() {
         assert_eq!(
-            kinds("param keep inline ident"),
+            kinds("main foo bar"),
             vec![
-                Tok::Param,
-                Tok::Keep,
-                Tok::Inline,
-                Tok::Ident("ident".into()),
+                Tok::KwMain,
+                Tok::Ident("foo".into()),
+                Tok::Ident("bar".into()),
                 Tok::Eof,
             ]
         );
     }
 
     #[test]
-    fn param_function_is_not_keyword() {
+    fn main_is_not_keyword_when_followed_by_paren() {
         assert_eq!(
-            kinds(r#"param("freq", 440)"#),
+            kinds(r#"main("freq", 440)"#),
             vec![
-                Tok::Ident("param".into()),
+                Tok::Ident("main".into()),
                 Tok::LParen,
                 Tok::Str("freq".into()),
                 Tok::Comma,
                 Tok::Int(440),
+                Tok::RParen,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_let_and_in_keywords() {
+        assert_eq!(
+            kinds("let x = 1 in x"),
+            vec![
+                Tok::KwLet,
+                Tok::Ident("x".into()),
+                Tok::Eq,
+                Tok::Int(1),
+                Tok::KwIn,
+                Tok::Ident("x".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn let_is_not_keyword_when_followed_by_paren() {
+        assert_eq!(
+            kinds("let(x, y)"),
+            vec![
+                Tok::Ident("let".into()),
+                Tok::LParen,
+                Tok::Ident("x".into()),
+                Tok::Comma,
+                Tok::Ident("y".into()),
                 Tok::RParen,
                 Tok::Eof,
             ]

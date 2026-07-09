@@ -1,6 +1,6 @@
-//! Thin wrapper over RillProgram with anchor-based parameter routing via mailbox.
+//! Thin wrapper over RillProgram with flat parameter routing via mailbox.
 //!
-//! During `process()`, the engine drains its mailbox for `GraphSetParameter`
+//! During `process()`, the engine drains its mailbox for `SetParameter`
 //! commands and applies them with sample-accurate timing via `apply_due_params`,
 //! matching rill-graph's deferred parameter mechanism.
 
@@ -14,7 +14,8 @@ use rill_core_actor::{ActorRef, Mailbox};
 
 use crate::program::RillProgram;
 
-pub type AnchorMap = HashMap<String, HashMap<String, usize>>;
+/// Map from parameter name to its index in the program's parameter list.
+pub type ParamMap = HashMap<String, usize>;
 
 /// A deferred parameter update with optional sample-accurate timing.
 struct PendingParam {
@@ -27,9 +28,10 @@ struct PendingParam {
     sample_pos: Option<u64>,
 }
 
+/// A compiled rill-lang program backed by its own actor mailbox for control messages.
 pub struct RillGraphEngine<T: Transcendental> {
     program: RillProgram<T>,
-    anchor_map: AnchorMap,
+    param_map: ParamMap,
     /// Deferred parameter updates, sorted by sample_pos.
     pending: Vec<PendingParam>,
     mailbox: Arc<Mailbox<CommandEnum>>,
@@ -37,49 +39,54 @@ pub struct RillGraphEngine<T: Transcendental> {
 }
 
 impl<T: Transcendental> RillGraphEngine<T> {
-    pub fn new(program: RillProgram<T>, anchor_map: AnchorMap) -> Self {
+    /// Create a new graph engine from a compiled program and a parameter name-to-index map.
+    pub fn new(program: RillProgram<T>, param_map: ParamMap) -> Self {
         let mailbox = Arc::new(Mailbox::new(64));
         let actor_ref = mailbox.actor_ref();
         Self {
             program,
-            anchor_map,
+            param_map,
             pending: Vec::new(),
             mailbox,
             actor_ref,
         }
     }
 
+    /// Returns the actor handle for sending control commands to the engine.
     pub fn handle(&self) -> ActorRef<CommandEnum> {
         self.actor_ref.clone()
     }
 
+    /// Returns a reference to the compiled rill-lang program.
     pub fn program(&self) -> &RillProgram<T> {
         &self.program
     }
 
-    pub fn anchor_map(&self) -> &AnchorMap {
-        &self.anchor_map
+    /// Returns the parameter name-to-index map used by this engine.
+    pub fn param_map(&self) -> &ParamMap {
+        &self.param_map
     }
 
-    /// Drain mailbox: push all `GraphSetParameter` to pending queue.
+    /// Drain mailbox: push all `SetParameter` to pending queue.
     fn drain_mailbox(&mut self) {
         while let Some(cmd) = self.mailbox.pop() {
-            if let CommandEnum::GraphSetParameter {
-                anchor,
-                param,
-                value,
-                sample_pos,
-            } = cmd
-            {
-                if let Some(inner) = self.anchor_map.get(&anchor) {
-                    if let Some(&param_idx) = inner.get(&param) {
+            match cmd {
+                CommandEnum::SetParameter(ref sp) => {
+                    let name = sp.parameter.as_str();
+                    if let Some(&idx) = self.param_map.get(name) {
                         self.pending.push(PendingParam {
-                            param_idx,
-                            value,
-                            sample_pos,
+                            param_idx: idx,
+                            value: sp.value.clone(),
+                            sample_pos: sp.sample_pos,
                         });
                     }
                 }
+                CommandEnum::ClockTick(_) => {
+                    // ClockTick commands are also routed through the engine
+                    // but the engine doesn't process them — they're forwarded
+                    // by the ProgramRunner.
+                }
+                _ => {}
             }
         }
     }

@@ -307,20 +307,20 @@ mod tests {
     fn steps_are_in_dependency_order() {
         // Every Block step's producer appears before any step that consumes it:
         // here we only assert the schedule is non-empty and ends producing output.
-        let s = schedule_of("main = abs(_) : _ * 2.0");
+        let s = schedule_of("main = abs _ : _ * 2.0");
         assert!(!s.steps.is_empty());
         assert_eq!(n_sample(&s), 0);
     }
 
     #[test]
     fn sample_builtin_schedules_as_sample_region() {
-        let (_, s) = schedule_of_with("main = _ : onepole(200.0, 0.5)");
+        let (_, s) = schedule_of_with("main = _ : onepole 200.0 0.5");
         assert_eq!(n_sample(&s), 1);
     }
 
     #[test]
     fn block_builtin_schedules_as_foreign_block() {
-        let (_, s) = schedule_of_with("main = _ : lowpass(1000.0, 0.7)");
+        let (_, s) = schedule_of_with("main = _ : lowpass 1000.0 0.7");
         assert!(s.steps.iter().any(|st| matches!(st, Step::ForeignBlock(_))));
         assert!(n_block(&s) >= 1); // LoadInput
         assert_eq!(n_sample(&s), 0);
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn block_builtin_in_feedback_lands_in_sample_region() {
-        let (ir, s) = schedule_of_with("main = + ~ lowpass(500.0, 0.7)");
+        let (ir, s) = schedule_of_with("main = + ~ lowpass 500.0 0.7");
         // CallBlock inside feedback SCC → Sample region (illegal; caught by
         // validate_block_builtins at compile time).
         assert!(s.steps.iter().any(|st| {

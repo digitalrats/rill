@@ -148,7 +148,7 @@ fn test_fft_builtins_compile_and_run() {
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
     // Compile a program using spectralgate
-    let src = "main = _ : spectralgate(0.01, 0.0)";
+    let src = "main = _ : spectralgate 0.01 0.0";
     let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile should succeed");
 
     let input = [0.5f32; BUF];
@@ -187,7 +187,7 @@ fn test_complex_gen_compile_and_run() {
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
     // complex → extract re to satisfy process arity 1 requirement
-    let src = "main = complex(3.0, 4.0) : re()";
+    let src = "main = complex 3.0 4.0 : re";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
@@ -207,7 +207,7 @@ fn test_complex_conj_compile_and_run() {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
-    let src = "main = complex(3.0, 4.0) : conj() : im()";
+    let src = "main = complex 3.0 4.0 : conj : im";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
@@ -227,7 +227,7 @@ fn test_complex_re_extract() {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
-    let src = "main = complex(3.0, 4.0) : re()";
+    let src = "main = complex 3.0 4.0 : re";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
@@ -242,7 +242,7 @@ fn test_complex_im_extract() {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
-    let src = "main = complex(5.0, 7.0) : im()";
+    let src = "main = complex 5.0 7.0 : im";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
@@ -257,7 +257,7 @@ fn test_complex_norm_compile_and_run() {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
-    let src = "main = complex(3.0, 4.0) : norm()";
+    let src = "main = complex 3.0 4.0 : norm";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
@@ -278,7 +278,7 @@ fn test_complex_cmul_compile_and_run() {
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
     // cmul → re: (1+0i)*(2+3i) = 2+3i → extract re=2
-    let src = "main = complex(1.0, 0.0), complex(2.0, 3.0) : cmul() : re()";
+    let src = "main = complex 1.0 0.0 , complex 2.0 3.0 : cmul : re";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
@@ -299,7 +299,7 @@ fn test_complex_cadd_compile_and_run() {
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
     // cadd → re: (1+2i)+(3+4i) = 4+6i → extract re=4
-    let src = "main = complex(1.0, 2.0), complex(3.0, 4.0) : cadd() : re()";
+    let src = "main = complex 1.0 2.0 , complex 3.0 4.0 : cadd : re";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
@@ -319,13 +319,13 @@ fn test_imag_literal_standalone() {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
-    let src = "main = 3i : re()";
+    let src = "main = 3i : re";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
     assert!((output[0] - 0.0).abs() < 1e-4, "re(3i) should be 0");
 
-    let src2 = "main = 3i : im()";
+    let src2 = "main = 3i : im";
     let mut prog2 = compile_with::<f32>(src2, &reg, 44100.0).expect("compile");
     let mut output2 = [0.0f32; 1];
     Algorithm::process(&mut prog2, None, &mut output2).unwrap();
@@ -340,13 +340,13 @@ fn test_complex_literal_syntax() {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
 
-    let src = "main = 1 + 2i : re()";
+    let src = "main = 1 + 2i : re";
     let mut prog = compile_with::<f32>(src, &reg, 44100.0).expect("compile");
     let mut output = [0.0f32; 1];
     Algorithm::process(&mut prog, None, &mut output).unwrap();
     assert!((output[0] - 1.0).abs() < 1e-4, "re(1+2i) should be 1");
 
-    let src2 = "main = 1 + 2i : im()";
+    let src2 = "main = 1 + 2i : im";
     let mut prog2 = compile_with::<f32>(src2, &reg, 44100.0).expect("compile");
     let mut output2 = [0.0f32; 1];
     Algorithm::process(&mut prog2, None, &mut output2).unwrap();

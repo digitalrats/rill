@@ -21,7 +21,7 @@ fn main() {
     // ========================================================================
     println!("=== DSL: spectralgate ===");
     {
-        let src = "process = _ : spectralgate(0.1, 0.0);";
+        let src = "_ : spectralgate 0.1 0.0";
         let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
 
         let input: Vec<f32> = (0..64)
@@ -43,7 +43,7 @@ fn main() {
     // ========================================================================
     println!("\n=== DSL: spectraldelay ===");
     {
-        let src = "process = _ : spectraldelay(0.5, 0.3);";
+        let src = "_ : spectraldelay 0.5 0.3";
         let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
 
         let input: Vec<f32> = (0..64)
@@ -66,7 +66,7 @@ fn main() {
     // ========================================================================
     println!("\n=== DSL: gate → delay chain ===");
     {
-        let src = "process = _ : spectralgate(0.05, 0.0) : spectraldelay(0.4, 0.2);";
+        let src = "_ : spectralgate 0.05 0.0 : spectraldelay 0.4 0.2";
         let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
 
         let input: Vec<f32> = (0..64)
@@ -92,7 +92,7 @@ fn main() {
     // ========================================================================
     println!("\n=== DSL: complex → norm ===");
     {
-        let src = "process = complex(3.0, 4.0) : norm();";
+        let src = "complex 3.0 4.0 : norm";
         let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
         let mut output = vec![0.0f32; 64];
         prog.process(None, &mut output).unwrap();
@@ -106,7 +106,7 @@ fn main() {
     // ========================================================================
     println!("\n=== DSL: _ : gate : delay ===");
     {
-        let src = "process = _ : spectralgate(0.01, 0.0) : spectraldelay(0.3, 0.2);";
+        let src = "_ : spectralgate 0.01 0.0 : spectraldelay 0.3 0.2";
         let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
 
         let input: Vec<f32> = (0..64)

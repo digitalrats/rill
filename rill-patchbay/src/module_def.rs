@@ -140,7 +140,7 @@ pub struct ServoDef {
     pub table: Option<Vec<ParamValue>>,
 
     /// String anchor name for rill-lang graph nodes.
-    /// When set, the servo sends `GraphSetParameter` to the
+    /// When set, the servo sends `SetParameter` to the
     /// RillGraphEngine using this anchor instead of a `PortId`.
     #[cfg_attr(feature = "serde", serde(default))]
     pub target_anchor: Option<String>,

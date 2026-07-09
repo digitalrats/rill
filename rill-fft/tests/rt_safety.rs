@@ -3,8 +3,8 @@
 //! perform zero heap allocations.
 //!
 //! Uses a custom global allocator that panics on any allocation/deallocation.
-//! These tests MUST run sequentially (`--test-threads=1`). A global `Mutex`
-//! ensures they don't interfere with each other when run in the same binary.
+//! Uses `thread_local!` to isolate the allocation guard per test thread,
+//! so tests can run in parallel without false positives.
 
 use num_complex::Complex;
 use rill_fft::complex_fft::ComplexFft;
@@ -12,16 +12,19 @@ use rill_fft::overlap_add::OverlapAddConvolver;
 use rill_fft::partitioned_conv::PartitionedConvolver;
 use rill_fft::real_fft::RealFft;
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static ALLOC_ALLOWED: AtomicBool = AtomicBool::new(true);
+std::thread_local! {
+    static ALLOC_ALLOWED: Cell<bool> = Cell::new(true);
+}
 static RT_TEST_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct PanicAllocator;
 
 unsafe impl GlobalAlloc for PanicAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if !ALLOC_ALLOWED.load(Ordering::SeqCst) {
+        if !ALLOC_ALLOWED.with(|flag| flag.get()) {
             panic!(
                 "HEAP ALLOCATION IN RT PATH: size={}, align={}",
                 layout.size(),
@@ -32,7 +35,7 @@ unsafe impl GlobalAlloc for PanicAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if !ALLOC_ALLOWED.load(Ordering::SeqCst) {
+        if !ALLOC_ALLOWED.with(|flag| flag.get()) {
             panic!("HEAP DEALLOCATION IN RT PATH");
         }
         System.dealloc(ptr, layout)
@@ -43,11 +46,17 @@ unsafe impl GlobalAlloc for PanicAllocator {
 static GLOBAL: PanicAllocator = PanicAllocator;
 
 fn rt_test<F: FnMut()>(mut f: F, iterations: usize) {
-    ALLOC_ALLOWED.store(false, Ordering::SeqCst);
+    struct RestoreAllocFlag;
+    impl Drop for RestoreAllocFlag {
+        fn drop(&mut self) {
+            ALLOC_ALLOWED.with(|flag| flag.set(true));
+        }
+    }
+    ALLOC_ALLOWED.with(|flag| flag.set(false));
+    let _guard = RestoreAllocFlag;
     for _ in 0..iterations {
         f();
     }
-    ALLOC_ALLOWED.store(true, Ordering::SeqCst);
 }
 
 fn with_rt_guard<F: FnOnce()>(f: F) {

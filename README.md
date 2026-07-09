@@ -1,7 +1,7 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests|68](https://img.shields.io/badge/tests-650-green)](https://github.com/DigitalRats/rill)
+[![tests|68](https://img.shields.io/badge/tests-706-green)](https://github.com/DigitalRats/rill)
 [![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -19,7 +19,7 @@ effects, and analog circuit modelling.
 │  rill-core-model  │  rill-analog-filters  │  rill-analog     │
 │  -effects  │  rill-lang  │  rill-fft                          │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
+│  rill-io (PortAudio / ALSA / PipeWire / JACK)                  │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)     │
 │  rill-core-actor  (ActorRef, ActorCell, ActorSystem)        │
@@ -81,7 +81,6 @@ lock-free queues, and SIMD-optimised block processing. Benchmarks on
 | RealFFT forward | 1024 | 6.2 µs | 165 Melem/s |
 | OverlapAdd convolver | IR 2048, BUF 128 | 61 µs/block | ~2100 blocks/s |
 | Partitioned convolver | IR 65536, BUF 128 | 104 µs/block | ~9600 blocks/s |
-| DirectConvolver | 128 taps, BUF 128 | 10 µs/block | 12.7 Melem/s |
 | DirectConvolver | 64 taps, BUF 128 | 10 µs/block | 12.7 Melem/s |
 
 All FFT operations are allocation‑free in the RT path, verified by
@@ -173,13 +172,13 @@ with complex arithmetic and chained gate‑delay processing.
 ### Load graph from JSON + config TOML
 
 ```bash
-cargo run -p rill-adrift --example player --features "cpal,sampler,serialization" -- [backend] [wav]
+cargo run -p rill-adrift --example player --features "portaudio,sampler,serialization" -- [backend] [wav]
 ```
 
 ### Runtime parameter control via actor mailbox
 
 ```bash
-cargo run -p rill-adrift --example advanced_player --features "cpal,sampler,serialization" -- [backend] [wav]
+cargo run -p rill-adrift --example advanced_player --features "portaudio,sampler,serialization" -- [backend] [wav]
 ```
 
 Same as `player` but sends `SetParameter` commands through the graph's actor
@@ -222,7 +221,7 @@ topology definition.
 | **rill-router** | EQ + mixer + routing |
 | **rill-patchbay** | Automation: LFO, envelopes, sequencer, sensors, servos |
 | **rill-lofi** | Lo-fi emulation (NES, AY-3-8910, Akai S900) |
-| **rill-io** | Audio I/O: ALSA, CPAL, PipeWire, JACK |
+| **rill-io** | Audio I/O: PortAudio, ALSA, PipeWire, JACK |
 | **rill-telemetry** | Real-time probes and collectors |
 | **rill-analog-filters** | WDF-based analog filters (MoogLadder) |
 | **rill-analog-effects** | Op-amp, tape deck, preamp models |
@@ -283,7 +282,7 @@ graph TD
 ## Testing
 
 ```bash
-cargo test --workspace    # 604 tests, all passing
+cargo test --workspace    # 706 tests, all passing
 cargo clippy --workspace  # lint
 cargo fmt                 # format (max_width=100)
 ```

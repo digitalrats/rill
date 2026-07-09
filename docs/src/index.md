@@ -11,7 +11,7 @@ rill-adrift = "0.5.0"
 
 ```rust
 use rill_adrift::prelude::*;
-use rill_adrift::rill_oscillators::audio::SineOsc;
+use rill_adrift::rill_oscillators::signal::SineOsc;
 ```
 
 ## What is Rill?
@@ -42,7 +42,7 @@ The foundation (`rill-core`) provides lock-free queues, `no_std`-compatible math
 
 ## Project Status
 
-Active development — 20 crates, version 0.5.0, 775 tests.
+Active development — 20 crates, version 0.5.0, 706 tests.
 
 - [GitHub](https://github.com/DigitalRats/rill)
 - [crates.io](https://crates.io/crates/rill-adrift)

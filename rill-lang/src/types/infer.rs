@@ -825,23 +825,23 @@ mod tests {
 
     #[test]
     fn builtin_call_is_1_to_1() {
-        let t = ty_with("main = _ : lowpass(1000.0, 0.7)").unwrap();
+        let t = ty_with("main = _ : lowpass 1000.0 0.7").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn builtin_wrong_param_count_errors() {
-        assert!(ty_with("main = _ : lowpass(1000.0)").is_err());
+        assert!(ty_with("main = _ : lowpass 1000.0").is_err());
     }
 
     #[test]
     fn builtin_ref_param_ok() {
-        assert!(ty_with("main f = _ : lowpass(f, 0.7)").is_ok());
+        assert!(ty_with("main f = _ : lowpass f 0.7").is_ok());
     }
 
     #[test]
     fn sample_builtin_in_feedback_typechecks() {
-        assert!(ty_with("main = + ~ onepole(200.0, 0.5)").is_ok());
+        assert!(ty_with("main = + ~ onepole 200.0 0.5").is_ok());
     }
 
     #[test]

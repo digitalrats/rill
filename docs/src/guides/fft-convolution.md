@@ -352,18 +352,18 @@ Eight built‑ins provide complex arithmetic in the DSL:
 
 ```faust
 // (3+4i) × (2+0i) = 6+8i → extract real part
-process = complex(3.0, 4.0), complex(2.0, 0.0) : cmul() : re();  // → 6.0
+main = complex(3.0, 4.0), complex(2.0, 0.0) : cmul() : re();  // → 6.0
 
 // norm of 3+4i
-process = complex(3.0, 4.0) : norm();  // → 5.0
+main = complex(3.0, 4.0) : norm();  // → 5.0
 ```
 
 Spectral effects are also available as DSL builtins behind the `fft` feature:
 
 ```faust
-process = _ : spectralgate(0.01, 0.0);             // spectral noise gate
-process = _ : spectraldelay(0.5, 0.3);             // shimmer
-process = _ : spectralgate(0.01, 0.0) : spectraldelay(0.5, 0.3);  // chain
+main = _ : spectralgate(0.01, 0.0);             // spectral noise gate
+main = _ : spectraldelay(0.5, 0.3);             // shimmer
+main = _ : spectralgate(0.01, 0.0) : spectraldelay(0.5, 0.3);  // chain
 ```
 
 ## Examples

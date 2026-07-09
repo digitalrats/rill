@@ -395,7 +395,7 @@ pub struct Servo<A: Automaton> {
     /// MIDI CC number for mod wheel (default 1).
     mod_wheel_cc: Option<u8>,
     /// String anchor name for rill-lang graph nodes. When set, parameter
-    /// commands use `GraphSetParameter` instead of PortId-based `SetParameter`.
+    /// commands use `SetParameter` with an anchor-prefixed parameter name.
     target_anchor: Option<String>,
 }
 
@@ -527,12 +527,17 @@ impl<A: Automaton + 'static> Servo<A> {
                             state.last_sent_index = idx;
                             let sp = clock.sample_pos + clock.io_quantum as u64;
                             if let Some(ref anchor) = target_anchor {
-                                gr.send(CommandEnum::GraphSetParameter {
-                                    anchor: anchor.clone(),
-                                    param: param.clone(),
-                                    value: table[index].clone(),
-                                    sample_pos: None,
-                                });
+                                let name = format!("{}.{}", anchor, param);
+                                let pid = ParameterId::new(&name).unwrap();
+                                gr.send(CommandEnum::SetParameter(
+                                    SetParameter::new(
+                                        PortId::param(nid, 0),
+                                        pid,
+                                        table[index].clone(),
+                                        SignalOrigin::Automaton(serv_id.clone()),
+                                    )
+                                    .with_sample_pos(sp),
+                                ));
                             } else {
                                 let pid = ParameterId::new(&param).unwrap();
                                 gr.send(CommandEnum::SetParameter(
@@ -569,12 +574,17 @@ impl<A: Automaton + 'static> Servo<A> {
 
                         let sp = clock.sample_pos + clock.io_quantum as u64;
                         if let Some(ref anchor) = target_anchor {
-                            gr.send(CommandEnum::GraphSetParameter {
-                                anchor: anchor.clone(),
-                                param: param.clone(),
-                                value: ParamValue::Float(value as f32),
-                                sample_pos: None,
-                            });
+                            let name = format!("{}.{}", anchor, param);
+                            let pid = ParameterId::new(&name).unwrap();
+                            gr.send(CommandEnum::SetParameter(
+                                SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid,
+                                    ParamValue::Float(value as f32),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )
+                                .with_sample_pos(sp),
+                            ));
                         } else {
                             let pid = ParameterId::new(&param).unwrap();
                             gr.send(CommandEnum::SetParameter(
@@ -610,12 +620,14 @@ impl<A: Automaton + 'static> Servo<A> {
                         };
                         if should_send {
                             if let Some(ref anchor) = target_anchor {
-                                gr.send(CommandEnum::GraphSetParameter {
-                                    anchor: anchor.clone(),
-                                    param: param.clone(),
-                                    value: ParamValue::Float(value as f32),
-                                    sample_pos: None,
-                                });
+                                let name = format!("{}.{}", anchor, param);
+                                let pid = ParameterId::new(&name).unwrap();
+                                gr.send(CommandEnum::SetParameter(SetParameter::new(
+                                    PortId::param(nid, 0),
+                                    pid,
+                                    ParamValue::Float(value as f32),
+                                    SignalOrigin::Automaton(serv_id.clone()),
+                                )));
                             } else {
                                 let pid = ParameterId::new(&param).unwrap();
                                 gr.send(CommandEnum::SetParameter(SetParameter::new(
@@ -828,8 +840,8 @@ impl<A: Automaton + 'static> Servo<A> {
 
     /// Set the string anchor for rill-lang graph targeting.
     ///
-    /// When set, parameter commands use `GraphSetParameter` with this anchor
-    /// instead of PortId-based `SetParameter`.
+    /// When set, parameter commands use `SetParameter` with an anchor-prefixed
+    /// parameter name (`anchor.param`).
     pub fn with_anchor(mut self, anchor: String) -> Self {
         self.target_anchor = Some(anchor);
         self

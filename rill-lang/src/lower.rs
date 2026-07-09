@@ -916,7 +916,7 @@ mod tests {
 
     #[test]
     fn sample_builtin_lowers_to_callsample() {
-        let ir = ir_with("main = _ : onepole(200.0, 0.5)");
+        let ir = ir_with("main = _ : onepole 200.0 0.5");
         assert!(
             ir.instrs
                 .iter()
@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn block_builtin_lowers_to_callblock() {
-        let ir = ir_with("main = _ : lowpass(1000.0, 0.7)");
+        let ir = ir_with("main = _ : lowpass 1000.0 0.7");
         assert!(
             ir.instrs
                 .iter()
@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn smooth_allocates_state() {
-        let ir = ir_of("main = smooth(_, 10.0)");
+        let ir = ir_of("main = smooth _ 10.0");
         assert_eq!(ir.state.state_slots, 1);
         assert!(ir
             .instrs

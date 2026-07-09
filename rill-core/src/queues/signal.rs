@@ -625,20 +625,6 @@ pub enum CommandEnum {
         /// Opaque command data.
         data: Vec<u8>,
     },
-    /// Graph anchor-based parameter change (targets a named anchor in RillGraphEngine).
-    /// Bypasses PortId — the engine routes by anchor name internally.
-    GraphSetParameter {
-        /// Anchor name identifying the target node.
-        anchor: String,
-        /// Parameter name.
-        param: String,
-        /// New parameter value.
-        value: ParamValue,
-        /// Optional sample-accurate application time (absolute sample position).
-        /// When `Some(pos)`, the engine applies this change during the block
-        /// whose sample range contains `pos`, rather than immediately.
-        sample_pos: Option<u64>,
-    },
 }
 
 impl CommandEnum {
@@ -646,7 +632,6 @@ impl CommandEnum {
     pub fn command_type(&self) -> CommandType {
         match self {
             CommandEnum::SetParameter(_) => CommandType::SetParameter,
-            CommandEnum::GraphSetParameter { .. } => CommandType::SetParameter,
             CommandEnum::Automaton(_) => CommandType::Automaton,
             CommandEnum::Sensor(_) => CommandType::Sensor,
             CommandEnum::Servo(_) => CommandType::Servo,
@@ -732,14 +717,6 @@ impl fmt::Display for CommandEnum {
             }
             CommandEnum::Control(event) => {
                 write!(f, "ControlEvent({event:?})")
-            }
-            CommandEnum::GraphSetParameter {
-                anchor,
-                param,
-                value,
-                ..
-            } => {
-                write!(f, "GraphSetParameter({anchor}::{param} = {value:?})")
             }
         }
     }

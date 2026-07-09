@@ -1,12 +1,13 @@
 #![cfg(feature = "lang")]
 
-use rill_core::queues::CommandEnum;
-use rill_core::traits::{Algorithm, ParamValue};
+use rill_core::queues::SignalOrigin;
+use rill_core::queues::{CommandEnum, SetParameter};
+use rill_core::traits::{Algorithm, NodeId, ParamValue, ParameterId, PortId};
 use rill_lang::compile_graph;
 
 #[test]
 fn simple_graph_osc_gain_chain() {
-    let src = "process = sin(220.0) * 0.5;";
+    let src = "main = sin 220.0 * 0.5";
     let mut engine = compile_graph::<f32>(src, &rill_lang::builtin::Registry::new(), 44100.0)
         .expect("should compile");
 
@@ -22,7 +23,7 @@ fn simple_graph_osc_gain_chain() {
 
 #[test]
 fn plain_process_half_input() {
-    let src = "process = _ * 0.5;";
+    let src = "main = _ * 0.5";
     let mut engine = compile_graph::<f32>(src, &rill_lang::builtin::Registry::new(), 44100.0)
         .expect("should compile");
 
@@ -34,24 +35,23 @@ fn plain_process_half_input() {
 }
 
 #[test]
-fn param_graph_accepts_graph_set_parameter() {
-    let src = r#"
-param myGain = _ * param("gain", 0.5);
-process = _ : myGain : _;
-"#;
+fn param_graph_accepts_set_parameter() {
+    let src = r"main gain = _ * gain";
     let mut engine = compile_graph::<f32>(src, &rill_lang::builtin::Registry::new(), 44100.0)
         .expect("should compile");
 
     let handle = engine.handle();
-    handle.send(CommandEnum::GraphSetParameter {
-        anchor: "myGain".into(),
-        param: "gain".into(),
-        value: ParamValue::Float(0.25),
-        sample_pos: None,
-    });
+    handle.send(CommandEnum::SetParameter(SetParameter::new(
+        PortId::param(NodeId(0), 0),
+        ParameterId::new("gain").unwrap(),
+        ParamValue::Float(0.25),
+        SignalOrigin::Manual,
+    )));
 
     let mut output = [0.0f32; 64];
     let input = [4.0f32; 64];
+    engine.process(Some(&input), &mut output).unwrap();
+    engine.apply_due_params(64);
     engine.process(Some(&input), &mut output).unwrap();
 
     assert!(
@@ -63,7 +63,7 @@ process = _ : myGain : _;
 
 #[test]
 fn feedback_graph_compiles_and_runs() {
-    let src = "process = _ ~ _ * 0.5;";
+    let src = "main = _ ~ _ * 0.5";
     let result = compile_graph::<f32>(src, &rill_lang::builtin::Registry::new(), 44100.0);
     assert!(
         result.is_ok(),
@@ -77,12 +77,12 @@ fn feedback_graph_compiles_and_runs() {
 }
 
 #[test]
-fn keep_param_compiles() {
-    let src = "keep param kf = _ * 0.5; process = _ : kf : _;";
+fn simple_inline_compiles() {
+    let src = "main = _ * 0.5 : _";
     let result = compile_graph::<f32>(src, &rill_lang::builtin::Registry::new(), 44100.0);
     assert!(
         result.is_ok(),
-        "keep param should compile: {:?}",
+        "inline binding should compile: {:?}",
         result.err()
     );
 }

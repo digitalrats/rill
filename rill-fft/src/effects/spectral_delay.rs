@@ -102,7 +102,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const MAX_DELAY: usize>
         let one = T::ONE;
         let one_minus_mix = one - self.mix;
 
-        for i in 0..self.half_plus_one {
+        for (i, _cur) in current.iter().enumerate() {
             let freq_ratio = T::from_usize(i) / T::from_usize(self.half_plus_one - 1);
 
             let delay_frames = (one - freq_ratio) * T::from_usize(MAX_DELAY - 1);

@@ -65,7 +65,7 @@ impl ProgramRunner {
         self.playback = playback;
     }
 
-    /// Handle for sending `GraphSetParameter` commands from control threads.
+    /// Handle for sending `SetParameter` commands from control threads.
     pub fn handle(&self) -> ActorRef<CommandEnum> {
         self.engine.handle()
     }
@@ -149,7 +149,7 @@ mod tests {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
-        let engine = compile_graph::<f32>("process = _;", &Registry::new(), 44100.0).unwrap();
+        let engine = compile_graph::<f32>("main = _", &Registry::new(), 44100.0).unwrap();
         let mut runner = ProgramRunner::new(engine, None, 128);
 
         let tick = ClockTick {
@@ -172,7 +172,7 @@ mod tests {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
-        let engine = compile_graph::<f32>("process = _ * 0.5;", &Registry::new(), 44100.0).unwrap();
+        let engine = compile_graph::<f32>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
         let mut runner = ProgramRunner::new(engine, None, 64);
 
         let tick = ClockTick {
