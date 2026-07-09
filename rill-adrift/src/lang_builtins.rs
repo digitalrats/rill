@@ -140,13 +140,7 @@ pub fn register_dsp_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     use rill_core_dsp::filters::{FilterParams, FilterType, OnePole};
 
     reg.register_sample(
-        BuiltinSig {
-            name: "onepole",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Sample,
-        },
+        BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Sample),
         |p, sr| {
             let mut inner = OnePole::<T>::new(FilterParams {
                 filter_type: FilterType::LowPass,
@@ -159,13 +153,7 @@ pub fn register_dsp_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_sample(
-        BuiltinSig {
-            name: "moog",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Sample,
-        },
+        BuiltinSig::simple("moog", 1, 1, 2, BuiltinKind::Sample),
         |p, sr| {
             let mut inner = rill_core_dsp::filters::MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
             Algorithm::init(&mut inner, sr);
@@ -173,13 +161,7 @@ pub fn register_dsp_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "lowpass",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("lowpass", 1, 1, 2, BuiltinKind::Block),
         |p, sr| {
             let mut b = rill_core_dsp::filters::Biquad::<T>::new(FilterParams {
                 filter_type: FilterType::LowPass,
@@ -192,13 +174,7 @@ pub fn register_dsp_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "highpass",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("highpass", 1, 1, 2, BuiltinKind::Block),
         |p, sr| {
             let mut b = rill_core_dsp::filters::Biquad::<T>::new(FilterParams {
                 filter_type: FilterType::HighPass,
@@ -216,13 +192,7 @@ pub fn register_dsp_builtins<T: Transcendental>(reg: &mut Registry<T>) {
 #[cfg(feature = "analog")]
 pub fn register_model_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig {
-            name: "analog_moog",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("analog_moog", 1, 1, 2, BuiltinKind::Block),
         |p, sr| {
             let pole = rill_core_model::wdf::RcPole::new(T::ZERO);
             let mut f = rill_core_model::wdf::MoogLadder::<T>::new(
@@ -299,13 +269,7 @@ impl<T: Transcendental> BlockBuiltin<T> for SpectralDelayBuiltin<T> {
 #[cfg(feature = "fft")]
 pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig {
-            name: "spectralgate",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("spectralgate", 1, 1, 2, BuiltinKind::Block),
         |p, _sr| {
             let mut gate = rill_fft::effects::spectral_gate::SpectralGate::<T, 64>::new();
             gate.set_threshold(T::from_f64(p[0]));
@@ -314,13 +278,7 @@ pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "spectraldelay",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("spectraldelay", 1, 1, 2, BuiltinKind::Block),
         |p, _sr| {
             let mut delay = rill_fft::effects::spectral_delay::SpectralDelay::<T, 64, 16>::new();
             delay.set_mix(p[0] as f32);
@@ -492,13 +450,7 @@ impl<T: Transcendental> BlockBuiltin<T> for ComplexGenBuiltin<T> {}
 /// Register complex number built-ins (dsl: complex, conj, re, im, norm, arg, cmul, cadd).
 pub fn register_complex_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig {
-            name: "complex",
-            signal_ins: 0,
-            signal_outs: 2,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("complex", 0, 2, 2, BuiltinKind::Block),
         |p, _sr| {
             let re = T::from_f64(p[0]);
             let im = T::from_f64(p[1]);
@@ -506,73 +458,31 @@ pub fn register_complex_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "conj",
-            signal_ins: 2,
-            signal_outs: 2,
-            num_params: 0,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("conj", 2, 2, 0, BuiltinKind::Block),
         |_p, _sr| Box::new(ComplexConjBuiltin),
     );
     reg.register_block(
-        BuiltinSig {
-            name: "re",
-            signal_ins: 2,
-            signal_outs: 1,
-            num_params: 0,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("re", 2, 1, 0, BuiltinKind::Block),
         |_p, _sr| Box::new(ComplexReBuiltin),
     );
     reg.register_block(
-        BuiltinSig {
-            name: "im",
-            signal_ins: 2,
-            signal_outs: 1,
-            num_params: 0,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("im", 2, 1, 0, BuiltinKind::Block),
         |_p, _sr| Box::new(ComplexImBuiltin),
     );
     reg.register_block(
-        BuiltinSig {
-            name: "norm",
-            signal_ins: 2,
-            signal_outs: 1,
-            num_params: 0,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("norm", 2, 1, 0, BuiltinKind::Block),
         |_p, _sr| Box::new(ComplexNormBuiltin),
     );
     reg.register_block(
-        BuiltinSig {
-            name: "arg",
-            signal_ins: 2,
-            signal_outs: 1,
-            num_params: 0,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("arg", 2, 1, 0, BuiltinKind::Block),
         |_p, _sr| Box::new(ComplexArgBuiltin),
     );
     reg.register_block(
-        BuiltinSig {
-            name: "cmul",
-            signal_ins: 4,
-            signal_outs: 2,
-            num_params: 0,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("cmul", 4, 2, 0, BuiltinKind::Block),
         |_p, _sr| Box::new(ComplexMulBuiltin),
     );
     reg.register_block(
-        BuiltinSig {
-            name: "cadd",
-            signal_ins: 4,
-            signal_outs: 2,
-            num_params: 0,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("cadd", 4, 2, 0, BuiltinKind::Block),
         |_p, _sr| Box::new(ComplexAddBuiltin),
     );
 }
@@ -638,13 +548,7 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     use rill_core_dsp::{BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform};
 
     reg.register_block(
-        BuiltinSig {
-            name: "sine",
-            signal_ins: 0,
-            signal_outs: 1,
-            num_params: 3,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -655,13 +559,7 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "saw",
-            signal_ins: 0,
-            signal_outs: 1,
-            num_params: 3,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("saw", 0, 1, 3, BuiltinKind::Block),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -672,13 +570,7 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "square",
-            signal_ins: 0,
-            signal_outs: 1,
-            num_params: 3,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("square", 0, 1, 3, BuiltinKind::Block),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -689,13 +581,7 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "triangle",
-            signal_ins: 0,
-            signal_outs: 1,
-            num_params: 3,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("triangle", 0, 1, 3, BuiltinKind::Block),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -706,16 +592,10 @@ pub fn register_oscillator_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig {
-            name: "noise",
-            signal_ins: 0,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("noise", 0, 1, 2, BuiltinKind::Block),
         |p, _sr| {
             let amp = T::from_f64(p[1]);
-            let mut gen = NoiseGenerator::<T>::new(
+            let gen = NoiseGenerator::<T>::new(
                 match p[0].round() as i32 {
                     1 => NoiseType::Pink,
                     2 => NoiseType::Brown,
@@ -783,13 +663,7 @@ pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
     use rill_core::traits::Node;
     use rill_lofi::ClassicSystem;
     reg.register_block(
-        BuiltinSig {
-            name: "lofi",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 7,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block),
         |p, sr| {
             let config = rill_lofi::LofiConfig {
                 system: ClassicSystem::Custom {
@@ -848,18 +722,12 @@ impl BlockBuiltin<f32> for Ay38910Builtin {
     }
 }
 
-/// Register AY-3-8910 chip built-in: `ay38910(chip_clock_hz)`.
+/// Register AY-3-8910 chip built-in: `ay38910(chip_clock_hz, regs)`.
 #[cfg(feature = "lofi")]
 pub fn register_chip_builtins(reg: &mut Registry<f32>) {
     use rill_core::traits::Algorithm;
     reg.register_block(
-        BuiltinSig {
-            name: "ay38910",
-            signal_ins: 0,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
+        BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),
         |p, sr| {
             let clock = p[0] as f32;
             let mut chip = rill_lofi::Ay38910Chip::new(clock);

@@ -18,6 +18,8 @@ pub mod parser;
 pub mod prelude;
 pub mod program;
 pub mod program_runner;
+pub mod reduce;
+pub mod regalloc;
 pub mod schedule;
 pub mod serde_def;
 pub mod types;
@@ -26,7 +28,9 @@ pub use error::{CompileError, Span};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
+pub use builtin::{
+    BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry, SampleBuiltin,
+};
 
 use rill_core::math::Transcendental;
 use std::collections::HashMap;
@@ -37,16 +41,18 @@ use std::collections::HashMap;
 /// use rill_lang::compile;
 /// use rill_core::traits::Algorithm;
 ///
-/// let mut prog = compile::<f32>("process = _ * 0.5;").unwrap();
+/// let mut prog = compile::<f32>("main = _ * 0.5").unwrap();
 /// let mut out = [0.0f32; 2];
 /// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
 /// assert_eq!(out, [1.0, 2.0]);
 /// ```
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens)?;
-    let typed = types::infer::infer_program(&program)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program(&program)?;
+    typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower(&typed)?;
+    // regalloc::allocate(&mut ir);
     Ok(RillProgram::<T>::new(ir))
 }
 
@@ -57,96 +63,59 @@ pub fn compile_with<T: Transcendental>(
     sample_rate: f32,
 ) -> Result<RillProgram<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens)?;
-    let typed = types::infer::infer_program_with(&program, registry)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program_with(&program, registry)?;
+    typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    // regalloc::allocate(&mut ir);
     validate_block_builtins(&ir)?;
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
 
-/// Compile rill-lang source containing `param` anchor definitions into an
-/// engine that supports [`GraphSetParameter`] commands via mailbox.
+/// Compile rill-lang source into an engine that supports [`SetParameter`]
+/// commands via mailbox for runtime parameter updates.
 ///
-/// `param`-annotated definitions are **inlined** into the `process` body —
-/// they do not create separate graph nodes. The `param` keyword creates a
-/// **named anchor** that maps to the parameter slots in the flat compiled
-/// program. At runtime, [`GraphSetParameter`] commands with `anchor` matching
-/// the `param` name are routed to the correct parameter slot before `process()`
-/// executes.
+/// Main parameters are addressed by name directly. Where-block anchor
+/// parameters use the format `"anchor.param"` (dot-separated).
 ///
-/// [`GraphSetParameter`]: rill_core::queues::CommandEnum::GraphSetParameter
+/// [`SetParameter`]: rill_core::queues::CommandEnum::SetParameter
 pub fn compile_graph<T: Transcendental>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
 ) -> Result<graph_engine::RillGraphEngine<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens)?;
-    let typed = types::infer::infer_program_with(&program, registry)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program_with(&program, registry)?;
 
-    // Build the flat IR (param bodies are just alias references — they get
-    // resolved during lowering of the `process` expression which calls them).
+    typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    // regalloc::allocate(&mut ir);
     validate_block_builtins(&ir)?;
     let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
 
-    // Build anchor_map: for each `param`/`keep param`/`inline param` def,
-    // map anchor_name → {param_name → param_index}.
-    // We find param indices by scanning prog.params_meta() and matching
-    // the param names declared inside the param def's body.
-    let mut anchor_map: graph_engine::AnchorMap = HashMap::new();
+    let mut p_idx: usize = 0;
+    let mut param_map: HashMap<String, usize> = HashMap::new();
 
-    for def in &program.defs {
-        use crate::ast::DefKind;
-        if matches!(
-            def.kind,
-            DefKind::Param | DefKind::KeepParam | DefKind::InlineParam
-        ) {
-            let anchor = def.name.clone();
-            let mut inner = HashMap::new();
-            // Collect `param("name", ...)` calls from the def's body
-            collect_param_refs(&def.body, &mut inner, prog.params_meta());
-            anchor_map.insert(anchor, inner);
-        }
+    let main = program.main_def().ok_or_else(|| CompileError::Parse {
+        msg: "program must contain a `main` definition".into(),
+        span: Span::new(0, 0),
+    })?;
+
+    for p in main.params() {
+        param_map.insert(p.name.clone(), p_idx);
+        p_idx += 1;
     }
-
-    Ok(graph_engine::RillGraphEngine::new(prog, anchor_map))
-}
-
-/// Walk an expression and collect `param("name", ...)` references,
-/// mapping param_name → param_index by matching against the compiled
-/// program's params_meta().
-fn collect_param_refs(
-    expr: &crate::ast::Expr,
-    out: &mut HashMap<String, usize>,
-    params_meta: &[crate::ir::ParamDef],
-) {
-    match expr {
-        crate::ast::Expr::Apply { name, args, .. } => {
-            if name == "param" {
-                if let Some(crate::ast::Expr::Str(param_name, _)) = args.first() {
-                    if let Some(idx) = params_meta.iter().position(|p| &p.name == param_name) {
-                        out.insert(param_name.clone(), idx);
-                    }
-                }
-            } else {
-                for arg in args {
-                    collect_param_refs(arg, out, params_meta);
-                }
+    for def in main.where_defs() {
+        if let crate::ast::Def::Anchor { name, params, .. } = def {
+            for p in params {
+                param_map.insert(format!("{}.{}", name, p.name), p_idx);
+                p_idx += 1;
             }
         }
-        crate::ast::Expr::Bin { lhs, rhs, .. } => {
-            collect_param_refs(lhs, out, params_meta);
-            collect_param_refs(rhs, out, params_meta);
-        }
-        crate::ast::Expr::Ref(name, _) => {
-            // If this ref matches an anchor name with params, we'd need to
-            // look up the def body. But at this point we only need to find
-            // param() calls — they're already in the program's params_meta.
-            // The anchor_map is built from the def body, not from references.
-        }
-        _ => {}
     }
+
+    Ok(graph_engine::RillGraphEngine::new(prog, param_map))
 }
 
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
