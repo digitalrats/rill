@@ -231,6 +231,7 @@ impl<'a> Lowerer<'a> {
                 self.defs = saved;
                 result
             }
+            Expr::Record(..) => unreachable!("Record should be desugared before lowering"),
         }
     }
 
@@ -622,6 +623,7 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
             }
         }
         Expr::Let { body, .. } => arity(body, sigs)?,
+        Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
     })
 }
 

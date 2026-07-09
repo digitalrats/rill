@@ -271,6 +271,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
             ctx.defs = saved_defs;
             Ok(ty)
         }
+        Expr::Record(..) => unreachable!("Record should be desugared before type inference"),
     }
 }
 
