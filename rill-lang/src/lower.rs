@@ -67,7 +67,7 @@ impl<'a> Lowerer<'a> {
                     }
                     self.emit(Instr::CallBlock {
                         dst: fst,
-                        src: 0,
+                        srcs: vec![],
                         instance,
                     });
                     return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
@@ -188,10 +188,10 @@ impl<'a> Lowerer<'a> {
                             for _ in 1..sig.signal_outs {
                                 self.fresh_reg();
                             }
-                            let src = if args.is_empty() { 0 } else { args[0] };
+                            let srcs = args.to_vec();
                             self.emit(Instr::CallBlock {
                                 dst: fst,
-                                src,
+                                srcs,
                                 instance,
                             });
                             return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
@@ -306,10 +306,10 @@ impl<'a> Lowerer<'a> {
                         for _ in 1..sig.signal_outs {
                             self.fresh_reg();
                         }
-                        let src = if args.is_empty() { 0 } else { args[0] };
+                        let srcs = args.to_vec();
                         self.emit(Instr::CallBlock {
                             dst: fst,
-                            src,
+                            srcs,
                             instance,
                         });
                         return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
@@ -478,7 +478,7 @@ impl<'a> Lowerer<'a> {
                             }
                             self.emit(Instr::CallBlock {
                                 dst: fst,
-                                src: 0,
+                                srcs: vec![],
                                 instance,
                             });
                             return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
@@ -734,9 +734,11 @@ pub fn lower_with(
         num_regs: lw.next_reg,
         output_reg: outs[0],
         num_inputs,
+        num_outputs: 1,
         state: StateLayout {
             state_slots: lw.state_slots,
             delay_lens: lw.delay_lens,
+            num_outputs: 1,
         },
         builtins: lw.builtins,
         params: lw.params,

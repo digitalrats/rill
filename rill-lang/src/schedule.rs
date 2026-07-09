@@ -50,7 +50,7 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
         Instr::Bin { a, b, .. } => vec![a, b],
         Instr::WriteState { src, .. } | Instr::WriteDelay { src, .. } => vec![src],
         Instr::CallSample { ref srcs, .. } => srcs.clone(),
-        Instr::CallBlock { src, .. } => vec![src],
+        Instr::CallBlock { ref srcs, .. } => srcs.clone(),
         _ => Vec::new(),
     }
 }

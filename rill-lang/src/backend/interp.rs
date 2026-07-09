@@ -101,8 +101,12 @@ fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) ->
                     _ => unreachable!(),
                 };
             }
-            Instr::CallBlock { dst, src, instance } => {
-                let x = T::from_f64(prog.regs_scalar[src]);
+            Instr::CallBlock {
+                dst,
+                srcs,
+                instance,
+            } => {
+                let x = T::from_f64(prog.regs_scalar[if srcs.is_empty() { 0 } else { srcs[0] }]);
                 let mut o = [T::ZERO; 1];
                 match &mut prog.builtins[instance] {
                     crate::program::BuiltinInst::Block(b) => {
@@ -254,7 +258,7 @@ fn exec_block_op<T: Transcendental>(
 fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, n: usize) {
     if let Instr::CallBlock {
         dst: first_dst,
-        src: first_src,
+        srcs,
         instance,
     } = prog.ir.instrs[idx].clone()
     {
@@ -268,7 +272,7 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
             let maybe_in = if n_in == 0 {
                 None
             } else {
-                Some(&prog.block_regs[first_src][..n] as &[T])
+                Some(&prog.block_regs[srcs[0]][..n] as &[T])
             };
             match &mut prog.builtins[instance] {
                 crate::program::BuiltinInst::Block(b) => {
@@ -281,7 +285,7 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
             // Multi-channel: interleave inputs, process, deinterleave outputs
             let inp: Vec<T> = (0..n_in)
                 .flat_map(|ch| {
-                    let reg_idx = first_src + ch;
+                    let reg_idx = srcs[ch];
                     prog.block_regs[reg_idx][..n].iter().copied()
                 })
                 .collect();
