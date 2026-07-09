@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, Def, Expr, Program};
-use crate::builtin::{BuiltinKind, SignatureSource};
+use crate::builtin::{BuiltinKind, ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
 use crate::types::infer::TypedProgram;
@@ -143,42 +143,132 @@ impl<'a> Lowerer<'a> {
                     self.emit(Instr::WriteState { slot, src: y });
                     return Ok(vec![y]);
                 }
-                if let Some(sig) = self.sigs.builtin_sig(name) {
-                    let sig = sig.clone();
-                    let mut params = Vec::with_capacity(call_args.len());
+                if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
+                    let mut param_values = Vec::new();
                     let mut param_bindings = Vec::new();
-                    for (pos, a) in call_args.iter().enumerate() {
-                        if let Expr::Ref(ref_name, _) = a {
-                            if let Some(&pidx) = self.param_names.get(ref_name) {
-                                params.push(0.0);
-                                param_bindings.push((pos, pidx));
-                                continue;
+                    let mut signal_srcs = Vec::new();
+                    let mut signal_pos = 0;
+                    let mut param_pos = 0;
+
+                    for ptype in &sig.params {
+                        match ptype {
+                            ParamType::Signal => {
+                                if signal_pos >= args.len() {
+                                    return Err(CompileError::Type {
+                                        msg: format!("missing signal input for `{name}`"),
+                                        span: *span,
+                                    });
+                                }
+                                signal_srcs.push(args[signal_pos]);
+                                signal_pos += 1;
                             }
+                            ParamType::Float | ParamType::Int => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                if let Expr::Ref(ref_name, _) = &call_args[param_pos] {
+                                    if let Some(&pidx) = self.param_names.get(ref_name) {
+                                        param_values.push(0.0);
+                                        param_bindings.push((param_values.len() - 1, pidx));
+                                        param_pos += 1;
+                                        continue;
+                                    }
+                                }
+                                let v = const_f64(&call_args[param_pos]).ok_or_else(|| {
+                                    CompileError::Type {
+                                        msg: format!(
+                                            "param at position {param_pos} of `{name}` \
+                                                 must be a constant or parameter reference"
+                                        ),
+                                        span: call_args[param_pos].span(),
+                                    }
+                                })?;
+                                param_values.push(v);
+                                param_pos += 1;
+                            }
+                            ParamType::String => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Bool => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                match &call_args[param_pos] {
+                                    Expr::Int(0, _) => param_values.push(0.0),
+                                    Expr::Int(1, _) => param_values.push(1.0),
+                                    _ => param_values.push(1.0),
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Enum(_) => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Record(_schema) => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                if let Expr::Record(fields, field_span) = &call_args[param_pos] {
+                                    for (field_name, field_expr) in fields {
+                                        if let Some(val) = const_f64(field_expr) {
+                                            self.intern_param(
+                                                field_name.clone(),
+                                                val,
+                                                f64::NEG_INFINITY,
+                                                f64::INFINITY,
+                                                *field_span,
+                                            )?;
+                                        }
+                                    }
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Variadic(inner) => match &**inner {
+                                ParamType::Signal => {
+                                    for &reg in &args[signal_pos..] {
+                                        signal_srcs.push(reg);
+                                    }
+                                    signal_pos = args.len();
+                                }
+                                _ => {
+                                    for arg in &call_args[param_pos..] {
+                                        if let Expr::Ref(ref_name, _) = arg {
+                                            if let Some(&pidx) = self.param_names.get(ref_name) {
+                                                param_values.push(0.0);
+                                                param_bindings.push((param_values.len() - 1, pidx));
+                                                continue;
+                                            }
+                                        }
+                                        if let Some(val) = const_f64(arg) {
+                                            param_values.push(val);
+                                        }
+                                    }
+                                    param_pos = call_args.len();
+                                }
+                            },
                         }
-                        let v = const_f64(a).ok_or_else(|| CompileError::Type {
-                            msg: format!(
-                                "param to `{name}` must be a constant expression or a declared parameter"
-                            ),
-                            span: a.span(),
-                        })?;
-                        params.push(v);
                     }
+
                     let instance = self.builtins.len();
                     self.builtins.push(BuiltinInstance {
                         name: name.clone(),
-                        params,
+                        params: param_values,
                         kind: sig.kind,
-                        signal_ins: sig.signal_ins(),
+                        signal_ins: signal_srcs.len(),
                         signal_outs: sig.signal_outs,
                         param_bindings,
                     });
                     match sig.kind {
                         BuiltinKind::Sample => {
                             let dst = self.fresh_reg();
-                            let srcs = args.to_vec();
                             self.emit(Instr::CallSample {
                                 dst,
-                                srcs,
+                                srcs: signal_srcs,
                                 instance,
                             });
                             return Ok(vec![dst]);
@@ -188,10 +278,9 @@ impl<'a> Lowerer<'a> {
                             for _ in 1..sig.signal_outs {
                                 self.fresh_reg();
                             }
-                            let srcs = args.to_vec();
                             self.emit(Instr::CallBlock {
                                 dst: fst,
-                                srcs,
+                                srcs: signal_srcs,
                                 instance,
                             });
                             return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
