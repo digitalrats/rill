@@ -9,6 +9,7 @@
 pub mod ast;
 pub mod backend;
 pub mod builtin;
+pub mod builtins;
 pub mod error;
 pub mod graph_engine;
 pub mod ir;
