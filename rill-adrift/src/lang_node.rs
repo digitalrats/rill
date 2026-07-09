@@ -414,7 +414,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for LangNo
         // Disjoint field borrows: `inputs`, `outputs`, `program`.
         let inp = self.inputs[0].read();
         let out = self.outputs[0].write();
-        self.program.process(Some(&inp[..]), &mut out[..])?;
+        Algorithm::process(&mut self.program, Some(&inp[..]), &mut out[..])?;
         self.state.advance();
         Ok(())
     }
@@ -445,10 +445,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
         metadata.type_name = Some("rill/lang_multi".to_string());
 
         let input_ports: Vec<_> = (0..n_in)
-            .map(|i| Port::input(NodeId(0), i as u16, format!("in_{i}")))
+            .map(|i| Port::input(NodeId(0), i as u16, "in"))
             .collect();
         let output_ports: Vec<_> = (0..n_out)
-            .map(|i| Port::output(NodeId(0), i as u16, format!("out_{i}")))
+            .map(|i| Port::output(NodeId(0), i as u16, "out"))
             .collect();
 
         Ok(Self {
@@ -478,10 +478,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
         metadata.type_name = Some("rill/lang_multi".to_string());
 
         let input_ports: Vec<_> = (0..n_in)
-            .map(|i| Port::input(NodeId(0), i as u16, format!("in_{i}")))
+            .map(|i| Port::input(NodeId(0), i as u16, "in"))
             .collect();
         let output_ports: Vec<_> = (0..n_out)
-            .map(|i| Port::output(NodeId(0), i as u16, format!("out_{i}")))
+            .map(|i| Port::output(NodeId(0), i as u16, "out"))
             .collect();
 
         Ok(Self {
@@ -643,10 +643,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> Router<T, BUF_SIZE> for MultiLang
             input_slices.push(self.input_ports[i].read() as &[T]);
         }
 
-        let mut output_slices: Vec<&mut [T]> = Vec::with_capacity(n_out);
-        for i in 0..n_out {
-            output_slices.push(self.output_ports[i].write() as &mut [T]);
+        // SAFETY: Each output port owns an independent buffer. Collecting
+        // raw pointers to non-overlapping buffers and constructing slices
+        // from them is safe — no aliasing occurs.
+        let mut out_ptrs: Vec<(*mut T, usize)> = Vec::with_capacity(n_out);
+        for port in self.output_ports.iter_mut() {
+            let buf = port.write();
+            out_ptrs.push((buf.as_mut_ptr(), buf.len()));
         }
+        let mut output_slices: Vec<&mut [T]> = out_ptrs
+            .iter_mut()
+            .map(|(ptr, len)| unsafe { std::slice::from_raw_parts_mut(*ptr, *len) })
+            .collect();
 
         MultichannelAlgorithm::process(&mut self.program, &input_slices, &mut output_slices)?;
         self.state.advance();
@@ -690,7 +698,7 @@ mod tests {
     #[test]
     fn is_graph_dsl_rejects_plain_program() {
         assert!(!is_graph_dsl("_ * 0.5"));
-        assert!(!is_graph_dsl("lowpass(_, 1000, 0.7)"));
+        assert!(!is_graph_dsl("lowpass _ 1000 0.7"));
     }
 
     #[test]

@@ -143,6 +143,7 @@ fn test_spectraldelay_builtin_in_registry() {
 #[cfg(all(feature = "fft", feature = "lang"))]
 #[test]
 fn test_fft_builtins_compile_and_run() {
+    use rill_adrift::rill_core::traits::algorithm::Algorithm;
     use rill_lang::compile_with;
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();

@@ -455,7 +455,7 @@ fn combined_param_smooth_feedback_builtin_runs() {
 fn combined_hybrid_matches_reference() {
     let reg = full_registry::<f32>();
     let sr = 48_000.0;
-    let src = "main cut fb gain = _ : lowpass cut 0.7 : (+ ~ (_ * fb)) * smooth(gain, 10.0)";
+    let src = "main cut fb gain = _ : lowpass cut 0.7 : (+ ~ (_ * fb)) * smooth gain 10.0";
     let mut ph = compile_with::<f32>(src, &reg, sr).unwrap();
     let mut pr = compile_with::<f32>(src, &reg, sr).unwrap();
 
