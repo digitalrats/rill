@@ -67,7 +67,7 @@ impl DelayRing {
 }
 
 impl<T: Transcendental> RillProgram<T> {
-    pub(crate) fn new(ir: Ir) -> Self {
+    pub fn new(ir: Ir) -> Self {
         let state = vec![0.0; ir.state.state_slots];
         let state_next = state.clone();
         let delays = ir

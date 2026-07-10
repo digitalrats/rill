@@ -97,6 +97,25 @@ impl<T: Transcendental> RillGraphEngine<T> {
         self.actor_ref.clone()
     }
 
+    /// Returns the merged parameter map for all programs in the engine.
+    ///
+    /// The map is the first program's mapping, which covers all parameters
+    /// for single-program engines. For multi-program graphs, this returns
+    /// the first program's map only.
+    pub fn param_map(&self) -> &HashMap<String, usize> {
+        self.param_maps.first().expect("engine has no programs")
+    }
+
+    /// Returns the active programs in this engine (borrowed).
+    pub fn programs(&self) -> &[RillProgram<T>] {
+        &self.programs
+    }
+
+    /// Returns the first program (for single-program engines).
+    pub fn program(&self) -> &RillProgram<T> {
+        self.programs.first().expect("engine has no programs")
+    }
+
     /// Drain mailbox: push all `SetParameter` to pending queue.
     fn drain_mailbox(&mut self) {
         while let Some(cmd) = self.mailbox.pop() {
@@ -144,13 +163,12 @@ impl<T: Transcendental> RillGraphEngine<T> {
                 node_idx,
                 input_bufs,
                 output_bufs,
-                param_indices,
+                param_indices: _,
             } => {
                 let prog = &mut self.programs[*node_idx];
-                for (pi, pidx) in param_indices.iter().enumerate() {
-                    if let Some(&val) = self.param_values[*node_idx].get(*pidx) {
-                        prog.set_param(pi, rill_core::traits::ParamValue::Float(val as f32));
-                    }
+                for i in 0..prog.params_meta().len() {
+                    let val = prog.param(i);
+                    prog.set_param(i, val);
                 }
                 let n_in = input_bufs.len();
                 let n_out = output_bufs.len();

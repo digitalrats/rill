@@ -237,6 +237,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Creates backends for nodes that have a backend name set (via
     /// `SourceDef::backend` / `SinkDef::backend` or the builder's default).  Finds the active
     /// (driver) node and stores its index for [`Graph::run`].
+    #[cfg(not(feature = "lang"))]
     pub fn build(self, system: &ActorSystem) -> Result<Graph<T, BUF_SIZE>, BuildError> {
         // Phase 1: Construct all nodes from recipes
         let mut node_entries: Vec<NodeEntry<T, BUF_SIZE>> = Vec::with_capacity(self.recipes.len());
@@ -788,6 +789,7 @@ type PendingParams = Rc<RefCell<Vec<SetParameter>>>;
 /// a later block stays queued. This is what makes parameter automation land at
 /// the right sample position regardless of how the backend batches blocks into
 /// I/O callbacks.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn apply_due_params<T: Transcendental, const BUF_SIZE: usize>(
     nodes: &UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>,
@@ -852,6 +854,7 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
 /// metadata.  The state is `!Send + !Sync` — it stays on the I/O thread.
 ///
 /// Created via [`Graph::into_processing_state`].
+#[cfg(not(feature = "lang"))]
 pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     actor: Actor<CommandEnum>,
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
@@ -875,6 +878,7 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     pending_params: PendingParams,
 }
 
+#[cfg(not(feature = "lang"))]
 impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
     /// Re-initialise every node for a new sample rate.
     ///
@@ -1064,6 +1068,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
 // ============================================================================
 
 /// Forward propagate from recording roots.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_forward<T: Transcendental, const BUF_SIZE: usize>(
     roots: &[*mut NodeVariant<T, BUF_SIZE>],
@@ -1084,6 +1089,7 @@ fn p_forward<T: Transcendental, const BUF_SIZE: usize>(
 }
 
 /// Pull-model playback chain: start from sink, recursively process upstream.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_pull<T: Transcendental, const BUF_SIZE: usize>(
     sink: *mut NodeVariant<T, BUF_SIZE>,
@@ -1098,6 +1104,7 @@ fn p_pull<T: Transcendental, const BUF_SIZE: usize>(
     }
 }
 
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
     node: &mut NodeVariant<T, BUF_SIZE>,
@@ -1149,6 +1156,7 @@ fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
 /// producers are on the sink path); here each is processed in order so its
 /// output is produced and `snapshot_feedback` captures it into the downstream
 /// feedback buffer for the next block.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_process_branch<T: Transcendental, const BUF_SIZE: usize>(
     branch: &[*mut NodeVariant<T, BUF_SIZE>],
@@ -1233,6 +1241,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     ///    propagates through the DAG via [`Port::propagate`].
     ///
     /// The graph is `!Send + !Sync` — it stays on the I/O callback thread.
+    #[cfg(not(feature = "lang"))]
     #[allow(unsafe_code)]
     pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
         if let Some(ref mut actor) = self.actor {
@@ -1277,6 +1286,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     ///
     /// `ProcessingState` is `!Send + !Sync` — it stays on the I/O thread
     /// and is moved into the backend's process callback closure.
+    #[cfg(not(feature = "lang"))]
     pub fn into_processing_state(mut self) -> ProcessingState<T, BUF_SIZE> {
         let actor = self.actor.take().expect("graph actor missing");
         ProcessingState {
@@ -1324,7 +1334,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "lang")))]
 mod tests {
     use super::*;
     use rill_core::math::Transcendental;

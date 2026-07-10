@@ -1,3 +1,4 @@
+#![cfg(not(feature = "lang"))]
 #[cfg(feature = "serialization")]
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 #[cfg(feature = "serialization")]

@@ -743,7 +743,7 @@ pub fn from_cbor(bytes: &[u8]) -> Result<GraphDef, SerializationError> {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "lang")))]
 mod tests {
     use super::*;
     use crate::factory::NodeConstructor;

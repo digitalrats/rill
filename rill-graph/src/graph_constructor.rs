@@ -3,6 +3,10 @@
 //!
 //! The graph runs on a dedicated OS thread. [`GraphConstructor`] captures the
 //! node factory at construction time so it does not need to be passed on every call.
+//!
+//! This module uses the old engine path and is disabled when the `lang` feature is enabled.
+
+#![cfg(not(feature = "lang"))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
