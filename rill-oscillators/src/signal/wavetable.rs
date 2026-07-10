@@ -231,7 +231,6 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Node<T, BUF
     fn num_signal_outputs(&self) -> usize {
         1
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Source<T, BUF_SIZE>
     for WavetableOscNode<T, BUF_SIZE, WT_SIZE>

@@ -162,7 +162,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
     }
         &mut self.state
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -207,7 +206,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
     fn latency(&self) -> usize {
         0
     }
-}
 
 #[cfg(test)]
 mod tests {

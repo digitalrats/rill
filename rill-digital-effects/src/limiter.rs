@@ -429,7 +429,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
 
         &mut self.state
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -449,4 +448,3 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
     fn latency(&self) -> usize {
         0
     }
-}

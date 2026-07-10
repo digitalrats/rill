@@ -378,7 +378,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SamplePlayerNode<T, B
     fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
     for SamplePlayerNode<T, BUF_SIZE>

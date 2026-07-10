@@ -431,7 +431,6 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
-}
 
 impl<T: Transcendental + Copy, const BUF_SIZE: usize> Source<T, BUF_SIZE>
     for TimeSeriesNode<T, BUF_SIZE>

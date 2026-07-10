@@ -341,7 +341,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
 
         &mut self.state
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
@@ -662,7 +661,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
 
         &mut self.state
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>

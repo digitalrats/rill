@@ -286,7 +286,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> 
     fn num_signal_outputs(&self) -> usize {
         1
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -328,7 +327,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> 
         self.state.as_mut().unwrap().advance();
         Ok(())
     }
-}
 
 #[cfg(test)]
 mod tests {

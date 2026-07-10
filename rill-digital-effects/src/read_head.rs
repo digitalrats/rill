@@ -126,7 +126,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     fn num_signal_outputs(&self) -> usize {
         1
     }
-}
 
     where
         Self: 'static + Sized,
@@ -209,7 +208,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     }
         &mut self.state
     }
-}
 
 #[cfg(test)]
 mod tests {

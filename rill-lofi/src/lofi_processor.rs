@@ -203,7 +203,6 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
             ],
         }
     }
-}
 
 
         NodeTypeId::of::<Self>()
@@ -397,7 +396,6 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
     fn num_signal_outputs(&self) -> usize {
         1
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -421,7 +419,6 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
     fn latency(&self) -> usize {
         0
     }
-}
 
 #[cfg(test)]
 mod tests {

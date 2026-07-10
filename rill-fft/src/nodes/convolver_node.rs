@@ -186,7 +186,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ConvolverNode<T, BUF_SIZE> {
 
         &mut self.state
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for ConvolverNode<T, BUF_SIZE>

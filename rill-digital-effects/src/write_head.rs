@@ -141,7 +141,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     fn latency(&self) -> usize {
         0
     }
-}
 
 // ── Node trait ─────────────────────────────────────────────────────
 
@@ -235,7 +234,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     }
         &mut self.state
     }
-}
 
 #[cfg(test)]
 mod tests {

@@ -133,7 +133,6 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
     }
         &mut self.state
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -163,4 +162,3 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
         self.state.advance();
         Ok(())
     }
-}

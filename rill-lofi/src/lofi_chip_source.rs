@@ -152,7 +152,6 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> N
 
         &mut self.state
     }
-}
 
 impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> Source<f32, BUF_SIZE>
     for LofiChipSource<C, BUF_SIZE>

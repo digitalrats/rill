@@ -394,7 +394,6 @@ impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
     fn num_feedback_ports(&self) -> usize {
         0
     }
-}
 
 // ── Router trait — N→M configurable routing ────────────────
 
@@ -480,4 +479,3 @@ impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
 
         matrix
     }
-}

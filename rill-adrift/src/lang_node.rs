@@ -179,7 +179,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
     fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for GraphLangNode<T, BUF_SIZE>
@@ -372,7 +371,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
     fn num_signal_outputs(&self) -> usize {
         self.outputs.len()
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -388,7 +386,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
         self.state.advance();
         Ok(())
     }
-}
 
 /// Graph node wrapping a multi-IO rill-lang program (mixer, dry/wet, etc.).
 /// Implements `Router` for N→M configurable signal routing.
@@ -578,7 +575,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
     fn num_signal_outputs(&self) -> usize {
         self.output_ports.len()
     }
-}
 
 
     fn num_route_inputs(&self) -> usize {
@@ -604,7 +600,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
             .map(|_| (0..n_in).map(|i| (i, T::ONE)).collect())
             .collect()
     }
-}
 
 #[cfg(test)]
 mod tests {

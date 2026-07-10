@@ -268,7 +268,6 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
     fn num_signal_outputs(&self) -> usize {
         1
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -281,7 +280,6 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
         *self.outputs[0].write() = temp;
         Ok(())
     }
-}
 
 #[cfg(test)]
 mod tests {

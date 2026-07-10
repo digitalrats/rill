@@ -160,7 +160,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
 
         &mut self.state
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for MoogLadderProcessor<T, BUF_SIZE>

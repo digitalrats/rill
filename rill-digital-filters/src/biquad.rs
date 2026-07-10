@@ -274,7 +274,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
 
         &mut self.state
     }
-}
 
 impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
     for BiquadProcessor<T, BUF_SIZE>

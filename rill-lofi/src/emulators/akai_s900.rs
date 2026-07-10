@@ -196,7 +196,6 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
     fn num_signal_outputs(&self) -> usize {
         1
     }
-}
 
         &mut self,
         _ctx: &RenderContext,
@@ -209,4 +208,3 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
         }
         Ok(())
     }
-}
