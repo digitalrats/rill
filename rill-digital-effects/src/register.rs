@@ -1,3 +1,4 @@
+/// Registration functions for rill-graph and rill-lang built-ins.
 #[cfg(feature = "graph")]
 use rill_core::traits::{Node, NodeId, NodeVariant, Params};
 #[cfg(feature = "graph")]

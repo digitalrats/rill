@@ -1,3 +1,4 @@
+/// Registration functions for rill-graph and rill-lang built-ins.
 #[cfg(feature = "lang")]
 mod lang_helpers {
     use rill_core::math::Transcendental;

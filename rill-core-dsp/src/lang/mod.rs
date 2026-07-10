@@ -1,3 +1,10 @@
+//! Built-in wrapper structs for rill-lang DSL registration.
+//!
+//! These structs implement `BlockBuiltin<T>` and `SampleBuiltin<T>`
+//! from `rill-core::builtin`, adapting `rill-core-dsp` types for
+//! use as callable functions in rill-lang expressions.
+#![allow(missing_docs)]
+
 pub mod biquad;
 pub mod moog;
 pub mod noise;
