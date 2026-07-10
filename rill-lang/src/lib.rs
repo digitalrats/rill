@@ -14,6 +14,8 @@ pub mod builtins;
 pub mod error;
 pub mod graph_engine;
 pub mod graph_ir;
+pub mod graph_lower;
+pub mod graph_optimize;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
