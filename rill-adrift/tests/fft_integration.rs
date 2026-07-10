@@ -85,7 +85,7 @@ fn test_convolver_node_parameters() {
     assert_eq!(node.get_parameter(&mix), Some(ParamValue::Float(0.5)));
 }
 
-#[cfg(all(feature = "fft", feature = "lang"))]
+#[cfg(feature = "fft")]
 #[test]
 fn test_spectralgate_builtin_in_registry() {
     use rill_adrift::lang_builtins::full_registry;
@@ -99,7 +99,7 @@ fn test_spectralgate_builtin_in_registry() {
     assert_eq!(sig.params.len(), 3);
 }
 
-#[cfg(all(feature = "fft", feature = "lang"))]
+#[cfg(feature = "fft")]
 #[test]
 fn test_spectraldelay_builtin_in_registry() {
     use rill_adrift::lang_builtins::full_registry;
@@ -113,7 +113,7 @@ fn test_spectraldelay_builtin_in_registry() {
     assert_eq!(sig.params.len(), 3);
 }
 
-#[cfg(all(feature = "fft", feature = "lang"))]
+#[cfg(feature = "fft")]
 #[test]
 fn test_fft_builtins_compile_and_run() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -132,7 +132,6 @@ fn test_fft_builtins_compile_and_run() {
     }
 }
 
-#[cfg(feature = "lang")]
 #[test]
 fn test_complex_builtins_in_registry() {
     use rill_adrift::lang_builtins::full_registry;
@@ -145,7 +144,7 @@ fn test_complex_builtins_in_registry() {
     }
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_gen_compile_and_run() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -164,7 +163,7 @@ fn test_complex_gen_compile_and_run() {
     );
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_conj_compile_and_run() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -183,7 +182,7 @@ fn test_complex_conj_compile_and_run() {
     );
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_re_extract() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -197,7 +196,7 @@ fn test_complex_re_extract() {
     assert!((output[0] - 3.0).abs() < 1e-4);
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_im_extract() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -211,7 +210,7 @@ fn test_complex_im_extract() {
     assert!((output[0] - 7.0).abs() < 1e-4);
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_norm_compile_and_run() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -230,7 +229,7 @@ fn test_complex_norm_compile_and_run() {
     );
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_cmul_compile_and_run() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -249,7 +248,7 @@ fn test_complex_cmul_compile_and_run() {
     );
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_cadd_compile_and_run() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -264,7 +263,7 @@ fn test_complex_cadd_compile_and_run() {
     assert!((output[0] - 4.0).abs() < 1e-3, "re should be 4.0");
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_imag_literal_standalone() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;
@@ -284,7 +283,7 @@ fn test_imag_literal_standalone() {
     assert!((output2[0] - 3.0).abs() < 1e-4, "im(3i) should be 3");
 }
 
-#[cfg(feature = "lang")]
+#[cfg(feature = "fft")]
 #[test]
 fn test_complex_literal_syntax() {
     use rill_adrift::rill_core::traits::algorithm::Algorithm;

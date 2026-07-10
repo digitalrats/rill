@@ -4,7 +4,6 @@
 //! * RackDef — control system (LFO, envelope, sequencer)
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use rill_core::traits::ParamValue;
@@ -21,12 +20,7 @@ use rill_graph::serialization::GraphDef;
 
 #[cfg(feature = "serialization")]
 use rill_core::queues::CommandEnum;
-#[cfg(feature = "serialization")]
-use rill_core_actor::ActorRef;
-#[cfg(feature = "serialization")]
-use rill_graph::backend_factory::BackendFactory;
 
-#[cfg(feature = "lang")]
 use rill_core_actor::Mailbox;
 
 mod case;
@@ -106,7 +100,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
     }
 
     /// Build a `RillGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
-    #[cfg(feature = "lang")]
     pub fn build_engine(
         &self,
         def: &GraphDef,
@@ -116,6 +109,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))?;
 
+        #[cfg(not(feature = "lofi"))]
         let registry = crate::lang_builtins::full_registry::<f32>();
         #[cfg(feature = "lofi")]
         let registry = crate::lang_builtins::full_registry_f32();
@@ -146,7 +140,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
     /// Launch — build graph engines, set up I/O. Returns self for chaining.
     /// Call `run()` after launch to start the I/O loop.
-    #[cfg(all(feature = "serialization", feature = "lang"))]
+    #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         let tokio_rt = tokio::runtime::Runtime::new()
             .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
@@ -167,27 +161,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 .map_err(|e| ModularError::Graph(format!("{e:?}")))?;
 
             let _case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref.clone(), vec![]);
-            self.cases.insert(rd.name.clone(), _case);
-        }
-
-        self.tokio_rt = Some(tokio_rt);
-        Ok(self)
-    }
-
-    /// Launch — legacy stub (requires both lang and serialization).
-    #[cfg(all(feature = "serialization", not(feature = "lang")))]
-    pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
-        let tokio_rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
-        let _guard = tokio_rt.enter();
-
-        for rd in &def.racks {
-            let actor_ref = self.actor_system.spawn_detached(
-                &format!("rack_{}", rd.name),
-                move || Box::new(move |_msg: CommandEnum| {}),
-                1,
-            );
-            let _case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, vec![]);
             self.cases.insert(rd.name.clone(), _case);
         }
 

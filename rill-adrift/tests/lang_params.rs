@@ -1,5 +1,3 @@
-#![cfg(feature = "lang")]
-
 use rill_adrift::lang_builtins::full_registry;
 use rill_core::traits::{Algorithm, Node, Processor};
 use rill_core::traits::{ParamMetadata, ParamType, ParamValue};

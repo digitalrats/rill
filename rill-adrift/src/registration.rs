@@ -11,15 +11,6 @@ use rill_core::traits::ParamValue;
 #[cfg(feature = "io")]
 use std::collections::HashMap;
 
-/// Register every built-in node type.
-///
-/// Stubbed: graph node construction was removed along with NodeFactory/NodeVariant.
-/// Use per-crate `register_lang_builtins()` with `rill_lang::builtin::Registry`.
-#[cfg(not(feature = "lang"))]
-pub fn register_all_nodes<const BUF_SIZE: usize>(_factory: &mut ()) {
-    // TODO: Port to rill_lang::builtin system
-}
-
 // ============================================================================
 // Module registration — custom rack modules (MIDI, OSC, etc.)
 // ============================================================================

@@ -17,7 +17,6 @@ criterion = { workspace = true, features = ["html_reports"] }
 name = "lang_dsp_bench"
 harness = false
 path = "benches/lang_dsp_bench.rs"
-required-features = ["lang"]
 
 [dependencies]
 rill-core = { workspace = true }
@@ -27,7 +26,7 @@ rill-graph = { workspace = true }
 rill-oscillators = { workspace = true, features = ["graph"] }
 rill-digital-filters = { workspace = true, features = ["graph"] }
 rill-digital-effects = { workspace = true, features = ["graph"] }
-rill-router = { workspace = true, features = ["graph"] }
+rill-router = { workspace = true, features = ["graph", "lang"] }
 rill-patchbay = { workspace = true }
 
 # Dependencies for Runtime (always needed)
@@ -42,7 +41,7 @@ rill-core-model = { workspace = true, optional = true }
 rill-analog-filters = { workspace = true, optional = true }
 rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
-rill-lang = { workspace = true, optional = true }
+rill-lang = { workspace = true, features = ["router"] }
 rill-fft = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
@@ -53,19 +52,19 @@ toml = { version = "0.8", optional = true }
 
 [[example]]
 name = "play_wav"
-required-features = ["io", "lang", "sampler"]
+required-features = ["io", "sampler"]
 
 [[example]]
 name = "player"
-required-features = ["io", "lang", "serialization"]
+required-features = ["io", "serialization"]
 
 [[example]]
 name = "advanced_player"
-required-features = ["io", "lang", "serialization"]
+required-features = ["io", "serialization"]
 
 [[example]]
 name = "record_mic"
-required-features = ["io", "lang", "sampler"]
+required-features = ["io", "sampler"]
 
 [[example]]
 name = "convolver"
@@ -73,7 +72,6 @@ required-features = ["fft"]
 
 [[example]]
 name = "complex_dsl"
-required-features = ["lang"]
 
 [[example]]
 name = "spectral_effects"
@@ -81,15 +79,15 @@ required-features = ["fft"]
 
 [[example]]
 name = "dsl_spectral"
-required-features = ["lang", "fft"]
+required-features = ["fft"]
 
 [[example]]
 name = "chiptune"
-required-features = ["io", "lang", "lofi"]
+required-features = ["io", "lofi"]
 
 [[example]]
 name = "midi_synth"
-required-features = ["midi", "io", "lang"]
+required-features = ["midi", "io"]
 
 [[example]]
 name = "midi_synth_serial"
@@ -97,19 +95,18 @@ required-features = ["midi", "io", "serialization"]
 
 [[example]]
 name = "lang_chiptune"
-required-features = ["lang", "io", "lofi"]
+required-features = ["io", "lofi"]
 
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "fft", "portaudio", "serialization"]
 
 io = ["dep:rill-io"]
-lofi = ["dep:rill-lofi", "rill-lofi/graph"]
+lofi = ["dep:rill-lofi", "rill-lofi/graph", "rill-lofi/lang"]
 telemetry = ["dep:rill-telemetry"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
-analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects", "rill-analog-filters/graph", "rill-analog-effects/graph"]
-sampler = ["dep:rill-sampler", "rill-sampler/graph"]
-lang = ["dep:rill-lang", "rill-lang/router", "rill-router/lang", "rill-lofi?/lang", "rill-fft?/lang", "rill-core-model?/lang", "rill-sampler?/lang", "rill-analog-effects?/lang"]
-fft = ["dep:rill-fft", "rill-fft/graph"]
+analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects", "rill-analog-filters/graph", "rill-analog-effects/graph", "rill-core-model/lang", "rill-analog-effects/lang"]
+sampler = ["dep:rill-sampler", "rill-sampler/graph", "rill-sampler/lang"]
+fft = ["dep:rill-fft", "rill-fft/graph", "rill-fft/lang"]
 serialization = [
     "rill-graph/serialization",
     "rill-patchbay/serialization",

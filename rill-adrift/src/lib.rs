@@ -35,18 +35,15 @@ pub use rill_analog_effects as analog_effects;
 #[cfg(feature = "sampler")]
 pub use rill_sampler as sampler;
 
-#[cfg(feature = "lang")]
 pub use rill_lang as lang;
 
 #[cfg(feature = "fft")]
 pub use rill_fft as fft;
 
-/// rill-lang graph node adapter (`LangNode`), available with the `lang` feature.
-#[cfg(feature = "lang")]
+/// rill-lang graph node adapter (`LangNode`).
 pub mod lang_node;
 
-/// rill-lang DSP/model built-in bindings, available with the `lang` feature.
-#[cfg(feature = "lang")]
+/// rill-lang DSP/model built-in bindings.
 pub mod lang_builtins;
 
 /// Centralised node type registration for the Rill ecosystem.

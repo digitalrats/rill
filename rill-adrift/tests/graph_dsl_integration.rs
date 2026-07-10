@@ -1,5 +1,3 @@
-#![cfg(feature = "lang")]
-
 use rill_core::queues::SignalOrigin;
 use rill_core::queues::{CommandEnum, SetParameter};
 use rill_core::traits::{Algorithm, NodeId, ParamValue, ParameterId, PortId};
