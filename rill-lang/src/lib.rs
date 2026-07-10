@@ -9,6 +9,7 @@
 pub mod ast;
 pub mod backend;
 pub mod builtin;
+/// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
 pub mod error;
 pub mod graph_engine;

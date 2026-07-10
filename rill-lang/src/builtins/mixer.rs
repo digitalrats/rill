@@ -1,20 +1,29 @@
 use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
 
-/// Mixer configuration extracted from the record argument.
+/// Per-channel configuration: sends list is `(bus_index, level, pre_fader)`.
 #[derive(Debug, Clone)]
 pub struct MixerConfig {
+    /// Number of input channels.
     pub num_channels: usize,
+    /// Number of aux send buses.
     pub num_buses: usize,
+    /// Target volume per channel (0.0–1.0).
     pub channel_vols: Vec<f64>,
+    /// Target pan per channel (-1.0 left to 1.0 right).
     pub channel_pans: Vec<f64>,
+    /// Mute state per channel.
     pub channel_mutes: Vec<bool>,
+    /// Per-channel send configurations: (bus_index, level, pre_fader).
     pub sends: Vec<Vec<(usize, f64, bool)>>,
+    /// Master output volume (0.0–2.0).
     pub master_vol: f64,
+    /// EMA smoothing factor (0.0 = instant, 1.0 = never).
     pub smoothing: f64,
 }
 
 impl MixerConfig {
+    /// Create a default mixer config with sensible defaults.
     pub fn new(num_channels: usize, num_buses: usize) -> Self {
         Self {
             num_channels,
@@ -39,6 +48,7 @@ pub struct MixerState<T: Transcendental> {
 }
 
 impl<T: Transcendental> MixerState<T> {
+    /// Create mixer state from config, pre-allocating bus buffers of `buf_size`.
     pub fn new(config: MixerConfig, buf_size: usize) -> Self {
         let n_bus = config.num_buses;
         Self {
@@ -58,13 +68,19 @@ impl<T: Transcendental> MixerState<T> {
         }
     }
 
+    /// Number of mixer input channels.
     pub fn num_inputs(&self) -> usize {
         self.config.num_channels
     }
+    /// Number of mixer output channels (2 master + N buses).
     pub fn num_outputs(&self) -> usize {
         2 + self.config.num_buses
     }
 
+    /// Process one block of samples through the mixer.
+    ///
+    /// Applies per-channel volume, pan, mute, pre/post-fader sends,
+    /// master volume, and EMA smoothing.
     pub fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
         let n_ch = self.config.num_channels;
         let n_bus = self.config.num_buses;
@@ -81,8 +97,8 @@ impl<T: Transcendental> MixerState<T> {
         }
 
         for sample in 0..buf_size {
-            for ch in 0..n_ch {
-                let input = inputs[ch][sample];
+            for (ch, input_ch) in inputs.iter().enumerate().take(n_ch) {
+                let input = input_ch[sample];
 
                 let target_vol = T::from_f64(self.config.channel_vols[ch]);
                 let target_pan = T::from_f64(self.config.channel_pans[ch]);
@@ -107,17 +123,15 @@ impl<T: Transcendental> MixerState<T> {
                 let left = input * vol * left_gain;
                 let right = input * vol * right_gain;
 
-                outputs[0][sample] = outputs[0][sample] + left;
-                outputs[1][sample] = outputs[1][sample] + right;
+                outputs[0][sample] += left;
+                outputs[1][sample] += right;
 
                 for &(bus_idx, level, pre_fader) in &self.config.sends[ch] {
                     let send_level = T::from_f64(level);
                     if pre_fader {
-                        self.bus_buffers[bus_idx][sample] =
-                            self.bus_buffers[bus_idx][sample] + input * send_level;
+                        self.bus_buffers[bus_idx][sample] += input * send_level;
                     } else {
-                        self.bus_buffers[bus_idx][sample] =
-                            self.bus_buffers[bus_idx][sample] + input * vol * send_level;
+                        self.bus_buffers[bus_idx][sample] += input * vol * send_level;
                     }
                 }
             }
@@ -125,8 +139,8 @@ impl<T: Transcendental> MixerState<T> {
             let target_master = T::from_f64(self.config.master_vol);
             self.current_master_vol =
                 self.current_master_vol + (target_master - self.current_master_vol) * smoothing;
-            outputs[0][sample] = outputs[0][sample] * self.current_master_vol;
-            outputs[1][sample] = outputs[1][sample] * self.current_master_vol;
+            outputs[0][sample] *= self.current_master_vol;
+            outputs[1][sample] *= self.current_master_vol;
         }
 
         for bus in 0..n_bus {

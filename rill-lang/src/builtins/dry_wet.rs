@@ -1,26 +1,33 @@
 use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
 
+/// Configuration for dry/wet signal blend.
 pub struct DryWetConfig {
+    /// Mix ratio: 0.0 = fully dry, 1.0 = fully wet.
     pub mix: f64,
 }
 
+/// Runtime state for dry/wet mixing (stateless — config only).
 pub struct DryWetState {
     config: DryWetConfig,
 }
 
 impl DryWetState {
+    /// Create a new dry/wet processor.
     pub fn new(config: DryWetConfig) -> Self {
         Self { config }
     }
 
+    /// Number of signal inputs (2: dry, wet).
     pub fn num_inputs(&self) -> usize {
         2
     }
+    /// Number of signal outputs (2: L, R — both receive the mono sum).
     pub fn num_outputs(&self) -> usize {
         2
     }
 
+    /// Process one block: output = dry * (1 - mix) + wet * mix.
     pub fn process<T: Transcendental>(
         &self,
         inputs: &[&[T]],

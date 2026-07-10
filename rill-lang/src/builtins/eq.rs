@@ -1,23 +1,38 @@
 use rill_core::math::Transcendental;
 
+/// Biquad filter type for EQ bands.
 pub enum BandType {
+    /// Peaking/parametric bell filter.
     Peak = 0,
+    /// Low shelf filter.
     LowShelf = 1,
+    /// High shelf filter.
     HighShelf = 2,
+    /// Second-order lowpass.
     LowPass = 3,
+    /// Second-order highpass.
     HighPass = 4,
+    /// Bandpass filter (constant skirt gain, peak at unity).
     BandPass = 5,
+    /// Notch/band-reject filter.
     Notch = 6,
 }
 
+/// Configuration for a single EQ band.
 pub struct EqBandConfig {
+    /// Center/corner frequency in Hz.
     pub freq: f64,
+    /// Q factor (bandwidth).
     pub q: f64,
+    /// Gain in dB (ignored for pass/notch filters).
     pub gain_db: f64,
+    /// Filter type.
     pub band_type: BandType,
 }
 
+/// Configuration for a full parametric EQ (cascaded biquad bands).
 pub struct EqConfig {
+    /// Ordered list of EQ bands (processed sequentially).
     pub bands: Vec<EqBandConfig>,
 }
 
@@ -29,6 +44,7 @@ struct BiquadCoeffs {
     a2: f64,
 }
 
+/// Runtime state for a cascaded biquad EQ.
 pub struct EqState<T: Transcendental> {
     config: EqConfig,
     coeffs: Vec<BiquadCoeffs>,
@@ -40,6 +56,7 @@ pub struct EqState<T: Transcendental> {
 }
 
 impl<T: Transcendental> EqState<T> {
+    /// Create EQ state from config, computing biquad coefficients at the given sample rate.
     pub fn new(config: EqConfig, sample_rate: f32) -> Self {
         let n = config.bands.len();
         let mut state = Self {
@@ -55,6 +72,7 @@ impl<T: Transcendental> EqState<T> {
         state
     }
 
+    /// Process a single sample through all EQ bands (cascaded).
     pub fn process_sample(&mut self, input: T) -> T {
         let mut x = input;
         for i in 0..self.config.bands.len() {
@@ -82,6 +100,7 @@ impl<T: Transcendental> EqState<T> {
         }
     }
 
+    /// Process an entire buffer of samples through the EQ.
     pub fn process_slice(&mut self, input: &[T], output: &mut [T]) {
         for (i, sample) in input.iter().enumerate() {
             output[i] = self.process_sample(*sample);

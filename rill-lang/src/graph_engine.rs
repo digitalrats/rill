@@ -114,8 +114,8 @@ impl<T: Transcendental> RillGraphEngine<T> {
 impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
-        let mut outputs: &mut [&mut [T]] = &mut [output];
-        MultichannelAlgorithm::process(self, inputs, &mut outputs)
+        let outputs: &mut [&mut [T]] = &mut [output];
+        MultichannelAlgorithm::process(self, inputs, outputs)
     }
 
     fn reset(&mut self) {
