@@ -254,6 +254,17 @@ fn register_lang<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Processor(Box::new(n))
     });
+
+    node_ctor!(factory, "rill/lang_multi", |id: NodeId, params: &Params| {
+        let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");
+        let mut n = crate::lang_node::MultiLangNode::<f32, BUF_SIZE>::from_source(source)
+            .unwrap_or_else(|_| {
+                crate::lang_node::MultiLangNode::<f32, BUF_SIZE>::from_source("main = _").unwrap()
+            });
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Router(Box::new(n))
+    });
 }
 
 // ============================================================================
