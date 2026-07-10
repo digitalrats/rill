@@ -17,6 +17,7 @@ serde = { workspace = true, optional = true, features = ["derive"] }
 
 [features]
 default = []
+router = []
 serde = ["dep:serde"]
 
 [dev-dependencies]
