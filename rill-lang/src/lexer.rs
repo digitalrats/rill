@@ -59,6 +59,8 @@ pub enum Tok {
     LBrace,
     /// `}`
     RBrace,
+    /// `?`
+    Question,
     /// End of input.
     Eof,
     /// Imaginary literal, e.g. `3i`, `2.5i`.
@@ -217,6 +219,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             b'/' => Tok::Slash,
             b'%' => Tok::Percent,
             b'!' => Tok::Cut,
+            b'?' => Tok::Question,
             b'(' => Tok::LParen,
             b')' => Tok::RParen,
             b'{' => Tok::LBrace,
@@ -254,7 +257,7 @@ mod tests {
     #[test]
     fn lexes_combinators_and_ops() {
         assert_eq!(
-            kinds("_ : + <: :> ~ @ , * / % ! ( ) { } = ;"),
+            kinds("_ : + <: :> ~ @ , * / % ! ? ( ) { } = ;"),
             vec![
                 Tok::Wire,
                 Tok::Colon,
@@ -268,6 +271,7 @@ mod tests {
                 Tok::Slash,
                 Tok::Percent,
                 Tok::Cut,
+                Tok::Question,
                 Tok::LParen,
                 Tok::RParen,
                 Tok::LBrace,

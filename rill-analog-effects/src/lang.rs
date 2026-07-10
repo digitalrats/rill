@@ -6,6 +6,7 @@ use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 
 use crate::CassetteDeck;
+use crate::{HeadConfig, TapeBridgeAlgorithm};
 
 struct CassetteDeckBuiltin<T: Transcendental> {
     inner: CassetteDeck,
@@ -43,6 +44,27 @@ impl<T: Transcendental> BlockBuiltin<T> for CassetteDeckBuiltin<T> {
     }
 }
 
+struct TapeBridgeBuiltin<T: Transcendental> {
+    inner: TapeBridgeAlgorithm<T>,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Transcendental> Algorithm<T> for TapeBridgeBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        self.inner.process(input, output)
+    }
+
+    fn init(&mut self, sr: f32) {
+        self.inner.init(sr);
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for TapeBridgeBuiltin<T> {}
+
 pub fn register_analog_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
         BuiltinSig::simple("cassette_deck", 1, 1, 4, BuiltinKind::Block),
@@ -55,6 +77,32 @@ pub fn register_analog_builtins<T: Transcendental>(reg: &mut Registry<T>) {
             Box::new(CassetteDeckBuiltin::<T> {
                 inner: deck,
                 sample_rate: sr,
+                _phantom: PhantomData,
+            })
+        },
+    );
+
+    reg.register_block(
+        BuiltinSig::simple("tape_bridge", 1, 2, 2, BuiltinKind::Block),
+        |p, sr| {
+            let capacity = p[0] as usize;
+            let n_read_heads = (p[1] as usize).max(1);
+            let mut heads = vec![HeadConfig {
+                position: 0,
+                gain: 0.8,
+                decorators: vec![],
+            }];
+            for _ in 0..n_read_heads {
+                heads.push(HeadConfig {
+                    position: 48000,
+                    gain: 0.5,
+                    decorators: vec![],
+                });
+            }
+            let mut algo = TapeBridgeAlgorithm::<T>::new(capacity, heads);
+            algo.init(sr);
+            Box::new(TapeBridgeBuiltin {
+                inner: algo,
                 _phantom: PhantomData,
             })
         },

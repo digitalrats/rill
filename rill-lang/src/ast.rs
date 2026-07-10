@@ -79,6 +79,15 @@ pub enum Expr {
     },
     /// Record literal, e.g. `{ channels: 3, gain: 0.8 }`.
     Record(Vec<(String, Expr)>, Span),
+    /// Late-binding actor parameter: `?name` or `?name=default`.
+    ActorParam {
+        /// Parameter name (without `?` prefix).
+        name: String,
+        /// Optional default value expression.
+        default: Option<Box<Expr>>,
+        /// Source span.
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -96,7 +105,8 @@ impl Expr {
             Expr::Apply { span, .. }
             | Expr::Bin { span, .. }
             | Expr::Let { span, .. }
-            | Expr::Record(_, span) => *span,
+            | Expr::Record(_, span)
+            | Expr::ActorParam { span, .. } => *span,
         }
     }
 }

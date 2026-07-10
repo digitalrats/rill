@@ -155,6 +155,14 @@ pub enum Instr {
         /// Index into [`Ir::params`].
         idx: usize,
     },
+    /// Read an actor parameter slot (?name syntax). Semantically same as ReadParam
+    /// but carries distinct semantics for higher layers (actor param naming).
+    ReadActorParam {
+        /// Destination register.
+        dst: Reg,
+        /// Index into [`Ir::params`].
+        param_idx: usize,
+    },
 }
 
 /// Layout describing pre-allocated persistent storage.

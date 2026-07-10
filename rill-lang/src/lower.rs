@@ -321,6 +321,31 @@ impl<'a> Lowerer<'a> {
                 result
             }
             Expr::Record(..) => unreachable!("Record should be desugared before lowering"),
+            Expr::ActorParam {
+                name,
+                default,
+                span,
+            } => {
+                let default_val = if let Some(d) = default {
+                    const_f64(d).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                let full_name = self.actor_param_prefix(name);
+                let idx = self.intern_param(
+                    full_name,
+                    default_val,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    *span,
+                )?;
+                let dst = self.fresh_reg();
+                self.emit(Instr::ReadActorParam {
+                    dst,
+                    param_idx: idx,
+                });
+                Ok(vec![dst])
+            }
         }
     }
 
@@ -359,6 +384,11 @@ impl<'a> Lowerer<'a> {
             self.param_names.insert(name, idx);
             Ok(idx)
         }
+    }
+
+    /// Build composit param name from current scope context + local name.
+    fn actor_param_prefix(&self, local_name: &str) -> String {
+        local_name.to_string()
     }
 
     fn lower_ref(
@@ -713,6 +743,7 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
         }
         Expr::Let { body, .. } => arity(body, sigs)?,
         Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
+        Expr::ActorParam { .. } => (0, 1),
     })
 }
 

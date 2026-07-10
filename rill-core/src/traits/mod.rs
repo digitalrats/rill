@@ -7,6 +7,8 @@
 pub mod action;
 /// Algorithm trait and action contexts.
 pub mod algorithm;
+/// Bridge backend trait for duplex execution boundary.
+pub mod bridge;
 /// BufferView trait for backend-specific ring buffer access.
 pub mod buffer_view;
 mod error;

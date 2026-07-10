@@ -101,6 +101,9 @@ mod tests {
                 params: Vec::new(),
                 keep: false,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
         ir.nodes.insert(
@@ -111,6 +114,9 @@ mod tests {
                 params: Vec::new(),
                 keep: false,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
 
@@ -137,6 +143,9 @@ mod tests {
                 params: Vec::new(),
                 keep: true,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
 

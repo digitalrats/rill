@@ -10,12 +10,13 @@ use std::sync::Arc;
 
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
+use rill_core::traits::bridge::BridgeAlgorithm;
 #[cfg(feature = "router")]
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ProcessResult};
 use rill_core_actor::{ActorRef, Mailbox};
 
-use crate::graph_lower::{ScheduledGraph, Step};
+use crate::graph_lower::{DuplexSchedule, ScheduledGraph, Step};
 use crate::program::RillProgram;
 
 /// Map from parameter name to its index in the program's parameter list.
@@ -33,6 +34,45 @@ struct PendingParam {
     sample_pos: Option<u64>,
 }
 
+/// Self-contained engine state for one side of a duplex graph.
+struct SubEngine<T: Transcendental> {
+    programs: Vec<RillProgram<T>>,
+    buffers: Vec<Vec<T>>,
+    param_maps: Vec<HashMap<String, usize>>,
+}
+
+impl<T: Transcendental> SubEngine<T> {
+    fn new(programs: Vec<RillProgram<T>>, n_bufs: usize, buf_size: usize) -> Self {
+        let param_maps: Vec<HashMap<String, usize>> = programs
+            .iter()
+            .map(|p| {
+                p.params_meta()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (m.name.clone(), i))
+                    .collect()
+            })
+            .collect();
+        Self {
+            programs,
+            buffers: vec![vec![T::ZERO; buf_size]; n_bufs],
+            param_maps,
+        }
+    }
+}
+
+/// Bridge-backed duplex execution state.
+struct DuplexData<T: Transcendental> {
+    duplex_schedule: DuplexSchedule,
+    left: SubEngine<T>,
+    right: SubEngine<T>,
+    bridge: Box<dyn BridgeAlgorithm<T>>,
+    feedback_read: Vec<Vec<T>>,
+    feedback_write: Vec<Vec<T>>,
+    name_to_idx: HashMap<String, usize>,
+    delay_buffers: Vec<Vec<T>>,
+}
+
 /// Graph execution engine that runs a `ScheduledGraph` over a buffer pool.
 pub struct RillGraphEngine<T: Transcendental> {
     schedule: ScheduledGraph,
@@ -42,8 +82,10 @@ pub struct RillGraphEngine<T: Transcendental> {
     param_values: Vec<Vec<f64>>,
     pending: Vec<PendingParam>,
     param_maps: Vec<HashMap<String, usize>>,
+    anchor_map: HashMap<String, usize>,
     mailbox: Arc<Mailbox<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
+    duplex: Option<DuplexData<T>>,
 }
 
 impl<T: Transcendental> RillGraphEngine<T> {
@@ -79,6 +121,13 @@ impl<T: Transcendental> RillGraphEngine<T> {
             .collect();
         let actor_ref = mailbox.actor_ref();
 
+        let anchor_map = schedule
+            .program_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i))
+            .collect();
+
         Self {
             schedule,
             programs,
@@ -87,8 +136,102 @@ impl<T: Transcendental> RillGraphEngine<T> {
             param_values,
             pending: Vec::new(),
             param_maps,
+            anchor_map,
             mailbox,
             actor_ref,
+            duplex: None,
+        }
+    }
+
+    /// Create a duplex graph engine from a [`DuplexSchedule`], programs,
+    /// a bridge backend, and a shared mailbox.
+    pub fn new_duplex(
+        duplex_schedule: DuplexSchedule,
+        left_programs: Vec<RillProgram<T>>,
+        right_programs: Vec<RillProgram<T>>,
+        bridge: Box<dyn BridgeAlgorithm<T>>,
+        mailbox: Arc<Mailbox<CommandEnum>>,
+        buf_size: usize,
+    ) -> Self {
+        let actor_ref = mailbox.actor_ref();
+        let n_left_bufs = duplex_schedule.left.buffers;
+        let n_right_bufs = duplex_schedule.right.buffers;
+
+        let n_left_delays = duplex_schedule
+            .left
+            .steps
+            .iter()
+            .filter(|s| matches!(s, Step::ReadDelay { .. }))
+            .count();
+        let n_right_delays = duplex_schedule
+            .right
+            .steps
+            .iter()
+            .filter(|s| matches!(s, Step::ReadDelay { .. }))
+            .count();
+
+        let left = SubEngine::new(left_programs, n_left_bufs, buf_size);
+        let right = SubEngine::new(right_programs, n_right_bufs, buf_size);
+
+        let n_feedback = duplex_schedule.feedback_names.len();
+
+        let mut name_to_idx = HashMap::new();
+        for (i, name) in duplex_schedule.feedback_names.iter().enumerate() {
+            name_to_idx.insert(name.clone(), i);
+        }
+
+        let n_delays = n_left_delays + n_right_delays;
+
+        let anchor_map = {
+            let mut map = HashMap::new();
+            for (i, name) in duplex_schedule.left.program_names.iter().enumerate() {
+                map.insert(name.clone(), i);
+            }
+            for (i, name) in duplex_schedule.right.program_names.iter().enumerate() {
+                map.insert(name.clone(), i + left.programs.len());
+            }
+            map
+        };
+
+        let param_maps: Vec<HashMap<String, usize>> = {
+            let mut maps = Vec::new();
+            maps.extend(left.param_maps.clone());
+            maps.extend(right.param_maps.clone());
+            maps
+        };
+
+        let duplex = DuplexData {
+            duplex_schedule,
+            left,
+            right,
+            bridge,
+            feedback_read: vec![vec![T::ZERO; buf_size]; n_feedback],
+            feedback_write: vec![vec![T::ZERO; buf_size]; n_feedback],
+            name_to_idx,
+            delay_buffers: vec![vec![T::ZERO; buf_size]; n_delays.max(1)],
+        };
+
+        let param_values: Vec<Vec<f64>> = vec![vec![]; param_maps.len()];
+
+        Self {
+            schedule: ScheduledGraph {
+                inputs: 0,
+                outputs: 0,
+                steps: Vec::new(),
+                buffers: 0,
+                output_mapping: Vec::new(),
+                program_names: Vec::new(),
+            },
+            programs: Vec::new(),
+            buffers: Vec::new(),
+            delay_buffers: Vec::new(),
+            param_values,
+            pending: Vec::new(),
+            param_maps,
+            anchor_map,
+            mailbox,
+            actor_ref,
+            duplex: Some(duplex),
         }
     }
 
@@ -120,16 +263,29 @@ impl<T: Transcendental> RillGraphEngine<T> {
     fn drain_mailbox(&mut self) {
         while let Some(cmd) = self.mailbox.pop() {
             if let CommandEnum::SetParameter(ref sp) = cmd {
-                let name = sp.parameter.as_str();
-                for (prog_idx, map) in self.param_maps.iter().enumerate() {
-                    if let Some(&idx) = map.get(name) {
-                        self.pending.push(PendingParam {
-                            param_idx: idx,
-                            program_idx: prog_idx,
-                            value: sp.value.clone(),
-                            sample_pos: sp.sample_pos,
-                        });
-                        break;
+                let param_name = sp.parameter.as_str();
+                if !sp.anchor.is_empty() {
+                    if let Some(&prog_idx) = self.anchor_map.get(&sp.anchor) {
+                        if let Some(&idx) = self.param_maps[prog_idx].get(param_name) {
+                            self.pending.push(PendingParam {
+                                param_idx: idx,
+                                program_idx: prog_idx,
+                                value: sp.value.clone(),
+                                sample_pos: sp.sample_pos,
+                            });
+                        }
+                    }
+                } else {
+                    for (prog_idx, map) in self.param_maps.iter().enumerate() {
+                        if let Some(&idx) = map.get(param_name) {
+                            self.pending.push(PendingParam {
+                                param_idx: idx,
+                                program_idx: prog_idx,
+                                value: sp.value.clone(),
+                                sample_pos: sp.sample_pos,
+                            });
+                            break;
+                        }
                     }
                 }
             }
@@ -149,8 +305,267 @@ impl<T: Transcendental> RillGraphEngine<T> {
             return;
         }
         for p in self.pending.drain(0..split) {
-            self.programs[p.program_idx].set_param(p.param_idx, p.value);
+            if let Some(ref mut duplex) = self.duplex {
+                if p.program_idx < duplex.left.programs.len() {
+                    duplex.left.programs[p.program_idx].set_param(p.param_idx, p.value);
+                } else {
+                    let right_idx = p.program_idx - duplex.left.programs.len();
+                    if right_idx < duplex.right.programs.len() {
+                        duplex.right.programs[right_idx].set_param(p.param_idx, p.value);
+                    }
+                }
+            } else {
+                self.programs[p.program_idx].set_param(p.param_idx, p.value);
+            }
         }
+    }
+
+    /// 5-phase tick for duplex graphs.
+    ///
+    /// Phases:
+    /// 1. ReadFeedback — copy named feedback buffers into sub-engine buffers
+    /// 2. process_left — execute left sub-graph, then bridge.process_left
+    /// 3. process_right — bridge.process_right, then execute right sub-graph
+    /// 4. WriteFeedback — copy sub-engine outputs into named feedback buffers
+    /// 5. Shadow copy — swap read/write feedback buffers
+    pub fn process_tick(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        self.drain_mailbox();
+
+        if let Some(ref mut duplex) = self.duplex {
+            if !inputs.is_empty() || !outputs.is_empty() {
+                let buf_size = if !outputs.is_empty() {
+                    outputs[0].len()
+                } else {
+                    inputs[0].len()
+                };
+
+                // Phase 1: ReadFeedback
+                Self::apply_read_feedback(duplex, buf_size);
+
+                // Phase 2: process_left
+                Self::execute_sub_schedule(
+                    &duplex.duplex_schedule.left,
+                    &mut duplex.left,
+                    &mut duplex.delay_buffers,
+                    inputs,
+                    buf_size,
+                )?;
+                duplex.bridge.process_left(inputs)?;
+
+                // Phase 3: process_right
+                duplex.bridge.process_right(outputs)?;
+                Self::execute_sub_schedule(
+                    &duplex.duplex_schedule.right,
+                    &mut duplex.right,
+                    &mut duplex.delay_buffers,
+                    &[],
+                    buf_size,
+                )?;
+
+                // Phase 4: WriteFeedback
+                Self::capture_write_feedback(duplex, buf_size);
+
+                // Phase 5: Shadow copy
+                for &idx in duplex.name_to_idx.values() {
+                    duplex.feedback_read[idx][..buf_size]
+                        .copy_from_slice(&duplex.feedback_write[idx][..buf_size]);
+                }
+            }
+        } else {
+            self.execute_siso(inputs, outputs)?;
+        }
+
+        Ok(())
+    }
+
+    fn apply_read_feedback(duplex: &mut DuplexData<T>, buf_size: usize) {
+        for step in &duplex.duplex_schedule.left.steps {
+            if let Step::ReadFeedback { name, target_buf } = step {
+                if let Some(&idx) = duplex.name_to_idx.get(name) {
+                    let src = &duplex.feedback_read[idx];
+                    if *target_buf < duplex.left.buffers.len() {
+                        duplex.left.buffers[*target_buf][..buf_size]
+                            .copy_from_slice(&src[..buf_size]);
+                    }
+                }
+            }
+        }
+        for step in &duplex.duplex_schedule.right.steps {
+            if let Step::ReadFeedback { name, target_buf } = step {
+                if let Some(&idx) = duplex.name_to_idx.get(name) {
+                    let src = &duplex.feedback_read[idx];
+                    if *target_buf < duplex.right.buffers.len() {
+                        duplex.right.buffers[*target_buf][..buf_size]
+                            .copy_from_slice(&src[..buf_size]);
+                    }
+                }
+            }
+        }
+    }
+
+    fn capture_write_feedback(duplex: &mut DuplexData<T>, buf_size: usize) {
+        for step in &duplex.duplex_schedule.left.steps {
+            if let Step::WriteFeedback { name, source_buf } = step {
+                if let Some(&idx) = duplex.name_to_idx.get(name) {
+                    let dst = &mut duplex.feedback_write[idx];
+                    if *source_buf < duplex.left.buffers.len() {
+                        dst[..buf_size]
+                            .copy_from_slice(&duplex.left.buffers[*source_buf][..buf_size]);
+                    }
+                }
+            }
+        }
+        for step in &duplex.duplex_schedule.right.steps {
+            if let Step::WriteFeedback { name, source_buf } = step {
+                if let Some(&idx) = duplex.name_to_idx.get(name) {
+                    let dst = &mut duplex.feedback_write[idx];
+                    if *source_buf < duplex.right.buffers.len() {
+                        dst[..buf_size]
+                            .copy_from_slice(&duplex.right.buffers[*source_buf][..buf_size]);
+                    }
+                }
+            }
+        }
+    }
+
+    fn execute_sub_schedule(
+        schedule: &ScheduledGraph,
+        engine: &mut SubEngine<T>,
+        delay_bufs: &mut [Vec<T>],
+        inputs: &[&[T]],
+        buf_size: usize,
+    ) -> ProcessResult<()> {
+        for (i, input) in inputs.iter().enumerate() {
+            if i < engine.buffers.len() {
+                engine.buffers[i][..buf_size].copy_from_slice(input);
+            }
+        }
+
+        for step in &schedule.steps {
+            match step {
+                Step::ReadFeedback { .. } | Step::WriteFeedback { .. } => {
+                    // Handled in phases 1 and 4
+                }
+                Step::ReadDelay { slot, target } => {
+                    if *target < engine.buffers.len() && *slot < delay_bufs.len() {
+                        engine.buffers[*target][..buf_size]
+                            .copy_from_slice(&delay_bufs[*slot][..buf_size]);
+                    }
+                }
+                Step::WriteDelay { source, slot } => {
+                    if *source < engine.buffers.len() && *slot < delay_bufs.len() {
+                        delay_bufs[*slot][..buf_size]
+                            .copy_from_slice(&engine.buffers[*source][..buf_size]);
+                    }
+                }
+                Step::InlineProgram {
+                    node_idx,
+                    input_bufs,
+                    output_bufs,
+                    param_indices: _,
+                } => {
+                    let prog = &mut engine.programs[*node_idx];
+                    for i in 0..prog.params_meta().len() {
+                        let val = prog.param(i);
+                        prog.set_param(i, val);
+                    }
+                    let n_in = input_bufs.len();
+                    let n_out = output_bufs.len();
+
+                    let (inp_slices, mut out_slices) =
+                        buf_slices(&mut engine.buffers, input_bufs, output_bufs, buf_size);
+
+                    if n_in <= 1 && n_out == 1 {
+                        let input = if n_in == 0 { None } else { Some(inp_slices[0]) };
+                        Algorithm::process(prog, input, out_slices[0])?;
+                    } else {
+                        #[cfg(feature = "router")]
+                        {
+                            MultichannelAlgorithm::process(prog, &inp_slices, &mut out_slices)?;
+                        }
+                        #[cfg(not(feature = "router"))]
+                        {
+                            return Err(rill_core::traits::ProcessError::processing(
+                                "multi-IO graph requires 'router' feature",
+                            ));
+                        }
+                    }
+                }
+                Step::BufferCopy {
+                    from,
+                    to,
+                    gain,
+                    add,
+                } => {
+                    if *from < engine.buffers.len() && *to < engine.buffers.len() {
+                        if *from != *to {
+                            let (src, dst) = if *from < *to {
+                                let (left, right) = engine.buffers.split_at_mut(*to);
+                                (&left[*from][..buf_size], &mut right[0][..buf_size])
+                            } else {
+                                let (left, right) = engine.buffers.split_at_mut(*from);
+                                (&right[0][..buf_size], &mut left[*to][..buf_size])
+                            };
+                            if *add {
+                                for (d, s) in dst.iter_mut().zip(src.iter()) {
+                                    *d += *s * T::from_f64(*gain as f64);
+                                }
+                            } else {
+                                dst.copy_from_slice(src);
+                                if (*gain - 1.0f32).abs() > f32::EPSILON {
+                                    let gain_t = T::from_f64(*gain as f64);
+                                    for v in dst {
+                                        *v *= gain_t;
+                                    }
+                                }
+                            }
+                        } else if *add {
+                            let gain_t = T::from_f64(*gain as f64);
+                            let buf = &mut engine.buffers[*to][..buf_size];
+                            for v in buf {
+                                *v = *v + *v * gain_t;
+                            }
+                        } else if (*gain - 1.0f32).abs() > f32::EPSILON {
+                            let gain_t = T::from_f64(*gain as f64);
+                            for v in &mut engine.buffers[*to][..buf_size] {
+                                *v *= gain_t;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_siso(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        let buf_size = if !outputs.is_empty() {
+            outputs[0].len()
+        } else {
+            return Ok(());
+        };
+
+        for (i, input) in inputs.iter().enumerate() {
+            if i < self.buffers.len() {
+                self.buffers[i][..buf_size].copy_from_slice(input);
+            }
+        }
+
+        let steps = self.schedule.steps.clone();
+        for step in &steps {
+            self.execute_step(step, buf_size)?;
+        }
+
+        for (i, output) in outputs.iter_mut().enumerate() {
+            if i < self.schedule.output_mapping.len() {
+                let src = self.schedule.output_mapping[i];
+                if src < self.buffers.len() {
+                    output.copy_from_slice(&self.buffers[src][..buf_size]);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn execute_step(&mut self, step: &Step, buf_size: usize) -> ProcessResult<()> {
@@ -236,6 +651,9 @@ impl<T: Transcendental> RillGraphEngine<T> {
                 self.delay_buffers[*slot][..buf_size]
                     .copy_from_slice(&self.buffers[*source][..buf_size]);
             }
+            Step::ReadFeedback { .. } | Step::WriteFeedback { .. } => {
+                // Handled externally — these only appear in duplex sub-schedules.
+            }
         }
         Ok(())
     }
@@ -275,8 +693,17 @@ impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
     }
 
     fn init(&mut self, sr: f32) {
-        for prog in &mut self.programs {
-            prog.init(sr);
+        if let Some(ref mut duplex) = self.duplex {
+            for prog in &mut duplex.left.programs {
+                prog.init(sr);
+            }
+            for prog in &mut duplex.right.programs {
+                prog.init(sr);
+            }
+        } else {
+            for prog in &mut self.programs {
+                prog.init(sr);
+            }
         }
     }
 
@@ -290,49 +717,47 @@ impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
         for prog in &mut self.programs {
             Algorithm::reset(prog);
         }
+        if let Some(ref mut duplex) = self.duplex {
+            for buf in &mut duplex.left.buffers {
+                buf.fill(T::ZERO);
+            }
+            for buf in &mut duplex.right.buffers {
+                buf.fill(T::ZERO);
+            }
+            for buf in &mut duplex.feedback_read {
+                buf.fill(T::ZERO);
+            }
+            for buf in &mut duplex.feedback_write {
+                buf.fill(T::ZERO);
+            }
+            for buf in &mut duplex.delay_buffers {
+                buf.fill(T::ZERO);
+            }
+            duplex.bridge.reset();
+        }
     }
 }
 
 #[cfg(feature = "router")]
 impl<T: Transcendental> MultichannelAlgorithm<T> for RillGraphEngine<T> {
     fn num_inputs(&self) -> usize {
-        self.schedule.inputs
+        if let Some(ref duplex) = self.duplex {
+            duplex.duplex_schedule.left.inputs
+        } else {
+            self.schedule.inputs
+        }
     }
 
     fn num_outputs(&self) -> usize {
-        self.schedule.outputs
+        if let Some(ref duplex) = self.duplex {
+            duplex.duplex_schedule.right.outputs
+        } else {
+            self.schedule.outputs
+        }
     }
 
     fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
-        self.drain_mailbox();
-
-        let buf_size = if !outputs.is_empty() {
-            outputs[0].len()
-        } else {
-            return Ok(());
-        };
-
-        for (i, input) in inputs.iter().enumerate() {
-            if i < self.buffers.len() {
-                self.buffers[i][..buf_size].copy_from_slice(input);
-            }
-        }
-
-        let steps = self.schedule.steps.clone();
-        for step in &steps {
-            self.execute_step(step, buf_size)?;
-        }
-
-        for (i, output) in outputs.iter_mut().enumerate() {
-            if i < self.schedule.output_mapping.len() {
-                let src = self.schedule.output_mapping[i];
-                if src < self.buffers.len() {
-                    output.copy_from_slice(&self.buffers[src][..buf_size]);
-                }
-            }
-        }
-
-        Ok(())
+        self.process_tick(inputs, outputs)
     }
 
     fn reset(&mut self) {
