@@ -22,6 +22,7 @@ pub mod program;
 pub mod program_runner;
 pub mod reduce;
 pub mod regalloc;
+pub mod register;
 pub mod schedule;
 pub mod serde_def;
 pub mod types;

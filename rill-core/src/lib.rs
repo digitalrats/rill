@@ -175,6 +175,9 @@ pub mod interpolate;
 /// Generic multi-channel signal I/O abstraction
 pub mod io;
 
+/// Built-in function registry for signal processing DSLs
+pub mod builtin;
+
 // ============================================================================
 // Error Types
 // ============================================================================

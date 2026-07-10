@@ -31,3 +31,5 @@ pub mod prelude;
 pub use rill_core;
 /// Re-export of the `rill_core_dsp` crate.
 pub use rill_core_dsp;
+
+pub mod register;

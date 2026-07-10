@@ -9,3 +9,5 @@ pub mod signal;
 
 // Re-export common types for convenience
 pub use signal::*;
+
+pub mod register;

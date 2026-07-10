@@ -3,7 +3,9 @@
 //! `process()` performs no heap allocation after warm-up.
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{Algorithm, MultichannelAlgorithm, ParamValue, ProcessResult};
+#[cfg(feature = "router")]
+use rill_core::traits::MultichannelAlgorithm;
+use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 
 use crate::builtin::{BlockBuiltin, SampleBuiltin};
 use crate::error::CompileError;
@@ -253,6 +255,7 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
     }
 }
 
+#[cfg(feature = "router")]
 impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
     fn num_inputs(&self) -> usize {
         self.ir.num_inputs

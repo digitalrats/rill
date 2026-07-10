@@ -10,12 +10,16 @@ documentation = "https://docs.rs/rill-lofi"
 
 [dependencies]
 rill-core = { workspace = true }
+rill-graph = { workspace = true, optional = true }
+rill-lang = { workspace = true, optional = true }
 rand = "0.8"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
 [features]
 default = []
+graph = ["rill-graph"]
+lang = ["rill-lang"]
 
 [dev-dependencies]
 serde_json = "1.0"
