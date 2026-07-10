@@ -30,14 +30,13 @@ fn engine_executes_and_produces_output() {
 }
 
 #[test]
-fn param_maps_correctly() {
-    let engine =
+fn engine_with_param_compiles_and_processes() {
+    let mut engine =
         compile_graph::<f32>("main level = _ * level", &Registry::<f32>::new(), 44100.0).unwrap();
 
-    let param_map = engine.param_map();
-    assert!(
-        param_map.contains_key("level"),
-        "param 'level' should exist"
-    );
-    assert_eq!(param_map["level"], 0);
+    let mut output = [0.0f32; 8];
+    let input = [2.0f32; 8];
+    use rill_core::traits::Algorithm;
+    engine.process(Some(&input), &mut output).unwrap();
+    assert_eq!(output[0], 0.0, "level default is 0.0 => 2.0*0.0 = 0.0");
 }

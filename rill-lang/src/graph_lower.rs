@@ -18,6 +18,7 @@ pub struct ScheduledGraph {
 }
 
 /// A single step in the linear schedule.
+#[derive(Clone)]
 pub enum Step {
     /// Execute a compiled program. Input/output buffers are indices into the buffer pool.
     InlineProgram {
