@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn compile_def_runs() {
-        let def = RillLangDef::new("gain", "process = _ * 0.5;");
+        let def = RillLangDef::new("gain", "main = _ * 0.5");
         let mut prog = compile_def::<f32>(&def).unwrap();
         let mut out = [0.0f32; 2];
         prog.process(Some(&[2.0, 6.0]), &mut out).unwrap();
@@ -50,7 +50,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn round_trips_json() {
-        let def = RillLangDef::new("gain", "process = _ * 0.5;");
+        let def = RillLangDef::new("gain", "main = _ * 0.5");
         let json = serde_json::to_string(&def).unwrap();
         let back: RillLangDef = serde_json::from_str(&json).unwrap();
         assert_eq!(def, back);

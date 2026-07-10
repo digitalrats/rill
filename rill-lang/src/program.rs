@@ -3,7 +3,7 @@
 //! `process()` performs no heap allocation after warm-up.
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{Algorithm, ProcessResult};
+use rill_core::traits::{Algorithm, MultichannelAlgorithm, ParamValue, ProcessResult};
 
 use crate::builtin::{BlockBuiltin, SampleBuiltin};
 use crate::error::CompileError;
@@ -35,7 +35,9 @@ pub struct RillProgram<T: Transcendental> {
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
     pub(crate) builtins: Vec<BuiltinInst<T>>,
     /// Current parameter values, indexed by [`Ir::params`].
-    pub(crate) params: Vec<f64>,
+    pub(crate) params: Vec<ParamValue>,
+    /// Dirty flags: true when a param was changed since last push.
+    pub(crate) params_dirty: Vec<bool>,
     /// Parameter metadata (name, default, range).
     pub(crate) params_meta: Vec<ParamDef>,
 }
@@ -76,7 +78,12 @@ impl<T: Transcendental> RillProgram<T> {
         let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
-        let params = ir.params.iter().map(|p| p.default).collect();
+        let params: Vec<ParamValue> = ir
+            .params
+            .iter()
+            .map(|p| ParamValue::Float(p.default as f32))
+            .collect();
+        let params_dirty = vec![false; params.len()];
         Self {
             ir,
             schedule,
@@ -87,6 +94,7 @@ impl<T: Transcendental> RillProgram<T> {
             regs_scalar,
             builtins: Vec::new(),
             params,
+            params_dirty,
             params_meta,
         }
     }
@@ -130,7 +138,12 @@ impl<T: Transcendental> RillProgram<T> {
         let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
-        let params = ir.params.iter().map(|p| p.default).collect();
+        let params: Vec<ParamValue> = ir
+            .params
+            .iter()
+            .map(|p| ParamValue::Float(p.default as f32))
+            .collect();
+        let params_dirty = vec![false; params.len()];
         Ok(Self {
             ir,
             schedule,
@@ -141,6 +154,7 @@ impl<T: Transcendental> RillProgram<T> {
             regs_scalar,
             builtins,
             params,
+            params_dirty,
             params_meta,
         })
     }
@@ -159,16 +173,29 @@ impl<T: Transcendental> RillProgram<T> {
         self.params_meta.iter().position(|p| p.name == name)
     }
 
-    /// Set a parameter by index (clamped to its range). RT-safe (plain store).
-    pub fn set_param(&mut self, idx: usize, value: f64) {
+    /// Set a parameter by index. RT-safe (plain store).
+    pub fn set_param(&mut self, idx: usize, value: ParamValue) {
         if let Some(def) = self.params_meta.get(idx) {
-            self.params[idx] = value.clamp(def.min, def.max);
+            let clamped = match &value {
+                ParamValue::Float(v) => {
+                    ParamValue::Float((*v as f64).clamp(def.min, def.max) as f32)
+                }
+                ParamValue::Int(v) if *v as f64 >= def.min && (*v as f64) <= def.max => value,
+                _ => value,
+            };
+            self.params[idx] = clamped;
+            if let Some(d) = self.params_dirty.get_mut(idx) {
+                *d = true;
+            }
         }
     }
 
     /// Current value of a parameter by index.
-    pub fn param(&self, idx: usize) -> f64 {
-        self.params.get(idx).copied().unwrap_or(0.0)
+    pub fn param(&self, idx: usize) -> ParamValue {
+        self.params
+            .get(idx)
+            .cloned()
+            .unwrap_or(ParamValue::Float(0.0))
     }
 
     /// Metadata for all parameters (name, default, range).
@@ -223,5 +250,44 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
                 BuiltinInst::Block(inst) => Algorithm::reset(inst.as_mut()),
             }
         }
+    }
+}
+
+impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
+    fn num_inputs(&self) -> usize {
+        self.ir.num_inputs
+    }
+
+    fn num_outputs(&self) -> usize {
+        self.ir.num_outputs
+    }
+
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        let n_in = inputs.len();
+        let n_out = outputs.len();
+        let buf_size = if n_out > 0 { outputs[0].len() } else { 0 };
+
+        if n_in <= 1 && n_out == 1 {
+            let input = if n_in == 0 { None } else { Some(inputs[0]) };
+            return Algorithm::process(self, input, outputs[0]);
+        }
+
+        crate::backend::interp::push_builtin_params(self);
+        for sample_idx in 0..buf_size {
+            let in_sample = if n_in > 0 {
+                inputs[0][sample_idx].to_f64()
+            } else {
+                0.0
+            };
+            let y = crate::backend::interp::eval_sample_scalar(self, in_sample);
+            if n_out > 0 {
+                outputs[0][sample_idx] = T::from_f64(y);
+            }
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        Algorithm::reset(self);
     }
 }

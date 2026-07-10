@@ -50,7 +50,7 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
         Instr::Bin { a, b, .. } => vec![a, b],
         Instr::WriteState { src, .. } | Instr::WriteDelay { src, .. } => vec![src],
         Instr::CallSample { ref srcs, .. } => srcs.clone(),
-        Instr::CallBlock { src, .. } => vec![src],
+        Instr::CallBlock { ref srcs, .. } => srcs.clone(),
         _ => Vec::new(),
     }
 }
@@ -214,34 +214,34 @@ mod tests {
         fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
             use crate::builtin::{BuiltinKind, BuiltinSig};
             match name {
-                "lowpass" => Some(Box::leak(Box::new(BuiltinSig {
-                    name: "lowpass",
-                    signal_ins: 1,
-                    signal_outs: 1,
-                    num_params: 2,
-                    kind: BuiltinKind::Block,
-                }))),
-                "onepole" => Some(Box::leak(Box::new(BuiltinSig {
-                    name: "onepole",
-                    signal_ins: 1,
-                    signal_outs: 1,
-                    num_params: 2,
-                    kind: BuiltinKind::Sample,
-                }))),
+                "lowpass" => Some(Box::leak(Box::new(BuiltinSig::simple(
+                    "lowpass",
+                    1,
+                    1,
+                    2,
+                    BuiltinKind::Block,
+                )))),
+                "onepole" => Some(Box::leak(Box::new(BuiltinSig::simple(
+                    "onepole",
+                    1,
+                    1,
+                    2,
+                    BuiltinKind::Sample,
+                )))),
                 _ => None,
             }
         }
     }
 
     fn schedule_of(src: &str) -> Schedule {
-        let p = parse(&tokenize(src).unwrap()).unwrap();
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let tp = infer_program(&p).unwrap();
         let ir = lower(&tp).unwrap();
         build_schedule(&ir)
     }
 
     fn schedule_of_with(src: &str) -> (Ir, Schedule) {
-        let p = parse(&tokenize(src).unwrap()).unwrap();
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let tp = infer_program_with(&p, &TestSigs).unwrap();
         let ir = lower_with(&tp, &TestSigs, 44_100.0).unwrap();
         let sched = build_schedule(&ir);
@@ -263,14 +263,14 @@ mod tests {
 
     #[test]
     fn combinational_program_is_all_block() {
-        let s = schedule_of("process = _ * 0.5;");
+        let s = schedule_of("main = _ * 0.5");
         assert_eq!(n_sample(&s), 0);
         assert!(n_block(&s) >= 1);
     }
 
     #[test]
     fn feedback_program_has_one_sample_region() {
-        let s = schedule_of("process = + ~ _;");
+        let s = schedule_of("main = + ~ _");
         assert_eq!(n_sample(&s), 1);
     }
 
@@ -278,7 +278,7 @@ mod tests {
     fn const_feeding_feedback_stays_block() {
         // `+ ~ (_ * 0.5)`: the 0.5 constant is combinational (Block); the
         // ReadState/Add/Mul/WriteState cycle is one Sample region.
-        let s = schedule_of("process = + ~ (_ * 0.5);");
+        let s = schedule_of("main = + ~ (_ * 0.5)");
         assert_eq!(n_sample(&s), 1);
         assert!(n_block(&s) >= 1); // at least the Const 0.5 and the LoadInput
     }
@@ -286,19 +286,19 @@ mod tests {
     #[test]
     fn feedforward_delay_is_isolated_sample_region() {
         // `_ @ 3`: delay read/write form a sample region; no feedback.
-        let s = schedule_of("process = _ @ 3;");
+        let s = schedule_of("main = _ @ 3");
         assert_eq!(n_sample(&s), 1);
     }
 
     #[test]
     fn feedback_through_delay_is_one_region() {
-        let s = schedule_of("process = + ~ (_ @ 2);");
+        let s = schedule_of("main = + ~ (_ @ 2)");
         assert_eq!(n_sample(&s), 1);
     }
 
     #[test]
     fn gain_then_integrator_splits_block_and_sample() {
-        let s = schedule_of("process = (_ * 0.5) : (+ ~ _);");
+        let s = schedule_of("main = (_ * 0.5) : (+ ~ _)");
         assert_eq!(n_sample(&s), 1);
         assert!(n_block(&s) >= 1);
     }
@@ -307,20 +307,20 @@ mod tests {
     fn steps_are_in_dependency_order() {
         // Every Block step's producer appears before any step that consumes it:
         // here we only assert the schedule is non-empty and ends producing output.
-        let s = schedule_of("process = abs(_) : _ * 2.0;");
+        let s = schedule_of("main = abs _ : _ * 2.0");
         assert!(!s.steps.is_empty());
         assert_eq!(n_sample(&s), 0);
     }
 
     #[test]
     fn sample_builtin_schedules_as_sample_region() {
-        let (_, s) = schedule_of_with("process = _ : onepole(200.0, 0.5);");
+        let (_, s) = schedule_of_with("main = _ : onepole 200.0 0.5");
         assert_eq!(n_sample(&s), 1);
     }
 
     #[test]
     fn block_builtin_schedules_as_foreign_block() {
-        let (_, s) = schedule_of_with("process = _ : lowpass(1000.0, 0.7);");
+        let (_, s) = schedule_of_with("main = _ : lowpass 1000.0 0.7");
         assert!(s.steps.iter().any(|st| matches!(st, Step::ForeignBlock(_))));
         assert!(n_block(&s) >= 1); // LoadInput
         assert_eq!(n_sample(&s), 0);
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn block_builtin_in_feedback_lands_in_sample_region() {
-        let (ir, s) = schedule_of_with("process = + ~ lowpass(500.0, 0.7);");
+        let (ir, s) = schedule_of_with("main = + ~ lowpass 500.0 0.7");
         // CallBlock inside feedback SCC → Sample region (illegal; caught by
         // validate_block_builtins at compile time).
         assert!(s.steps.iter().any(|st| {

@@ -34,38 +34,37 @@ fn assert_equiv(src: &str) {
 
 #[test]
 fn stress_parallel_feedbacks_merged() {
-    assert_equiv("process = _ <: (+ ~ (_ * 0.5)) , (+ ~ (_ * 0.9)) :> +;");
+    assert_equiv("main = _ <: (+ ~ (_ * 0.5)) , (+ ~ (_ * 0.9)) :> +");
 }
 
 #[test]
 fn stress_feedback_feeding_feedforward() {
-    assert_equiv("process = (+ ~ (_ * 0.8)) : abs : (_ * 0.5);");
+    assert_equiv("main = (+ ~ (_ * 0.8)) : abs : (_ * 0.5)");
 }
 
 #[test]
 fn stress_delay_inside_outside_feedback() {
-    assert_equiv("process = (_ @ 2) : (+ ~ (_ @ 1));");
+    assert_equiv("main = (_ @ 2) : (+ ~ (_ @ 1))");
 }
 
 #[test]
 fn stress_fanout_mixed_branches_feedback() {
-    assert_equiv("process = _ <: (_ , _ * 0.5) :> (+ ~ (_ * 0.7));");
+    assert_equiv("main = _ <: (_ , _ * 0.5) :> (+ ~ (_ * 0.7))");
 }
 
 #[test]
 fn stress_nested_feedback_composition() {
-    assert_equiv("process = (+ ~ _) : (+ ~ (_ * 0.5));");
+    assert_equiv("main = (+ ~ _) : (+ ~ (_ * 0.5))");
 }
 
 #[test]
 fn stress_deep_feedforward_chain() {
-    assert_equiv("process = _ * 0.5 : abs : sqrt : (_ * 0.5);");
+    assert_equiv("main = _ * 0.5 : abs : sqrt : (_ * 0.5)");
 }
 
 #[test]
 fn stress_multi_block_state_carry() {
-    let mut prog =
-        compile::<f32>("process = _ <: (+ ~ (_ * 0.5)) , (+ ~ (_ * 0.9)) :> +;").unwrap();
+    let mut prog = compile::<f32>("main = _ <: (+ ~ (_ * 0.5)) , (+ ~ (_ * 0.9)) :> +").unwrap();
     let mut out1 = vec![0.0f32; 128];
     let mut out2 = vec![0.0f32; 128];
     let input1: Vec<f32> = (0..128).map(|i| (i as f32 * 0.07).sin() * 0.8).collect();
@@ -76,7 +75,7 @@ fn stress_multi_block_state_carry() {
     prog.process(Some(&input2), &mut out2).unwrap();
 
     let mut prog_ref =
-        compile::<f32>("process = _ <: (+ ~ (_ * 0.5)) , (+ ~ (_ * 0.9)) :> +;").unwrap();
+        compile::<f32>("main = _ <: (+ ~ (_ * 0.5)) , (+ ~ (_ * 0.9)) :> +").unwrap();
     let mut ref1 = vec![0.0f32; 128];
     let mut ref2 = vec![0.0f32; 128];
     prog_ref

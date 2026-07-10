@@ -6,7 +6,7 @@
 extracts `ProcessingState` from the graph, and registers a process callback
 driven by the backend. **Control thread** — Servo actors that send
 `SetParameter` commands and receive `ClockTick` telemetry.
-Communication via lock-free `MpscQueue` through `ActorRef`/`ActorCell`.
+Communication via the graph actor mailbox (`Mailbox<CommandEnum>` through `ActorRef<CommandEnum>`).
 
 ```
 [Control Thread]                         [Signal Thread]
@@ -29,18 +29,18 @@ Communication via lock-free `MpscQueue` through `ActorRef`/`ActorCell`.
 
 | Direction | Type | Mailbox owner | Sender | Purpose |
 |-----------|------|---------------|--------|---------|
-| Control → Signal | `SetParameter` | `Graph` | Servo actors via `graph_ref` | Parameter changes |
-| Signal → Control | `ClockTick` | Servo actors | Graph via `actor.drain()` side effect | Block-level timing |
+| Control → Signal | `CommandEnum::SetParameter` | Graph actor mailbox | Servo actor via `ActorRef<CommandEnum>` | Parameter changes |
+| Signal → Control | `CommandEnum::ClockTick` | Servo actor mailbox | Graph via `ProcessingState::send_clock_tick()` | Block-level timing |
 
 ## Processing model
 
 The process callback (registered on the backend by the orchestrator)
 handles one signal block:
 
-1. Drain command queue (`SetParameter` → `set_parameter` on target nodes)
+1. `actor.drain()` — applies queued `CommandEnum::SetParameter` commands
 2. `Source::generate()` / `Processor::process()` / `Sink::consume()`
 3. `Port::propagate()` — recursive DAG traversal via `downstream_input_ptrs`
-4. Send `ClockTick` to control thread via `clock_tx`
+4. Send `CommandEnum::ClockTick` to control rack via `send_clock_tick()`
 
 ## Backend ownership
 
@@ -53,8 +53,8 @@ The backend's `run()` method enters the I/O loop.
 | Component | Thread | Requirements |
 |-----------|-------|------------|
 | `ProcessingState::process_block` | Signal (hard RT) | zero-alloc, lock-free |
-| `IoBackend::run` | I/O | Stack buffers, no syscalls |
-| `MpscQueue::push` / `ActorRef::send` | Any | Lock-free |
-| `MpscQueue::pop` | Consumer's thread | Lock-free |
-| `ActorCell::receive` | Consumer's thread | Matches consumer's RT profile |
+| `IoDriver::run` | I/O | Stack buffers, no syscalls |
+| `ActorRef<CommandEnum>::send` | Any | Lock-free (mailbox) |
+| `Mailbox<CommandEnum>::drain` | Consumer's thread | Lock-free |
+| `Actor<CommandEnum>::handler` | Consumer's thread | Matches consumer's RT profile |
 | Control actors | Control (soft RT) | May allocate |

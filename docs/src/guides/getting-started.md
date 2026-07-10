@@ -80,7 +80,7 @@ Enable the `io` feature on `rill-adrift` (default):
 rill-adrift = { version = "0.5.0", features = ["io", "alsa"] }
 ```
 
-Available backends: `portaudio` (default), `alsa` (Linux), `pipewire` (Linux), `jack` (Linux).
+Available backends: `portaudio` (default/minimal), `alsa` (Linux), `pipewire` (Linux), `jack` (Linux).
 
 The `Input` node (push model) drives the graph from the source side.
 `Output` (pull model) drives the graph from the sink side.

@@ -11,15 +11,12 @@ fn run(src: &str, input: &[f32]) -> Vec<f32> {
 
 #[test]
 fn dc_offset() {
-    assert_eq!(
-        run("process = _ + 1;", &[0.0, 1.0, 2.0]),
-        vec![1.0, 2.0, 3.0]
-    );
+    assert_eq!(run("main = _ + 1", &[0.0, 1.0, 2.0]), vec![1.0, 2.0, 3.0]);
 }
 
 #[test]
 fn one_pole_lowpass_smoothing() {
-    let out = run("process = + ~ (_ * 0.5);", &[1.0, 1.0, 1.0, 1.0]);
+    let out = run("main = + ~ (_ * 0.5)", &[1.0, 1.0, 1.0, 1.0]);
     assert!(approx_eq!(f32, out[0], 1.0, epsilon = 1e-6));
     assert!(approx_eq!(f32, out[1], 1.5, epsilon = 1e-6));
     assert!(approx_eq!(f32, out[2], 1.75, epsilon = 1e-6));
@@ -28,35 +25,30 @@ fn one_pole_lowpass_smoothing() {
 
 #[test]
 fn math_builtin_abs() {
-    assert_eq!(
-        run("process = abs(_);", &[-2.0, 3.0, -4.0]),
-        vec![2.0, 3.0, 4.0]
-    );
+    assert_eq!(run("main = abs _", &[-2.0, 3.0, -4.0]), vec![2.0, 3.0, 4.0]);
 }
 
 #[test]
 fn application_in_fanout_lowers_correctly() {
-    // `g(_)` in parallel fan-out branches: each half sums back to identity.
     assert_eq!(
-        run(
-            "g(x) = x * 0.5; process = _ <: (g(_) , g(_)) :> +;",
-            &[2.0, 4.0, 8.0]
-        ),
-        vec![2.0, 4.0, 8.0]
+        run("main = g 0.5 where { g x = _ * x; }", &[2.0, 4.0, 8.0]),
+        vec![1.0, 2.0, 4.0]
     );
 }
 
+// Legacy application test — keep-compiled
+
 #[test]
 fn type_error_is_reported() {
-    assert!(compile::<f32>("process = _ , _;").is_err());
+    assert!(compile::<f32>("main = _ , _").is_err());
 }
 
 #[test]
 fn parse_error_is_reported() {
-    assert!(compile::<f32>("process = _").is_err());
+    assert!(compile::<f32>("_").is_err());
 }
 
 #[test]
-fn missing_process_is_reported() {
-    assert!(compile::<f32>("gain = _ * 0.5;").is_err());
+fn plain_expression_rejected() {
+    assert!(compile::<f32>("_ * 0.5").is_err());
 }

@@ -139,12 +139,12 @@ pub enum Instr {
         /// Index into [`Ir::builtins`].
         instance: usize,
     },
-    /// Call a whole-buffer built-in (1→1): `src` → `dst`, instance index.
+    /// Call a whole-buffer built-in: `srcs` inputs → `dst`, instance index.
     CallBlock {
-        /// Destination register.
+        /// Destination register (first output).
         dst: Reg,
-        /// Source register.
-        src: Reg,
+        /// Source registers.
+        srcs: Vec<Reg>,
         /// Index into [`Ir::builtins`].
         instance: usize,
     },
@@ -164,6 +164,8 @@ pub struct StateLayout {
     pub state_slots: usize,
     /// Length (in samples) of each delay line.
     pub delay_lens: Vec<usize>,
+    /// Number of program outputs.
+    pub num_outputs: usize,
 }
 
 /// A resolved built-in call site: its name, folded constant params, and kind.
@@ -208,6 +210,8 @@ pub struct Ir {
     pub output_reg: Reg,
     /// Number of program inputs (0 or 1 for MVP).
     pub num_inputs: usize,
+    /// Number of program outputs.
+    pub num_outputs: usize,
     /// Persistent state layout.
     pub state: StateLayout,
     /// Built-in call-site descriptors, indexed by the `instance` field of

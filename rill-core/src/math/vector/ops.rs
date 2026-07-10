@@ -227,36 +227,32 @@ impl<'a, T: Transcendental> SliceMut<'a, T> {
 
 impl<'a, T: Transcendental> AddAssign<&[T]> for SliceMut<'a, T> {
     fn add_assign(&mut self, rhs: &[T]) {
-        let len = self.0.len().min(rhs.len());
-        for i in 0..len {
-            self.0[i] = self.0[i] + rhs[i];
+        for (a, &b) in self.0.iter_mut().zip(rhs.iter()) {
+            *a += b;
         }
     }
 }
 
 impl<'a, T: Transcendental> SubAssign<&[T]> for SliceMut<'a, T> {
     fn sub_assign(&mut self, rhs: &[T]) {
-        let len = self.0.len().min(rhs.len());
-        for i in 0..len {
-            self.0[i] = self.0[i] - rhs[i];
+        for (a, &b) in self.0.iter_mut().zip(rhs.iter()) {
+            *a -= b;
         }
     }
 }
 
 impl<'a, T: Transcendental> MulAssign<&[T]> for SliceMut<'a, T> {
     fn mul_assign(&mut self, rhs: &[T]) {
-        let len = self.0.len().min(rhs.len());
-        for i in 0..len {
-            self.0[i] = self.0[i] * rhs[i];
+        for (a, &b) in self.0.iter_mut().zip(rhs.iter()) {
+            *a *= b;
         }
     }
 }
 
 impl<'a, T: Transcendental> DivAssign<&[T]> for SliceMut<'a, T> {
     fn div_assign(&mut self, rhs: &[T]) {
-        let len = self.0.len().min(rhs.len());
-        for i in 0..len {
-            self.0[i] = self.0[i] / rhs[i];
+        for (a, &b) in self.0.iter_mut().zip(rhs.iter()) {
+            *a /= b;
         }
     }
 }
@@ -348,9 +344,8 @@ impl<'a, T: Transcendental> SlicePair<'a, T> {
 
     /// Element-wise remainder: `out[i] = a[i] % b[i]`.
     pub fn rem_into<const N: usize, V: Vector<T, N>>(self, out: &mut [T]) {
-        let len = self.0.len().min(self.1.len()).min(out.len());
-        for i in 0..len {
-            out[i] = self.0[i] % self.1[i];
+        for (o, (&a, &b)) in out.iter_mut().zip(self.0.iter().zip(self.1.iter())) {
+            *o = a % b;
         }
     }
 }

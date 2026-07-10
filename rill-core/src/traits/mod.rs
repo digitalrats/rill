@@ -10,6 +10,8 @@ pub mod algorithm;
 /// BufferView trait for backend-specific ring buffer access.
 pub mod buffer_view;
 mod error;
+/// MultichannelAlgorithm trait for multi-IO processing (N inputs, M outputs).
+pub mod multichannel_algorithm;
 /// Core node trait (`Node`) and related types.
 pub mod node;
 /// Parameter types and IDs (`ParameterId`, `ParamValue`, `ParamType`, etc.).
@@ -30,6 +32,7 @@ pub use action::*;
 pub use algorithm::*;
 pub use buffer_view::*;
 pub use error::*;
+pub use multichannel_algorithm::*;
 pub use node::*;
 pub use param::*;
 pub use parameter_write::*;
@@ -238,7 +241,7 @@ mod tests {
         assert!(ParameterId::new("").is_err());
         assert!(ParameterId::new("1gain").is_err());
         assert!(ParameterId::new("_gain").is_err());
-        assert!(ParameterId::new("gain.value").is_err());
+        assert!(ParameterId::new("gain.value").is_ok());
     }
 
     #[test]

@@ -25,10 +25,10 @@ fn rms(v: &[f32]) -> f32 {
 #[test]
 fn param_in_feedback_hybrid_matches_reference() {
     let reg = full_registry::<f32>();
-    let mut ph =
-        compile_with::<f32>("process = + ~ (_ * param(\"fb\", 0.5));", &reg, 48_000.0).unwrap();
-    let mut pr =
-        compile_with::<f32>("process = + ~ (_ * param(\"fb\", 0.5));", &reg, 48_000.0).unwrap();
+    let mut ph = compile_with::<f32>("main fb = + ~ (_ * fb)", &reg, 48_000.0).unwrap();
+    let mut pr = compile_with::<f32>("main fb = + ~ (_ * fb)", &reg, 48_000.0).unwrap();
+    ph.set_param(ph.param_index("fb").unwrap(), ParamValue::Float(0.5));
+    pr.set_param(pr.param_index("fb").unwrap(), ParamValue::Float(0.5));
 
     // impulse: y[n] = x[n] + fb * y[n-1]
     let input = {
@@ -64,8 +64,7 @@ fn param_in_feedback_hybrid_matches_reference() {
 #[test]
 fn param_in_feedback_changes_with_set_param() {
     let reg = full_registry::<f32>();
-    let mut prog =
-        compile_with::<f32>("process = + ~ (_ * param(\"fb\", 0.5));", &reg, 48_000.0).unwrap();
+    let mut prog = compile_with::<f32>("main fb = + ~ (_ * fb)", &reg, 48_000.0).unwrap();
 
     let fi = prog.param_index("fb").unwrap();
     let input = {
@@ -73,10 +72,11 @@ fn param_in_feedback_changes_with_set_param() {
         v[0] = 1.0;
         v
     };
+    prog.set_param(fi, ParamValue::Float(0.5));
     let mut out_05 = vec![0.0f32; 64];
     prog.process(Some(&input), &mut out_05).unwrap();
 
-    prog.set_param(fi, 0.9);
+    prog.set_param(fi, ParamValue::Float(0.9));
     let mut out_09 = vec![0.0f32; 64];
     prog.process(Some(&input), &mut out_09).unwrap();
 
@@ -94,12 +94,7 @@ fn param_in_feedback_changes_with_set_param() {
 #[test]
 fn smooth_of_param_ramps_not_instant() {
     let reg = full_registry::<f32>();
-    let mut prog = compile_with::<f32>(
-        "process = _ * smooth(param(\"g\", 0.0), 20.0);",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
+    let mut prog = compile_with::<f32>("main g = smooth g 20.0", &reg, 48_000.0).unwrap();
     let gi = prog.param_index("g").unwrap();
 
     // block 1: g=0, output should be ~0
@@ -110,15 +105,10 @@ fn smooth_of_param_ramps_not_instant() {
 
     // Set g=1.0 and run. smooth(20ms) at 48kHz → a ≈ 1-exp(-1/(0.02*48000)) = 1-exp(-0.00104) ≈ 0.00104
     // Very slow ramp: first few samples should still be near zero
-    prog.set_param(gi, 1.0);
+    prog.set_param(gi, ParamValue::Float(1.0));
     let mut out2 = vec![0.0f32; 64];
     prog.process(Some(&[1.0f32; 64]), &mut out2).unwrap();
 
-    // After block 2 (64 samples), the smoothed value is far from 1.0
-    // At sample 64, the smoothed value ≈ 1 - exp(-64*sr*...)? Actually:
-    // y[n] = a * x + (1-a) * y[n-1], with a ≈ 0.00104
-    // After n=63 (0-indexed in the loop): y[63] ≈ 1 - (1-a)^64 ≈ 1 - 0.936 ≈ 0.064
-    // So short-term energy should be << 1.0
     let rms2 = rms(&out2);
     assert!(
         rms2 < 0.5,
@@ -138,22 +128,12 @@ fn smooth_of_param_ramps_not_instant() {
 #[test]
 fn smooth_matches_reference() {
     let reg = full_registry::<f32>();
-    let mut ph = compile_with::<f32>(
-        "process = _ * smooth(param(\"g\", 1.0), 10.0);",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
+    let mut ph = compile_with::<f32>("main g = smooth g 10.0", &reg, 48_000.0).unwrap();
     let gi = ph.param_index("g").unwrap();
-    ph.set_param(gi, 0.7);
+    ph.set_param(gi, ParamValue::Float(0.7));
 
-    let mut pr = compile_with::<f32>(
-        "process = _ * smooth(param(\"g\", 1.0), 10.0);",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
-    pr.set_param(pr.param_index("g").unwrap(), 0.7);
+    let mut pr = compile_with::<f32>("main g = smooth g 10.0", &reg, 48_000.0).unwrap();
+    pr.set_param(pr.param_index("g").unwrap(), ParamValue::Float(0.7));
 
     let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
     let mut oh = vec![0.0f32; input.len()];
@@ -184,19 +164,14 @@ fn dynamic_cutoff_moog_changes_output() {
         .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin())
         .collect();
 
-    let mut prog = compile_with::<f32>(
-        "process = _ : moog(param(\"cutoff\", 500.0), 0.5);",
-        &reg,
-        sr,
-    )
-    .unwrap();
+    let mut prog = compile_with::<f32>("main cutoff = _ : moog cutoff 0.5", &reg, sr).unwrap();
     let ci = prog.param_index("cutoff").unwrap();
 
     let mut out_low = vec![0.0f32; block.len()];
     prog.process(Some(&block), &mut out_low).unwrap();
     let e_low = rms(&out_low);
 
-    prog.set_param(ci, 12000.0);
+    prog.set_param(ci, ParamValue::Float(12000.0));
     let mut out_high = vec![0.0f32; block.len()];
     prog.process(Some(&block), &mut out_high).unwrap();
     let e_high = rms(&out_high);
@@ -212,23 +187,13 @@ fn dynamic_cutoff_moog_hybrid_matches_reference() {
     let reg = full_registry::<f32>();
     let sr = 48_000.0;
 
-    let mut ph = compile_with::<f32>(
-        "process = _ : moog(param(\"cutoff\", 800.0), 0.5);",
-        &reg,
-        sr,
-    )
-    .unwrap();
-    let mut pr = compile_with::<f32>(
-        "process = _ : moog(param(\"cutoff\", 800.0), 0.5);",
-        &reg,
-        sr,
-    )
-    .unwrap();
+    let mut ph = compile_with::<f32>("main cutoff = _ : moog cutoff 0.5", &reg, sr).unwrap();
+    let mut pr = compile_with::<f32>("main cutoff = _ : moog cutoff 0.5", &reg, sr).unwrap();
 
     let ci = ph.param_index("cutoff").unwrap();
     let ci_r = pr.param_index("cutoff").unwrap();
-    ph.set_param(ci, 3000.0);
-    pr.set_param(ci_r, 3000.0);
+    ph.set_param(ci, ParamValue::Float(3000.0));
+    pr.set_param(ci_r, ParamValue::Float(3000.0));
 
     let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
     let mut oh = vec![0.0f32; input.len()];
@@ -259,19 +224,14 @@ fn dynamic_cutoff_lowpass_changes_output_across_blocks() {
         .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin())
         .collect();
 
-    let mut prog = compile_with::<f32>(
-        "process = _ : lowpass(param(\"cutoff\", 500.0), 0.7);",
-        &reg,
-        sr,
-    )
-    .unwrap();
+    let mut prog = compile_with::<f32>("main cutoff = _ : lowpass cutoff 0.7", &reg, sr).unwrap();
     let ci = prog.param_index("cutoff").unwrap();
 
     let mut out_low = vec![0.0f32; block.len()];
     prog.process(Some(&block), &mut out_low).unwrap();
     let e_low = rms(&out_low);
 
-    prog.set_param(ci, 8000.0);
+    prog.set_param(ci, ParamValue::Float(8000.0));
     let mut out_high = vec![0.0f32; block.len()];
     prog.process(Some(&block), &mut out_high).unwrap();
     let e_high = rms(&out_high);
@@ -287,29 +247,21 @@ fn dynamic_cutoff_lowpass_changes_output_across_blocks() {
 #[test]
 fn shared_param_name_conflicting_defaults_is_rejected() {
     let reg = full_registry::<f32>();
-    // The same name `k` is declared with two different defaults (0.5 vs 1000.0).
-    // This is rejected at compile time rather than silently taking the first.
-    let err = compile_with::<f32>(
-        "process = _ * param(\"k\", 0.5) : lowpass(param(\"k\", 1000.0), 0.7);",
-        &reg,
-        48_000.0,
-    );
+    // With the new syntax, params are just named slots — using the same name
+    // in multiple places produces one shared slot (no per-use defaults).
+    let prog = compile_with::<f32>("main k = _ * k : lowpass k 0.7", &reg, 48_000.0);
     assert!(
-        err.is_err(),
-        "conflicting param defaults must be a compile error"
+        prog.is_ok(),
+        "shared param name should share one slot (no conflict)"
     );
+    assert_eq!(prog.unwrap().params_meta().len(), 1);
 }
 
 #[test]
 fn shared_param_name_matching_defaults_shares_one_slot() {
     let reg = full_registry::<f32>();
     // Identical declarations of `k` share a single slot.
-    let prog = compile_with::<f32>(
-        "process = _ * param(\"k\", 0.5) + param(\"k\", 0.5);",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
+    let prog = compile_with::<f32>("main k = _ * k + k", &reg, 48_000.0).unwrap();
     assert_eq!(
         prog.params_meta().len(),
         1,
@@ -331,12 +283,12 @@ fn lang_node_from(src: &str) -> rill_adrift::lang_node::LangNode<f32, 64> {
 
 #[test]
 fn lang_node_set_parameter_changes_output() {
-    let mut node = lang_node_from("process = _ * param(\"gain\", 1.0);");
+    let mut node = lang_node_from("main gain = _ * gain");
     Node::init(&mut node, 48_000.0);
 
     let out_default = render_through(&mut node, 2.0);
     for &v in &out_default {
-        assert!((v - 2.0).abs() < 1e-4, "gain=1: expected ~2, got {v}");
+        assert!((v - 0.0).abs() < 1e-4, "gain=0: expected ~0, got {v}");
     }
 
     Node::set_parameter(
@@ -355,12 +307,12 @@ fn lang_node_set_parameter_changes_output() {
 
 #[test]
 fn lang_node_get_parameter_roundtrips() {
-    let mut node = lang_node_from("process = _ * param(\"gain\", 1.0, 0.0, 2.0);");
+    let mut node = lang_node_from("main gain = _ * gain");
     Node::init(&mut node, 48_000.0);
 
     let val =
         Node::get_parameter(&node, &ParameterId::new("gain").unwrap()).expect("should get param");
-    assert!((val.as_f32().unwrap() - 1.0).abs() < 1e-6);
+    assert!((val.as_f32().unwrap() - 0.0).abs() < 1e-6);
 
     Node::set_parameter(
         &mut node,
@@ -379,7 +331,7 @@ fn lang_node_get_parameter_roundtrips() {
 
 #[test]
 fn lang_node_metadata_lists_params() {
-    let mut node = lang_node_from("process = _ * param(\"g\", 1.0);");
+    let mut node = lang_node_from("main g = _ * g");
     Node::init(&mut node, 48_000.0);
 
     let md = Node::metadata(&node);
@@ -388,10 +340,10 @@ fn lang_node_metadata_lists_params() {
     let g_meta: Vec<&ParamMetadata> = md.parameters.iter().filter(|p| p.name == "g").collect();
     assert_eq!(g_meta.len(), 1);
     assert_eq!(g_meta[0].typ, ParamType::Float);
-    assert!((g_meta[0].default.as_f32().unwrap() - 1.0).abs() < 1e-6);
+    assert!((g_meta[0].default.as_f32().unwrap() - 0.0).abs() < 1e-6);
 
-    // With range
-    let mut node_r = lang_node_from("process = _ * param(\"w\", 0.5, 0.0, 1.0);");
+    // With range — range is unbounded by default
+    let mut node_r = lang_node_from("main w = _ * w");
     Node::init(&mut node_r, 48_000.0);
 
     let md_r = Node::metadata(&node_r);
@@ -400,13 +352,19 @@ fn lang_node_metadata_lists_params() {
         .iter()
         .find(|p| p.name == "w")
         .expect("w param listed");
-    assert!(w_meta.range.min.is_some());
-    assert!(w_meta.range.max.is_some());
+    assert!(
+        w_meta.range.min.is_none(),
+        "default range has no lower bound"
+    );
+    assert!(
+        w_meta.range.max.is_none(),
+        "default range has no upper bound"
+    );
 }
 
 #[test]
 fn lang_node_source_recompile_reinitializes_params() {
-    let mut node = lang_node_from("process = _ * param(\"g\", 1.0);");
+    let mut node = lang_node_from("main g = _ * g");
     Node::init(&mut node, 48_000.0);
 
     // Set g to 0.5
@@ -428,7 +386,7 @@ fn lang_node_source_recompile_reinitializes_params() {
     Node::set_parameter(
         &mut node,
         &ParameterId::new("source").unwrap(),
-        ParamValue::String("process = _ * 3.0;".to_string()),
+        ParamValue::String("main = _ * 3.0".to_string()),
     )
     .unwrap();
 
@@ -456,7 +414,7 @@ fn combined_param_smooth_feedback_builtin_runs() {
     let reg = full_registry::<f32>();
     let sr = 48_000.0;
     let mut prog = compile_with::<f32>(
-        "process = _ : lowpass(param(\"cut\", 2000.0), 0.7) : (+ ~ (_ * param(\"fb\", 0.3))) * smooth(param(\"gain\", 1.0), 10.0);",
+        "main cut fb gain = _ : lowpass cut 0.7 : (+ ~ (_ * fb)) * smooth gain 10.0",
         &reg,
         sr,
     )
@@ -468,6 +426,11 @@ fn combined_param_smooth_feedback_builtin_runs() {
 
     assert_eq!(prog.params_meta().len(), 3);
 
+    // Set defaults so output is non-zero
+    prog.set_param(cut_i, ParamValue::Float(2000.0));
+    prog.set_param(fb_i, ParamValue::Float(0.5));
+    prog.set_param(gain_i, ParamValue::Float(1.0));
+
     let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
     let mut out = vec![0.0f32; input.len()];
     prog.process(Some(&input), &mut out).unwrap();
@@ -475,9 +438,9 @@ fn combined_param_smooth_feedback_builtin_runs() {
     assert!(e > 0.0, "combined program silenced output");
     assert!(e < 10.0, "combined program unstable (rms={e})");
 
-    prog.set_param(cut_i, 8000.0);
-    prog.set_param(fb_i, 0.7);
-    prog.set_param(gain_i, 0.1);
+    prog.set_param(cut_i, ParamValue::Float(8000.0));
+    prog.set_param(fb_i, ParamValue::Float(0.7));
+    prog.set_param(gain_i, ParamValue::Float(0.1));
     let mut out2 = vec![0.0f32; input.len()];
     prog.process(Some(&input), &mut out2).unwrap();
 
@@ -492,7 +455,7 @@ fn combined_param_smooth_feedback_builtin_runs() {
 fn combined_hybrid_matches_reference() {
     let reg = full_registry::<f32>();
     let sr = 48_000.0;
-    let src = "process = _ : lowpass(param(\"cut\", 2000.0), 0.7) : (+ ~ (_ * param(\"fb\", 0.3))) * smooth(param(\"gain\", 1.0), 10.0);";
+    let src = "main cut fb gain = _ : lowpass cut 0.7 : (+ ~ (_ * fb)) * smooth gain 10.0";
     let mut ph = compile_with::<f32>(src, &reg, sr).unwrap();
     let mut pr = compile_with::<f32>(src, &reg, sr).unwrap();
 
@@ -518,10 +481,12 @@ fn combined_hybrid_matches_reference() {
 #[test]
 fn no_panic_on_multiple_dynamic_params() {
     let reg = full_registry::<f32>();
-    let src = "process = _ : moog(param(\"c\", 800.0), param(\"r\", 0.5));";
+    let src = "main c r = _ : moog c r";
     let mut prog = compile_with::<f32>(src, &reg, 48_000.0).unwrap();
     let ci = prog.param_index("c").unwrap();
     let ri = prog.param_index("r").unwrap();
+    prog.set_param(ci, ParamValue::Float(800.0));
+    prog.set_param(ri, ParamValue::Float(0.5));
 
     let input = vec![0.1f32; 32];
     let mut out = vec![0.0f32; 32];
@@ -529,8 +494,8 @@ fn no_panic_on_multiple_dynamic_params() {
     assert!(rms(&out) > 0.0);
 
     // Change both params mid-run — should not panic
-    prog.set_param(ci, 4000.0);
-    prog.set_param(ri, 0.9);
+    prog.set_param(ci, ParamValue::Float(4000.0));
+    prog.set_param(ri, ParamValue::Float(0.9));
     prog.process(Some(&input), &mut out).unwrap();
     assert!(rms(&out) > 0.0);
 }

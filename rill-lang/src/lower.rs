@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, Def, Expr, Program};
-use crate::builtin::{BuiltinKind, SignatureSource};
+use crate::builtin::{BuiltinKind, ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
 use crate::types::infer::TypedProgram;
 
 struct Lowerer<'a> {
-    defs: HashMap<String, &'a Def>,
+    defs: HashMap<String, Def>,
     sigs: &'a dyn SignatureSource,
     instrs: Vec<Instr>,
     next_reg: usize,
@@ -33,7 +33,7 @@ impl<'a> Lowerer<'a> {
         self.instrs.push(i);
     }
 
-    fn lower(&mut self, e: &Expr, inputs: &[usize]) -> Result<Vec<usize>, CompileError> {
+    fn lower(&mut self, e: &Expr, args: &[usize]) -> Result<Vec<usize>, CompileError> {
         match e {
             Expr::Int(v, _) => {
                 let dst = self.fresh_reg();
@@ -49,7 +49,6 @@ impl<'a> Lowerer<'a> {
                 Ok(vec![dst])
             }
             Expr::Imag(v, _) => {
-                // Desugar `vi` → complex(0, v)
                 let name = "complex".to_string();
                 if let Some(sig) = self.sigs.builtin_sig(&name) {
                     let sig = sig.clone();
@@ -58,7 +57,7 @@ impl<'a> Lowerer<'a> {
                         name,
                         params: vec![0.0, *v],
                         kind: sig.kind,
-                        signal_ins: sig.signal_ins,
+                        signal_ins: sig.signal_ins(),
                         signal_outs: sig.signal_outs,
                         param_bindings: Vec::new(),
                     });
@@ -68,21 +67,20 @@ impl<'a> Lowerer<'a> {
                     }
                     self.emit(Instr::CallBlock {
                         dst: fst,
-                        src: 0,
+                        srcs: vec![],
                         instance,
                     });
                     return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
-                // Fallback: if complex builtin not registered, output constant 0 (real)
                 let dst = self.fresh_reg();
                 self.emit(Instr::Const { dst, value: 0.0 });
                 Ok(vec![dst])
             }
-            Expr::Wire(_) => Ok(vec![inputs[0]]),
+            Expr::Wire(_) => Ok(vec![args[0]]),
             Expr::Cut(_) => Ok(vec![]),
-            Expr::Ref(name, span) => self.lower_ref(name, inputs, *span),
+            Expr::Ref(name, span) => self.lower_ref(name, args, *span),
             Expr::Neg(inner, _) => {
-                let outs = self.lower(inner, inputs)?;
+                let outs = self.lower(inner, args)?;
                 Ok(outs
                     .into_iter()
                     .map(|src| {
@@ -96,30 +94,15 @@ impl<'a> Lowerer<'a> {
                     })
                     .collect())
             }
-            Expr::Apply { name, args, span } => {
-                if name == "param" {
-                    let pname = match &args[0] {
-                        Expr::Str(s, _) => s.clone(),
-                        _ => unreachable!("checked in infer"),
-                    };
-                    let default = const_f64(&args[1]).unwrap_or(0.0);
-                    let (min, max) = if args.len() == 4 {
-                        (
-                            const_f64(&args[2]).unwrap_or(f64::NEG_INFINITY),
-                            const_f64(&args[3]).unwrap_or(f64::INFINITY),
-                        )
-                    } else {
-                        (f64::NEG_INFINITY, f64::INFINITY)
-                    };
-                    let idx = self.intern_param(pname, default, min, max, *span)?;
-                    let dst = self.fresh_reg();
-                    self.emit(Instr::ReadParam { dst, idx });
-                    return Ok(vec![dst]);
-                }
+            Expr::Apply {
+                name,
+                args: call_args,
+                span,
+            } => {
                 if name == "smooth" {
-                    let x_regs = self.lower(&args[0], inputs)?;
+                    let x_regs = self.lower(&call_args[0], args)?;
                     let x = x_regs[0];
-                    let ms = const_f64(&args[1]).unwrap_or(0.0);
+                    let ms = const_f64(&call_args[1]).unwrap_or(0.0);
                     let sr = self.sample_rate as f64;
                     let a = if ms <= 0.0 {
                         1.0
@@ -160,64 +143,132 @@ impl<'a> Lowerer<'a> {
                     self.emit(Instr::WriteState { slot, src: y });
                     return Ok(vec![y]);
                 }
-                if let Some(sig) = self.sigs.builtin_sig(name) {
-                    let sig = sig.clone();
-                    let mut params = Vec::with_capacity(args.len());
+                if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
+                    let mut param_values = Vec::new();
                     let mut param_bindings = Vec::new();
-                    for (pos, a) in args.iter().enumerate() {
-                        if let Expr::Apply {
-                            name: pn,
-                            args: pargs,
-                            ..
-                        } = a
-                        {
-                            if pn == "param" {
-                                let pname = match &pargs[0] {
-                                    Expr::Str(s, _) => s.clone(),
-                                    _ => {
-                                        return Err(CompileError::Type {
-                                            msg: "param name must be a string literal".into(),
-                                            span: pargs[0].span(),
-                                        });
-                                    }
-                                };
-                                let default = const_f64(&pargs[1]).unwrap_or(0.0);
-                                let (min, max) = if pargs.len() == 4 {
-                                    (
-                                        const_f64(&pargs[2]).unwrap_or(f64::NEG_INFINITY),
-                                        const_f64(&pargs[3]).unwrap_or(f64::INFINITY),
-                                    )
-                                } else {
-                                    (f64::NEG_INFINITY, f64::INFINITY)
-                                };
-                                let idx = self.intern_param(pname, default, min, max, a.span())?;
-                                params.push(default);
-                                param_bindings.push((pos, idx));
-                                continue;
+                    let mut signal_srcs = Vec::new();
+                    let mut signal_pos = 0;
+                    let mut param_pos = 0;
+
+                    for ptype in &sig.params {
+                        match ptype {
+                            ParamType::Signal => {
+                                if signal_pos >= args.len() {
+                                    return Err(CompileError::Type {
+                                        msg: format!("missing signal input for `{name}`"),
+                                        span: *span,
+                                    });
+                                }
+                                signal_srcs.push(args[signal_pos]);
+                                signal_pos += 1;
                             }
+                            ParamType::Float | ParamType::Int => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                if let Expr::Ref(ref_name, _) = &call_args[param_pos] {
+                                    if let Some(&pidx) = self.param_names.get(ref_name) {
+                                        param_values.push(0.0);
+                                        param_bindings.push((param_values.len() - 1, pidx));
+                                        param_pos += 1;
+                                        continue;
+                                    }
+                                }
+                                let v = const_f64(&call_args[param_pos]).ok_or_else(|| {
+                                    CompileError::Type {
+                                        msg: format!(
+                                            "param at position {param_pos} of `{name}` \
+                                                 must be a constant or parameter reference"
+                                        ),
+                                        span: call_args[param_pos].span(),
+                                    }
+                                })?;
+                                param_values.push(v);
+                                param_pos += 1;
+                            }
+                            ParamType::String => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Bool => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                match &call_args[param_pos] {
+                                    Expr::Int(0, _) => param_values.push(0.0),
+                                    Expr::Int(1, _) => param_values.push(1.0),
+                                    _ => param_values.push(1.0),
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Enum(_) => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Record(_schema) => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                if let Expr::Record(fields, field_span) = &call_args[param_pos] {
+                                    for (field_name, field_expr) in fields {
+                                        if let Some(val) = const_f64(field_expr) {
+                                            self.intern_param(
+                                                field_name.clone(),
+                                                val,
+                                                f64::NEG_INFINITY,
+                                                f64::INFINITY,
+                                                *field_span,
+                                            )?;
+                                        }
+                                    }
+                                }
+                                param_pos += 1;
+                            }
+                            ParamType::Variadic(inner) => match &**inner {
+                                ParamType::Signal => {
+                                    for &reg in &args[signal_pos..] {
+                                        signal_srcs.push(reg);
+                                    }
+                                    signal_pos = args.len();
+                                }
+                                _ => {
+                                    for arg in &call_args[param_pos..] {
+                                        if let Expr::Ref(ref_name, _) = arg {
+                                            if let Some(&pidx) = self.param_names.get(ref_name) {
+                                                param_values.push(0.0);
+                                                param_bindings.push((param_values.len() - 1, pidx));
+                                                continue;
+                                            }
+                                        }
+                                        if let Some(val) = const_f64(arg) {
+                                            param_values.push(val);
+                                        }
+                                    }
+                                    param_pos = call_args.len();
+                                }
+                            },
                         }
-                        let v = const_f64(a).ok_or_else(|| CompileError::Type {
-                            msg: format!("param to `{name}` must be a constant or a param(...)"),
-                            span: a.span(),
-                        })?;
-                        params.push(v);
                     }
+
                     let instance = self.builtins.len();
                     self.builtins.push(BuiltinInstance {
                         name: name.clone(),
-                        params,
+                        params: param_values,
                         kind: sig.kind,
-                        signal_ins: sig.signal_ins,
+                        signal_ins: signal_srcs.len(),
                         signal_outs: sig.signal_outs,
                         param_bindings,
                     });
                     match sig.kind {
                         BuiltinKind::Sample => {
                             let dst = self.fresh_reg();
-                            let srcs = inputs.to_vec();
                             self.emit(Instr::CallSample {
                                 dst,
-                                srcs,
+                                srcs: signal_srcs,
                                 instance,
                             });
                             return Ok(vec![dst]);
@@ -227,10 +278,9 @@ impl<'a> Lowerer<'a> {
                             for _ in 1..sig.signal_outs {
                                 self.fresh_reg();
                             }
-                            let src = if inputs.is_empty() { 0 } else { inputs[0] };
                             self.emit(Instr::CallBlock {
                                 dst: fst,
-                                src,
+                                srcs: signal_srcs,
                                 instance,
                             });
                             return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
@@ -238,16 +288,39 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 let mut arg_regs = Vec::new();
-                for a in args {
-                    arg_regs.extend(self.lower(a, inputs)?);
+                for a in call_args {
+                    arg_regs.extend(self.lower(a, args)?);
                 }
-                self.lower_ref(name, &arg_regs, *span)
+                // User-defined function: prepend λ-arguments to caller's args. The Anchor
+                // splits by params().len() — first N entries fill the scope, remainder are
+                // passed to the body. Builtins receive arg_regs directly (no λ-params).
+                if self.defs.contains_key(name) {
+                    let mut combined = arg_regs.clone();
+                    combined.extend_from_slice(args);
+                    self.lower_ref(name, &combined, *span)
+                } else {
+                    self.lower_ref(name, &arg_regs, *span)
+                }
             }
             Expr::Str(_, span) => Err(CompileError::Type {
-                msg: "string literal is only valid as a `param` name".into(),
+                msg: "string literal is only valid as a parameter name".into(),
                 span: *span,
             }),
-            Expr::Bin { op, lhs, rhs, span } => self.lower_bin(*op, lhs, rhs, inputs, *span),
+            Expr::Bin { op, lhs, rhs, span } => self.lower_bin(*op, lhs, rhs, args, *span),
+            Expr::Let {
+                defs,
+                body,
+                span: _,
+            } => {
+                let saved = self.defs.clone();
+                for d in defs {
+                    self.defs.insert(d.name().to_string(), d.clone());
+                }
+                let result = self.lower(body, args);
+                self.defs = saved;
+                result
+            }
+            Expr::Record(..) => unreachable!("Record should be desugared before lowering"),
         }
     }
 
@@ -291,25 +364,25 @@ impl<'a> Lowerer<'a> {
     fn lower_ref(
         &mut self,
         name: &str,
-        inputs: &[usize],
-        span: Span,
+        args: &[usize],
+        _span: Span,
     ) -> Result<Vec<usize>, CompileError> {
         if let Some(sig) = self.sigs.builtin_sig(name) {
-            if sig.clone().num_params == 0 {
+            if sig.clone().params.len() == sig.clone().signal_ins() {
                 let sig = sig.clone();
                 let instance = self.builtins.len();
                 self.builtins.push(BuiltinInstance {
                     name: name.to_string(),
                     params: Vec::new(),
                     kind: sig.kind,
-                    signal_ins: sig.signal_ins,
+                    signal_ins: sig.signal_ins(),
                     signal_outs: sig.signal_outs,
                     param_bindings: Vec::new(),
                 });
                 match sig.kind {
                     BuiltinKind::Sample => {
                         let dst = self.fresh_reg();
-                        let srcs = inputs.to_vec();
+                        let srcs = args.to_vec();
                         self.emit(Instr::CallSample {
                             dst,
                             srcs,
@@ -322,10 +395,10 @@ impl<'a> Lowerer<'a> {
                         for _ in 1..sig.signal_outs {
                             self.fresh_reg();
                         }
-                        let src = if inputs.is_empty() { 0 } else { inputs[0] };
+                        let srcs = args.to_vec();
                         self.emit(Instr::CallBlock {
                             dst: fst,
-                            src,
+                            srcs,
                             instance,
                         });
                         return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
@@ -348,8 +421,8 @@ impl<'a> Lowerer<'a> {
             self.emit(Instr::Bin {
                 dst,
                 op,
-                a: inputs[0],
-                b: inputs[1],
+                a: args[0],
+                b: args[1],
             });
             return Ok(vec![dst]);
         }
@@ -369,8 +442,13 @@ impl<'a> Lowerer<'a> {
             self.emit(Instr::Un {
                 dst,
                 op,
-                src: inputs[0],
+                src: args[0],
             });
+            return Ok(vec![dst]);
+        }
+        if let Some(&idx) = self.param_names.get(name) {
+            let dst = self.fresh_reg();
+            self.emit(Instr::ReadParam { dst, idx });
             return Ok(vec![dst]);
         }
         for scope in self.locals.iter().rev() {
@@ -378,18 +456,32 @@ impl<'a> Lowerer<'a> {
                 return Ok(regs.clone());
             }
         }
-        let def = *self.defs.get(name).ok_or_else(|| CompileError::Type {
-            msg: format!("unknown `{name}` in lowering"),
-            span,
-        })?;
-        let mut scope = HashMap::new();
-        for (idx, p) in def.params.iter().enumerate() {
-            scope.insert(p.clone(), vec![inputs[idx]]);
+        let def = self
+            .defs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| CompileError::Type {
+                msg: format!("unknown `{name}` in lowering"),
+                span: _span,
+            })?;
+        match def {
+            Def::Anchor {
+                params: def_params,
+                ref body,
+                ..
+            } => {
+                let n = def_params.len();
+                let mut scope = HashMap::new();
+                for (idx, p) in def_params.iter().enumerate() {
+                    scope.insert(p.name.clone(), vec![args[idx]]);
+                }
+                self.locals.push(scope);
+                let out = self.lower(body, &args[n..])?;
+                self.locals.pop();
+                Ok(out)
+            }
+            Def::Local { ref body, .. } => self.lower(body, args),
         }
-        self.locals.push(scope);
-        let out = self.lower(&def.body, inputs)?;
-        self.locals.pop();
-        Ok(out)
     }
 
     fn lower_bin(
@@ -397,23 +489,23 @@ impl<'a> Lowerer<'a> {
         op: BinOp,
         lhs: &Expr,
         rhs: &Expr,
-        inputs: &[usize],
+        args: &[usize],
         span: Span,
     ) -> Result<Vec<usize>, CompileError> {
         match op {
             BinOp::Seq => {
-                let mid = self.lower(lhs, inputs)?;
+                let mid = self.lower(lhs, args)?;
                 self.lower(rhs, &mid)
             }
             BinOp::Par => {
                 let li = arity_in(lhs, self.sigs)?;
-                let (a_in, b_in) = inputs.split_at(li.min(inputs.len()));
+                let (a_in, b_in) = args.split_at(li.min(args.len()));
                 let mut out = self.lower(lhs, a_in)?;
                 out.extend(self.lower(rhs, b_in)?);
                 Ok(out)
             }
             BinOp::Split => {
-                let a_out = self.lower(lhs, inputs)?;
+                let a_out = self.lower(lhs, args)?;
                 let bi = arity_in(rhs, self.sigs)?;
                 let reps = bi / a_out.len().max(1);
                 let mut fanned = Vec::with_capacity(bi);
@@ -423,7 +515,7 @@ impl<'a> Lowerer<'a> {
                 self.lower(rhs, &fanned)
             }
             BinOp::Merge => {
-                let a_out = self.lower(lhs, inputs)?;
+                let a_out = self.lower(lhs, args)?;
                 let bi = arity_in(rhs, self.sigs)?;
                 let groups = a_out.len() / bi.max(1);
                 let mut merged = Vec::with_capacity(bi);
@@ -443,10 +535,9 @@ impl<'a> Lowerer<'a> {
                 }
                 self.lower(rhs, &merged)
             }
-            BinOp::Feedback => self.lower_feedback(lhs, rhs, inputs, span),
-            BinOp::Delay => self.lower_delay(lhs, rhs, inputs, span),
+            BinOp::Feedback => self.lower_feedback(lhs, rhs, args, span),
+            BinOp::Delay => self.lower_delay(lhs, rhs, args, span),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-                // Desugar `Float + Imag` / `Int + Imag` → complex(re, im)
                 if matches!(op, BinOp::Add | BinOp::Sub) {
                     let re = match lhs {
                         Expr::Float(v, _) => Some(*v),
@@ -466,7 +557,7 @@ impl<'a> Lowerer<'a> {
                                 name,
                                 params: vec![re, im],
                                 kind: sig.kind,
-                                signal_ins: sig.signal_ins,
+                                signal_ins: sig.signal_ins(),
                                 signal_outs: sig.signal_outs,
                                 param_bindings: Vec::new(),
                             });
@@ -476,15 +567,15 @@ impl<'a> Lowerer<'a> {
                             }
                             self.emit(Instr::CallBlock {
                                 dst: fst,
-                                src: 0,
+                                srcs: vec![],
                                 instance,
                             });
                             return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                         }
                     }
                 }
-                let a = self.lower(lhs, inputs)?;
-                let b = self.lower(rhs, inputs)?;
+                let a = self.lower(lhs, args)?;
+                let b = self.lower(rhs, args)?;
                 let arith = match op {
                     BinOp::Add => BinArith::Add,
                     BinOp::Sub => BinArith::Sub,
@@ -509,7 +600,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         lhs: &Expr,
         rhs: &Expr,
-        inputs: &[usize],
+        args: &[usize],
         _span: Span,
     ) -> Result<Vec<usize>, CompileError> {
         let bo = arity_out(rhs, self.sigs)?;
@@ -524,7 +615,7 @@ impl<'a> Lowerer<'a> {
             fb_regs.push(dst);
         }
         let mut a_in = fb_regs.clone();
-        a_in.extend_from_slice(inputs);
+        a_in.extend_from_slice(args);
         let a_out = self.lower(lhs, &a_in)?;
         let bi = arity_in(rhs, self.sigs)?;
         let b_in: Vec<usize> = a_out.iter().copied().take(bi).collect();
@@ -542,7 +633,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         lhs: &Expr,
         rhs: &Expr,
-        inputs: &[usize],
+        args: &[usize],
         span: Span,
     ) -> Result<Vec<usize>, CompileError> {
         let len = const_int(rhs).ok_or_else(|| CompileError::Type {
@@ -555,7 +646,7 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
-        let signal = self.lower(lhs, inputs)?;
+        let signal = self.lower(lhs, args)?;
         let src = signal[0];
         if len == 0 {
             return Ok(vec![src]);
@@ -577,7 +668,7 @@ fn arity_in(e: &Expr, sigs: &dyn SignatureSource) -> Result<usize, CompileError>
 }
 
 fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), CompileError> {
-    let unsupported = |m: &str| CompileError::Unsupported(m.to_string());
+    let _unsupported = |m: &str| CompileError::Unsupported(m.to_string());
     Ok(match e {
         Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
         Expr::Imag(_, _) => (0, 2),
@@ -590,17 +681,15 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
             "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
             _ => {
                 if let Some(sig) = sigs.builtin_sig(name) {
-                    (sig.signal_ins, sig.signal_outs)
+                    (sig.signal_ins(), sig.signal_outs)
                 } else {
-                    return Err(unsupported(
-                        "arity of bare user-def ref; wrap in application",
-                    ));
+                    (0, 1)
                 }
             }
         },
         Expr::Apply { name, args, .. } => {
             if let Some(sig) = sigs.builtin_sig(name) {
-                (sig.signal_ins, sig.signal_outs)
+                (sig.signal_ins(), sig.signal_outs)
             } else {
                 let mut ins = 0;
                 for a in args {
@@ -622,6 +711,8 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
                 _ => (ai + bi, 1),
             }
         }
+        Expr::Let { body, .. } => arity(body, sigs)?,
+        Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
     })
 }
 
@@ -677,11 +768,17 @@ pub fn lower_with(
     sample_rate: f32,
 ) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
-    let defs: HashMap<String, &Def> = program.defs.iter().map(|d| (d.name.clone(), d)).collect();
-    let process = *defs.get("process").ok_or_else(|| CompileError::Type {
-        msg: "no `process` definition".into(),
-        span: Span::new(0, 0),
-    })?;
+    let main = program
+        .main_def()
+        .ok_or_else(|| CompileError::Unsupported("program must have a `main` definition".into()))?;
+
+    let mut defs: HashMap<String, Def> = HashMap::new();
+    for d in &program.defs {
+        defs.insert(d.name().to_string(), d.clone());
+        for wd in d.where_defs() {
+            defs.insert(wd.name().to_string(), wd.clone());
+        }
+    }
 
     let num_inputs = tp.process_ty.arity_in();
     let mut lw = Lowerer {
@@ -697,16 +794,27 @@ pub fn lower_with(
         param_names: HashMap::new(),
         sample_rate,
     };
-    let mut input_regs = Vec::with_capacity(num_inputs);
+
+    for p in main.params() {
+        lw.intern_param(
+            p.name.clone(),
+            0.0,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            p.span,
+        )?;
+    }
+
+    let mut main_args = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
         let dst = lw.fresh_reg();
         lw.emit(Instr::LoadInput { dst, index });
-        input_regs.push(dst);
+        main_args.push(dst);
     }
-    let outs = lw.lower(&process.body, &input_regs)?;
+    let outs = lw.lower(main.body(), &main_args)?;
     if outs.len() != 1 {
         return Err(CompileError::Unsupported(format!(
-            "process lowered to {} outputs, expected 1",
+            "body lowered to {} outputs, expected 1",
             outs.len()
         )));
     }
@@ -715,9 +823,11 @@ pub fn lower_with(
         num_regs: lw.next_reg,
         output_reg: outs[0],
         num_inputs,
+        num_outputs: 1,
         state: StateLayout {
             state_slots: lw.state_slots,
             delay_lens: lw.delay_lens,
+            num_outputs: 1,
         },
         builtins: lw.builtins,
         params: lw.params,
@@ -732,7 +842,7 @@ mod tests {
     use crate::types::infer::{infer_program, infer_program_with};
 
     fn ir_of(src: &str) -> Ir {
-        let p = parse(&tokenize(src).unwrap()).unwrap();
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let tp = infer_program(&p).unwrap();
         lower(&tp).unwrap()
     }
@@ -742,34 +852,34 @@ mod tests {
         fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
             use crate::builtin::{BuiltinKind, BuiltinSig};
             match name {
-                "lowpass" => Some(Box::leak(Box::new(BuiltinSig {
-                    name: "lowpass",
-                    signal_ins: 1,
-                    signal_outs: 1,
-                    num_params: 2,
-                    kind: BuiltinKind::Block,
-                }))),
-                "onepole" => Some(Box::leak(Box::new(BuiltinSig {
-                    name: "onepole",
-                    signal_ins: 1,
-                    signal_outs: 1,
-                    num_params: 2,
-                    kind: BuiltinKind::Sample,
-                }))),
+                "lowpass" => Some(Box::leak(Box::new(BuiltinSig::simple(
+                    "lowpass",
+                    1,
+                    1,
+                    2,
+                    BuiltinKind::Block,
+                )))),
+                "onepole" => Some(Box::leak(Box::new(BuiltinSig::simple(
+                    "onepole",
+                    1,
+                    1,
+                    2,
+                    BuiltinKind::Sample,
+                )))),
                 _ => None,
             }
         }
     }
 
     fn ir_with(src: &str) -> Ir {
-        let p = parse(&tokenize(src).unwrap()).unwrap();
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let tp = infer_program_with(&p, &TestSigs).unwrap();
         lower_with(&tp, &TestSigs, 44_100.0).unwrap()
     }
 
     #[test]
     fn gain_lowers_to_const_and_mul() {
-        let ir = ir_of("process = _ * 0.5;");
+        let ir = ir_of("main = _ * 0.5");
         assert_eq!(ir.num_inputs, 1);
         assert!(ir.instrs.iter().any(|i| matches!(
             i,
@@ -786,7 +896,7 @@ mod tests {
 
     #[test]
     fn integrator_allocates_one_state_slot() {
-        let ir = ir_of("process = + ~ _;");
+        let ir = ir_of("main = + ~ _");
         assert_eq!(ir.state.state_slots, 1);
         assert!(ir
             .instrs
@@ -800,13 +910,13 @@ mod tests {
 
     #[test]
     fn delay_allocates_line() {
-        let ir = ir_of("process = _ @ 3;");
+        let ir = ir_of("main = _ @ 3");
         assert_eq!(ir.state.delay_lens, vec![3]);
     }
 
     #[test]
     fn sample_builtin_lowers_to_callsample() {
-        let ir = ir_with("process = _ : onepole(200.0, 0.5);");
+        let ir = ir_with("main = _ : onepole 200.0 0.5");
         assert!(
             ir.instrs
                 .iter()
@@ -821,7 +931,7 @@ mod tests {
 
     #[test]
     fn block_builtin_lowers_to_callblock() {
-        let ir = ir_with("process = _ : lowpass(1000.0, 0.7);");
+        let ir = ir_with("main = _ : lowpass 1000.0 0.7");
         assert!(
             ir.instrs
                 .iter()
@@ -836,7 +946,7 @@ mod tests {
 
     #[test]
     fn smooth_allocates_state() {
-        let ir = ir_of("process = smooth(_, 10.0);");
+        let ir = ir_of("main = smooth _ 10.0");
         assert_eq!(ir.state.state_slots, 1);
         assert!(ir
             .instrs

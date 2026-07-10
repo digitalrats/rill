@@ -46,7 +46,7 @@ pub enum Expr {
     Str(String, Span),
     /// A reference to a definition or a bound parameter.
     Ref(String, Span),
-    /// Application `name(arg, ...)`.
+    /// Application `name(arg, ...)` or juxtaposed `name arg1 arg2`.
     Apply {
         /// Function name.
         name: String,
@@ -68,6 +68,17 @@ pub enum Expr {
         /// Full span.
         span: Span,
     },
+    /// `let defs in body` — expression-level mutually-recursive bindings.
+    Let {
+        /// Definitions (may contain Anchors and Locals).
+        defs: Vec<Def>,
+        /// The expression these bindings are visible in.
+        body: Box<Expr>,
+        /// Full span.
+        span: Span,
+    },
+    /// Record literal, e.g. `{ channels: 3, gain: 0.8 }`.
+    Record(Vec<(String, Expr)>, Span),
 }
 
 impl Expr {
@@ -82,27 +93,97 @@ impl Expr {
             | Expr::Str(_, s)
             | Expr::Ref(_, s)
             | Expr::Neg(_, s) => *s,
-            Expr::Apply { span, .. } | Expr::Bin { span, .. } => *span,
+            Expr::Apply { span, .. }
+            | Expr::Bin { span, .. }
+            | Expr::Let { span, .. }
+            | Expr::Record(_, span) => *span,
         }
     }
 }
 
-/// A top-level definition: `name(params) = body;` (params may be empty).
+/// A parameter declaration.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Def {
-    /// Definition name.
+pub struct Param {
+    /// Parameter name.
     pub name: String,
-    /// Formal parameter names (empty for a plain alias).
-    pub params: Vec<String>,
-    /// Right-hand side.
-    pub body: Expr,
-    /// Span of the whole definition.
+    /// Source span.
     pub span: Span,
 }
 
-/// A whole program: an ordered list of definitions. One MUST be named `process`.
+/// A definition — top-level, `where`-block, or `let`-block.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Def {
+    /// `name p1 p2 = body` — an anchor with parameters.
+    Anchor {
+        /// Definition name.
+        name: String,
+        /// Formal parameters.
+        params: Vec<Param>,
+        /// Right-hand side.
+        body: Expr,
+        /// Optional where-block definitions.
+        where_defs: Vec<Def>,
+        /// Span of the whole definition.
+        span: Span,
+    },
+    /// `name = body` — a local binding (no params).
+    Local {
+        /// Definition name.
+        name: String,
+        /// Right-hand side.
+        body: Expr,
+        /// Optional where-block definitions.
+        where_defs: Vec<Def>,
+        /// Span of the whole definition.
+        span: Span,
+    },
+}
+
+impl Def {
+    /// Returns the identifier name of this definition.
+    pub fn name(&self) -> &str {
+        match self {
+            Def::Anchor { name, .. } => name,
+            Def::Local { name, .. } => name,
+        }
+    }
+
+    /// Returns the body expression of this definition.
+    pub fn body(&self) -> &Expr {
+        match self {
+            Def::Anchor { body, .. } => body,
+            Def::Local { body, .. } => body,
+        }
+    }
+
+    /// Returns the parameters of this definition (empty for Local).
+    pub fn params(&self) -> &[Param] {
+        match self {
+            Def::Anchor { params, .. } => params,
+            Def::Local { .. } => &[],
+        }
+    }
+
+    /// Returns the where-block definitions of this definition.
+    pub fn where_defs(&self) -> &[Def] {
+        match self {
+            Def::Anchor { where_defs, .. } => where_defs,
+            Def::Local { where_defs, .. } => where_defs,
+        }
+    }
+}
+
+/// A whole program: a list of mutually-recursive definitions.
+/// Exactly one must be named `main`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
-    /// The definitions in source order.
+    /// Top-level definitions.
     pub defs: Vec<Def>,
+}
+
+impl Program {
+    /// Returns the `main` definition, if present.
+    pub fn main_def(&self) -> Option<&Def> {
+        self.defs.iter().find(|d| d.name() == "main")
+    }
 }

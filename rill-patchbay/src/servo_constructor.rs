@@ -76,6 +76,9 @@ impl ModuleConstructor for ServoConstructor {
                 if let Some(ref cf) = s.conflict_strategy {
                     servo = servo.with_conflict(*cf);
                 }
+                if let Some(ref anchor) = s.target_anchor {
+                    servo = servo.with_anchor(anchor.clone());
+                }
                 servo.spawn(system)
             }
             AutomatonDef::Envelope {
@@ -105,6 +108,9 @@ impl ModuleConstructor for ServoConstructor {
                 }
                 if let Some(ref cf) = s.conflict_strategy {
                     servo = servo.with_conflict(*cf);
+                }
+                if let Some(ref anchor) = s.target_anchor {
+                    servo = servo.with_anchor(anchor.clone());
                 }
                 servo.spawn(system)
             }
@@ -142,6 +148,9 @@ impl ModuleConstructor for ServoConstructor {
                 }
                 if let Some(ref cf) = s.conflict_strategy {
                     servo = servo.with_conflict(*cf);
+                }
+                if let Some(ref anchor) = s.target_anchor {
+                    servo = servo.with_anchor(anchor.clone());
                 }
                 servo.spawn(system)
             }

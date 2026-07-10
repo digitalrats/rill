@@ -121,8 +121,8 @@ impl<T: Transcendental> ComplexFft<T> {
         self.butterfly_soa(re, im, true);
         let scale = T::ONE / T::from_usize(self.size);
         for i in 0..self.size {
-            re[i] = re[i] * scale;
-            im[i] = im[i] * scale;
+            re[i] *= scale;
+            im[i] *= scale;
         }
     }
 
@@ -533,9 +533,8 @@ mod simd_soa {
             }
         }
 
-        fn bit_reverse_soa_simd(bit_rev: &[usize], re: &mut [f32], im: &mut [f32], size: usize) {
-            for i in 0..size {
-                let j = bit_rev[i];
+        fn bit_reverse_soa_simd(bit_rev: &[usize], re: &mut [f32], im: &mut [f32], _size: usize) {
+            for (i, &j) in bit_rev.iter().enumerate() {
                 if i < j {
                     re.swap(i, j);
                     im.swap(i, j);
@@ -640,9 +639,8 @@ mod simd_soa {
             }
         }
 
-        fn bit_reverse_soa_simd(bit_rev: &[usize], re: &mut [f64], im: &mut [f64], size: usize) {
-            for i in 0..size {
-                let j = bit_rev[i];
+        fn bit_reverse_soa_simd(bit_rev: &[usize], re: &mut [f64], im: &mut [f64], _size: usize) {
+            for (i, &j) in bit_rev.iter().enumerate() {
                 if i < j {
                     re.swap(i, j);
                     im.swap(i, j);

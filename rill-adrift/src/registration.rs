@@ -228,10 +228,7 @@ fn register_analog<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZ
 #[cfg(feature = "lang")]
 fn register_lang<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     node_ctor!(factory, "rill/lang", |id: NodeId, params: &Params| {
-        let source = params
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("process = _;");
+        let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");
         let reg = std::sync::Arc::new(crate::lang_builtins::full_registry::<f32>());
         let mut n = crate::lang_node::LangNode::<f32, BUF_SIZE>::from_source_with(
             source,
@@ -242,6 +239,31 @@ fn register_lang<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>
         Node::set_id(&mut n, id);
         Node::init(&mut n, params.sample_rate);
         NodeVariant::Processor(Box::new(n))
+    });
+
+    node_ctor!(factory, "rill/graph_lang", |id: NodeId, params: &Params| {
+        let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");
+        let reg = std::sync::Arc::new(crate::lang_builtins::full_registry::<f32>());
+        let mut n = crate::lang_node::GraphLangNode::<f32, BUF_SIZE>::from_source_with(
+            source,
+            reg,
+            params.sample_rate,
+        )
+        .unwrap_or_else(|_| crate::lang_node::GraphLangNode::identity());
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Processor(Box::new(n))
+    });
+
+    node_ctor!(factory, "rill/lang_multi", |id: NodeId, params: &Params| {
+        let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");
+        let mut n = crate::lang_node::MultiLangNode::<f32, BUF_SIZE>::from_source(source)
+            .unwrap_or_else(|_| {
+                crate::lang_node::MultiLangNode::<f32, BUF_SIZE>::from_source("main = _").unwrap()
+            });
+        Node::set_id(&mut n, id);
+        Node::init(&mut n, params.sample_rate);
+        NodeVariant::Router(Box::new(n))
     });
 }
 

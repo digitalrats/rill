@@ -75,7 +75,7 @@ impl<T: Transcendental> ParamSmoother<T> {
     pub fn next(&mut self) -> T {
         let diff = self.target - self.current;
         let step = diff * self.coeff;
-        self.current = self.current + step;
+        self.current += step;
         self.current
     }
 }

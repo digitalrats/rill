@@ -9,13 +9,19 @@
 pub mod ast;
 pub mod backend;
 pub mod builtin;
+/// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
+pub mod builtins;
 pub mod error;
+pub mod graph_engine;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
 pub mod parser;
 pub mod prelude;
 pub mod program;
+pub mod program_runner;
+pub mod reduce;
+pub mod regalloc;
 pub mod schedule;
 pub mod serde_def;
 pub mod types;
@@ -24,9 +30,12 @@ pub use error::{CompileError, Span};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
+pub use builtin::{
+    BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry, SampleBuiltin,
+};
 
 use rill_core::math::Transcendental;
+use std::collections::HashMap;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
@@ -34,16 +43,18 @@ use rill_core::math::Transcendental;
 /// use rill_lang::compile;
 /// use rill_core::traits::Algorithm;
 ///
-/// let mut prog = compile::<f32>("process = _ * 0.5;").unwrap();
+/// let mut prog = compile::<f32>("main = _ * 0.5").unwrap();
 /// let mut out = [0.0f32; 2];
 /// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
 /// assert_eq!(out, [1.0, 2.0]);
 /// ```
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens)?;
-    let typed = types::infer::infer_program(&program)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program(&program)?;
+    typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower(&typed)?;
+    // regalloc::allocate(&mut ir);
     Ok(RillProgram::<T>::new(ir))
 }
 
@@ -54,11 +65,59 @@ pub fn compile_with<T: Transcendental>(
     sample_rate: f32,
 ) -> Result<RillProgram<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens)?;
-    let typed = types::infer::infer_program_with(&program, registry)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program_with(&program, registry)?;
+    typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    // regalloc::allocate(&mut ir);
     validate_block_builtins(&ir)?;
     RillProgram::<T>::new_with(ir, registry, sample_rate)
+}
+
+/// Compile rill-lang source into an engine that supports [`SetParameter`]
+/// commands via mailbox for runtime parameter updates.
+///
+/// Main parameters are addressed by name directly. Where-block anchor
+/// parameters use the format `"anchor.param"` (dot-separated).
+///
+/// [`SetParameter`]: rill_core::queues::CommandEnum::SetParameter
+pub fn compile_graph<T: Transcendental>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+) -> Result<graph_engine::RillGraphEngine<T>, CompileError> {
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program_with(&program, registry)?;
+
+    typed.program = reduce::reduce(&typed.program);
+    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    // regalloc::allocate(&mut ir);
+    validate_block_builtins(&ir)?;
+    let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
+
+    let mut p_idx: usize = 0;
+    let mut param_map: HashMap<String, usize> = HashMap::new();
+
+    let main = program.main_def().ok_or_else(|| CompileError::Parse {
+        msg: "program must contain a `main` definition".into(),
+        span: Span::new(0, 0),
+    })?;
+
+    for p in main.params() {
+        param_map.insert(p.name.clone(), p_idx);
+        p_idx += 1;
+    }
+    for def in main.where_defs() {
+        if let crate::ast::Def::Anchor { name, params, .. } = def {
+            for p in params {
+                param_map.insert(format!("{}.{}", name, p.name), p_idx);
+                p_idx += 1;
+            }
+        }
+    }
+
+    Ok(graph_engine::RillGraphEngine::new(prog, param_map))
 }
 
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {

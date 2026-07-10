@@ -17,7 +17,7 @@ fn onepole_sample_builtin_smooths() {
     let input: Vec<f32> = (0..64)
         .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
         .collect();
-    let out = run("process = _ : onepole(200.0, 0.7);", &input, 48_000.0);
+    let out = run("main = _ : onepole 200.0 0.7", &input, 48_000.0);
     let e: f32 = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
     assert!(e < 0.9, "onepole did not attenuate (energy {e})");
 }
@@ -27,7 +27,7 @@ fn lowpass_block_matches_direct_biquad() {
     use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
     let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.3).sin()).collect();
 
-    let via_lang = run("process = _ : lowpass(1000.0, 0.7);", &input, 48_000.0);
+    let via_lang = run("main = _ : lowpass 1000.0 0.7", &input, 48_000.0);
 
     let mut b = Biquad::<f32>::new(FilterParams {
         filter_type: FilterType::LowPass,
@@ -47,13 +47,13 @@ fn lowpass_block_matches_direct_biquad() {
 #[test]
 fn sample_builtin_composes_in_feedback() {
     let reg = full_registry::<f32>();
-    assert!(compile_with::<f32>("process = + ~ onepole(500.0, 0.5);", &reg, 48_000.0).is_ok());
+    assert!(compile_with::<f32>("main = + ~ onepole 500.0 0.5", &reg, 48_000.0).is_ok());
 }
 
 #[test]
 fn block_builtin_in_feedback_is_rejected() {
     let reg = full_registry::<f32>();
-    let err = compile_with::<f32>("process = + ~ lowpass(500.0, 0.7);", &reg, 48_000.0);
+    let err = compile_with::<f32>("main = + ~ lowpass 500.0 0.7", &reg, 48_000.0);
     assert!(err.is_err());
 }
 
@@ -62,5 +62,5 @@ fn block_builtin_in_feedback_is_rejected() {
 fn analog_moog_smoke() {
     let reg = full_registry::<f32>();
     assert!(reg.get("analog_moog").is_some());
-    assert!(compile_with::<f32>("process = _ : analog_moog(800.0, 0.5);", &reg, 48_000.0).is_ok());
+    assert!(compile_with::<f32>("main = _ : analog_moog 800.0 0.5", &reg, 48_000.0).is_ok());
 }

@@ -44,8 +44,8 @@ pub use context::DspContext;
 pub use direct_conv::DirectConvolver;
 pub use filters::{Filter, FilterParams, FilterType};
 pub use generators::{
-    EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator, Resampler,
-    SamplePlayer, WavetableOscillator, LFO,
+    BasicOscillator, EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator,
+    NoiseType, Resampler, SamplePlayer, Waveform, WavetableOscillator, LFO,
 };
 
 /// Prelude for convenient imports

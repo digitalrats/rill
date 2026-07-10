@@ -26,12 +26,12 @@ fn build(src: &str) -> RillProgram<f32> {
 
 fn bench_compile(c: &mut Criterion) {
     let programs = [
-        ("gain", "process = _ * 0.5;"),
-        ("chain", "process = _ * 0.5 : abs : (_ * 2.0);"),
-        ("feedback", "process = + ~ (_ * 0.5);"),
+        ("gain", "main = _ * 0.5"),
+        ("chain", "main = _ * 0.5 : abs : (_ * 2.0)"),
+        ("feedback", "main = + ~ (_ * 0.5)"),
         (
             "mixed",
-            "process = (_ * 0.5) <: (_ , _ * 0.5) :> (+ ~ (_ * 0.7));",
+            "main = (_ * 0.5) <: (_ , _ * 0.5) :> (+ ~ (_ * 0.7))",
         ),
     ];
     let mut group = c.benchmark_group("compile");
@@ -53,13 +53,13 @@ fn bench_compile(c: &mut Criterion) {
 fn bench_runtime(c: &mut Criterion) {
     let input = make_input();
     let programs = [
-        ("feedforward_gain", "process = _ * 0.5;"),
-        ("feedforward_chain", "process = _ * 0.5 : abs : (_ * 2.0);"),
-        ("feedback_leaky", "process = + ~ (_ * 0.5);"),
-        ("delay", "process = _ @ 4;"),
-        ("split_merge", "process = _ <: (_ , _ * 0.5) :> +;"),
-        ("param", "process = _ * param(\"g\", 0.5);"),
-        ("smooth", "process = _ * smooth(param(\"g\", 0.5), 10.0);"),
+        ("feedforward_gain", "main = _ * 0.5"),
+        ("feedforward_chain", "main = _ * 0.5 : abs : (_ * 2.0)"),
+        ("feedback_leaky", "main = + ~ (_ * 0.5)"),
+        ("delay", "main = _ @ 4"),
+        ("split_merge", "main = _ <: (_ , _ * 0.5) :> +"),
+        ("param", "main g = _ * g"),
+        ("smooth", "main g = smooth g 10.0"),
     ];
     let mut group = c.benchmark_group("runtime");
     group.throughput(criterion::Throughput::Elements(BLOCK as u64));
@@ -83,13 +83,11 @@ fn bench_runtime(c: &mut Criterion) {
 fn bench_hybrid_vs_reference(c: &mut Criterion) {
     let input = make_input();
     let cases = [
-        // Feedforward: the hybrid runs whole-buffer SIMD ops; the biggest win.
         (
             "feedforward",
-            "process = _ * 0.5 : abs : (_ * 2.0) : (_ + 0.1);",
+            "main = _ * 0.5 : abs : (_ * 2.0) : (_ + 0.1)",
         ),
-        // Feedback: both run per-sample for the recurrence; expect parity.
-        ("feedback", "process = + ~ (_ * 0.9);"),
+        ("feedback", "main = + ~ (_ * 0.9)"),
     ];
     for (name, src) in cases {
         let mut group = c.benchmark_group(format!("hybrid_vs_reference/{name}"));

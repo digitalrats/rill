@@ -50,7 +50,7 @@ impl ParameterId {
         }
 
         for c in name.chars() {
-            if !c.is_ascii_alphanumeric() && c != '_' {
+            if !c.is_ascii_alphanumeric() && c != '_' && c != '.' {
                 return Err(ParameterError::InvalidCharacter(c));
             }
         }

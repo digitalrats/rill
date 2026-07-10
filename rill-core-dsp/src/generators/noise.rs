@@ -196,8 +196,7 @@ impl<T: Transcendental> NoiseGenerator<T> {
     fn generate_brown_scalar(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         // Integrator with clipping
-        self.brown_state =
-            self.brown_state + ScalarVector1::splat(white) * ScalarVector1::splat(T::from_f32(0.1));
+        self.brown_state += ScalarVector1::splat(white) * ScalarVector1::splat(T::from_f32(0.1));
         let one_vec = ScalarVector1::splat(T::ONE);
         let neg_one_vec = ScalarVector1::splat(-T::ONE);
         self.brown_state = self.brown_state.clamp(&neg_one_vec, &one_vec);

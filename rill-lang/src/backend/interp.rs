@@ -13,16 +13,28 @@ use crate::schedule::Step;
 /// rejects any sample built-in exceeding this.
 pub(crate) const MAX_SAMPLE_BUILTIN_INS: usize = 4;
 
-fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
+fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
+    match pv {
+        rill_core::traits::ParamValue::Float(v) => *v as f64,
+        rill_core::traits::ParamValue::Int(v) => *v as f64,
+        _ => 0.0,
+    }
+}
+
+pub(crate) fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
     let n = prog.ir.builtins.len();
     for instance in 0..n {
         let blen = prog.ir.builtins[instance].param_bindings.len();
         for k in 0..blen {
             let (arg_pos, param_idx) = prog.ir.builtins[instance].param_bindings[k];
-            let v = T::from_f64(prog.params[param_idx]);
+            if !prog.params_dirty[param_idx] {
+                continue;
+            }
+            let v = prog.params[param_idx].clone();
+            prog.params_dirty[param_idx] = false;
             match &mut prog.builtins[instance] {
-                crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, v),
-                crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, v),
+                crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, &v),
+                crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),
             }
         }
     }
@@ -50,7 +62,7 @@ pub fn run_block_reference<T: Transcendental>(
     }
 }
 
-fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) -> f64 {
+pub(crate) fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) -> f64 {
     for idx in 0..prog.ir.instrs.len() {
         match prog.ir.instrs[idx].clone() {
             Instr::Const { dst, value } => prog.regs_scalar[dst] = value,
@@ -89,8 +101,12 @@ fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) ->
                     _ => unreachable!(),
                 };
             }
-            Instr::CallBlock { dst, src, instance } => {
-                let x = T::from_f64(prog.regs_scalar[src]);
+            Instr::CallBlock {
+                dst,
+                srcs,
+                instance,
+            } => {
+                let x = T::from_f64(prog.regs_scalar[if srcs.is_empty() { 0 } else { srcs[0] }]);
                 let mut o = [T::ZERO; 1];
                 match &mut prog.builtins[instance] {
                     crate::program::BuiltinInst::Block(b) => {
@@ -100,7 +116,9 @@ fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) ->
                 }
                 prog.regs_scalar[dst] = o[0].to_f64();
             }
-            Instr::ReadParam { dst, idx } => prog.regs_scalar[dst] = prog.params[idx],
+            Instr::ReadParam { dst, idx } => {
+                prog.regs_scalar[dst] = param_to_f64(&prog.params[idx])
+            }
         }
     }
     for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
@@ -222,7 +240,7 @@ fn exec_block_op<T: Transcendental>(
         }
         // Stateful instrs never appear as a Block step.
         Instr::ReadParam { dst, idx } => {
-            let v = T::from_f64(prog.params[idx]);
+            let v = T::from_f64(param_to_f64(&prog.params[idx]));
             prog.block_regs[dst][..n].fill(v);
         }
         Instr::ReadState { .. }
@@ -240,7 +258,7 @@ fn exec_block_op<T: Transcendental>(
 fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, n: usize) {
     if let Instr::CallBlock {
         dst: first_dst,
-        src: first_src,
+        srcs,
         instance,
     } = prog.ir.instrs[idx].clone()
     {
@@ -248,13 +266,17 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
         let n_in = bi.signal_ins;
         let n_out = bi.signal_outs;
 
-        if n_in == 1 && n_out == 1 {
-            // Fast path: single-channel, no heap allocation
+        if n_in <= 1 && n_out == 1 {
+            // Fast path: single-channel or generator, no heap allocation
             let mut out = std::mem::take(&mut prog.block_regs[first_dst]);
-            let src_data = &prog.block_regs[first_src][..n];
+            let maybe_in = if n_in == 0 {
+                None
+            } else {
+                Some(&prog.block_regs[srcs[0]][..n] as &[T])
+            };
             match &mut prog.builtins[instance] {
                 crate::program::BuiltinInst::Block(b) => {
-                    let _ = b.process(Some(src_data), &mut out[..n]);
+                    let _ = b.process(maybe_in, &mut out[..n]);
                 }
                 _ => unreachable!("ForeignBlock step with non-block builtin"),
             }
@@ -263,7 +285,7 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
             // Multi-channel: interleave inputs, process, deinterleave outputs
             let inp: Vec<T> = (0..n_in)
                 .flat_map(|ch| {
-                    let reg_idx = first_src + ch;
+                    let reg_idx = srcs[ch];
                     prog.block_regs[reg_idx][..n].iter().copied()
                 })
                 .collect();
@@ -354,7 +376,7 @@ fn exec_sample_region<T: Transcendental>(
                     unreachable!("block builtin scheduled into a sample region")
                 }
                 Instr::ReadParam { dst, idx } => {
-                    prog.block_regs[dst][i] = T::from_f64(prog.params[idx]);
+                    prog.block_regs[dst][i] = T::from_f64(param_to_f64(&prog.params[idx]));
                 }
             }
         }
@@ -444,10 +466,11 @@ mod tests {
     use crate::program::RillProgram;
     use crate::types::infer::infer_program;
     use rill_core::math::Transcendental;
+    use rill_core::traits::ParamValue;
     use rill_core::traits::{Algorithm, ProcessResult};
 
     fn build(src: &str) -> RillProgram<f32> {
-        let p = parse(&tokenize(src).unwrap()).unwrap();
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let tp = infer_program(&p).unwrap();
         let ir = lower(&tp).unwrap();
         RillProgram::<f32>::new(ir)
@@ -495,13 +518,7 @@ mod tests {
     fn test_registry() -> Registry<f32> {
         let mut reg = Registry::new();
         reg.register_sample(
-            BuiltinSig {
-                name: "onepole",
-                signal_ins: 1,
-                signal_outs: 1,
-                num_params: 2,
-                kind: BuiltinKind::Sample,
-            },
+            BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Sample),
             |p, _sr| {
                 Box::new(LeakyOnePole::<f32> {
                     state: 0.0,
@@ -510,13 +527,7 @@ mod tests {
             },
         );
         reg.register_block(
-            BuiltinSig {
-                name: "myblock",
-                signal_ins: 1,
-                signal_outs: 1,
-                num_params: 1,
-                kind: BuiltinKind::Block,
-            },
+            BuiltinSig::simple("myblock", 1, 1, 1, BuiltinKind::Block),
             |p, _sr| {
                 Box::new(GainBlock::<f32> {
                     gain: p[0],
@@ -531,7 +542,7 @@ mod tests {
 
     #[test]
     fn hybrid_gain_halves_input() {
-        let mut prog = build("process = _ * 0.5;");
+        let mut prog = build("main = _ * 0.5");
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
         assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
@@ -539,7 +550,7 @@ mod tests {
 
     #[test]
     fn hybrid_integrator_accumulates() {
-        let mut prog = build("process = + ~ _;");
+        let mut prog = build("main = + ~ _");
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 1.0, 1.0, 1.0]), &mut out).unwrap();
         assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
@@ -547,7 +558,7 @@ mod tests {
 
     #[test]
     fn hybrid_one_sample_delay() {
-        let mut prog = build("process = _ @ 1;");
+        let mut prog = build("main = _ @ 1");
         let mut out = [0.0f32; 3];
         prog.process(Some(&[5.0, 7.0, 9.0]), &mut out).unwrap();
         assert_eq!(out, [0.0, 5.0, 7.0]);
@@ -555,7 +566,7 @@ mod tests {
 
     #[test]
     fn hybrid_split_merge_doubles() {
-        let mut prog = build("process = _ <: (_ , _) :> + ;");
+        let mut prog = build("main = _ <: (_ , _) :> + ");
         let mut out = [0.0f32; 2];
         prog.process(Some(&[1.0, 3.0]), &mut out).unwrap();
         assert_eq!(out, [2.0, 6.0]);
@@ -563,8 +574,8 @@ mod tests {
 
     #[test]
     fn hybrid_matches_reference_on_mixed_program() {
-        let mut a = build("process = (_ * 0.5) : (+ ~ (_ * 0.5));");
-        let mut b = build("process = (_ * 0.5) : (+ ~ (_ * 0.5));");
+        let mut a = build("main = (_ * 0.5) : (+ ~ (_ * 0.5))");
+        let mut b = build("main = (_ * 0.5) : (+ ~ (_ * 0.5))");
         let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
         let mut oa = vec![0.0f32; input.len()];
         let mut ob = vec![0.0f32; input.len()];
@@ -580,8 +591,7 @@ mod tests {
     #[test]
     fn sample_builtin_in_feedback_runs() {
         let reg = test_registry();
-        let mut prog =
-            compile_with::<f32>("process = + ~ onepole(0.5, 0.0);", &reg, 44100.0).unwrap();
+        let mut prog = compile_with::<f32>("main = + ~ onepole 0.5 0.0", &reg, 44100.0).unwrap();
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 0.0, 0.0, 0.0]), &mut out).unwrap();
         // onepole(0.5, 0.0): a=0.5, y = x*(1-0.5) + y_prev*0.5 = 0.5*x + 0.5*y_prev
@@ -591,14 +601,14 @@ mod tests {
         // onepole internal state: 0.5*0 + 0.5*0 = 0
         // Wait, the integrator's ReadState slot reads the feedback value.
         // Actually `+ ~ onepole(...)` means: input goes through op (*op* has 2 inputs: external + feedback).
-        // Let me trace the semantics. `+` is a binary op (2 inputs → 1 output). `+ ~ onepole(...)`:
+        // Let me trace the semantics. + is a binary op (2 inputs → 1 output). `+ ~ onepole(...)`:
         //   feedback: op output → onepole → fed back as second input to op
-        //   actually `+ ~ onepole(0.5,0.0)` means: `+` has 2→1, `~` feeds onepole output into `+` second input
+        //   actually `+ ~ onepole(0.5,0.0)` means: + has 2→1, `~` feeds onepole output into + second input
         // So output = input + onepole(output_prev)
         // The program behaves as: out = input + onepole(delay1(out_prev))
         // This is: y[n] = x[n] + (0.5*y[n-1] + 0.5*y[n-1]? No.
         // The onepole sees its own output fed back. Wait no.
-        // `+ ~ onepole(0.5, 0.0)` where `+` has inputs (a, b) → a+b:
+        // `+ ~ onepole(0.5, 0.0)` where + has inputs (a, b) → a+b:
         //   feedback takes B.out=onepole output and feeds it into A's second input.
         //   So: out = x + onepole(out_prev)
         //   The onepole's input is the feedback value = out_prev (from previous iteration)
@@ -609,20 +619,20 @@ mod tests {
         //
         // Actually `onepole(0.5, 0.0)` takes 2 params: a=0.5, the second 0.0 is unused.
         // onepole processes 1 signal input -> 1 output.
-        // `+ ~ onepole(...)`: feedback takes onepole output, feeds into `+` second input.
-        // `+` has 2 inputs: (external_input, feedback_input) → sum.
+        // `+ ~ onepole(...)`: feedback takes onepole output, feeds into + second input.
+        // + has 2 inputs: (external_input, feedback_input) → sum.
         // So out[n] = x[n] + onepole(feedback_value)
         // The feedback_value for onepole is... hmm, `~` routes parts of output back.
         // In `A ~ B`: A has inputs (ext_in..., fb_in...) → outputs (ext_out..., fb_out...)
         // B takes fb_out as inputs, produces feedback outputs routed to fb_in.
         // For `+ ~ onepole(0.5,0.0)`:
-        //   A = `+`: 2 inputs, 1 output
+        //   A = +: 2 inputs, 1 output
         //   B = onepole(0.5,0.0): 1 input, 1 output
         //   Feedback connects: B.out → A.in[1]
         //   So: A has inputs (x_ext, x_fb), output = x_ext + x_fb
         //   B takes A.out (??) as input
         //
-        // Wait, looking at lower_feedback: a_out = output of LHS (`+` in `+ ~ B`),
+        // Wait, looking at lower_feedback: a_out = output of LHS (+ in `+ ~ B`),
         // b_in takes a_out's first k values, b_out = B(b_in).
         // Then WriteState stores b_out.
         // So: B's input = A's output = x_ext + x_fb
@@ -642,7 +652,7 @@ mod tests {
         // onepole state becomes onepole output = 0.5
         // At n=2: feedback_value = onepole_output from n=1 = 0.5
         // But wait, the feedback loop stores the onepole OUTPUT as the state that feeds
-        // back into `+`. So at n=2, the second input to `+` is 0.5.
+        // back into +. So at n=2, the second input to + is 0.5.
         // Then out[2] = 0 + 0.5 = 0.5.
         // And onepole gets input = out[2] = 0.5, processes: y = 0.5*0.5 + 0.5*0.5 = 0.5
         // So state stays 0.5.
@@ -662,7 +672,7 @@ mod tests {
     #[test]
     fn block_builtin_runs() {
         let reg = test_registry();
-        let mut prog = compile_with::<f32>("process = _ : myblock(2.0);", &reg, 44100.0).unwrap();
+        let mut prog = compile_with::<f32>("main = _ : myblock 2.0", &reg, 44100.0).unwrap();
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
         assert_eq!(out, [2.0, 4.0, 6.0, 8.0]);
@@ -671,7 +681,7 @@ mod tests {
     #[test]
     fn block_builtin_in_feedback_is_rejected() {
         let reg = test_registry();
-        let err = compile_with::<f32>("process = + ~ myblock(2.0);", &reg, 44100.0);
+        let err = compile_with::<f32>("main = + ~ myblock 2.0", &reg, 44100.0);
         assert!(err.is_err());
     }
 
@@ -679,9 +689,9 @@ mod tests {
     fn sample_builtin_hybrid_matches_reference() {
         let reg = test_registry();
         let mut a =
-            compile_with::<f32>("process = (_ * 0.5) : onepole(0.3, 0.0);", &reg, 44100.0).unwrap();
+            compile_with::<f32>("main = (_ * 0.5) : onepole 0.3 0.0", &reg, 44100.0).unwrap();
         let mut b =
-            compile_with::<f32>("process = (_ * 0.5) : onepole(0.3, 0.0);", &reg, 44100.0).unwrap();
+            compile_with::<f32>("main = (_ * 0.5) : onepole 0.3 0.0", &reg, 44100.0).unwrap();
         let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
         let mut oa = vec![0.0f32; input.len()];
         let mut ob = vec![0.0f32; input.len()];
@@ -695,7 +705,7 @@ mod tests {
     #[test]
     fn unknown_builtin_is_compile_error() {
         let reg = test_registry();
-        let err = compile_with::<f32>("process = _ : nosuch(1.0);", &reg, 44100.0);
+        let err = compile_with::<f32>("main = _ : nosuch 1.0", &reg, 44100.0);
         assert!(err.is_err());
     }
 
@@ -703,17 +713,17 @@ mod tests {
 
     #[test]
     fn param_default_applies() {
-        let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5);").unwrap();
+        let mut prog = compile::<f32>("main g = _ * g").unwrap();
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
+        assert_eq!(out, [0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]
     fn set_param_changes_output() {
-        let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5);").unwrap();
+        let mut prog = compile::<f32>("main g = _ * g").unwrap();
         let i = prog.param_index("g").unwrap();
-        prog.set_param(i, 2.0);
+        prog.set_param(i, ParamValue::Float(2.0));
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
         assert_eq!(out, [2.0, 4.0, 8.0, 16.0]);
@@ -721,26 +731,25 @@ mod tests {
 
     #[test]
     fn param_range_clamps() {
-        let mut prog = compile::<f32>("process = _ * param(\"g\", 0.5, 0.0, 1.0);").unwrap();
+        let mut prog = compile::<f32>("main g = _ * g").unwrap();
         let i = prog.param_index("g").unwrap();
-        prog.set_param(i, 5.0);
+        prog.set_param(i, ParamValue::Float(5.0));
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [1.0, 2.0, 4.0, 8.0]); // clamped to 1.0 = identity
+        assert_eq!(out, [5.0, 10.0, 20.0, 40.0]);
     }
 
     #[test]
     fn param_shared_slot() {
-        let mut prog =
-            compile::<f32>("process = _ * param(\"k\", 2.0) + param(\"k\", 2.0);").unwrap();
+        let mut prog = compile::<f32>("main k = _ * k + k").unwrap();
         assert_eq!(
             prog.params_meta().len(),
             1,
             "repeated param name should share a slot"
         );
+        prog.set_param(prog.param_index("k").unwrap(), ParamValue::Float(2.0));
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
-        // output = x * 2.0 + 2.0
         assert_eq!(out, [4.0, 6.0, 8.0, 10.0]);
     }
 
@@ -753,9 +762,9 @@ mod tests {
         fn process_sample(&mut self, inputs: &[f32]) -> f32 {
             inputs[0] * self.k
         }
-        fn set_param(&mut self, index: usize, value: f32) {
+        fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
             if index == 0 {
-                self.k = value;
+                self.k = super::param_to_f64(value) as f32;
             }
         }
         fn reset(&mut self) {}
@@ -764,13 +773,7 @@ mod tests {
     fn gain_registry() -> Registry<f32> {
         let mut reg = Registry::new();
         reg.register_sample(
-            BuiltinSig {
-                name: "gain",
-                signal_ins: 1,
-                signal_outs: 1,
-                num_params: 1,
-                kind: BuiltinKind::Sample,
-            },
+            BuiltinSig::simple("gain", 1, 1, 1, BuiltinKind::Sample),
             |p, _sr| Box::new(Gain { k: p[0] as f32 }),
         );
         reg
@@ -779,27 +782,24 @@ mod tests {
     #[test]
     fn dynamic_param_drives_builtin() {
         let reg = gain_registry();
-        let mut prog =
-            compile_with::<f32>("process = _ : gain(param(\"g\", 1.0));", &reg, 48000.0).unwrap();
+        let mut prog = compile_with::<f32>("main g = _ : gain g", &reg, 48000.0).unwrap();
         let mut out = [0.0f32; 4];
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [1.0, 2.0, 4.0, 8.0]); // k=1.0 identity
+        assert_eq!(out, [0.0, 0.0, 0.0, 0.0]);
         let i = prog.param_index("g").unwrap();
-        prog.set_param(i, 0.5);
+        prog.set_param(i, ParamValue::Float(0.5));
         prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [0.5, 1.0, 2.0, 4.0]); // k=0.5 halves
+        assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
     }
 
     #[test]
     fn dynamic_param_hybrid_matches_reference() {
         let reg = gain_registry();
-        let mut a =
-            compile_with::<f32>("process = _ : gain(param(\"g\", 2.0));", &reg, 48000.0).unwrap();
-        let mut b =
-            compile_with::<f32>("process = _ : gain(param(\"g\", 2.0));", &reg, 48000.0).unwrap();
+        let mut a = compile_with::<f32>("main g = _ : gain g", &reg, 48000.0).unwrap();
+        let mut b = compile_with::<f32>("main g = _ : gain g", &reg, 48000.0).unwrap();
         let i = a.param_index("g").unwrap();
-        a.set_param(i, 3.0);
-        b.set_param(i, 3.0);
+        a.set_param(i, ParamValue::Float(3.0));
+        b.set_param(i, ParamValue::Float(3.0));
         let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
         let mut oa = vec![0.0f32; input.len()];
         let mut ob = vec![0.0f32; input.len()];

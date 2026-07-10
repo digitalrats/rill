@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use rill_core::math::Transcendental;
+use rill_core::traits::ParamValue;
 
 /// A stateful per-sample built-in: `signal_ins` inputs → 1 output.
 pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
@@ -16,14 +17,14 @@ pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
     fn init(&mut self, _sample_rate: f32) {}
     /// Clear internal state.
     fn reset(&mut self);
-    /// Set a parameter by index (default no-op).
-    fn set_param(&mut self, _index: usize, _value: T) {}
+    /// Set a parameter by index.
+    fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
 }
 
 /// A whole-buffer built-in with settable params.
 pub trait BlockBuiltin<T: Transcendental>: rill_core::traits::Algorithm<T> {
-    /// Set a parameter by index (default no-op).
-    fn set_param(&mut self, _index: usize, _value: T) {}
+    /// Set a parameter by index.
+    fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
 }
 
 /// Whether a built-in is per-sample or whole-buffer.
@@ -35,19 +36,127 @@ pub enum BuiltinKind {
     Block,
 }
 
+/// The type of a parameter in a built-in function signature.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamType {
+    /// A signal wire argument — contributes to the built-in's input arity.
+    Signal,
+    /// A compile-time f64 constant.
+    Float,
+    /// A compile-time i64 constant.
+    Int,
+    /// A compile-time string literal.
+    String,
+    /// A compile-time boolean.
+    Bool,
+    /// A compile-time record literal with a known schema.
+    Record(RecordSchema),
+    /// A compile-time enum value with allowed variants.
+    Enum(&'static [&'static str]),
+    /// Zero or more arguments of the inner type.
+    Variadic(Box<ParamType>),
+}
+
+/// Schema for a record literal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordSchema {
+    /// Fields in declaration order.
+    pub fields: Vec<RecordField>,
+}
+
+/// A single field in a record schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordField {
+    /// Field name.
+    pub name: &'static str,
+    /// Field type.
+    pub ty: ParamType,
+    /// Default value, if any.
+    pub default: Option<f64>,
+}
+
+impl RecordSchema {
+    /// Create a schema from a field list.
+    pub fn new(fields: Vec<RecordField>) -> Self {
+        Self { fields }
+    }
+}
+
 /// Type-checker-facing signature of a built-in (independent of `T`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BuiltinSig {
     /// Registered name.
     pub name: &'static str,
-    /// Number of signal inputs.
-    pub signal_ins: usize,
+    /// Parameter list: first N entries are signal inputs, remainder are compile-time params.
+    pub params: Vec<ParamType>,
     /// Number of signal outputs (1 in this increment).
     pub signal_outs: usize,
-    /// Number of constant params.
-    pub num_params: usize,
     /// Sample vs block.
     pub kind: BuiltinKind,
+}
+
+impl BuiltinSig {
+    /// Convenience constructor for SISO built-ins with only Float params.
+    /// Maintains backward compatibility during migration.
+    pub fn simple(
+        name: &'static str,
+        signal_ins: usize,
+        signal_outs: usize,
+        num_params: usize,
+        kind: BuiltinKind,
+    ) -> Self {
+        let mut params = Vec::with_capacity(signal_ins + num_params);
+        for _ in 0..signal_ins {
+            params.push(ParamType::Signal);
+        }
+        for _ in 0..num_params {
+            params.push(ParamType::Float);
+        }
+        Self {
+            name,
+            params,
+            signal_outs,
+            kind,
+        }
+    }
+
+    /// Number of signal inputs = count of Signal params (non-variadic).
+    pub fn signal_ins(&self) -> usize {
+        self.params
+            .iter()
+            .filter(|p| matches!(p, ParamType::Signal))
+            .count()
+    }
+
+    /// Minimum number of Apply arguments (excludes Signal params).
+    pub fn min_args(&self) -> usize {
+        let mut count = 0;
+        for p in &self.params {
+            match p {
+                ParamType::Signal | ParamType::Variadic(_) => {}
+                _ => count += 1,
+            }
+        }
+        count
+    }
+
+    /// Maximum number of Apply arguments (None if variadic; excludes Signal params).
+    pub fn max_args(&self) -> Option<usize> {
+        if self
+            .params
+            .iter()
+            .any(|p| matches!(p, ParamType::Variadic(_)))
+        {
+            None
+        } else {
+            Some(
+                self.params
+                    .iter()
+                    .filter(|p| !matches!(p, ParamType::Signal))
+                    .count(),
+            )
+        }
+    }
 }
 
 /// A boxed factory building an instance from folded params + a sample rate.
@@ -187,13 +296,7 @@ mod tests {
     fn register_and_lookup_sample() {
         let mut reg = Registry::<f32>::new();
         reg.register_sample(
-            BuiltinSig {
-                name: "gain",
-                signal_ins: 1,
-                signal_outs: 1,
-                num_params: 1,
-                kind: BuiltinKind::Sample,
-            },
+            BuiltinSig::simple("gain", 1, 1, 1, BuiltinKind::Sample),
             |params, _sr| {
                 Box::new(Gain {
                     k: params[0] as f32,
@@ -201,7 +304,7 @@ mod tests {
             },
         );
         let sig = reg.builtin_sig("gain").unwrap();
-        assert_eq!((sig.signal_ins, sig.num_params), (1, 1));
+        assert_eq!((sig.signal_ins(), sig.params.len()), (1, 2));
         let mut inst = reg
             .get("gain")
             .unwrap()
