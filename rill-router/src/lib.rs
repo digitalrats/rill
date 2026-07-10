@@ -29,3 +29,5 @@ pub use mixer::{ChannelConfig, ChannelMode, ChannelState, MixerNode, SendConfig,
 
 // Re-export main types from dry_wet module
 pub use dry_wet::DryWetMix;
+
+pub mod register;
