@@ -1,149 +1,23 @@
-#![allow(deprecated)]
 //! Centralized registration of all built-in node types and backends.
 //!
 //! Provides `register_all_nodes` and `register_all_backends` for
-//! populating factories before creating a
-//! [rill_graph::GraphBuilder].
-
-use rill_core::traits::{Node, NodeId, NodeVariant, Params};
-#[cfg(not(feature = "lang"))]
-use rill_graph::{node_ctor, NodeFactory};
+//! populating factories before creating a `rill_graph::GraphBuilder`.
+//!
+//! `register_all_nodes` is deprecated — use per-crate `register_lang_builtins()`
+//! with `rill_lang::builtin::Registry` instead.
 
 #[cfg(feature = "io")]
 use rill_core::traits::ParamValue;
 #[cfg(feature = "io")]
 use std::collections::HashMap;
 
-/// Register every built-in node type on a
-/// [rill_graph::GraphBuilder].
+/// Register every built-in node type.
 ///
-/// Typically called once at application startup before loading graph presets.
-///
-/// # Type parameters
-///
-/// - `BUF_SIZE` — block size, must match the target graph.
-///
-/// Register every built-in node type into a [`NodeFactory`].
-///
-/// Only available without the `lang` feature — when `lang` is enabled,
-/// nodes are registered as lang builtins instead.
+/// Stubbed: graph node construction was removed along with NodeFactory/NodeVariant.
+/// Use per-crate `register_lang_builtins()` with `rill_lang::builtin::Registry`.
 #[cfg(not(feature = "lang"))]
-#[deprecated = "Use each crate's register_lang_builtins() directly, or full_registry()"]
-pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    rill_oscillators::register::register_graph_nodes(factory);
-    rill_digital_filters::register::register_graph_nodes(factory);
-    rill_digital_effects::register::register_graph_nodes(factory);
-    rill_router::register::register_graph_nodes(factory);
-    #[cfg(feature = "io")]
-    register_io(factory);
-    #[cfg(feature = "sampler")]
-    rill_sampler::register::register_graph_nodes(factory);
-    #[cfg(feature = "lofi")]
-    rill_lofi::register::register_graph_nodes(factory);
-    #[cfg(feature = "analog")]
-    {
-        rill_analog_filters::register::register_graph_nodes(factory);
-        rill_analog_effects::register::register_graph_nodes(factory);
-    }
-    #[cfg(feature = "lang")]
-    register_lang(factory);
-    #[cfg(feature = "fft")]
-    rill_fft::register::register_graph_nodes(factory);
-}
-
-#[cfg(all(feature = "io", not(feature = "lang")))]
-fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    use rill_core::io::{IoCapture, IoPlayback};
-    use std::sync::Arc;
-
-    struct NullCapture;
-    impl IoCapture for NullCapture {
-        fn read_input(&self, _channel: usize, dst: &mut [f32]) -> usize {
-            dst.fill(0.0);
-            dst.len()
-        }
-        fn num_input_channels(&self) -> usize {
-            2
-        }
-    }
-
-    struct NullPlayback;
-    impl IoPlayback for NullPlayback {
-        fn write_output(&self, _channel: usize, _src: &[f32]) -> usize {
-            _src.len()
-        }
-        fn num_output_channels(&self) -> usize {
-            2
-        }
-    }
-
-    node_ctor!(
-        factory,
-        "rill/output",
-        move |id: NodeId, params: &Params| {
-            let ch = params.get_f32("channels", 2.0) as usize;
-            let null_pb = Arc::new(NullPlayback);
-            let mut n = crate::io::output::Output::<f32, BUF_SIZE>::with_channels(null_pb, ch);
-            Node::set_id(&mut n, id);
-            Node::init(&mut n, params.sample_rate);
-            NodeVariant::Sink(Box::new(n))
-        }
-    );
-
-    node_ctor!(factory, "rill/input", move |id: NodeId, params: &Params| {
-        let ch = params.get_f32("channels", 2.0) as usize;
-        let null_cap = Arc::new(NullCapture);
-        let mut n = crate::io::input::Input::<f32, BUF_SIZE>::with_channels(null_cap, ch);
-        Node::set_id(&mut n, id);
-        Node::init(&mut n, params.sample_rate);
-        NodeVariant::Source(Box::new(n))
-    });
-}
-
-// ============================================================================
-// Rill Lang (DSL graph node)
-// ============================================================================
-
-#[cfg(all(feature = "lang", not(feature = "lang")))]
-fn register_lang<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
-    node_ctor!(factory, "rill/lang", |id: NodeId, params: &Params| {
-        let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");
-        let reg = std::sync::Arc::new(crate::lang_builtins::full_registry::<f32>());
-        let mut n = crate::lang_node::LangNode::<f32, BUF_SIZE>::from_source_with(
-            source,
-            reg,
-            params.sample_rate,
-        )
-        .unwrap_or_else(|_| crate::lang_node::LangNode::identity());
-        Node::set_id(&mut n, id);
-        Node::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    });
-
-    node_ctor!(factory, "rill/graph_lang", |id: NodeId, params: &Params| {
-        let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");
-        let reg = std::sync::Arc::new(crate::lang_builtins::full_registry::<f32>());
-        let mut n = crate::lang_node::GraphLangNode::<f32, BUF_SIZE>::from_source_with(
-            source,
-            reg,
-            params.sample_rate,
-        )
-        .unwrap_or_else(|_| crate::lang_node::GraphLangNode::identity());
-        Node::set_id(&mut n, id);
-        Node::init(&mut n, params.sample_rate);
-        NodeVariant::Processor(Box::new(n))
-    });
-
-    node_ctor!(factory, "rill/lang_multi", |id: NodeId, params: &Params| {
-        let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");
-        let mut n = crate::lang_node::MultiLangNode::<f32, BUF_SIZE>::from_source(source)
-            .unwrap_or_else(|_| {
-                crate::lang_node::MultiLangNode::<f32, BUF_SIZE>::from_source("main = _").unwrap()
-            });
-        Node::set_id(&mut n, id);
-        Node::init(&mut n, params.sample_rate);
-        NodeVariant::Router(Box::new(n))
-    });
+pub fn register_all_nodes<const BUF_SIZE: usize>(_factory: &mut ()) {
+    // TODO: Port to rill_lang::builtin system
 }
 
 // ============================================================================
@@ -220,11 +94,10 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             let mappings: Vec<rill_patchbay::engine::Mapping> =
                 mappings.iter().map(|m| m.to_mapping()).collect();
 
-            // Create a servo to apply mappings — the sensor only decodes MIDI
             let servo_ref = rill_patchbay::Servo::new(
                 format!("midi_servo_{port_name}"),
-                rill_patchbay::engine::NoAction, // no automaton — mapping-only servo
-                NodeId(0),
+                rill_patchbay::engine::NoAction,
+                rill_core::traits::NodeId(0),
                 "",
                 rill_patchbay::engine::ParameterMapping::Linear,
                 0.0,
@@ -235,7 +108,6 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             .with_mappings(mappings)
             .spawn(system);
 
-            // Spawn the sensor, pointing raw events to the servo
             let _sensor_ref =
                 rill_patchbay::midi::spawn_midi_sensor(port_name, be, system, servo_ref.clone());
             Ok(servo_ref)
@@ -283,11 +155,10 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
             let mappings: Vec<rill_patchbay::engine::Mapping> =
                 mappings.iter().map(|m| m.to_mapping()).collect();
 
-            // Create a servo to apply mappings — the sensor only decodes OSC
             let servo_ref = rill_patchbay::Servo::new(
                 format!("osc_servo_{port}"),
-                rill_patchbay::engine::NoAction, // no automaton — mapping-only servo
-                NodeId(0),
+                rill_patchbay::engine::NoAction,
+                rill_core::traits::NodeId(0),
                 "",
                 rill_patchbay::engine::ParameterMapping::Linear,
                 0.0,
@@ -298,7 +169,6 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
             .with_mappings(mappings)
             .spawn(system);
 
-            // Spawn the sensor, pointing raw events to the servo
             let _sensor_ref = rill_patchbay::osc::spawn_osc_sensor(
                 &format!("osc_{port}"),
                 bind_addr,
