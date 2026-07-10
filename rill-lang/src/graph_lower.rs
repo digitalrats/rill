@@ -207,6 +207,9 @@ mod tests {
                 }],
                 keep: false,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
 
@@ -236,6 +239,9 @@ mod tests {
                 params: Vec::new(),
                 keep: false,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
         nodes.insert(
@@ -246,6 +252,9 @@ mod tests {
                 params: Vec::new(),
                 keep: false,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
 
@@ -295,6 +304,9 @@ mod tests {
                 params: Vec::new(),
                 keep: false,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
 
