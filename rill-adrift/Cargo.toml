@@ -53,19 +53,19 @@ toml = { version = "0.8", optional = true }
 
 [[example]]
 name = "play_wav"
-required-features = ["io", "sampler"]
+required-features = ["io", "lang", "sampler"]
 
 [[example]]
 name = "player"
-required-features = ["io", "serialization", "sampler"]
+required-features = ["io", "lang", "serialization"]
 
 [[example]]
 name = "advanced_player"
-required-features = ["io", "serialization", "sampler"]
+required-features = ["io", "lang", "serialization"]
 
 [[example]]
 name = "record_mic"
-required-features = ["io", "serialization", "sampler"]
+required-features = ["io", "lang", "sampler"]
 
 [[example]]
 name = "convolver"
@@ -85,11 +85,11 @@ required-features = ["lang", "fft"]
 
 [[example]]
 name = "chiptune"
-required-features = ["io", "lofi"]
+required-features = ["io", "lang", "lofi"]
 
 [[example]]
 name = "midi_synth"
-required-features = ["midi", "io"]
+required-features = ["midi", "io", "lang"]
 
 [[example]]
 name = "midi_synth_serial"

@@ -1,47 +1,30 @@
-//! Simple monophonic MIDI synth — sine oscillator controlled via MIDI.
+//! MIDI-controlled sine oscillator — rill-lang DSL version.
 //!
-//! # MIDI Mappings
+//! Compiles a sine oscillator via rill-lang and controls frequency/amplitude
+//! via MIDI through a Servo actor.
 //!
-//! | Control | Target | Range |
-//! |---------|--------|-------|
-//! | CC#128 (pitch bend) | frequency | 100 Hz – 4 kHz (Exponential) |
-//! | CC#1 (mod wheel) | amplitude | 0.0 – 1.0 (Linear) |
-//! | Note On | frequency + amplitude | `midi_to_freq(note)`, `velocity / 127` |
-//! | Note Off | amplitude = 0 | oscillator silenced |
-//!
-//! # Usage
-//!
-//! ```bash
-//! # Auto-selects first non-virtual MIDI port, portaudio backend:
-//! cargo run --example midi_synth --features "midi,io,portaudio"
-//! # Specify port by index (1) or name (KOMPLETE), alsa backend:
-//! cargo run --example midi_synth --features "midi,io,alsa" -- 1 alsa
-//! ```
+//! Usage:
+//!   cargo run --example midi_synth --features "midi,io,lang,portaudio"
+//!   cargo run --example midi_synth --features "midi,io,lang,portaudio" -- [midi_port] [audio_backend]
 
-/// NOTE: This example uses the legacy `ProcessingState` API.
-/// For rill-lang-based examples, see: `lang_chiptune`, `complex_dsl`, `dsl_spectral`.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use std::collections::HashMap;
 
-use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
-use rill_core::traits::{NodeId, ParamValue, Params, PortId};
-use rill_core_actor::ActorSystem;
+use rill_adrift::registration;
+use rill_core::traits::{NodeId, ParamValue};
 use rill_graph::backend_factory::{BackendFactory, OutputBundle};
-use rill_graph::{GraphBuilder, NodeFactory};
 use rill_io::backends::MidirBackend;
+use rill_lang::program_runner::ProgramRunner;
 use rill_patchbay::engine::{midi_cc, NoAction, ParameterMapping, Transform};
 use rill_patchbay::midi::spawn_midi_sensor;
 use rill_patchbay::Servo;
-
-use rill_adrift::registration;
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── CLI: [midi_port] [audio_backend] ────────────────────────────
     let args: Vec<String> = std::env::args().collect();
     let midi_spec = args
         .get(1)
@@ -56,11 +39,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
     let audio_backend_display = audio_backend.clone();
 
-    // Show available ports
     eprintln!("Available MIDI ports:");
     let _ = MidirBackend::list_ports("rill-probe");
 
-    // ── 1. Create backend first ────────────────────────
+    // Compile rill-lang DSL: sine oscillator.
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+    let src = "main = sine 220.0 0.5 0.0";
+    let engine = rill_lang::compile_graph::<f32>(src, &reg, RATE)?;
+    let graph_ref = engine.handle();
+
+    // Create I/O backend
     let mut bf = BackendFactory::new();
     registration::register_backends(&mut bf);
     let mut be_params = HashMap::new();
@@ -71,46 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .create_output(&audio_backend, &be_params)
         .expect("create output backend");
 
-    // ── 2. Register node types ────────────────────────
-    let mut nf = NodeFactory::<f32, BUF>::new();
-    registration::register_all_nodes::<BUF>(&mut nf);
-
-    let mut builder = GraphBuilder::new(Arc::new(nf));
-
-    // ── 3. Build signal topology: sine oscillator → stereo output ──
-    let mut osc_params = Params::new(RATE);
-    osc_params.insert("freq", ParamValue::Float(220.0));
-    osc_params.insert("amp", ParamValue::Float(0.0));
-    let osc = builder.add_node("rill/sine", &osc_params);
-    let out = builder.add_node("rill/output", &Params::new(RATE));
-    builder.connect_signal(osc, 0, out, 0);
-    builder.connect_signal(osc, 0, out, 1);
-
-    // ── 4. Run graph on dedicated I/O thread (Graph is !Send) ───────
-    let running = Arc::new(AtomicBool::new(true));
-    let (graph_tx, graph_rx) = std::sync::mpsc::channel();
-    let r_graph = running.clone();
-
-    let audio_thread = std::thread::spawn(move || {
-        let sys = ActorSystem::new();
-        match builder.build(&sys) {
-            Ok(graph) => {
-                let _ = graph_tx.send((sys, graph.handle()));
-                let mut state = graph.into_processing_state();
-                state.wire_backends(None, Some(playback));
-                if let Err(e) = state.run_with_driver(driver, r_graph) {
-                    eprintln!("Backend error: {e}");
-                }
-            }
-            Err(e) => eprintln!("graph build: {:?}", e),
-        }
-    });
-
-    let (system, graph_ref) = graph_rx.recv()?;
-    let system = Arc::new(system);
-
-    // ── 5. MIDI sensor with declarative mappings ────────────────────
-    // Connect: by name substring or numeric index
+    // MIDI
     let midi_backend: Box<dyn rill_io::midi_input::MidiInput> = if let Ok(idx) =
         midi_spec.parse::<usize>()
     {
@@ -120,9 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             MidirBackend::new_by_name("rill-midi-synth", midi_spec).map_err(|e| e.to_string())?,
         )
     };
-    let osc_node = rill_core::traits::NodeId(osc as u32);
+    let osc_node = NodeId(0);
 
-    // Additional CC mappings (non-stateful controllers)
     let mappings = vec![midi_cc(
         7,
         None,
@@ -133,60 +81,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Transform::Linear,
     )];
 
-    // Create a servo with stateful pitch bend / mod wheel + generic mappings
+    // Spawn Servo
+    let system = Arc::new(rill_core_actor::ActorSystem::new());
     let servo_ref = Servo::new(
         "midi_servo",
         NoAction,
         osc_node,
-        "", // target_param overridden per-event
+        "",
         ParameterMapping::Linear,
         0.0,
         1.0,
         system.clone(),
         graph_ref.clone(),
     )
-    .with_pitch_bend(128, 2.0) // CC#128 = pitch bend, ±2 semitones
-    .with_mod_wheel(1) // CC#1 = mod wheel
-    .with_mappings(mappings) // fallback: generic CC mappings
+    .with_pitch_bend(128, 2.0)
+    .with_mod_wheel(1)
+    .with_mappings(mappings)
     .spawn(&system);
 
-    // Spawn the MIDI sensor, pointing raw events to the servo
     spawn_midi_sensor("midi", midi_backend, &system, servo_ref);
 
-    // ── 6. Keep alive until Enter ────────────────────────────────────
+    // Signal thread
+    let running = Arc::new(AtomicBool::new(true));
+    let t_run = running.clone();
+    let signal_thread = std::thread::spawn(move || {
+        let mut runner = ProgramRunner::new(engine, None, BUF);
+        runner.wire_backends(None, Some(playback));
+        runner.run_with_driver(driver, t_run).ok();
+    });
+
     println!("MIDI synth active (backend: {audio_backend_display}):");
-    println!("  Pitch bend (CC#128) → ±2 semitones (stateful)");
-    println!("  Mod wheel (CC#1)    → amplitude (stateful)");
-    println!("  CC#7 (volume)       → amplitude (0.0 – 1.0)");
-    println!("  Note On              → freq = midi_to_freq * 2^(pitch_bend/12)");
-    println!("  Note Off             → amplitude = 0");
+    println!("  Pitch bend (CC#128) -> +/-2 semitones (stateful)");
+    println!("  Mod wheel (CC#1)    -> amplitude (stateful)");
+    println!("  CC#7 (volume)       -> amplitude (0.0 - 1.0)");
+    println!("  Note On              -> freq = midi_to_freq * 2^(pitch_bend/12)");
+    println!("  Note Off             -> amplitude = 0");
     println!();
     println!("Press Enter to stop.");
 
     let r = running.clone();
-    let handle = audio_thread.thread().clone();
-    let shutdown_gr = graph_ref.clone();
+    let handle = signal_thread.thread().clone();
     std::thread::spawn(move || {
         let mut input = String::new();
         let _ = std::io::stdin().read_line(&mut input);
-
-        // Fade out, then let the audio stream run in silence before stopping
-        let pid = rill_core::traits::ParameterId::new("amplitude").unwrap();
-        shutdown_gr.send(CommandEnum::SetParameter(SetParameter::new(
-            PortId::param(NodeId(osc as u32), 0),
-            pid,
-            ParamValue::Float(0.0),
-            SignalOrigin::Manual,
-        )));
-        // Let smoothing + zero-crossing detection complete, then let
-        // the backend run a bit more in silence before cutting power
         std::thread::sleep(std::time::Duration::from_secs(1));
         r.store(false, Ordering::Release);
         handle.unpark();
     });
 
-    audio_thread.join().ok();
-
+    signal_thread.join().ok();
     println!("Shutting down.");
     Ok(())
 }
