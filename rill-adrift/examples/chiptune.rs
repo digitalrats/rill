@@ -182,3 +182,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(feature = "lang")]
+fn main() {
+    eprintln!("This example uses the legacy API and is not available with the 'lang' feature.");
+    eprintln!("Use the lang examples (lang_chiptune, complex_dsl, dsl_spectral) instead.");
+}
