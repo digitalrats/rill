@@ -31,3 +31,7 @@ pub use mixer::{ChannelConfig, ChannelMode, ChannelState, MixerNode, SendConfig,
 pub use dry_wet::DryWetMix;
 
 pub mod register;
+
+/// rill-lang builtins for router types.
+#[cfg(feature = "lang")]
+mod lang;

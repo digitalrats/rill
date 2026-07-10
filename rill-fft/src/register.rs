@@ -100,6 +100,62 @@ mod lang_helpers {
                 Box::new(SpectralDelayBuiltin { inner: delay })
             },
         );
+        reg.register_block(
+            BuiltinSig::simple("convolver", 1, 1, 2, BuiltinKind::Block),
+            |p, _sr| {
+                let ir_gain = p[0] as f32;
+                let mix = p[1] as f32;
+                let conv = crate::partitioned_conv::PartitionedConvolver::<T, 64>::new(4096);
+                Box::new(ConvolverBuiltin {
+                    inner: conv,
+                    ir_gain,
+                    mix,
+                })
+            },
+        );
+    }
+
+    struct ConvolverBuiltin<T: Transcendental> {
+        inner: crate::partitioned_conv::PartitionedConvolver<T, 64>,
+        ir_gain: f32,
+        mix: f32,
+    }
+
+    impl<T: Transcendental> Algorithm<T> for ConvolverBuiltin<T> {
+        fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+            match input {
+                Some(inp) => {
+                    self.inner.process(inp, output);
+                    let gain = T::from_f32(self.ir_gain);
+                    let mix_gain = T::from_f32(self.mix);
+                    let dry_gain = T::ONE - mix_gain;
+                    for i in 0..output.len() {
+                        output[i] = inp[i] * dry_gain + output[i] * gain * mix_gain;
+                    }
+                    Ok(())
+                }
+                None => {
+                    output.fill(T::ZERO);
+                    Ok(())
+                }
+            }
+        }
+        fn reset(&mut self) {}
+    }
+
+    impl<T: Transcendental> BlockBuiltin<T> for ConvolverBuiltin<T> {
+        fn set_param(&mut self, index: usize, value: &ParamValue) {
+            let v = value.as_f32().unwrap_or(0.0);
+            match index {
+                0 => {
+                    self.ir_gain = v.clamp(0.0, 4.0);
+                }
+                1 => {
+                    self.mix = v.clamp(0.0, 1.0);
+                }
+                _ => {}
+            }
+        }
     }
 }
 

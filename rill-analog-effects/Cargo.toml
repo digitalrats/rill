@@ -12,8 +12,10 @@ documentation = "https://docs.rs/rill-analog-effects"
 rill-core = { workspace = true }
 rill-core-model = { workspace = true }
 rill-graph = { workspace = true, optional = true }
+rill-lang = { workspace = true, optional = true }
 rand = { workspace = true }
 
 [features]
 default = []
 graph = ["rill-graph"]
+lang = ["rill-lang"]

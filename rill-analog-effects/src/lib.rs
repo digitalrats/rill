@@ -10,3 +10,7 @@ pub use cassette::CassetteDeck;
 pub use nodes::CassetteDeckProcessor;
 
 pub mod register;
+
+/// rill-lang builtins for analog effects.
+#[cfg(feature = "lang")]
+mod lang;

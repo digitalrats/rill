@@ -108,7 +108,7 @@ telemetry = ["dep:rill-telemetry"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects", "rill-analog-filters/graph", "rill-analog-effects/graph"]
 sampler = ["dep:rill-sampler", "rill-sampler/graph"]
-lang = ["dep:rill-lang", "rill-lang/router", "rill-lofi?/lang", "rill-fft?/lang", "rill-core-model?/lang"]
+lang = ["dep:rill-lang", "rill-lang/router", "rill-router/lang", "rill-lofi?/lang", "rill-fft?/lang", "rill-core-model?/lang", "rill-sampler?/lang", "rill-analog-effects?/lang"]
 fft = ["dep:rill-fft", "rill-fft/graph"]
 serialization = [
     "rill-graph/serialization",
