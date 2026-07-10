@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Port types and identifiers for the Rill ecosystem
 //!
 //! Ports are the connection points between nodes in the signal graph.
@@ -759,6 +760,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Port<T, BUF_SIZE> {
     /// through its output ports.
     ///
     /// No heap allocations — `downstream_nodes` is pre‑filled at build time.
+    #[deprecated = "Port-level propagation is replaced by ScheduledGraph buffer pool execution"]
     #[allow(unsafe_code)]
     pub fn propagate(
         &self,

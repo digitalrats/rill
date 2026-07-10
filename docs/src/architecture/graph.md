@@ -3,6 +3,10 @@
 Static DAG signal graph — topology and port connections only.
 Processing is driven by `Port::propagate`.
 
+> ⚠️ **Deprecated**: `ProcessingState` and `Port::propagate` are the legacy execution engine.
+> The recommended path is `GraphBuilder::build_ir()` → `GraphIr` → `RillGraphEngine`
+> via the `lang` feature in `rill-graph`. See the [execution unification spec](../../docs/execution-unification.md) for details.
+
 ## Architecture
 
 ```

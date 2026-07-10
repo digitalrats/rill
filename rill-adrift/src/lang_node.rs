@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Graph-node adapter that wraps a compiled [`rill_lang::RillProgram`] as a
 //! signal-graph [`Processor`].
 //!

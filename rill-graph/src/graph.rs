@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use crate::factory::NodeFactory;
 use std::sync::Arc;
 
@@ -238,6 +239,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// `SourceDef::backend` / `SinkDef::backend` or the builder's default).  Finds the active
     /// (driver) node and stores its index for [`Graph::run`].
     #[cfg(not(feature = "lang"))]
+    #[deprecated = "Use build_ir(&registry) with 'lang' feature for GraphIr → RillGraphEngine path"]
     pub fn build(self, system: &ActorSystem) -> Result<Graph<T, BUF_SIZE>, BuildError> {
         // Phase 1: Construct all nodes from recipes
         let mut node_entries: Vec<NodeEntry<T, BUF_SIZE>> = Vec::with_capacity(self.recipes.len());
@@ -830,6 +832,7 @@ type GraphParts<T, const BUF_SIZE: usize> = (Vec<NodeVariant<T, BUF_SIZE>>, Vec<
 /// port-level methods (`pre_process`, `snapshot_feedback`, `propagate`)
 /// called from external code (e.g. a real-time signal callback or an
 /// offline renderer).
+#[deprecated = "Replaced by RillGraphEngine from rill-lang"]
 pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
     topo_order: Vec<usize>,
@@ -858,6 +861,7 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
 ///
 /// Created via [`Graph::into_processing_state`].
 #[cfg(not(feature = "lang"))]
+#[deprecated = "Replaced by RillGraphEngine from rill-lang"]
 pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     actor: Actor<CommandEnum>,
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,

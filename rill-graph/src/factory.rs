@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,6 +36,7 @@ impl std::error::Error for RegistryError {}
 /// implements this trait. The [`construct`](Self::construct) method
 /// receives a [`NodeId`] and [`Params`] and must return the
 /// appropriate [`NodeVariant`].
+#[deprecated = "Built-in registration now uses rill_lang::builtin traits"]
 pub trait NodeConstructor<T: Transcendental, const BUF_SIZE: usize>: Send + Sync {
     /// Canonical name for this node type (e.g. `"rill/sine_osc"`).
     fn type_name(&self) -> &'static str;
@@ -66,6 +68,7 @@ pub trait NodeConstructor<T: Transcendental, const BUF_SIZE: usize>: Send + Sync
 ///
 /// - `T` — sample type (typically `f32`)
 /// - `BUF_SIZE` — block size (must match the target graph)
+#[deprecated = "Use rill_core::builtin::Registry instead"]
 pub struct NodeFactory<T: Transcendental, const BUF_SIZE: usize> {
     entries: HashMap<&'static str, Box<dyn NodeConstructor<T, BUF_SIZE>>>,
 }

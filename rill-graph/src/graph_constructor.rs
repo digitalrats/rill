@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Graph constructor — creates a signal graph from a [`GraphDef`] descriptor
 //! and returns its actor handle.
 //!

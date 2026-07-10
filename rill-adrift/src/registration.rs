@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Centralized registration of all built-in node types and backends.
 //!
 //! Provides `register_all_nodes` and `register_all_backends` for
@@ -27,6 +28,7 @@ use std::collections::HashMap;
 /// Only available without the `lang` feature — when `lang` is enabled,
 /// nodes are registered as lang builtins instead.
 #[cfg(not(feature = "lang"))]
+#[deprecated = "Use each crate's register_lang_builtins() directly, or full_registry()"]
 pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     rill_oscillators::register::register_graph_nodes(factory);
     rill_digital_filters::register::register_graph_nodes(factory);
