@@ -92,28 +92,27 @@ impl ProgramRunner {
         let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
         self.engine.apply_due_params(chunk_end);
 
+        // Single engine.process() call per tick
+        let input = if let Some(ref cap) = self.capture {
+            cap.read_input(0, &mut self.input_buf[..block_size]);
+            Some(&self.input_buf[..block_size] as &[f32])
+        } else {
+            None
+        };
+        let _ = self
+            .engine
+            .process(input, &mut self.output_buf[..block_size]);
+
         for ch in 0..num_outputs {
-            let in_slice = &mut self.input_buf[..block_size];
-            let out_slice = &mut self.output_buf[..block_size];
-
-            if let Some(ref cap) = self.capture {
-                cap.read_input(ch, in_slice);
-            }
-
-            let _ = self.engine.process(
-                if self.capture.is_some() {
-                    Some(in_slice as &[f32])
-                } else {
-                    None
-                },
-                out_slice,
-            );
             if let Some(ref pb) = self.playback {
-                pb.write_output(ch, out_slice);
+                pb.write_output(ch, &self.output_buf[..block_size]);
             }
         }
 
         if tick.is_final {
+            self.engine
+                .handle()
+                .send(CommandEnum::ClockTick(tick.clone()));
             if let Some(ref parent) = self.parent_ref {
                 parent.send(CommandEnum::ClockTick(tick.clone()));
             }
