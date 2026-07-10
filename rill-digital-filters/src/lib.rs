@@ -14,3 +14,5 @@ pub mod moog_ladder;
 pub use biquad::{BiquadExt, BiquadFilter, BiquadProcessor};
 pub use moog_ladder::MoogLadderProcessor;
 pub use rill_core_dsp::filters::{Filter, FilterParams, FilterType, MoogLadder};
+
+pub mod register;
