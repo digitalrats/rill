@@ -11,11 +11,13 @@ documentation = "https://docs.rs/rill-digital-effects"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-dsp = { workspace = true }
+rill-graph = { workspace = true, optional = true }
 rill-oscillators = { workspace = true, optional = true }
 thiserror = "1.0"
 
 [features]
 default = []
+graph = ["rill-graph"]
 modulation = ["rill-oscillators"]  # для LFO в модуляционных эффектах
 
 [dev-dependencies]
