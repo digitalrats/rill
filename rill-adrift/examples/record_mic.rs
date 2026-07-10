@@ -173,110 +173,119 @@ fn write_wav(
 // ============================================================================
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let positional: Vec<&String> = args
-        .iter()
-        .skip(1)
-        .filter(|a| !a.starts_with("--"))
-        .collect();
-    let (backend_arg, out_path): (Option<&str>, &str) = match positional.len() {
-        0 => (None, "output.wav"),
-        1 => {
-            let v = positional[0].as_str();
-            if v.ends_with(".wav") || std::path::Path::new(v).is_file() {
-                (None, v)
-            } else {
-                (Some(v), "output.wav")
-            }
-        }
-        _ => (Some(positional[0].as_str()), positional[1].as_str()),
-    };
-
-    let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
-
-    let backend_name = backend_arg.unwrap_or("portaudio").to_string();
-    let backend_display = backend_name.clone();
-
-    // Start
-    let running = Arc::new(AtomicBool::new(true));
-    let t_run = running.clone();
-    let rec = recorded.clone();
-    let be_name = backend_name.clone();
-    let audio_thread = std::thread::spawn(move || {
-        // ── 1. Register backends first ──────────────────
-        let mut bf = BackendFactory::new();
-        registration::register_backends(&mut bf);
-        let mut be_params = HashMap::new();
-        be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-        be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-        be_params.insert("input_channels".into(), ParamValue::Int(2));
-        be_params.insert("output_channels".into(), ParamValue::Int(0));
-        let InputBundle { driver, capture } = bf
-            .create_input(&be_name, &be_params)
-            .expect("create input backend");
-
-        // ── 2. Register node types ──────────────────
-        let mut factory = NodeFactory::<f32, BUF>::new();
-        registration::register_all_nodes::<BUF>(&mut factory);
-
-        // Register custom RecordingSink
-        let rec2 = rec.clone();
-        factory.register_fn("rill/record_sink", move |id, params| {
-            let mut sink = RecordingSink::new(rec2.clone());
-            Node::set_id(&mut sink, id);
-            Node::init(&mut sink, params.sample_rate);
-            NodeVariant::Sink(Box::new(sink))
-        });
-
-        // ── 3. Build graph ──────────────────────────────────────────
-        let mut builder = GraphBuilder::new(Arc::new(factory));
-
-        let mic = builder.add_node("rill/input", &Params::new(RATE));
-        let recorder = builder.add_node("rill/record_sink", &Params::new(RATE));
-        builder.connect_signal(mic, 0, recorder, 0);
-        builder.connect_signal(mic, 1, recorder, 1);
-
-        // ── Build and run ────────────────────────────────────────
-        let system = ActorSystem::new();
-        match builder.build(&system) {
-            Ok(graph) => {
-                eprintln!("Graph built ({} nodes). Recording...", graph.node_count());
-                let mut state = graph.into_processing_state();
-                state.wire_backends(Some(capture), None);
-                if let Err(e) = state.run_with_driver(driver, t_run) {
-                    eprintln!("Backend error: {e}");
+    #[cfg(not(feature = "lang"))]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        let positional: Vec<&String> = args
+            .iter()
+            .skip(1)
+            .filter(|a| !a.starts_with("--"))
+            .collect();
+        let (backend_arg, out_path): (Option<&str>, &str) = match positional.len() {
+            0 => (None, "output.wav"),
+            1 => {
+                let v = positional[0].as_str();
+                if v.ends_with(".wav") || std::path::Path::new(v).is_file() {
+                    (None, v)
+                } else {
+                    (Some(v), "output.wav")
                 }
             }
-            Err(e) => eprintln!("Build error: {e:?}"),
-        }
-    });
+            _ => (Some(positional[0].as_str()), positional[1].as_str()),
+        };
 
-    println!(
-        "▶ Recording from {} backend... Press Enter to stop.",
-        backend_display
-    );
-    let mut input_line = String::new();
-    std::io::stdin().read_line(&mut input_line)?;
-    running.store(false, Ordering::Release);
-    audio_thread.thread().unpark();
-    let _ = audio_thread.join();
+        let recorded = Arc::new(Mutex::new(Vec::<f32>::new()));
 
-    // Save WAV
-    let data = recorded.lock().unwrap();
-    let total_samples = data.len();
-    let wav_rate = 48000u32;
+        let backend_name = backend_arg.unwrap_or("portaudio").to_string();
+        let backend_display = backend_name.clone();
 
-    let max_amp = data.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    println!(
-        "{} max={max_amp:.6}",
-        if max_amp < 0.001 {
-            "⚠ Silence"
-        } else {
-            "✓ Signal"
-        }
-    );
+        // Start
+        let running = Arc::new(AtomicBool::new(true));
+        let t_run = running.clone();
+        let rec = recorded.clone();
+        let be_name = backend_name.clone();
+        let audio_thread = std::thread::spawn(move || {
+            // ── 1. Register backends first ──────────────────
+            let mut bf = BackendFactory::new();
+            registration::register_backends(&mut bf);
+            let mut be_params = HashMap::new();
+            be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+            be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+            be_params.insert("input_channels".into(), ParamValue::Int(2));
+            be_params.insert("output_channels".into(), ParamValue::Int(0));
+            let InputBundle { driver, capture } = bf
+                .create_input(&be_name, &be_params)
+                .expect("create input backend");
 
-    write_wav(out_path, wav_rate, 2, &data)?;
-    println!("⏹ Saved: {out_path} — {total_samples} samples");
-    Ok(())
+            // ── 2. Register node types ──────────────────
+            let mut factory = NodeFactory::<f32, BUF>::new();
+            registration::register_all_nodes::<BUF>(&mut factory);
+
+            // Register custom RecordingSink
+            let rec2 = rec.clone();
+            factory.register_fn("rill/record_sink", move |id, params| {
+                let mut sink = RecordingSink::new(rec2.clone());
+                Node::set_id(&mut sink, id);
+                Node::init(&mut sink, params.sample_rate);
+                NodeVariant::Sink(Box::new(sink))
+            });
+
+            // ── 3. Build graph ──────────────────────────────────────────
+            let mut builder = GraphBuilder::new(Arc::new(factory));
+
+            let mic = builder.add_node("rill/input", &Params::new(RATE));
+            let recorder = builder.add_node("rill/record_sink", &Params::new(RATE));
+            builder.connect_signal(mic, 0, recorder, 0);
+            builder.connect_signal(mic, 1, recorder, 1);
+
+            // ── Build and run ────────────────────────────────────────
+            let system = ActorSystem::new();
+            match builder.build(&system) {
+                Ok(graph) => {
+                    eprintln!("Graph built ({} nodes). Recording...", graph.node_count());
+                    let mut state = graph.into_processing_state();
+                    state.wire_backends(Some(capture), None);
+                    if let Err(e) = state.run_with_driver(driver, t_run) {
+                        eprintln!("Backend error: {e}");
+                    }
+                }
+                Err(e) => eprintln!("Build error: {e:?}"),
+            }
+        });
+
+        println!(
+            "▶ Recording from {} backend... Press Enter to stop.",
+            backend_display
+        );
+        let mut input_line = String::new();
+        std::io::stdin().read_line(&mut input_line)?;
+        running.store(false, Ordering::Release);
+        audio_thread.thread().unpark();
+        let _ = audio_thread.join();
+
+        // Save WAV
+        let data = recorded.lock().unwrap();
+        let total_samples = data.len();
+        let wav_rate = 48000u32;
+
+        let max_amp = data.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        println!(
+            "{} max={max_amp:.6}",
+            if max_amp < 0.001 {
+                "⚠ Silence"
+            } else {
+                "✓ Signal"
+            }
+        );
+
+        write_wav(out_path, wav_rate, 2, &data)?;
+        println!("⏹ Saved: {out_path} — {total_samples} samples");
+        Ok(())
+    }
+    #[cfg(feature = "lang")]
+    {
+        eprintln!("This example uses the legacy API and is not available with the 'lang' feature.");
+        eprintln!("Use the lang examples (lang_chiptune, complex_dsl, dsl_spectral) instead.");
+        Ok(())
+    }
 }
