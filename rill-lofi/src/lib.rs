@@ -23,6 +23,8 @@ pub use lofi_processor::LofiProcessor;
 // Re-export for convenience
 pub use rill_core::traits::Node;
 
+pub mod register;
+
 #[cfg(test)]
 mod tests {
     use super::*;
