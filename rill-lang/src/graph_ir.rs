@@ -32,6 +32,12 @@ pub struct GraphNode {
     pub keep: bool,
     /// If true, this node should be inlined even with dynamic params.
     pub inline: bool,
+    /// Splits the graph into left/right sub-graphs for duplex execution.
+    pub is_bridge: bool,
+    /// Named feedback buffers to read BEFORE processing (mixed into input signal).
+    pub feedback_read: Vec<String>,
+    /// Named feedback buffers to write AFTER processing (capture output).
+    pub feedback_write: Vec<String>,
 }
 
 /// A directed edge between two node ports.

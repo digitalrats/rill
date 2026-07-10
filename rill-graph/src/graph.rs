@@ -678,6 +678,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     params,
                     keep: false,
                     inline: false,
+                    is_bridge: false,
+                    feedback_read: vec![],
+                    feedback_write: vec![],
                 },
             );
         }
