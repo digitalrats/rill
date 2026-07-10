@@ -119,6 +119,9 @@ pub(crate) fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, i
             Instr::ReadParam { dst, idx } => {
                 prog.regs_scalar[dst] = param_to_f64(&prog.params[idx])
             }
+            Instr::ReadActorParam { dst, param_idx } => {
+                prog.regs_scalar[dst] = param_to_f64(&prog.params[param_idx])
+            }
         }
     }
     for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
@@ -241,6 +244,10 @@ fn exec_block_op<T: Transcendental>(
         // Stateful instrs never appear as a Block step.
         Instr::ReadParam { dst, idx } => {
             let v = T::from_f64(param_to_f64(&prog.params[idx]));
+            prog.block_regs[dst][..n].fill(v);
+        }
+        Instr::ReadActorParam { dst, param_idx } => {
+            let v = T::from_f64(param_to_f64(&prog.params[param_idx]));
             prog.block_regs[dst][..n].fill(v);
         }
         Instr::ReadState { .. }
@@ -377,6 +384,9 @@ fn exec_sample_region<T: Transcendental>(
                 }
                 Instr::ReadParam { dst, idx } => {
                     prog.block_regs[dst][i] = T::from_f64(param_to_f64(&prog.params[idx]));
+                }
+                Instr::ReadActorParam { dst, param_idx } => {
+                    prog.block_regs[dst][i] = T::from_f64(param_to_f64(&prog.params[param_idx]));
                 }
             }
         }

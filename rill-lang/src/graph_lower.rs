@@ -15,6 +15,8 @@ pub struct ScheduledGraph {
     pub buffers: usize,
     /// Which buffer index maps to which graph output channel.
     pub output_mapping: Vec<usize>,
+    /// Names of programs in topological order, used for anchor-based param routing.
+    pub program_names: Vec<String>,
 }
 
 /// A single step in the linear schedule.
@@ -161,6 +163,7 @@ pub fn lower(ir: &GraphIr) -> ScheduledGraph {
         steps,
         buffers: buffer_counter,
         output_mapping,
+        program_names: ir.topo_order.clone(),
     }
 }
 

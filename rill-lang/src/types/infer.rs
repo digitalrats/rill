@@ -272,6 +272,21 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
             Ok(ty)
         }
         Expr::Record(_, _) => Ok(Type::uniform(0, 1, Scalar::Float)),
+        Expr::ActorParam { default, span, .. } => {
+            if let Some(d) = default {
+                let ty = infer_expr(ctx, d)?;
+                if ty.arity_in() != 0 || ty.arity_out() != 1 {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "`?name` default must be a constant expression (0→1), got {:?}",
+                            ty
+                        ),
+                        span: *span,
+                    });
+                }
+            }
+            Ok(Type::uniform(0, 1, Scalar::Float))
+        }
     }
 }
 
@@ -861,5 +876,22 @@ mod tests {
         // This test existed before; keep it but it's tricky to trigger
         // with current rules since everything defaults to Float
         assert!(ty_of("main = _ @ _").is_err());
+    }
+
+    #[test]
+    fn actor_param_no_default_typechecks() {
+        let t = ty_of("main = _ * ?gain").unwrap();
+        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+    }
+
+    #[test]
+    fn actor_param_with_default_typechecks() {
+        let t = ty_of("main = _ * ?gain=0.5").unwrap();
+        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+    }
+
+    #[test]
+    fn actor_param_default_must_be_constant() {
+        assert!(ty_of("main = _ * ?gain=_").is_err());
     }
 }

@@ -42,6 +42,7 @@ pub struct RillGraphEngine<T: Transcendental> {
     param_values: Vec<Vec<f64>>,
     pending: Vec<PendingParam>,
     param_maps: Vec<HashMap<String, usize>>,
+    anchor_map: HashMap<String, usize>,
     mailbox: Arc<Mailbox<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
 }
@@ -79,6 +80,13 @@ impl<T: Transcendental> RillGraphEngine<T> {
             .collect();
         let actor_ref = mailbox.actor_ref();
 
+        let anchor_map = schedule
+            .program_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i))
+            .collect();
+
         Self {
             schedule,
             programs,
@@ -87,6 +95,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
             param_values,
             pending: Vec::new(),
             param_maps,
+            anchor_map,
             mailbox,
             actor_ref,
         }
@@ -120,16 +129,29 @@ impl<T: Transcendental> RillGraphEngine<T> {
     fn drain_mailbox(&mut self) {
         while let Some(cmd) = self.mailbox.pop() {
             if let CommandEnum::SetParameter(ref sp) = cmd {
-                let name = sp.parameter.as_str();
-                for (prog_idx, map) in self.param_maps.iter().enumerate() {
-                    if let Some(&idx) = map.get(name) {
-                        self.pending.push(PendingParam {
-                            param_idx: idx,
-                            program_idx: prog_idx,
-                            value: sp.value.clone(),
-                            sample_pos: sp.sample_pos,
-                        });
-                        break;
+                let param_name = sp.parameter.as_str();
+                if !sp.anchor.is_empty() {
+                    if let Some(&prog_idx) = self.anchor_map.get(&sp.anchor) {
+                        if let Some(&idx) = self.param_maps[prog_idx].get(param_name) {
+                            self.pending.push(PendingParam {
+                                param_idx: idx,
+                                program_idx: prog_idx,
+                                value: sp.value.clone(),
+                                sample_pos: sp.sample_pos,
+                            });
+                        }
+                    }
+                } else {
+                    for (prog_idx, map) in self.param_maps.iter().enumerate() {
+                        if let Some(&idx) = map.get(param_name) {
+                            self.pending.push(PendingParam {
+                                param_idx: idx,
+                                program_idx: prog_idx,
+                                value: sp.value.clone(),
+                                sample_pos: sp.sample_pos,
+                            });
+                            break;
+                        }
                     }
                 }
             }

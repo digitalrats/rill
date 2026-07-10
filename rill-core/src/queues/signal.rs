@@ -102,6 +102,8 @@ impl fmt::Display for SignalOrigin {
 pub struct SetParameter {
     /// Target port.
     pub port: PortId,
+    /// Node anchor name in the graph IR (for lang-based graphs).
+    pub anchor: String,
     /// Target parameter identifier.
     pub parameter: ParameterId,
     /// New parameter value.
@@ -131,6 +133,7 @@ impl SetParameter {
     ) -> Self {
         Self {
             port,
+            anchor: String::new(),
             parameter,
             value,
             source,
@@ -149,6 +152,7 @@ impl SetParameter {
     ) -> Self {
         Self {
             port,
+            anchor: String::new(),
             parameter,
             value,
             source,
@@ -175,6 +179,7 @@ impl SetParameter {
 impl PartialEq for SetParameter {
     fn eq(&self, other: &Self) -> bool {
         self.port == other.port
+            && self.anchor == other.anchor
             && self.parameter == other.parameter
             && self.value == other.value
             && self.source == other.source

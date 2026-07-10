@@ -41,6 +41,7 @@ fn is_atom_start(tok: &Tok) -> bool {
             | Tok::LParen
             | Tok::LBrace
             | Tok::Minus
+            | Tok::Question
     )
 }
 
@@ -362,6 +363,21 @@ impl<'a> Parser<'a> {
             Tok::Wire => Ok(Expr::Wire(t.span)),
             Tok::Cut => Ok(Expr::Cut(t.span)),
             Tok::Str(s) => Ok(Expr::Str(s, t.span)),
+            Tok::Question => {
+                let start = t.span.start;
+                let (name, _) = self.expect_ident()?;
+                let default = if self.peek().tok == Tok::Eq {
+                    self.bump();
+                    Some(Box::new(self.parse_expr(0, false)?))
+                } else {
+                    None
+                };
+                Ok(Expr::ActorParam {
+                    name,
+                    default,
+                    span: self.span_from(start),
+                })
+            }
             Tok::Plus => Ok(Expr::Ref("+".into(), t.span)),
             Tok::Minus => Ok(Expr::Ref("-".into(), t.span)),
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
@@ -682,6 +698,76 @@ mod tests {
                         assert_eq!(fields.len(), 1);
                     }
                     other => panic!("expected Record, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_actor_param_no_default() {
+        let p = prog("main = _ * ?gain");
+        let main = p.main_def().unwrap();
+        match main.body() {
+            Expr::Bin {
+                op: BinOp::Mul,
+                rhs,
+                ..
+            } => match rhs.as_ref() {
+                Expr::ActorParam { name, default, .. } => {
+                    assert_eq!(name, "gain");
+                    assert!(default.is_none());
+                }
+                other => panic!("expected ActorParam, got {other:?}"),
+            },
+            other => panic!("expected Bin(Mul), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_actor_param_with_default() {
+        let p = prog("main = _ * ?gain=0.5");
+        let main = p.main_def().unwrap();
+        match main.body() {
+            Expr::Bin {
+                op: BinOp::Mul,
+                rhs,
+                ..
+            } => match rhs.as_ref() {
+                Expr::ActorParam { name, default, .. } => {
+                    assert_eq!(name, "gain");
+                    assert!(default.is_some());
+                    if let Some(d) = default {
+                        assert!(matches!(d.as_ref(), Expr::Float(v, _) if (*v - 0.5).abs() < 1e-9));
+                    }
+                }
+                other => panic!("expected ActorParam, got {other:?}"),
+            },
+            other => panic!("expected Bin(Mul), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_actor_params() {
+        let p = prog("main = lofi ?bitdepth=8 ?sr=44100 0.5 1.0");
+        let main = p.main_def().unwrap();
+        match main.body() {
+            Expr::Apply { name, args, .. } => {
+                assert_eq!(name, "lofi");
+                assert_eq!(args.len(), 4);
+                match &args[0] {
+                    Expr::ActorParam { name, default, .. } => {
+                        assert_eq!(name, "bitdepth");
+                        assert!(default.is_some());
+                    }
+                    other => panic!("expected ActorParam(bitdepth), got {other:?}"),
+                }
+                match &args[1] {
+                    Expr::ActorParam { name, default, .. } => {
+                        assert_eq!(name, "sr");
+                        assert!(default.is_some());
+                    }
+                    other => panic!("expected ActorParam(sr), got {other:?}"),
                 }
             }
             other => panic!("expected Apply, got {other:?}"),

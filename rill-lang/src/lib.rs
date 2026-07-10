@@ -121,6 +121,7 @@ pub fn compile_graph<T: Transcendental>(
         }],
         buffers: 2,
         output_mapping: vec![1],
+        program_names: vec!["main".to_string()],
     };
 
     let mailbox = Arc::new(Mailbox::new(64));
