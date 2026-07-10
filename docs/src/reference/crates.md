@@ -4,12 +4,12 @@ The Rill workspace consists of 20 crates, all versioned synchronously.
 
 | Crate | Version | Description | Docs |
 |-------|---------|-------------|------|
-| **rill-adrift** | 0.5.0 | Umbrella crate — re-exports all workspace crates | [docs.rs](https://docs.rs/rill-adrift) |
-| **rill-core** | 0.5.0 | Core traits, math, buffers, queues, time, macros, interpolation | [docs.rs](https://docs.rs/rill-core) |
+| **rill-adrift** | 0.5.0 | Umbrella crate — re-exports all workspace crates; `lang` feature replaces `register_all_nodes()` with rill-lang builtin registries via `full_registry()` / `full_registry_f32()` | [docs.rs](https://docs.rs/rill-adrift) |
+| **rill-core** | 0.5.0 | Core traits, math, buffers, queues, time, macros, interpolation; `builtin` module (Registry of lang built-ins), `MultichannelAlgorithm` and `BridgeAlgorithm` traits | [docs.rs](https://docs.rs/rill-core) |
 | **rill-core-actor** | 0.5.0 | Actor model — ActorRef, Actor, ActorSystem for lock-free message passing | [docs.rs](https://docs.rs/rill-core-actor) |
 | **rill-core-dsp** | 0.5.0 | DSP algorithms, vector ops, filters, generators, sample player | [docs.rs](https://docs.rs/rill-core-dsp) |
 | **rill-core-model** | 0.5.0 | WDF core + physical modeling — string, plate, modal, cavity | [docs.rs](https://docs.rs/rill-core-model) |
-| **rill-graph** | 0.5.0 | Static DAG signal graph with topological sort | [docs.rs](https://docs.rs/rill-graph) |
+| **rill-graph** | 0.5.0 | Static DAG signal graph with topological sort; optional `lang` feature enables `build_graph_ir()` path that bridges to `rill-lang::graph_ir::GraphIr` | [docs.rs](https://docs.rs/rill-graph) |
 | **rill-oscillators** | 0.5.0 | Sine, saw, noise, LFO, envelope, wavetable nodes | [docs.rs](https://docs.rs/rill-oscillators) |
 | **rill-digital-filters** | 0.5.0 | Biquad, SVF, Comb, MoogLadder filter nodes | [docs.rs](https://docs.rs/rill-digital-filters) |
 | **rill-digital-effects** | 0.5.0 | Delay, Distortion, Limiter nodes | [docs.rs](https://docs.rs/rill-digital-effects) |
@@ -23,7 +23,7 @@ The Rill workspace consists of 20 crates, all versioned synchronously.
 | **rill-analog-effects** | 0.5.0 | Analog circuit models — op-amp, tape deck, preamps | [docs.rs](https://docs.rs/rill-analog-effects) |
 | **rill-osc** | 0.5.0 | OSC — UDP server, encode/decode, pattern dispatch | [docs.rs](https://docs.rs/rill-osc) |
 | **rill-sampler** | 0.5.0 | Sample playback + time-series reader + WAV loading | [docs.rs](https://docs.rs/rill-sampler) |
-| **rill-lang** | 0.5.0 | Faust-style functional signal DSL, compiles to `Algorithm<T>` | [docs.rs](https://docs.rs/rill-lang) |
+| **rill-lang** | 0.5.0 | Faust-style functional signal DSL; compiles to `Algorithm<T>` or `MultichannelAlgorithm<T>` via `compile()`/`compile_with()`, or to a full `RillGraphEngine` via `compile_graph()` with runtime `?name` parameter support | [docs.rs](https://docs.rs/rill-lang) |
 
 ## Feature flags
 
