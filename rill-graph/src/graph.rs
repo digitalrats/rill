@@ -33,6 +33,8 @@ pub enum BuildError {
     Backend(String),
     /// Factory registration error (unknown node type).
     Registry(String),
+    /// A node type is not registered in the built-in registry.
+    UnknownNodeType(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -41,6 +43,7 @@ impl std::fmt::Display for BuildError {
             Self::CycleDetected => write!(f, "graph cycle detected"),
             Self::Backend(msg) => write!(f, "backend error: {msg}"),
             Self::Registry(msg) => write!(f, "registry error: {msg}"),
+            Self::UnknownNodeType(msg) => write!(f, "unknown node type: {msg}"),
         }
     }
 }
@@ -594,6 +597,176 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             parent_ref: self.parent_ref.clone(),
             system_clock: None,
             pending_params,
+        })
+    }
+}
+
+#[cfg(feature = "lang")]
+impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
+    /// Build a [`rill_lang::graph_ir::GraphIr`] using the built-in [`Registry`].
+    ///
+    /// This is the new execution path replacing [`build`](Self::build) → [`Graph`].
+    /// It looks up each node type in the registry, constructs placeholder IRs,
+    /// and performs topological sort. Actual compilation to executable programs
+    /// happens in a future phase.
+    pub fn build_ir(
+        self,
+        registry: &rill_lang::builtin::Registry<T>,
+    ) -> Result<rill_lang::graph_ir::GraphIr, BuildError> {
+        use indexmap::IndexMap;
+        use rill_lang::builtin::SignatureSource;
+        use rill_lang::graph_ir::{EdgeKind, GraphEdge, GraphIr, GraphNode};
+        use std::collections::HashMap;
+
+        // 1. Build index → name mapping
+        let idx_to_name: HashMap<usize, String> = self
+            .recipes
+            .iter()
+            .enumerate()
+            .map(|(idx, recipe)| (idx, format!("node_{}", recipe.id.inner())))
+            .collect();
+
+        // 2. Create GraphNodes from recipes
+        let mut nodes: IndexMap<String, GraphNode> = IndexMap::new();
+        let mut node_list: Vec<String> = Vec::new();
+
+        for (idx, recipe) in self.recipes.iter().enumerate() {
+            let name = idx_to_name[&idx].clone();
+            node_list.push(name.clone());
+
+            let sig = registry
+                .builtin_sig(&recipe.type_name)
+                .ok_or_else(|| BuildError::UnknownNodeType(recipe.type_name.clone()))?;
+
+            let arity = (sig.signal_ins(), sig.signal_outs);
+
+            let params: Vec<rill_lang::ir::ParamDef> = recipe
+                .params
+                .parameters
+                .iter()
+                .filter_map(|(k, v)| {
+                    v.as_f32().map(|f| rill_lang::ir::ParamDef {
+                        name: k.clone(),
+                        default: f as f64,
+                        min: f64::NEG_INFINITY,
+                        max: f64::INFINITY,
+                    })
+                })
+                .collect();
+
+            let ir = rill_lang::ir::Ir {
+                instrs: vec![],
+                num_regs: 1,
+                output_reg: 0,
+                num_inputs: arity.0,
+                num_outputs: arity.1,
+                state: rill_lang::ir::StateLayout {
+                    state_slots: 0,
+                    delay_lens: vec![],
+                    num_outputs: arity.1,
+                },
+                builtins: vec![],
+                params: vec![],
+            };
+
+            nodes.insert(
+                name.clone(),
+                GraphNode {
+                    arity,
+                    ir,
+                    params,
+                    keep: false,
+                    inline: false,
+                },
+            );
+        }
+
+        // 3. Convert edges
+        let mut edges = Vec::new();
+        for (from_idx, from_port, to_idx, to_port) in &self.signal_edges {
+            edges.push(GraphEdge {
+                from_node: idx_to_name[from_idx].clone(),
+                from_port: *from_port,
+                to_node: idx_to_name[to_idx].clone(),
+                to_port: *to_port,
+                kind: EdgeKind::Signal,
+            });
+        }
+        for (from_idx, from_port, to_idx, to_port) in &self.feedback_edges {
+            edges.push(GraphEdge {
+                from_node: idx_to_name[from_idx].clone(),
+                from_port: *from_port,
+                to_node: idx_to_name[to_idx].clone(),
+                to_port: *to_port,
+                kind: EdgeKind::Feedback,
+            });
+        }
+
+        // 4. Compute topological order (Kahn's algorithm on signal edges only)
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        for name in &node_list {
+            in_degree.insert(name.clone(), 0);
+        }
+        for edge in &edges {
+            if edge.kind == EdgeKind::Signal {
+                *in_degree.get_mut(&edge.to_node).unwrap() += 1;
+            }
+        }
+
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        for name in &node_list {
+            adj.insert(name.clone(), vec![]);
+        }
+        for edge in &edges {
+            if edge.kind == EdgeKind::Signal {
+                adj.get_mut(&edge.from_node)
+                    .unwrap()
+                    .push(edge.to_node.clone());
+            }
+        }
+
+        let mut queue: Vec<String> = in_degree
+            .iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(n, _)| n.clone())
+            .collect();
+        let mut topo_order = Vec::new();
+
+        while let Some(node) = queue.pop() {
+            topo_order.push(node.clone());
+            if let Some(neighbors) = adj.get(&node) {
+                for neighbor in neighbors {
+                    let deg = in_degree.get_mut(neighbor).unwrap();
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push(neighbor.clone());
+                    }
+                }
+            }
+        }
+
+        if topo_order.len() != node_list.len() {
+            return Err(BuildError::CycleDetected);
+        }
+
+        // 5. Compute graph-level inputs/outputs from root/leaf nodes
+        let inputs = topo_order
+            .iter()
+            .filter(|n| in_degree.get(*n) == Some(&0))
+            .map(|n| nodes[n].arity.0)
+            .sum();
+        let outputs = topo_order
+            .iter()
+            .filter(|n| adj.get(*n).is_none_or(|v| v.is_empty()))
+            .map(|n| nodes[n].arity.1)
+            .sum();
+
+        Ok(GraphIr {
+            inputs,
+            outputs,
+            nodes,
+            edges,
+            topo_order,
         })
     }
 }

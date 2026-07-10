@@ -11,6 +11,8 @@ documentation = "https://docs.rs/rill-graph"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-actor = { workspace = true }
+rill-lang = { version = "0.5", path = "../rill-lang", optional = true }
+indexmap = { version = "2", optional = true }
 
 log = "0.4"
 
@@ -23,4 +25,5 @@ serde_cbor = { version = "0.11", optional = true }
 [features]
 default = []
 serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "rill-core/serde"]
+lang = ["dep:rill-lang", "dep:indexmap"]
 
