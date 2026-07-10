@@ -8,6 +8,7 @@ use rill_lang::builtin::{
     SampleBuiltin,
 };
 
+use rill_lang::builtins::eq::{EqConfig, EqState};
 use rill_lang::builtins::mixer::{MixerConfig, MixerState};
 
 // --- sample built-ins ---
@@ -777,6 +778,58 @@ impl<T: Transcendental> Algorithm<T> for MixerAlgorithmWrapper<T> {
 
 impl<T: Transcendental> BlockBuiltin<T> for MixerAlgorithmWrapper<T> {}
 
+// ============================================================================
+// EQ parametric built-in
+// ============================================================================
+
+struct EqBuiltin<T: Transcendental> {
+    inner: EqState<T>,
+}
+
+impl<T: Transcendental> Algorithm<T> for EqBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        match input {
+            Some(inp) => self.inner.process_slice(inp, output),
+            None => output.fill(T::ZERO),
+        }
+        Ok(())
+    }
+    fn reset(&mut self) {}
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for EqBuiltin<T> {}
+
+// ============================================================================
+// Dry/Wet built-in
+// ============================================================================
+
+struct DryWetBuiltin<T: Transcendental> {
+    mix: T,
+}
+
+impl<T: Transcendental> Algorithm<T> for DryWetBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        match input {
+            Some(inp) => {
+                let n = (inp.len() / 2).min(output.len() / 2);
+                let dry_gain = T::ONE - self.mix;
+                for i in 0..n {
+                    let dry = inp[2 * i];
+                    let wet = inp[2 * i + 1];
+                    let out = dry * dry_gain + wet * self.mix;
+                    output[2 * i] = out;
+                    output[2 * i + 1] = out;
+                }
+            }
+            None => output.fill(T::ZERO),
+        }
+        Ok(())
+    }
+    fn reset(&mut self) {}
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for DryWetBuiltin<T> {}
+
 /// Register the mixer built-in: `mixer(signal..., { buses, master_vol })`.
 pub fn register_mixer_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     let mixer_sig = BuiltinSig {
@@ -816,6 +869,79 @@ pub fn register_mixer_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     );
 }
 
+/// Register the EQ parametric built-in: `eq_parametric(signal, { bands })`.
+pub fn register_eq_parametric_builtin<T: Transcendental>(reg: &mut Registry<T>) {
+    let sig = BuiltinSig {
+        name: "eq_parametric",
+        params: vec![
+            ParamType::Signal,
+            ParamType::Record(RecordSchema::new(vec![RecordField {
+                name: "bands",
+                ty: ParamType::Variadic(Box::new(ParamType::Record(RecordSchema::new(vec![
+                    RecordField {
+                        name: "freq",
+                        ty: ParamType::Float,
+                        default: Some(1000.0),
+                    },
+                    RecordField {
+                        name: "q",
+                        ty: ParamType::Float,
+                        default: Some(1.0),
+                    },
+                    RecordField {
+                        name: "gain_db",
+                        ty: ParamType::Float,
+                        default: Some(0.0),
+                    },
+                    RecordField {
+                        name: "band_type",
+                        ty: ParamType::Int,
+                        default: Some(0.0),
+                    },
+                ])))),
+                default: None,
+            }])),
+        ],
+        signal_outs: 1,
+        kind: BuiltinKind::Block,
+    };
+
+    reg.register_block(
+        sig,
+        |_params: &[f64], sample_rate: f32| -> Box<dyn BlockBuiltin<T>> {
+            let inner = EqState::new(EqConfig { bands: vec![] }, sample_rate);
+            Box::new(EqBuiltin { inner })
+        },
+    );
+}
+
+/// Register the dry/wet built-in: `dry_wet(dry, wet, { mix })`.
+pub fn register_dry_wet_builtin<T: Transcendental>(reg: &mut Registry<T>) {
+    let sig = BuiltinSig {
+        name: "dry_wet",
+        params: vec![
+            ParamType::Signal,
+            ParamType::Signal,
+            ParamType::Record(RecordSchema::new(vec![RecordField {
+                name: "mix",
+                ty: ParamType::Float,
+                default: Some(0.5),
+            }])),
+        ],
+        signal_outs: 2,
+        kind: BuiltinKind::Block,
+    };
+
+    reg.register_block(
+        sig,
+        |_params: &[f64], _sr: f32| -> Box<dyn BlockBuiltin<T>> {
+            Box::new(DryWetBuiltin {
+                mix: T::from_f64(0.5),
+            })
+        },
+    );
+}
+
 /// Build a complete builtin registry: DSP primitives, oscillators, complex
 /// arithmetic, and optionally analog models, FFT nodes, lo-fi, and chip emulators.
 pub fn full_registry<T: Transcendental>() -> Registry<T> {
@@ -824,6 +950,8 @@ pub fn full_registry<T: Transcendental>() -> Registry<T> {
     register_oscillator_builtins(&mut reg);
     register_complex_builtins(&mut reg);
     register_mixer_builtins(&mut reg);
+    register_eq_parametric_builtin(&mut reg);
+    register_dry_wet_builtin(&mut reg);
     #[cfg(feature = "analog")]
     register_model_builtins(&mut reg);
     #[cfg(feature = "fft")]
