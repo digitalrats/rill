@@ -15,7 +15,7 @@ pub struct WavetableOscNode<T: Transcendental, const BUF_SIZE: usize, const WT_S
     amplitude: T,
     cubic: bool,
     outputs: Vec<Port<T, BUF_SIZE>>,
-    state: Option<NodeState<T, BUF_SIZE>>,
+    // (removed legacy field)
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
@@ -101,7 +101,6 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize>
 impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Node<T, BUF_SIZE>
     for WavetableOscNode<T, BUF_SIZE, WT_SIZE>
 {
-    fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "WavetableOsc".to_string(),
             type_name: None,
@@ -219,11 +218,9 @@ impl<T: Transcendental, const BUF_SIZE: usize, const WT_SIZE: usize> Node<T, BUF
         None
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         self.state.as_ref().unwrap()
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         self.state.as_mut().unwrap()
     }
 

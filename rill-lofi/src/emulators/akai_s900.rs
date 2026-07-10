@@ -5,8 +5,8 @@ use rill_core::prelude::*;
 /// Emulates the Akai S900 hardware sampler, including its 12-bit DAC, analog
 /// filters, and sample interpolation with pitch shifting and loop support.
 pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
-    state: NodeState<f32, BUF_SIZE>,
-    id: NodeId,
+    // (removed legacy field)
+    // (removed legacy field)
     metadata: NodeMetadata,
     outputs: Vec<Port<f32, BUF_SIZE>>,
 
@@ -109,7 +109,6 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
 }
 
 
-    fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
 
@@ -186,10 +185,8 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
         None
     }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
         &self.state
     }
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
         &mut self.state
     }
 

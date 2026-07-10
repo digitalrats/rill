@@ -55,7 +55,7 @@ impl DistortionType {
 /// - output_gain: output level (0.0 - 2.0)
 pub struct Distortion<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
-    id: NodeId,
+    // (removed legacy field)
     /// Node metadata
     metadata: NodeMetadata,
     /// Input ports
@@ -65,7 +65,7 @@ pub struct Distortion<T: Transcendental, const BUF_SIZE: usize> {
     /// Control ports
     controls: Vec<Port<T, BUF_SIZE>>,
     /// Node state
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     /// Distortion type
     pub distortion_type: DistortionType,
     /// Drive (input gain)
@@ -89,12 +89,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
         outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             distortion_type: DistortionType::SoftClip,
             drive: 1.0,
             output_gain: 1.0,
@@ -160,8 +160,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -176,7 +174,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Distortion<
         self.id = id;
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -276,17 +273,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Distortion<
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Distortion<T, BUF_SIZE> {
-    fn process(
         &mut self,
         _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],

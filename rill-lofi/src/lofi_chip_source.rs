@@ -24,12 +24,12 @@ use crate::lofi_processor::LofiProcessor;
 /// bitcrushing, noise, and DAC coloring after the chip output.
 pub struct LofiChipSource<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize>
 {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     chip: C,
     lofi: LofiProcessor<BUF_SIZE>,
     outputs: Vec<Port<f32, BUF_SIZE>>,
-    state: NodeState<f32, BUF_SIZE>,
+    // (removed legacy field)
     _phantom: PhantomData<[f32; BUF_SIZE]>,
 }
 
@@ -55,12 +55,12 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize>
             })
             .collect();
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             chip,
             lofi: LofiProcessor::new(lofi_config),
             outputs,
-            state: NodeState::new(44100.0),
+    // (removed legacy field)
             _phantom: PhantomData,
         }
     }
@@ -69,7 +69,6 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize>
 impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> Node<f32, BUF_SIZE>
     for LofiChipSource<C, BUF_SIZE>
 {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -84,7 +83,6 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> N
         self.id = id;
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -149,11 +147,9 @@ impl<C: Algorithm<f32> + ChipEmulator + ParameterWrite, const BUF_SIZE: usize> N
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
         &mut self.state
     }
 }

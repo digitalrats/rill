@@ -45,7 +45,7 @@ pub struct NoiseOsc<const BUF_SIZE: usize> {
     controls: Vec<Port<f32, BUF_SIZE>>,
 
     /// Node state
-    state: Option<NodeState<f32, BUF_SIZE>>,
+    // (removed legacy field)
 
     // State for pink noise (Paul Kellett's method)
     pink_b0: f32,
@@ -255,11 +255,9 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
         self.controls.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
         self.state.as_ref().unwrap()
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
         self.state.as_mut().unwrap()
     }
 

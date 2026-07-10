@@ -20,7 +20,7 @@ const MAX_DELAY_SAMPLES: usize = (MAX_DELAY_SECONDS * MAX_SAMPLE_RATE) as usize;
 /// - mix: dry/wet mix (0.0 - 1.0)
 pub struct Delay<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
-    id: NodeId,
+    // (removed legacy field)
     /// Node metadata
     metadata: NodeMetadata,
     /// Input ports
@@ -30,7 +30,7 @@ pub struct Delay<T: Transcendental, const BUF_SIZE: usize> {
     /// Control ports
     controls: Vec<Port<T, BUF_SIZE>>,
     /// Node state
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     /// Delay time in seconds
     pub delay_time: f32,
     /// Delay time in samples
@@ -63,12 +63,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
         delay_line.set_delay_samples(delay_samples);
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             delay_time,
             delay_samples,
             feedback: 0.3,
@@ -145,7 +145,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
         // Update port IDs? For simplicity, we ignore for now.
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -237,11 +236,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }

@@ -26,10 +26,10 @@ use rill_core::{
 /// RecordingSink::<f32, 256>::write_wav("output.wav", 44100, 2, &data).unwrap();
 /// ```
 pub struct RecordingSink<T: Transcendental, const B: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<T, B>>,
-    state: NodeState<T, B>,
+    // (removed legacy field)
     recorded: Arc<Mutex<Vec<f32>>>,
 }
 
@@ -46,10 +46,10 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
             ]
         };
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata: NodeMetadata::new("RecordingSink", NodeCategory::Sink),
             inputs,
-            state: NodeState::new(44100.0),
+    // (removed legacy field)
             recorded,
         }
     }
@@ -91,7 +91,6 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
             p.id = PortId::signal_in(id, i as u16);
         }
     }
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
     fn init(&mut self, sample_rate: f32) {
@@ -130,10 +129,8 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
     fn num_signal_outputs(&self) -> usize {
         0
     }
-    fn state(&self) -> &NodeState<T, B> {
         &self.state
     }
-    fn state_mut(&mut self) -> &mut NodeState<T, B> {
         &mut self.state
     }
 }

@@ -7,7 +7,7 @@
 //! ## What's included
 //!
 //! - Core traits (`Node`, `Source`, `Processor`, `Sink`)
-//! - Node identification (`NodeId`, `NodeMetadata`, `NodeCategory`)
+//! - Node identification (`NodeId`, ``, ``)
 //! - Parameter handling (`ParameterId`, `ParamValue`, `ParamType`)
 //! - Ports (`PortId`, `PortType`, `PortDirection`)
 //! - Time and clock (`ClockTick`, `ClockSource`, `SystemClock`)
