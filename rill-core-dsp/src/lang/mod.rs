@@ -3,6 +3,7 @@ pub mod moog;
 pub mod noise;
 pub mod onepole;
 pub mod osc;
+pub mod register;
 
 pub use biquad::BiquadBuiltin;
 pub use moog::MoogBuiltin;
