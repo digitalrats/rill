@@ -122,3 +122,5 @@ pub mod prelude {
     pub use crate::real_fft::RealFft;
     pub use crate::spectrum::FftSpectrumAnalyzer;
 }
+
+pub mod register;
