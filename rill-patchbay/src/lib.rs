@@ -49,7 +49,6 @@
 // Re-exports from rill-core
 pub use rill_core::prelude::*;
 pub use rill_core::queues::RtQueue;
-pub use rill_core::{NodeId, ParamValue, ParameterId, PortId};
 
 // =============================================================================
 // Public modules
@@ -162,7 +161,6 @@ pub mod prelude {
     // Re-exports from rill-core
     pub use rill_core::prelude::*;
     pub use rill_core::queues::RtQueue;
-    pub use rill_core::{NodeId, ParameterId, PortId};
 }
 
 // =============================================================================

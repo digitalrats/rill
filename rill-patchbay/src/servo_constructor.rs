@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use rill_core::queues::CommandEnum;
-use rill_core::traits::NodeId;
 use rill_core_actor::{ActorRef, ActorSystem};
 
 use crate::automaton::envelope::EnvelopeAutomaton;
@@ -44,7 +43,7 @@ impl ModuleConstructor for ServoConstructor {
                 ))
             })?;
 
-        let nid = NodeId(s.target_node);
+        let nid = s.target_node;
         let mapping = s.mapping.to_parameter_mapping();
 
         let actor_ref = match def {

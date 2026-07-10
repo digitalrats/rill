@@ -1,6 +1,6 @@
 //! Telemetry types — event data from the signal processing world.
 
-use crate::traits::{NodeId, ParameterId, PortId};
+use crate::traits::ParameterId;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,7 +42,7 @@ pub enum Telemetry {
     /// A parameter value change.
     ParameterValue {
         /// Target port.
-        port: PortId,
+        port: String,
         /// Target parameter.
         parameter: ParameterId,
         /// Current parameter value.
@@ -53,7 +53,7 @@ pub enum Telemetry {
     /// Signal or sensor signal data.
     SignalData {
         /// Source node ID.
-        node_id: NodeId,
+        node_id: u32,
         /// Channel index.
         channel: usize,
         /// Signal sample data.
@@ -66,7 +66,7 @@ pub enum Telemetry {
     /// Peak value reading.
     Peak {
         /// Target port.
-        port: PortId,
+        port: String,
         /// Peak value.
         value: f32,
         /// Unix timestamp (microseconds).
@@ -112,7 +112,7 @@ impl Telemetry {
     }
 
     /// Create a parameter value telemetry event.
-    pub fn parameter(port: PortId, parameter: ParameterId, value: f32) -> Self {
+    pub fn parameter(port: String, parameter: ParameterId, value: f32) -> Self {
         Telemetry::ParameterValue {
             port,
             parameter,

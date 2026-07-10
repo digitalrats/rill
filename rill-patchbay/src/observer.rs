@@ -2,7 +2,7 @@
 
 use parking_lot::RwLock;
 use rill_core::queues::telemetry::Telemetry;
-use rill_core::traits::{ParameterId, PortId};
+use rill_core::traits::ParameterId;
 use rill_core_actor::ActorRef;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,14 +107,14 @@ impl MicroControlObserver {
     pub fn observe_start_with_params(
         &self,
         component: &str,
-        port: PortId,
+        port: String,
         _parameter: &ParameterId,
     ) -> OperationGuard {
         let guard = self.observe_start(component);
         self.send_telemetry(Telemetry::event(
             "observer",
             "micro_start",
-            vec![port.node_id().inner() as f32, port.index() as f32],
+            vec![0.0_f32, 0.0_f32],
         ));
         guard
     }

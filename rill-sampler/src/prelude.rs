@@ -1,8 +1,6 @@
 pub use crate::buffer::SampleBuffer;
 pub use crate::player::SamplePlayerNode;
 pub use crate::recorder::RecordingSink;
-pub use crate::timeseries::{
-    from_csv, InterpMode, TimeSeriesChannel, TimeSeriesNode, TimeSeriesReader,
-};
+pub use crate::timeseries::{from_csv, InterpMode, TimeSeriesChannel, TimeSeriesTimeSeriesReader};
 pub use rill_core::prelude::*;
 pub use rill_core_dsp::generators::LoopMode;

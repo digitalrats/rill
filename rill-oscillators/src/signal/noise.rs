@@ -2,9 +2,7 @@
 
 use rand::Rng;
 use rill_core::time::{ClockTick, RenderContext};
-use rill_core::traits::{
-    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port, Source,
-};
+use rill_core::traits::{ParamValue, ParameterId};
 use rill_core::{ProcessError, ProcessResult};
 
 /// Types of noise

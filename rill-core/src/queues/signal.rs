@@ -28,7 +28,7 @@
 use super::command::Command;
 use super::control_event::ControlEvent;
 use crate::time::ClockTick;
-use crate::traits::{ParamValue, ParameterId, PortId};
+use crate::traits::{ParamValue, ParameterId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -101,7 +101,7 @@ impl fmt::Display for SignalOrigin {
 #[derive(Debug, Clone)]
 pub struct SetParameter {
     /// Target port.
-    pub port: PortId,
+    pub port: String,
     /// Node anchor name in the graph IR (for lang-based graphs).
     pub anchor: String,
     /// Target parameter identifier.
@@ -126,7 +126,7 @@ pub struct SetParameter {
 impl SetParameter {
     /// Create a new parameter-change command with the current timestamp.
     pub fn new(
-        port: PortId,
+        port: String,
         parameter: ParameterId,
         value: ParamValue,
         source: SignalOrigin,
@@ -144,7 +144,7 @@ impl SetParameter {
 
     /// Create a new parameter-change command with an explicit timestamp.
     pub fn with_timestamp(
-        port: PortId,
+        port: String,
         parameter: ParameterId,
         value: ParamValue,
         source: SignalOrigin,
@@ -482,7 +482,7 @@ pub enum ServoCommand {
         /// Servo identifier.
         servo_id: String,
         /// Target port.
-        port: PortId,
+        port: String,
         /// Target parameter.
         parameter: ParameterId,
     },
@@ -648,12 +648,6 @@ impl CommandEnum {
     }
 
     /// If this is a `SetParameter` command, return the target `NodeId`.
-    pub fn target_node_id(&self) -> Option<crate::traits::NodeId> {
-        match self {
-            CommandEnum::SetParameter(cmd) => Some(cmd.port.node_id()),
-            _ => None,
-        }
-    }
 
     /// Return the timestamp if the command carries one.
     pub fn timestamp(&self) -> Option<u64> {

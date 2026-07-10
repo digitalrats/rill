@@ -56,18 +56,7 @@ pub use crate::traits::{
     ConnectionResult,
     // Parameter conversion
     IntoParamValue,
-
-    // Core node traits
-    Node,
-    NodeCategory,
-    // Node identification
-    NodeId,
-    NodeMetadata,
-    NodeState,
-
-    NodeTypeId,
     ParamMetadata,
-
     ParamRange,
     ParamType,
     ParamValue,
@@ -76,21 +65,12 @@ pub use crate::traits::{
     ParameterId,
     ParameterResult,
     Params,
-    Port,
-
-    PortDirection,
     PortError,
     // Ports
-    PortId,
     PortResult,
-    PortType,
     ProcessError,
     // Error handling
     ProcessResult,
-    Processor,
-    Sink,
-
-    Source,
 };
 
 // ============================================================================
@@ -251,9 +231,6 @@ pub mod f32_prelude {
     /// System clock for f32 (same as default)
     pub type SystemClockF32 = crate::time::SystemClock;
 
-    // Re-export traits
-    pub use crate::traits::{Processor as ProcessorF32, Sink as SinkF32, Source as SourceF32};
-
     pub use crate::math::Transcendental;
 }
 
@@ -280,9 +257,6 @@ pub mod f64_prelude {
 
     /// System clock for f64 (same as default)
     pub type SystemClockF64 = crate::time::SystemClock;
-
-    // Re-export traits
-    pub use crate::traits::{Processor as ProcessorF64, Sink as SinkF64, Source as SourceF64};
 
     pub use crate::math::Transcendental;
 }
@@ -317,15 +291,11 @@ pub mod param_prelude {
 
 /// Prelude for working with ports
 pub mod port_prelude {
-    pub use crate::traits::{PortDirection, PortError, PortId, PortResult, PortType};
+    pub use crate::traits::{PortError, PortResult};
 }
 
 /// Prelude for working with nodes
-pub mod node_prelude {
-    pub use crate::traits::{
-        Node, NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, Sink, Source,
-    };
-}
+pub mod node_prelude {}
 
 // ============================================================================
 // Re-export of commonly used items from other crates
@@ -474,10 +444,7 @@ mod tests {
     #[test]
     fn test_port_prelude() {
         use port_prelude::*;
-
-        let port = PortId::signal_in(NodeId(0), 0);
-        assert!(port.is_signal());
-        assert!(port.is_input());
+        let _err = PortError::not_found("test");
     }
 
     #[test]

@@ -1,9 +1,6 @@
 //! Processor nodes for integration with rill-core signal graphs.
 
-use rill_core::{
-    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    ProcessError, ProcessResult, Processor, Transcendental,
-};
+use rill_core::{ParamValue, ParameterId, ProcessError, ProcessResult, Transcendental};
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 use super::{BandType, FilterFactory, GraphicEq, ParametricEq};

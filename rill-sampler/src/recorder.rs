@@ -8,10 +8,7 @@ use std::sync::{Arc, Mutex};
 use rill_core::{
     math::Transcendental,
     time::{ClockTick, RenderContext},
-    traits::{
-        Node, NodeCategory, NodeMetadata, NodeState, ParamValue, ParameterId, Port, PortId,
-        ProcessError, ProcessResult, Sink,
-    },
+    traits::{ParamValue, ParameterId, ProcessError, ProcessResult},
     NodeId,
 };
 

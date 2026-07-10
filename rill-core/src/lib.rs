@@ -191,10 +191,8 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    ClockError, ClockResult, ConnectionError, ConnectionResult, Eurorack, Node, NodeCategory,
-    NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
-    ParameterError, ParameterId, Params, Port, PortDirection, PortError, PortId, PortResult,
-    PortType, ProcessError, ProcessResult, Processor, Sink, Source,
+    ParamMetadata, ParamRange, ParamType, ParamValue, ParameterError, ParameterId, Params,
+    PortError, PortResult, ProcessError, ProcessResult,
 };
 
 // Re-export math abstractions

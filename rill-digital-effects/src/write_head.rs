@@ -3,8 +3,7 @@ use rill_core::{
     math::vector::scalar::ScalarVector4,
     math::vector::traits::Vector as VecTrait,
     math::Transcendental,
-    traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
-    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
+    ParamValue, ParameterId, ProcessError, ProcessResult, RenderContext,
 };
 
 // Holds an `Rc`-based tape handle — the graph is single-threaded and moved

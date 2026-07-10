@@ -190,7 +190,7 @@ impl MappingDef {
         crate::engine::Mapping::new(
             self.event_pattern.clone(),
             Target {
-                node_id: rill_core::traits::NodeId(self.target_node),
+                node_id: self.target_node,
                 param_name: self.target_param.clone(),
                 min: self.min as f32,
                 max: self.max as f32,

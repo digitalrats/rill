@@ -1,11 +1,8 @@
 //! Distortion effect with waveshaping
 
 use rill_core::{
-    math::vector::scalar::ScalarVector4,
-    math::vector::traits::Vector,
-    math::Transcendental,
-    traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
-    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
+    math::vector::scalar::ScalarVector4, math::vector::traits::Vector, math::Transcendental,
+    ParamValue, ParameterId, ProcessError, ProcessResult, RenderContext,
 };
 
 /// Distortion type

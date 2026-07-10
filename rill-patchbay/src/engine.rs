@@ -98,7 +98,7 @@ impl Transform {
 #[derive(Debug, Clone)]
 pub struct Target {
     /// Graph node that owns the target parameter.
-    pub node_id: NodeId,
+    pub node_id: u32,
     /// Name of the parameter to control.
     pub param_name: String,
     /// Lower bound of the parameter value range.
@@ -174,7 +174,7 @@ impl Mapping {
             };
             let pid = ParameterId::new(&self.target.param_name).unwrap();
             return Some(SetParameter::new(
-                PortId::param(self.target.node_id, 0),
+                "".to_string(),
                 pid,
                 ParamValue::Float(value),
                 SignalOrigin::External(self.name.clone()),
@@ -186,7 +186,7 @@ impl Mapping {
         let value = self.transform.apply(norm, self.target.min, self.target.max);
         let pid = ParameterId::new(&self.target.param_name).unwrap();
         Some(SetParameter::new(
-            PortId::param(self.target.node_id, 0),
+            "".to_string(),
             pid,
             ParamValue::Float(value),
             SignalOrigin::External(self.name.clone()),
@@ -378,7 +378,7 @@ pub struct Servo<A: Automaton> {
     automaton: Arc<A>,
     state: Arc<Mutex<ServoState<A>>>,
     graph_ref: ActorRef<CommandEnum>,
-    target_node: NodeId,
+    target_node: u32,
     target_param: String,
     mapping: ParameterMapping,
     min: f64,
@@ -404,7 +404,7 @@ impl<A: Automaton + 'static> Servo<A> {
     pub fn new(
         id: impl Into<String>,
         automaton: A,
-        target_node: NodeId,
+        target_node: u32,
         target_param: impl Into<String>,
         mapping: ParameterMapping,
         min: f64,
@@ -531,7 +531,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                 let pid = ParameterId::new(&name).unwrap();
                                 gr.send(CommandEnum::SetParameter(
                                     SetParameter::new(
-                                        PortId::param(nid, 0),
+                                        "".to_string(),
                                         pid,
                                         table[index].clone(),
                                         SignalOrigin::Automaton(serv_id.clone()),
@@ -542,7 +542,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                 let pid = ParameterId::new(&param).unwrap();
                                 gr.send(CommandEnum::SetParameter(
                                     SetParameter::new(
-                                        PortId::param(nid, 0),
+                                        "".to_string(),
                                         pid,
                                         table[index].clone(),
                                         SignalOrigin::Automaton(serv_id.clone()),
@@ -578,7 +578,7 @@ impl<A: Automaton + 'static> Servo<A> {
                             let pid = ParameterId::new(&name).unwrap();
                             gr.send(CommandEnum::SetParameter(
                                 SetParameter::new(
-                                    PortId::param(nid, 0),
+                                    "".to_string(),
                                     pid,
                                     ParamValue::Float(value as f32),
                                     SignalOrigin::Automaton(serv_id.clone()),
@@ -589,7 +589,7 @@ impl<A: Automaton + 'static> Servo<A> {
                             let pid = ParameterId::new(&param).unwrap();
                             gr.send(CommandEnum::SetParameter(
                                 SetParameter::new(
-                                    PortId::param(nid, 0),
+                                    "".to_string(),
                                     pid,
                                     ParamValue::Float(value as f32),
                                     SignalOrigin::Automaton(serv_id.clone()),
@@ -623,7 +623,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                 let name = format!("{}.{}", anchor, param);
                                 let pid = ParameterId::new(&name).unwrap();
                                 gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                    PortId::param(nid, 0),
+                                    "".to_string(),
                                     pid,
                                     ParamValue::Float(value as f32),
                                     SignalOrigin::Automaton(serv_id.clone()),
@@ -631,7 +631,7 @@ impl<A: Automaton + 'static> Servo<A> {
                             } else {
                                 let pid = ParameterId::new(&param).unwrap();
                                 gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                    PortId::param(nid, 0),
+                                    "".to_string(),
                                     pid,
                                     ParamValue::Float(value as f32),
                                     SignalOrigin::Automaton(serv_id.clone()),
@@ -666,7 +666,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                         * 2.0f64.powf(s3.control_ctx.pitch_bend_semitones / 12.0);
                                     let pid = ParameterId::new("frequency").unwrap();
                                     gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                        PortId::param(nid, 0),
+                                        "".to_string(),
                                         pid,
                                         ParamValue::Float(freq as f32),
                                         SignalOrigin::Automaton(serv_id.clone()),
@@ -691,7 +691,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                     let amp = vel as f64 * s3.control_ctx.mod_wheel;
                                     let pid = ParameterId::new("amplitude").unwrap();
                                     gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                        PortId::param(nid, 0),
+                                        "".to_string(),
                                         pid,
                                         ParamValue::Float(amp as f32),
                                         SignalOrigin::Automaton(serv_id.clone()),
@@ -718,7 +718,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                 // Send frequency
                                 let pid = ParameterId::new("frequency").unwrap();
                                 gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                    PortId::param(nid, 0),
+                                    "".to_string(),
                                     pid,
                                     ParamValue::Float(freq as f32),
                                     SignalOrigin::Automaton(serv_id.clone()),
@@ -726,7 +726,7 @@ impl<A: Automaton + 'static> Servo<A> {
                                 // Send amplitude
                                 let pid_amp = ParameterId::new("amplitude").unwrap();
                                 gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                    PortId::param(nid, 0),
+                                    "".to_string(),
                                     pid_amp,
                                     ParamValue::Float(amp as f32),
                                     SignalOrigin::Automaton(serv_id.clone()),
@@ -741,7 +741,7 @@ impl<A: Automaton + 'static> Servo<A> {
 
                                 let pid = ParameterId::new("amplitude").unwrap();
                                 gr.send(CommandEnum::SetParameter(SetParameter::new(
-                                    PortId::param(nid, 0),
+                                    "".to_string(),
                                     pid,
                                     ParamValue::Float(0.0),
                                     SignalOrigin::Automaton(serv_id.clone()),
@@ -882,7 +882,7 @@ pub trait Module: Send {
 pub fn midi_cc(
     controller: u8,
     channel: Option<u8>,
-    target_node: NodeId,
+    target_node: u32,
     target_param: &str,
     min: f32,
     max: f32,
@@ -913,7 +913,7 @@ pub fn midi_note(
     kind: MidiNoteKind,
     note: Option<u8>,
     channel: Option<u8>,
-    target_node: NodeId,
+    target_node: u32,
     target_param: &str,
     min: f32,
     max: f32,
@@ -938,7 +938,7 @@ pub fn midi_note(
 /// Convenience constructor for an OSC address mapping.
 pub fn osc_address(
     address: &str,
-    target_node: NodeId,
+    target_node: u32,
     target_param: &str,
     min: f32,
     max: f32,
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn test_midi_mapping() {
-        let node = NodeId(1);
+        let node = 1;
         let mapping = midi_cc(7, Some(1), node, "volume", 0.0, 1.0, Transform::Linear);
         let event = ControlEvent::MidiControl {
             channel: 1,
