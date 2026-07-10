@@ -31,7 +31,7 @@ pub struct SawOsc<T: Transcendental, const BUF_SIZE: usize> {
     controls: Vec<Port<T, BUF_SIZE>>,
 
     /// Node state
-    state: Option<NodeState<T, BUF_SIZE>>,
+    // (removed legacy field)
 
     /// Phantom data
     _phantom: PhantomData<[T; BUF_SIZE]>,
@@ -166,11 +166,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
         self.controls.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         self.state.as_ref().unwrap()
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         self.state.as_mut().unwrap()
     }
 

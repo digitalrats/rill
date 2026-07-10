@@ -5,8 +5,8 @@ use rill_core::prelude::*;
 /// Applies lo-fi audio effects (bitcrushing, sample-rate reduction, vintage noise,
 /// DAC emulation, and delay) to emulate classic digital audio systems.
 pub struct LofiProcessor<const BUF_SIZE: usize> {
-    state: NodeState<f32, BUF_SIZE>,
-    id: NodeId,
+    // (removed legacy field)
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<f32, BUF_SIZE>>,
     outputs: Vec<Port<f32, BUF_SIZE>>,
@@ -123,7 +123,6 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
         )
     }
 
-    fn build_metadata(config: &LofiConfig) -> NodeMetadata {
         let system_name = match config.system {
             ClassicSystem::Nes => "NES Emulator",
             ClassicSystem::Commodore64 => "Commodore 64 SID",
@@ -207,7 +206,6 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
 }
 
 
-    fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
     }
 
@@ -386,11 +384,9 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
         None
     }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
         &mut self.state
     }
 

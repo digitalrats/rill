@@ -11,7 +11,7 @@ use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 /// Biquad processor with configurable filter type and parameters.
 pub struct BiquadProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
-    id: NodeId,
+    // (removed legacy field)
     /// Node metadata
     metadata: NodeMetadata,
     /// Input ports
@@ -21,7 +21,7 @@ pub struct BiquadProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Control ports
     controls: Vec<Port<T, BUF_SIZE>>,
     /// Node state
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     /// Cutoff frequency (Hz)
     pub cutoff: f32,
     /// Q factor
@@ -59,12 +59,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
         algorithm.init(sample_rate);
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             cutoff: 1000.0,
             q: 0.707,
             gain_db: 0.0,
@@ -181,7 +181,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
         // For simplicity, we ignore for now.
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -270,11 +269,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }

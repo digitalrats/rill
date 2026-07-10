@@ -36,7 +36,7 @@ pub struct SamplePlayerNode<T: Transcendental, const BUF_SIZE: usize> {
     loop_end: f64,
     cubic: bool,
     outputs: Vec<Port<T, BUF_SIZE>>,
-    state: Option<NodeState<T, BUF_SIZE>>,
+    // (removed legacy field)
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
@@ -365,11 +365,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SamplePlayerNode<T, B
         None
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         self.state.as_ref().unwrap()
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         self.state.as_mut().unwrap()
     }
 

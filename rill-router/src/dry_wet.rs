@@ -13,11 +13,11 @@ use rill_core::{
 /// - `wet`    (0.0 – 1.0)
 /// - `master` (0.0 – 2.0)
 pub struct DryWetMix<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
 
     dry: f32,
     wet: f32,
@@ -63,11 +63,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
         outputs.push(Port::output(NodeId(0), 1, "out_R"));
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
-            state: NodeState::new(44100.0),
+    // (removed legacy field)
             dry: 1.0,
             wet: 0.5,
             master: 1.0,
@@ -87,7 +87,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
     fn set_id(&mut self, id: NodeId) {
         self.id = id;
     }
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -159,10 +158,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
         2
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }

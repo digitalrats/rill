@@ -18,7 +18,7 @@ const ANALYSIS_BUF_SIZE: usize = MAX_LOOKAHEAD_SAMPLES * 2;
 /// Limiter with lookahead using Delay + envelope detection
 pub struct Limiter<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
-    id: NodeId,
+    // (removed legacy field)
     /// Node metadata
     metadata: NodeMetadata,
     /// Input ports
@@ -28,7 +28,7 @@ pub struct Limiter<T: Transcendental, const BUF_SIZE: usize> {
     /// Control ports
     controls: Vec<Port<T, BUF_SIZE>>,
     /// Node state
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     /// Delay line for lookahead
     delay: Delay<T, BUF_SIZE>,
     /// Buffer for envelope detection
@@ -102,12 +102,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
         outputs.push(Port::output(NodeId(0), 0, "signal_out"));
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             delay,
             analysis_buffer,
             threshold_db,
@@ -297,8 +297,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -313,7 +311,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Limiter<T, 
         self.id = id;
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -427,17 +424,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for Limiter<T, 
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for Limiter<T, BUF_SIZE> {
-    fn process(
         &mut self,
         _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],

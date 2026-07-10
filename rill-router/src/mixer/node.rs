@@ -34,7 +34,7 @@ pub struct MixerNode<const BUF_SIZE: usize> {
     /// Optional hook called after a parameter changes
     pub after_param_change_closure: fn(&mut Self, &str, f32),
     /// Node ID
-    pub id: NodeId,
+    // (removed legacy field)
     /// Audio input ports
     pub input_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Audio output ports
@@ -42,7 +42,7 @@ pub struct MixerNode<const BUF_SIZE: usize> {
     /// Control ports
     pub control_ports: Vec<Port<f32, BUF_SIZE>>,
     /// Node state
-    pub state: NodeState<f32, BUF_SIZE>,
+    // (removed legacy field)
 }
 
 impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
@@ -95,11 +95,11 @@ impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
             control_values: Vec::new(),
             param_ids: HashMap::new(),
             after_param_change_closure: |_, _, _| {},
-            id: NodeId::new(0),
+    // (removed legacy field)
             input_ports,
             output_ports,
             control_ports: Vec::new(),
-            state: NodeState::new(44100.0),
+    // (removed legacy field)
         }
     }
 
@@ -230,7 +230,6 @@ impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
 }
 
 
-    fn node_type_id(&self) -> NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -362,11 +361,9 @@ impl<const BUF_SIZE: usize> MixerNode<BUF_SIZE> {
         self.control_ports.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<f32, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<f32, BUF_SIZE> {
         &mut self.state
     }
 

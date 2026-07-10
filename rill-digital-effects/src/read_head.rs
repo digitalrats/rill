@@ -17,10 +17,10 @@ use rill_core::{
 /// # Parameters
 /// - `delay` (0.01 – 2.0 s)
 pub struct ReadHead<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     outputs: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     tape: Option<TapeReader<T>>,
     resource_name: String,
     delay: f32,
@@ -75,10 +75,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
         .with_range(0.01, 2.0, 0.01)];
         let outputs = vec![Port::output(NodeId(0), 0, "out")];
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             outputs,
-            state: NodeState::new(44100.0),
+    // (removed legacy field)
             tape: None,
             resource_name: resource_name.to_string(),
             delay: 0.5,
@@ -95,8 +95,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ReadHead<T, BUF_SIZE> {
-    #[allow(clippy::needless_range_loop)]
     fn generate(
         &mut self,
         _ctx: &RenderContext,
@@ -130,8 +128,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for ReadHead<
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ReadHead<T, BUF_SIZE> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -143,7 +139,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ReadHead<T,
     fn set_id(&mut self, id: NodeId) {
         self.id = id;
     }
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
     fn init(&mut self, sr: f32) {
@@ -210,10 +205,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ReadHead<T,
     fn num_signal_outputs(&self) -> usize {
         1
     }
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }

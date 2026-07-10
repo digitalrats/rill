@@ -29,12 +29,12 @@ pub fn is_graph_dsl(src: &str) -> bool {
 /// A graph node driven by a compiled rill-lang engine with anchor-based
 /// parameter routing. Wraps a flat [`RillProgram`] + anchor map + mailbox.
 pub struct GraphLangNode<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
     controls: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     source: String,
     engine: rill_lang::graph_engine::RillGraphEngine<T>,
     sample_rate: f32,
@@ -57,12 +57,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
         let outputs = vec![Port::output(NodeId(0), 0, "signal_out")];
 
         Ok(Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             source: source.to_string(),
             engine,
             sample_rate,
@@ -166,11 +166,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
         self.controls.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 
@@ -204,12 +202,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
 
 /// A graph node whose per-block math is defined by rill-lang source.
 pub struct LangNode<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
     controls: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     source: String,
     program: RillProgram<T>,
     registry: Option<std::sync::Arc<rill_lang::builtin::Registry<T>>>,
@@ -228,12 +226,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
         let outputs = vec![Port::output(NodeId(0), 0, "signal_out")];
 
         Ok(Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(44_100.0),
+    // (removed legacy field)
             source: source.to_string(),
             program,
             registry: None,
@@ -255,12 +253,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
         let outputs = vec![Port::output(NodeId(0), 0, "signal_out")];
 
         Ok(Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             source: source.to_string(),
             program,
             registry: Some(registry),
@@ -361,11 +359,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
         self.controls.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 
@@ -397,12 +393,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
 /// Graph node wrapping a multi-IO rill-lang program (mixer, dry/wet, etc.).
 /// Implements `Router` for N→M configurable signal routing.
 pub struct MultiLangNode<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     input_ports: Vec<Port<T, BUF_SIZE>>,
     output_ports: Vec<Port<T, BUF_SIZE>>,
     controls: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     source: String,
     program: RillProgram<T>,
     registry: Option<std::sync::Arc<rill_lang::builtin::Registry<T>>>,
@@ -426,12 +422,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
             .collect();
 
         Ok(Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             input_ports,
             output_ports,
             controls: Vec::new(),
-            state: NodeState::new(44_100.0),
+    // (removed legacy field)
             source: source.to_string(),
             program,
             registry: None,
@@ -459,12 +455,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
             .collect();
 
         Ok(Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             input_ports,
             output_ports,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             source: source.to_string(),
             program,
             registry: Some(registry),
@@ -569,11 +565,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
         self.controls.get_mut(index)
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 

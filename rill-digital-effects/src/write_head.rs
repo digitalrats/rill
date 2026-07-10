@@ -29,11 +29,11 @@ unsafe impl<T: Transcendental, const B: usize> Sync for WriteHead<T, B> {}
 /// - `delay_time` (0.01 – 2.0 s)
 /// - `feedback`   (0.0 – 0.99)
 pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
 
     tape: Option<TapeWriter<T>>,
     resource_name: String,
@@ -76,11 +76,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
         outputs.push(Port::output(NodeId(0), 0, "main_out"));
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             tape: None,
             resource_name: resource_name.to_string(),
             delay_time: 0.5,
@@ -92,8 +92,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
 
 // ── Processor trait ──────────────────────────────────────────────────────
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteHead<T, BUF_SIZE> {
-    fn process(
         &mut self,
         _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],
@@ -147,8 +145,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for WriteH
 
 // ── Node trait ─────────────────────────────────────────────────────
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for WriteHead<T, BUF_SIZE> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -160,7 +156,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for WriteHead<T
     fn set_id(&mut self, id: NodeId) {
         self.id = id;
     }
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
     fn init(&mut self, sample_rate: f32) {
@@ -236,10 +231,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for WriteHead<T
     fn num_feedback_ports(&self) -> usize {
         0
     }
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }

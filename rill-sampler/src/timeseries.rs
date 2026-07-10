@@ -227,7 +227,7 @@ pub struct TimeSeriesNode<T: Transcendental, const BUF_SIZE: usize> {
     time: f64,
     speed: f64,
     outputs: Vec<Port<T, BUF_SIZE>>,
-    state: Option<NodeState<T, BUF_SIZE>>,
+    // (removed legacy field)
     _phantom: PhantomData<[T; BUF_SIZE]>,
 }
 
@@ -288,7 +288,6 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Default for TimeSeriesNode
 impl<T: Transcendental + Copy, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for TimeSeriesNode<T, BUF_SIZE>
 {
-    fn metadata(&self) -> NodeMetadata {
         NodeMetadata {
             name: "TimeSeries".to_string(),
             type_name: None,
@@ -419,11 +418,9 @@ impl<T: Transcendental + Copy, const BUF_SIZE: usize> Node<T, BUF_SIZE>
         None
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         self.state.as_ref().unwrap()
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         self.state.as_mut().unwrap()
     }
 

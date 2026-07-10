@@ -22,12 +22,12 @@ use crate::partitioned_conv::PartitionedConvolver;
 /// The impulse response is set via `set_ir(&[T])`. To load from a WAV file,
 /// use `rill-sampler` or any WAV reader, then pass the samples.
 pub struct ConvolverNode<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
     controls: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     convolver: PartitionedConvolver<T, BUF_SIZE>,
     ir_gain: f32,
     mix: f32,
@@ -49,12 +49,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> ConvolverNode<T, BUF_SIZE> {
         let convolver = PartitionedConvolver::new(ir_len);
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             convolver,
             ir_gain: 1.0,
             mix: 1.0,
@@ -98,7 +98,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ConvolverNode<T, BUF_SIZE> {
         self.id = id;
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -182,11 +181,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> ConvolverNode<T, BUF_SIZE> {
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }

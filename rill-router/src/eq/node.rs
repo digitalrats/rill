@@ -30,7 +30,7 @@ impl FilterFactory<Biquad<f32>> for BiquadFactory {
 /// Parametric equalizer processor node for signal graphs.
 pub struct ParametricEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
-    id: NodeId,
+    // (removed legacy field)
     /// Node metadata
     metadata: NodeMetadata,
     /// Input ports
@@ -40,7 +40,7 @@ pub struct ParametricEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Control ports
     controls: Vec<Port<T, BUF_SIZE>>,
     /// Node state
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     /// Inner parametric equalizer (works with f32)
     eq: ParametricEq<Biquad<f32>, BiquadFactory>,
     /// Output gain (linear)
@@ -66,12 +66,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE
         eq.init(sample_rate);
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             eq,
             output_gain: 1.0,
             num_bands,
@@ -135,7 +135,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ParametricEqProcessor<T, BUF_SIZE
 impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for ParametricEqProcessor<T, BUF_SIZE>
 {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -152,7 +151,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
         // For simplicity, we ignore for now.
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -338,11 +336,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }
@@ -384,7 +380,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
 /// Graphic equalizer processor node for signal graphs.
 pub struct GraphicEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Node identifier
-    id: NodeId,
+    // (removed legacy field)
     /// Node metadata
     metadata: NodeMetadata,
     /// Input ports
@@ -394,7 +390,7 @@ pub struct GraphicEqProcessor<T: Transcendental, const BUF_SIZE: usize> {
     /// Control ports
     controls: Vec<Port<T, BUF_SIZE>>,
     /// Node state
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     /// Inner graphic equalizer (works with f32)
     eq: GraphicEq<Biquad<f32>>,
     /// Output gain (linear)
@@ -421,12 +417,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
         let num_bands = eq.num_bands();
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             eq,
             output_gain: 1.0,
             num_bands,
@@ -450,12 +446,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
         let num_bands = eq.num_bands();
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             eq,
             output_gain: 1.0,
             num_bands,
@@ -503,7 +499,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphicEqProcessor<T, BUF_SIZE> {
 impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for GraphicEqProcessor<T, BUF_SIZE>
 {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -518,7 +513,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
         self.id = id;
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -663,11 +657,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }

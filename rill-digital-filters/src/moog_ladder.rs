@@ -4,12 +4,12 @@ use rill_core_dsp::filters::MoogLadder;
 
 /// Processor wrapper for Moog ladder filter
 pub struct MoogLadderProcessor<T: Transcendental, const BUF_SIZE: usize> {
-    id: NodeId,
+    // (removed legacy field)
     metadata: NodeMetadata,
     inputs: Vec<Port<T, BUF_SIZE>>,
     outputs: Vec<Port<T, BUF_SIZE>>,
     controls: Vec<Port<T, BUF_SIZE>>,
-    state: NodeState<T, BUF_SIZE>,
+    // (removed legacy field)
     /// Cutoff frequency (Hz)
     pub cutoff: f32,
     /// Resonance (0.0 – 1.0)
@@ -33,12 +33,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> 
         algorithm.init(sample_rate);
 
         Self {
-            id: NodeId(0),
+    // (removed legacy field)
             metadata,
             inputs,
             outputs,
             controls: Vec::new(),
-            state: NodeState::new(sample_rate),
+    // (removed legacy field)
             cutoff: 1000.0,
             resonance: 0.0,
             algorithm,
@@ -54,7 +54,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> 
 impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
     for MoogLadderProcessor<T, BUF_SIZE>
 {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -69,7 +68,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
         self.id = id;
     }
 
-    fn metadata(&self) -> NodeMetadata {
         self.metadata.clone()
     }
 
@@ -157,11 +155,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
         self.outputs.len()
     }
 
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
         &self.state
     }
 
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
         &mut self.state
     }
 }
