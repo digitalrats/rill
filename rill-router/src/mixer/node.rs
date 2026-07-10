@@ -2,10 +2,7 @@
 
 use super::channel::{ChannelConfig, ChannelState};
 use super::send::{SendConfig, SendType};
-use rill_core::traits::{
-    Node, NodeCategory, NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange,
-    ParamType, ParamValue, ParameterId, Port,
-};
+use rill_core::traits::{ParamMetadata, ParamRange, ParamType, ParamValue, ParameterId};
 use rill_core::RenderContext;
 use rill_core::{ProcessError, ProcessResult};
 use std::collections::HashMap;

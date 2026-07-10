@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{NodeId, ParamValue, Params};
+use rill_core::traits::{ParamValue, Params};
 
 use crate::graph::GraphBuilder;
 
@@ -398,7 +398,7 @@ impl GraphDef {
             for (k, v) in nd.parameters() {
                 p = p.with(k.clone(), v.clone());
             }
-            let idx = builder.add_node_with_id(nd.type_name(), &p, NodeId(nd.id()));
+            let idx = builder.add_node_with_id(nd.type_name(), &p, nd.id());
 
             if let NodeDef::Router(ref r) = nd {
                 for entry in &r.routing_matrix {

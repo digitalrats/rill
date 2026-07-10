@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use rill_core::queues::CommandEnum;
-use rill_core::traits::{NodeId, ParamValue, Params};
+use rill_core::traits::{ParamValue, Params};
 use rill_core_actor::ActorRef;
 
 use crate::engine::{BoxedModule, ParameterMapping};
@@ -27,7 +27,7 @@ impl fmt::Display for FactoryError {
 #[derive(Debug, Clone)]
 pub struct ServoTarget {
     /// The graph node that receives the parameter value.
-    pub target_node: NodeId,
+    pub target_node: u32,
     /// The parameter name on the target node to update.
     pub target_param: String,
     /// How the automaton output maps to the parameter.

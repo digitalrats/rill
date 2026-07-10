@@ -1,5 +1,4 @@
 use crate::math::Transcendental;
-use crate::traits::NodeId;
 
 /// Fixed-size telemetry frame for RT-safe ring buffer communication.
 ///
@@ -9,7 +8,7 @@ use crate::traits::NodeId;
 #[derive(Debug, Clone, Copy)]
 pub struct TelemetryBlock<T: Transcendental, const BUF_SIZE: usize> {
     /// Source node identifier
-    pub node_id: NodeId,
+    pub node_id: u32,
     /// Signal channel index
     pub channel: u32,
     /// Timestamp (microseconds since UNIX epoch)
@@ -31,7 +30,7 @@ pub struct TelemetryBlock<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> Default for TelemetryBlock<T, BUF_SIZE> {
     fn default() -> Self {
         Self {
-            node_id: NodeId(0),
+            node_id: 0,
             channel: 0,
             timestamp: 0,
             sample_rate: 44100.0,

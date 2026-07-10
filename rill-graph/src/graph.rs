@@ -1,6 +1,6 @@
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
-use rill_core::traits::{NodeId, Params};
+use rill_core::traits::Params;
 use rill_core_actor::ActorRef;
 
 use indexmap::IndexMap;
@@ -40,7 +40,7 @@ impl std::fmt::Display for BuildError {
 /// A deferred node recipe — constructed at build_ir time.
 struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
-    id: NodeId,
+    id: u32,
     params: Params,
     routing_entries: Vec<(usize, usize, f32)>,
     _phantom: std::marker::PhantomData<(T, [(); BUF_SIZE])>,
@@ -92,12 +92,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     ///
     /// Returns the index of the newly added node.
     pub fn add_node(&mut self, type_name: &str, params: &Params) -> usize {
-        let id = NodeId(self.recipes.len() as u32);
+        let id = self.recipes.len() as u32;
         self.add_node_with_id(type_name, params, id)
     }
 
     /// Add a node with an explicit [`NodeId`].
-    pub fn add_node_with_id(&mut self, type_name: &str, params: &Params, id: NodeId) -> usize {
+    pub fn add_node_with_id(&mut self, type_name: &str, params: &Params, id: u32) -> usize {
         let idx = self.recipes.len();
         self.recipes.push(NodeRecipe {
             type_name: type_name.to_string(),
@@ -198,7 +198,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .recipes
             .iter()
             .enumerate()
-            .map(|(idx, recipe)| (idx, format!("node_{}", recipe.id.inner())))
+            .map(|(idx, recipe)| (idx, format!("node_{}", recipe.id)))
             .collect();
 
         // 2. Create GraphNodes from recipes

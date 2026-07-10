@@ -324,18 +324,18 @@ pub enum PortError {
     #[error("Port direction mismatch: expected {expected}, got {got}")]
     DirectionMismatch {
         /// Expected direction
-        expected: crate::traits::PortDirection,
+        expected: &'static str,
         /// Actual direction
-        got: crate::traits::PortDirection,
+        got: &'static str,
     },
 
     /// Port type mismatch (e.g., trying to connect signal to control)
     #[error("Port type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch {
         /// Expected port type
-        expected: crate::traits::PortType,
+        expected: &'static str,
         /// Actual port type
-        got: crate::traits::PortType,
+        got: &'static str,
     },
 
     /// Port already connected
@@ -361,15 +361,12 @@ impl PortError {
     }
 
     /// Create a new direction mismatch error
-    pub fn direction_mismatch(
-        expected: crate::traits::PortDirection,
-        got: crate::traits::PortDirection,
-    ) -> Self {
+    pub fn direction_mismatch(expected: &'static str, got: &'static str) -> Self {
         Self::DirectionMismatch { expected, got }
     }
 
     /// Create a new type mismatch error
-    pub fn type_mismatch(expected: crate::traits::PortType, got: crate::traits::PortType) -> Self {
+    pub fn type_mismatch(expected: &'static str, got: &'static str) -> Self {
         Self::TypeMismatch { expected, got }
     }
 
@@ -458,7 +455,7 @@ pub struct ErrorContext {
     pub timestamp: std::time::SystemTime,
 
     /// Node ID (if applicable)
-    pub node_id: Option<crate::traits::NodeId>,
+    pub node_id: Option<u32>,
 
     /// Port ID (if applicable)
     pub port_id: Option<String>,
@@ -496,7 +493,7 @@ impl ErrorContext {
     }
 
     /// Add node ID
-    pub fn with_node(mut self, node_id: crate::traits::NodeId) -> Self {
+    pub fn with_node(mut self, node_id: u32) -> Self {
         self.node_id = Some(node_id);
         self
     }
@@ -581,12 +578,8 @@ impl From<PortError> for ProcessError {
     fn from(err: PortError) -> Self {
         match err {
             PortError::NotFound(port) => Self::port_not_found(port),
-            PortError::DirectionMismatch { expected, got } => {
-                Self::type_mismatch(expected.name(), got.name())
-            }
-            PortError::TypeMismatch { expected, got } => {
-                Self::type_mismatch(expected.name(), got.name())
-            }
+            PortError::DirectionMismatch { expected, got } => Self::type_mismatch(expected, got),
+            PortError::TypeMismatch { expected, got } => Self::type_mismatch(expected, got),
             PortError::AlreadyConnected(port) => {
                 Self::connection(format!("Port already connected: {}", port))
             }
@@ -673,10 +666,10 @@ mod tests {
 
     #[test]
     fn test_port_error_creation() {
-        let err = PortError::direction_mismatch(PortDirection::Input, PortDirection::Output);
+        let err = PortError::direction_mismatch("input", "output");
         assert!(matches!(err, PortError::DirectionMismatch { .. }));
 
-        let err = PortError::type_mismatch(PortType::Signal, PortType::Control);
+        let err = PortError::type_mismatch("signal", "control");
         assert!(matches!(err, PortError::TypeMismatch { .. }));
     }
 
@@ -699,7 +692,7 @@ mod tests {
     fn test_error_context() {
         let ctx = ErrorContext::new()
             .with_location("test.rs", 42)
-            .with_node(crate::traits::NodeId(1))
+            .with_node(u32(1))
             .with_extra("sample_rate", "44100");
 
         let err = ProcessError::processing("test");

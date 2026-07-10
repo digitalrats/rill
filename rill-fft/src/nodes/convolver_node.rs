@@ -5,9 +5,7 @@
 //! (IR) convolution in any signal graph.
 
 use rill_core::{
-    math::Transcendental,
-    traits::{Node, NodeCategory, NodeMetadata, NodeState, Processor},
-    NodeId, ParamValue, ParameterId, Port, ProcessError, ProcessResult, RenderContext,
+    math::Transcendental, ParamValue, ParameterId, ProcessError, ProcessResult, RenderContext,
 };
 
 use crate::partitioned_conv::PartitionedConvolver;

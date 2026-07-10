@@ -1,7 +1,7 @@
 use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
-use rill_core::traits::{Node, ProcessResult};
+use rill_core::traits::ProcessResult;
 
 use super::pv_f32;
 use crate::DistortionType;

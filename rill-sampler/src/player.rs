@@ -1,8 +1,5 @@
 use rill_core::time::{ClockTick, RenderContext};
-use rill_core::traits::{
-    Algorithm, Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    Source,
-};
+use rill_core::traits::{Algorithm, ParamValue, ParameterId, Source};
 use rill_core::Transcendental;
 use rill_core::{ProcessError, ProcessResult};
 use rill_core_dsp::generators::{Generator, LoopMode, SamplePlayer};
@@ -444,7 +441,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::traits::Node;
 
     #[test]
     fn test_set_and_get_parameter() {

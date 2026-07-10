@@ -41,7 +41,6 @@ impl Algorithm<f32> for LofiBuiltin {
 
 impl BlockBuiltin<f32> for LofiBuiltin {
     fn set_param(&mut self, index: usize, value: &ParamValue) {
-        use rill_core::traits::Node;
         use rill_core::ParameterId;
         let (name, pv) = match index {
             0 => ("bit_depth", ParamValue::Int(pv_f32(value).round() as i32)),
@@ -64,7 +63,7 @@ impl BlockBuiltin<f32> for LofiBuiltin {
 
 pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
     use crate::ClassicSystem;
-    use rill_core::traits::Node;
+
     reg.register_block(
         BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block),
         |p, sr| {
