@@ -12,7 +12,7 @@ pub mod onepole;
 pub mod osc;
 pub mod register;
 
-pub use biquad::BiquadBuiltin;
+pub use biquad::{BiquadBuiltin, GeneralBiquadBuiltin};
 pub use moog::MoogBuiltin;
 pub use noise::NoiseGenBuiltin;
 pub use onepole::OnePoleBuiltin;
