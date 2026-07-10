@@ -37,6 +37,48 @@ pub trait ParameterWrite {
 Implemented by `BasicOscillator<f32>`, `Ay38910Chip`, and any engine
 that accepts named parameter writes.
 
+### `MultichannelAlgorithm`
+
+Multi-IO signal processing trait (`N` inputs, `M` outputs). Unlike
+`Algorithm<T>` which is strictly single-input/single-output (SISO),
+this trait supports N-to-M channel processing in a single call.
+Used by mixer, EQ, and multi-IO graph engines.
+
+```rust
+pub trait MultichannelAlgorithm<T: Transcendental>: Send {
+    fn num_inputs(&self) -> usize;
+    fn num_outputs(&self) -> usize;
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()>;
+    fn reset(&mut self);
+}
+```
+
+Implemented by `RillGraphEngine<T>` (with `router` feature) and by `SisoAdapter<A, T>`
+(wraps any `Algorithm<T>` as a 1-in/1-out `MultichannelAlgorithm`).
+
+File: `rill-core/src/traits/multichannel_algorithm.rs`.
+
+### `BridgeAlgorithm`
+
+Bridge backend trait for duplex execution boundaries. A bridge node splits
+the signal graph into left (recording) and right (playback) sub-graphs.
+
+```rust
+pub trait BridgeAlgorithm<T: Transcendental>: Send + Sync {
+    fn num_inputs(&self) -> usize;
+    fn num_outputs(&self) -> usize;
+    fn process_left(&mut self, inputs: &[&[T]]) -> ProcessResult<()>;
+    fn process_right(&mut self, outputs: &mut [&mut [T]]) -> ProcessResult<()>;
+    fn reset(&mut self);
+}
+```
+
+The engine runs a 5-phase tick: ReadFeedback, process_left (left sub-graph +
+bridge.process_left), process_right (bridge.process_right + right sub-graph),
+WriteFeedback, shadow copy.
+
+File: `rill-core/src/traits/bridge.rs`.
+
 ### `Source`, `Processor`, `Sink`
 
 ```rust
@@ -169,18 +211,24 @@ and is set to the full callback size by chunking backends (PipeWire, JACK).
 
 ## Sample-accurate parameter changes
 
-`SetParameter` carries an optional `sample_pos: Option<u64>`:
+`SetParameter` carries an optional `sample_pos: Option<u64>` and an
+`anchor: String` for routing to the correct program in multi-node graphs:
 
 ```rust
 pub struct SetParameter {
     pub port: PortId,
+    pub anchor: String,         // node anchor name for lang-based graphs
     pub parameter: ParameterId,
     pub value: ParamValue,
     pub source: SignalOrigin,
-    pub timestamp: u64,        // wall-clock, for ordering/telemetry
+    pub timestamp: u64,         // wall-clock, for ordering/telemetry
     pub sample_pos: Option<u64>, // absolute sample to apply at; None = ASAP
 }
 ```
+
+When `anchor` is non-empty, the engine uses the schedule's `program_names`
+map for O(1) lookup into the correct `RillProgram`. When empty, the engine
+scans all program param maps (backward compat).
 
 - `None` — applied immediately when the graph actor drains it (legacy; used by
   live UI/MIDI writes so there is no added latency).
@@ -191,11 +239,56 @@ Because an async control module reacting to a tick in I/O callback *N* is only
 rendered in callback *N+1*, producers look ahead by one quantum:
 `SetParameter::new(..).with_sample_pos(tick.sample_pos + tick.io_quantum as u64)`.
 
+## Builtin registry
+
+`rill-core/src/builtin.rs` provides the foreign-function registry for
+DSP/model built-ins callable from rill-lang:
+
+```rust
+pub struct Registry<T: Transcendental> { /* ... */ }
+impl<T: Transcendental> Registry<T> {
+    pub fn register_sample(&mut self, sig: BuiltinSig, factory: ...);
+    pub fn register_block(&mut self, sig: BuiltinSig, factory: ...);
+    pub fn get(&self, name: &str) -> Option<&Entry<T>>;
+}
+```
+
+Key types:
+
+| Type | Purpose |
+|------|---------|
+| `Registry<T>` | HashMap-backed collection of built-in definitions |
+| `BuiltinSig` | Type-checker-facing signature: name, params (list of `ParamType`), signal_outs, `BuiltinKind` |
+| `ParamType` | `Signal`, `Float`, `Int`, `String`, `Bool`, `Record(RecordSchema)`, `Enum(...)`, `Variadic(Box<ParamType>)` |
+| `RecordSchema` | Named fields with type and optional default |
+| `BlockBuiltin<T>` | Whole-buffer built-in extending `Algorithm<T>` |
+| `SampleBuiltin<T>` | Per-sample built-in (feedback-legal) |
+| `SignatureSource` | `T`-independent trait for type-checker/lowering |
+
+```rust
+use rill_core::builtin::{Registry, BuiltinSig, BuiltinKind, ParamType};
+
+let mut reg = Registry::<f32>::new();
+reg.register_sample(
+    BuiltinSig {
+        name: "gain",
+        params: vec![ParamType::Signal, ParamType::Float],
+        signal_outs: 1,
+        kind: BuiltinKind::Sample,
+    },
+    |params, _sr| {
+        Box::new(Gain { k: params[0] as f32 }) as Box<dyn SampleBuiltin<f32>>
+    },
+);
+```
+
 ## Module tree
 
 ```
 rill-core/
-├── traits/   — Node, Source, Processor, Sink, ParamValue, Port
+├── traits/   — Node, Source, Processor, Sink, ParamValue, Port, Algorithm,
+│              MultichannelAlgorithm, BridgeAlgorithm, ParameterWrite
+├── builtin/  — Registry<T>, BuiltinSig, ParamType, BlockBuiltin<T>, SampleBuiltin<T>
 ├── math/     — Scalar, Transcendental, Vector, glam re-export (Mat2/3/4, Vec2/3/4)
 ├── buffer/   — PipeBuffer, FanOutBuffer, FanInBuffer, DelayLine, RingBuffer, TapeLoop, FixedBuffer, ResourceRegistry
 ├── queues/   — MpscQueue, SetParameter, CommandEnum, Telemetry
