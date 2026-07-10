@@ -88,23 +88,32 @@ regardless of definition order.
 
 ### Application syntax
 
-Built-ins and user-defined functions support two calling conventions:
-
-**Parenthesized:** `name(arg1, arg2, ...)` — comma-separated arguments:
-
-```faust
-main = _ : lowpass(1000.0, 0.7);
-```
-
-**Juxtaposed (Haskell-style):** `name arg1 arg2 ...` — space-separated atoms,
-each argument must be an atom (identifier, literal, `_`, `!`, `(expr)`, `-expr`):
+rill-lang uses **bracket-free juxtaposition** as its canonical calling
+convention — function name followed by space-separated arguments:
 
 ```faust
 main = _ : lowpass 1000.0 0.7;
+main = lowpass _ 1000.0 0.7;     // signal as first-class argument
+main = sine 440.0 0.5 0.0;       // oscillator with freq, amp, phase
 ```
 
-Both forms are equivalent. Juxtaposition only works when each argument is an
-atom — for complex expressions use parenthesized form.
+The parenthesized form `name(arg, ...)` is also supported but **juxtaposition
+is canonical**. Each argument must be an atom (identifier, literal, `_`, `!`,
+`(expr)`, `-expr`); for complex expressions use parentheses around the argument.
+
+### Unified arguments
+
+**Signals are first-class arguments** in the unified calling model. A built-in
+doesn't require the signal on the left via `:`, you can pass it inline:
+
+```faust
+main = lowpass _ 1000.0 0.7;        // signal as first positional arg
+main = mixer _1 _2 _3 { gain: 0.8 }; // variadic signal args
+```
+
+Some built-ins accept **variadic** signal inputs (e.g. `mixer` takes any number
+of signals). Others specify a fixed signal arity per their signature. Scalar
+parameters (floats, ints, records) follow signal args.
 
 ### `where` blocks and layout
 
@@ -174,15 +183,26 @@ main cutoff res = _ : lowpass cutoff res;
 
 When compiled via `compile_graph()`, each `main` parameter and each function
 parameter in the `where` block becomes a named parameter in the resulting
-graph node. Where-block function parameters are namespaced with dot notation:
-`osc.freq`, `filt.cutoff`.
+graph node. Use the `?name=default` syntax for late-binding actor parameters
+(see [Actor Parameters](#actor-parameters) below).
+
+### Records and config
+
+Built-ins that accept structured configuration use **record literals**
+`{ key: val }`:
 
 ```faust
-main = osc : filt : _ where
-    osc  freq   = sine freq 0.5 0.0
-    filt cutoff = _ : lowpass cutoff 0.7
--- Exposes parameters: "osc.freq", "filt.cutoff"
+main = mixer _1 _2 { channels: 2, buses: 0, master_vol: 0.8 };
+main = dry_wet _ wet { mix: 0.5 };
+main = eq_parametric _ { bands: [
+    { freq: 500.0, q: 2.0, gain_db: -3.0, band_type: 0 },
+    { freq: 2000.0, q: 1.0, gain_db: 1.5, band_type: 0 },
+]};
 ```
+
+Records can be nested — the EQ `bands` field contains a list of band
+configurations (`{ freq, q, gain_db, band_type }`). Record keys must be
+literals; values can be literals, `param()` references, or other records.
 
 ## Primitives
 
@@ -201,7 +221,7 @@ Arithmetic also appears in infix position: `_ * 0.5` and `_ + 1` build the same
 blocks as `*` and `+` used as primitives.
 
 Complex number literals use the suffix `i`: `3i`, `2.5i`. The parser also
-recognises `1.0 + 2.0i` as syntactic sugar for `complex(1.0, 2.0)`.
+recognises `1.0 + 2.0i` as syntactic sugar for `complex 1.0 2.0`.
 
 ## Combinators
 
@@ -240,7 +260,7 @@ main = + ~ _;             // integrator:        y[n] = x[n] + y[n-1]
 main = + ~ (_ * 0.5);     // leaky integrator:  y[n] = x[n] + 0.5·y[n-1]
 main = _ @ 1;             // one-sample delay
 main = _ <: (_ , _) :> +; // fan out, then sum  = 2·x
-main = abs(_);            // full-wave rectifier
+main = abs _;              // full-wave rectifier
 ```
 
 ## Type checking
@@ -263,38 +283,54 @@ interpreter.
 
 ```rust,no_run
 use rill_lang::compile;
-// top-level parallel pair is (2 → 2): not a valid `main`
+// top-level parallel pair is (2 → 2): not a valid SISO main
 assert!(compile::<f32>("main = _ , _;").is_err());
 ```
 
 ## Built-in functions
 
-rill-lang programs can call stateful DSP/model built-ins from
-`rill-core-dsp`/`rill-core-model` via an extensible FFI registry. Built-ins are
-**not** compiled into the interpreter core — bindings live in the umbrella crate
-`rill-adrift`, keeping `rill-lang` dependent only on `rill-core`.
+rill-lang programs can call stateful DSP/model built-ins from workspace crates
+via an extensible FFI registry. Built-ins are **not** compiled into the
+interpreter core — bindings live in the individual crates, aggregated by
+`rill-adrift` (`lang_builtins::full_registry`), keeping `rill-lang` dependent
+only on `rill-core`.
+
+### Built-in registry
+
+| Category | Builtins | Feature |
+|---|---|---|
+| Filters | `onepole`, `moog` (sample), `lowpass`, `highpass`, `biquad` (block) | always |
+| Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
+| Effects | `delay`, `distortion`, `limiter` (block) | always |
+| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
+| Analog | `analog_moog`, `cassette_deck`, `tape_bridge` (block) | `analog` |
+| Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
+| Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
+| Sampler | (none currently in lang registry) | `sampler` |
+| Lofi | `lofi`, `ay38910` (block) | `lofi` |
 
 ### Calling convention
 
-A built-in is called like a function with constant-parameter arguments; the
-signal wire connects from the left via the sequential combinator `:`:
+Built-ins use the **unified argument model**: signals are first-class positional
+arguments, scalars follow, and configuration is passed as a record:
 
 ```faust
-main = _ : lowpass 1000.0 0.7;
+main = lowpass _ 1000.0 0.7;           // filter: signal, cutoff, resonance
+main = sine 440.0 0.5 0.0;             // oscillator: freq, amp, phase (no signal in)
+main = mixer _ ch2 ch3 { channels: 3 }; // variadic signal args + record
 ```
 
 Parameters are **compile-time constants** (float or integer literals, optionally
-with arithmetic) or a [`param(...)`](#parameters) reference for dynamic control.
-Constant parameters are folded to `f64` during lowering and passed to the
-built-in constructor. A built-in has arity `(signal_ins → signal_outs)`; in this
-release `signal_outs` is always 1.
+with arithmetic) or a `param(...)` reference. Constants are folded to `f64`
+during lowering. The signal port count per built-in is defined by its signature
+(see individual crate registrations).
 
 ### Sample built-ins vs block built-ins
 
 | Kind | Names | Behaviour | Inside `~` |
 |---|---|---|---|
 | **Sample** | `onepole`, `moog` | Per-sample state; the built-in's `process_sample` runs inside the sample-level recurrence loop. | Allowed |
-| **Block** | `lowpass`, `highpass`, `analog_moog` | Opaque whole-buffer step; the built-in implements `Algorithm<T>` and processes all samples at once. | Compile error |
+| **Block** | `lowpass`, `highpass`, `biquad`, `delay`, `distortion`, `limiter`, `sine`, `saw`, `square`, `triangle`, `noise`, `analog_moog`, `cassette_deck`, `tape_bridge`, `spectralgate`, `spectraldelay`, `convolver`, `lofi`, `ay38910` | Opaque whole-buffer step; the built-in implements `Algorithm<T>` and processes all samples at once. | Compile error |
 
 Sample built-ins are composed from the feedback combinator just like hand-rolled
 recurrences:
@@ -308,13 +344,20 @@ error (`block built-in cannot be used inside a feedback loop`).
 
 ### Using built-ins from Rust
 
+The umbrella registry (`rill_adrift::lang_builtins::full_registry`) aggregates
+all workspace built-ins. For selective registration, individual crates expose
+`register_lang_builtins()` functions:
+
 ```rust,no_run
 use rill_lang::compile_with;
-use rill_adrift::lang_builtins::full_registry;
+use rill_lang::builtin::Registry;
 
-let reg = full_registry::<f32>();
+let mut reg = Registry::<f32>::new();
+rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
+rill_lang::register::register_core_builtins(&mut reg);
+
 let mut prog = compile_with::<f32>(
-    "main = _ : onepole 200.0 0.7;",
+    "main = lowpass _ 1000.0 0.7;",
     &reg,
     48_000.0,
 ).unwrap();
@@ -322,9 +365,20 @@ let mut out = [0.0f32; 4];
 prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
 ```
 
-The `full_registry()` includes all DSP built-ins. `analog_moog` requires
-`rill-adrift`'s `analog` feature. The default `compile()` function has no
-built-ins — it uses an empty registry and is unchanged.
+Or to compile directly into a graph engine with actor mailbox support:
+
+```rust,no_run
+use rill_lang::compile_graph;
+use rill_adrift::lang_builtins::full_registry;
+
+let reg = full_registry::<f32>();
+let mut engine = compile_graph::<f32>(
+    "main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;",
+    &reg,
+    48_000.0,
+).unwrap();
+// engine.handle() returns ActorRef<CommandEnum> for sending SetParameter
+```
 
 ## Parameters
 
@@ -415,6 +469,107 @@ no atomics).
 
 For more on the automation plumbing, see the [Automaton guide](world-of-automatons.md).
 
+## Actor parameters
+
+rill-lang supports **late-binding actor parameters** with the `?name=default`
+syntax — a concise alternative to `param()` designed for `compile_graph()`:
+
+```faust
+main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;
+main = sine ?freq=440.0 0.5 0.0;
+```
+
+Each `?name=default` creates a named parameter slot. When compiled via
+`compile_graph()`, parameters are addressable by the engine's `handle()`:
+
+```rust,no_run
+use rill_lang::compile_graph;
+use rill_adrift::lang_builtins::full_registry;
+use rill_core::queues::CommandEnum;
+use rill_core::traits::ParamValue;
+
+let reg = full_registry::<f32>();
+let mut engine = compile_graph::<f32>(
+    "main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;",
+    &reg,
+    48_000.0,
+).unwrap();
+engine.handle().send(CommandEnum::SetParameter(
+    rill_core::queues::SetParameter {
+        anchor: "main".into(),
+        parameter: "cutoff".into(),
+        value: ParamValue::Float(2000.0),
+        sample_pos: None,
+    }
+)).ok();
+```
+
+### Where-block namespacing
+
+Where-block definitions with parameters use **dot-notation namespacing**:
+
+```faust
+main = osc : filt where
+    osc  = sine ?freq=440.0 0.5 0.0
+    filt = _ : lowpass ?cutoff=1200.0 0.7
+-- Parameters: "osc.freq", "filt.cutoff"
+```
+
+The `anchor` field in `SetParameter` is the definition name when inside a
+`where` block (e.g. `"osc"` for `osc.freq`). Top-level `main` parameters
+use `"main"` as their anchor.
+
+### `?name` vs `param()`
+
+| Feature | `?name=default` | `param("name", default)` |
+|---|---|---|
+| Syntax cost | 3 extra chars | 9+ extra chars |
+| Intent | Late-binding for actor system | Inline parameter slot |
+| Works with | `compile_graph()` | `compile()` / `compile_with()` |
+| Use case | Graph nodes with external control | Standalone programs |
+
+Both are RT-safe: one scalar per slot, read once per block, no locks.
+
+## Multi-IO and graph compilation
+
+rill-lang programs can be **multi-channel** — N inputs, M outputs. Multi-IO
+programs implement `MultichannelAlgorithm<T>` when compiled with the `router`
+feature:
+
+```faust
+main = mixer _1 _2 _3 { channels: 3, buses: 2 };  // 3→4 (2 master + 2 bus)
+main = dry_wet _ wet_signals { mix: 0.5 };          // 2→2
+```
+
+### Graph compilation
+
+`compile_graph(src, &registry, sample_rate)` compiles a rill-lang program into
+a `RillGraphEngine<T>` — a self-contained engine that:
+
+- Runs a `ScheduledGraph` over a pool of pre-allocated signal buffers
+- Drains the actor mailbox for `SetParameter` commands each tick
+- Dispatches to `MultichannelAlgorithm::process()` for multi-IO programs
+- Uses SISO fast path for 0/1 input → 1 output programs
+
+```rust,no_run
+use rill_lang::compile_graph;
+use rill_core::traits::Algorithm;
+
+let reg = rill_lang::builtin::Registry::<f32>::new();
+let mut engine = compile_graph::<f32>(
+    "main = _ * 0.5;",
+    &reg,
+    48_000.0,
+).unwrap();
+let mut out = [0.0f32; 4];
+engine.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
+```
+
+`RillGraphEngine` also supports **duplex** (feedback) configurations via
+`RillGraphEngine::new_duplex()`, used for tape delay and send/return
+topologies where left-side outputs feed right-side inputs through a bridge.
+
 ## Scoping
 
 | Binding form | Visibility | Mutual recursion |
@@ -441,9 +596,32 @@ let mut prog = compile_def::<f32>(&def).unwrap();
 
 ## Using it in a graph
 
-The umbrella crate `rill-adrift` exposes `rill-lang` behind its `lang` feature
-and registers a `rill/lang` node type. A serialized graph can then embed a
-rill-lang block by giving it a `source` parameter:
+Two paths to runtime:
+
+### `compile_graph()` — direct engine
+
+`compile_graph()` compiles source directly into a `RillGraphEngine<T>` with
+actor mailbox support:
+
+```rust,no_run
+use rill_lang::compile_graph;
+use rill_adrift::lang_builtins::full_registry;
+
+let reg = full_registry::<f32>();
+let mut engine = compile_graph::<f32>(
+    "main = _ * 0.5;",
+    &reg,
+    48_000.0,
+).unwrap();
+```
+
+The engine provides `handle()` → `ActorRef<CommandEnum>` for sending
+`SetParameter` commands, and implements `Algorithm<T>` directly.
+
+### `rill/lang` factory node
+
+The umbrella crate `rill-adrift` registers a `rill/lang` node type. A
+serialized graph can embed a rill-lang block by giving it a `source` parameter:
 
 ```json
 {
@@ -589,8 +767,11 @@ a filter parameter with `param(...)` adds only the per-block coefficient update.
 The language is feature-complete for signal authoring: block-diagram
 combinators, feedback and delay, Hindley-Milner types, Haskell-style definitions
 with β-reduction, `let` and `where` binding groups with mutual visibility,
-hybrid block/sample execution, a DSP/model built-in registry, and RT-safe named
-parameters with smoothing.
+hybrid block/sample execution, a 27-built-in registry (DSP, effects, oscillators,
+mixer/EQ, analog, spectral, complex, lofi), RT-safe named parameters (`param()`
+and `?name`), records for built-in configuration, multi-IO via
+`MultichannelAlgorithm`, and graph compilation (`compile_graph()` →
+`RillGraphEngine`) with duplex support.
 
 Deferred to follow-on work:
 
@@ -599,6 +780,6 @@ Deferred to follow-on work:
   schedule);
 - **signal-rate** (per-sample) modulation of imported built-in parameters
   (current parameter modulation is control-rate/per-block);
-- composed expressions as built-in arguments and multi-output built-ins.
+- composed expressions as built-in arguments.
 
 [`RillLangDef`]: https://docs.rs/rill-lang
