@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Serialization of graph topology and node parameters.
 //!
 //! # Feature gate

@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+#![allow(deprecated)]
 //! # ModularSystem — modular signal processing host
 //!
 //! * GraphDef — signal topology
@@ -174,6 +176,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
     /// Launch — build graph, spawn servos, start threads.
     #[cfg(all(feature = "serialization", not(feature = "lang")))]
+    #[deprecated = "Use ModularSystem::build_engine() with 'lang' feature"]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         let tokio_rt = tokio::runtime::Runtime::new()
             .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
