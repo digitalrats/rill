@@ -156,6 +156,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 Arc::new(Mutex::new(HashMap::new()));
             let tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
+            let (graph_tx, graph_rx) = std::sync::mpsc::channel::<ActorRef<CommandEnum>>();
+
             // 1. Rack actor — forwards messages to registered modules
             let m = modules.clone();
             let actor_ref = sys.spawn_detached(
@@ -171,7 +173,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
             );
 
             let parent_ref = actor_ref.clone();
-            let module_parent = actor_ref.clone();
             let mut case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, tasks);
             self.cases.insert(rd.name.clone(), case);
 
@@ -211,6 +212,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         scheduled, programs, mailbox, buf_size,
                     );
 
+                    let _ = graph_tx.send(engine.handle());
+
                     let mut runner = rill_lang::program_runner::ProgramRunner::new(
                         engine,
                         Some(parent_ref),
@@ -232,7 +235,12 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 });
             }
 
-            // 3. Build modules via ModuleFactory
+            // 3. Receive engine handle for module SetParameter routing
+            let graph_ref = graph_rx
+                .recv()
+                .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
+
+            // 4. Build modules via ModuleFactory
             let automaton_defs = &rd.automatons;
             for module_def in &rd.modules {
                 let pb_def = to_pb_module(module_def);
@@ -240,7 +248,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 if pb_def.type_name() == "Graph" {
                     continue;
                 }
-                let graph_ref = module_parent.clone();
+                let graph_ref = graph_ref.clone();
                 match self.module_factory.construct(
                     &pb_def,
                     automaton_defs,
