@@ -1,35 +1,23 @@
-//! MIDI-controlled sine synth via ModularSystem serialisation.
+//! MIDI-controlled sine synth via rill-lang DSL.
 //!
-//! Demonstrates fully declarative system construction using [`ModularSystemDef`]:
-//! signal graph, MIDI sensor, and parameter mappings are all described as data.
+//! Demonstrates rill-lang DSL compilation with MIDI control.
 //!
-//! # MIDI Mappings
-//!
-//! | Control | Target | Range |
-//! |---------|--------|-------|
-//! | CC#128 (pitch bend) | frequency | 100 Hz – 4 kHz (Exponential) |
-//! | CC#1 (mod wheel) | amplitude | 0.0 – 1.0 (Linear) |
-//! | Note On | frequency + amplitude | `midi_to_freq(note)`, `velocity / 127` |
-//! | Note Off | amplitude = 0 | oscillator silenced |
-//!
-//! # Usage
-//!
-//! ```bash
-//! cargo run --example midi_synth_serial --features "midi,io,portaudio,serialization"
-//! # or with ALSA backend:
-//! cargo run --example midi_synth_serial --features "midi,io,alsa,serialization"
-//! ```
+//! Usage:
+//!   cargo run --example midi_synth_serial --features "midi,io,lang,portaudio,serialization"
+//!   cargo run --example midi_synth_serial --features "midi,io,lang,alsa,serialization"
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
-use rill_adrift::modular::{ModularConfig, ModularSystem};
-use rill_adrift::rill_core::traits::ParamValue;
-use rill_adrift::rill_graph::serialization::{
-    ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
-};
-use rill_adrift::rill_patchbay::engine::{EventPattern, MidiNoteKind};
-use rill_adrift::rill_patchbay::module_def::{MappingDef, SensorDef, TransformDef};
+use rill_adrift::registration;
+use rill_core::traits::{NodeId, ParamValue};
+use rill_graph::backend_factory::{BackendFactory, OutputBundle};
+use rill_io::backends::MidirBackend;
+use rill_lang::program_runner::ProgramRunner;
+use rill_patchbay::engine::{midi_cc, NoAction, ParameterMapping, Transform};
+use rill_patchbay::midi::spawn_midi_sensor;
+use rill_patchbay::Servo;
 
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
@@ -44,157 +32,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
     let backend_display = backend_name.clone();
 
-    // ── Backend params ───────────────────────────────────────────
+    // Compile rill-lang DSL: sine oscillator
+    let reg = rill_adrift::lang_builtins::full_registry::<f32>();
+    let src = "main = sine 220.0 0.5 0.0";
+    let engine = rill_lang::compile_graph::<f32>(src, &reg, RATE)?;
+    let graph_ref = engine.handle();
+
+    // I/O backend
+    let mut bf = BackendFactory::new();
+    registration::register_backends(&mut bf);
     let mut be_params = HashMap::new();
-    be_params.insert("sample_rate".into(), RATE.to_string());
-    be_params.insert("buffer_size".into(), BUF.to_string());
-    be_params.insert("channels".into(), "2".to_string());
+    be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
+    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
+    be_params.insert("channels".into(), ParamValue::Int(2));
+    let OutputBundle { driver, playback } = bf
+        .create_output(&backend_name, &be_params)
+        .expect("create output backend");
 
-    // ── ModularSystemDef ─────────────────────────────────────────
-    let def = ModularSystemDef {
-        format_version: "rill/1".into(),
-        sample_rate: RATE,
-        block_size: BUF,
-        racks: vec![RackDef {
-            name: "midi_synth".into(),
-            graph: GraphDef {
-                format_version: "rill/1".into(),
-                sample_rate: RATE,
-                block_size: BUF,
-                resources: vec![],
-                nodes: vec![
-                    // Sine oscillator
-                    NodeDef::Source(SourceDef {
-                        id: 0,
-                        type_name: "rill/sine".into(),
-                        name: "osc".into(),
-                        backend: None,
-                        parameters: [
-                            ("frequency".into(), ParamValue::Float(220.0)),
-                            ("amplitude".into(), ParamValue::Float(0.0)),
-                        ]
-                        .into(),
-                    }),
-                    // Stereo output
-                    NodeDef::Sink(SinkDef {
-                        id: 1,
-                        type_name: "rill/output".into(),
-                        name: "out".into(),
-                        backend: None,
-                        parameters: [("channels".into(), ParamValue::Float(2.0))].into(),
-                    }),
-                ],
-                connections: vec![
-                    ConnectionDef {
-                        kind: SignalKind::Signal,
-                        from_node: 0,
-                        from_port: 0,
-                        to_node: 1,
-                        to_port: 0,
-                    },
-                    ConnectionDef {
-                        kind: SignalKind::Signal,
-                        from_node: 0,
-                        from_port: 0,
-                        to_node: 1,
-                        to_port: 1,
-                    },
-                ],
-                description: None,
-            },
-            automatons: vec![],
-            modules: vec![
-                // MIDI sensor with declarative mappings
-                ModuleDef::Sensor(SensorDef::Midi {
-                    backend: "midir".into(),
-                    port_name: "rill-midi-synth".into(),
-                    mappings: vec![
-                        // CC#128 (pitch bend) → frequency (Exponential)
-                        MappingDef {
-                            event_pattern: EventPattern::MidiControl {
-                                channel: None,
-                                controller: 128,
-                            },
-                            target_node: 0,
-                            target_param: "frequency".into(),
-                            transform: TransformDef::Exponential,
-                            min: 20.0,
-                            max: 20000.0,
-                            enabled: true,
-                        },
-                        // CC#15 → amplitude (Linear)
-                        MappingDef {
-                            event_pattern: EventPattern::MidiControl {
-                                channel: None,
-                                controller: 1,
-                            },
-                            target_node: 0,
-                            target_param: "amplitude".into(),
-                            transform: TransformDef::Linear,
-                            min: 0.0,
-                            max: 1.0,
-                            enabled: true,
-                        },
-                        // Note On → frequency (midi_to_freq)
-                        MappingDef {
-                            event_pattern: EventPattern::MidiNote {
-                                channel: None,
-                                note: None,
-                                kind: MidiNoteKind::Frequency,
-                            },
-                            target_node: 0,
-                            target_param: "frequency".into(),
-                            transform: TransformDef::Linear,
-                            min: 0.0,
-                            max: 1.0,
-                            enabled: true,
-                        },
-                        // Note On/Off → amplitude (velocity/127 or 0)
-                        MappingDef {
-                            event_pattern: EventPattern::MidiNote {
-                                channel: None,
-                                note: None,
-                                kind: MidiNoteKind::Amplitude,
-                            },
-                            target_node: 0,
-                            target_param: "amplitude".into(),
-                            transform: TransformDef::Linear,
-                            min: 0.0,
-                            max: 1.0,
-                            enabled: true,
-                        },
-                    ],
-                }),
-            ],
-            mappings: vec![],
-            description: None,
-        }],
-        description: Some("MIDI-controlled sine synth".into()),
-    };
+    // MIDI sensor
+    let midi_backend: Box<dyn rill_io::midi_input::MidiInput> =
+        Box::new(MidirBackend::new("rill-midi-synth").map_err(|e| e.to_string())?);
+    let osc_node = NodeId(0);
 
-    // ── Launch ────────────────────────────────────────────────────
-    let config = ModularConfig {
-        sample_rate: RATE,
-        block_size: BUF,
-        backend_name: Some(backend_name.clone()),
-        backend_params: be_params,
-        ..Default::default()
-    };
+    let mappings = vec![midi_cc(
+        7,
+        None,
+        osc_node,
+        "amplitude",
+        0.0,
+        1.0,
+        Transform::Linear,
+    )];
 
-    let system = ModularSystem::<BUF>::new(config);
-    let _system = system.launch(&def).expect("launch system");
+    let system = Arc::new(rill_core_actor::ActorSystem::new());
+    let servo_ref = Servo::new(
+        "midi_servo",
+        NoAction,
+        osc_node,
+        "",
+        ParameterMapping::Linear,
+        0.0,
+        1.0,
+        system.clone(),
+        graph_ref.clone(),
+    )
+    .with_pitch_bend(128, 2.0)
+    .with_mod_wheel(1)
+    .with_mappings(mappings)
+    .spawn(&system);
 
-    println!("MIDI-controlled sine synth (ModularSystem)");
-    println!("  Backend: {}", backend_display);
-    println!("  CC#128 (pitch bend)  → frequency (100 Hz – 4 kHz)");
-    println!("  CC#1 (mod wheel)     → amplitude (0.0 – 1.0)");
-    println!("  Note On/Off      → frequency + amplitude");
-    println!();
+    spawn_midi_sensor("midi", midi_backend, &system, servo_ref);
+
+    // Signal thread
+    let running = Arc::new(AtomicBool::new(true));
+    let t_run = running.clone();
+    let signal_thread = std::thread::spawn(move || {
+        let mut runner = ProgramRunner::new(engine, None, BUF);
+        runner.wire_backends(None, Some(playback));
+        runner.run_with_driver(driver, t_run).ok();
+    });
+
+    println!("MIDI-controlled sine synth (declarative) [{backend_display}]");
+    println!("  Pitch bend (CC#128) -> +/-2 semitones");
+    println!("  Mod wheel (CC#1)    -> amplitude");
+    println!("  CC#7 (volume)       -> amplitude");
     println!("Press Enter to stop.");
 
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok();
+    let r = running.clone();
+    let handle = signal_thread.thread().clone();
+    std::thread::spawn(move || {
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        r.store(false, Ordering::Release);
+        handle.unpark();
+    });
 
+    signal_thread.join().ok();
     println!("Shutting down.");
     Ok(())
 }

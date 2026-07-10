@@ -124,3 +124,5 @@ pub mod prelude {
 }
 
 pub mod register;
+
+pub mod lang;

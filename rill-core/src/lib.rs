@@ -138,7 +138,6 @@
 #![deny(unsafe_code)]
 #![cfg_attr(not(test), deny(unused))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(deprecated)]
 
 // ============================================================================
 // Core Modules

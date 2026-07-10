@@ -53,19 +53,19 @@ toml = { version = "0.8", optional = true }
 
 [[example]]
 name = "play_wav"
-required-features = ["io", "sampler"]
+required-features = ["io", "lang", "sampler"]
 
 [[example]]
 name = "player"
-required-features = ["io", "serialization", "sampler"]
+required-features = ["io", "lang", "serialization"]
 
 [[example]]
 name = "advanced_player"
-required-features = ["io", "serialization", "sampler"]
+required-features = ["io", "lang", "serialization"]
 
 [[example]]
 name = "record_mic"
-required-features = ["io", "serialization", "sampler"]
+required-features = ["io", "lang", "sampler"]
 
 [[example]]
 name = "convolver"
@@ -85,11 +85,11 @@ required-features = ["lang", "fft"]
 
 [[example]]
 name = "chiptune"
-required-features = ["io", "lofi"]
+required-features = ["io", "lang", "lofi"]
 
 [[example]]
 name = "midi_synth"
-required-features = ["midi", "io"]
+required-features = ["midi", "io", "lang"]
 
 [[example]]
 name = "midi_synth_serial"
@@ -108,7 +108,7 @@ telemetry = ["dep:rill-telemetry"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects", "rill-analog-filters/graph", "rill-analog-effects/graph"]
 sampler = ["dep:rill-sampler", "rill-sampler/graph"]
-lang = ["dep:rill-lang", "rill-lang/router", "rill-router/lang", "rill-graph/lang", "rill-lofi?/lang", "rill-fft?/lang", "rill-core-model?/lang", "rill-sampler?/lang", "rill-analog-effects?/lang"]
+lang = ["dep:rill-lang", "rill-lang/router", "rill-router/lang", "rill-lofi?/lang", "rill-fft?/lang", "rill-core-model?/lang", "rill-sampler?/lang", "rill-analog-effects?/lang"]
 fft = ["dep:rill-fft", "rill-fft/graph"]
 serialization = [
     "rill-graph/serialization",

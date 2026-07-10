@@ -25,6 +25,8 @@ pub use rill_core::traits::Node;
 
 pub mod register;
 
+mod lang_helpers;
+
 #[cfg(test)]
 mod tests {
     use super::*;
