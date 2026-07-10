@@ -58,6 +58,38 @@ pub enum Step {
         /// Delay slot index to write into.
         slot: usize,
     },
+    /// Mix feedback buffer into target buffer before processing.
+    ReadFeedback {
+        /// Named feedback buffer to read from.
+        name: String,
+        /// Buffer index in the sub-engine pool to write into.
+        target_buf: usize,
+    },
+    /// Capture target buffer into feedback buffer after processing.
+    WriteFeedback {
+        /// Named feedback buffer to write into.
+        name: String,
+        /// Buffer index in the sub-engine pool to read from.
+        source_buf: usize,
+    },
+}
+
+/// Split schedule for duplex (bridge) execution.
+///
+/// A bridge node splits the graph into left (recording) and right (playback)
+/// sub-graphs. Each sub-graph has its own `ScheduledGraph` with embedded
+/// `ReadFeedback`/`WriteFeedback` steps.
+pub struct DuplexSchedule {
+    /// Left sub-graph — executes before the bridge.
+    pub left: ScheduledGraph,
+    /// Right sub-graph — executes after the bridge.
+    pub right: ScheduledGraph,
+    /// All unique feedback buffer names across the graph.
+    pub feedback_names: Vec<String>,
+    /// Bridge node name, used for anchor-based parameter routing.
+    pub anchor: String,
+    /// Bridge param name → slot index mapping.
+    pub anchor_params: HashMap<String, usize>,
 }
 
 /// Lower a GraphIr to a ScheduledGraph.
@@ -164,6 +196,139 @@ pub fn lower(ir: &GraphIr) -> ScheduledGraph {
         buffers: buffer_counter,
         output_mapping,
         program_names: ir.topo_order.clone(),
+    }
+}
+
+/// Lower a GraphIr containing a bridge node into a DuplexSchedule.
+///
+/// The graph is split into left (before bridge) and right (after bridge) sub-graphs.
+/// Returns `None` if no bridge node is found (use regular [`lower()`] instead).
+pub fn lower_duplex(ir: &GraphIr) -> Option<DuplexSchedule> {
+    let bridge_name = ir
+        .nodes
+        .iter()
+        .find(|(_, n)| n.is_bridge)
+        .map(|(name, _)| name.clone())?;
+
+    let bridge = &ir.nodes[&bridge_name];
+
+    let bridge_pos = ir.topo_order.iter().position(|n| n == &bridge_name)?;
+
+    let left_names: Vec<String> = ir.topo_order[..bridge_pos].to_vec();
+    let right_names: Vec<String> = ir.topo_order[bridge_pos + 1..].to_vec();
+
+    let left_schedule = build_sub_schedule(ir, &left_names, true);
+    let right_schedule = build_sub_schedule(ir, &right_names, false);
+
+    let mut feedback_names = Vec::new();
+    for node in ir.nodes.values() {
+        for name in &node.feedback_read {
+            if !feedback_names.contains(name) {
+                feedback_names.push(name.clone());
+            }
+        }
+        for name in &node.feedback_write {
+            if !feedback_names.contains(name) {
+                feedback_names.push(name.clone());
+            }
+        }
+    }
+
+    let mut anchor_params = HashMap::new();
+    for (i, p) in bridge.params.iter().enumerate() {
+        anchor_params.insert(p.name.clone(), i);
+    }
+
+    Some(DuplexSchedule {
+        left: left_schedule,
+        right: right_schedule,
+        feedback_names,
+        anchor: bridge_name,
+        anchor_params,
+    })
+}
+
+/// Build a sub-schedule for a set of nodes, inserting `ReadFeedback`/`WriteFeedback` steps.
+fn build_sub_schedule(ir: &GraphIr, node_names: &[String], is_left: bool) -> ScheduledGraph {
+    let mut steps = Vec::new();
+    let mut buffer_counter = 0usize;
+    let mut delay_slots = 0usize;
+    let mut output_buffers: HashMap<(String, usize), usize> = HashMap::new();
+
+    for (idx, name) in node_names.iter().enumerate() {
+        let node = &ir.nodes[name];
+
+        for fb_name in &node.feedback_read {
+            let buf = buffer_counter;
+            buffer_counter += 1;
+            steps.push(Step::ReadFeedback {
+                name: fb_name.clone(),
+                target_buf: buf,
+            });
+        }
+
+        let mut input_bufs = Vec::new();
+        for edge in &ir.edges {
+            if edge.to_node == *name && edge.kind == EdgeKind::Signal {
+                let key = (edge.from_node.clone(), edge.from_port);
+                if let Some(&buf) = output_buffers.get(&key) {
+                    while input_bufs.len() <= edge.to_port {
+                        input_bufs.push(0);
+                    }
+                    input_bufs[edge.to_port] = buf;
+                }
+            }
+        }
+
+        let mut output_bufs = Vec::new();
+        for _port in 0..node.arity.1 {
+            let buf = buffer_counter;
+            buffer_counter += 1;
+            output_bufs.push(buf);
+        }
+
+        for (port, &buf) in output_bufs.iter().enumerate() {
+            output_buffers.insert((name.clone(), port), buf);
+        }
+
+        let param_indices: Vec<usize> = (0..node.params.len()).collect();
+
+        steps.push(Step::InlineProgram {
+            node_idx: idx,
+            input_bufs,
+            output_bufs: output_bufs.clone(),
+            param_indices,
+        });
+
+        for edge in &ir.edges {
+            if edge.from_node == *name && edge.kind == EdgeKind::Feedback {
+                let slot = delay_slots;
+                delay_slots += 1;
+                steps.push(Step::WriteDelay {
+                    source: output_bufs[edge.from_port],
+                    slot,
+                });
+            }
+        }
+
+        for fb_name in &node.feedback_write {
+            steps.push(Step::WriteFeedback {
+                name: fb_name.clone(),
+                source_buf: output_bufs[0],
+            });
+        }
+    }
+
+    let inputs: usize = if is_left { ir.inputs } else { 0 };
+    let outputs: usize = if !is_left { ir.outputs } else { 0 };
+
+    ScheduledGraph {
+        inputs,
+        outputs,
+        steps,
+        buffers: buffer_counter,
+        output_mapping: Vec::new(),
+        program_names: node_names.to_vec(),
     }
 }
 

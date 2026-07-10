@@ -143,6 +143,9 @@ mod tests {
                 params: Vec::new(),
                 keep: true,
                 inline: false,
+                is_bridge: false,
+                feedback_read: vec![],
+                feedback_write: vec![],
             },
         );
 

@@ -18,7 +18,7 @@ use crate::traits::ProcessResult;
 /// 3. process_right — bridge.process_right(outputs) + execute right sub-graph
 /// 4. WriteFeedback — capture node outputs into feedback buffers
 /// 5. Shadow copy — swap read/write feedback buffers
-pub trait BridgeAlgorithm<T: Transcendental>: Send {
+pub trait BridgeAlgorithm<T: Transcendental>: Send + Sync {
     /// Number of signal input channels.
     fn num_inputs(&self) -> usize;
     /// Number of signal output channels.
