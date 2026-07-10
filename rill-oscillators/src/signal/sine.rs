@@ -142,26 +142,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SineOsc<T, BUF_SIZE> 
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "SineOsc".to_string(),
-
-            type_name: None,
-            category: NodeCategory::Source,
-            description: "Sine wave oscillator with FM".to_string(),
-            author: "Rill".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            signal_inputs: if self.use_fm { 1 } else { 0 },
-            signal_outputs: 1,
-            control_inputs: 0,
-            control_outputs: 0,
-            clock_inputs: 0,
-            clock_outputs: 0,
-            feedback_ports: 0,
-            parameters: vec![],
-        }
-    }
 
     fn init(&mut self, sample_rate: f32) {
         self.osc.init(sample_rate);
@@ -310,8 +290,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SineOsc<T, 
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SineOsc<T, BUF_SIZE> {
-    fn generate(
         &mut self,
         _ctx: &RenderContext,
         _control_inputs: &[T],

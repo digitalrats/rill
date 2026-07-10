@@ -162,26 +162,6 @@ impl<const BUF_SIZE: usize> Default for NoiseOsc<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "NoiseOsc".to_string(),
-
-            type_name: None,
-            category: NodeCategory::Source,
-            description: "Noise generator (white, pink, brown)".to_string(),
-            author: "Rill".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            signal_inputs: 0,
-            signal_outputs: 1,
-            control_inputs: 0,
-            control_outputs: 0,
-            clock_inputs: 0,
-            clock_outputs: 0,
-            feedback_ports: 0,
-            parameters: vec![],
-        }
-    }
 
     fn init(&mut self, sample_rate: f32) {
         self.state = Some(NodeState::new(sample_rate));
@@ -292,8 +272,6 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for NoiseOsc<BUF_SIZE> {
-    fn generate(
         &mut self,
         _ctx: &RenderContext,
         _control_inputs: &[f32],

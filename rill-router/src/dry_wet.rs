@@ -75,8 +75,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> DryWetMix<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for DryWetMix<T, BUF_SIZE> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -169,8 +167,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for DryWetMix<T
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for DryWetMix<T, BUF_SIZE> {
-    fn process(
         &mut self,
         _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],

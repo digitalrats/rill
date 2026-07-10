@@ -206,10 +206,6 @@ impl<const BUF_SIZE: usize> LofiProcessor<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        self.metadata.clone()
-    }
 
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
@@ -407,8 +403,6 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Processor<f32, BUF_SIZE> for LofiProcessor<BUF_SIZE> {
-    fn process(
         &mut self,
         _ctx: &RenderContext,
         signal_inputs: &[&[f32; BUF_SIZE]],

@@ -88,26 +88,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SawOsc<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "SawOsc".to_string(),
-
-            type_name: None,
-            category: NodeCategory::Source,
-            description: "Sawtooth wave oscillator".to_string(),
-            author: "Rill".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            signal_inputs: 0,
-            signal_outputs: 1,
-            control_inputs: 0,
-            control_outputs: 0,
-            clock_inputs: 0,
-            clock_outputs: 0,
-            feedback_ports: 0,
-            parameters: vec![],
-        }
-    }
 
     fn init(&mut self, sample_rate: f32) {
         self.osc.init(sample_rate);
@@ -203,8 +183,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SawOsc<T, B
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for SawOsc<T, BUF_SIZE> {
-    fn generate(
         &mut self,
         _ctx: &RenderContext,
         _control_inputs: &[T],

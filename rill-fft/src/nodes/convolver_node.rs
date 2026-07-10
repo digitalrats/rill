@@ -84,8 +84,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> ConvolverNode<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for ConvolverNode<T, BUF_SIZE> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {

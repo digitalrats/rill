@@ -130,25 +130,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for SamplePlayerNode<T, B
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for SamplePlayerNode<T, BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        NodeMetadata {
-            name: "SamplePlayer".to_string(),
-            type_name: None,
-            category: NodeCategory::Source,
-            description: "Sample playback node with loop modes and stereo".to_string(),
-            author: "Rill".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            signal_inputs: 0,
-            signal_outputs: self.outputs.len(),
-            control_inputs: 0,
-            control_outputs: 0,
-            clock_inputs: 0,
-            clock_outputs: 0,
-            feedback_ports: 0,
-            parameters: vec![],
-        }
-    }
 
     fn init(&mut self, sample_rate: f32) {
         self.left.init(sample_rate);

@@ -96,10 +96,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphLangNode<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for GraphLangNode<T, BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        self.metadata.clone()
-    }
 
     fn init(&mut self, sample_rate: f32) {
         self.state.sample_rate = sample_rate;
@@ -284,27 +280,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> LangNode<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LangNode<T, BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        let mut md = self.metadata.clone();
-        md.parameters = self
-            .program
-            .params_meta()
-            .iter()
-            .map(|p| {
-                let mut pm = ParamMetadata::new(
-                    &p.name,
-                    ParamType::Float,
-                    ParamValue::Float(p.default as f32),
-                );
-                if p.min.is_finite() && p.max.is_finite() {
-                    pm = pm.with_range(p.min as f32, p.max as f32, 0.0);
-                }
-                pm
-            })
-            .collect();
-        md
-    }
 
     fn init(&mut self, sample_rate: f32) {
         self.state.sample_rate = sample_rate;
@@ -403,8 +378,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for LangNode<T,
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE> for LangNode<T, BUF_SIZE> {
-    fn process(
         &mut self,
         _ctx: &RenderContext,
         _signal_inputs: &[&[T; BUF_SIZE]],
@@ -515,27 +488,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultiLangNode<T, BUF_SIZE> {
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for MultiLangNode<T, BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        let mut md = self.metadata.clone();
-        md.parameters = self
-            .program
-            .params_meta()
-            .iter()
-            .map(|p| {
-                let mut pm = ParamMetadata::new(
-                    &p.name,
-                    ParamType::Float,
-                    ParamValue::Float(p.default as f32),
-                );
-                if p.min.is_finite() && p.max.is_finite() {
-                    pm = pm.with_range(p.min as f32, p.max as f32, 0.0);
-                }
-                pm
-            })
-            .collect();
-        md
-    }
 
     fn init(&mut self, sample_rate: f32) {
         self.state.sample_rate = sample_rate;
@@ -634,33 +586,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for MultiLangNo
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> Router<T, BUF_SIZE> for MultiLangNode<T, BUF_SIZE> {
-    fn route(&mut self, _ctx: &RenderContext, _inputs: &[&[T; BUF_SIZE]]) -> ProcessResult<()> {
-        let n_in = self.program.num_inputs();
-        let n_out = self.program.num_outputs();
-
-        let mut input_slices: Vec<&[T]> = Vec::with_capacity(n_in);
-        for i in 0..n_in {
-            input_slices.push(self.input_ports[i].read() as &[T]);
-        }
-
-        // SAFETY: Each output port owns an independent buffer. Collecting
-        // raw pointers to non-overlapping buffers and constructing slices
-        // from them is safe — no aliasing occurs.
-        let mut out_ptrs: Vec<(*mut T, usize)> = Vec::with_capacity(n_out);
-        for port in self.output_ports.iter_mut() {
-            let buf = port.write();
-            out_ptrs.push((buf.as_mut_ptr(), buf.len()));
-        }
-        let mut output_slices: Vec<&mut [T]> = out_ptrs
-            .iter_mut()
-            .map(|(ptr, len)| unsafe { std::slice::from_raw_parts_mut(*ptr, *len) })
-            .collect();
-
-        MultichannelAlgorithm::process(&mut self.program, &input_slices, &mut output_slices)?;
-        self.state.advance();
-        Ok(())
-    }
 
     fn num_route_inputs(&self) -> usize {
         self.program.num_inputs()

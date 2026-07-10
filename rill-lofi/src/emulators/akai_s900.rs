@@ -108,10 +108,6 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
-    fn metadata(&self) -> NodeMetadata {
-        self.metadata.clone()
-    }
 
     fn node_type_id(&self) -> NodeTypeId {
         NodeTypeId::of::<Self>()
@@ -205,8 +201,6 @@ impl<const BUF_SIZE: usize> Node<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
     }
 }
 
-impl<const BUF_SIZE: usize> Source<f32, BUF_SIZE> for AkaiS900Emulator<BUF_SIZE> {
-    fn generate(
         &mut self,
         _ctx: &RenderContext,
         _control_inputs: &[f32],

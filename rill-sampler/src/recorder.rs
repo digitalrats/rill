@@ -77,8 +77,6 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
     }
 }
 
-impl<T: Transcendental, const B: usize> Node<T, B> for RecordingSink<T, B> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
     where
         Self: 'static + Sized,
     {
@@ -140,8 +138,6 @@ impl<T: Transcendental, const B: usize> Node<T, B> for RecordingSink<T, B> {
     }
 }
 
-impl<T: Transcendental, const B: usize> Sink<T, B> for RecordingSink<T, B> {
-    fn consume(
         &mut self,
         _ctx: &RenderContext,
         _signal_inputs: &[&[T; B]],
