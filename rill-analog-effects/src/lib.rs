@@ -5,9 +5,11 @@
 
 mod cassette;
 mod nodes;
+mod tape_bridge;
 
 pub use cassette::CassetteDeck;
 pub use nodes::CassetteDeckProcessor;
+pub use tape_bridge::{HeadConfig, TapeBridgeAlgorithm};
 
 pub mod register;
 
