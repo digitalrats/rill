@@ -11,6 +11,8 @@ documentation = "https://docs.rs/rill-analog-filters"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-model = { workspace = true }
+rill-graph = { workspace = true, optional = true }
 
 [features]
 default = []
+graph = ["rill-graph"]
