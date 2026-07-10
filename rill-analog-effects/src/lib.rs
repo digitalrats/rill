@@ -8,3 +8,5 @@ mod nodes;
 
 pub use cassette::CassetteDeck;
 pub use nodes::CassetteDeckProcessor;
+
+pub mod register;
