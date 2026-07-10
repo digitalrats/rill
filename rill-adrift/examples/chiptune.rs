@@ -7,6 +7,8 @@
 //!   cargo run --example chiptune --features "lofi,portaudio,serialization" [portaudio]
 //!   cargo run --example chiptune --features "lofi,alsa,serialization" [alsa]
 
+/// NOTE: This example uses the legacy `ProcessingState` API.
+/// For rill-lang-based examples, see: `lang_chiptune`, `complex_dsl`, `dsl_spectral`.
 use std::collections::HashMap;
 
 use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};

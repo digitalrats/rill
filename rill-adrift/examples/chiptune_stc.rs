@@ -8,6 +8,8 @@
 //!   cargo run --example chiptune_stc --features "io,lofi,portaudio,serialization" -- --file <file.stc> [backend]
 //!   cargo run --example chiptune_stc --features "io,lofi,alsa,serialization" -- --file <file.stc> alsa
 
+/// NOTE: This example uses the legacy `ProcessingState` API.
+/// For rill-lang-based examples, see: `lang_chiptune`, `complex_dsl`, `dsl_spectral`.
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

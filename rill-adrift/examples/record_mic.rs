@@ -9,6 +9,8 @@
 //!   cargo run --example record_mic --features "io,serialization,sampler,pipewire" -- pipewire [file.wav]
 //!   cargo run --example record_mic --features "io,serialization,sampler,alsa" -- alsa [file.wav]
 
+/// NOTE: This example uses the legacy `ProcessingState` API.
+/// For rill-lang-based examples, see: `lang_chiptune`, `complex_dsl`, `dsl_spectral`.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 

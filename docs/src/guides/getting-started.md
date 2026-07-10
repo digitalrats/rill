@@ -48,6 +48,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+> ⚠️ **Deprecated**: The `GraphBuilder::build()` → `ProcessingState` path shown here is the legacy API,
+> kept for backward compatibility. For new development, use the `lang` feature:
+> `GraphBuilder::build_ir(&registry)` → `RillGraphEngine`.
+> 
+> See the [rill-lang guide](rill-lang.md) for details.
+
 > **Note:** For real I/O, use `Output` / `Input` from `rill-io` (feature-gated
 > behind `io`). The `Output` node (Sink) writes to `IoPlayback`, `Input` (Source)
 > reads from `IoCapture`. The orchestrator creates the backend, extracts

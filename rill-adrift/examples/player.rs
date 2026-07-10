@@ -8,6 +8,8 @@
 //!   backend   I/O backend name (e.g. portaudio, alsa, null). Default from config.toml.
 //!   wav       Path to a WAV file to play. Overrides the file in graph.json.
 
+/// NOTE: This example uses the legacy `ProcessingState` API.
+/// For rill-lang-based examples, see: `lang_chiptune`, `complex_dsl`, `dsl_spectral`.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

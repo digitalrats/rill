@@ -8,6 +8,8 @@
 //!   cargo run --example play_wav --features "io,sampler,portaudio" -- [backend] [wav_path]
 //!   cargo run --example play_wav --features "io,sampler,alsa" -- alsa myfile.wav
 
+/// NOTE: This example uses the legacy `ProcessingState` API.
+/// For rill-lang-based examples, see: `lang_chiptune`, `complex_dsl`, `dsl_spectral`.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

@@ -481,6 +481,10 @@ Backends are created by the orchestrator **before** graph construction.
 into Source / Sink nodes via `Source::set_capture()` / `Sink::set_playback()`.
 The driver is wired separately via `ProcessingState::run_with_driver()`.
 
+> ⚠️ **Deprecated**: `ProcessingState` and `Port::propagate` are the legacy execution engine.
+> The recommended path is `GraphBuilder::build_ir()` → `GraphIr` → `RillGraphEngine`
+> via the `lang` feature in `rill-graph`. See the [execution unification spec](../docs/execution-unification.md) for details.
+
 The graph is `!Send + !Sync` — it stays on the I/O callback thread.
 
 ### `rill-lang` (0.5.0)
