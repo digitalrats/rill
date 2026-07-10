@@ -4,7 +4,7 @@
 //! * RackDef — control system (LFO, envelope, sequencer)
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rill_core::traits::ParamValue;
 use rill_core_actor::ActorSystem;
@@ -20,6 +20,8 @@ use rill_graph::serialization::GraphDef;
 
 #[cfg(feature = "serialization")]
 use rill_core::queues::CommandEnum;
+#[cfg(feature = "serialization")]
+use rill_core_actor::ActorRef;
 
 use rill_core_actor::Mailbox;
 
@@ -138,8 +140,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         &mut self.module_factory
     }
 
-    /// Launch — build graph engines, set up I/O. Returns self for chaining.
-    /// Call `run()` after launch to start the I/O loop.
+    /// Launch — build graph engines, set up IO, register modules, start processing.
     #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         let tokio_rt = tokio::runtime::Runtime::new()
@@ -148,20 +149,113 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
         for rd in &def.racks {
             let buf_size = def.block_size.max(64);
+            let sys = self.actor_system.clone();
+            let gd = rd.graph.clone();
 
-            let actor_ref = self.actor_system.spawn_detached(
+            let modules: Arc<Mutex<HashMap<String, ActorRef<CommandEnum>>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+            let tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
+
+            // 1. Rack actor — forwards messages to registered modules
+            let m = modules.clone();
+            let actor_ref = sys.spawn_detached(
                 &format!("rack_{}", rd.name),
-                move || Box::new(move |_msg: CommandEnum| {}),
+                move || {
+                    Box::new(move |msg: CommandEnum| {
+                        for module_ref in m.lock().unwrap().values() {
+                            module_ref.send(msg.clone());
+                        }
+                    })
+                },
                 1,
             );
 
-            // Build engine using shared build_engine method
-            let _engine = self
-                .build_engine(&rd.graph, buf_size)
-                .map_err(|e| ModularError::Graph(format!("{e:?}")))?;
+            let parent_ref = actor_ref.clone();
+            let module_parent = actor_ref.clone();
+            let mut case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, tasks);
+            self.cases.insert(rd.name.clone(), case);
 
-            let _case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref.clone(), vec![]);
-            self.cases.insert(rd.name.clone(), _case);
+            // 2. Build engine + ProgramRunner on signal thread
+            let backend_name = self.default_backend.clone();
+
+            // 2. Build engine + ProgramRunner on signal thread
+            let backend_name = self.default_backend.clone();
+            let registry = crate::lang_builtins::full_registry::<f32>();
+            #[cfg(feature = "lofi")]
+            let registry = crate::lang_builtins::full_registry_f32();
+
+            if let Some(case) = self.cases.get_mut(&rd.name) {
+                let graph_def = gd.clone();
+                case.start(move |running| {
+                    let mut builder: GraphBuilder<f32, BUF> = GraphBuilder::new();
+                    if let Err(e) = graph_def.populate(&mut builder) {
+                        log::error!("graph populate: {e}");
+                        return;
+                    }
+                    let ir = match builder.build_ir(&registry) {
+                        Ok(ir) => ir,
+                        Err(e) => {
+                            log::error!("build_ir: {e:?}");
+                            return;
+                        }
+                    };
+                    let scheduled = rill_lang::graph_lower::lower(&ir);
+                    let programs: Vec<rill_lang::RillProgram<f32>> = ir
+                        .topo_order
+                        .iter()
+                        .filter_map(|name| ir.nodes.get(name))
+                        .map(|node| rill_lang::RillProgram::<f32>::new(node.ir.clone()))
+                        .collect();
+                    let mailbox = Arc::new(Mailbox::new(64));
+                    let engine = rill_lang::graph_engine::RillGraphEngine::new(
+                        scheduled, programs, mailbox, buf_size,
+                    );
+
+                    let mut runner = rill_lang::program_runner::ProgramRunner::new(
+                        engine,
+                        Some(parent_ref),
+                        buf_size,
+                    );
+
+                    if let Some((ref name, ref params)) = backend_name {
+                        let mut bf: rill_graph::backend_factory::BackendFactory =
+                            Default::default();
+                        crate::registration::register_backends(&mut bf);
+                        match bf.create_any(name, params) {
+                            Ok((driver, capture, playback)) => {
+                                runner.wire_backends(capture, playback);
+                                let _ = runner.run_with_driver(driver, running);
+                            }
+                            Err(e) => log::error!("backend create '{}': {e}", name),
+                        }
+                    }
+                });
+            }
+
+            // 3. Build modules via ModuleFactory
+            let automaton_defs = &rd.automatons;
+            for module_def in &rd.modules {
+                let pb_def = to_pb_module(module_def);
+                // Skip graph modules — they're handled by the signal thread above
+                if pb_def.type_name() == "Graph" {
+                    continue;
+                }
+                let graph_ref = module_parent.clone();
+                match self.module_factory.construct(
+                    &pb_def,
+                    automaton_defs,
+                    &self.actor_system,
+                    &graph_ref,
+                ) {
+                    Ok(actor_ref) => {
+                        modules
+                            .lock()
+                            .unwrap()
+                            .insert(pb_def.type_name().to_string(), actor_ref);
+                    }
+                    Err(e) => log::warn!("module construct '{}': {e}", pb_def.type_name()),
+                }
+            }
         }
 
         self.tokio_rt = Some(tokio_rt);

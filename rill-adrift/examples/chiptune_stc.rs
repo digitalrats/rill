@@ -1,29 +1,32 @@
-//! STC file player — Sound Tracker Compiled format player via rill-lang DSL.
+//! STC file player — loads a Sound Tracker compiled module and plays it
+//! through the AY-3-8910 emulator via IoControl register writes.
 //!
-//! Mirrors lang_chiptune.rs: STC player in a control thread sends AY-3-8910
-//! register writes to the rill-lang compiled engine.
+//! Demonstrates `ModuleFactory` for registering a custom rack module
+//! (the STC player) that receives ClockTick via the rack actor.
 //!
 //! Usage:
-//!   cargo run --example chiptune_stc --features "io,lang,lofi,portaudio" -- --file <file.stc> [backend]
-//!   cargo run --example chiptune_stc --features "io,lang,lofi,alsa" -- --file <file.stc> alsa
+//!   cargo run --example chiptune_stc --features "io,lofi,portaudio,serialization" -- --file <file.stc> [backend]
+//!   cargo run --example chiptune_stc --features "io,lofi,alsa,serialization" -- --file <file.stc> alsa
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rill_adrift::lang::program_runner::ProgramRunner;
-use rill_adrift::registration;
-use rill_adrift::rill_graph::backend_factory::BackendFactory;
-use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
-use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
+use rill_adrift::modular::{ModularConfig, ModularSystem};
+use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
+use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::rill_graph::serialization::{
+    ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
+};
+use rill_adrift::rill_patchbay::module_factory::Drain;
 
-const BUF: usize = 512;
+const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
 // ============================================================================
 // STC Player — Sound Tracker Compiled format player
-// (identical to lang_chiptune.rs engine)
 // ============================================================================
 
 const ST_TABLE: [u16; 96] = [
@@ -72,7 +75,9 @@ impl StcPlayer {
         let pos_ptr = u16::from_le_bytes([data[1], data[2]]) as usize;
         let orn_ptr = u16::from_le_bytes([data[3], data[4]]) as usize;
         let pat_ptr = u16::from_le_bytes([data[5], data[6]]) as usize;
+
         let song_length = data[pos_ptr];
+
         let mut sample_ptrs: [Option<usize>; 16] = [None; 16];
         let mut samp_off: usize = 27;
         let mut sample_count: usize = 0;
@@ -84,6 +89,7 @@ impl StcPlayer {
             samp_off += 99;
             sample_count += 1;
         }
+
         let mut ornament_ptrs: [Option<usize>; 16] = [None; 16];
         let mut orn_off = orn_ptr;
         let mut orn_count: usize = 0;
@@ -95,6 +101,7 @@ impl StcPlayer {
             orn_off += 33;
             orn_count += 1;
         }
+
         let mut p = Self {
             data,
             delay,
@@ -119,13 +126,16 @@ impl StcPlayer {
             ch_envelope_state: [ENVELOPE_OFF; 3],
             finished: false,
         };
+
         p.ch_events[0] = usize::MAX;
         p.ch_current_ornament = [p.ornament_ptrs[0]; 3];
         p.ch_current_sample = [p.sample_ptrs[1]; 3];
+
         p.last_regs[7] = 0x38;
         for i in 8..11 {
             p.last_regs[i] = 15;
         }
+
         p
     }
 
@@ -202,14 +212,17 @@ impl StcPlayer {
     fn step_int(&mut self) -> [u8; 14] {
         let mut regs = [0u8; 14];
         regs.copy_from_slice(&self.last_regs);
+
         self.delay_counter = self.delay_counter.wrapping_sub(1);
         if self.delay_counter == 0 {
             self.delay_counter = self.delay;
+
             for ch in 0..3usize {
                 let row_counter = &mut self.ch_row_counter[ch];
                 *row_counter -= 1;
                 if *row_counter < 0 {
                     *row_counter = self.ch_row_skip[ch];
+
                     if ch == 0 {
                         let ev_ptr = self.ch_events[0];
                         let need_advance = ev_ptr == usize::MAX
@@ -249,6 +262,7 @@ impl StcPlayer {
                             }
                         }
                     }
+
                     loop {
                         let ev_off = self.ch_events[ch];
                         if ev_off >= self.data.len() {
@@ -256,6 +270,7 @@ impl StcPlayer {
                         }
                         let event = self.data[ev_off];
                         self.ch_events[ch] = ev_off + 1;
+
                         if event < 0x60 {
                             self.ch_note_value[ch] = event;
                             self.ch_sample_position[ch] = 0;
@@ -295,10 +310,13 @@ impl StcPlayer {
                 }
             }
         }
+
+        // Render AY output for current frame
         regs[7] = 0;
         for ch in 0..3usize {
             let sample_pos = self.get_sample_pos(ch);
             let sample_is_active = ch == 0 || self.ch_sample_repeat_counter[ch] != -1;
+
             if sample_is_active {
                 if let Some(samp_ptr) = self.ch_current_sample[ch] {
                     let step_off = samp_ptr + sample_pos * 3;
@@ -315,7 +333,9 @@ impl StcPlayer {
                             sample_pitch |= 0x1000;
                         }
                         let volume = sd0 & 0x0F;
+
                         regs[7] |= (noise_mask | tone_mask) << ch;
+
                         if self.ch_sample_repeat_counter[ch] != -1 {
                             if noise_mask == 0 {
                                 regs[6] = noise_value;
@@ -334,6 +354,7 @@ impl StcPlayer {
                         } else {
                             regs[8 + ch] = 0;
                         }
+
                         if self.ch_sample_repeat_counter[ch] != 0xFF
                             && self.ch_envelope_state[ch] != ENVELOPE_OFF
                         {
@@ -351,31 +372,52 @@ impl StcPlayer {
                 regs[8 + ch] = 0;
             }
         }
+
         self.last_regs = regs;
         regs
     }
 }
 
+// ============================================================================
+// Main
+// ============================================================================
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+
     let stc_file = args
         .iter()
         .position(|a| a == "--file")
         .and_then(|i| args.get(i + 1))
-        .expect("usage: --file <file.stc>");
-    let stc_data = std::fs::read(stc_file)?;
+        .cloned();
+    let stc_file = match stc_file {
+        Some(f) => f,
+        None => {
+            eprintln!("Usage: chiptune_stc --file <file.stc> [--normalize] [backend]");
+            eprintln!("  --file <path>    Path to .stc (Sound Tracker Compiled) file (required)");
+            eprintln!("  --normalize      Apply DC offset, gain, and ceiling normalization");
+            eprintln!("  [backend]        I/O backend name (default: portaudio)");
+            std::process::exit(1);
+        }
+    };
 
-    // Compile rill-lang DSL: AY-3-8910 + lofi
-    let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let src = r#"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1"#;
-    let engine = rill_lang::compile_graph::<f32>(src, &reg, RATE)?;
+    let stc_data = match std::fs::read(&stc_file) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Error reading STC file '{}': {}", stc_file, e);
+            std::process::exit(1);
+        }
+    };
 
-    // I/O backend
+    let normalize = args.iter().any(|a| a == "--normalize");
+
+    // Backend name: first positional argument that is not a known flag value
     let backend_name = args
         .iter()
         .enumerate()
         .skip(1)
         .find(|(i, a)| {
+            // Skip --file and its value
             if *i > 0 && args[*i - 1] == "--file" {
                 return false;
             }
@@ -385,72 +427,152 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
 
-    let mut be: BackendFactory = Default::default();
-    registration::register_backends(&mut be);
-    let mut be_params: HashMap<String, ParamValue> = HashMap::new();
+    let mut be_params = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
-    be_params.insert("block_size".into(), ParamValue::Int(256));
+    be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
     be_params.insert("channels".into(), ParamValue::Int(1));
-    let output = be
-        .create_output(&backend_name, &be_params)
-        .map_err(|e| format!("backend: {e}"))?;
 
-    // STC control thread
-    let playing = Arc::new(AtomicBool::new(false));
-    let finished = Arc::new(AtomicBool::new(false));
-    let stc_player = RefCell::new(StcPlayer::new(stc_data.clone()));
-
-    let stc_playing = playing.clone();
-    let stc_finished = finished.clone();
-    let stc_handle = engine.handle();
-    let stc_thread = std::thread::spawn(move || {
-        let step_ms = 20.48; // 1000/48.828125
-        loop {
-            if !stc_playing.load(Ordering::Acquire) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-                continue;
-            }
-            if let Some(regs) = stc_player.borrow_mut().step_ms(step_ms) {
-                stc_handle.send(CommandEnum::SetParameter(SetParameter::new(
-                    PortId::param(NodeId(0), 1),
-                    ParameterId::new("regs").unwrap(),
-                    ParamValue::Bytes(regs.to_vec()),
-                    SignalOrigin::Manual,
-                )));
-            }
-            if stc_player.borrow().finished {
-                stc_finished.store(true, Ordering::Release);
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+    let mut system = ModularSystem::<BUF>::new(ModularConfig {
+        sample_rate: RATE,
+        block_size: BUF,
+        backend_name: None,
+        backend_params: HashMap::new(),
+        ..Default::default()
     });
+    system.set_default_backend(&backend_name, be_params);
 
-    // Signal thread
-    let running = Arc::new(AtomicBool::new(true));
-    let runner_running = running.clone();
-    let driver = output.driver.clone();
-    let playback = output.playback.clone();
-    let sig_thread = std::thread::spawn(move || {
-        let mut runner = ProgramRunner::new(engine, None, BUF);
-        runner.wire_backends(None, Some(playback));
-        runner.run_with_driver(driver, runner_running).ok();
-    });
+    // Shared flag: set by Enter keypress (or MIDI Start in the future)
+    let is_playing = Arc::new(AtomicBool::new(false));
+    // Set when the melody loops back to the start
+    let melody_done = Arc::new(AtomicBool::new(false));
 
-    println!("AY-3-8910 Chiptune -- Popcorn (STC) [{backend_display}]");
-    println!("Press Enter to start playback...\n");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok();
-    playing.store(true, Ordering::Release);
+    // Register the STC player as a custom rack module
+    let playing_flag = is_playing.clone();
+    let melody_done_flag = melody_done.clone();
+    system.module_factory_mut().register_fn(
+        "stc_player",
+        Drain::OsThread { interval_ms: 1 },
+        move |_id, _params, graph_ref| {
+            let player = RefCell::new(StcPlayer::new(stc_data.clone()));
+            let gr = graph_ref.clone();
+            let playing = playing_flag.clone();
+            let done = melody_done_flag.clone();
+            Box::new(move |msg: CommandEnum| {
+                if !playing.load(Ordering::Acquire) {
+                    return;
+                }
+                if let CommandEnum::ClockTick(tick) = msg {
+                    let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
+                    if let Some(regs) = player.borrow_mut().step_ms(ms) {
+                        let pid = ParameterId::new("register_write").unwrap();
+                        // Schedule the register write sample-accurately. The graph
+                        // applies it during the block whose sample range contains
+                        // this position. We look ahead by one I/O quantum because
+                        // this module runs asynchronously: a change reacting to a
+                        // tick in the current callback can only be rendered in the
+                        // next one, so `sample_pos` targets the matching block of
+                        // the next callback instead of collapsing onto block 0.
+                        let apply_at = tick.sample_pos + tick.io_quantum as u64;
+                        gr.send(CommandEnum::SetParameter(
+                            SetParameter::new(
+                                PortId::param(NodeId(0), 0),
+                                pid,
+                                ParamValue::Bytes(regs.to_vec()),
+                                SignalOrigin::Manual,
+                            )
+                            .with_sample_pos(apply_at),
+                        ));
+                    }
+                    if player.borrow().finished {
+                        done.store(true, Ordering::Release);
+                        playing.store(false, Ordering::Release);
+                    }
+                }
+            })
+        },
+    );
 
-    while !finished.load(Ordering::Acquire) {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    let mut source_params = HashMap::new();
+    source_params.insert("bit_depth".into(), ParamValue::Int(8));
+    source_params.insert("nonlinear".into(), ParamValue::Bool(false));
+    source_params.insert("noise_floor".into(), ParamValue::Float(-48.0));
+    if normalize {
+        source_params.insert("dc_offset".into(), ParamValue::Float(0.5));
+        source_params.insert("output_gain".into(), ParamValue::Float(1.0));
+        source_params.insert("output_ceiling".into(), ParamValue::Float(0.8));
     }
 
-    running.store(false, Ordering::SeqCst);
-    output.driver.stop().ok();
-    sig_thread.join().ok();
-    stc_thread.join().ok();
-    println!("Done.");
+    let def = ModularSystemDef {
+        format_version: "rill/1".into(),
+        sample_rate: RATE,
+        block_size: BUF,
+        racks: vec![RackDef {
+            name: "chiptune_stc".into(),
+            graph: GraphDef {
+                format_version: "rill/1".to_string(),
+                sample_rate: RATE,
+                block_size: BUF,
+                resources: vec![],
+                nodes: vec![
+                    NodeDef::Source(SourceDef {
+                        id: 0,
+                        type_name: "rill/lofi_chip".into(),
+                        name: "ay_chip".into(),
+                        backend: None,
+                        parameters: source_params,
+                    }),
+                    NodeDef::Sink(SinkDef {
+                        id: 1,
+                        type_name: "rill/output".into(),
+                        name: "output".into(),
+                        backend: None,
+                        parameters: [("channels".into(), ParamValue::Float(1.0))].into(),
+                    }),
+                ],
+                connections: vec![ConnectionDef {
+                    kind: SignalKind::Signal,
+                    from_node: 0,
+                    from_port: 0,
+                    to_node: 1,
+                    to_port: 0,
+                }],
+                description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
+            },
+            automatons: vec![],
+            modules: vec![ModuleDef::Custom {
+                type_name: "stc_player".into(),
+                params: HashMap::new(),
+            }],
+            mappings: vec![],
+            description: None,
+        }],
+        description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
+    };
+
+    // ── Launch backend immediately so PipeWire/JACK ports exist ──────────
+    // Recording apps (Ardour, Audacity via pw-loopback) can connect before
+    // playback starts. The STC module stays silent until is_playing = true.
+    let _running_system = system.launch(&def).expect("launch system");
+    // Small settle: allow backend to register ports before printing prompt
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    println!("AY-3-8910 Chiptune — Popcorn (STC) [{backend_display}]\n");
+    println!("Backend ports are live — connect your recording app now.\n");
+    println!("Press Enter to start playback...");
+    println!("  (Future: MIDI Start 0xFA will also trigger playback)\n");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+
+    // ── Start playback ──────────────────────────────────────────────────
+    // In the future, this flag can be wired to MidiClockTracker::playing_flag()
+    is_playing.store(true, Ordering::Release);
+    println!("Playing... (waiting for melody to end)\n");
+
+    // Poll until melody finishes
+    while !melody_done.load(Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    println!("\nMelody finished.");
+
     Ok(())
 }
