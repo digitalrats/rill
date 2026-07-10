@@ -23,3 +23,10 @@ pub fn register_graph_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32
         }
     );
 }
+
+#[cfg(feature = "lang")]
+pub fn register_lang_builtins<T: rill_core::math::Transcendental>(
+    reg: &mut rill_lang::builtin::Registry<T>,
+) {
+    crate::lang::register_analog_builtins(reg);
+}

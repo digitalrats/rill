@@ -1,3 +1,4 @@
+#![cfg(not(feature = "lang"))]
 // rill-adrift/tests/fft_integration.rs
 //! Integration tests for rill-fft graph nodes via rill-adrift.
 

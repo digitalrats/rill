@@ -33,6 +33,8 @@ pub enum BuildError {
     Backend(String),
     /// Factory registration error (unknown node type).
     Registry(String),
+    /// A node type is not registered in the built-in registry.
+    UnknownNodeType(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -41,6 +43,7 @@ impl std::fmt::Display for BuildError {
             Self::CycleDetected => write!(f, "graph cycle detected"),
             Self::Backend(msg) => write!(f, "backend error: {msg}"),
             Self::Registry(msg) => write!(f, "registry error: {msg}"),
+            Self::UnknownNodeType(msg) => write!(f, "unknown node type: {msg}"),
         }
     }
 }
@@ -234,6 +237,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Creates backends for nodes that have a backend name set (via
     /// `SourceDef::backend` / `SinkDef::backend` or the builder's default).  Finds the active
     /// (driver) node and stores its index for [`Graph::run`].
+    #[cfg(not(feature = "lang"))]
     pub fn build(self, system: &ActorSystem) -> Result<Graph<T, BUF_SIZE>, BuildError> {
         // Phase 1: Construct all nodes from recipes
         let mut node_entries: Vec<NodeEntry<T, BUF_SIZE>> = Vec::with_capacity(self.recipes.len());
@@ -598,6 +602,176 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     }
 }
 
+#[cfg(feature = "lang")]
+impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
+    /// Build a [`rill_lang::graph_ir::GraphIr`] using the built-in [`Registry`].
+    ///
+    /// This is the new execution path replacing [`build`](Self::build) → [`Graph`].
+    /// It looks up each node type in the registry, constructs placeholder IRs,
+    /// and performs topological sort. Actual compilation to executable programs
+    /// happens in a future phase.
+    pub fn build_ir(
+        self,
+        registry: &rill_lang::builtin::Registry<T>,
+    ) -> Result<rill_lang::graph_ir::GraphIr, BuildError> {
+        use indexmap::IndexMap;
+        use rill_lang::builtin::SignatureSource;
+        use rill_lang::graph_ir::{EdgeKind, GraphEdge, GraphIr, GraphNode};
+        use std::collections::HashMap;
+
+        // 1. Build index → name mapping
+        let idx_to_name: HashMap<usize, String> = self
+            .recipes
+            .iter()
+            .enumerate()
+            .map(|(idx, recipe)| (idx, format!("node_{}", recipe.id.inner())))
+            .collect();
+
+        // 2. Create GraphNodes from recipes
+        let mut nodes: IndexMap<String, GraphNode> = IndexMap::new();
+        let mut node_list: Vec<String> = Vec::new();
+
+        for (idx, recipe) in self.recipes.iter().enumerate() {
+            let name = idx_to_name[&idx].clone();
+            node_list.push(name.clone());
+
+            let sig = registry
+                .builtin_sig(&recipe.type_name)
+                .ok_or_else(|| BuildError::UnknownNodeType(recipe.type_name.clone()))?;
+
+            let arity = (sig.signal_ins(), sig.signal_outs);
+
+            let params: Vec<rill_lang::ir::ParamDef> = recipe
+                .params
+                .parameters
+                .iter()
+                .filter_map(|(k, v)| {
+                    v.as_f32().map(|f| rill_lang::ir::ParamDef {
+                        name: k.clone(),
+                        default: f as f64,
+                        min: f64::NEG_INFINITY,
+                        max: f64::INFINITY,
+                    })
+                })
+                .collect();
+
+            let ir = rill_lang::ir::Ir {
+                instrs: vec![],
+                num_regs: 1,
+                output_reg: 0,
+                num_inputs: arity.0,
+                num_outputs: arity.1,
+                state: rill_lang::ir::StateLayout {
+                    state_slots: 0,
+                    delay_lens: vec![],
+                    num_outputs: arity.1,
+                },
+                builtins: vec![],
+                params: vec![],
+            };
+
+            nodes.insert(
+                name.clone(),
+                GraphNode {
+                    arity,
+                    ir,
+                    params,
+                    keep: false,
+                    inline: false,
+                },
+            );
+        }
+
+        // 3. Convert edges
+        let mut edges = Vec::new();
+        for (from_idx, from_port, to_idx, to_port) in &self.signal_edges {
+            edges.push(GraphEdge {
+                from_node: idx_to_name[from_idx].clone(),
+                from_port: *from_port,
+                to_node: idx_to_name[to_idx].clone(),
+                to_port: *to_port,
+                kind: EdgeKind::Signal,
+            });
+        }
+        for (from_idx, from_port, to_idx, to_port) in &self.feedback_edges {
+            edges.push(GraphEdge {
+                from_node: idx_to_name[from_idx].clone(),
+                from_port: *from_port,
+                to_node: idx_to_name[to_idx].clone(),
+                to_port: *to_port,
+                kind: EdgeKind::Feedback,
+            });
+        }
+
+        // 4. Compute topological order (Kahn's algorithm on signal edges only)
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        for name in &node_list {
+            in_degree.insert(name.clone(), 0);
+        }
+        for edge in &edges {
+            if edge.kind == EdgeKind::Signal {
+                *in_degree.get_mut(&edge.to_node).unwrap() += 1;
+            }
+        }
+
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        for name in &node_list {
+            adj.insert(name.clone(), vec![]);
+        }
+        for edge in &edges {
+            if edge.kind == EdgeKind::Signal {
+                adj.get_mut(&edge.from_node)
+                    .unwrap()
+                    .push(edge.to_node.clone());
+            }
+        }
+
+        let mut queue: Vec<String> = in_degree
+            .iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(n, _)| n.clone())
+            .collect();
+        let mut topo_order = Vec::new();
+
+        while let Some(node) = queue.pop() {
+            topo_order.push(node.clone());
+            if let Some(neighbors) = adj.get(&node) {
+                for neighbor in neighbors {
+                    let deg = in_degree.get_mut(neighbor).unwrap();
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push(neighbor.clone());
+                    }
+                }
+            }
+        }
+
+        if topo_order.len() != node_list.len() {
+            return Err(BuildError::CycleDetected);
+        }
+
+        // 5. Compute graph-level inputs/outputs from root/leaf nodes
+        let inputs = topo_order
+            .iter()
+            .filter(|n| in_degree.get(*n) == Some(&0))
+            .map(|n| nodes[n].arity.0)
+            .sum();
+        let outputs = topo_order
+            .iter()
+            .filter(|n| adj.get(*n).is_none_or(|v| v.is_empty()))
+            .map(|n| nodes[n].arity.1)
+            .sum();
+
+        Ok(GraphIr {
+            inputs,
+            outputs,
+            nodes,
+            edges,
+            topo_order,
+        })
+    }
+}
+
 // ============================================================================
 // Graph (Static DAG)
 // ============================================================================
@@ -615,6 +789,7 @@ type PendingParams = Rc<RefCell<Vec<SetParameter>>>;
 /// a later block stays queued. This is what makes parameter automation land at
 /// the right sample position regardless of how the backend batches blocks into
 /// I/O callbacks.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn apply_due_params<T: Transcendental, const BUF_SIZE: usize>(
     nodes: &UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>,
@@ -679,6 +854,7 @@ pub struct Graph<T: Transcendental, const BUF_SIZE: usize> {
 /// metadata.  The state is `!Send + !Sync` — it stays on the I/O thread.
 ///
 /// Created via [`Graph::into_processing_state`].
+#[cfg(not(feature = "lang"))]
 pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     actor: Actor<CommandEnum>,
     nodes: Rc<UnsafeCell<Vec<NodeVariant<T, BUF_SIZE>>>>,
@@ -702,6 +878,7 @@ pub struct ProcessingState<T: Transcendental, const BUF_SIZE: usize> {
     pending_params: PendingParams,
 }
 
+#[cfg(not(feature = "lang"))]
 impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
     /// Re-initialise every node for a new sample rate.
     ///
@@ -891,6 +1068,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ProcessingState<T, BUF_SIZE> {
 // ============================================================================
 
 /// Forward propagate from recording roots.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_forward<T: Transcendental, const BUF_SIZE: usize>(
     roots: &[*mut NodeVariant<T, BUF_SIZE>],
@@ -911,6 +1089,7 @@ fn p_forward<T: Transcendental, const BUF_SIZE: usize>(
 }
 
 /// Pull-model playback chain: start from sink, recursively process upstream.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_pull<T: Transcendental, const BUF_SIZE: usize>(
     sink: *mut NodeVariant<T, BUF_SIZE>,
@@ -925,6 +1104,7 @@ fn p_pull<T: Transcendental, const BUF_SIZE: usize>(
     }
 }
 
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
     node: &mut NodeVariant<T, BUF_SIZE>,
@@ -976,6 +1156,7 @@ fn p_pull_recurse<T: Transcendental, const BUF_SIZE: usize>(
 /// producers are on the sink path); here each is processed in order so its
 /// output is produced and `snapshot_feedback` captures it into the downstream
 /// feedback buffer for the next block.
+#[cfg(not(feature = "lang"))]
 #[allow(unsafe_code)]
 fn p_process_branch<T: Transcendental, const BUF_SIZE: usize>(
     branch: &[*mut NodeVariant<T, BUF_SIZE>],
@@ -1060,6 +1241,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     ///    propagates through the DAG via [`Port::propagate`].
     ///
     /// The graph is `!Send + !Sync` — it stays on the I/O callback thread.
+    #[cfg(not(feature = "lang"))]
     #[allow(unsafe_code)]
     pub fn process_block(&mut self, tick: &ClockTick) -> ProcessResult<()> {
         if let Some(ref mut actor) = self.actor {
@@ -1104,6 +1286,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     ///
     /// `ProcessingState` is `!Send + !Sync` — it stays on the I/O thread
     /// and is moved into the backend's process callback closure.
+    #[cfg(not(feature = "lang"))]
     pub fn into_processing_state(mut self) -> ProcessingState<T, BUF_SIZE> {
         let actor = self.actor.take().expect("graph actor missing");
         ProcessingState {
@@ -1151,7 +1334,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Graph<T, BUF_SIZE> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "lang")))]
 mod tests {
     use super::*;
     use rill_core::math::Transcendental;

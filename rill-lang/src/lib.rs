@@ -13,6 +13,9 @@ pub mod builtin;
 pub mod builtins;
 pub mod error;
 pub mod graph_engine;
+pub mod graph_ir;
+pub mod graph_lower;
+pub mod graph_optimize;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
@@ -36,7 +39,8 @@ pub use builtin::{
 };
 
 use rill_core::math::Transcendental;
-use std::collections::HashMap;
+use rill_core_actor::Mailbox;
+use std::sync::Arc;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
@@ -87,6 +91,8 @@ pub fn compile_graph<T: Transcendental>(
     registry: &Registry<T>,
     sample_rate: f32,
 ) -> Result<graph_engine::RillGraphEngine<T>, CompileError> {
+    use crate::graph_lower::{ScheduledGraph, Step};
+
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
@@ -97,28 +103,34 @@ pub fn compile_graph<T: Transcendental>(
     validate_block_builtins(&ir)?;
     let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
 
-    let mut p_idx: usize = 0;
-    let mut param_map: HashMap<String, usize> = HashMap::new();
+    let n_params = prog.params_meta().len();
 
-    let main = program.main_def().ok_or_else(|| CompileError::Parse {
-        msg: "program must contain a `main` definition".into(),
-        span: Span::new(0, 0),
-    })?;
-
-    for p in main.params() {
-        param_map.insert(p.name.clone(), p_idx);
-        p_idx += 1;
-    }
-    for def in main.where_defs() {
-        if let crate::ast::Def::Anchor { name, params, .. } = def {
-            for p in params {
-                param_map.insert(format!("{}.{}", name, p.name), p_idx);
-                p_idx += 1;
-            }
-        }
+    let mut step_input = Vec::new();
+    if prog.ir.num_inputs > 0 {
+        step_input.push(0u32 as usize); // buffer 0 = graph input
     }
 
-    Ok(graph_engine::RillGraphEngine::new(prog, param_map))
+    let schedule = ScheduledGraph {
+        inputs: 1,
+        outputs: 1,
+        steps: vec![Step::InlineProgram {
+            node_idx: 0,
+            input_bufs: step_input,
+            output_bufs: vec![1],
+            param_indices: (0..n_params).collect(),
+        }],
+        buffers: 2,
+        output_mapping: vec![1],
+    };
+
+    let mailbox = Arc::new(Mailbox::new(64));
+
+    Ok(graph_engine::RillGraphEngine::new(
+        schedule,
+        vec![prog],
+        mailbox,
+        512,
+    ))
 }
 
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {

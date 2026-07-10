@@ -31,6 +31,9 @@ use crate::modular::serialization::ModuleDef;
 #[cfg(feature = "serialization")]
 use rill_graph::serialization::GraphDef;
 
+#[cfg(feature = "lang")]
+use rill_core_actor::Mailbox;
+
 mod case;
 mod config;
 #[cfg(feature = "serialization")]
@@ -80,6 +83,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     /// Create a new `ModularSystem` with the given configuration.
     pub fn new(config: ModularConfig) -> Self {
         let mut nf = NodeFactory::new();
+        #[cfg(not(feature = "lang"))]
         crate::registration::register_all_nodes(&mut nf);
         let mut module_factory = ModuleFactory::new();
         crate::registration::register_modules(&mut module_factory);
@@ -113,7 +117,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         GraphBuilder::new(Arc::new(self.node_factory.lock().unwrap().clone()))
     }
     /// Build a signal graph from a GraphDef.
-    #[cfg(feature = "serialization")]
+    #[cfg(all(feature = "serialization", not(feature = "lang")))]
     pub fn build_graph(
         &self,
         def: &GraphDef,
@@ -124,6 +128,38 @@ impl<const BUF: usize> ModularSystem<BUF> {
         builder
             .build(&self.actor_system)
             .map_err(|e| format!("build: {e}").into())
+    }
+
+    /// Build a `RillGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
+    #[cfg(feature = "lang")]
+    pub fn build_engine(
+        &self,
+        def: &GraphDef,
+        buf_size: usize,
+    ) -> Result<rill_lang::graph_engine::RillGraphEngine<f32>, Box<dyn std::error::Error>> {
+        let mut builder = self.create_builder();
+        def.populate(&mut builder)
+            .map_err(|e| format!("populate: {e}"))?;
+
+        let registry = crate::lang_builtins::full_registry::<f32>();
+        let ir = builder
+            .build_ir(&registry)
+            .map_err(|e| format!("build_ir: {e}"))?;
+
+        let scheduled = rill_lang::graph_lower::lower(&ir);
+
+        let programs: Vec<rill_lang::RillProgram<f32>> = ir
+            .topo_order
+            .iter()
+            .filter_map(|name| ir.nodes.get(name))
+            .map(|node| rill_lang::RillProgram::<f32>::new(node.ir.clone()))
+            .collect();
+
+        let mailbox = Arc::new(Mailbox::new(64));
+
+        Ok(rill_lang::graph_engine::RillGraphEngine::new(
+            scheduled, programs, mailbox, buf_size,
+        ))
     }
 
     /// Access the module factory for registering custom rack module types before launch.
@@ -137,7 +173,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     }
 
     /// Launch — build graph, spawn servos, start threads.
-    #[cfg(feature = "serialization")]
+    #[cfg(all(feature = "serialization", not(feature = "lang")))]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         let tokio_rt = tokio::runtime::Runtime::new()
             .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;

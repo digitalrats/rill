@@ -33,3 +33,7 @@ pub use rill_core;
 pub use rill_core_dsp;
 
 pub mod register;
+
+/// rill-lang builtins for sampler types.
+#[cfg(feature = "lang")]
+mod lang;

@@ -5,6 +5,7 @@
 //! [rill_graph::GraphBuilder].
 
 use rill_core::traits::{Node, NodeId, NodeVariant, Params};
+#[cfg(not(feature = "lang"))]
 use rill_graph::{node_ctor, NodeFactory};
 
 #[cfg(feature = "io")]
@@ -22,6 +23,10 @@ use std::collections::HashMap;
 /// - `BUF_SIZE` — block size, must match the target graph.
 ///
 /// Register every built-in node type into a [`NodeFactory`].
+///
+/// Only available without the `lang` feature — when `lang` is enabled,
+/// nodes are registered as lang builtins instead.
+#[cfg(not(feature = "lang"))]
 pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     rill_oscillators::register::register_graph_nodes(factory);
     rill_digital_filters::register::register_graph_nodes(factory);
@@ -44,7 +49,7 @@ pub fn register_all_nodes<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, 
     rill_fft::register::register_graph_nodes(factory);
 }
 
-#[cfg(feature = "io")]
+#[cfg(all(feature = "io", not(feature = "lang")))]
 fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     use rill_core::io::{IoCapture, IoPlayback};
     use std::sync::Arc;
@@ -97,7 +102,7 @@ fn register_io<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) 
 // Rill Lang (DSL graph node)
 // ============================================================================
 
-#[cfg(feature = "lang")]
+#[cfg(all(feature = "lang", not(feature = "lang")))]
 fn register_lang<const BUF_SIZE: usize>(factory: &mut NodeFactory<f32, BUF_SIZE>) {
     node_ctor!(factory, "rill/lang", |id: NodeId, params: &Params| {
         let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("_");

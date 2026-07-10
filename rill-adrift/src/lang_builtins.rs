@@ -10,12 +10,18 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_core::builtin::Regis
     // Always available
     rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
     rill_lang::register::register_core_builtins(&mut reg);
+    rill_router::register::register_lang_builtins(&mut reg);
+    rill_digital_effects::register::register_lang_builtins(&mut reg);
 
     // Feature-gated
     #[cfg(feature = "fft")]
     rill_fft::register::register_lang_builtins(&mut reg);
     #[cfg(feature = "analog")]
     rill_core_model::register::register_lang_builtins(&mut reg);
+    #[cfg(feature = "analog")]
+    rill_analog_effects::register::register_lang_builtins(&mut reg);
+    #[cfg(feature = "sampler")]
+    rill_sampler::register::register_lang_builtins(&mut reg);
 
     reg
 }

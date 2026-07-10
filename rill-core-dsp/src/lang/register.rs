@@ -5,7 +5,7 @@ use rill_core::traits::algorithm::Algorithm;
 use crate::filters::{Biquad, FilterParams, FilterType, MoogLadder, OnePole};
 use crate::generators::{BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform};
 
-use super::biquad::BiquadBuiltin;
+use super::biquad::{BiquadBuiltin, GeneralBiquadBuiltin};
 use super::moog::MoogBuiltin;
 use super::noise::NoiseGenBuiltin;
 use super::onepole::OnePoleBuiltin;
@@ -62,6 +62,29 @@ fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
             });
             Algorithm::init(&mut b, sr);
             Box::new(BiquadBuiltin { inner: b })
+        },
+    );
+    reg.register_block(
+        BuiltinSig::simple("biquad", 1, 1, 4, BuiltinKind::Block),
+        |p, sr| {
+            let ft = match p[0] as u8 {
+                0 => FilterType::LowPass,
+                1 => FilterType::HighPass,
+                2 => FilterType::BandPass,
+                3 => FilterType::Notch,
+                4 => FilterType::Peak,
+                5 => FilterType::LowShelf,
+                6 => FilterType::HighShelf,
+                _ => FilterType::LowPass,
+            };
+            let mut b = Biquad::<T>::new(FilterParams {
+                filter_type: ft,
+                cutoff: p[1] as f32,
+                q: p[2] as f32,
+                gain_db: p[3] as f32,
+            });
+            Algorithm::init(&mut b, sr);
+            Box::new(GeneralBiquadBuiltin { inner: b })
         },
     );
 }
