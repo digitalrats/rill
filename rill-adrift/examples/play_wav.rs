@@ -25,6 +25,7 @@ use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
+#[cfg(not(feature = "lang"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let args: Vec<String> = std::env::args().collect();

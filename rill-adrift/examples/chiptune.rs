@@ -65,6 +65,7 @@ const MELODY: &[(f32, u64)] = &[
 
 const BASS: &[(f32, u64)] = &[(110.0, 480), (130.8, 480), (98.0, 480), (110.0, 480)];
 
+#[cfg(not(feature = "lang"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let backend_name = args
