@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use rill_core::math::Transcendental;
 use rill_core::queues::CommandEnum;
-use rill_core::traits::{Algorithm, ProcessResult};
+use rill_core::traits::{Algorithm, MultichannelAlgorithm, ProcessResult};
 use rill_core_actor::{ActorRef, Mailbox};
 
 use crate::program::RillProgram;
@@ -113,8 +113,28 @@ impl<T: Transcendental> RillGraphEngine<T> {
 
 impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
+        let mut outputs: &mut [&mut [T]] = &mut [output];
+        MultichannelAlgorithm::process(self, inputs, &mut outputs)
+    }
+
+    fn reset(&mut self) {
+        Algorithm::reset(&mut self.program);
+    }
+}
+
+impl<T: Transcendental> MultichannelAlgorithm<T> for RillGraphEngine<T> {
+    fn num_inputs(&self) -> usize {
+        self.program.num_inputs()
+    }
+
+    fn num_outputs(&self) -> usize {
+        self.program.num_outputs()
+    }
+
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
         self.drain_mailbox();
-        self.program.process(input, output)
+        MultichannelAlgorithm::process(&mut self.program, inputs, outputs)
     }
 
     fn reset(&mut self) {
