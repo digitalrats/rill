@@ -117,6 +117,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
             .map_err(|e| format!("populate: {e}"))?;
 
         let registry = crate::lang_builtins::full_registry::<f32>();
+        #[cfg(feature = "lofi")]
+        let registry = crate::lang_builtins::full_registry_f32();
         let ir = builder
             .build_ir(&registry)
             .map_err(|e| format!("build_ir: {e}"))?;
@@ -142,7 +144,37 @@ impl<const BUF: usize> ModularSystem<BUF> {
         &mut self.module_factory
     }
 
-    /// Launch — build graph, spawn servos, start threads.
+    /// Launch — build graph engines, set up I/O. Returns self for chaining.
+    /// Call `run()` after launch to start the I/O loop.
+    #[cfg(all(feature = "serialization", feature = "lang"))]
+    pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
+        let tokio_rt = tokio::runtime::Runtime::new()
+            .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
+        let _guard = tokio_rt.enter();
+
+        for rd in &def.racks {
+            let buf_size = def.block_size.max(64);
+
+            let actor_ref = self.actor_system.spawn_detached(
+                &format!("rack_{}", rd.name),
+                move || Box::new(move |_msg: CommandEnum| {}),
+                1,
+            );
+
+            // Build engine using shared build_engine method
+            let _engine = self
+                .build_engine(&rd.graph, buf_size)
+                .map_err(|e| ModularError::Graph(format!("{e:?}")))?;
+
+            let _case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref.clone(), vec![]);
+            self.cases.insert(rd.name.clone(), _case);
+        }
+
+        self.tokio_rt = Some(tokio_rt);
+        Ok(self)
+    }
+
+    /// Launch — legacy stub (requires both lang and serialization).
     #[cfg(all(feature = "serialization", not(feature = "lang")))]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         let tokio_rt = tokio::runtime::Runtime::new()
@@ -150,27 +182,13 @@ impl<const BUF: usize> ModularSystem<BUF> {
         let _guard = tokio_rt.enter();
 
         for rd in &def.racks {
-            let sys = self.actor_system.clone();
-
-            let (graph_tx, graph_rx) = std::sync::mpsc::channel::<ActorRef<CommandEnum>>();
-
-            // 1. Rack actor — forwards to modules
-            let case_name = rd.name.clone();
-            let actor_ref = sys.spawn_detached(
-                &format!("rack_{case_name}"),
+            let actor_ref = self.actor_system.spawn_detached(
+                &format!("rack_{}", rd.name),
                 move || Box::new(move |_msg: CommandEnum| {}),
                 1,
             );
-
-            let parent_ref = actor_ref.clone();
             let _case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, vec![]);
             self.cases.insert(rd.name.clone(), _case);
-
-            log::warn!(
-                "ModularSystem::launch() is deprecated — use build_engine() with 'lang' feature"
-            );
-            let _ = graph_tx.send(parent_ref);
-            let _ = graph_rx.recv();
         }
 
         self.tokio_rt = Some(tokio_rt);

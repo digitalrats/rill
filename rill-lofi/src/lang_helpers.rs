@@ -1,3 +1,4 @@
+#![cfg(feature = "lang")]
 use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::{ParamValue, ProcessResult};
 use rill_lang::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};

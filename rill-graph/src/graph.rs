@@ -211,6 +211,30 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
             let sig = registry
                 .builtin_sig(&recipe.type_name)
+                .or_else(|| {
+                    // Strip "rill/" prefix for graph node → lang builtin mapping
+                    recipe
+                        .type_name
+                        .strip_prefix("rill/")
+                        .and_then(|n| registry.builtin_sig(n))
+                })
+                .or_else(|| {
+                    // Common suffix mappings
+                    let mapped = match recipe.type_name.as_str() {
+                        "rill/dry_wet_mix" => "dry_wet",
+                        "rill/parametric_eq" => "eq_parametric",
+                        "rill/graphic_eq" => "graphic_eq",
+                        "rill/moog_ladder" => "moog",
+                        "rill/write_head" => "write_head",
+                        "rill/read_head" => "read_head",
+                        _ => "",
+                    };
+                    if mapped.is_empty() {
+                        None
+                    } else {
+                        registry.builtin_sig(mapped)
+                    }
+                })
                 .ok_or_else(|| BuildError::UnknownNodeType(recipe.type_name.clone()))?;
 
             let arity = (sig.signal_ins(), sig.signal_outs);

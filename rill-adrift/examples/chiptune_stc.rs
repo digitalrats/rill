@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::lang::program_runner::ProgramRunner;
 use rill_adrift::registration;
 use rill_adrift::rill_graph::backend_factory::BackendFactory;
 use rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
-use rill_lang::program_runner::ProgramRunner;
 
 const BUF: usize = 512;
 const RATE: f32 = 44100.0;

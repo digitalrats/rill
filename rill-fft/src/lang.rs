@@ -1,3 +1,4 @@
+#![cfg(feature = "lang")]
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::{ParamValue, ProcessResult};
