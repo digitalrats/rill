@@ -11,6 +11,7 @@ use rill_lang::debug::{CommandFrame, DebugControl, ProbeFrame, ProbeSlot};
 use rill_lang::ir::ProbeId;
 
 use super::formatter::{EventFormatter, JsonFormatter, TextFormatter};
+use super::ipc::ShmemRegion;
 use super::protocol::{AnalyzerCommand, AnalyzerConfig, AnalyzerResponse, OutputMode};
 use super::state::{ProbeState, ProbeStateManager};
 
@@ -32,6 +33,7 @@ impl CollectorThread {
         probe_slots: Vec<Arc<ProbeSlot>>,
         debug_control: DebugControl,
         resp_tx: mpsc::Sender<AnalyzerResponse>,
+        shmem: Option<ShmemRegion>,
     ) -> (Self, mpsc::Sender<AnalyzerCommand>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<AnalyzerCommand>();
 
@@ -41,7 +43,8 @@ impl CollectorThread {
         thread::Builder::new()
             .name("rill-telemetry-collector".into())
             .spawn(move || {
-                let manager = ProbeStateManager::new(probe_states, probe_slots, debug_control);
+                let manager =
+                    ProbeStateManager::new(probe_states, probe_slots, debug_control.clone());
                 let mut formatter: Box<dyn EventFormatter + Send> = match output_mode {
                     OutputMode::Text => Box::new(TextFormatter::new(log_file)),
                     OutputMode::Json => Box::new(JsonFormatter::new(log_file)),
@@ -55,6 +58,20 @@ impl CollectorThread {
                         }
                         let resp = manager.handle_command(cmd);
                         let _ = resp_tx.send(resp);
+                    }
+
+                    if let Some(ref shmem) = shmem {
+                        if shmem.has_flag(super::ipc::FLAG_SHUTDOWN) {
+                            break;
+                        }
+                        while let Some(cmd) = shmem.read_command() {
+                            if matches!(cmd, AnalyzerCommand::Quit) {
+                                shmem.set_flag(super::ipc::FLAG_SHUTDOWN);
+                                break;
+                            }
+                            let resp = manager.handle_command(cmd);
+                            let _ = shmem.write_response(&resp);
+                        }
                     }
 
                     for (probe_id, queue) in probe_queues.iter().enumerate() {
@@ -82,6 +99,12 @@ impl CollectorThread {
                     }
 
                     formatter.flush();
+
+                    if let Some(ref shmem) = shmem {
+                        if shmem.has_flag(super::ipc::FLAG_PAUSED) {
+                            debug_control.pause();
+                        }
+                    }
 
                     thread::sleep(Duration::from_millis(5));
                 }
