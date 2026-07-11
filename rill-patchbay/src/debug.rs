@@ -1,0 +1,84 @@
+//! Patchbay inspector — runtime introspection of automata, sensors, and queues.
+//!
+//! Provides snapshot types and trait interfaces for inspecting the control-path
+//! state of servos, sensors, and other patchbay components at runtime.
+
+use std::collections::HashMap;
+
+use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+
+/// A snapshot of an automaton's current state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomatonSnapshot {
+    pub name: String,
+    pub enabled: bool,
+    pub value: f64,
+    pub extra: HashMap<String, f64>,
+}
+
+/// A snapshot of a sensor's current status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SensorSnapshot {
+    pub name: String,
+    pub kind: String,
+    pub connected: bool,
+    pub event_count: u64,
+    pub last_event: Option<String>,
+    pub tracker_active: bool,
+}
+
+/// Interface for types that can produce an automaton snapshot.
+pub trait AutomatonInspector: Send + Sync {
+    fn snapshot(&self) -> AutomatonSnapshot;
+}
+
+/// Interface for types that can produce a sensor snapshot.
+pub trait SensorInspector: Send + Sync {
+    fn snapshot(&self) -> SensorSnapshot;
+}
+
+/// Central inspector registry for patchbay control-path components.
+pub struct PatchbayInspector {
+    automata: DashMap<String, Box<dyn AutomatonInspector>>,
+    sensors: DashMap<String, Box<dyn SensorInspector>>,
+}
+
+impl PatchbayInspector {
+    pub fn new() -> Self {
+        Self {
+            automata: DashMap::new(),
+            sensors: DashMap::new(),
+        }
+    }
+
+    pub fn register_automaton(&self, name: String, inspector: Box<dyn AutomatonInspector>) {
+        self.automata.insert(name, inspector);
+    }
+
+    pub fn register_sensor(&self, name: String, inspector: Box<dyn SensorInspector>) {
+        self.sensors.insert(name, inspector);
+    }
+
+    pub fn list_automata(&self) -> Vec<String> {
+        self.automata.iter().map(|e| e.key().clone()).collect()
+    }
+
+    pub fn get_automaton_snapshot(&self, name: &str) -> Option<AutomatonSnapshot> {
+        self.automata.get(name).map(|entry| entry.snapshot())
+    }
+
+    pub fn list_sensors(&self) -> Vec<String> {
+        self.sensors.iter().map(|e| e.key().clone()).collect()
+    }
+
+    pub fn get_sensor_snapshot(&self, name: &str) -> Option<SensorSnapshot> {
+        self.sensors.get(name).map(|entry| entry.snapshot())
+    }
+}
+
+impl Default for PatchbayInspector {
+    fn default() -> Self {
+        Self::new()
+    }
+}

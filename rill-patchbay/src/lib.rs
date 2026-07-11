@@ -107,6 +107,10 @@ pub mod osc;
 /// Micro-control observer for RT safety monitoring
 pub mod observer;
 
+/// Runtime introspection for control-path components
+#[cfg(feature = "debug")]
+pub mod debug;
+
 #[cfg(feature = "midi")]
 pub use midi::serialize_to_midi;
 #[cfg(feature = "midi")]
