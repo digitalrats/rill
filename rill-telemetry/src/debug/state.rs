@@ -10,7 +10,9 @@ use super::protocol::{AnalyzerCommand, AnalyzerResponse, ProbeInfo};
 
 /// Human-readable metadata for a probe.
 pub struct ProbeState {
+    /// Human-readable probe name (e.g., "lofi_chip", "osc1/output").
     pub name: String,
+    /// Which graph node this probe monitors.
     pub node_name: String,
 }
 
@@ -71,7 +73,7 @@ impl ProbeStateManager {
                 AnalyzerResponse::Ok
             }
             AnalyzerCommand::Step => {
-                self.debug_control.cont();
+                self.debug_control.step();
                 AnalyzerResponse::Ok
             }
             AnalyzerCommand::Pause => {

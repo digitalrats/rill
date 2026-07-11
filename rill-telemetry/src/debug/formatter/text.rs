@@ -71,20 +71,21 @@ impl EventFormatter for TextFormatter {
         self.writeln(&line);
     }
 
-    fn format_break(&mut self, probe_id: u32, name: &str, block_index: u64) {
+    fn format_break(&mut self, probe: &str, value: f64, block_index: u64) {
         let line = format!(
-            "{} Breakpoint hit at probe[{}] {}",
+            "{} Breakpoint hit at {} = {:.6}",
             format!("[block {}]", block_index).dimmed(),
-            probe_id.to_string().cyan().bold(),
-            name.red().bold(),
+            probe.red().bold(),
+            value.to_string().green().bold(),
         );
         self.writeln(&line);
     }
 
-    fn format_pause(&mut self, block_index: u64) {
+    fn format_pause(&mut self, reason: &str) {
         let line = format!(
-            "{} Engine paused",
-            format!("[block {}]", block_index).dimmed(),
+            "{} Engine paused: {}",
+            format!("[reason: {}]", reason).dimmed(),
+            "BREAK".white().on_red(),
         );
         self.writeln(&line);
     }

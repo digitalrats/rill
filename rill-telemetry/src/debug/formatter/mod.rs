@@ -21,13 +21,13 @@ pub trait EventFormatter {
         value_repr: &str,
     );
 
-    /// Format a breakpoint hit event.
-    fn format_break(&mut self, probe_id: u32, name: &str, block_index: u64);
+    /// Format a breakpoint hit (Phase 3 — called from REPL-aware collector).
+    fn format_break(&mut self, probe: &str, value: f64, block_index: u64);
 
-    /// Format a pause event.
-    fn format_pause(&mut self, block_index: u64);
+    /// Format engine pause event (Phase 3).
+    fn format_pause(&mut self, reason: &str);
 
-    /// Format an informational message.
+    /// Format informational message (Phase 3).
     fn format_info(&mut self, message: &str);
 
     /// Flush any buffered output.

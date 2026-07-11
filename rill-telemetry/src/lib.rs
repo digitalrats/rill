@@ -4,6 +4,7 @@
 
 /// Non-real-time collector that drains telemetry from a shared ring buffer.
 pub mod collector;
+/// Active debugging infrastructure (gated behind `debug` feature).
 #[cfg(feature = "debug")]
 pub mod debug;
 /// Real-time telemetry probe that captures per-block metrics.

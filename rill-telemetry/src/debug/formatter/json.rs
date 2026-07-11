@@ -71,20 +71,20 @@ impl EventFormatter for JsonFormatter {
         self.writeln_json(&json);
     }
 
-    fn format_break(&mut self, probe_id: u32, name: &str, block_index: u64) {
+    fn format_break(&mut self, probe: &str, value: f64, block_index: u64) {
         let json = serde_json::json!({
             "type": "breakpoint",
             "block_index": block_index,
-            "probe_id": probe_id,
-            "name": name,
+            "probe": probe,
+            "value": value,
         });
         self.writeln_json(&json);
     }
 
-    fn format_pause(&mut self, block_index: u64) {
+    fn format_pause(&mut self, reason: &str) {
         let json = serde_json::json!({
             "type": "pause",
-            "block_index": block_index,
+            "reason": reason,
         });
         self.writeln_json(&json);
     }
