@@ -35,6 +35,14 @@ impl ProbeStateManager {
         }
     }
 
+    /// Look up the human-readable name for a probe.
+    pub fn probe_name(&self, probe_id: ProbeId) -> String {
+        self.probe_states
+            .get(&probe_id)
+            .map(|entry| entry.name.clone())
+            .unwrap_or_else(|| format!("probe_{}", probe_id))
+    }
+
     /// Process an analyzer command and return the response.
     pub fn handle_command(&self, cmd: AnalyzerCommand) -> AnalyzerResponse {
         match cmd {
