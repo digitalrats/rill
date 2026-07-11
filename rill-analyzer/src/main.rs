@@ -317,7 +317,7 @@ fn repl_loop_shmem(shmem: rill_telemetry::debug::ipc::ShmemRegion) {
                 rill_telemetry::debug::protocol::AnalyzerResponse::Error(message) => {
                     println!("{} {}", "ERROR:".red(), message);
                 }
-                rill_telemetry::debug::protocol::AnalyzerResponse::AutomataList(list) => {
+                rill_telemetry::debug::protocol::AnalyzerResponse::AutomatonsList(list) => {
                     for name in &list {
                         println!("  automaton: {}", name);
                     }

@@ -47,8 +47,8 @@ pub enum AnalyzerCommand {
     },
     /// Pause the engine.
     Pause,
-    /// List all registered automata.
-    ListAutomata,
+    /// List all registered automatons.
+    ListAutomatons,
     /// Get the state of a specific automaton.
     GetAutomatonState { name: String },
     /// List all sensors.
@@ -84,7 +84,7 @@ pub enum AnalyzerResponse {
     /// An error occurred.
     Error(String),
     /// List of automaton names.
-    AutomataList(Vec<String>),
+    AutomatonsList(Vec<String>),
     /// State of a single automaton.
     AutomatonState(String),
     /// List of sensor names.

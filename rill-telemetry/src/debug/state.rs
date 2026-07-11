@@ -160,8 +160,8 @@ impl ProbeStateManager {
                 }
             }
             AnalyzerCommand::Quit => AnalyzerResponse::Ok,
-            AnalyzerCommand::ListAutomata => {
-                AnalyzerResponse::Error("ListAutomata not yet implemented".to_string())
+            AnalyzerCommand::ListAutomatons => {
+                AnalyzerResponse::Error("ListAutomatons not yet implemented".to_string())
             }
             AnalyzerCommand::GetAutomatonState { .. } => {
                 AnalyzerResponse::Error("GetAutomatonState not yet implemented".to_string())

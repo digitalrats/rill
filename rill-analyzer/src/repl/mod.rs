@@ -157,7 +157,7 @@ fn drain_responses(resp_rx: &mpsc::Receiver<AnalyzerResponse>) {
             AnalyzerResponse::Paused => {
                 println!("{}", "[paused]".yellow());
             }
-            AnalyzerResponse::AutomataList(list) => {
+            AnalyzerResponse::AutomatonsList(list) => {
                 for name in &list {
                     println!("{} {}", "automaton".cyan(), name.bold());
                 }

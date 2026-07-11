@@ -1,4 +1,4 @@
-//! Patchbay inspector — runtime introspection of automata, sensors, and queues.
+//! Patchbay inspector — runtime introspection of automatons, sensors, and queues.
 //!
 //! Provides snapshot types and trait interfaces for inspecting the control-path
 //! state of servos, sensors, and other patchbay components at runtime.
@@ -43,32 +43,32 @@ pub trait SensorInspector: Send + Sync {
 
 /// Central inspector registry for patchbay control-path components.
 pub struct PatchbayInspector {
-    automata: DashMap<String, Box<dyn AutomatonInspector>>,
+    automatons: DashMap<String, Box<dyn AutomatonInspector>>,
     sensors: DashMap<String, Box<dyn SensorInspector>>,
 }
 
 impl PatchbayInspector {
     pub fn new() -> Self {
         Self {
-            automata: DashMap::new(),
+            automatons: DashMap::new(),
             sensors: DashMap::new(),
         }
     }
 
     pub fn register_automaton(&self, name: String, inspector: Box<dyn AutomatonInspector>) {
-        self.automata.insert(name, inspector);
+        self.automatons.insert(name, inspector);
     }
 
     pub fn register_sensor(&self, name: String, inspector: Box<dyn SensorInspector>) {
         self.sensors.insert(name, inspector);
     }
 
-    pub fn list_automata(&self) -> Vec<String> {
-        self.automata.iter().map(|e| e.key().clone()).collect()
+    pub fn list_automatons(&self) -> Vec<String> {
+        self.automatons.iter().map(|e| e.key().clone()).collect()
     }
 
     pub fn get_automaton_snapshot(&self, name: &str) -> Option<AutomatonSnapshot> {
-        self.automata.get(name).map(|entry| entry.snapshot())
+        self.automatons.get(name).map(|entry| entry.snapshot())
     }
 
     pub fn list_sensors(&self) -> Vec<String> {

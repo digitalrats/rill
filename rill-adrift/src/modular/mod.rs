@@ -352,8 +352,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
                     dyn Fn(&AnalyzerCommand) -> Option<AnalyzerResponse> + Send,
                 > = Box::new(move |cmd: &AnalyzerCommand| -> Option<AnalyzerResponse> {
                     match cmd {
-                        AnalyzerCommand::ListAutomata => Some(AnalyzerResponse::AutomataList(
-                            inspector_clone.list_automata(),
+                        AnalyzerCommand::ListAutomatons => Some(AnalyzerResponse::AutomatonsList(
+                            inspector_clone.list_automatons(),
                         )),
                         AnalyzerCommand::GetAutomatonState { name } => {
                             inspector_clone.get_automaton_snapshot(name).map(|snap| {
