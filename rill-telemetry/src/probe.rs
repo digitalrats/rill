@@ -42,12 +42,14 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
-        let mut block = TelemetryBlock::<T, BUF_SIZE>::default();
-        block.node_id = 0;
-        block.channel = self.channel;
-        block.timestamp = now;
-        block.sample_rate = 44100.0;
-        block.block_index = self.block_index;
+        let mut block = TelemetryBlock::<T, BUF_SIZE> {
+            node_id: 0,
+            channel: self.channel,
+            timestamp: now,
+            sample_rate: 44100.0,
+            block_index: self.block_index,
+            ..Default::default()
+        };
         self.block_index += 1;
         block.data.copy_from_slice(input);
         block.compute_metrics();

@@ -73,6 +73,12 @@ pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     parent_ref: Option<ActorRef<CommandEnum>>,
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Create a new empty graph builder.
     pub fn new() -> Self {
