@@ -285,11 +285,13 @@ impl<T: Transcendental> RillGraphEngine<T> {
     }
 
     #[cfg(feature = "debug")]
+    /// Allocate `count` probe slots for the engine.
     pub fn allocate_probe_slots(&mut self, count: usize) {
         self.probe_slots.resize_with(count, ProbeSlot::default);
     }
 
     #[cfg(feature = "debug")]
+    /// Return debug state handles for external collector/debugger threads.
     pub fn debug_state(
         &self,
     ) -> (
@@ -341,10 +343,10 @@ impl<T: Transcendental> RillGraphEngine<T> {
                     {
                         let _ = self.command_queue.push(CommandFrame {
                             block_index: block_idx,
-                            command_kind: CmdStr::from_str("SetParameter"),
-                            node_name: CmdStr::from_str(&sp.anchor),
-                            param_name: CmdStr::from_str(&format!("{}", sp.parameter)),
-                            value_repr: CmdStr::from_str(&format!("{:?}", sp.value)),
+                            command_kind: CmdStr::new("SetParameter"),
+                            node_name: CmdStr::new(&sp.anchor),
+                            param_name: CmdStr::new(&format!("{}", sp.parameter)),
+                            value_repr: CmdStr::new(&format!("{:?}", sp.value)),
                         });
                     }
                 }
@@ -353,7 +355,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
                     {
                         let _ = self.command_queue.push(CommandFrame {
                             block_index: block_idx,
-                            command_kind: CmdStr::from_str(&format!("{:?}", cmd)),
+                            command_kind: CmdStr::new(&format!("{:?}", cmd)),
                             node_name: CmdStr::default(),
                             param_name: CmdStr::default(),
                             value_repr: CmdStr::default(),
@@ -401,6 +403,10 @@ impl<T: Transcendental> RillGraphEngine<T> {
     /// 4. WriteFeedback — copy sub-engine outputs into named feedback buffers
     /// 5. Shadow copy — swap read/write feedback buffers
     pub fn process_tick(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        #[cfg(feature = "debug")]
+        {
+            self.debug_control.block_index.fetch_add(1, Ordering::Relaxed);
+        }
         self.drain_mailbox();
 
         #[cfg(feature = "debug")]
@@ -411,7 +417,6 @@ impl<T: Transcendental> RillGraphEngine<T> {
                 std::hint::spin_loop();
             }
             self.debug_control.global_resume.store(false, Ordering::Release);
-            self.debug_control.block_index.fetch_add(1, Ordering::Relaxed);
         }
 
         if let Some(ref mut duplex) = self.duplex {
@@ -832,6 +837,10 @@ impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
     #[cfg(not(feature = "router"))]
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let buf_size = output.len();
+        #[cfg(feature = "debug")]
+        {
+            self.debug_control.block_index.fetch_add(1, Ordering::Relaxed);
+        }
         self.drain_mailbox();
 
         #[cfg(feature = "debug")]
@@ -842,7 +851,6 @@ impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
                 std::hint::spin_loop();
             }
             self.debug_control.global_resume.store(false, Ordering::Release);
-            self.debug_control.block_index.fetch_add(1, Ordering::Relaxed);
         }
 
         if let Some(inp) = input {
