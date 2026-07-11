@@ -5,14 +5,14 @@
 [![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Modular signal-processing ecosystem for Rust. 21 crates, from lock-free
+Modular signal-processing ecosystem for Rust. 20 crates (plus the
+`rill-analyzer` CLI debugger), from lock-free
 queues and generic vector math to real-time FFT, convolution, frequency‑domain
 effects, and analog circuit modelling.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  rill-osc  │  rill-graph  │  rill-patchbay  │  rill-sampler │
-│  rill-analyzer                                               │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)   │
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
@@ -26,6 +26,10 @@ effects, and analog circuit modelling.
 │  rill-core-actor  (ActorRef, ActorCell, ActorSystem)        │
 │  rill-telemetry  (probes, collectors, debug IPC)           │
 └─────────────────────────────────────────────────────────────┘
+
+CLI tools: `rill-analyzer` — interactive gdb-style debugger. Connects to
+running processes via shared memory, inspects signal probes, traces
+parameter changes, and controls execution.
 ```
 
 Most crates are **domain-agnostic** — only `rill-io` and `rill-osc` are
@@ -243,7 +247,7 @@ topology definition.
 | **rill-lofi** | Lo-fi emulation (NES, AY-3-8910, Akai S900) |
 | **rill-io** | Audio I/O: PortAudio, ALSA, PipeWire, JACK |
 | **rill-telemetry** | Real-time probes, collectors, debug IPC |
-| **rill-analyzer** | Interactive gdb-style debugger for signal graph inspection |
+| **rill-analyzer** | **[CLI]** Interactive gdb-style debugger for signal graph inspection |
 | **rill-analog-filters** | WDF-based analog filters (MoogLadder) |
 | **rill-analog-effects** | Op-amp, tape deck, preamp models |
 | **rill-osc** | OSC server and networking |
@@ -312,7 +316,8 @@ cargo fmt                 # format (max_width=100)
 
 ## Publications
 
-All 21 crates publish to [crates.io](https://crates.io) in dependency order.
+All 20 crates publish to [crates.io](https://crates.io) in dependency order.
+`rill-analyzer` is a CLI tool and is **not** published to crates.io.
 Use the publish script:
 
 ```bash
