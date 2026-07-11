@@ -304,6 +304,83 @@ Wait — `ServoState<A>` is not public. It's `pub(crate)`. The `ServoInspector` 
 
 Actually, `ServoInspector` is a new struct living inside `rill-patchbay/src/debug.rs`. It has access to `pub(crate)` types.
 
+### 7. Sensor Inspection API
+
+`OscSensor` and `MidiHub` both implement the `Sensor` trait. Each has:
+- `id: String` — identifier
+- `running: Arc<AtomicBool>` — polling active flag
+- `thread: Option<JoinHandle<()>>` — Some = polling thread alive, None = stopped
+
+Add `inspect()` to both:
+
+```rust
+// rill-patchbay/src/osc.rs
+impl OscSensor {
+    pub fn inspect(&self) -> SensorSnapshot {
+        SensorSnapshot {
+            name: self.id.clone(),
+            kind: "osc".into(),
+            connected: self.thread.is_some(),
+            event_count: 0,
+            last_event: None,
+        }
+    }
+}
+
+// rill-patchbay/src/midi.rs
+impl MidiHub {
+    pub fn inspect(&self) -> SensorSnapshot {
+        SensorSnapshot {
+            name: self.id.clone(),
+            kind: "midi".into(),
+            connected: self.thread.is_some(),
+            event_count: 0,
+            last_event: None,
+            tracker_active: self.tracker.is_some(),
+        }
+    }
+}
+```
+
+`SensorSnapshot` gains a `tracker_active: bool` field for MIDI clock info:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SensorSnapshot {
+    pub name: String,
+    pub kind: String,
+    pub connected: bool,
+    pub event_count: u64,
+    pub last_event: Option<String>,
+    pub tracker_active: bool,
+}
+```
+
+**Registration:** In `ModuleFactory::construct()`, after constructing a Servo, the constructor calls `servo.inspector()` and registers with `PatchbayInspector::register_automaton()`. Similarly for sensors — but sensors are constructed indirectly via `spawn_midi_sensor` / `spawn_osc_sensor` helpers, not via `ModuleFactory`. The `OscConstructor` and `MidiConstructor` in `registration.rs` create `Servo<NoAction>` wrappers around sensors.
+
+For MVP: `Servo<NoAction>` wrappers register as automata. Direct sensor inspection (OscSensor, MidiHub) is available via the `inspect()` method but registration with `PatchbayInspector` happens at the `ModularSystem::launch()` level — we iterate `modules` and check if each has an `ActorRef<CommandEnum>` that responds to inspection commands.
+
+**Alternative (simpler for MVP):** Instead of registering inspectors for individual sensors, `PatchbayInspector` stores a reference to the `modules: Arc<Mutex<HashMap<String, ActorRef<CommandEnum>>>>` map and sends a new `CommandEnum::Inspect` variant to each module. The module handler responds with either `AutomatonSnapshot` or `SensorSnapshot`. But this requires a response channel...
+
+**Simplest approach for MVP:** `PatchbayInspector` stores an `Arc<Mutex<HashMap<String, ActorRef<CommandEnum>>>>` reference. For `ListAutomata`/`ListSensors`, it just returns the module names grouped by type (Servo, Sensor). For `GetAutomatonState`/`GetSensorStatus`, it sends a request to the module's `ActorRef` and waits for a response. This avoids modifying the Servo/Sensor internals.
+
+Actually, the cleanest: add a `request_inspect` method that sends a special command to the module's ActorRef and returns the snapshot. But this is complex.
+
+**For MVP: Manual registration.** In `ModularSystem::launch()`, after `ModuleFactory::construct()` returns, we know which module is a Servo (has a type_name) and call `servo.inspector()` on the constructed `Servo` instance. But the `ModuleFactory::construct()` interface returns only `ActorRef<CommandEnum>` — we lose the `Servo` instance.
+
+**Fix:** Change `ModuleFactory::construct()` to also return an optional `Box<dyn AutomatonInspector>` or `Box<dyn SensorInspector>`:
+
+```rust
+pub fn construct(
+    ...
+    inspector: Option<&PatchbayInspector>,
+) -> Result<(ActorRef<CommandEnum>, Option<Box<dyn Any>>), ModuleError>
+```
+
+The `Box<dyn Any>` can be downcast to `Box<dyn AutomatonInspector>` or `Box<dyn SensorInspector>` in `ModularSystem::launch()`.
+
+For now, document this as the approach and provide concrete impl in the plan.
+
 ## Implementation Plan
 
 ### Task 1: Arc<ProbeSlot> + clone_debug_state
@@ -329,23 +406,36 @@ Actually, `ServoInspector` is a new struct living inside `rill-patchbay/src/debu
 - `rill-patchbay/src/debug.rs` (new) — `PatchbayInspector`, `AutomatonInspector`, `SensorInspector` traits, `AutomatonSnapshot`, `SensorSnapshot`
 - `rill-patchbay/Cargo.toml` — add `debug` feature, `serde` dependency
 
-### Task 5: Servo Inspection
+### Task 5: Servo + Sensor Inspection
 
 **Files:**
-- `rill-patchbay/src/engine.rs` — add `Servo::inspector()` method
-- `rill-patchbay/src/debug.rs` — `ServoInspector` impl
+- `rill-patchbay/src/engine.rs` — add `Servo::inspector()` method returning `Box<dyn AutomatonInspector>`
+- `rill-patchbay/src/osc.rs` — add `OscSensor::inspect()` method
+- `rill-patchbay/src/midi.rs` — add `MidiHub::inspect()` method
+- `rill-patchbay/src/debug.rs` — `ServoInspector<A>`, `OscSensorInspector`, `MidiSensorInspector` impls
 
-### Task 6: CollectorThread Integration
+### Task 6: ModuleFactory register_inspector
+
+**Files:**
+- `rill-patchbay/src/module_factory.rs` — extend `construct()` to accept `inspector: Option<&PatchbayInspector>`, register automaton/sensor inspectors during construction
+- `rill-patchbay/src/servo_constructor.rs` — pass inspector through to Servo construction
+
+### Task 7: CollectorThread Integration
 
 **Files:**
 - `rill-telemetry/src/debug/collector_thread.rs` — handle new `AnalyzerCommand` variants via `PatchbayInspector`
 
-### Task 7: ModularSystem Integration
+### Task 7: CollectorThread Integration
+
+**Files:**
+- `rill-telemetry/src/debug/collector_thread.rs` — handle new `AnalyzerCommand` variants via `PatchbayInspector`
+
+### Task 8: ModularSystem Integration
 
 **Files:**
 - `rill-adrift/src/modular/mod.rs` — modify signal closure to send DebugState; wire CollectorThread + PatchbayInspector after module construction
 - `rill-adrift/Cargo.toml` — ensure `debug` feature enables everything needed
 
-### Task 8: Workspace Check
+### Task 9: Workspace Check
 
 - `cargo check --workspace`, `cargo clippy`, `cargo test`
