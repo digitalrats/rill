@@ -50,11 +50,17 @@ pub enum AnalyzerCommand {
     /// List all registered automatons.
     ListAutomatons,
     /// Get the state of a specific automaton.
-    GetAutomatonState { name: String },
+    GetAutomatonState {
+        /// Automaton identifier.
+        name: String,
+    },
     /// List all sensors.
     ListSensors,
     /// Get the status of a specific sensor.
-    GetSensorStatus { name: String },
+    GetSensorStatus {
+        /// Sensor identifier.
+        name: String,
+    },
     /// List all queues.
     ListQueues,
     /// Shut down the collector thread.

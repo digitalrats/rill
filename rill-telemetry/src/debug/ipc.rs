@@ -295,6 +295,7 @@ impl ShmemRegion {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_ring_buffer(
         &self,
         offset: usize,

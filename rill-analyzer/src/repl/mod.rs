@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use colored::Colorize;
 
-use rill_telemetry::debug::protocol::{AnalyzerCommand, AnalyzerResponse, NodeInfo, QueueStats};
+use rill_telemetry::debug::protocol::{AnalyzerCommand, AnalyzerResponse, NodeInfo};
 
 use self::history::History;
 use self::parser::Command;

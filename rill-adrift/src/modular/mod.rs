@@ -205,13 +205,13 @@ impl<const BUF: usize> ModularSystem<BUF> {
             );
 
             let parent_ref = actor_ref.clone();
-            let mut case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, tasks);
+            let case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, tasks);
             self.cases.insert(rd.name.clone(), case);
 
             // 2. Build engine + ProgramRunner on signal thread
             let backend_name = self.default_backend.clone();
             let rack_name = rd.name.clone();
-            let registry = crate::lang_builtins::full_registry::<f32>();
+            let _registry = crate::lang_builtins::full_registry::<f32>();
             #[cfg(feature = "lofi")]
             let registry = crate::lang_builtins::full_registry_f32();
 
@@ -231,7 +231,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             return;
                         }
                     };
-                    let scheduled = rill_lang::graph_lower::lower(&ir);
+                    let _scheduled = rill_lang::graph_lower::lower(&ir);
                     let scheduled = rill_lang::graph_lower::lower(&ir);
                     let programs: Vec<rill_lang::RillProgram<f32>> = ir
                         .topo_order

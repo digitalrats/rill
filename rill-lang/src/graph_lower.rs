@@ -102,7 +102,7 @@ pub struct DuplexSchedule {
 /// 4. Feedback edges → ReadDelay/WriteDelay steps.
 /// 5. Allocate buffers: register-allocation-style graph coloring on liveness intervals.
 pub fn lower(ir: &GraphIr) -> ScheduledGraph {
-    let n_nodes = ir.nodes.len();
+    let _n_nodes = ir.nodes.len();
 
     let _pos: HashMap<String, usize> = ir
         .topo_order

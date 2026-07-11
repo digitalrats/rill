@@ -481,7 +481,7 @@ impl<A: Automaton + 'static> Servo<A> {
         let a = automaton;
         let s = state;
         let gr = graph_ref;
-        let nid = target_node;
+        let _nid = target_node;
         let param = target_param;
         let map = mapping;
         let ctrl = control;

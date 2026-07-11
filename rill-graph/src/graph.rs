@@ -258,8 +258,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             let param_values: Vec<f64> = recipe
                 .params
                 .parameters
-                .iter()
-                .filter_map(|(_, v)| v.as_f32().map(|f| f as f64))
+                .values()
+                .filter_map(|v| v.as_f32().map(|f| f as f64))
                 .collect();
 
             // Build BuiltinInstance: one builtin wrapping the recipe's type

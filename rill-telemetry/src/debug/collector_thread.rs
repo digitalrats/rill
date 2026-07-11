@@ -25,6 +25,7 @@ impl CollectorThread {
     ///
     /// The caller is responsible for creating the response channel and passing
     /// `resp_tx` in. The `resp_rx` side stays with the caller (e.g., the REPL thread).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn spawn(
         config: AnalyzerConfig,
         probe_states: Arc<DashMap<ProbeId, ProbeState>>,

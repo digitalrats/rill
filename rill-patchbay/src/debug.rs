@@ -14,20 +14,30 @@ use crate::engine::Automaton;
 /// A snapshot of an automaton's current state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomatonSnapshot {
+    /// Automaton identifier (servo name).
     pub name: String,
+    /// Whether the automaton is enabled.
     pub enabled: bool,
+    /// Current output value.
     pub value: f64,
+    /// Additional state fields (time, base, frozen, etc.).
     pub extra: HashMap<String, f64>,
 }
 
 /// A snapshot of a sensor's current status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorSnapshot {
+    /// Sensor identifier.
     pub name: String,
+    /// Sensor type ("osc", "midi").
     pub kind: String,
+    /// Whether the sensor is connected and polling.
     pub connected: bool,
+    /// Total events received.
     pub event_count: u64,
+    /// Last event description, if any.
     pub last_event: Option<String>,
+    /// Whether a MIDI clock tracker is active.
     pub tracker_active: bool,
 }
 

@@ -628,26 +628,27 @@ impl<T: Transcendental> RillGraphEngine<T> {
                                 let slot_idx = *id as usize;
                                 if slot_idx < probe_slots.len() {
                                     let slot = &probe_slots[slot_idx];
-                                    if slot.is_active() {
-                                        if !out_slices.is_empty() && !out_slices[0].is_empty() {
-                                            let val = out_slices[0][0];
-                                            let bits = val.to_f64().to_bits();
-                                            slot.last_value.store(bits, Ordering::Release);
-                                            let _ = slot.queue.push(ProbeFrame {
-                                                value_bits: bits,
-                                                block_index: block_idx,
-                                            });
-                                            if slot.is_breakpoint() {
-                                                slot.paused_flag.store(true, Ordering::Release);
-                                                debug_control.pause();
-                                                while !debug_control
-                                                    .global_resume
-                                                    .load(Ordering::Acquire)
-                                                {
-                                                    std::hint::spin_loop();
-                                                }
-                                                slot.paused_flag.store(false, Ordering::Release);
+                                    if slot.is_active()
+                                        && !out_slices.is_empty()
+                                        && !out_slices[0].is_empty()
+                                    {
+                                        let val = out_slices[0][0];
+                                        let bits = val.to_f64().to_bits();
+                                        slot.last_value.store(bits, Ordering::Release);
+                                        let _ = slot.queue.push(ProbeFrame {
+                                            value_bits: bits,
+                                            block_index: block_idx,
+                                        });
+                                        if slot.is_breakpoint() {
+                                            slot.paused_flag.store(true, Ordering::Release);
+                                            debug_control.pause();
+                                            while !debug_control
+                                                .global_resume
+                                                .load(Ordering::Acquire)
+                                            {
+                                                std::hint::spin_loop();
                                             }
+                                            slot.paused_flag.store(false, Ordering::Release);
                                         }
                                     }
                                 }
@@ -779,31 +780,30 @@ impl<T: Transcendental> RillGraphEngine<T> {
                             let slot_idx = *id as usize;
                             if slot_idx < self.probe_slots.len() {
                                 let slot = &self.probe_slots[slot_idx];
-                                if slot.is_active() {
-                                    if !output_bufs.is_empty()
-                                        && *output_bufs.first().unwrap() < self.buffers.len()
-                                    {
-                                        let buf = &self.buffers[*output_bufs.first().unwrap()];
-                                        if !buf.is_empty() {
-                                            let val = buf[0];
-                                            let bits = val.to_f64().to_bits();
-                                            slot.last_value.store(bits, Ordering::Release);
-                                            let _ = slot.queue.push(ProbeFrame {
-                                                value_bits: bits,
-                                                block_index: block_idx,
-                                            });
-                                            if slot.is_breakpoint() {
-                                                slot.paused_flag.store(true, Ordering::Release);
-                                                self.debug_control.pause();
-                                                while !self
-                                                    .debug_control
-                                                    .global_resume
-                                                    .load(Ordering::Acquire)
-                                                {
-                                                    std::hint::spin_loop();
-                                                }
-                                                slot.paused_flag.store(false, Ordering::Release);
+                                if slot.is_active()
+                                    && !output_bufs.is_empty()
+                                    && *output_bufs.first().unwrap() < self.buffers.len()
+                                {
+                                    let buf = &self.buffers[*output_bufs.first().unwrap()];
+                                    if !buf.is_empty() {
+                                        let val = buf[0];
+                                        let bits = val.to_f64().to_bits();
+                                        slot.last_value.store(bits, Ordering::Release);
+                                        let _ = slot.queue.push(ProbeFrame {
+                                            value_bits: bits,
+                                            block_index: block_idx,
+                                        });
+                                        if slot.is_breakpoint() {
+                                            slot.paused_flag.store(true, Ordering::Release);
+                                            self.debug_control.pause();
+                                            while !self
+                                                .debug_control
+                                                .global_resume
+                                                .load(Ordering::Acquire)
+                                            {
+                                                std::hint::spin_loop();
                                             }
+                                            slot.paused_flag.store(false, Ordering::Release);
                                         }
                                     }
                                 }

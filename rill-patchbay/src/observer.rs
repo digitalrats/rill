@@ -107,7 +107,7 @@ impl MicroControlObserver {
     pub fn observe_start_with_params(
         &self,
         component: &str,
-        port: String,
+        _port: String,
         _parameter: &ParameterId,
     ) -> OperationGuard {
         let guard = self.observe_start(component);
