@@ -206,13 +206,24 @@ let shmem = rill_telemetry::debug::ipc::ShmemRegion::create().ok();
 5. Процесс обнаруживает флаг и начинает обработку команд из CmdRingBuffer
 6. Отладчик читает RespRingBuffer, выводит в REPL
 
-#### Launch: `rill-analyzer launch graph.json`
+#### Launch: `rill-analyzer launch <target>`
 
+Гибридный режим с разрешением по расширению файла:
+
+**Если `<target>` заканчивается на `.json` (граф rill):**
 1. Отладчик делает `ShmemRegion::create()` (получает `/dev/shm/rill-debug-<my-pid>`)
-2. `fork()` + `exec("drift", "--graph", "graph.json")` с `RILL_DEBUG_SHMEM=/dev/shm/rill-debug-<ppid>` в окружении
+2. `fork()` + `exec("drift", "--graph", "<target>")` с `RILL_DEBUG_SHMEM=/dev/shm/rill-debug-<ppid>` в окружении
 3. Дочерний процесс (drift) делает `ShmemRegion::open_from_env("RILL_DEBUG_SHMEM")`
 4. Устанавливает `FLAG_ATTACHED`
 5. Отладчик ждёт флаг, затем активирует REPL
+
+**Если `<target>` — не `.json` (произвольный бинарник/команда):**
+1. Отладчик делает `ShmemRegion::create()`
+2. `fork()` + `exec(<target>)` с `RILL_DEBUG_SHMEM=...` в окружении
+3. Дочерний процесс должен сам создать/открыть shmem через `rill_telemetry::debug::ipc`
+4. Отладчик ждёт `FLAG_ATTACHED` от дочернего процесса, затем активирует REPL
+
+**Явная команда:** `rill-analyzer launch -- cargo run --example chiptune_stc` — всё после `--` передаётся как команда в `execvp`.
 
 #### Local: `rill-analyzer run graph.json` (без изменений)
 
@@ -237,13 +248,30 @@ enum Commands {
         #[arg(long)] json: bool,
     },
 
-    /// Запустить граф как дочерний процесс и подключиться.
+    /// Запустить цель и подключиться отладчиком.
+    ///
+    /// Если target заканчивается на .json — запускается drift с этим графом.
+    /// Иначе target трактуется как бинарник/команда.
+    /// Всё после "--" передаётся как явная команда в execvp.
     Launch {
-        graph: PathBuf,
-        #[arg(long, default_value = "drift")] host_binary: PathBuf,
+        /// Граф (.json) или бинарник для запуска.
+        target: String,
+
+        /// Дополнительные аргументы для целевого процесса (после target).
+        #[arg(last = true)]
+        args: Vec<String>,
+
         #[arg(long)] json: bool,
     },
 }
+```
+
+**Примеры:**
+```bash
+rill-analyzer launch graph.json                    # drift --graph graph.json
+rill-analyzer launch ./my-app --verbose            # exec ./my-app --verbose
+rill-analyzer launch -- cargo run --example chip   # exec cargo run --example chip
+rill-analyzer run graph.json                       # локально (без fork)
 ```
 
 ### 7. Зависимости и feature gates
