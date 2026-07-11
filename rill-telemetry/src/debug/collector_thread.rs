@@ -62,6 +62,7 @@ impl CollectorThread {
 
                     if let Some(ref shmem) = shmem {
                         if shmem.has_flag(super::ipc::FLAG_SHUTDOWN) {
+                            let _ = resp_tx.send(AnalyzerResponse::Ok);
                             break;
                         }
                         while let Some(cmd) = shmem.read_command() {
