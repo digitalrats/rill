@@ -6,7 +6,7 @@ use rill_lang::ir::ProbeId;
 use serde::{Deserialize, Serialize};
 
 /// Commands sent from the analyzer to the collector thread.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnalyzerCommand {
     /// Set a breakpoint at the given probe.
     SetBreakpoint {
@@ -52,7 +52,7 @@ pub enum AnalyzerCommand {
 }
 
 /// Responses sent from the collector thread back to the analyzer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AnalyzerResponse {
     /// Generic success acknowledgment.
     Ok,
@@ -139,7 +139,7 @@ impl Default for AnalyzerConfig {
 }
 
 /// Output rendering mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputMode {
     /// Human-readable colored text output.
     Text,
