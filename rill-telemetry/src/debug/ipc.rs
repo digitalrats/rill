@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -64,8 +64,8 @@ pub const FLAG_SHUTDOWN: u32 = 0x04;
 struct ControlHeader {
     magic: u32,
     version: u32,
-    process_pid: u64,
-    debugger_pid: u64,
+    process_pid: AtomicU64,
+    debugger_pid: AtomicU64,
     flags: AtomicU32,
     cmd_capacity: u32,
     resp_capacity: u32,
@@ -165,8 +165,8 @@ impl ShmemRegion {
         let header = unsafe { &mut *(ptr as *mut ControlHeader) };
         header.magic = MAGIC;
         header.version = VERSION;
-        header.process_pid = pid;
-        header.debugger_pid = 0;
+        header.process_pid = AtomicU64::new(pid);
+        header.debugger_pid = AtomicU64::new(0);
         header.flags = AtomicU32::new(0);
         header.cmd_capacity = CMD_BUFFER_SIZE as u32;
         header.resp_capacity = RESP_BUFFER_SIZE as u32;
@@ -206,17 +206,17 @@ impl ShmemRegion {
     }
 
     pub fn process_pid(&self) -> u64 {
-        self.header().process_pid
+        self.header().process_pid.load(Ordering::Acquire)
     }
 
     pub fn debugger_pid(&self) -> u64 {
-        self.header().debugger_pid
+        self.header().debugger_pid.load(Ordering::Acquire)
     }
 
     pub fn set_debugger_pid(&self, pid: u64) {
         unsafe {
             let header = &mut *(self.ptr as *mut ControlHeader);
-            header.debugger_pid = pid;
+            header.debugger_pid.store(pid, Ordering::Release);
         }
     }
 
@@ -289,7 +289,7 @@ impl ShmemRegion {
     }
 
     pub fn notify_process(&self) {
-        let pid = self.header().process_pid as pid_t;
+        let pid = self.header().process_pid.load(Ordering::Acquire) as pid_t;
         unsafe {
             kill(pid, SIGUSR1);
         }
@@ -324,6 +324,9 @@ impl ShmemRegion {
         }
 
         if write_pos + frame_len > capacity {
+            if write_pos + 2 > capacity {
+                return false;
+            }
             let base = unsafe { self.ptr.add(offset) };
             unsafe {
                 ptr::write(base.add(write_pos) as *mut u16, 0u16);
