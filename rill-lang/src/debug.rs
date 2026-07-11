@@ -27,7 +27,10 @@ impl<const N: usize> CmdStr<N> {
         let mut bytes = [0u8; N];
         let len = s.len().min(N);
         bytes[..len].copy_from_slice(&s.as_bytes()[..len]);
-        Self { bytes, len: len as u8 }
+        Self {
+            bytes,
+            len: len as u8,
+        }
     }
     /// Return the contained string slice.
     pub fn as_str(&self) -> &str {
@@ -35,11 +38,18 @@ impl<const N: usize> CmdStr<N> {
         std::str::from_utf8(&self.bytes[..len]).unwrap_or("")
     }
     /// Returns true if the string is empty.
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 impl<const N: usize> Default for CmdStr<N> {
-    fn default() -> Self { Self { bytes: [0u8; N], len: 0 } }
+    fn default() -> Self {
+        Self {
+            bytes: [0u8; N],
+            len: 0,
+        }
+    }
 }
 
 /// A single frame of command data captured from the actor mailbox.
@@ -84,7 +94,9 @@ impl ProbeSlot {
     }
     /// Returns true if the probe is enabled and capturing.
     #[inline]
-    pub fn is_active(&self) -> bool { self.enabled.load(Ordering::Acquire) }
+    pub fn is_active(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
     /// Returns true if the probe is enabled and has a breakpoint set.
     #[inline]
     pub fn is_breakpoint(&self) -> bool {
@@ -93,7 +105,9 @@ impl ProbeSlot {
 }
 
 impl Default for ProbeSlot {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Debug control atomics shared between engine and collector/debugger threads.
@@ -121,6 +135,10 @@ impl DebugControl {
         self.global_pause.store(false, Ordering::Release);
         self.global_resume.store(true, Ordering::Release);
     }
+    /// Step one tick: allow engine to process one block, then re-pause.
+    pub fn step(&self) {
+        self.global_resume.store(true, Ordering::Release);
+    }
     /// Signal the engine to pause at the next inter-tick boundary.
     pub fn pause(&self) {
         self.global_pause.store(true, Ordering::Release);
@@ -129,5 +147,7 @@ impl DebugControl {
 }
 
 impl Default for DebugControl {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
