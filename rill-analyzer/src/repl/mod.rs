@@ -1,8 +1,7 @@
-mod commands;
 mod history;
 mod parser;
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc;
 
 use colored::Colorize;
@@ -31,7 +30,6 @@ pub fn run(
     loop {
         print_prompt();
         line.clear();
-        use std::io::Write;
         let _ = std::io::stdout().flush();
 
         match reader.read_line(&mut line) {
@@ -73,11 +71,11 @@ pub fn run(
             }
         }
 
-        drain_responses(&resp_rx, &nodes);
+        drain_responses(&resp_rx);
     }
 }
 
-fn drain_responses(resp_rx: &mpsc::Receiver<AnalyzerResponse>, _nodes: &[NodeInfo]) {
+fn drain_responses(resp_rx: &mpsc::Receiver<AnalyzerResponse>) {
     while let Ok(resp) = resp_rx.try_recv() {
         match resp {
             AnalyzerResponse::Ok => {}
@@ -122,11 +120,6 @@ fn drain_responses(resp_rx: &mpsc::Receiver<AnalyzerResponse>, _nodes: &[NodeInf
             }
             AnalyzerResponse::ProbeList(list) => {
                 for pi in &list {
-                    let _status = if pi.enabled {
-                        "[on]".green()
-                    } else {
-                        "[off]".red()
-                    };
                     let bp = if pi.has_breakpoint {
                         " [bp]".yellow()
                     } else {
@@ -148,7 +141,7 @@ fn drain_responses(resp_rx: &mpsc::Receiver<AnalyzerResponse>, _nodes: &[NodeInf
                         "{} {} {} {} {}",
                         format!("[block#{}]", entry.block_index).dimmed(),
                         entry.command_kind.blue(),
-                        format!("→").dimmed(),
+                        "→".to_string().dimmed(),
                         entry.node_name.bold(),
                         if let Some(ref p) = entry.param_name {
                             format!("{} = {}", p, entry.value_repr)

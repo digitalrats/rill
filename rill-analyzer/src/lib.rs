@@ -10,6 +10,7 @@ use rill_telemetry::debug::protocol::{AnalyzerCommand, AnalyzerConfig, NodeInfo}
 use rill_telemetry::debug::state::ProbeState;
 
 pub mod lua;
+pub mod prelude;
 pub mod repl;
 
 pub struct Analyzer {
@@ -21,6 +22,11 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
+    /// Launch the analyzer with a collector thread and an interactive REPL.
+    ///
+    /// Spawns the collector thread on a dedicated OS thread and the REPL on
+    /// another thread. Returns immediately — call [`wait`](Self::wait) to block
+    /// until the REPL exits.
     pub fn launch(
         config: AnalyzerConfig,
         probes: Arc<DashMap<ProbeId, ProbeState>>,
@@ -55,6 +61,7 @@ impl Analyzer {
         }
     }
 
+    /// Block until the REPL thread exits (user types `quit`).
     pub fn wait(mut self) {
         if let Some(h) = self.repl_handle.take() {
             let _ = h.join();

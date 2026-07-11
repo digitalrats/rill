@@ -17,30 +17,6 @@ impl History {
     }
 
     #[allow(dead_code)]
-    pub fn prev(&mut self) -> Option<&str> {
-        if self.entries.is_empty() {
-            return None;
-        }
-        if self.position > 0 {
-            self.position -= 1;
-        }
-        Some(&self.entries[self.position])
-    }
-
-    #[allow(dead_code)]
-    pub fn next(&mut self) -> Option<&str> {
-        if self.position >= self.entries.len() {
-            return None;
-        }
-        self.position += 1;
-        if self.position >= self.entries.len() {
-            None
-        } else {
-            Some(&self.entries[self.position])
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn all(&self) -> &[String] {
         &self.entries
     }

@@ -13,7 +13,6 @@ rill-core = { workspace = true }
 rill-lang = { workspace = true, features = ["debug"] }
 rill-graph = { workspace = true, features = ["serialization"] }
 rill-telemetry = { workspace = true, features = ["debug"] }
-parking_lot = { workspace = true }
 dashmap = "6"
 clap = { version = "4", features = ["derive"] }
 colored = "3"

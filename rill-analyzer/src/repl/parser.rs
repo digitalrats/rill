@@ -53,10 +53,7 @@ pub fn parse(line: &str) -> Option<Command> {
                 probe_id,
             }))
         }
-        _ => {
-            let matches = find_prefix_match(cmd, args);
-            matches
-        }
+        _ => find_prefix_match(cmd, args),
     }
 }
 

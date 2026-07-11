@@ -27,7 +27,40 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Run { graph, .. } => {
+        Commands::Run {
+            graph,
+            no_repl,
+            json,
+            log,
+            script,
+        } => {
+            if no_repl {
+                println!(
+                    "{} --no-repl mode not yet implemented",
+                    "[rill-analyzer]".yellow()
+                );
+            }
+            if json {
+                println!(
+                    "{} --json mode not yet implemented",
+                    "[rill-analyzer]".yellow()
+                );
+            }
+            if let Some(ref path) = log {
+                println!(
+                    "{} --log {} mode not yet implemented",
+                    "[rill-analyzer]".yellow(),
+                    path.display()
+                );
+            }
+            if let Some(ref path) = script {
+                println!(
+                    "{} --script {} mode not yet implemented",
+                    "[rill-analyzer]".yellow(),
+                    path.display()
+                );
+            }
+
             let json_str = std::fs::read_to_string(&graph).unwrap_or_else(|e| {
                 eprintln!("ERROR: {}", e);
                 std::process::exit(1);
