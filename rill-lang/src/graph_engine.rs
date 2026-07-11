@@ -19,6 +19,13 @@ use rill_core_actor::{ActorRef, Mailbox};
 use crate::graph_lower::{DuplexSchedule, ScheduledGraph, Step};
 use crate::program::RillProgram;
 
+#[cfg(feature = "debug")]
+use crate::debug::{CmdStr, CommandFrame, DebugControl, ProbeFrame, ProbeSlot};
+#[cfg(feature = "debug")]
+use rill_core::queues::spsc::SpscQueue;
+#[cfg(feature = "debug")]
+use std::sync::atomic::Ordering;
+
 /// Map from parameter name to its index in the program's parameter list.
 pub type ParamMap = HashMap<String, usize>;
 
@@ -86,6 +93,12 @@ pub struct RillGraphEngine<T: Transcendental> {
     mailbox: Arc<Mailbox<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
     duplex: Option<DuplexData<T>>,
+    #[cfg(feature = "debug")]
+    pub(crate) probe_slots: Vec<ProbeSlot>,
+    #[cfg(feature = "debug")]
+    pub(crate) command_queue: std::sync::Arc<SpscQueue<CommandFrame, 256>>,
+    #[cfg(feature = "debug")]
+    pub(crate) debug_control: DebugControl,
 }
 
 impl<T: Transcendental> RillGraphEngine<T> {
@@ -140,6 +153,12 @@ impl<T: Transcendental> RillGraphEngine<T> {
             mailbox,
             actor_ref,
             duplex: None,
+            #[cfg(feature = "debug")]
+            probe_slots: Vec::new(),
+            #[cfg(feature = "debug")]
+            command_queue: std::sync::Arc::new(SpscQueue::new()),
+            #[cfg(feature = "debug")]
+            debug_control: DebugControl::new(),
         }
     }
 
@@ -232,6 +251,12 @@ impl<T: Transcendental> RillGraphEngine<T> {
             mailbox,
             actor_ref,
             duplex: Some(duplex),
+            #[cfg(feature = "debug")]
+            probe_slots: Vec::new(),
+            #[cfg(feature = "debug")]
+            command_queue: std::sync::Arc::new(SpscQueue::new()),
+            #[cfg(feature = "debug")]
+            debug_control: DebugControl::new(),
         }
     }
 
@@ -259,33 +284,80 @@ impl<T: Transcendental> RillGraphEngine<T> {
         self.programs.first().expect("engine has no programs")
     }
 
+    #[cfg(feature = "debug")]
+    pub fn allocate_probe_slots(&mut self, count: usize) {
+        self.probe_slots.resize_with(count, ProbeSlot::default);
+    }
+
+    #[cfg(feature = "debug")]
+    pub fn debug_state(
+        &self,
+    ) -> (
+        &[ProbeSlot],
+        DebugControl,
+        std::sync::Arc<SpscQueue<CommandFrame, 256>>,
+    ) {
+        (
+            &self.probe_slots,
+            self.debug_control.clone(),
+            self.command_queue.clone(),
+        )
+    }
+
     /// Drain mailbox: push all `SetParameter` to pending queue.
     fn drain_mailbox(&mut self) {
+        #[cfg(feature = "debug")]
+        let block_idx = self.debug_control.block_index.load(Ordering::Relaxed);
+
         while let Some(cmd) = self.mailbox.pop() {
-            if let CommandEnum::SetParameter(ref sp) = cmd {
-                let param_name = sp.parameter.as_str();
-                if !sp.anchor.is_empty() {
-                    if let Some(&prog_idx) = self.anchor_map.get(&sp.anchor) {
-                        if let Some(&idx) = self.param_maps[prog_idx].get(param_name) {
-                            self.pending.push(PendingParam {
-                                param_idx: idx,
-                                program_idx: prog_idx,
-                                value: sp.value.clone(),
-                                sample_pos: sp.sample_pos,
-                            });
+            match cmd {
+                CommandEnum::SetParameter(ref sp) => {
+                    let param_name = sp.parameter.as_str();
+                    if !sp.anchor.is_empty() {
+                        if let Some(&prog_idx) = self.anchor_map.get(&sp.anchor) {
+                            if let Some(&idx) = self.param_maps[prog_idx].get(param_name) {
+                                self.pending.push(PendingParam {
+                                    param_idx: idx,
+                                    program_idx: prog_idx,
+                                    value: sp.value.clone(),
+                                    sample_pos: sp.sample_pos,
+                                });
+                            }
+                        }
+                    } else {
+                        for (prog_idx, map) in self.param_maps.iter().enumerate() {
+                            if let Some(&idx) = map.get(param_name) {
+                                self.pending.push(PendingParam {
+                                    param_idx: idx,
+                                    program_idx: prog_idx,
+                                    value: sp.value.clone(),
+                                    sample_pos: sp.sample_pos,
+                                });
+                                break;
+                            }
                         }
                     }
-                } else {
-                    for (prog_idx, map) in self.param_maps.iter().enumerate() {
-                        if let Some(&idx) = map.get(param_name) {
-                            self.pending.push(PendingParam {
-                                param_idx: idx,
-                                program_idx: prog_idx,
-                                value: sp.value.clone(),
-                                sample_pos: sp.sample_pos,
-                            });
-                            break;
-                        }
+                    #[cfg(feature = "debug")]
+                    {
+                        let _ = self.command_queue.push(CommandFrame {
+                            block_index: block_idx,
+                            command_kind: CmdStr::from_str("SetParameter"),
+                            node_name: CmdStr::from_str(&sp.anchor),
+                            param_name: CmdStr::from_str(&format!("{}", sp.parameter)),
+                            value_repr: CmdStr::from_str(&format!("{:?}", sp.value)),
+                        });
+                    }
+                }
+                _ => {
+                    #[cfg(feature = "debug")]
+                    {
+                        let _ = self.command_queue.push(CommandFrame {
+                            block_index: block_idx,
+                            command_kind: CmdStr::from_str(&format!("{:?}", cmd)),
+                            node_name: CmdStr::default(),
+                            param_name: CmdStr::default(),
+                            value_repr: CmdStr::default(),
+                        });
                     }
                 }
             }
@@ -331,6 +403,17 @@ impl<T: Transcendental> RillGraphEngine<T> {
     pub fn process_tick(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
         self.drain_mailbox();
 
+        #[cfg(feature = "debug")]
+        {
+            while self.debug_control.global_pause.load(Ordering::Acquire)
+                && !self.debug_control.global_resume.load(Ordering::Acquire)
+            {
+                std::hint::spin_loop();
+            }
+            self.debug_control.global_resume.store(false, Ordering::Release);
+            self.debug_control.block_index.fetch_add(1, Ordering::Relaxed);
+        }
+
         if let Some(ref mut duplex) = self.duplex {
             if !inputs.is_empty() || !outputs.is_empty() {
                 let buf_size = if !outputs.is_empty() {
@@ -349,6 +432,10 @@ impl<T: Transcendental> RillGraphEngine<T> {
                     &mut duplex.delay_buffers,
                     inputs,
                     buf_size,
+                    #[cfg(feature = "debug")]
+                    &self.debug_control,
+                    #[cfg(feature = "debug")]
+                    &self.probe_slots,
                 )?;
                 duplex.bridge.process_left(inputs)?;
 
@@ -360,6 +447,10 @@ impl<T: Transcendental> RillGraphEngine<T> {
                     &mut duplex.delay_buffers,
                     &[],
                     buf_size,
+                    #[cfg(feature = "debug")]
+                    &self.debug_control,
+                    #[cfg(feature = "debug")]
+                    &self.probe_slots,
                 )?;
 
                 // Phase 4: WriteFeedback
@@ -434,6 +525,8 @@ impl<T: Transcendental> RillGraphEngine<T> {
         delay_bufs: &mut [Vec<T>],
         inputs: &[&[T]],
         buf_size: usize,
+        #[cfg(feature = "debug")] debug_control: &DebugControl,
+        #[cfg(feature = "debug")] probe_slots: &[ProbeSlot],
     ) -> ProcessResult<()> {
         for (i, input) in inputs.iter().enumerate() {
             if i < engine.buffers.len() {
@@ -488,6 +581,43 @@ impl<T: Transcendental> RillGraphEngine<T> {
                             return Err(rill_core::traits::ProcessError::processing(
                                 "multi-IO graph requires 'router' feature",
                             ));
+                        }
+                    }
+                    #[cfg(feature = "debug")]
+                    {
+                        let block_idx = debug_control.block_index.load(Ordering::Relaxed);
+                        let ir = &engine.programs[*node_idx].ir;
+                        for instr in &ir.instrs {
+                            if let crate::ir::Instr::ProbePoint { id, .. } = instr {
+                                let slot_idx = *id as usize;
+                                if slot_idx < probe_slots.len() {
+                                    let slot = &probe_slots[slot_idx];
+                                    if slot.is_active() {
+                                        if !out_slices.is_empty() && !out_slices[0].is_empty() {
+                                            let val = out_slices[0][0];
+                                            let bits = val.to_f64().to_bits();
+                                            slot.last_value.store(bits, Ordering::Release);
+                                            let _ = slot.queue.push(ProbeFrame {
+                                                value_bits: bits,
+                                                block_index: block_idx,
+                                            });
+                                            if slot.is_breakpoint() {
+                                                slot.paused_flag
+                                                    .store(true, Ordering::Release);
+                                                debug_control.pause();
+                                                while !debug_control
+                                                    .global_resume
+                                                    .load(Ordering::Acquire)
+                                                {
+                                                    std::hint::spin_loop();
+                                                }
+                                                slot.paused_flag
+                                                    .store(false, Ordering::Release);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
