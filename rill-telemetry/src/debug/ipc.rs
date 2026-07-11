@@ -311,7 +311,7 @@ impl ShmemRegion {
             return false;
         }
 
-        let mut write_pos = get_write(header) as usize;
+        let write_pos = get_write(header) as usize;
         let read_pos = get_read(header) as usize;
 
         let available = if write_pos >= read_pos {
@@ -319,7 +319,7 @@ impl ShmemRegion {
         } else {
             read_pos - write_pos
         };
-        if available < frame_len + 2 {
+        if available <= frame_len + 2 {
             return false;
         }
 
@@ -328,8 +328,13 @@ impl ShmemRegion {
             unsafe {
                 ptr::write(base.add(write_pos) as *mut u16, 0u16);
             }
-            set_write(header, 0);
-            write_pos = 0;
+            let len = payload.len() as u16;
+            unsafe {
+                ptr::write(base as *mut u16, len);
+                ptr::copy_nonoverlapping(payload.as_ptr(), base.add(2), payload.len());
+            }
+            set_write(header, (frame_len % capacity) as u32);
+            return true;
         }
 
         let base = unsafe { self.ptr.add(offset) };
