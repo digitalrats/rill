@@ -34,6 +34,7 @@ impl CollectorThread {
         debug_control: DebugControl,
         resp_tx: mpsc::Sender<AnalyzerResponse>,
         shmem: Option<ShmemRegion>,
+        inspect_handler: Option<Box<dyn Fn(&AnalyzerCommand) -> Option<AnalyzerResponse> + Send>>,
     ) -> (Self, mpsc::Sender<AnalyzerCommand>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<AnalyzerCommand>();
 
@@ -56,7 +57,14 @@ impl CollectorThread {
                             let _ = resp_tx.send(AnalyzerResponse::Ok);
                             return;
                         }
-                        let resp = manager.handle_command(cmd);
+                        let mut resp = manager.handle_command(cmd.clone());
+                        if matches!(resp, AnalyzerResponse::Error(_)) {
+                            if let Some(ref handler) = inspect_handler {
+                                if let Some(custom) = handler(&cmd) {
+                                    resp = custom;
+                                }
+                            }
+                        }
                         let _ = resp_tx.send(resp);
                     }
 
@@ -70,7 +78,14 @@ impl CollectorThread {
                                 shmem.set_flag(super::ipc::FLAG_SHUTDOWN);
                                 break;
                             }
-                            let resp = manager.handle_command(cmd);
+                            let mut resp = manager.handle_command(cmd.clone());
+                            if matches!(resp, AnalyzerResponse::Error(_)) {
+                                if let Some(ref handler) = inspect_handler {
+                                    if let Some(custom) = handler(&cmd) {
+                                        resp = custom;
+                                    }
+                                }
+                            }
                             let _ = shmem.write_response(&resp);
                         }
                     }
