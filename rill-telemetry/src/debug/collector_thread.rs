@@ -17,11 +17,13 @@ use super::state::{ProbeState, ProbeStateManager};
 /// Manages the collector background thread.
 pub struct CollectorThread {
     cmd_tx: mpsc::Sender<AnalyzerCommand>,
-    resp_rx: mpsc::Receiver<AnalyzerResponse>,
 }
 
 impl CollectorThread {
-    /// Spawn the collector thread and return a handle.
+    /// Spawn the collector thread and return a handle plus the command sender.
+    ///
+    /// The caller is responsible for creating the response channel and passing
+    /// `resp_tx` in. The `resp_rx` side stays with the caller (e.g., the REPL thread).
     pub fn spawn(
         config: AnalyzerConfig,
         probe_states: Arc<DashMap<ProbeId, ProbeState>>,
@@ -29,9 +31,9 @@ impl CollectorThread {
         command_queue: Arc<SpscQueue<CommandFrame, 256>>,
         probe_slots: Vec<Arc<ProbeSlot>>,
         debug_control: DebugControl,
-    ) -> Self {
+        resp_tx: mpsc::Sender<AnalyzerResponse>,
+    ) -> (Self, mpsc::Sender<AnalyzerCommand>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<AnalyzerCommand>();
-        let (resp_tx, resp_rx) = mpsc::channel::<AnalyzerResponse>();
 
         let log_file = config.log_file.clone();
         let output_mode = config.output;
@@ -86,21 +88,16 @@ impl CollectorThread {
             })
             .expect("failed to spawn collector thread");
 
-        Self { cmd_tx, resp_rx }
+        (
+            Self {
+                cmd_tx: cmd_tx.clone(),
+            },
+            cmd_tx,
+        )
     }
 
     /// Send a command to the collector thread.
     pub fn send(&self, cmd: AnalyzerCommand) -> Result<(), mpsc::SendError<AnalyzerCommand>> {
         self.cmd_tx.send(cmd)
-    }
-
-    /// Receive a response from the collector thread (non-blocking).
-    pub fn try_recv(&self) -> Result<AnalyzerResponse, mpsc::TryRecvError> {
-        self.resp_rx.try_recv()
-    }
-
-    /// Receive a response from the collector thread (blocking).
-    pub fn recv(&self) -> Result<AnalyzerResponse, mpsc::RecvError> {
-        self.resp_rx.recv()
     }
 }
