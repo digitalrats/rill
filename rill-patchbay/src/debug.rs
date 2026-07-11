@@ -4,9 +4,12 @@
 //! state of servos, sensors, and other patchbay components at runtime.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+
+use crate::engine::Automaton;
 
 /// A snapshot of an automaton's current state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,5 +83,26 @@ impl PatchbayInspector {
 impl Default for PatchbayInspector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub(crate) struct ServoInspector<A: Automaton> {
+    pub(crate) name: String,
+    pub(crate) state: Arc<Mutex<crate::engine::ServoState<A>>>,
+}
+
+impl<A: Automaton> AutomatonInspector for ServoInspector<A> {
+    fn snapshot(&self) -> AutomatonSnapshot {
+        let s = self.state.lock().unwrap();
+        let mut extra = HashMap::new();
+        extra.insert("time".into(), s.time);
+        extra.insert("base".into(), s.base);
+        extra.insert("frozen".into(), if s.frozen { 1.0 } else { 0.0 });
+        AutomatonSnapshot {
+            name: self.name.clone(),
+            enabled: s.enabled,
+            value: s.value.as_f32().unwrap_or(s.base as f32) as f64,
+            extra,
+        }
     }
 }

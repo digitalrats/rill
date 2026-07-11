@@ -376,7 +376,7 @@ pub(crate) struct ServoState<A: Automaton> {
 pub struct Servo<A: Automaton> {
     id: String,
     automaton: Arc<A>,
-    state: Arc<Mutex<ServoState<A>>>,
+    pub(crate) state: Arc<Mutex<ServoState<A>>>,
     graph_ref: ActorRef<CommandEnum>,
     target_node: u32,
     target_param: String,
@@ -850,6 +850,16 @@ impl<A: Automaton + 'static> Servo<A> {
     /// Returns this servo's unique identifier.
     pub fn id(&self) -> &str {
         &self.id
+    }
+}
+
+#[cfg(feature = "debug")]
+impl<A: Automaton + 'static> Servo<A> {
+    pub fn inspector(&self) -> Box<dyn crate::debug::AutomatonInspector> {
+        Box::new(crate::debug::ServoInspector {
+            name: self.id.clone(),
+            state: self.state.clone(),
+        })
     }
 }
 

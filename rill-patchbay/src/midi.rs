@@ -29,11 +29,11 @@ use crate::sensor::Sensor;
 /// normal parsing, enabling BPM derivation from clock pulses.
 pub struct MidiHub {
     id: String,
-    thread: Option<JoinHandle<()>>,
+    pub(crate) thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
     events: Option<ActorRef<ControlEvent>>,
     backend: Option<Box<dyn MidiInput>>,
-    tracker: Option<MidiClockTracker>,
+    pub(crate) tracker: Option<MidiClockTracker>,
 }
 
 impl MidiHub {
@@ -145,6 +145,20 @@ impl Sensor for MidiHub {
 impl Drop for MidiHub {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(feature = "debug")]
+impl MidiHub {
+    pub fn inspect(&self) -> crate::debug::SensorSnapshot {
+        crate::debug::SensorSnapshot {
+            name: self.id.clone(),
+            kind: "midi".into(),
+            connected: self.thread.is_some(),
+            event_count: 0,
+            last_event: None,
+            tracker_active: self.tracker.is_some(),
+        }
     }
 }
 
