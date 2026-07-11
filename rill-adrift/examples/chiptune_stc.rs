@@ -394,9 +394,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stc_file = match stc_file {
         Some(f) => f,
         None => {
-            eprintln!("Usage: chiptune_stc --file <file.stc> [--normalize] [backend]");
+            eprintln!("Usage: chiptune_stc --file <file.stc> [--normalize] [--no-wait] [backend]");
             eprintln!("  --file <path>    Path to .stc (Sound Tracker Compiled) file (required)");
             eprintln!("  --normalize      Apply DC offset, gain, and ceiling normalization");
+            eprintln!("  --no-wait        Start playback immediately without Enter keypress");
             eprintln!("  [backend]        I/O backend name (default: portaudio)");
             std::process::exit(1);
         }
@@ -411,6 +412,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let normalize = args.iter().any(|a| a == "--normalize");
+    let no_wait = args.iter().any(|a| a == "--no-wait");
 
     // Backend name: first positional argument that is not a known flag value
     let backend_name = args
@@ -551,10 +553,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("AY-3-8910 Chiptune — Popcorn (STC) [{backend_display}]\n");
     println!("Backend ports are live — connect your recording app now.\n");
-    println!("Press Enter to start playback...");
-    println!("  (Future: MIDI Start 0xFA will also trigger playback)\n");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok();
+    if !no_wait {
+        println!("Press Enter to start playback...");
+        println!("  (Future: MIDI Start 0xFA will also trigger playback)\n");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+    }
 
     // ── Start playback ──────────────────────────────────────────────────
     // In the future, this flag can be wired to MidiClockTracker::playing_flag()

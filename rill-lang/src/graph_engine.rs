@@ -332,6 +332,8 @@ impl<T: Transcendental> RillGraphEngine<T> {
             match cmd {
                 CommandEnum::SetParameter(ref sp) => {
                     let param_name = sp.parameter.as_str();
+                    #[cfg(feature = "debug")]
+                    let mut applied = false;
                     if !sp.anchor.is_empty() {
                         if let Some(&prog_idx) = self.anchor_map.get(&sp.anchor) {
                             if let Some(&idx) = self.param_maps[prog_idx].get(param_name) {
@@ -341,6 +343,10 @@ impl<T: Transcendental> RillGraphEngine<T> {
                                     value: sp.value.clone(),
                                     sample_pos: sp.sample_pos,
                                 });
+                                #[cfg(feature = "debug")]
+                                {
+                                    applied = true;
+                                }
                             }
                         }
                     } else {
@@ -352,12 +358,16 @@ impl<T: Transcendental> RillGraphEngine<T> {
                                     value: sp.value.clone(),
                                     sample_pos: sp.sample_pos,
                                 });
+                                #[cfg(feature = "debug")]
+                                {
+                                    applied = true;
+                                }
                                 break;
                             }
                         }
                     }
                     #[cfg(feature = "debug")]
-                    {
+                    if applied {
                         let _ = self.command_queue.push(CommandFrame {
                             block_index: block_idx,
                             command_kind: CmdStr::new("SetParameter"),

@@ -101,7 +101,7 @@ impl<T: Transcendental> RillProgram<T> {
         }
     }
 
-    pub(crate) fn new_with(
+    pub fn new_with(
         ir: Ir,
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,

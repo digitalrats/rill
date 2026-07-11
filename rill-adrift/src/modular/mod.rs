@@ -144,8 +144,11 @@ impl<const BUF: usize> ModularSystem<BUF> {
             .topo_order
             .iter()
             .filter_map(|name| ir.nodes.get(name))
-            .map(|node| rill_lang::RillProgram::<f32>::new(node.ir.clone()))
-            .collect();
+            .map(|node| {
+                rill_lang::RillProgram::<f32>::new_with(node.ir.clone(), &registry, def.sample_rate)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("program creation: {e}"))?;
 
         let mailbox = Arc::new(Mailbox::new(64));
 
@@ -214,6 +217,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
             if let Some(case) = self.cases.get_mut(&rd.name) {
                 let graph_def = gd.clone();
+                let sr = def.sample_rate;
                 case.start(move |running| {
                     let mut builder: GraphBuilder<f32, BUF> = GraphBuilder::new();
                     if let Err(e) = graph_def.populate(&mut builder) {
@@ -228,12 +232,16 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         }
                     };
                     let scheduled = rill_lang::graph_lower::lower(&ir);
+                    let scheduled = rill_lang::graph_lower::lower(&ir);
                     let programs: Vec<rill_lang::RillProgram<f32>> = ir
                         .topo_order
                         .iter()
                         .filter_map(|name| ir.nodes.get(name))
-                        .map(|node| rill_lang::RillProgram::<f32>::new(node.ir.clone()))
-                        .collect();
+                        .map(|node| {
+                            rill_lang::RillProgram::<f32>::new_with(node.ir.clone(), &registry, sr)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .expect("program creation failed");
                     log::info!(
                         "rill-adrift: rack '{}' engine built — {} programs",
                         rack_name,

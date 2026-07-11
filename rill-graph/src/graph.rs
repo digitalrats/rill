@@ -240,7 +240,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
             let arity = (sig.signal_ins(), sig.signal_outs);
 
-            let params: Vec<rill_lang::ir::ParamDef> = recipe
+            // Convert recipe parameters to ParamDef (name → Ir.params)
+            // and to f64 constants for the builtin constructor
+            let param_defs: Vec<rill_lang::ir::ParamDef> = recipe
                 .params
                 .parameters
                 .iter()
@@ -253,9 +255,43 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     })
                 })
                 .collect();
+            let param_values: Vec<f64> = recipe
+                .params
+                .parameters
+                .iter()
+                .filter_map(|(_, v)| v.as_f32().map(|f| f as f64))
+                .collect();
+
+            // Build BuiltinInstance: one builtin wrapping the recipe's type
+            let builtin_name = sig.name.to_string();
+            let builtin_instance = rill_lang::ir::BuiltinInstance {
+                name: builtin_name,
+                params: param_values,
+                kind: sig.kind,
+                signal_ins: arity.0,
+                signal_outs: arity.1,
+                // Map compile-time param slots to Ir param indices for
+                // run-time SetParameter routing. All recipe params are
+                // dynamic: arg position i → Ir param index i.
+                param_bindings: (0..param_defs.len()).map(|i| (i, i)).collect(),
+            };
+
+            // Build instructions: CallBlock for the builtin
+            let mut instrs = Vec::new();
+            if arity.1 > 0 {
+                // Load input from input slot 0 if the builtin has signal inputs
+                if arity.0 > 0 {
+                    instrs.push(rill_lang::ir::Instr::LoadInput { dst: 0, index: 0 });
+                }
+                instrs.push(rill_lang::ir::Instr::CallBlock {
+                    dst: 0,
+                    srcs: if arity.0 > 0 { vec![0] } else { vec![] },
+                    instance: 0,
+                });
+            }
 
             let ir = rill_lang::ir::Ir {
-                instrs: vec![],
+                instrs,
                 num_regs: 1,
                 output_reg: 0,
                 num_inputs: arity.0,
@@ -265,8 +301,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     delay_lens: vec![],
                     num_outputs: arity.1,
                 },
-                builtins: vec![],
-                params: vec![],
+                builtins: vec![builtin_instance],
+                params: param_defs.clone(),
             };
 
             nodes.insert(
@@ -274,7 +310,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 GraphNode {
                     arity,
                     ir,
-                    params,
+                    params: param_defs,
                     keep: false,
                     inline: false,
                     is_bridge: false,
