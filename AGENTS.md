@@ -148,6 +148,12 @@ mdbook serve docs/                # dev server at localhost:3000
 
     Rationale: `eprintln!` bypasses the debug infrastructure, cannot be filtered by level, is invisible to `rill-analyzer`, and is invariably removed after debugging — wasting effort. Structured logging and telemetry persist and help future developers.
 
+- **Warnings policy:**
+    - **Every warning MUST be fixed before merging a feature branch.** Run `cargo check --all-features --workspace` and `cargo clippy --all-features --workspace`. Zero warnings in the workspaces's code after `cargo clippy --fix` has been applied.
+    - **Never suppress warnings with blanket `#[allow(...)]`.** Specifically: `#![allow(missing_docs)]` is forbidden. If a type, function, or module lacks documentation, add a doc comment (`/// `).
+    - **Use `cargo clippy --fix` first** — it auto-generates doc stubs and fixes many warnings mechanically. Review the changes, fill in actual descriptions where `clippy` leaves placeholders.
+    - **`#[allow(clippy::too_many_arguments)]` and `#[allow(clippy::type_complexity)]`** are acceptable for specific functions where refactoring would be invasive — but never at crate level.
+
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
 - **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
