@@ -121,6 +121,8 @@ mdbook serve docs/                # dev server at localhost:3000
     - Code comments (inline `//`) should also be in English.
     - The only exception is `docs/src/guides/world-of-automatons.md` — a full-fledged published article intentionally written in Russian as a deliberate stylistic choice.
     - The term **Automaton** is canonical in the codebase (`Automaton` trait, `AutomatonDef`, etc.). Do not use "Automata" in code identifiers, documentation, or commit messages. In prose, prefer "automaton" (singular) / "automatons" (plural).
+
+    **Why this matters:** Automaton is not an abstract mathematical machine — it is a concrete rill mechanism. Code identifiers (`ListAutomatons`, `AutomatonState`, `automaton.step()`), log messages (`"registered automaton '{}'"`), CLI output, and commit messages form a **naming contract** tied to specific entities. Mixing "Automata" breaks this contract and creates inconsistency between the object model and its surface area. Always ask: "am I naming a rill entity or describing an abstraction?" If it's a rill entity, use the canonical form.
     - Rationale: English is the lingua franca of open-source. One Russian-language article is an exception, not a precedent — do not add more without explicit discussion.
 
 - **Zero-copy data flow:**
@@ -180,6 +182,8 @@ Rill is a **universal signal processing platform**, not exclusively audio. The t
 **«Hearing» / acoustic sensors** — the `hearing` module name and «acoustic» are domain-level concepts. Doc comments describing signal analysis algorithms should use «signal» (not «audio») for the generic processing path.
 
 **«Automaton» vs «automata»** — the singular "automaton" and plural **"automatons"** are the only acceptable forms. The legacy plural "automata" has been removed from both public API and documentation. All code identifiers, variable names, and docs use `automatons`.
+
+**Scope of this rule:** applies to enum variants (`ListAutomatons`, not `ListAutomata`), response types (`AutomatonsList`, not `AutomataList`), method names, log messages, CLI output, commit messages, and doc comments. The only permitted form outside code identifiers is the compound phrase «cellular automata» (see exception below).
 
 > **Exception:** «cellular automata» is a well-established mathematical term (Conway, Wolfram).
 > The compound phrase `cellular automata` (both words together) is exempt.
