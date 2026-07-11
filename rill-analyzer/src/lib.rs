@@ -46,6 +46,7 @@ impl Analyzer {
             probe_slots,
             debug_control,
             resp_tx,
+            None,
         );
 
         let repl_cmd_tx = cmd_tx.clone();
