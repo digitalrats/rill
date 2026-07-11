@@ -288,10 +288,20 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     srcs: if arity.0 > 0 { vec![0] } else { vec![] },
                     instance: 0,
                 });
+                // Probe the output — one probe per graph node at its output register
+                #[cfg(feature = "debug")]
+                instrs.push(rill_lang::ir::Instr::ProbePoint {
+                    id: idx as u32,
+                    src: 0,
+                    dst: 1,
+                });
             }
 
             let ir = rill_lang::ir::Ir {
                 instrs,
+                #[cfg(feature = "debug")]
+                num_regs: 2, // need extra reg for ProbePoint dst
+                #[cfg(not(feature = "debug"))]
                 num_regs: 1,
                 output_reg: 0,
                 num_inputs: arity.0,

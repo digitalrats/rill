@@ -114,16 +114,16 @@ pub fn compile_graph<T: Transcendental>(
     }
 
     let schedule = ScheduledGraph {
-        inputs: 1,
-        outputs: 1,
+        inputs: prog.ir.num_inputs,
+        outputs: prog.ir.num_outputs,
         steps: vec![Step::InlineProgram {
             node_idx: 0,
             input_bufs: step_input,
-            output_bufs: vec![1],
+            output_bufs: vec![0],
             param_indices: (0..n_params).collect(),
         }],
-        buffers: 2,
-        output_mapping: vec![1],
+        buffers: 1,
+        output_mapping: vec![0],
         program_names: vec!["main".to_string()],
     };
 

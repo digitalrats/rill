@@ -250,9 +250,12 @@ impl<const BUF: usize> ModularSystem<BUF> {
                     let mailbox = Arc::new(Mailbox::new(64));
                     #[cfg(feature = "debug")]
                     let node_names = scheduled.program_names.clone();
-                    let engine = rill_lang::graph_engine::RillGraphEngine::new(
+                    let mut engine = rill_lang::graph_engine::RillGraphEngine::new(
                         scheduled, programs, mailbox, buf_size,
                     );
+
+                    #[cfg(feature = "debug")]
+                    engine.allocate_probe_slots(ir.nodes.len());
 
                     #[cfg(feature = "debug")]
                     let debug_state = {
@@ -391,6 +394,12 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             node_name: name.clone(),
                         },
                     );
+                    // Auto-enable probe for each node
+                    if i < ds.probe_slots.len() {
+                        ds.probe_slots[i]
+                            .enabled
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
                 }
 
                 let probe_queues: Vec<_> = ds.probe_slots.iter().map(|s| s.queue.clone()).collect();

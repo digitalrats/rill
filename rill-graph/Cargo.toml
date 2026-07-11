@@ -24,4 +24,5 @@ serde_cbor = { version = "0.11", optional = true }
 
 [features]
 default = []
+debug = ["rill-lang/debug"]
 serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "rill-core/serde"]

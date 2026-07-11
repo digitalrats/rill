@@ -125,6 +125,7 @@ pub fn lower(ir: &GraphIr) -> ScheduledGraph {
     let mut delay_slots = 0usize;
     let mut buffer_counter = ir.inputs;
     let mut edge_buffers: HashMap<(String, usize, String, usize), usize> = HashMap::new();
+    let mut leaf_output_bufs: Vec<usize> = Vec::new();
 
     for (idx, name) in ir.topo_order.iter().enumerate() {
         let node = &ir.nodes[name];
@@ -152,6 +153,16 @@ pub fn lower(ir: &GraphIr) -> ScheduledGraph {
             let buf = buffer_counter;
             buffer_counter += 1;
             output_bufs.push(buf);
+        }
+
+        // If this is a leaf node (no signal output edges), its output buffers
+        // are graph-level outputs and should be routed to the I/O backend.
+        let is_leaf = !ir
+            .edges
+            .iter()
+            .any(|e| e.from_node == *name && e.kind == EdgeKind::Signal);
+        if is_leaf {
+            leaf_output_bufs.extend(&output_bufs);
         }
 
         let param_indices: Vec<usize> = (0..node.params.len()).collect();
@@ -187,7 +198,7 @@ pub fn lower(ir: &GraphIr) -> ScheduledGraph {
         }
     }
 
-    let output_mapping: Vec<usize> = (0..ir.outputs).map(|i| ir.inputs + n_nodes + i).collect();
+    let output_mapping: Vec<usize> = leaf_output_bufs;
 
     ScheduledGraph {
         inputs: ir.inputs,
