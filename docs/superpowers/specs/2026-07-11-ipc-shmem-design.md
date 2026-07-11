@@ -210,14 +210,20 @@ let shmem = rill_telemetry::debug::ipc::ShmemRegion::create().ok();
 
 Гибридный режим с разрешением по расширению файла:
 
-**Если `<target>` заканчивается на `.json` (граф rill):**
+**Если `<target>` заканчивается на `.json` (сериализованный GraphDef):**
 1. Отладчик делает `ShmemRegion::create()` (получает `/dev/shm/rill-debug-<my-pid>`)
 2. `fork()` + `exec("drift", "--graph", "<target>")` с `RILL_DEBUG_SHMEM=/dev/shm/rill-debug-<ppid>` в окружении
 3. Дочерний процесс (drift) делает `ShmemRegion::open_from_env("RILL_DEBUG_SHMEM")`
 4. Устанавливает `FLAG_ATTACHED`
 5. Отладчик ждёт флаг, затем активирует REPL
 
-**Если `<target>` — не `.json` (произвольный бинарник/команда):**
+**Если `<target>` заканчивается на `.rll` (rill-lang DSL):**
+1. Отладчик компилирует `.rll` в `RillGraphEngine` через `rill_lang::compile_graph()`
+2. Сериализует `ScheduledGraph` во временный `.json` (или передаёт через shmem)
+3. Запускает `drift --graph <tmp.json>` с `RILL_DEBUG_SHMEM=...`
+4. Ждёт `FLAG_ATTACHED`, активирует REPL
+
+**Если `<target>` — не `.json` и не `.rll` (произвольный бинарник/команда):**
 1. Отладчик делает `ShmemRegion::create()`
 2. `fork()` + `exec(<target>)` с `RILL_DEBUG_SHMEM=...` в окружении
 3. Дочерний процесс должен сам создать/открыть shmem через `rill_telemetry::debug::ipc`
@@ -268,7 +274,8 @@ enum Commands {
 
 **Примеры:**
 ```bash
-rill-analyzer launch graph.json                    # drift --graph graph.json
+rill-analyzer launch graph.json                    # drift --graph graph.json (GraphDef)
+rill-analyzer launch chip.rll                      # compile .rll → drift --graph <tmp.json>
 rill-analyzer launch ./my-app --verbose            # exec ./my-app --verbose
 rill-analyzer launch -- cargo run --example chip   # exec cargo run --example chip
 rill-analyzer run graph.json                       # локально (без fork)
