@@ -15,6 +15,9 @@ use rill_core_actor::{ActorRef, ActorSystem};
 
 use crate::module_def::{AutomatonDef, ModuleDef};
 
+#[cfg(feature = "debug")]
+use crate::debug::PatchbayInspector;
+
 /// Errors returned by module construction via the type-registry.
 #[derive(Debug, Clone)]
 pub enum ModuleError {
@@ -47,12 +50,14 @@ pub trait ModuleConstructor: Send + Sync {
     ///
     /// `automaton_defs` provides the automaton definitions referenced
     /// by `ModuleDef::Servo`. Other module types ignore this parameter.
+    #[cfg_attr(feature = "debug", allow(unused_variables))]
     fn construct(
         &self,
         module: &ModuleDef,
         automaton_defs: &[AutomatonDef],
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
+        #[cfg(feature = "debug")] inspector: Option<&PatchbayInspector>,
     ) -> Result<ActorRef<CommandEnum>, ModuleError>;
 
     /// Returns a heap-allocated clone of this constructor.
@@ -149,12 +154,22 @@ impl ModuleFactory {
         automaton_defs: &[AutomatonDef],
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
+        #[cfg(feature = "debug")] inspector: Option<&PatchbayInspector>,
     ) -> Result<ActorRef<CommandEnum>, ModuleError> {
         let type_name = module.type_name();
         self.entries
             .get(type_name)
             .ok_or_else(|| ModuleError::UnknownType(type_name.to_string()))
-            .and_then(|ctor| ctor.construct(module, automaton_defs, system, graph_ref))
+            .and_then(|ctor| {
+                ctor.construct(
+                    module,
+                    automaton_defs,
+                    system,
+                    graph_ref,
+                    #[cfg(feature = "debug")]
+                    inspector,
+                )
+            })
     }
 
     /// Checks whether a type name is registered.
@@ -257,6 +272,7 @@ impl ModuleConstructor for ClosureCtor {
         _automaton_defs: &[AutomatonDef],
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
+        #[cfg(feature = "debug")] _inspector: Option<&PatchbayInspector>,
     ) -> Result<ActorRef<CommandEnum>, ModuleError> {
         let ModuleDef::Custom {
             type_name: _,

@@ -12,6 +12,9 @@ use crate::engine::Servo;
 use crate::module_def::{AutomatonDef, ModuleDef};
 use crate::module_factory::{ModuleConstructor, ModuleError};
 
+#[cfg(feature = "debug")]
+use crate::debug::PatchbayInspector;
+
 /// Module constructor for the `"servo"` type — bridges an automaton to a graph parameter.
 pub struct ServoConstructor;
 
@@ -26,6 +29,7 @@ impl ModuleConstructor for ServoConstructor {
         automaton_defs: &[AutomatonDef],
         system: &Arc<ActorSystem>,
         graph_ref: &ActorRef<CommandEnum>,
+        #[cfg(feature = "debug")] inspector: Option<&PatchbayInspector>,
     ) -> Result<ActorRef<CommandEnum>, ModuleError> {
         let ModuleDef::Servo(s) = module else {
             return Err(ModuleError::ConstructionFailed(
@@ -78,6 +82,12 @@ impl ModuleConstructor for ServoConstructor {
                 if let Some(ref anchor) = s.target_anchor {
                     servo = servo.with_anchor(anchor.clone());
                 }
+                #[cfg(feature = "debug")]
+                if let Some(inspector) = inspector {
+                    let automaton_inspector = servo.inspector();
+                    inspector
+                        .register_automaton(module.type_name().to_string(), automaton_inspector);
+                }
                 servo.spawn(system)
             }
             AutomatonDef::Envelope {
@@ -110,6 +120,12 @@ impl ModuleConstructor for ServoConstructor {
                 }
                 if let Some(ref anchor) = s.target_anchor {
                     servo = servo.with_anchor(anchor.clone());
+                }
+                #[cfg(feature = "debug")]
+                if let Some(inspector) = inspector {
+                    let automaton_inspector = servo.inspector();
+                    inspector
+                        .register_automaton(module.type_name().to_string(), automaton_inspector);
                 }
                 servo.spawn(system)
             }
@@ -150,6 +166,12 @@ impl ModuleConstructor for ServoConstructor {
                 }
                 if let Some(ref anchor) = s.target_anchor {
                     servo = servo.with_anchor(anchor.clone());
+                }
+                #[cfg(feature = "debug")]
+                if let Some(inspector) = inspector {
+                    let automaton_inspector = servo.inspector();
+                    inspector
+                        .register_automaton(module.type_name().to_string(), automaton_inspector);
                 }
                 servo.spawn(system)
             }
