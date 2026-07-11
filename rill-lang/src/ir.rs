@@ -17,6 +17,7 @@ pub type Reg = usize;
 pub type StateSlot = usize;
 
 /// A unique identifier for a probe point in the IR.
+#[cfg(feature = "debug")]
 pub type ProbeId = u32;
 
 /// A single unary math primitive.
