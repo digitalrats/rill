@@ -5,8 +5,8 @@
 [![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Modular signal-processing ecosystem for Rust. 20 crates (plus the
-`rill-analyzer` CLI debugger), from lock-free
+Modular signal-processing ecosystem for Rust. 20 workspace members —
+19 library crates plus the `rill-analyzer` CLI debugger. Lock-free
 queues and generic vector math to real-time FFT, convolution, frequency‑domain
 effects, and analog circuit modelling.
 
@@ -316,7 +316,7 @@ cargo fmt                 # format (max_width=100)
 
 ## Publications
 
-All 20 crates publish to [crates.io](https://crates.io) in dependency order.
+19 library crates publish to [crates.io](https://crates.io) in dependency order.
 `rill-analyzer` is a CLI tool and is **not** published to crates.io.
 Use the publish script:
 
