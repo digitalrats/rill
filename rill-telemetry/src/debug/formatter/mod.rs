@@ -1,6 +1,10 @@
 //! Event formatter abstraction for debug output.
 
-use std::io::Write;
+pub mod json;
+pub mod text;
+
+pub use json::JsonFormatter;
+pub use text::TextFormatter;
 
 /// Trait for formatting debug events (probe values, commands, breakpoints, etc.).
 pub trait EventFormatter {

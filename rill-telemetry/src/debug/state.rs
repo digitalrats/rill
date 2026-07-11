@@ -48,7 +48,8 @@ impl ProbeStateManager {
         match cmd {
             AnalyzerCommand::SetBreakpoint { probe_id } => {
                 if let Some(slot) = self.probe_slots.get(probe_id as usize) {
-                    slot.enabled.store(true, std::sync::atomic::Ordering::Release);
+                    slot.enabled
+                        .store(true, std::sync::atomic::Ordering::Release);
                     slot.break_flag
                         .store(true, std::sync::atomic::Ordering::Release);
                     AnalyzerResponse::Ok
@@ -79,8 +80,7 @@ impl ProbeStateManager {
             }
             AnalyzerCommand::GetProbeValue { probe_id } => {
                 if let Some(slot) = self.probe_slots.get(probe_id as usize) {
-                    let value_bits =
-                        slot.last_value.load(std::sync::atomic::Ordering::Acquire);
+                    let value_bits = slot.last_value.load(std::sync::atomic::Ordering::Acquire);
                     AnalyzerResponse::ProbeValue {
                         probe_id,
                         value_bits,
@@ -117,10 +117,8 @@ impl ProbeStateManager {
                         let (enabled, has_breakpoint) =
                             if let Some(slot) = self.probe_slots.get(probe_id as usize) {
                                 (
-                                    slot.enabled
-                                        .load(std::sync::atomic::Ordering::Acquire),
-                                    slot.break_flag
-                                        .load(std::sync::atomic::Ordering::Acquire),
+                                    slot.enabled.load(std::sync::atomic::Ordering::Acquire),
+                                    slot.break_flag.load(std::sync::atomic::Ordering::Acquire),
                                 )
                             } else {
                                 (false, false)
@@ -141,7 +139,8 @@ impl ProbeStateManager {
             }
             AnalyzerCommand::EnableProbe { probe_id } => {
                 if let Some(slot) = self.probe_slots.get(probe_id as usize) {
-                    slot.enabled.store(true, std::sync::atomic::Ordering::Release);
+                    slot.enabled
+                        .store(true, std::sync::atomic::Ordering::Release);
                     AnalyzerResponse::Ok
                 } else {
                     AnalyzerResponse::Error(format!("Unknown probe {}", probe_id))
@@ -149,7 +148,8 @@ impl ProbeStateManager {
             }
             AnalyzerCommand::DisableProbe { probe_id } => {
                 if let Some(slot) = self.probe_slots.get(probe_id as usize) {
-                    slot.enabled.store(false, std::sync::atomic::Ordering::Release);
+                    slot.enabled
+                        .store(false, std::sync::atomic::Ordering::Release);
                     slot.break_flag
                         .store(false, std::sync::atomic::Ordering::Release);
                     AnalyzerResponse::Ok
