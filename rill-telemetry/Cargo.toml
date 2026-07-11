@@ -10,7 +10,16 @@ documentation = "https://docs.rs/rill-telemetry"
 
 [dependencies]
 rill-core = { workspace = true }
+rill-lang = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+colored = "3"
+dashmap = "6"
 thiserror = { workspace = true }
+
+[features]
+debug = ["rill-lang/debug"]
 
 [dev-dependencies]
 float-cmp = "0.9"
