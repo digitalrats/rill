@@ -21,6 +21,8 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
         | Instr::ReadParam { dst, .. }
         | Instr::ReadActorParam { dst, .. } => Some(*dst),
         Instr::WriteState { .. } | Instr::WriteDelay { .. } => None,
+        #[cfg(feature = "debug")]
+        Instr::ProbePoint { dst, .. } => Some(*dst),
     }
 }
 
@@ -37,6 +39,8 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
         Instr::WriteState { src, .. } | Instr::WriteDelay { src, .. } => vec![*src],
         Instr::CallSample { srcs, .. } => srcs.clone(),
         Instr::CallBlock { srcs, .. } => srcs.clone(),
+        #[cfg(feature = "debug")]
+        Instr::ProbePoint { src, .. } => vec![*src],
     }
 }
 
@@ -53,6 +57,8 @@ fn set_dst(instr: &mut Instr, phys: usize) {
         | Instr::CallBlock { dst, .. }
         | Instr::ReadParam { dst, .. }
         | Instr::ReadActorParam { dst, .. } => *dst = phys,
+        #[cfg(feature = "debug")]
+        Instr::ProbePoint { dst, .. } => *dst = phys,
         _ => {}
     }
 }
@@ -76,6 +82,8 @@ fn remap_srcs(instr: &mut Instr, remap: &HashMap<usize, usize>) {
                 m(s);
             }
         }
+        #[cfg(feature = "debug")]
+        Instr::ProbePoint { src, .. } => m(src),
         _ => {}
     }
 }

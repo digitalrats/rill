@@ -41,6 +41,8 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
         | Instr::ReadParam { dst, .. }
         | Instr::ReadActorParam { dst, .. } => Some(dst),
         Instr::WriteState { .. } | Instr::WriteDelay { .. } => None,
+        #[cfg(feature = "debug")]
+        Instr::ProbePoint { dst, .. } => Some(dst),
     }
 }
 
@@ -52,6 +54,8 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
         Instr::WriteState { src, .. } | Instr::WriteDelay { src, .. } => vec![src],
         Instr::CallSample { ref srcs, .. } => srcs.clone(),
         Instr::CallBlock { ref srcs, .. } => srcs.clone(),
+        #[cfg(feature = "debug")]
+        Instr::ProbePoint { src, .. } => vec![src],
         _ => Vec::new(),
     }
 }

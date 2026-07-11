@@ -16,6 +16,9 @@ pub type Reg = usize;
 /// A slot index into the persistent state vector.
 pub type StateSlot = usize;
 
+/// A unique identifier for a probe point in the IR.
+pub type ProbeId = u32;
+
 /// A single unary math primitive.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnOp {
@@ -162,6 +165,17 @@ pub enum Instr {
         dst: Reg,
         /// Index into [`Ir::params`].
         param_idx: usize,
+    },
+    /// A debug probe point that passes a signal through unchanged.
+    /// The runtime debug engine can latch this value for inspection.
+    #[cfg(feature = "debug")]
+    ProbePoint {
+        /// Unique probe identifier.
+        id: ProbeId,
+        /// Source register to copy from.
+        src: Reg,
+        /// Destination register to write to.
+        dst: Reg,
     },
 }
 

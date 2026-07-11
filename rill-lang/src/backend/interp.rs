@@ -122,6 +122,10 @@ pub(crate) fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, i
             Instr::ReadActorParam { dst, param_idx } => {
                 prog.regs_scalar[dst] = param_to_f64(&prog.params[param_idx])
             }
+            #[cfg(feature = "debug")]
+            Instr::ProbePoint { src, dst, .. } => {
+                prog.regs_scalar[dst] = prog.regs_scalar[src];
+            }
         }
     }
     for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
@@ -258,6 +262,13 @@ fn exec_block_op<T: Transcendental>(
         | Instr::CallBlock { .. } => {
             unreachable!("stateful or built-in instruction scheduled as a block op")
         }
+        #[cfg(feature = "debug")]
+        Instr::ProbePoint { dst, src, .. } => {
+            // dst != src (SSA); move src out to satisfy the borrow checker.
+            let mut tmp = std::mem::take(&mut prog.block_regs[dst]);
+            tmp[..n].copy_from_slice(&prog.block_regs[src][..n]);
+            prog.block_regs[dst] = tmp;
+        }
     }
 }
 
@@ -387,6 +398,10 @@ fn exec_sample_region<T: Transcendental>(
                 }
                 Instr::ReadActorParam { dst, param_idx } => {
                     prog.block_regs[dst][i] = T::from_f64(param_to_f64(&prog.params[param_idx]));
+                }
+                #[cfg(feature = "debug")]
+                Instr::ProbePoint { dst, src, .. } => {
+                    prog.block_regs[dst][i] = prog.block_regs[src][i];
                 }
             }
         }
