@@ -1,6 +1,6 @@
 [package]
 name = "rill-adrift"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Umbrella crate re-exporting all rill crates for signal processing application development"
 license.workspace = true
