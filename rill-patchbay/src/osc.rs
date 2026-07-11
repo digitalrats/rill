@@ -127,6 +127,7 @@ impl Drop for OscSensor {
 
 #[cfg(feature = "debug")]
 impl OscSensor {
+    /// Capture a snapshot of this OSC sensor's status.
     pub fn inspect(&self) -> crate::debug::SensorSnapshot {
         crate::debug::SensorSnapshot {
             name: self.id.clone(),

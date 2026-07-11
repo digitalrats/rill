@@ -43,11 +43,13 @@ pub struct SensorSnapshot {
 
 /// Interface for types that can produce an automaton snapshot.
 pub trait AutomatonInspector: Send + Sync {
+    /// Capture the current automaton state.
     fn snapshot(&self) -> AutomatonSnapshot;
 }
 
 /// Interface for types that can produce a sensor snapshot.
 pub trait SensorInspector: Send + Sync {
+    /// Capture the current sensor state.
     fn snapshot(&self) -> SensorSnapshot;
 }
 
@@ -58,6 +60,7 @@ pub struct PatchbayInspector {
 }
 
 impl PatchbayInspector {
+    /// Create an empty inspector registry.
     pub fn new() -> Self {
         Self {
             automatons: DashMap::new(),
@@ -65,26 +68,32 @@ impl PatchbayInspector {
         }
     }
 
+    /// Register an automaton state provider.
     pub fn register_automaton(&self, name: String, inspector: Box<dyn AutomatonInspector>) {
         self.automatons.insert(name, inspector);
     }
 
+    /// Register a sensor state provider.
     pub fn register_sensor(&self, name: String, inspector: Box<dyn SensorInspector>) {
         self.sensors.insert(name, inspector);
     }
 
+    /// List names of all registered automatons.
     pub fn list_automatons(&self) -> Vec<String> {
         self.automatons.iter().map(|e| e.key().clone()).collect()
     }
 
+    /// Get a snapshot of a specific automaton's state.
     pub fn get_automaton_snapshot(&self, name: &str) -> Option<AutomatonSnapshot> {
         self.automatons.get(name).map(|entry| entry.snapshot())
     }
 
+    /// List names of all registered sensors.
     pub fn list_sensors(&self) -> Vec<String> {
         self.sensors.iter().map(|e| e.key().clone()).collect()
     }
 
+    /// Get a snapshot of a specific sensor's state.
     pub fn get_sensor_snapshot(&self, name: &str) -> Option<SensorSnapshot> {
         self.sensors.get(name).map(|entry| entry.snapshot())
     }

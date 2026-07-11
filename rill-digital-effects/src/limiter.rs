@@ -96,20 +96,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
             return input;
         }
 
-        if self.warming_up {
-            if self.position < self.lookahead_samples * 2 {
-                if self.position - self.lookahead_samples <= self.init_buffer.len() {
-                    let idx = self.position - self.lookahead_samples - 1;
-                    if idx < self.init_buffer.len() {
-                        let sample = self.init_buffer[idx];
-                        let _ = self.delay.process_sample(sample);
-                    }
+        if self.warming_up && self.position < self.lookahead_samples * 2 {
+            if self.position - self.lookahead_samples <= self.init_buffer.len() {
+                let idx = self.position - self.lookahead_samples - 1;
+                if idx < self.init_buffer.len() {
+                    let sample = self.init_buffer[idx];
+                    let _ = self.delay.process_sample(sample);
                 }
-                if self.position >= self.lookahead_samples * 2 - 1 {
-                    self.warming_up = false;
-                }
-                return input;
             }
+            if self.position >= self.lookahead_samples * 2 - 1 {
+                self.warming_up = false;
+            }
+            return input;
         }
 
         let mut max_amp = T::ZERO;

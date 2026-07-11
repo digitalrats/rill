@@ -15,6 +15,12 @@ pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
     config: LofiConfig,
 }
 
+impl<const BUF_SIZE: usize> Default for AkaiS900Emulator<BUF_SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
     pub fn new() -> Self {
         let config = LofiConfig::for_system(crate::config::ClassicSystem::AkaiS900);

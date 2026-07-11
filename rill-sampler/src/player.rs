@@ -1,6 +1,5 @@
 use crate::buffer::SampleBuffer;
 use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
-use rill_core::traits::ParamValue;
 use rill_core::traits::ProcessResult;
 use rill_core::Transcendental;
 use rill_core_dsp::generators::{LoopMode, SamplePlayer};

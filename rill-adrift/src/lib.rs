@@ -39,8 +39,6 @@ pub use rill_lang as lang;
 #[cfg(feature = "fft")]
 pub use rill_fft as fft;
 
-/// rill-lang graph node adapter (`LangNode`).
-
 /// rill-lang DSP/model built-in bindings.
 pub mod lang_builtins;
 

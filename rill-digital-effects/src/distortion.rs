@@ -55,6 +55,12 @@ pub struct Distortion<T: Transcendental, const BUF_SIZE: usize> {
     _phantom: PhantomData<(T, [T; BUF_SIZE])>,
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for Distortion<T, BUF_SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
     pub fn new() -> Self {
         Self {

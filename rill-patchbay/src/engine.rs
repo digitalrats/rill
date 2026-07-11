@@ -855,6 +855,7 @@ impl<A: Automaton + 'static> Servo<A> {
 
 #[cfg(feature = "debug")]
 impl<A: Automaton + 'static> Servo<A> {
+    /// Return an inspector that can snapshot this servo's automaton state.
     pub fn inspector(&self) -> Box<dyn crate::debug::AutomatonInspector> {
         Box::new(crate::debug::ServoInspector {
             name: self.id.clone(),

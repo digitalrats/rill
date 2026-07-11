@@ -67,6 +67,9 @@ impl DelayRing {
 }
 
 impl<T: Transcendental> RillProgram<T> {
+    /// Create a program from a compiled IR. Allocates state, delays, registers,
+    /// and builds the execution schedule. Built-ins are NOT instantiated — use
+    /// [`new_with`](Self::new_with) if the IR references built-in functions.
     pub fn new(ir: Ir) -> Self {
         let state = vec![0.0; ir.state.state_slots];
         let state_next = state.clone();

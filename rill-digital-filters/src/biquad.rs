@@ -4,7 +4,7 @@
 //! for use in signal graphs.
 
 use rill_core::traits::Algorithm;
-use rill_core::{ProcessError, ProcessResult, Transcendental};
+use rill_core::Transcendental;
 use rill_core_dsp::algorithm::ParameterizedAlgorithm;
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 

@@ -150,6 +150,7 @@ impl Drop for MidiHub {
 
 #[cfg(feature = "debug")]
 impl MidiHub {
+    /// Capture a snapshot of this MIDI sensor's status.
     pub fn inspect(&self) -> crate::debug::SensorSnapshot {
         crate::debug::SensorSnapshot {
             name: self.id.clone(),

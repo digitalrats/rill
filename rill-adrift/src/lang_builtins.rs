@@ -33,14 +33,12 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_core::builtin::Regis
 }
 
 struct IdentityAlgo<T: Transcendental> {
-    channels: usize,
     _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T: Transcendental> IdentityAlgo<T> {
-    fn new(channels: usize) -> Self {
+    fn new(_channels: usize) -> Self {
         Self {
-            channels,
             _phantom: std::marker::PhantomData,
         }
     }

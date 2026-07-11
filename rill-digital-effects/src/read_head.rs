@@ -25,6 +25,12 @@ unsafe impl<T: Transcendental, const B: usize> Send for ReadHead<T, B> {}
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Sync for ReadHead<T, B> {}
 
+impl<T: Transcendental, const BUF_SIZE: usize> Default for ReadHead<T, BUF_SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     pub fn new() -> Self {
         Self::with_resource("tape_0")

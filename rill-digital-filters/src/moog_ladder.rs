@@ -1,6 +1,5 @@
 use rill_core::traits::Algorithm;
-use rill_core::{ProcessError, ProcessResult, Transcendental};
-use rill_core_dsp::algorithm::ParameterizedAlgorithm;
+use rill_core::Transcendental;
 use rill_core_dsp::filters::MoogLadder;
 
 /// Processor wrapper for Moog ladder filter

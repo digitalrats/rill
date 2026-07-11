@@ -359,6 +359,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 }
 
                 let inspector_clone = inspector.clone();
+                #[allow(clippy::type_complexity)]
                 let inspect_handler: Box<
                     dyn Fn(&AnalyzerCommand) -> Option<AnalyzerResponse> + Send,
                 > = Box::new(move |cmd: &AnalyzerCommand| -> Option<AnalyzerResponse> {

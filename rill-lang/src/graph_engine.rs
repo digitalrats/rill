@@ -86,6 +86,7 @@ pub struct RillGraphEngine<T: Transcendental> {
     programs: Vec<RillProgram<T>>,
     buffers: Vec<Vec<T>>,
     delay_buffers: Vec<Vec<T>>,
+    #[allow(dead_code)]
     param_values: Vec<Vec<f64>>,
     pending: Vec<PendingParam>,
     param_maps: Vec<HashMap<String, usize>>,
@@ -309,6 +310,8 @@ impl<T: Transcendental> RillGraphEngine<T> {
     }
 
     #[cfg(feature = "debug")]
+    /// Clone probe slots, debug control, and command queue for sharing with a
+    /// collector or debugger thread.
     pub fn clone_debug_state(
         &self,
     ) -> (
