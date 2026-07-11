@@ -184,6 +184,7 @@ fn launch_child(binary: &str, args: &[&str], shmem_env: &str) -> u32 {
     cmd.args(args);
     cmd.env("RILL_DEBUG_SHMEM", shmem_env);
     cmd.stdin(std::process::Stdio::null());
+    #[allow(clippy::zombie_processes)]
     let child = cmd.spawn().unwrap_or_else(|e| {
         eprintln!("ERROR: cannot launch '{}': {}", binary, e);
         std::process::exit(1);
