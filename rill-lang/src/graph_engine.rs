@@ -94,7 +94,7 @@ pub struct RillGraphEngine<T: Transcendental> {
     actor_ref: ActorRef<CommandEnum>,
     duplex: Option<DuplexData<T>>,
     #[cfg(feature = "debug")]
-    pub(crate) probe_slots: Vec<ProbeSlot>,
+    pub(crate) probe_slots: Vec<std::sync::Arc<ProbeSlot>>,
     #[cfg(feature = "debug")]
     pub(crate) command_queue: std::sync::Arc<SpscQueue<CommandFrame, 256>>,
     #[cfg(feature = "debug")]
@@ -287,7 +287,9 @@ impl<T: Transcendental> RillGraphEngine<T> {
     #[cfg(feature = "debug")]
     /// Allocate `count` probe slots for the engine.
     pub fn allocate_probe_slots(&mut self, count: usize) {
-        self.probe_slots.resize_with(count, ProbeSlot::default);
+        self.probe_slots = (0..count)
+            .map(|_| std::sync::Arc::new(ProbeSlot::default()))
+            .collect();
     }
 
     #[cfg(feature = "debug")]
@@ -295,12 +297,27 @@ impl<T: Transcendental> RillGraphEngine<T> {
     pub fn debug_state(
         &self,
     ) -> (
-        &[ProbeSlot],
+        &[std::sync::Arc<ProbeSlot>],
         DebugControl,
         std::sync::Arc<SpscQueue<CommandFrame, 256>>,
     ) {
         (
             &self.probe_slots,
+            self.debug_control.clone(),
+            self.command_queue.clone(),
+        )
+    }
+
+    #[cfg(feature = "debug")]
+    pub fn clone_debug_state(
+        &self,
+    ) -> (
+        Vec<std::sync::Arc<ProbeSlot>>,
+        DebugControl,
+        std::sync::Arc<SpscQueue<CommandFrame, 256>>,
+    ) {
+        (
+            self.probe_slots.clone(),
             self.debug_control.clone(),
             self.command_queue.clone(),
         )
@@ -535,7 +552,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
         inputs: &[&[T]],
         buf_size: usize,
         #[cfg(feature = "debug")] debug_control: &DebugControl,
-        #[cfg(feature = "debug")] probe_slots: &[ProbeSlot],
+        #[cfg(feature = "debug")] probe_slots: &[std::sync::Arc<ProbeSlot>],
     ) -> ProcessResult<()> {
         for (i, input) in inputs.iter().enumerate() {
             if i < engine.buffers.len() {
