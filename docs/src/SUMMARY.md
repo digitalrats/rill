@@ -20,6 +20,8 @@
 - [FFT and Convolution](guides/fft-convolution.md)
 - [Chip Emulators](guides/chip-emulators.md)
 - [Real-Time Safety](guides/real-time-safety.md)
+- [Debugging & Diagnostics](guides/debugging.md)
+- [rill-analyzer — Interactive Debugger](guides/rill-analyzer.md)
 - [The World of Automatons](guides/world-of-automatons.md)
 - [eDSL: Embedded Domain-Specific Languages](guides/dsl.md)
 - [rill-lang: the Signal DSL](guides/rill-lang.md)

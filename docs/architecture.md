@@ -403,7 +403,23 @@ let mut akai = LofiProcessor::new(akai_config);
 ```
 
 ### `rill-telemetry` (0.5.0, ✅ active)
-Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
+
+Probes and data collectors for monitoring signal flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
+
+**Debug infrastructure** (behind `debug` feature):
+- **Signal probes:** `ProbePoint` IR instructions capture per-block output samples. Probes are lock-free (atomics + SPSC queues), RT-safe, and auto-enabled in `ModularSystem::launch()`.
+- **Command logging:** Every `SetParameter` command successfully routed to a program parameter is logged with block index, node name, parameter name, and value.
+- **Pause/resume:** `DebugControl` atomics (`global_pause`, `global_resume`) allow the debugger to halt the engine between processing blocks without syscalls.
+- **IPC via shared memory:** `/dev/shm/rill-debug-<pid>` — `ShmemRegion` with two lock-free ring buffers for command/response serialization via `serde_cbor`. Supports `rill-analyzer attach <pid>` and `rill-analyzer launch <target>`.
+
+### `rill-analyzer` (0.5.0, ✅ active)
+
+Interactive gdb-style debugger for Rill signal processing applications. Three operating modes:
+- **Local:** `rill-analyzer run graph.json` — embedded debugger in the same process
+- **Attach:** `rill-analyzer attach <pid>` — connect to running process via shared memory
+- **Launch:** `rill-analyzer launch <target>` — start a process and connect immediately
+
+Supports REPL commands (break, continue, step, print, watch), Lua scripting via `mlua`, JSON output for automation, and control-path inspection (automaton state, sensor status). See the [rill-analyzer guide](src/guides/rill-analyzer.md) for full documentation.
 
 ### `rill-core-model` (0.5.0, ✅ active)
 WDF core + physical modeling — elements (Resistor, Capacitor, Inductor, Diode, OpAmp), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion), WDF filters (MoogLadder, DiodeClipper), tape models (RecordHead, PlaybackHead), and resonant physical models (StringModel — 1D waveguide, PlateModel — 2D FDTD mesh, ModalModel — parallel filter bank, HelmholtzCavity + CavityArray). Generic over `rill_core::Transcendental` — supports `f32` and `f64`.
