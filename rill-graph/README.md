@@ -41,6 +41,13 @@ sample rate carried by each `ClockTick`.
 
 - `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`
 
+### Debug infrastructure (`debug` feature)
+
+- `build_ir()` automatically inserts `ProbePoint` IR instructions at each node's
+  output, enabling signal-level inspection via `rill-analyzer`
+- Compiles graph nodes to complete `rill_lang::Ir` with builtins, params, and
+  instructions — mirrors the rill-lang DSL compilation path
+
 ## Links
 
 - Repository: <https://github.com/DigitalRats/rill>

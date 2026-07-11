@@ -5,13 +5,14 @@
 [![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Modular signal-processing ecosystem for Rust. 20 crates, from lock-free
+Modular signal-processing ecosystem for Rust. 21 crates, from lock-free
 queues and generic vector math to real-time FFT, convolution, frequency‑domain
 effects, and analog circuit modelling.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  rill-osc  │  rill-graph  │  rill-patchbay  │  rill-sampler │
+│  rill-analyzer                                               │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)   │
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
@@ -23,6 +24,7 @@ effects, and analog circuit modelling.
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)     │
 │  rill-core-actor  (ActorRef, ActorCell, ActorSystem)        │
+│  rill-telemetry  (probes, collectors, debug IPC)           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -185,14 +187,32 @@ Same as `player` but sends `SetParameter` commands through the graph's actor
 mailbox before starting playback — demonstrates filter cutoff control and WAV
 path override at runtime.
 
-### AY-3-8910 chiptune_stc (Popcorn)
+### AY-3-8910 chiptune (Popcorn) — rill-lang DSL
 
 ```bash
-cargo run -p rill-adrift --example chiptune_stc --features "lofi,portaudio" -- [backend]
+cargo run -p rill-adrift --example lang_chiptune --features "lofi,portaudio,lang" -- [backend]
 ```
 
-Plays the Popcorn melody on an emulated AY-3-8910 sound chip. The sequencer
-runs externally and sends register writes via the actor mailbox.
+The same AY-3-8910 melody through rill‑lang's declarative DSL — cleaner
+graph definition with the same chip emulation backend.
+
+### Interactive debugging
+
+```bash
+# Build the debugger
+cargo build --release -p rill-analyzer
+
+# Launch an example under the debugger
+rill-analyzer launch -- cargo run --example chiptune_stc --features "lofi,pipewire,io,serialization,debug" -- --file music.stc --no-wait pipewire
+
+# Attach to a running process
+rill-analyzer attach <pid>
+```
+
+`rill-analyzer` provides signal probes, command tracing, breakpoints,
+step/continue execution control, and Lua scripting. See the
+[debugging guide](docs/src/guides/debugging.md) and
+[rill-analyzer guide](docs/src/guides/rill-analyzer.md).
 
 ### Microphone recording
 
@@ -222,7 +242,8 @@ topology definition.
 | **rill-patchbay** | Automation: LFO, envelopes, sequencer, sensors, servos |
 | **rill-lofi** | Lo-fi emulation (NES, AY-3-8910, Akai S900) |
 | **rill-io** | Audio I/O: PortAudio, ALSA, PipeWire, JACK |
-| **rill-telemetry** | Real-time probes and collectors |
+| **rill-telemetry** | Real-time probes, collectors, debug IPC |
+| **rill-analyzer** | Interactive gdb-style debugger for signal graph inspection |
 | **rill-analog-filters** | WDF-based analog filters (MoogLadder) |
 | **rill-analog-effects** | Op-amp, tape deck, preamp models |
 | **rill-osc** | OSC server and networking |
@@ -240,6 +261,7 @@ topology definition.
 | `sampler` | `rill-sampler` | yes |
 | `fft` | `rill-fft` (FFT, convolution, spectral effects) | yes |
 | `lang` | `rill-lang` (signal DSL, complex builtins) | no |
+| `debug` | Diagnostic & debug infrastructure (probes, command log, rill-analyzer IPC) | no |
 | `analog` | WDF + analog filters + effects | no |
 | `serialization` | Graph/patchbay JSON/CBOR | no |
 | `alsa` / `portaudio` / `jack` / `pipewire` | I/O backends (implies `io`) | no |
@@ -278,6 +300,7 @@ graph TD
 - **API docs** — [docs.rs/rill-adrift](https://docs.rs/rill-adrift)
 - **Architecture** — `docs/src/architecture/` (core, graph, overview)
 - **Changelog** — [CHANGELOG.md](CHANGELOG.md)
+- **Debugging** — [Debugging Guide](docs/src/guides/debugging.md), [rill-analyzer Guide](docs/src/guides/rill-analyzer.md)
 
 ## Testing
 
@@ -289,7 +312,7 @@ cargo fmt                 # format (max_width=100)
 
 ## Publications
 
-All 20 crates publish to [crates.io](https://crates.io) in dependency order.
+All 21 crates publish to [crates.io](https://crates.io) in dependency order.
 Use the publish script:
 
 ```bash

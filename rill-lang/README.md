@@ -264,6 +264,22 @@ eDSL, while feedback (`~`) and delay (`@`) recurrences run per-sample. The block
 path computes in `T` with zero heap allocation on the hot path. A Cranelift JIT
 backend is still planned and will reuse the same IR.
 
+## Debug infrastructure (`debug` feature)
+
+When the `debug` Cargo feature is enabled, the IR gains a `ProbePoint` instruction
+for signal-level diagnostics. Each graph node compiled via `rill-graph`'s `build_ir()`
+automatically gets a probe at its output:
+
+- **`ProbePoint { id, src, dst }`** — pass-through IR instruction that copies a register
+  value and simultaneously captures it to a lock-free probe slot
+- **`ProbeSlot`** — atomic flags (`enabled`, `break_flag`, `paused_flag`) plus an
+  SPSC queue for frame transport to a non-RT collector thread
+- **`DebugControl`** — shared atomics (`global_pause`, `global_resume`) for
+  pause/resume execution control without syscalls
+
+Probe data flows through `rill-telemetry`'s `CollectorThread` and can be inspected
+via `rill-analyzer`. Zero overhead when the feature is disabled.
+
 ## Status
 
 MVP. Deferred to follow-on work: the Cranelift `jit` feature, foreign references
