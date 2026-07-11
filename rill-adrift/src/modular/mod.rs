@@ -148,6 +148,12 @@ impl<const BUF: usize> ModularSystem<BUF> {
         let _guard = tokio_rt.enter();
 
         for rd in &def.racks {
+            log::info!(
+                "rill-adrift: launching rack '{}' — {} nodes, {} modules",
+                rd.name,
+                rd.graph.nodes.len(),
+                rd.modules.len()
+            );
             let buf_size = def.block_size.max(64);
             let sys = self.actor_system.clone();
             let gd = rd.graph.clone();
@@ -178,9 +184,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
             // 2. Build engine + ProgramRunner on signal thread
             let backend_name = self.default_backend.clone();
-
-            // 2. Build engine + ProgramRunner on signal thread
-            let backend_name = self.default_backend.clone();
+            let rack_name = rd.name.clone();
             let registry = crate::lang_builtins::full_registry::<f32>();
             #[cfg(feature = "lofi")]
             let registry = crate::lang_builtins::full_registry_f32();
@@ -207,6 +211,11 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         .filter_map(|name| ir.nodes.get(name))
                         .map(|node| rill_lang::RillProgram::<f32>::new(node.ir.clone()))
                         .collect();
+                    log::info!(
+                        "rill-adrift: rack '{}' engine built — {} programs",
+                        rack_name,
+                        programs.len()
+                    );
                     let mailbox = Arc::new(Mailbox::new(64));
                     let engine = rill_lang::graph_engine::RillGraphEngine::new(
                         scheduled, programs, mailbox, buf_size,
@@ -228,8 +237,17 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             Ok((driver, capture, playback)) => {
                                 runner.wire_backends(capture, playback);
                                 let _ = runner.run_with_driver(driver, running);
+                                log::info!(
+                                    "rill-adrift: rack '{}' backend '{}' started",
+                                    rack_name,
+                                    name
+                                );
                             }
-                            Err(e) => log::error!("backend create '{}': {e}", name),
+                            Err(e) => log::error!(
+                                "rill-adrift: rack '{}' backend create '{}': {e}",
+                                rack_name,
+                                name
+                            ),
                         }
                     }
                 });
@@ -261,10 +279,19 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             .unwrap()
                             .insert(pb_def.type_name().to_string(), actor_ref);
                     }
-                    Err(e) => log::warn!("module construct '{}': {e}", pb_def.type_name()),
+                    Err(e) => log::warn!(
+                        "rill-adrift: rack '{}' module construct '{}': {e}",
+                        rd.name,
+                        pb_def.type_name()
+                    ),
                 }
             }
         }
+
+        log::info!(
+            "rill-adrift: system launched with {} rack(s)",
+            def.racks.len()
+        );
 
         self.tokio_rt = Some(tokio_rt);
         Ok(self)
@@ -272,13 +299,16 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
     /// Stop all processing — terminates signal loops and drops the tokio runtime.
     pub fn stop(&mut self) {
-        for case in self.cases.values_mut() {
+        log::info!("rill-adrift: stopping system");
+        for (name, case) in self.cases.iter_mut() {
+            log::info!("rill-adrift: stopping rack '{}'", name);
             case.stop();
         }
         #[cfg(feature = "serialization")]
         {
             self.tokio_rt = None;
         }
+        log::info!("rill-adrift: system stopped");
     }
 }
 
