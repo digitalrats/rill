@@ -405,7 +405,9 @@ impl<T: Transcendental> RillGraphEngine<T> {
     pub fn process_tick(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
         #[cfg(feature = "debug")]
         {
-            self.debug_control.block_index.fetch_add(1, Ordering::Relaxed);
+            self.debug_control
+                .block_index
+                .fetch_add(1, Ordering::Relaxed);
         }
         self.drain_mailbox();
 
@@ -416,7 +418,9 @@ impl<T: Transcendental> RillGraphEngine<T> {
             {
                 std::hint::spin_loop();
             }
-            self.debug_control.global_resume.store(false, Ordering::Release);
+            self.debug_control
+                .global_resume
+                .store(false, Ordering::Release);
         }
 
         if let Some(ref mut duplex) = self.duplex {
@@ -607,8 +611,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
                                                 block_index: block_idx,
                                             });
                                             if slot.is_breakpoint() {
-                                                slot.paused_flag
-                                                    .store(true, Ordering::Release);
+                                                slot.paused_flag.store(true, Ordering::Release);
                                                 debug_control.pause();
                                                 while !debug_control
                                                     .global_resume
@@ -616,8 +619,7 @@ impl<T: Transcendental> RillGraphEngine<T> {
                                                 {
                                                     std::hint::spin_loop();
                                                 }
-                                                slot.paused_flag
-                                                    .store(false, Ordering::Release);
+                                                slot.paused_flag.store(false, Ordering::Release);
                                             }
                                         }
                                     }
@@ -751,17 +753,26 @@ impl<T: Transcendental> RillGraphEngine<T> {
                             if slot_idx < self.probe_slots.len() {
                                 let slot = &self.probe_slots[slot_idx];
                                 if slot.is_active() {
-                                    if !output_bufs.is_empty() && *output_bufs.first().unwrap() < self.buffers.len() {
+                                    if !output_bufs.is_empty()
+                                        && *output_bufs.first().unwrap() < self.buffers.len()
+                                    {
                                         let buf = &self.buffers[*output_bufs.first().unwrap()];
                                         if !buf.is_empty() {
                                             let val = buf[0];
                                             let bits = val.to_f64().to_bits();
                                             slot.last_value.store(bits, Ordering::Release);
-                                            let _ = slot.queue.push(ProbeFrame { value_bits: bits, block_index: block_idx });
+                                            let _ = slot.queue.push(ProbeFrame {
+                                                value_bits: bits,
+                                                block_index: block_idx,
+                                            });
                                             if slot.is_breakpoint() {
                                                 slot.paused_flag.store(true, Ordering::Release);
                                                 self.debug_control.pause();
-                                                while !self.debug_control.global_resume.load(Ordering::Acquire) {
+                                                while !self
+                                                    .debug_control
+                                                    .global_resume
+                                                    .load(Ordering::Acquire)
+                                                {
                                                     std::hint::spin_loop();
                                                 }
                                                 slot.paused_flag.store(false, Ordering::Release);
@@ -839,7 +850,9 @@ impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
         let buf_size = output.len();
         #[cfg(feature = "debug")]
         {
-            self.debug_control.block_index.fetch_add(1, Ordering::Relaxed);
+            self.debug_control
+                .block_index
+                .fetch_add(1, Ordering::Relaxed);
         }
         self.drain_mailbox();
 
@@ -850,7 +863,9 @@ impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
             {
                 std::hint::spin_loop();
             }
-            self.debug_control.global_resume.store(false, Ordering::Release);
+            self.debug_control
+                .global_resume
+                .store(false, Ordering::Release);
         }
 
         if let Some(inp) = input {

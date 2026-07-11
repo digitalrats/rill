@@ -11,21 +11,15 @@ struct DelayBuiltin<T: Transcendental, const BUF_SIZE: usize> {
 
 impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for DelayBuiltin<T, BUF_SIZE> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                for (i, out) in output.iter_mut().enumerate() {
-                    *out = self.inner.process_sample(inp[i.min(inp.len() - 1)]);
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
+        Algorithm::process(&mut self.inner, input, output)
     }
+
     fn reset(&mut self) {
-        Node::reset(&mut self.inner);
+        Algorithm::reset(&mut self.inner);
     }
+
     fn init(&mut self, sample_rate: f32) {
-        Node::init(&mut self.inner, sample_rate);
+        Algorithm::init(&mut self.inner, sample_rate);
     }
 }
 
@@ -47,7 +41,7 @@ pub fn register_delay_builtins<T: Transcendental + 'static>(reg: &mut Registry<T
         |p, sr| {
             let mut d =
                 crate::Delay::<T, 64>::with_params(sr, p[0] as f32, p[1] as f32, p[2] as f32);
-            Node::init(&mut d, sr);
+            Algorithm::init(&mut d, sr);
             Box::new(DelayBuiltin::<T, 64> { inner: d })
         },
     );

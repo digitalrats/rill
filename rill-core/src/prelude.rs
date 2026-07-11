@@ -6,38 +6,23 @@
 //!
 //! ## What's included
 //!
-//! - Core traits (`Node`, `Source`, `Processor`, `Sink`)
-//! - Node identification (`NodeId`, ``, ``)
+//! - Node identification (`NodeId`)
 //! - Parameter handling (`ParameterId`, `ParamValue`, `ParamType`)
-//! - Ports (`PortId`, `PortType`, `PortDirection`)
 //! - Time and clock (`ClockTick`, `ClockSource`, `SystemClock`)
 //! - Error types (`ProcessResult`, `ProcessError`, etc.)
 //! - Buffer types (`PipeBuffer`, `FanOutBuffer`, `DelayLine`, `RingBuffer`)
 //! - Atomic types (`AtomicCell`, `AtomicStats`)
-//! - Math abstractions (`Scalar`, `Transcendental`)
+//! - Math abstractions (`Transcendental`)
 //! - Constants (`DEFAULT_BLOCK_SIZE`, `MAX_SAMPLE_RATE`, etc.)
 //!
-//! ## Example
-//!
-// In rill-core/src/lib.rs - line 151 (prelude example)
-
 //! ## Example
 //!
 //! ```rust
 //! use rill_core::prelude::*;
 //!
-//! fn process_block<T: Transcendental, const BUF_SIZE: usize>(
-//!     source: &mut dyn Source<T, BUF_SIZE>,
-//!     processor: &mut dyn Processor<T, BUF_SIZE>,
-//!     sink: &mut dyn Sink<T, BUF_SIZE>,
-//!     ctx: &RenderContext,
-//!     tick: &ClockTick,
-//! ) -> ProcessResult<()> {
-//!     source.generate(ctx, &[], &[], tick)?;
-//!     processor.process(ctx, &[], &[], &[], &[])?;
-//!     sink.consume(ctx, &[], &[], &[], &[], tick)?;
-//!     Ok(())
-//! }
+//! let param = ParameterId::new("gain").unwrap();
+//! let ctx = RenderContext::new(0, 64, 44100.0);
+//! let tick = ClockTick::new(0, 64, 44100.0, "main".to_string());
 //! ```
 
 // ============================================================================
@@ -366,9 +351,6 @@ mod tests {
 
     #[test]
     fn test_prelude_imports() {
-        // Verify that all expected types are accessible
-        let _node_id = NodeId(0);
-        let _port_id = PortId::signal_in(_node_id, 0);
         let _param_id = ParameterId::new("test").unwrap();
         let _clock = SystemClock::with_sample_rate(44100.0);
         let _tick = ClockTick::new(0, 64, 44100.0, "test".to_string());

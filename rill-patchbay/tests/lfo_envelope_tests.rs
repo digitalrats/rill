@@ -1,4 +1,4 @@
-use rill_core::NodeId;
+use rill_core::traits::NodeId;
 use rill_core_actor::ActorSystem;
 use rill_patchbay::{LfoWaveform, Servo};
 use std::sync::Arc;
@@ -19,7 +19,7 @@ fn test_lfo_servo_spawn() {
     let servo = Servo::new(
         "test_lfo",
         LfoAutomaton::new("lfo", 1.0, 0.5, 0.0, LfoWaveform::Sine),
-        NodeId(1),
+        1u32,
         "cutoff",
         rill_patchbay::ParameterMapping::Linear,
         100.0,
@@ -43,7 +43,7 @@ fn test_envelope_servo_spawn() {
     let servo = Servo::new(
         "test_env",
         EnvelopeAutomaton::adsr("env", 0.1, 0.2, 0.7, 0.3),
-        NodeId(1),
+        1u32,
         "gain",
         rill_patchbay::ParameterMapping::Linear,
         0.0,

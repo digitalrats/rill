@@ -16,7 +16,7 @@ use std::sync::Arc;
 use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
-use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
 use rill_adrift::rill_graph::serialization::{
     ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
 };
@@ -390,6 +390,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .position(|a| a == "--file")
         .and_then(|i| args.get(i + 1))
         .cloned();
+
     let stc_file = match stc_file {
         Some(f) => f,
         None => {
@@ -475,7 +476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let apply_at = tick.sample_pos + tick.io_quantum as u64;
                         gr.send(CommandEnum::SetParameter(
                             SetParameter::new(
-                                PortId::param(NodeId(0), 0),
+                                "".into(),
                                 pid,
                                 ParamValue::Bytes(regs.to_vec()),
                                 SignalOrigin::Manual,
@@ -493,14 +494,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut source_params = HashMap::new();
-    source_params.insert("bit_depth".into(), ParamValue::Int(8));
-    source_params.insert("nonlinear".into(), ParamValue::Bool(false));
-    source_params.insert("noise_floor".into(), ParamValue::Float(-48.0));
-    if normalize {
-        source_params.insert("dc_offset".into(), ParamValue::Float(0.5));
-        source_params.insert("output_gain".into(), ParamValue::Float(1.0));
-        source_params.insert("output_ceiling".into(), ParamValue::Float(0.8));
-    }
+    source_params.insert("param_0".into(), ParamValue::Float(1_750_000.0)); // clock
+    source_params.insert("register_write".into(), ParamValue::Float(0.0)); // regs
 
     let def = ModularSystemDef {
         format_version: "rill/1".into(),
@@ -553,8 +548,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Recording apps (Ardour, Audacity via pw-loopback) can connect before
     // playback starts. The STC module stays silent until is_playing = true.
     let _running_system = system.launch(&def).expect("launch system");
-    // Small settle: allow backend to register ports before printing prompt
-    std::thread::sleep(std::time::Duration::from_millis(200));
 
     println!("AY-3-8910 Chiptune — Popcorn (STC) [{backend_display}]\n");
     println!("Backend ports are live — connect your recording app now.\n");

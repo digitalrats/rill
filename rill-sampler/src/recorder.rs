@@ -1,60 +1,22 @@
 //! Recording sink — captures signal into a Vec<f32> for offline analysis.
-//!
-//! RT-safe: the Mutex is only used during `consume()` (signal thread, single writer)
-//! and for post-processing (read after graph stops). No contention.
 
 use std::sync::{Arc, Mutex};
 
-use rill_core::{
-    math::Transcendental,
-    time::{ClockTick, RenderContext},
-    traits::{ParamValue, ParameterId, ProcessError, ProcessResult},
-    NodeId,
-};
-
-/// Sink node that records stereo signal into a shared buffer.
-///
-/// # Usage
-///
-/// ```no_run
-/// # use std::sync::{Arc, Mutex};
-/// # use rill_sampler::recorder::RecordingSink;
-/// let buf = Arc::new(Mutex::new(Vec::new()));
-/// let sink = RecordingSink::<f32, 256>::new(buf.clone(), 2);
-/// // ... build graph, run ...
-/// let data = buf.lock().unwrap();
-/// RecordingSink::<f32, 256>::write_wav("output.wav", 44100, 2, &data).unwrap();
-/// ```
-pub struct RecordingSink<T: Transcendental, const B: usize> {
-    // (removed legacy field)
-    metadata: NodeMetadata,
-    inputs: Vec<Port<T, B>>,
-    // (removed legacy field)
-    recorded: Arc<Mutex<Vec<f32>>>,
+pub struct RecordingSink<const B: usize> {
+    pub recorded: Arc<Mutex<Vec<f32>>>,
 }
 
-impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
-    /// Create a stereo RecordingSink.
-    pub fn new(recorded: Arc<Mutex<Vec<f32>>>, channels: usize) -> Self {
-        let ch = channels.clamp(1, 2);
-        let inputs: Vec<_> = if ch == 1 {
-            vec![Port::input(NodeId(0), 0, "mono")]
-        } else {
-            vec![
-                Port::input(NodeId(0), 0, "left"),
-                Port::input(NodeId(0), 1, "right"),
-            ]
-        };
-        Self {
-    // (removed legacy field)
-            metadata: NodeMetadata::new("RecordingSink", NodeCategory::Sink),
-            inputs,
-    // (removed legacy field)
-            recorded,
+impl<const B: usize> RecordingSink<B> {
+    pub fn new(recorded: Arc<Mutex<Vec<f32>>>) -> Self {
+        Self { recorded }
+    }
+
+    pub fn record(&self, samples: &[f32]) {
+        if let Ok(mut buf) = self.recorded.lock() {
+            buf.extend_from_slice(samples);
         }
     }
 
-    /// Write recorded samples to a 16-bit WAV file.
     #[cfg(feature = "wav")]
     pub fn write_wav(
         path: &str,
@@ -70,95 +32,10 @@ impl<T: Transcendental, const B: usize> RecordingSink<T, B> {
         };
         let mut writer = hound::WavWriter::create(path, spec).map_err(|e| e.to_string())?;
         for &s in samples {
-            let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-            writer.write_sample(v).map_err(|e| e.to_string())?;
+            writer
+                .write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)
+                .map_err(|e| e.to_string())?;
         }
         writer.finalize().map_err(|e| e.to_string())
     }
 }
-
-    where
-        Self: 'static + Sized,
-    {
-        rill_core::NodeTypeId::of::<Self>()
-    }
-    fn id(&self) -> NodeId {
-        self.id
-    }
-    fn set_id(&mut self, id: NodeId) {
-        self.id = id;
-        for (i, p) in self.inputs.iter_mut().enumerate() {
-            p.id = PortId::signal_in(id, i as u16);
-        }
-    }
-        self.metadata.clone()
-    }
-    fn init(&mut self, sample_rate: f32) {
-        self.state = NodeState::new(sample_rate);
-    }
-    fn reset(&mut self) {
-        self.state.sample_pos = 0;
-    }
-    fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
-        None
-    }
-    fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
-        Err(ProcessError::parameter("RecordingSink has no parameters"))
-    }
-    fn input_port(&self, index: usize) -> Option<&Port<T, B>> {
-        self.inputs.get(index)
-    }
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, B>> {
-        self.inputs.get_mut(index)
-    }
-    fn output_port(&self, _index: usize) -> Option<&Port<T, B>> {
-        None
-    }
-    fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, B>> {
-        None
-    }
-    fn control_port(&self, _index: usize) -> Option<&Port<T, B>> {
-        None
-    }
-    fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, B>> {
-        None
-    }
-    fn num_signal_inputs(&self) -> usize {
-        self.inputs.len()
-    }
-    fn num_signal_outputs(&self) -> usize {
-        0
-    }
-        &self.state
-    }
-        &mut self.state
-    }
-
-        &mut self,
-        _ctx: &RenderContext,
-        _signal_inputs: &[&[T; B]],
-        _control_inputs: &[T],
-        _clock_inputs: &[RenderContext],
-        _feedback_inputs: &[&[T; B]],
-        _tick: &ClockTick,
-    ) -> ProcessResult<()> {
-        if self.inputs.is_empty() {
-            return Ok(());
-        }
-        let nch = self.inputs.len();
-        let ch0 = self.inputs[0].read();
-        let ch1 = if nch > 1 {
-            Some(self.inputs[1].read())
-        } else {
-            None
-        };
-        let mut dst = self.recorded.lock().unwrap();
-        for i in 0..B {
-            dst.push(ch0[i].to_f32());
-            if let Some(c1) = ch1 {
-                dst.push(c1[i].to_f32());
-            }
-        }
-        self.state.advance();
-        Ok(())
-    }

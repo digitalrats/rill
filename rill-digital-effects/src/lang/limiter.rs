@@ -19,11 +19,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for LimiterBuiltin<T
         }
         Ok(())
     }
+
     fn reset(&mut self) {
-        Node::reset(&mut self.inner);
+        Algorithm::reset(&mut self.inner);
     }
+
     fn init(&mut self, sample_rate: f32) {
-        Node::init(&mut self.inner, sample_rate);
+        Algorithm::init(&mut self.inner, sample_rate);
     }
 }
 
@@ -43,7 +45,7 @@ pub fn register_limiter_builtins<T: Transcendental + 'static>(reg: &mut Registry
         BuiltinSig::simple("limiter", 1, 1, 2, BuiltinKind::Block),
         |p, sr| {
             let mut l = crate::Limiter::<T, 64>::new(sr, p[0] as f32, 1.0, p[1] as f32, 0.0);
-            Node::init(&mut l, sr);
+            Algorithm::init(&mut l, sr);
             Box::new(LimiterBuiltin::<T, 64> { inner: l })
         },
     );

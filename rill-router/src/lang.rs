@@ -5,8 +5,30 @@ use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 
-use crate::eq::GraphicEq;
-use rill_core_dsp::filters::Biquad;
+use crate::eq::{FilterFactory, GraphicEq};
+use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
+
+/// Default factory that creates `Biquad<f32>` filters.
+#[derive(Debug, Clone, Default)]
+struct BiquadFactory;
+
+impl FilterFactory<Biquad<f32>> for BiquadFactory {
+    fn create_filter(
+        &self,
+        filter_type: FilterType,
+        frequency: f32,
+        q: f32,
+        gain_db: f32,
+    ) -> Biquad<f32> {
+        let params = FilterParams {
+            filter_type,
+            cutoff: frequency,
+            q,
+            gain_db,
+        };
+        Biquad::new(params)
+    }
+}
 
 struct GraphicEqBuiltin<T: Transcendental> {
     eq: GraphicEq<Biquad<f32>>,
@@ -56,7 +78,7 @@ pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
         BuiltinSig::simple("graphic_eq", 1, 1, 1, BuiltinKind::Block),
         |p, sr| {
-            let factory = crate::eq::BiquadFactory;
+            let factory = BiquadFactory;
             let mut eq = GraphicEq::new_third_octave(factory, sr);
             eq.set_output_gain(p[0] as f32);
             eq.init(sr);

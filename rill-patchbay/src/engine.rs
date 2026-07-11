@@ -976,7 +976,6 @@ mod tests {
         };
         assert!(mapping.matches(&event));
         let cmd = mapping.apply(&event).unwrap();
-        assert_eq!(cmd.port.node_id(), node);
         assert_eq!(cmd.parameter.as_ref(), "volume");
         assert!((cmd.value.as_f32().unwrap() - 0.5).abs() < 1e-6);
     }

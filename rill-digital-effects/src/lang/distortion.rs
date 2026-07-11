@@ -12,21 +12,15 @@ struct DistortionBuiltin<T: Transcendental, const BUF_SIZE: usize> {
 
 impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for DistortionBuiltin<T, BUF_SIZE> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                for (i, out) in output.iter_mut().enumerate() {
-                    *out = self.inner.process_sample(inp[i.min(inp.len() - 1)]);
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
+        Algorithm::process(&mut self.inner, input, output)
     }
+
     fn reset(&mut self) {
-        Node::reset(&mut self.inner);
+        Algorithm::reset(&mut self.inner);
     }
+
     fn init(&mut self, sample_rate: f32) {
-        Node::init(&mut self.inner, sample_rate);
+        Algorithm::init(&mut self.inner, sample_rate);
     }
 }
 
@@ -45,14 +39,10 @@ pub fn register_distortion_builtins<T: Transcendental + 'static>(reg: &mut Regis
     reg.register_block(
         BuiltinSig::simple("distortion", 1, 1, 2, BuiltinKind::Block),
         |p, sr| {
-            let mut d = crate::Distortion::<T, 64>::with_params(
-                sr,
-                DistortionType::SoftClip,
-                p[0] as f32,
-                1.0,
-            );
+            let mut d =
+                crate::Distortion::<T, 64>::with_params(DistortionType::SoftClip, p[0] as f32, 1.0);
             d.set_output_gain(p[1] as f32);
-            Node::init(&mut d, sr);
+            Algorithm::init(&mut d, sr);
             Box::new(DistortionBuiltin::<T, 64> { inner: d })
         },
     );

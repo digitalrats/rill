@@ -640,7 +640,6 @@ impl From<crate::error::Error> for ProcessError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{PortDirection, PortType};
 
     #[test]
     fn test_process_error_creation() {
@@ -692,14 +691,14 @@ mod tests {
     fn test_error_context() {
         let ctx = ErrorContext::new()
             .with_location("test.rs", 42)
-            .with_node(u32(1))
+            .with_node(1u32)
             .with_extra("sample_rate", "44100");
 
         let err = ProcessError::processing("test");
         let formatted = ctx.format(&err);
 
         assert!(formatted.contains("test.rs:42"));
-        assert!(formatted.contains("node: Node(1)"));
+        assert!(formatted.contains("node: 1"));
         assert!(formatted.contains("sample_rate: 44100"));
     }
 

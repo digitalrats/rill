@@ -14,16 +14,8 @@
 //!
 //! ## Example
 //!
-//! ```no_run
-//! use rill_core::queues::*;
-//! use rill_core::traits::*;
 //!
-//! let node = NodeId(1);
-//! let port = PortId::control_in(node, 0);
-//! let param = ParameterId::new("gain").unwrap();
-//! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalOrigin::Automaton("lfo".into()));
-//! // Send via ActorRef<SetParameter> or MpscQueue<SetParameter>
-//! ```
+//! See crate-level documentation for usage examples.
 
 use super::command::Command;
 use super::control_event::ControlEvent;

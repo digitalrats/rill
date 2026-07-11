@@ -227,6 +227,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                         "rill/moog_ladder" => "moog",
                         "rill/write_head" => "write_head",
                         "rill/read_head" => "read_head",
+                        "rill/lofi_chip" => "ay38910",
                         _ => "",
                     };
                     if mapped.is_empty() {

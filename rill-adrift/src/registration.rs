@@ -88,7 +88,7 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             let servo_ref = rill_patchbay::Servo::new(
                 format!("midi_servo_{port_name}"),
                 rill_patchbay::engine::NoAction,
-                rill_core::traits::NodeId(0),
+                0u32,
                 "",
                 rill_patchbay::engine::ParameterMapping::Linear,
                 0.0,
@@ -149,7 +149,7 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
             let servo_ref = rill_patchbay::Servo::new(
                 format!("osc_servo_{port}"),
                 rill_patchbay::engine::NoAction,
-                rill_core::traits::NodeId(0),
+                0u32,
                 "",
                 rill_patchbay::engine::ParameterMapping::Linear,
                 0.0,

@@ -23,7 +23,6 @@ rill-core = { workspace = true }
 rill-core-actor = { workspace = true }
 rill-core-dsp = { workspace = true }
 rill-graph = { workspace = true }
-rill-oscillators = { workspace = true, features = ["graph"] }
 rill-digital-filters = { workspace = true, features = ["graph"] }
 rill-digital-effects = { workspace = true, features = ["graph"] }
 rill-router = { workspace = true, features = ["graph", "lang"] }
@@ -58,17 +57,11 @@ required-features = ["io", "sampler"]
 name = "player"
 required-features = ["io", "serialization"]
 
-[[example]]
-name = "advanced_player"
-required-features = ["io", "serialization"]
 
 [[example]]
 name = "record_mic"
 required-features = ["io", "sampler"]
 
-[[example]]
-name = "convolver"
-required-features = ["fft"]
 
 [[example]]
 name = "complex_dsl"
@@ -81,21 +74,9 @@ required-features = ["fft"]
 name = "dsl_spectral"
 required-features = ["fft"]
 
-[[example]]
-name = "chiptune"
-required-features = ["io", "lofi"]
 
-[[example]]
-name = "midi_synth"
-required-features = ["midi", "io"]
 
-[[example]]
-name = "midi_synth_serial"
-required-features = ["midi", "io", "serialization"]
 
-[[example]]
-name = "lang_chiptune"
-required-features = ["io", "lofi"]
 
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "fft", "portaudio", "serialization"]
@@ -126,3 +107,11 @@ pipewire = ["rill-io/pipewire"]
 # MIDI
 midi = ["rill-patchbay/midi", "rill-io/midir", "io"]
 
+
+[[example]]
+name = "chiptune_stc"
+required-features = ["io", "lofi", "serialization"]
+
+[[example]]
+name = "lang_chiptune"
+required-features = ["io", "lofi", "serialization"]

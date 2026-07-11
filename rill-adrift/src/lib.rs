@@ -7,7 +7,6 @@ pub use rill_core_dsp;
 pub use rill_digital_effects;
 pub use rill_digital_filters;
 pub use rill_graph;
-pub use rill_oscillators;
 pub use rill_patchbay;
 pub use rill_router;
 
@@ -41,7 +40,6 @@ pub use rill_lang as lang;
 pub use rill_fft as fft;
 
 /// rill-lang graph node adapter (`LangNode`).
-pub mod lang_node;
 
 /// rill-lang DSP/model built-in bindings.
 pub mod lang_builtins;

@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn test_telemetry_block_default() {
         let block = TelemetryBlock::<f32, 64>::default();
-        assert_eq!(block.node_id, NodeId(0));
+        assert_eq!(block.node_id, 0);
         assert_eq!(block.channel, 0);
         assert_eq!(block.timestamp, 0);
         assert_eq!(block.block_index, 0);
