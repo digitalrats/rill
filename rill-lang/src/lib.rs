@@ -30,6 +30,9 @@ pub mod schedule;
 pub mod serde_def;
 pub mod types;
 
+#[cfg(feature = "debug")]
+pub mod debug;
+
 pub use error::{CompileError, Span};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
