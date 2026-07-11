@@ -24,7 +24,7 @@ use crate::sensor::Sensor;
 /// and dispatches via [`ActorRef`].
 pub struct OscSensor {
     id: String,
-    thread: Option<JoinHandle<()>>,
+    pub(crate) thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
     events: Option<ActorRef<ControlEvent>>,
     bind_addr: SocketAddr,
@@ -122,6 +122,21 @@ impl Sensor for OscSensor {
 impl Drop for OscSensor {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(feature = "debug")]
+impl OscSensor {
+    /// Capture a snapshot of this OSC sensor's status.
+    pub fn inspect(&self) -> crate::debug::SensorSnapshot {
+        crate::debug::SensorSnapshot {
+            name: self.id.clone(),
+            kind: "osc".into(),
+            connected: self.thread.is_some(),
+            event_count: 0,
+            last_event: None,
+            tracker_active: false,
+        }
     }
 }
 

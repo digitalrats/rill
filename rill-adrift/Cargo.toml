@@ -23,11 +23,11 @@ rill-core = { workspace = true }
 rill-core-actor = { workspace = true }
 rill-core-dsp = { workspace = true }
 rill-graph = { workspace = true }
-rill-oscillators = { workspace = true, features = ["graph"] }
 rill-digital-filters = { workspace = true, features = ["graph"] }
 rill-digital-effects = { workspace = true, features = ["graph"] }
 rill-router = { workspace = true, features = ["graph", "lang"] }
 rill-patchbay = { workspace = true }
+dashmap = { version = "6", optional = true }
 
 # Dependencies for Runtime (always needed)
 log = "0.4"
@@ -58,17 +58,11 @@ required-features = ["io", "sampler"]
 name = "player"
 required-features = ["io", "serialization"]
 
-[[example]]
-name = "advanced_player"
-required-features = ["io", "serialization"]
 
 [[example]]
 name = "record_mic"
 required-features = ["io", "sampler"]
 
-[[example]]
-name = "convolver"
-required-features = ["fft"]
 
 [[example]]
 name = "complex_dsl"
@@ -81,21 +75,9 @@ required-features = ["fft"]
 name = "dsl_spectral"
 required-features = ["fft"]
 
-[[example]]
-name = "chiptune"
-required-features = ["io", "lofi"]
 
-[[example]]
-name = "midi_synth"
-required-features = ["midi", "io"]
 
-[[example]]
-name = "midi_synth_serial"
-required-features = ["midi", "io", "serialization"]
 
-[[example]]
-name = "lang_chiptune"
-required-features = ["io", "lofi"]
 
 [features]
 default = ["io", "lofi", "telemetry", "osc", "sampler", "fft", "portaudio", "serialization"]
@@ -103,6 +85,7 @@ default = ["io", "lofi", "telemetry", "osc", "sampler", "fft", "portaudio", "ser
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi", "rill-lofi/graph", "rill-lofi/lang"]
 telemetry = ["dep:rill-telemetry"]
+debug = ["telemetry", "rill-telemetry/debug", "rill-patchbay/debug", "rill-graph/debug", "rill-lang/debug", "dep:dashmap"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects", "rill-analog-filters/graph", "rill-analog-effects/graph", "rill-core-model/lang", "rill-analog-effects/lang"]
 sampler = ["dep:rill-sampler", "rill-sampler/graph", "rill-sampler/lang"]
@@ -126,3 +109,11 @@ pipewire = ["rill-io/pipewire"]
 # MIDI
 midi = ["rill-patchbay/midi", "rill-io/midir", "io"]
 
+
+[[example]]
+name = "chiptune_stc"
+required-features = ["io", "lofi", "serialization"]
+
+[[example]]
+name = "lang_chiptune"
+required-features = ["io", "lofi", "serialization"]

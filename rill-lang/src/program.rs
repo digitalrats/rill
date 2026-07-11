@@ -67,6 +67,9 @@ impl DelayRing {
 }
 
 impl<T: Transcendental> RillProgram<T> {
+    /// Create a program from a compiled IR. Allocates state, delays, registers,
+    /// and builds the execution schedule. Built-ins are NOT instantiated — use
+    /// [`new_with`](Self::new_with) if the IR references built-in functions.
     pub fn new(ir: Ir) -> Self {
         let state = vec![0.0; ir.state.state_slots];
         let state_next = state.clone();
@@ -101,7 +104,13 @@ impl<T: Transcendental> RillProgram<T> {
         }
     }
 
-    pub(crate) fn new_with(
+    /// Create a program from a compiled [`Ir`], instantiating all built-ins
+    /// via the provided [`Registry`]. Also sets the initial `sample_rate`.
+    ///
+    /// Parses `builtins` from the IR, allocates registers, state, and delays,
+    /// and builds the execution schedule. The resulting program implements
+    /// [`Algorithm<T>`](rill_core::traits::Algorithm).
+    pub fn new_with(
         ir: Ir,
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,

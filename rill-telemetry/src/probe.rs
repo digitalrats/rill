@@ -4,6 +4,7 @@ use rill_core::queues::TelemetryBlock;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Real-time telemetry probe that captures per-block metrics (peak, RMS, DC).
 pub struct TelemetryProbe<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize> {
     queue: Arc<SpscQueue<TelemetryBlock<T, BUF_SIZE>, QUEUE_CAP>>,
     interval: u32,
@@ -15,6 +16,7 @@ pub struct TelemetryProbe<T: Transcendental, const BUF_SIZE: usize, const QUEUE_
 impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
     TelemetryProbe<T, BUF_SIZE, QUEUE_CAP>
 {
+    /// Create a probe attached to the given queue, sampling every `interval` blocks.
     pub fn new(
         queue: Arc<SpscQueue<TelemetryBlock<T, BUF_SIZE>, QUEUE_CAP>>,
         interval: u32,
@@ -28,6 +30,7 @@ impl<T: Transcendental, const BUF_SIZE: usize, const QUEUE_CAP: usize>
             channel,
         }
     }
+    /// Process a block: copy input to output, capture metrics at the configured interval.
     pub fn process_block(&mut self, input: &[T; BUF_SIZE], output: &mut [T; BUF_SIZE]) {
         output.copy_from_slice(input);
         self.counter += 1;

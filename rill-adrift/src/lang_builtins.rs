@@ -26,36 +26,19 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_core::builtin::Regis
     #[cfg(feature = "sampler")]
     rill_sampler::register::register_lang_builtins(&mut reg);
 
-    // IO pass-through nodes (identity — real IO handled by ProgramRunner)
-    register_io_nodes(&mut reg);
     // Tape loop pass-through nodes (replaced by tape_bridge in future)
     register_tape_nodes(&mut reg);
 
     reg
 }
 
-/// Register IO graph nodes as identity pass-through built-ins.
-/// Real I/O is handled by ProgramRunner — these just pass signal through.
-fn register_io_nodes<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    reg.register_block(
-        BuiltinSig::simple("rill/input", 0, 2, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(IdentityAlgo::<T>::new(2)),
-    );
-    reg.register_block(
-        BuiltinSig::simple("rill/output", 2, 0, 0, BuiltinKind::Block), // 2→0: stereo sink
-        |_p, _sr| Box::new(IdentityAlgo::<T>::new(0)),
-    );
-}
-
 struct IdentityAlgo<T: Transcendental> {
-    channels: usize,
     _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T: Transcendental> IdentityAlgo<T> {
-    fn new(channels: usize) -> Self {
+    fn new(_channels: usize) -> Self {
         Self {
-            channels,
             _phantom: std::marker::PhantomData,
         }
     }

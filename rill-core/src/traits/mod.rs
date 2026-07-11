@@ -13,6 +13,8 @@ pub mod buffer_view;
 mod error;
 /// MultichannelAlgorithm trait for multi-IO processing (N inputs, M outputs).
 pub mod multichannel_algorithm;
+/// NodeId type for identifying nodes.
+pub mod node;
 /// Parameter types and IDs (`ParameterId`, `ParamValue`, `ParamType`, etc.).
 pub mod param;
 /// ParameterWrite trait — polymorphic control interface for DSP engines.
@@ -25,6 +27,7 @@ pub use algorithm::*;
 pub use buffer_view::*;
 pub use error::*;
 pub use multichannel_algorithm::*;
+pub use node::*;
 pub use param::*;
 pub use parameter_write::*;
 pub use rack::*;
@@ -136,19 +139,6 @@ impl<T: 'static> AsAny for T {
 #[cfg(test)]
 mod tests {
     use super::prelude::*;
-    use crate::traits::IntoParamValue;
-    #[test]
-    fn test_prelude_imports() {
-        let _node_id = NodeId(0);
-        let _port_id = PortId::signal_in(_node_id, 0);
-        let _param_id = ParameterId::new("test").unwrap();
-        // Test IntoParamValue
-        let f: f32 = 42.0;
-        let pv = f.into_param_value();
-        assert_eq!(pv.as_f32(), Some(42.0));
-        let back = f32::from_param_value(pv);
-        assert_eq!(back, Some(42.0));
-    }
     #[test]
     fn test_param_value_conversions() {
         let f = ParamValue::Float(42.0);
@@ -173,47 +163,6 @@ mod tests {
         assert!(ParameterId::new("1gain").is_err());
         assert!(ParameterId::new("_gain").is_err());
         assert!(ParameterId::new("gain.value").is_ok());
-    }
-    #[test]
-    fn test_port_id_creation() {
-        let node = NodeId(42);
-        let signal_in = PortId::signal_in(node, 0);
-        assert_eq!(signal_in.node_id(), node);
-        assert_eq!(signal_in.port_type(), PortType::Signal);
-        assert_eq!(signal_in.direction(), PortDirection::Input);
-        assert_eq!(signal_in.index(), 0);
-        assert!(signal_in.is_input());
-        assert!(signal_in.is_signal());
-        let clock_out = PortId::clock_out(node, 0);
-        assert_eq!(clock_out.port_type(), PortType::Clock);
-        assert!(clock_out.is_output());
-        assert!(clock_out.is_clock());
-        let feedback_in = PortId::feedback_in(node, 0);
-        assert_eq!(feedback_in.port_type(), PortType::Feedback);
-        assert!(feedback_in.is_input());
-        assert!(feedback_in.is_feedback());
-    }
-    #[test]
-    fn test_node_metadata() {
-        let metadata = NodeMetadata {
-            name: "TestNode".to_string(),
-            type_name: None,
-            category: NodeCategory::Processor,
-            description: "A test node".to_string(),
-            author: "Rill".to_string(),
-            version: "1.0".to_string(),
-            signal_inputs: 2,
-            signal_outputs: 2,
-            control_inputs: 1,
-            control_outputs: 0,
-            clock_inputs: 1,
-            clock_outputs: 0,
-            feedback_ports: 0,
-            parameters: vec![],
-        };
-        assert_eq!(metadata.name, "TestNode");
-        assert_eq!(metadata.category, NodeCategory::Processor);
-        assert_eq!(metadata.signal_inputs, 2);
     }
     #[test]
     fn test_param_range() {

@@ -106,7 +106,6 @@
 
 pub mod complex_fft;
 pub mod effects;
-pub mod nodes;
 pub mod overlap_add;
 pub mod partitioned_conv;
 pub mod real_fft;
@@ -116,7 +115,6 @@ pub mod spectrum;
 pub mod prelude {
     pub use crate::complex_fft::ComplexFft;
     pub use crate::effects::{spectral_delay::SpectralDelay, spectral_gate::SpectralGate};
-    pub use crate::nodes::convolver_node::ConvolverNode;
     pub use crate::overlap_add::OverlapAddConvolver;
     pub use crate::partitioned_conv::PartitionedConvolver;
     pub use crate::real_fft::RealFft;

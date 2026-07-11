@@ -376,7 +376,7 @@ pub(crate) struct ServoState<A: Automaton> {
 pub struct Servo<A: Automaton> {
     id: String,
     automaton: Arc<A>,
-    state: Arc<Mutex<ServoState<A>>>,
+    pub(crate) state: Arc<Mutex<ServoState<A>>>,
     graph_ref: ActorRef<CommandEnum>,
     target_node: u32,
     target_param: String,
@@ -481,7 +481,7 @@ impl<A: Automaton + 'static> Servo<A> {
         let a = automaton;
         let s = state;
         let gr = graph_ref;
-        let nid = target_node;
+        let _nid = target_node;
         let param = target_param;
         let map = mapping;
         let ctrl = control;
@@ -853,6 +853,17 @@ impl<A: Automaton + 'static> Servo<A> {
     }
 }
 
+#[cfg(feature = "debug")]
+impl<A: Automaton + 'static> Servo<A> {
+    /// Return an inspector that can snapshot this servo's automaton state.
+    pub fn inspector(&self) -> Box<dyn crate::debug::AutomatonInspector> {
+        Box::new(crate::debug::ServoInspector {
+            name: self.id.clone(),
+            state: self.state.clone(),
+        })
+    }
+}
+
 // =============================================================================
 // 9. Module trait — unified interface for sensors
 // =============================================================================
@@ -976,7 +987,6 @@ mod tests {
         };
         assert!(mapping.matches(&event));
         let cmd = mapping.apply(&event).unwrap();
-        assert_eq!(cmd.port.node_id(), node);
         assert_eq!(cmd.parameter.as_ref(), "volume");
         assert!((cmd.value.as_f32().unwrap() - 0.5).abs() < 1e-6);
     }

@@ -19,6 +19,13 @@ use rill_core_actor::{ActorRef, Mailbox};
 use crate::graph_lower::{DuplexSchedule, ScheduledGraph, Step};
 use crate::program::RillProgram;
 
+#[cfg(feature = "debug")]
+use crate::debug::{CmdStr, CommandFrame, DebugControl, ProbeFrame, ProbeSlot};
+#[cfg(feature = "debug")]
+use rill_core::queues::spsc::SpscQueue;
+#[cfg(feature = "debug")]
+use std::sync::atomic::Ordering;
+
 /// Map from parameter name to its index in the program's parameter list.
 pub type ParamMap = HashMap<String, usize>;
 
@@ -79,6 +86,7 @@ pub struct RillGraphEngine<T: Transcendental> {
     programs: Vec<RillProgram<T>>,
     buffers: Vec<Vec<T>>,
     delay_buffers: Vec<Vec<T>>,
+    #[allow(dead_code)]
     param_values: Vec<Vec<f64>>,
     pending: Vec<PendingParam>,
     param_maps: Vec<HashMap<String, usize>>,
@@ -86,6 +94,12 @@ pub struct RillGraphEngine<T: Transcendental> {
     mailbox: Arc<Mailbox<CommandEnum>>,
     actor_ref: ActorRef<CommandEnum>,
     duplex: Option<DuplexData<T>>,
+    #[cfg(feature = "debug")]
+    pub(crate) probe_slots: Vec<std::sync::Arc<ProbeSlot>>,
+    #[cfg(feature = "debug")]
+    pub(crate) command_queue: std::sync::Arc<SpscQueue<CommandFrame, 256>>,
+    #[cfg(feature = "debug")]
+    pub(crate) debug_control: DebugControl,
 }
 
 impl<T: Transcendental> RillGraphEngine<T> {
@@ -140,6 +154,12 @@ impl<T: Transcendental> RillGraphEngine<T> {
             mailbox,
             actor_ref,
             duplex: None,
+            #[cfg(feature = "debug")]
+            probe_slots: Vec::new(),
+            #[cfg(feature = "debug")]
+            command_queue: std::sync::Arc::new(SpscQueue::new()),
+            #[cfg(feature = "debug")]
+            debug_control: DebugControl::new(),
         }
     }
 
@@ -232,6 +252,12 @@ impl<T: Transcendental> RillGraphEngine<T> {
             mailbox,
             actor_ref,
             duplex: Some(duplex),
+            #[cfg(feature = "debug")]
+            probe_slots: Vec::new(),
+            #[cfg(feature = "debug")]
+            command_queue: std::sync::Arc::new(SpscQueue::new()),
+            #[cfg(feature = "debug")]
+            debug_control: DebugControl::new(),
         }
     }
 
@@ -259,33 +285,111 @@ impl<T: Transcendental> RillGraphEngine<T> {
         self.programs.first().expect("engine has no programs")
     }
 
+    #[cfg(feature = "debug")]
+    /// Allocate `count` probe slots for the engine.
+    pub fn allocate_probe_slots(&mut self, count: usize) {
+        self.probe_slots = (0..count)
+            .map(|_| std::sync::Arc::new(ProbeSlot::default()))
+            .collect();
+    }
+
+    #[cfg(feature = "debug")]
+    /// Return debug state handles for external collector/debugger threads.
+    pub fn debug_state(
+        &self,
+    ) -> (
+        &[std::sync::Arc<ProbeSlot>],
+        DebugControl,
+        std::sync::Arc<SpscQueue<CommandFrame, 256>>,
+    ) {
+        (
+            &self.probe_slots,
+            self.debug_control.clone(),
+            self.command_queue.clone(),
+        )
+    }
+
+    #[cfg(feature = "debug")]
+    /// Clone probe slots, debug control, and command queue for sharing with a
+    /// collector or debugger thread.
+    pub fn clone_debug_state(
+        &self,
+    ) -> (
+        Vec<std::sync::Arc<ProbeSlot>>,
+        DebugControl,
+        std::sync::Arc<SpscQueue<CommandFrame, 256>>,
+    ) {
+        (
+            self.probe_slots.clone(),
+            self.debug_control.clone(),
+            self.command_queue.clone(),
+        )
+    }
+
     /// Drain mailbox: push all `SetParameter` to pending queue.
     fn drain_mailbox(&mut self) {
+        #[cfg(feature = "debug")]
+        let block_idx = self.debug_control.block_index.load(Ordering::Relaxed);
+
         while let Some(cmd) = self.mailbox.pop() {
-            if let CommandEnum::SetParameter(ref sp) = cmd {
-                let param_name = sp.parameter.as_str();
-                if !sp.anchor.is_empty() {
-                    if let Some(&prog_idx) = self.anchor_map.get(&sp.anchor) {
-                        if let Some(&idx) = self.param_maps[prog_idx].get(param_name) {
-                            self.pending.push(PendingParam {
-                                param_idx: idx,
-                                program_idx: prog_idx,
-                                value: sp.value.clone(),
-                                sample_pos: sp.sample_pos,
-                            });
+            match cmd {
+                CommandEnum::SetParameter(ref sp) => {
+                    let param_name = sp.parameter.as_str();
+                    #[cfg(feature = "debug")]
+                    let mut applied = false;
+                    if !sp.anchor.is_empty() {
+                        if let Some(&prog_idx) = self.anchor_map.get(&sp.anchor) {
+                            if let Some(&idx) = self.param_maps[prog_idx].get(param_name) {
+                                self.pending.push(PendingParam {
+                                    param_idx: idx,
+                                    program_idx: prog_idx,
+                                    value: sp.value.clone(),
+                                    sample_pos: sp.sample_pos,
+                                });
+                                #[cfg(feature = "debug")]
+                                {
+                                    applied = true;
+                                }
+                            }
+                        }
+                    } else {
+                        for (prog_idx, map) in self.param_maps.iter().enumerate() {
+                            if let Some(&idx) = map.get(param_name) {
+                                self.pending.push(PendingParam {
+                                    param_idx: idx,
+                                    program_idx: prog_idx,
+                                    value: sp.value.clone(),
+                                    sample_pos: sp.sample_pos,
+                                });
+                                #[cfg(feature = "debug")]
+                                {
+                                    applied = true;
+                                }
+                                break;
+                            }
                         }
                     }
-                } else {
-                    for (prog_idx, map) in self.param_maps.iter().enumerate() {
-                        if let Some(&idx) = map.get(param_name) {
-                            self.pending.push(PendingParam {
-                                param_idx: idx,
-                                program_idx: prog_idx,
-                                value: sp.value.clone(),
-                                sample_pos: sp.sample_pos,
-                            });
-                            break;
-                        }
+                    #[cfg(feature = "debug")]
+                    if applied {
+                        let _ = self.command_queue.push(CommandFrame {
+                            block_index: block_idx,
+                            command_kind: CmdStr::new("SetParameter"),
+                            node_name: CmdStr::new(&sp.anchor),
+                            param_name: CmdStr::new(&format!("{}", sp.parameter)),
+                            value_repr: CmdStr::new(&format!("{:?}", sp.value)),
+                        });
+                    }
+                }
+                _ => {
+                    #[cfg(feature = "debug")]
+                    {
+                        let _ = self.command_queue.push(CommandFrame {
+                            block_index: block_idx,
+                            command_kind: CmdStr::new(&format!("{:?}", cmd)),
+                            node_name: CmdStr::default(),
+                            param_name: CmdStr::default(),
+                            value_repr: CmdStr::default(),
+                        });
                     }
                 }
             }
@@ -329,7 +433,25 @@ impl<T: Transcendental> RillGraphEngine<T> {
     /// 4. WriteFeedback — copy sub-engine outputs into named feedback buffers
     /// 5. Shadow copy — swap read/write feedback buffers
     pub fn process_tick(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        #[cfg(feature = "debug")]
+        {
+            self.debug_control
+                .block_index
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self.drain_mailbox();
+
+        #[cfg(feature = "debug")]
+        {
+            while self.debug_control.global_pause.load(Ordering::Acquire)
+                && !self.debug_control.global_resume.load(Ordering::Acquire)
+            {
+                std::hint::spin_loop();
+            }
+            self.debug_control
+                .global_resume
+                .store(false, Ordering::Release);
+        }
 
         if let Some(ref mut duplex) = self.duplex {
             if !inputs.is_empty() || !outputs.is_empty() {
@@ -349,6 +471,10 @@ impl<T: Transcendental> RillGraphEngine<T> {
                     &mut duplex.delay_buffers,
                     inputs,
                     buf_size,
+                    #[cfg(feature = "debug")]
+                    &self.debug_control,
+                    #[cfg(feature = "debug")]
+                    &self.probe_slots,
                 )?;
                 duplex.bridge.process_left(inputs)?;
 
@@ -360,6 +486,10 @@ impl<T: Transcendental> RillGraphEngine<T> {
                     &mut duplex.delay_buffers,
                     &[],
                     buf_size,
+                    #[cfg(feature = "debug")]
+                    &self.debug_control,
+                    #[cfg(feature = "debug")]
+                    &self.probe_slots,
                 )?;
 
                 // Phase 4: WriteFeedback
@@ -434,6 +564,8 @@ impl<T: Transcendental> RillGraphEngine<T> {
         delay_bufs: &mut [Vec<T>],
         inputs: &[&[T]],
         buf_size: usize,
+        #[cfg(feature = "debug")] debug_control: &DebugControl,
+        #[cfg(feature = "debug")] probe_slots: &[std::sync::Arc<ProbeSlot>],
     ) -> ProcessResult<()> {
         for (i, input) in inputs.iter().enumerate() {
             if i < engine.buffers.len() {
@@ -488,6 +620,42 @@ impl<T: Transcendental> RillGraphEngine<T> {
                             return Err(rill_core::traits::ProcessError::processing(
                                 "multi-IO graph requires 'router' feature",
                             ));
+                        }
+                    }
+                    #[cfg(feature = "debug")]
+                    {
+                        let block_idx = debug_control.block_index.load(Ordering::Relaxed);
+                        let ir = &engine.programs[*node_idx].ir;
+                        for instr in &ir.instrs {
+                            if let crate::ir::Instr::ProbePoint { id, .. } = instr {
+                                let slot_idx = *id as usize;
+                                if slot_idx < probe_slots.len() {
+                                    let slot = &probe_slots[slot_idx];
+                                    if slot.is_active()
+                                        && !out_slices.is_empty()
+                                        && !out_slices[0].is_empty()
+                                    {
+                                        let val = out_slices[0][0];
+                                        let bits = val.to_f64().to_bits();
+                                        slot.last_value.store(bits, Ordering::Release);
+                                        let _ = slot.queue.push(ProbeFrame {
+                                            value_bits: bits,
+                                            block_index: block_idx,
+                                        });
+                                        if slot.is_breakpoint() {
+                                            slot.paused_flag.store(true, Ordering::Release);
+                                            debug_control.pause();
+                                            while !debug_control
+                                                .global_resume
+                                                .load(Ordering::Acquire)
+                                            {
+                                                std::hint::spin_loop();
+                                            }
+                                            slot.paused_flag.store(false, Ordering::Release);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -606,6 +774,46 @@ impl<T: Transcendental> RillGraphEngine<T> {
                         ));
                     }
                 }
+                #[cfg(feature = "debug")]
+                {
+                    let block_idx = self.debug_control.block_index.load(Ordering::Relaxed);
+                    let ir = &self.programs[*node_idx].ir;
+                    for instr in &ir.instrs {
+                        if let crate::ir::Instr::ProbePoint { id, .. } = instr {
+                            let slot_idx = *id as usize;
+                            if slot_idx < self.probe_slots.len() {
+                                let slot = &self.probe_slots[slot_idx];
+                                if slot.is_active()
+                                    && !output_bufs.is_empty()
+                                    && *output_bufs.first().unwrap() < self.buffers.len()
+                                {
+                                    let buf = &self.buffers[*output_bufs.first().unwrap()];
+                                    if !buf.is_empty() {
+                                        let val = buf[0];
+                                        let bits = val.to_f64().to_bits();
+                                        slot.last_value.store(bits, Ordering::Release);
+                                        let _ = slot.queue.push(ProbeFrame {
+                                            value_bits: bits,
+                                            block_index: block_idx,
+                                        });
+                                        if slot.is_breakpoint() {
+                                            slot.paused_flag.store(true, Ordering::Release);
+                                            self.debug_control.pause();
+                                            while !self
+                                                .debug_control
+                                                .global_resume
+                                                .load(Ordering::Acquire)
+                                            {
+                                                std::hint::spin_loop();
+                                            }
+                                            slot.paused_flag.store(false, Ordering::Release);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Step::BufferCopy {
                 from,
@@ -670,7 +878,25 @@ impl<T: Transcendental> Algorithm<T> for RillGraphEngine<T> {
     #[cfg(not(feature = "router"))]
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let buf_size = output.len();
+        #[cfg(feature = "debug")]
+        {
+            self.debug_control
+                .block_index
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self.drain_mailbox();
+
+        #[cfg(feature = "debug")]
+        {
+            while self.debug_control.global_pause.load(Ordering::Acquire)
+                && !self.debug_control.global_resume.load(Ordering::Acquire)
+            {
+                std::hint::spin_loop();
+            }
+            self.debug_control
+                .global_resume
+                .store(false, Ordering::Release);
+        }
 
         if let Some(inp) = input {
             if self.schedule.inputs > 0 {

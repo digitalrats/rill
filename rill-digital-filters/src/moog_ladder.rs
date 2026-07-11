@@ -1,186 +1,55 @@
 use rill_core::traits::Algorithm;
-use rill_core::{ParamValue, ParameterId, ProcessError, ProcessResult, Transcendental};
+use rill_core::Transcendental;
 use rill_core_dsp::filters::MoogLadder;
 
 /// Processor wrapper for Moog ladder filter
 pub struct MoogLadderProcessor<T: Transcendental, const BUF_SIZE: usize> {
-    // (removed legacy field)
-    metadata: NodeMetadata,
-    inputs: Vec<Port<T, BUF_SIZE>>,
-    outputs: Vec<Port<T, BUF_SIZE>>,
-    controls: Vec<Port<T, BUF_SIZE>>,
-    // (removed legacy field)
-    /// Cutoff frequency (Hz)
     pub cutoff: f32,
-    /// Resonance (0.0 – 1.0)
     pub resonance: f32,
-    /// Inner MoogLadder algorithm
     pub algorithm: MoogLadder<T>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> MoogLadderProcessor<T, BUF_SIZE> {
-    /// Create a new Moog ladder processor
     pub fn new(sample_rate: f32) -> Self {
-        let metadata = NodeMetadata::new("MoogLadderProcessor", NodeCategory::Processor);
-
-        let mut inputs = Vec::new();
-        let mut outputs = Vec::new();
-
-        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
-        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
-
         let mut algorithm = MoogLadder::new(1000.0, 0.0);
         algorithm.init(sample_rate);
 
         Self {
-    // (removed legacy field)
-            metadata,
-            inputs,
-            outputs,
-            controls: Vec::new(),
-    // (removed legacy field)
             cutoff: 1000.0,
             resonance: 0.0,
             algorithm,
         }
     }
 
+    pub fn cutoff(&self) -> f32 {
+        self.cutoff
+    }
+
+    pub fn set_cutoff(&mut self, cutoff: f32) {
+        self.cutoff = cutoff.clamp(20.0, 20000.0);
+        self.update_algorithm();
+    }
+
+    pub fn resonance(&self) -> f32 {
+        self.resonance
+    }
+
+    pub fn set_resonance(&mut self, resonance: f32) {
+        self.resonance = resonance.clamp(0.0, 1.0);
+        self.update_algorithm();
+    }
+
+    pub fn algorithm(&self) -> &MoogLadder<T> {
+        &self.algorithm
+    }
+
+    pub fn algorithm_mut(&mut self) -> &mut MoogLadder<T> {
+        &mut self.algorithm
+    }
+
     fn update_algorithm(&mut self) {
         self.algorithm.set_cutoff(self.cutoff);
         self.algorithm.set_resonance(self.resonance);
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE>
-    for MoogLadderProcessor<T, BUF_SIZE>
-{
-    where
-        Self: 'static + Sized,
-    {
-        rill_core::NodeTypeId::of::<Self>()
-    }
-
-    fn id(&self) -> NodeId {
-        self.id
-    }
-
-    fn set_id(&mut self, id: NodeId) {
-        self.id = id;
-    }
-
-        self.metadata.clone()
-    }
-
-    fn init(&mut self, sample_rate: f32) {
-        self.state.sample_rate = sample_rate;
-        self.algorithm.init(sample_rate);
-    }
-
-    fn reset(&mut self) {
-        self.state.sample_pos = 0;
-        self.state.blocks_processed = 0;
-        self.algorithm.reset();
-    }
-
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
-        let name = id.as_str();
-        match name {
-            "cutoff" => Some(ParamValue::Float(self.cutoff)),
-            "resonance" => Some(ParamValue::Float(self.resonance)),
-            _ => None,
-        }
-    }
-
-    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
-        let name = id.as_str();
-        if let Some(v) = value.as_f32() {
-            match name {
-                "cutoff" => {
-                    self.cutoff = v.clamp(20.0, 20000.0);
-                    self.update_algorithm();
-                    Ok(())
-                }
-                "resonance" => {
-                    self.resonance = v.clamp(0.0, 1.0);
-                    self.update_algorithm();
-                    Ok(())
-                }
-                _ => Err(ProcessError::parameter(format!(
-                    "Unknown parameter: {}",
-                    name
-                ))),
-            }
-        } else {
-            Err(ProcessError::parameter("Expected float value"))
-        }
-    }
-
-    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        self.inputs.get(index)
-    }
-
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        self.inputs.get_mut(index)
-    }
-
-    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        self.outputs.get(index)
-    }
-
-    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        self.outputs.get_mut(index)
-    }
-
-    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        self.controls.get(index)
-    }
-
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        self.controls.get_mut(index)
-    }
-
-    fn num_inputs(&self) -> usize {
-        self.inputs.len()
-    }
-
-    fn num_outputs(&self) -> usize {
-        self.outputs.len()
-    }
-
-    fn num_signal_inputs(&self) -> usize {
-        self.inputs.len()
-    }
-
-    fn num_signal_outputs(&self) -> usize {
-        self.outputs.len()
-    }
-
-        &self.state
-    }
-
-        &mut self.state
-    }
-
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
-    for MoogLadderProcessor<T, BUF_SIZE>
-{
-    fn process(
-        &mut self,
-        _ctx: &rill_core::RenderContext,
-        _signal_inputs: &[&[T; BUF_SIZE]],
-        _control_inputs: &[T],
-        _clock_inputs: &[rill_core::RenderContext],
-        _feedback_inputs: &[&[T; BUF_SIZE]],
-    ) -> ProcessResult<()> {
-        let inp = self.inputs[0].read();
-        let out = self.outputs[0].write();
-        self.algorithm.process(Some(&inp[..]), &mut out[..])?;
-        self.state.advance();
-        Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
     }
 }
 

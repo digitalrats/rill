@@ -3,9 +3,9 @@ members = [
     "rill-core",
     "rill-core-actor",
     "rill-core-dsp",
+    "rill-analyzer",
     "rill-graph",
     "rill-patchbay",
-    "rill-oscillators",
     "rill-digital-filters",
     "rill-digital-effects",
     "rill-telemetry",
@@ -38,6 +38,7 @@ num-traits = "0.2"
 thiserror = "1.0"
 async-trait = "0.1"
 serde = "1.0"
+serde_json = "1.0"
 rand = "0.8"
 log = "0.4"
 tokio = "1.0"
@@ -51,7 +52,6 @@ rill-core-dsp = { path = "rill-core-dsp", version = "0.5.0" }
 rill-core-model = { path = "rill-core-model", version = "0.5.0" }
 rill-graph = { path = "rill-graph", version = "0.5.0" }
 rill-patchbay = { path = "rill-patchbay", version = "0.5.0" }
-rill-oscillators = { path = "rill-oscillators", version = "0.5.0" }
 rill-digital-filters = { path = "rill-digital-filters", version = "0.5.0" }
 rill-digital-effects = { path = "rill-digital-effects", version = "0.5.0" }
 rill-router = { path = "rill-router", version = "0.5.0" }
@@ -65,3 +65,4 @@ rill-sampler = { path = "rill-sampler", version = "0.5.0" }
 rill-adrift = { path = "rill-adrift", version = "0.5.0" }
 rill-lang = { path = "rill-lang", version = "0.5.0" }
 rill-fft = { path = "rill-fft", version = "0.5.0" }
+rill-analyzer = { path = "rill-analyzer", version = "0.5.0" }

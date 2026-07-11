@@ -1,5 +1,3 @@
-use std::fmt;
-
 pub struct NodeId(pub u32);
 
 impl NodeId {

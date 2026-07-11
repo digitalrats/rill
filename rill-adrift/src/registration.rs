@@ -33,6 +33,8 @@ pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFacto
 fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
     use rill_core::queues::CommandEnum;
     use rill_io::midi_input::MidiInput;
+    #[cfg(feature = "debug")]
+    use rill_patchbay::debug::PatchbayInspector;
     use rill_patchbay::module_def::{ModuleDef, SensorDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
 
@@ -49,6 +51,7 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
             system: &std::sync::Arc<rill_core_actor::ActorSystem>,
             graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
+            #[cfg(feature = "debug")] _inspector: Option<&PatchbayInspector>,
         ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
             let (backend, port_name, mappings) = match module {
                 ModuleDef::Sensor(SensorDef::Midi {
@@ -88,7 +91,7 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
             let servo_ref = rill_patchbay::Servo::new(
                 format!("midi_servo_{port_name}"),
                 rill_patchbay::engine::NoAction,
-                rill_core::traits::NodeId(0),
+                0u32,
                 "",
                 rill_patchbay::engine::ParameterMapping::Linear,
                 0.0,
@@ -115,6 +118,8 @@ fn register_midi_module(factory: &mut rill_patchbay::module_factory::ModuleFacto
 #[cfg(feature = "osc")]
 fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
     use rill_core::queues::CommandEnum;
+    #[cfg(feature = "debug")]
+    use rill_patchbay::debug::PatchbayInspector;
     use rill_patchbay::module_def::{ModuleDef, SensorDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
     use std::net::SocketAddr;
@@ -132,6 +137,7 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
             _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
             system: &std::sync::Arc<rill_core_actor::ActorSystem>,
             graph_ref: &rill_core_actor::ActorRef<CommandEnum>,
+            #[cfg(feature = "debug")] _inspector: Option<&PatchbayInspector>,
         ) -> Result<rill_core_actor::ActorRef<CommandEnum>, ModuleError> {
             let (port, mappings) = match module {
                 ModuleDef::Sensor(SensorDef::Osc { port, mappings }) => (port, mappings),
@@ -149,7 +155,7 @@ fn register_osc_module(factory: &mut rill_patchbay::module_factory::ModuleFactor
             let servo_ref = rill_patchbay::Servo::new(
                 format!("osc_servo_{port}"),
                 rill_patchbay::engine::NoAction,
-                rill_core::traits::NodeId(0),
+                0u32,
                 "",
                 rill_patchbay::engine::ParameterMapping::Linear,
                 0.0,
@@ -182,6 +188,8 @@ fn register_clock_module(factory: &mut rill_patchbay::module_factory::ModuleFact
     use rill_core::queues::CommandEnum;
     use rill_core_actor::ActorRef;
     use rill_io::midi_output::MidiOutput;
+    #[cfg(feature = "debug")]
+    use rill_patchbay::debug::PatchbayInspector;
     use rill_patchbay::midi_clock::spawn_midi_clock_output;
     use rill_patchbay::module_def::{ClockDef, ModuleDef};
     use rill_patchbay::module_factory::{ModuleConstructor, ModuleError};
@@ -199,6 +207,7 @@ fn register_clock_module(factory: &mut rill_patchbay::module_factory::ModuleFact
             _automaton_defs: &[rill_patchbay::module_def::AutomatonDef],
             system: &std::sync::Arc<rill_core_actor::ActorSystem>,
             _graph_ref: &ActorRef<CommandEnum>,
+            #[cfg(feature = "debug")] _inspector: Option<&PatchbayInspector>,
         ) -> Result<ActorRef<CommandEnum>, ModuleError> {
             let (backend, port_name, auto_start) = match module {
                 ModuleDef::Clock(ClockDef {

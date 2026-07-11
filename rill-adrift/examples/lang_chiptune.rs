@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
-use rill_adrift::rill_core::traits::{NodeId, ParamValue, ParameterId, PortId};
+use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
 use rill_lang::program_runner::ProgramRunner;
 
 // ============================================================================
@@ -368,6 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("usage: --file <file.stc>");
 
     let stc_data = std::fs::read(stc_file)?;
+    let no_wait = args.iter().any(|a| a == "--no-wait");
 
     // ── Compile rill-lang DSL ──────────────────────────────────────────────
     let src = r#"
@@ -421,7 +422,7 @@ main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1
                 let apply_at = tick.sample_pos + tick.io_quantum as u64;
                 stc_handle.send(CommandEnum::SetParameter(
                     SetParameter::new(
-                        PortId::param(NodeId(0), 0),
+                        "".into(),
                         ParameterId::new("regs").unwrap(),
                         ParamValue::Bytes(regs.to_vec()),
                         SignalOrigin::Manual,
@@ -450,9 +451,11 @@ main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1
     });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");
-    println!("Press Enter to start playback...\n");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok();
+    if !no_wait {
+        println!("Press Enter to start playback...\n");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+    }
     playing.store(true, Ordering::Release);
 
     while !finished.load(Ordering::Acquire) {

@@ -18,6 +18,17 @@ crates for signal processing application development.
 | `alsa` | ALSA backend (implies `io`) | no |
 | `jack` | JACK backend (implies `io`) | no |
 | `pipewire` | PipeWire backend (implies `io`) | no |
+| `debug` | Diagnostic & debug infrastructure (probes, command log, IPC, lifecycle logging) | no |
+
+### Debug infrastructure (`debug` feature)
+
+- **`debug_init`** — `init_shmem()` and `init_shmem_from_env()` create the shared
+  memory region for `rill-analyzer` attach/launch. Called automatically in
+  `ModularSystem::launch()`.
+- **Lifecycle logging** — `ModularSystem` logs rack creation, engine build,
+  backend connection, and shutdown via the `log` crate.
+- **Auto-probes** — each graph node gets a signal probe at its output, wire into
+  `rill-telemetry`'s `CollectorThread` for formatted output.
 
 ## Usage
 
