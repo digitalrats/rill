@@ -19,6 +19,7 @@ serde = { workspace = true, optional = true, features = ["derive"] }
 default = []
 router = []
 serde = ["dep:serde"]
+debug = []
 
 [dev-dependencies]
 float-cmp = "0.9"
