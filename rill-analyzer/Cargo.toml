@@ -1,6 +1,6 @@
 [package]
 name = "rill-analyzer"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Interactive debugger and analyzer for Rill signal graphs"
 license.workspace = true

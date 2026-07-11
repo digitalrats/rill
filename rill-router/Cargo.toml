@@ -1,6 +1,6 @@
 [package]
 name = "rill-router"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Signal routing, mixing, and equalization for Rill"
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "rill-osc"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "OSC server and networking for Rill signal graph"
 license.workspace = true

@@ -46,23 +46,23 @@ criterion = { version = "0.5", features = ["html_reports"] }
 glam = { version = "0.33", default-features = false, features = ["libm"] }
 
 # Internal workspace crates
-rill-core = { path = "rill-core", version = "0.5.0" }
-rill-core-actor = { path = "rill-core-actor", version = "0.5.0" }
-rill-core-dsp = { path = "rill-core-dsp", version = "0.5.0" }
-rill-core-model = { path = "rill-core-model", version = "0.5.0" }
-rill-graph = { path = "rill-graph", version = "0.5.0" }
-rill-patchbay = { path = "rill-patchbay", version = "0.5.0" }
-rill-digital-filters = { path = "rill-digital-filters", version = "0.5.0" }
-rill-digital-effects = { path = "rill-digital-effects", version = "0.5.0" }
-rill-router = { path = "rill-router", version = "0.5.0" }
-rill-lofi = { path = "rill-lofi", version = "0.5.0" }
-rill-io = { path = "rill-io", version = "0.5.0" }
-rill-telemetry = { path = "rill-telemetry", version = "0.5.0" }
-rill-analog-filters = { path = "rill-analog-filters", version = "0.5.0" }
-rill-analog-effects = { path = "rill-analog-effects", version = "0.5.0" }
-rill-osc = { path = "rill-osc", version = "0.5.0" }
-rill-sampler = { path = "rill-sampler", version = "0.5.0" }
-rill-adrift = { path = "rill-adrift", version = "0.5.0" }
-rill-lang = { path = "rill-lang", version = "0.5.0" }
-rill-fft = { path = "rill-fft", version = "0.5.0" }
-rill-analyzer = { path = "rill-analyzer", version = "0.5.0" }
+rill-core = { path = "rill-core", version = "0.6.0-M1" }
+rill-core-actor = { path = "rill-core-actor", version = "0.6.0-M1" }
+rill-core-dsp = { path = "rill-core-dsp", version = "0.6.0-M1" }
+rill-core-model = { path = "rill-core-model", version = "0.6.0-M1" }
+rill-graph = { path = "rill-graph", version = "0.6.0-M1" }
+rill-patchbay = { path = "rill-patchbay", version = "0.6.0-M1" }
+rill-digital-filters = { path = "rill-digital-filters", version = "0.6.0-M1" }
+rill-digital-effects = { path = "rill-digital-effects", version = "0.6.0-M1" }
+rill-router = { path = "rill-router", version = "0.6.0-M1" }
+rill-lofi = { path = "rill-lofi", version = "0.6.0-M1" }
+rill-io = { path = "rill-io", version = "0.6.0-M1" }
+rill-telemetry = { path = "rill-telemetry", version = "0.6.0-M1" }
+rill-analog-filters = { path = "rill-analog-filters", version = "0.6.0-M1" }
+rill-analog-effects = { path = "rill-analog-effects", version = "0.6.0-M1" }
+rill-osc = { path = "rill-osc", version = "0.6.0-M1" }
+rill-sampler = { path = "rill-sampler", version = "0.6.0-M1" }
+rill-adrift = { path = "rill-adrift", version = "0.6.0-M1" }
+rill-lang = { path = "rill-lang", version = "0.6.0-M1" }
+rill-fft = { path = "rill-fft", version = "0.6.0-M1" }
+rill-analyzer = { path = "rill-analyzer", version = "0.6.0-M1" }

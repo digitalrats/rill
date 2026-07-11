@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "rill-analyzer", version = "0.5.0")]
+#[command(name = "rill-analyzer", version = "0.6.0-M1")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

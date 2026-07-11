@@ -1,6 +1,6 @@
 [package]
 name = "rill-digital-effects"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Digital signal effects for Rill - Delay, Distortion, Chorus, Reverb, etc."
 license.workspace = true
