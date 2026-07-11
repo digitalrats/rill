@@ -223,6 +223,18 @@ Any code reached from the process callback — `generate()`, `process()`,
 | **`downstream_nodes` is pre‑filled** | `Port::downstream_nodes` is populated once by `GraphBuilder::build()` and iterated at runtime without deduplication or allocation. |
 | **Fixed‑size stack buffers** | Backend callbacks must use `[f32; MAX_BLOCK_SAMPLES]` (512) instead of `vec![]`. |
 
+**Forbidden in the RT path — logging and output:**
+
+Any code reachable from the signal callback must NOT call:
+- `log::info!`, `log::warn!`, `log::error!`, `log::debug!`
+- `println!`, `eprintln!`, `format!`
+- `write!` / `writeln!` to any I/O stream (stdout, stderr, file, socket)
+- `std::io::stdout().write()` or equivalent
+
+**Rationale:** These macros internally allocate (`format!` arguments), acquire locks (stderr/stdout mutex), and may block (write syscall if buffer is full). Even with `log` crate, the logger implementation may allocate or lock.
+
+**The only permitted path for RT diagnostics:** push data through lock-free SPSC queues (`rill_core::queues::SpscQueue`), `AtomicU64`, or `AtomicBool`. A non-RT collector thread drains the queue and formats output. This is exactly how `rill-telemetry` works.
+
 **Allowed exceptions:**
 - `MpscQueue::pop()` — lock‑free atomic, OK on RT.
 - `AtomicU32::fetch_add()` / `AtomicBool::store()` — OK on RT.
