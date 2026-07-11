@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use colored::Colorize;
 
-use rill_telemetry::debug::protocol::{AnalyzerCommand, AnalyzerResponse, NodeInfo};
+use rill_telemetry::debug::protocol::{AnalyzerCommand, AnalyzerResponse, NodeInfo, QueueStats};
 
 use self::history::History;
 use self::parser::Command;
@@ -156,6 +156,34 @@ fn drain_responses(resp_rx: &mpsc::Receiver<AnalyzerResponse>) {
             }
             AnalyzerResponse::Paused => {
                 println!("{}", "[paused]".yellow());
+            }
+            AnalyzerResponse::AutomataList(list) => {
+                for name in &list {
+                    println!("{} {}", "automaton".cyan(), name.bold());
+                }
+            }
+            AnalyzerResponse::AutomatonState(json) => {
+                println!("{}", json);
+            }
+            AnalyzerResponse::SensorList(list) => {
+                for name in &list {
+                    println!("{} {}", "sensor".cyan(), name.bold());
+                }
+            }
+            AnalyzerResponse::SensorStatus(json) => {
+                println!("{}", json);
+            }
+            AnalyzerResponse::QueueList(list) => {
+                for qs in &list {
+                    println!(
+                        "{} {} {} {}/{}",
+                        "queue".cyan(),
+                        qs.name.bold(),
+                        "→".dimmed(),
+                        qs.len,
+                        qs.capacity
+                    );
+                }
             }
         }
     }

@@ -317,6 +317,27 @@ fn repl_loop_shmem(shmem: rill_telemetry::debug::ipc::ShmemRegion) {
                 rill_telemetry::debug::protocol::AnalyzerResponse::Error(message) => {
                     println!("{} {}", "ERROR:".red(), message);
                 }
+                rill_telemetry::debug::protocol::AnalyzerResponse::AutomataList(list) => {
+                    for name in &list {
+                        println!("  automaton: {}", name);
+                    }
+                }
+                rill_telemetry::debug::protocol::AnalyzerResponse::AutomatonState(json) => {
+                    println!("  automaton state: {}", json);
+                }
+                rill_telemetry::debug::protocol::AnalyzerResponse::SensorList(list) => {
+                    for name in &list {
+                        println!("  sensor: {}", name);
+                    }
+                }
+                rill_telemetry::debug::protocol::AnalyzerResponse::SensorStatus(json) => {
+                    println!("  sensor status: {}", json);
+                }
+                rill_telemetry::debug::protocol::AnalyzerResponse::QueueList(list) => {
+                    for qs in &list {
+                        println!("  queue: {} {}/{}", qs.name, qs.len, qs.capacity);
+                    }
+                }
             }
         }
     }

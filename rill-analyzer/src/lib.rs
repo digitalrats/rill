@@ -47,6 +47,7 @@ impl Analyzer {
             debug_control,
             resp_tx,
             None,
+            None,
         );
 
         let repl_cmd_tx = cmd_tx.clone();

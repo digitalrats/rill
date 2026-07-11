@@ -25,6 +25,17 @@ use rill_core_actor::ActorRef;
 
 use rill_core_actor::Mailbox;
 
+#[cfg(feature = "debug")]
+use dashmap::DashMap;
+#[cfg(feature = "debug")]
+use rill_patchbay::debug::PatchbayInspector;
+#[cfg(feature = "debug")]
+use rill_telemetry::debug::{
+    collector_thread::CollectorThread,
+    protocol::{AnalyzerCommand, AnalyzerConfig, AnalyzerResponse},
+    state::ProbeState,
+};
+
 mod case;
 mod config;
 #[cfg(feature = "serialization")]
@@ -51,6 +62,14 @@ pub enum ModularError {
 // ============================================================================
 // ModularSystem struct
 // ============================================================================
+
+#[cfg(feature = "debug")]
+struct DebugState {
+    probe_slots: Vec<Arc<rill_lang::debug::ProbeSlot>>,
+    debug_control: rill_lang::debug::DebugControl,
+    command_queue: Arc<rill_core::queues::spsc::SpscQueue<rill_lang::debug::CommandFrame, 256>>,
+    node_names: Vec<String>,
+}
 
 /// A modular signal processing host that manages one or more [`RackCase`] instances.
 ///
@@ -162,7 +181,11 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 Arc::new(Mutex::new(HashMap::new()));
             let tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
+            #[cfg(not(feature = "debug"))]
             let (graph_tx, graph_rx) = std::sync::mpsc::channel::<ActorRef<CommandEnum>>();
+            #[cfg(feature = "debug")]
+            let (graph_tx, graph_rx) =
+                std::sync::mpsc::channel::<(ActorRef<CommandEnum>, Option<DebugState>)>();
 
             // 1. Rack actor — forwards messages to registered modules
             let m = modules.clone();
@@ -217,11 +240,30 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         programs.len()
                     );
                     let mailbox = Arc::new(Mailbox::new(64));
+                    #[cfg(feature = "debug")]
+                    let node_names = scheduled.program_names.clone();
                     let engine = rill_lang::graph_engine::RillGraphEngine::new(
                         scheduled, programs, mailbox, buf_size,
                     );
 
-                    let _ = graph_tx.send(engine.handle());
+                    #[cfg(feature = "debug")]
+                    let debug_state = {
+                        let (slots, ctrl, queue) = engine.clone_debug_state();
+                        Some(DebugState {
+                            probe_slots: slots,
+                            debug_control: ctrl,
+                            command_queue: queue,
+                            node_names,
+                        })
+                    };
+                    #[cfg(feature = "debug")]
+                    {
+                        let _ = graph_tx.send((engine.handle(), debug_state));
+                    }
+                    #[cfg(not(feature = "debug"))]
+                    {
+                        let _ = graph_tx.send(engine.handle());
+                    }
 
                     let mut runner = rill_lang::program_runner::ProgramRunner::new(
                         engine,
@@ -254,12 +296,21 @@ impl<const BUF: usize> ModularSystem<BUF> {
             }
 
             // 3. Receive engine handle for module SetParameter routing
+            #[cfg(not(feature = "debug"))]
             let graph_ref = graph_rx
+                .recv()
+                .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
+            #[cfg(feature = "debug")]
+            let (graph_ref, debug_state) = graph_rx
                 .recv()
                 .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
 
             // 4. Build modules via ModuleFactory
             let automaton_defs = &rd.automatons;
+
+            #[cfg(feature = "debug")]
+            let inspector = Arc::new(PatchbayInspector::new());
+
             for module_def in &rd.modules {
                 let pb_def = to_pb_module(module_def);
                 // Skip graph modules — they're handled by the signal thread above
@@ -272,6 +323,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
                     automaton_defs,
                     &self.actor_system,
                     &graph_ref,
+                    #[cfg(feature = "debug")]
+                    Some(&inspector),
                 ) {
                     Ok(actor_ref) => {
                         modules
@@ -285,6 +338,72 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         pb_def.type_name()
                     ),
                 }
+            }
+            #[cfg(feature = "debug")]
+            if let Some(ds) = debug_state {
+                let shmem =
+                    crate::debug_init::init_shmem().or_else(crate::debug_init::init_shmem_from_env);
+                if shmem.is_some() {
+                    log::info!("rill-debug: shmem ready for rack '{}'", rd.name);
+                }
+
+                let inspector_clone = inspector.clone();
+                let inspect_handler: Box<
+                    dyn Fn(&AnalyzerCommand) -> Option<AnalyzerResponse> + Send,
+                > = Box::new(move |cmd: &AnalyzerCommand| -> Option<AnalyzerResponse> {
+                    match cmd {
+                        AnalyzerCommand::ListAutomata => Some(AnalyzerResponse::AutomataList(
+                            inspector_clone.list_automata(),
+                        )),
+                        AnalyzerCommand::GetAutomatonState { name } => {
+                            inspector_clone.get_automaton_snapshot(name).map(|snap| {
+                                let json = format!("{:?}", snap);
+                                AnalyzerResponse::AutomatonState(json)
+                            })
+                        }
+                        AnalyzerCommand::ListSensors => {
+                            Some(AnalyzerResponse::SensorList(inspector_clone.list_sensors()))
+                        }
+                        AnalyzerCommand::GetSensorStatus { name } => {
+                            inspector_clone.get_sensor_snapshot(name).map(|snap| {
+                                let json = format!("{:?}", snap);
+                                AnalyzerResponse::SensorStatus(json)
+                            })
+                        }
+                        _ => None,
+                    }
+                });
+
+                let probe_states = Arc::new(DashMap::new());
+                for (i, name) in ds.node_names.iter().enumerate() {
+                    probe_states.insert(
+                        i as u32,
+                        ProbeState {
+                            name: name.clone(),
+                            node_name: name.clone(),
+                        },
+                    );
+                }
+
+                let probe_queues: Vec<_> = ds.probe_slots.iter().map(|s| s.queue.clone()).collect();
+
+                let (resp_tx, _resp_rx) = std::sync::mpsc::channel();
+                let (_collector, _cmd_tx) = CollectorThread::spawn(
+                    AnalyzerConfig::default(),
+                    probe_states,
+                    probe_queues,
+                    ds.command_queue,
+                    ds.probe_slots,
+                    ds.debug_control,
+                    resp_tx,
+                    shmem,
+                    Some(inspect_handler),
+                );
+
+                log::info!(
+                    "rill-debug: collector thread started for rack '{}'",
+                    rd.name
+                );
             }
         }
 

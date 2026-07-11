@@ -27,6 +27,7 @@ rill-digital-filters = { workspace = true, features = ["graph"] }
 rill-digital-effects = { workspace = true, features = ["graph"] }
 rill-router = { workspace = true, features = ["graph", "lang"] }
 rill-patchbay = { workspace = true }
+dashmap = { version = "6", optional = true }
 
 # Dependencies for Runtime (always needed)
 log = "0.4"
@@ -84,7 +85,7 @@ default = ["io", "lofi", "telemetry", "osc", "sampler", "fft", "portaudio", "ser
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi", "rill-lofi/graph", "rill-lofi/lang"]
 telemetry = ["dep:rill-telemetry"]
-debug = ["telemetry", "rill-telemetry/debug"]
+debug = ["telemetry", "rill-telemetry/debug", "rill-patchbay/debug", "dep:dashmap"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "dep:rill-analog-filters", "dep:rill-analog-effects", "rill-analog-filters/graph", "rill-analog-effects/graph", "rill-core-model/lang", "rill-analog-effects/lang"]
 sampler = ["dep:rill-sampler", "rill-sampler/graph", "rill-sampler/lang"]
