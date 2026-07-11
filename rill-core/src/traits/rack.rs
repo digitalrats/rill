@@ -6,7 +6,7 @@
 //!
 //! Each case holds:
 //! - **Signal processing modules** — signal generation, transformation, routing, consumption
-//! - **Control modules** — automata (LFO, envelope), sensors (OSC)
+//! - **Control modules** — automatons (LFO, envelope), sensors (OSC)
 //! - **Signal routing** — port-to-port connections between modules
 //!
 //! ## Domain

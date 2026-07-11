@@ -1,6 +1,6 @@
 [package]
 name = "rill-lang"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "rill-lang — a Faust-style functional streaming DSL compiled to rill Algorithm<T>"
 license.workspace = true
@@ -10,12 +10,16 @@ documentation = "https://docs.rs/rill-lang"
 
 [dependencies]
 rill-core = { workspace = true }
+rill-core-actor = { workspace = true }
+indexmap = "2"
 thiserror = "1.0"
 serde = { workspace = true, optional = true, features = ["derive"] }
 
 [features]
 default = []
+router = []
 serde = ["dep:serde"]
+debug = []
 
 [dev-dependencies]
 float-cmp = "0.9"

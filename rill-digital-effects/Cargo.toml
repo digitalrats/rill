@@ -1,6 +1,6 @@
 [package]
 name = "rill-digital-effects"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Digital signal effects for Rill - Delay, Distortion, Chorus, Reverb, etc."
 license.workspace = true
@@ -11,12 +11,12 @@ documentation = "https://docs.rs/rill-digital-effects"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-dsp = { workspace = true }
-rill-oscillators = { workspace = true, optional = true }
+rill-graph = { workspace = true, optional = true }
 thiserror = "1.0"
 
 [features]
 default = []
-modulation = ["rill-oscillators"]  # для LFO в модуляционных эффектах
+graph = ["rill-graph"]
 
 [dev-dependencies]
 float-cmp = "0.9"

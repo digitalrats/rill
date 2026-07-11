@@ -1,6 +1,6 @@
 [package]
 name = "rill-core-dsp"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Core DSP abstractions and algorithms for Rill"
 license.workspace = true
@@ -37,6 +37,11 @@ path = "benches/noise_bench.rs"
 name = "reader_bench"
 harness = false
 path = "benches/reader_bench.rs"
+
+[[bench]]
+name = "conv_direct_bench"
+harness = false
+path = "benches/conv_direct_bench.rs"
 
 [features]
 default = []

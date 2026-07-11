@@ -403,7 +403,23 @@ let mut akai = LofiProcessor::new(akai_config);
 ```
 
 ### `rill-telemetry` (0.5.0, ✅ active)
-Probes and data collectors for monitoring audio flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
+
+Probes and data collectors for monitoring signal flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
+
+**Debug infrastructure** (behind `debug` feature):
+- **Signal probes:** `ProbePoint` IR instructions capture per-block output samples. Probes are lock-free (atomics + SPSC queues), RT-safe, and auto-enabled in `ModularSystem::launch()`.
+- **Command logging:** Every `SetParameter` command successfully routed to a program parameter is logged with block index, node name, parameter name, and value.
+- **Pause/resume:** `DebugControl` atomics (`global_pause`, `global_resume`) allow the debugger to halt the engine between processing blocks without syscalls.
+- **IPC via shared memory:** `/dev/shm/rill-debug-<pid>` — `ShmemRegion` with two lock-free ring buffers for command/response serialization via `serde_cbor`. Supports `rill-analyzer attach <pid>` and `rill-analyzer launch <target>`.
+
+### `rill-analyzer` (0.5.0, ✅ active)
+
+Interactive gdb-style debugger for Rill signal processing applications. Three operating modes:
+- **Local:** `rill-analyzer run graph.json` — embedded debugger in the same process
+- **Attach:** `rill-analyzer attach <pid>` — connect to running process via shared memory
+- **Launch:** `rill-analyzer launch <target>` — start a process and connect immediately
+
+Supports REPL commands (break, continue, step, print, watch), Lua scripting via `mlua`, JSON output for automation, and control-path inspection (automaton state, sensor status). See the [rill-analyzer guide](src/guides/rill-analyzer.md) for full documentation.
 
 ### `rill-core-model` (0.5.0, ✅ active)
 WDF core + physical modeling — elements (Resistor, Capacitor, Inductor, Diode, OpAmp), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion), WDF filters (MoogLadder, DiodeClipper), tape models (RecordHead, PlaybackHead), and resonant physical models (StringModel — 1D waveguide, PlateModel — 2D FDTD mesh, ModalModel — parallel filter bank, HelmholtzCavity + CavityArray). Generic over `rill_core::Transcendental` — supports `f32` and `f64`.
@@ -481,11 +497,60 @@ Backends are created by the orchestrator **before** graph construction.
 into Source / Sink nodes via `Source::set_capture()` / `Sink::set_playback()`.
 The driver is wired separately via `ProcessingState::run_with_driver()`.
 
+> ⚠️ **Deprecated**: `ProcessingState` and `Port::propagate` are the legacy execution engine.
+> The recommended path is `GraphBuilder::build_ir()` → `GraphIr` → `RillGraphEngine`
+> via the `lang` feature in `rill-graph`. See the [execution unification spec](../docs/execution-unification.md) for details.
+
 The graph is `!Send + !Sync` — it stays on the I/O callback thread.
+
+### `rill-lang` (0.5.0)
+
+A Faust-style functional signal processing DSL that compiles to `Algorithm<T>`,
+`MultichannelAlgorithm<T>`, or a full `RillGraphEngine`. The language uses
+**bracket-free juxtaposition** for function application (Faust syntax:
+`gain = *(0.5))` and supports **record types** (curly-brace literals) and
+**`?name` parameters** for compile-time named parameters with default values.
+
+Two compilation targets:
+
+- **Single program** — `compile()` / `compile_with()` produce a `RillProgram<T>`,
+  a self-contained `Algorithm<T>` for one DSL function.
+- **Whole graph** — `compile_graph()` produces a `RillGraphEngine<T>` that
+  supports runtime `SetParameter` commands via mailbox. The engine wraps a
+  `ScheduledGraph` with pre-allocated buffer pool and anchor-based parameter
+  routing.
+
+`GraphIr` is the language-agnostic intermediate representation for multi-node
+graphs: typed IR per node (arity, `keep`/`inline`/`is_bridge`/`feedback_read`/
+`feedback_write` annotations), with signal and feedback edges. The pipeline:
+`GraphBuilder::build_ir()` → `GraphIr` → `graph_optimize::inline_graph()`
+(dead-code elimination, inlining, merge) → `graph_lower::lower()` / `lower_duplex()`
+(register-allocation-style buffer assignment) → `RillGraphEngine` (linear schedule
+executor over buffer pool).
+
+### Bridge backend
+
+`BridgeAlgorithm<T>` (`rill-core/src/traits/bridge.rs`) splits a signal graph
+into left (recording) and right (playback) sub-graphs at a duplex boundary.
+The engine executes in **5 phases** per tick:
+
+1. ReadFeedback — mix feedback buffers into sub-engine buffer inputs
+2. process_left — run left sub-graph, then `bridge.process_left(inputs)`
+3. process_right — `bridge.process_right(outputs)`, then run right sub-graph
+4. WriteFeedback — capture sub-engine outputs into feedback buffers
+5. Shadow copy — swap read/write feedback buffers
+
+This is driven by `RillGraphEngine::process_tick()` with an internal
+`DuplexSchedule` containing separate `ScheduledGraph`s for each side
+and a shared feedback buffer pool. `GraphBuilder::build_ir()` sets
+`is_bridge = true` for the bridge node; `lower_duplex()` splits the graph
+at that node and inserts `ReadFeedback`/`WriteFeedback` steps.
 
 ### Graph processing
 
-The graph has no external engine. `ProcessingState::process_block(&tick)`:
+The graph has two execution paths:
+
+**Old path** (`not(lang)` — backward compat): `ProcessingState::process_block(&tick)`:
 
 1. Re-initialises nodes if the backend's hardware rate differs (chip clocks,
    filter coefficients etc.)
@@ -501,6 +566,43 @@ The graph has no external engine. `ProcessingState::process_block(&tick)`:
 
 No external loop. Two-thread architecture:
 I/O callback thread (hard or soft RT) + control thread (tokio, patchbay).
+
+**TODO:** `Port::propagate`'s inner `process` call on the output port is a
+zero-parameter virtual call that does nothing — it exists solely because the
+new `rill-lang`-based path needs a uniform method dispatch. It will be removed
+once the old path is sunset.
+
+**New path** (behind `cfg(feature = "lang")` — the future):
+
+`GraphBuilder::build_ir()` → `GraphIr` → optimizer → lowerer → `RillGraphEngine`
+
+1. `GraphBuilder::build_ir(registry)` produces a `GraphIr` — a language-agnostic
+   typed intermediate representation (typed IR with arity, edges, parameter
+   definitions, `keep`/`inline`/`is_bridge`/`feedback_read`/`feedback_write`
+   annotations).
+2. `graph_optimize::inline_graph(ir, registry)` performs inlining, constant
+   folding, and merge across the graph IR.
+3. `graph_lower::lower(&ir)` translates node IRs + edges into a
+   `ScheduledGraph` — a linear program with buffer allocation (register-
+   allocation-style graph coloring on liveness intervals). For bridge
+   graphs, `graph_lower::lower_duplex(&ir)` produces a `DuplexSchedule`
+   with left/right sub-graphs.
+4. `graph_engine::RillGraphEngine::new(schedule, programs, mailbox, buf_size)`
+   creates the runtime — a buffer pool executor that runs the linear schedule
+   step by step (`InlineProgram`, `BufferCopy`, `ReadDelay`, `WriteDelay`,
+   with `ReadFeedback`/`WriteFeedback` for duplex).
+
+`RillGraphEngine` implements `Algorithm<T>` and (with `router` feature)
+`MultichannelAlgorithm<T>`. Parameter dispatch uses `SetParameter.anchor`
+(string anchor matching the node name in the schedule's `program_names` map)
+for O(1) lookup into the correct `RillProgram`.
+
+**Duplex execution** (`RillGraphEngine::process_tick`) uses a 5-phase tick:
+1. ReadFeedback — copy named feedback buffers into sub-engine buffers
+2. process_left — execute left sub-graph, then `bridge.process_left(inputs)`
+3. process_right — `bridge.process_right(outputs)`, then execute right sub-graph
+4. WriteFeedback — capture node outputs into named feedback buffers
+5. Shadow copy — swap read/write feedback buffers
 
 ## Key architectural principles
 
@@ -826,4 +928,4 @@ Full license text: [LICENSE.md](../LICENSE.md)
 - **Clean modularity** — each crate has a single responsibility, composable independently
 - **Real-time safe** — zero-allocation hot path, lock-free SPSC queues, no syscalls
 - **Well-tested** — 487 unit tests across the workspace
-- **Extensible** — add custom algorithms via macros or the `Algorithm` trait, register custom graph nodes via `NodeFactory`
+- **Extensible** — add custom algorithms via macros or the `Algorithm` trait, register custom graph nodes via per-crate `register_lang_builtins()` (the new path) or `NodeFactory` (old path, for backward compat)

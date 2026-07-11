@@ -144,9 +144,9 @@ impl<T: Transcendental> BasicOscillator<T> {
 
                     vals.store(&mut output[offset..offset + 4]);
 
-                    phase = phase + inc4;
+                    phase += inc4;
                     if phase.extract(0) >= one.extract(0) {
-                        phase = phase - one;
+                        phase -= one;
                         self.periods += 1;
                     }
                 }
@@ -176,10 +176,10 @@ impl<T: Transcendental> BasicOscillator<T> {
             Waveform::Triangle => self.scalar_triangle(),
             Waveform::Pulse(width) => self.scalar_pulse(width),
         };
-        self.phase = self.phase + effective_inc;
+        self.phase += effective_inc;
         let one = ScalarVector1::splat(T::ONE);
         if self.phase.extract(0) >= one.extract(0) {
-            self.phase = self.phase - one;
+            self.phase -= one;
             self.periods += 1;
         }
         output_vec.extract(0)
@@ -189,22 +189,20 @@ impl<T: Transcendental> BasicOscillator<T> {
 
     #[inline(always)]
     fn scalar_sine(&self) -> ScalarVector1<T> {
-        let phase_rad = self.phase.mul(&ScalarVector1::splat(T::from_f32(2.0 * PI)));
-        phase_rad.sin().mul(&self.amplitude)
+        let phase_rad = self.phase * ScalarVector1::splat(T::from_f32(2.0 * PI));
+        phase_rad.sin() * self.amplitude
     }
 
     #[inline(always)]
     fn scalar_saw_raw(&self) -> ScalarVector1<T> {
-        self.phase
-            .mul(&ScalarVector1::splat(T::from_f32(2.0)))
-            .sub(&ScalarVector1::splat(T::from_f32(1.0)))
-            .mul(&self.amplitude)
+        self.phase * ScalarVector1::splat(T::from_f32(2.0))
+            - ScalarVector1::splat(T::from_f32(1.0)) * self.amplitude
     }
 
     #[inline(always)]
     fn scalar_saw_bandlimited(&mut self) -> ScalarVector1<T> {
         let raw = self.scalar_saw_raw();
-        let next_phase = self.phase.add(&self.phase_inc).extract(0);
+        let next_phase = (self.phase + self.phase_inc).extract(0);
         let one = T::from_f32(1.0);
         if next_phase >= one {
             let one_vec = ScalarVector1::splat(one);
@@ -250,10 +248,10 @@ impl<T: Transcendental> BasicOscillator<T> {
     #[inline(always)]
     fn simd_sine(&self, phases: &ScalarVector4<T>, amp: &ScalarVector1<T>) -> ScalarVector4<T> {
         let pi2 = ScalarVector4::splat(T::from_f32(2.0 * PI));
-        let rad = phases.mul(&pi2);
+        let rad = *phases * pi2;
         let raw = rad.sin();
         let amp_broadcast = ScalarVector4::splat(amp.extract(0));
-        raw.mul(&amp_broadcast)
+        raw * amp_broadcast
     }
 
     #[inline(always)]
@@ -262,8 +260,8 @@ impl<T: Transcendental> BasicOscillator<T> {
         let four = ScalarVector4::splat(T::from_f32(4.0));
         let one = ScalarVector4::splat(T::from_f32(1.0));
         let amp_b = ScalarVector4::splat(amp.extract(0));
-        let p = phases.sub(&half);
-        p.abs().mul(&four).sub(&one).mul(&amp_b)
+        let p = *phases - half;
+        (p.abs() * four - one) * amp_b
     }
 
     #[inline(always)]
@@ -294,7 +292,7 @@ impl<T: Transcendental> BasicOscillator<T> {
         let two = ScalarVector4::splat(T::from_f32(2.0));
         let one = ScalarVector4::splat(T::from_f32(1.0));
         let amp_b = ScalarVector4::splat(amp.extract(0));
-        phases.mul(&two).sub(&one).mul(&amp_b)
+        (*phases * two - one) * amp_b
     }
 
     #[inline(always)]
@@ -311,18 +309,18 @@ impl<T: Transcendental> BasicOscillator<T> {
         let amp_v = ScalarVector4::splat(amp.extract(0));
 
         // next_phases = phases + inc for each lane
-        let next = phases.add(&inc_v);
+        let next = *phases + inc_v;
 
         // Mask: true where next >= 1.0 (discontinuity)
         let wrap_mask = next.ge(&one);
 
         // t = (1 - phase) / inc (pre-compute for all lanes, used only where wrapping)
-        let t = one.sub(phases).div(&inc_v);
+        let t = (one - *phases) / inc_v;
 
         // BLEP = 2*t - 1, then scale by amplitude
-        let blep = t.mul(&two).sub(&one).mul(&amp_v);
+        let blep = (t * two - one) * amp_v;
 
-        let corrected = raw.sub(&blep);
+        let corrected = raw - blep;
 
         <ScalarVector4<T> as VectorMask<T, 4>>::select(&corrected, &raw, wrap_mask)
     }
@@ -337,10 +335,10 @@ impl<T: Transcendental> BasicOscillator<T> {
             Waveform::Triangle => self.scalar_triangle(),
             Waveform::Pulse(width) => self.scalar_pulse(width),
         };
-        self.phase = self.phase + effective_inc;
+        self.phase += effective_inc;
         let one = ScalarVector1::splat(T::from_f32(1.0));
         if self.phase.extract(0) >= one.extract(0) {
-            self.phase = self.phase - one;
+            self.phase -= one;
             self.periods += 1;
         }
         output_vec

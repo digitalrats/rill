@@ -1,5 +1,106 @@
 # CHANGELOG
 
+## [0.6.0-M1] — 2026-07-11
+
+### 🐛 New crate: `rill-analyzer` — interactive gdb-style debugger
+
+CLI tool for debugging Rill signal processing applications. Three modes:
+
+- **`run graph.json`** — local debugging with embedded REPL
+- **`attach <pid>`** — connect to a running process via shared memory
+- **`launch <target>`** — start a process and connect immediately
+
+Supports signal probes (`break`, `print`, `step`), command tracing (SetParameter
+flow), Lua scripting via `mlua`, and JSON output for automation. Connects to
+running ModularSystem processes through `/dev/shm/rill-debug-<pid>` with
+lock-free ring buffers and `SIGUSR1` notifications.
+
+### 🧪 Diagnostic and debugging infrastructure (`debug` feature)
+
+**rill-lang:**
+- `ProbePoint` IR instruction — lock-free signal sampling (zero overhead when disabled)
+- `ProbeSlot` with atomic flags (`enabled`, `break_flag`, `paused_flag`) and SPSC queue
+- `DebugControl` — inter-block pause/resume atomics for engine control
+- `CommandFrame` — fixed-size copy-compatible frame for actor mailbox tracing
+
+**rill-graph:**
+- `build_ir()` now compiles graph nodes to complete `rill_lang::Ir` with builtins,
+  parameters, and instructions — mirroring the rill-lang DSL compilation path
+- Automatic `ProbePoint` insertion at each node's output under `debug` feature
+
+**rill-telemetry:**
+- `CollectorThread` — background thread drains probe queues + command log, formats
+  via `TextFormatter` (colored terminal) or `JsonFormatter` (JSON lines)
+- `ProbeStateManager` — handles breakpoints, continue/step/pause, probe enable/disable
+- `ShmemRegion` — `/dev/shm/rill-debug-<pid>` mmap region with two lock-free SPSC
+  ring buffers for `AnalyzerCommand`/`AnalyzerResponse` via `serde_cbor`
+- `AnalyzerCommand`/`AnalyzerResponse` protocol types with automaton/sensor/queue
+  inspection variants
+
+**rill-patchbay:**
+- `PatchbayInspector` — collects automaton/sensor snapshots for control-path debugging
+- `Servo::inspector()` — automaton state snapshot via `Arc<Mutex<>>`
+- `OscSensor::inspect()` / `MidiHub::inspect()` — sensor status snapshots
+- `ModuleFactory::construct()` accepts an inspector parameter for auto-registration
+
+**rill-adrift:**
+- `debug_init` module — `init_shmem()` / `init_shmem_from_env()` for IPC setup
+- Lifecycle logging in `ModularSystem::launch()` — rack creation, engine build,
+  backend connection, shutdown (via `log` crate)
+- Auto-probes enabled for each graph node; `CollectorThread` spawned with shmem
+  and `PatchbayInspector`
+
+### ⚡ Execution model unification
+
+- `compile_graph()` and `graph_lower::lower()` now use identical buffer numbering
+  (`output_bufs = [0]`, `output_mapping = [0]`, `buffers = 1`). Both paths converge
+  on the same `RillProgram::new_with()` → `ScheduledGraph` → `RillGraphEngine`
+  pipeline.
+- `build_ir()` produces complete `Ir` with `builtins`, `params`, and `instrs` —
+  no more stub IRs. `GraphDef`-based graphs and rill-lang DSL programs share the
+  same execution mechanism.
+
+### ❌ Removals
+
+- **`rill-oscillators`** crate removed from workspace (obsolete Port-based nodes,
+  replaced by rill-lang builtins).
+- **`rill/input` and `rill/output`** built-in identity pass-through nodes removed.
+  `ProgramRunner` handles I/O directly; graphs no longer need explicit Source/Sink
+  nodes for signal routing.
+
+### 📋 Breaking changes
+
+- `GraphBuilder::build_ir()` now returns complete `Ir` — may change behavior for
+  existing graphs that depended on stub IRs.
+- `RillProgram::new_with()` made `pub` — previously `pub(crate)`.
+- Graphs using `SinkDef` with `type_name: "rill/output"` require updating to
+  remove the sink node (output routing is handled by `ProgramRunner`).
+- `SourceDef.backend: None` graphs now produce output through graph-level `outputs`
+  computation (leaf node arity sum), not through explicit sink passthrough.
+- `rill-oscillators` direct dependencies broken — use `rill-oscillators` builtins
+  via `rill-lang` registry or `rill-adrift`.
+
+### 📚 Documentation
+
+- **Debugging guide** (`docs/src/guides/debugging.md`) — probe architecture,
+  command logging, shmem IPC, RT safety, lifecycle logging
+- **rill-analyzer guide** (`docs/src/guides/rill-analyzer.md`) — REPL commands,
+  Lua scripting, JSON output, attach/launch flows
+- Updated root `architecture.md` with debug infrastructure and rill-analyzer
+- All crate-level READMEs updated with debug features and architecture changes
+- `AGENTS.md`: naming conventions (Automaton), debugging priority, RT safety rules,
+  warnings policy, forbidden `eprintln!` in signal path
+
+### 🧹 Housekeeping
+
+- `AGENTS.md` — strengthened Automaton naming rule with rationale and scope;
+  debugging priority rule; RT safety rules for logging; warnings policy
+- Fixed 3 pre-existing clippy warnings (GraphBuilder Default impl, probe struct init)
+- `CmdStr<N>` — fixed-size Copy-compatible string buffer for `SpscQueue` in RT path
+- `chiptune_stc` example: added `--no-wait` flag; removed SinkDef; compiles to
+  identical IR as `lang_chiptune`
+- `lang_chiptune` example: added `--no-wait` flag
+
 ## [0.5.0] — 2026-07-06
 
 ### 🧬 New crate: `rill-lang` — Faust-style signal DSL

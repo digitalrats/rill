@@ -1,6 +1,6 @@
 //! # Sequencers
 //!
-//! Automata for generating rhythmic patterns and sequences
+//! Automatons for generating rhythmic patterns and sequences
 //! of values over time.
 
 use crate::engine::{Automaton, NoAction, Range, Time};

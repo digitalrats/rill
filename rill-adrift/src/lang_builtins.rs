@@ -1,235 +1,83 @@
-//! rill-lang built-in bindings for rill-core-dsp / rill-core-model blocks.
+//! rill-lang built-in bindings — thin aggregation over crate-level registries.
 
+use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 use rill_core::math::Transcendental;
-use rill_core::traits::algorithm::{Algorithm, AlgorithmMetadata};
-use rill_core::traits::ProcessResult;
-use rill_lang::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
+use rill_core::traits::algorithm::Algorithm;
+use rill_core::traits::{ParamValue, ProcessResult};
 
-// --- sample built-ins ---
+/// Build a complete builtin registry: DSP primitives, oscillators, complex
+/// arithmetic, mixer, EQ, dry/wet, and optionally analog models and FFT nodes.
+pub fn full_registry<T: Transcendental + 'static>() -> rill_core::builtin::Registry<T> {
+    let mut reg = rill_core::builtin::Registry::new();
 
-struct OnePoleBuiltin<T: Transcendental> {
-    inner: rill_core_dsp::filters::OnePole<T>,
-}
-impl<T: Transcendental> SampleBuiltin<T> for OnePoleBuiltin<T> {
-    fn process_sample(&mut self, inputs: &[T]) -> T {
-        self.inner.process_sample(inputs[0])
-    }
-    fn init(&mut self, sr: f32) {
-        Algorithm::init(&mut self.inner, sr);
-    }
-    fn reset(&mut self) {
-        Algorithm::reset(&mut self.inner);
-    }
-    fn set_param(&mut self, index: usize, value: T) {
-        let v = value.to_f32();
-        match index {
-            0 => rill_core_dsp::filters::Filter::set_cutoff(&mut self.inner, v),
-            1 => rill_core_dsp::filters::Filter::set_q(&mut self.inner, v),
-            _ => {}
-        }
-    }
-}
+    // Always available
+    rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
+    rill_lang::register::register_core_builtins(&mut reg);
+    rill_router::register::register_lang_builtins(&mut reg);
+    rill_digital_effects::register::register_lang_builtins(&mut reg);
 
-struct MoogBuiltin<T: Transcendental> {
-    inner: rill_core_dsp::filters::MoogLadder<T>,
-}
-impl<T: Transcendental> SampleBuiltin<T> for MoogBuiltin<T> {
-    fn process_sample(&mut self, inputs: &[T]) -> T {
-        self.inner.process_sample(inputs[0])
-    }
-    fn init(&mut self, sr: f32) {
-        Algorithm::init(&mut self.inner, sr);
-    }
-    fn reset(&mut self) {
-        Algorithm::reset(&mut self.inner);
-    }
-    fn set_param(&mut self, index: usize, value: T) {
-        let v = value.to_f32();
-        match index {
-            0 => self.inner.set_cutoff(v),
-            1 => self.inner.set_resonance(v),
-            _ => {}
-        }
-    }
-}
-
-// --- block built-in wrappers ---
-
-struct BiquadBuiltin<T: Transcendental> {
-    inner: rill_core_dsp::filters::Biquad<T>,
-}
-
-impl<T: Transcendental> Algorithm<T> for BiquadBuiltin<T> {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        self.inner.process(input, output)
-    }
-    fn reset(&mut self) {
-        Algorithm::reset(&mut self.inner);
-    }
-    fn init(&mut self, sample_rate: f32) {
-        Algorithm::init(&mut self.inner, sample_rate);
-    }
-    fn apply_command(&mut self, value: T) {
-        Algorithm::apply_command(&mut self.inner, value);
-    }
-    fn metadata(&self) -> AlgorithmMetadata {
-        Algorithm::metadata(&self.inner)
-    }
-}
-
-impl<T: Transcendental> BlockBuiltin<T> for BiquadBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
-        let v = value.to_f32();
-        match index {
-            0 => rill_core_dsp::filters::Filter::set_cutoff(&mut self.inner, v),
-            1 => rill_core_dsp::filters::Filter::set_q(&mut self.inner, v),
-            _ => {}
-        }
-    }
-}
-
-#[cfg(feature = "analog")]
-struct AnalogMoogBuiltin<T: Transcendental> {
-    inner: rill_core_model::wdf::MoogLadder<T>,
-}
-
-#[cfg(feature = "analog")]
-impl<T: Transcendental> Algorithm<T> for AnalogMoogBuiltin<T> {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        self.inner.process(input, output)
-    }
-    fn reset(&mut self) {
-        Algorithm::reset(&mut self.inner);
-    }
-    fn init(&mut self, sample_rate: f32) {
-        Algorithm::init(&mut self.inner, sample_rate);
-    }
-    fn apply_command(&mut self, value: T) {
-        Algorithm::apply_command(&mut self.inner, value);
-    }
-    fn metadata(&self) -> AlgorithmMetadata {
-        Algorithm::metadata(&self.inner)
-    }
-}
-
-#[cfg(feature = "analog")]
-impl<T: Transcendental> BlockBuiltin<T> for AnalogMoogBuiltin<T> {
-    fn set_param(&mut self, index: usize, value: T) {
-        match index {
-            0 => self.inner.set_cutoff(value),
-            1 => self.inner.set_resonance(value),
-            _ => {}
-        }
-    }
-}
-
-/// Register the always-available rill-core-dsp built-ins.
-pub fn register_dsp_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    use rill_core_dsp::filters::{FilterParams, FilterType, OnePole};
-
-    reg.register_sample(
-        BuiltinSig {
-            name: "onepole",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Sample,
-        },
-        |p, sr| {
-            let mut inner = OnePole::<T>::new(FilterParams {
-                filter_type: FilterType::LowPass,
-                cutoff: p[0] as f32,
-                q: p[1] as f32,
-                gain_db: 0.0,
-            });
-            Algorithm::init(&mut inner, sr);
-            Box::new(OnePoleBuiltin { inner })
-        },
-    );
-    reg.register_sample(
-        BuiltinSig {
-            name: "moog",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Sample,
-        },
-        |p, sr| {
-            let mut inner = rill_core_dsp::filters::MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
-            Algorithm::init(&mut inner, sr);
-            Box::new(MoogBuiltin { inner })
-        },
-    );
-    reg.register_block(
-        BuiltinSig {
-            name: "lowpass",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
-        |p, sr| {
-            let mut b = rill_core_dsp::filters::Biquad::<T>::new(FilterParams {
-                filter_type: FilterType::LowPass,
-                cutoff: p[0] as f32,
-                q: p[1] as f32,
-                gain_db: 0.0,
-            });
-            Algorithm::init(&mut b, sr);
-            Box::new(BiquadBuiltin { inner: b })
-        },
-    );
-    reg.register_block(
-        BuiltinSig {
-            name: "highpass",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
-        |p, sr| {
-            let mut b = rill_core_dsp::filters::Biquad::<T>::new(FilterParams {
-                filter_type: FilterType::HighPass,
-                cutoff: p[0] as f32,
-                q: p[1] as f32,
-                gain_db: 0.0,
-            });
-            Algorithm::init(&mut b, sr);
-            Box::new(BiquadBuiltin { inner: b })
-        },
-    );
-}
-
-/// Register rill-core-model / analog built-ins.
-#[cfg(feature = "analog")]
-pub fn register_model_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    reg.register_block(
-        BuiltinSig {
-            name: "analog_moog",
-            signal_ins: 1,
-            signal_outs: 1,
-            num_params: 2,
-            kind: BuiltinKind::Block,
-        },
-        |p, sr| {
-            let pole = rill_core_model::wdf::RcPole::new(T::ZERO);
-            let mut f = rill_core_model::wdf::MoogLadder::<T>::new(
-                pole,
-                T::from_f32(p[0] as f32),
-                T::from_f32(p[1] as f32),
-                T::from_f32(sr),
-            );
-            f.update_coeffs();
-            Box::new(AnalogMoogBuiltin { inner: f })
-        },
-    );
-}
-
-/// A registry populated with all available built-ins.
-pub fn full_registry<T: Transcendental>() -> Registry<T> {
-    let mut reg = Registry::new();
-    register_dsp_builtins(&mut reg);
+    // Feature-gated
+    #[cfg(feature = "fft")]
+    rill_fft::register::register_lang_builtins(&mut reg);
     #[cfg(feature = "analog")]
-    register_model_builtins(&mut reg);
+    rill_core_model::register::register_lang_builtins(&mut reg);
+    #[cfg(feature = "analog")]
+    rill_analog_effects::register::register_lang_builtins(&mut reg);
+    #[cfg(feature = "sampler")]
+    rill_sampler::register::register_lang_builtins(&mut reg);
+
+    // Tape loop pass-through nodes (replaced by tape_bridge in future)
+    register_tape_nodes(&mut reg);
+
+    reg
+}
+
+struct IdentityAlgo<T: Transcendental> {
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: Transcendental> IdentityAlgo<T> {
+    fn new(_channels: usize) -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Transcendental> Algorithm<T> for IdentityAlgo<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        if let Some(inp) = input {
+            let n = inp.len().min(output.len());
+            output[..n].copy_from_slice(&inp[..n]);
+        } else {
+            output.fill(T::ZERO);
+        }
+        Ok(())
+    }
+    fn init(&mut self, _sr: f32) {}
+    fn reset(&mut self) {}
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for IdentityAlgo<T> {
+    fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
+}
+
+/// Register tape loop pass-through nodes.
+fn register_tape_nodes<T: Transcendental + 'static>(reg: &mut Registry<T>) {
+    reg.register_block(
+        BuiltinSig::simple("write_head", 2, 1, 0, BuiltinKind::Block),
+        |_p, _sr| Box::new(IdentityAlgo::<T>::new(1)),
+    );
+    reg.register_block(
+        BuiltinSig::simple("read_head", 0, 1, 0, BuiltinKind::Block),
+        |_p, _sr| Box::new(IdentityAlgo::<T>::new(1)),
+    );
+}
+
+/// Build a lofi-capable registry (concrete `f32`).
+#[cfg(feature = "lofi")]
+pub fn full_registry_f32() -> rill_core::builtin::Registry<f32> {
+    let mut reg = full_registry::<f32>();
+    rill_lofi::register::register_lang_builtins(&mut reg);
     reg
 }

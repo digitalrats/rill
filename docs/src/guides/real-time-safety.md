@@ -40,3 +40,17 @@ Any code reached from the process callback — `generate()`, `process()`,
 2. **Testing RT code** — any new RT path code must be verified with
    `cargo test --release` under `pw-loopback` or similar virtual device
    to detect xruns.
+
+## RT-safety unit tests
+
+`rill-fft` includes automated RT-safety integration tests (`tests/rt_safety.rs`)
+using a custom `#[global_allocator]` that panics on any heap allocation or
+deallocation during `process()` calls. The allocator guard uses `thread_local!`
+to isolate test threads, allowing tests to run in parallel. Run with:
+
+```bash
+cargo test -p rill-fft --test rt_safety
+```
+
+All FFT, convolution, and spectral effect `process()` paths are verified
+zero-allocation.

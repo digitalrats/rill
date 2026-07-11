@@ -8,7 +8,9 @@
 //! - `F64x2`, `F64x4` for `f64`
 
 use crate::Transcendental;
-use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
+use std::ops::{
+    Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
+};
 use wide::{f32x4, f32x8, f64x2, f64x4, CmpEq, CmpGe, CmpGt, CmpLe, CmpLt, CmpNe};
 
 use crate::math::vector::traits::{Vector, VectorMask, VectorTranscendental};
@@ -643,6 +645,38 @@ impl Neg for F32x4 {
     }
 }
 
+impl AddAssign for F32x4 {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
+impl SubAssign for F32x4 {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+    }
+}
+impl MulAssign for F32x4 {
+    fn mul_assign(&mut self, rhs: Self) {
+        self.0 *= rhs.0;
+    }
+}
+impl DivAssign for F32x4 {
+    fn div_assign(&mut self, rhs: Self) {
+        self.0 /= rhs.0;
+    }
+}
+impl RemAssign for F32x4 {
+    fn rem_assign(&mut self, rhs: Self) {
+        let a: [f32; 4] = self.0.into();
+        let b: [f32; 4] = rhs.0.into();
+        let mut arr = [0.0f32; 4];
+        for i in 0..4 {
+            arr[i] = a[i] % b[i];
+        }
+        self.0 = f32x4::from(arr);
+    }
+}
+
 // Similarly for F32x8, F64x2, F64x4
 
 impl Add for F32x8 {
@@ -690,6 +724,38 @@ impl Neg for F32x8 {
     type Output = Self;
     fn neg(self) -> Self {
         Self(-self.0)
+    }
+}
+
+impl AddAssign for F32x8 {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
+impl SubAssign for F32x8 {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+    }
+}
+impl MulAssign for F32x8 {
+    fn mul_assign(&mut self, rhs: Self) {
+        self.0 *= rhs.0;
+    }
+}
+impl DivAssign for F32x8 {
+    fn div_assign(&mut self, rhs: Self) {
+        self.0 /= rhs.0;
+    }
+}
+impl RemAssign for F32x8 {
+    fn rem_assign(&mut self, rhs: Self) {
+        let a: [f32; 8] = self.0.into();
+        let b: [f32; 8] = rhs.0.into();
+        let mut arr = [0.0f32; 8];
+        for i in 0..8 {
+            arr[i] = a[i] % b[i];
+        }
+        self.0 = f32x8::from(arr);
     }
 }
 
@@ -741,6 +807,38 @@ impl Neg for F64x2 {
     }
 }
 
+impl AddAssign for F64x2 {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
+impl SubAssign for F64x2 {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+    }
+}
+impl MulAssign for F64x2 {
+    fn mul_assign(&mut self, rhs: Self) {
+        self.0 *= rhs.0;
+    }
+}
+impl DivAssign for F64x2 {
+    fn div_assign(&mut self, rhs: Self) {
+        self.0 /= rhs.0;
+    }
+}
+impl RemAssign for F64x2 {
+    fn rem_assign(&mut self, rhs: Self) {
+        let a: [f64; 2] = self.0.into();
+        let b: [f64; 2] = rhs.0.into();
+        let mut arr = [0.0f64; 2];
+        for i in 0..2 {
+            arr[i] = a[i] % b[i];
+        }
+        self.0 = f64x2::from(arr);
+    }
+}
+
 impl Add for F64x4 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
@@ -786,6 +884,38 @@ impl Neg for F64x4 {
     type Output = Self;
     fn neg(self) -> Self {
         Self(-self.0)
+    }
+}
+
+impl AddAssign for F64x4 {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
+impl SubAssign for F64x4 {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+    }
+}
+impl MulAssign for F64x4 {
+    fn mul_assign(&mut self, rhs: Self) {
+        self.0 *= rhs.0;
+    }
+}
+impl DivAssign for F64x4 {
+    fn div_assign(&mut self, rhs: Self) {
+        self.0 /= rhs.0;
+    }
+}
+impl RemAssign for F64x4 {
+    fn rem_assign(&mut self, rhs: Self) {
+        let a: [f64; 4] = self.0.into();
+        let b: [f64; 4] = rhs.0.into();
+        let mut arr = [0.0f64; 4];
+        for i in 0..4 {
+            arr[i] = a[i] % b[i];
+        }
+        self.0 = f64x4::from(arr);
     }
 }
 

@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use rill_core::queues::CommandEnum;
-use rill_core::traits::{NodeId, ParamValue, Params};
+use rill_core::traits::{ParamValue, Params};
 use rill_core_actor::ActorRef;
 
 use crate::engine::{BoxedModule, ParameterMapping};
@@ -27,7 +27,7 @@ impl fmt::Display for FactoryError {
 #[derive(Debug, Clone)]
 pub struct ServoTarget {
     /// The graph node that receives the parameter value.
-    pub target_node: NodeId,
+    pub target_node: u32,
     /// The parameter name on the target node to update.
     pub target_param: String,
     /// How the automaton output maps to the parameter.
@@ -36,7 +36,7 @@ pub struct ServoTarget {
     pub min: f64,
     /// Maximum output clamp value.
     pub max: f64,
-    /// Optional value table for index-based automata.
+    /// Optional value table for index-based automatons.
     pub table: Option<Vec<ParamValue>>,
 }
 /// Constructs automaton modules from type name, params, and target.
@@ -45,7 +45,7 @@ pub trait AutomatonConstructor: Send + Sync {
     fn type_name(&self) -> &'static str;
     /// Builds a boxed module from the given id, params, and servo target.
     fn construct(&self, id: &str, params: &Params, target: &ServoTarget) -> BoxedModule;
-    /// Optionally spawns an async green-thread for automata that run independently of the graph clock.
+    /// Optionally spawns an async green-thread for automatons that run independently of the graph clock.
     fn spawn_async(
         &self,
         _id: &str,

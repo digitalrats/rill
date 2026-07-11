@@ -97,7 +97,7 @@ impl<T: Transcendental> Algorithm<T> for StateVariableFilter<T> {
 
         for i in 0..len {
             let input_vec = ScalarVector1::splat(input[i]);
-            self.lp = self.lp + self.f * self.bp;
+            self.lp += self.f * self.bp;
             self.hp = input_vec - self.lp - self.q * self.bp;
             self.bp = self.f * self.hp + self.bp;
 

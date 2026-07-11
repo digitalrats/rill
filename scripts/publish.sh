@@ -17,15 +17,15 @@
 #   7  rill-lofi
 #   8  rill-osc
 #   9  rill-io
-#  10  rill-oscillators
-#  11  rill-digital-filters
-#  12  rill-digital-effects
-#  13  rill-router
-#  14  rill-patchbay
-#  15  rill-analog-filters
-#  16  rill-analog-effects
-#  17  rill-sampler
-#  18  rill-lang
+#  10  rill-digital-filters
+#  11  rill-digital-effects
+#  12  rill-router
+#  13  rill-patchbay
+#  14  rill-analog-filters
+#  15  rill-analog-effects
+#  16  rill-sampler
+#  17  rill-lang
+#  18  rill-fft
 #  19  rill-adrift
 
 set -euo pipefail
@@ -41,7 +41,6 @@ CRATES=(
     rill-lofi
     rill-osc
     rill-io
-    rill-oscillators
     rill-digital-filters
     rill-digital-effects
     rill-router
@@ -50,6 +49,7 @@ CRATES=(
     rill-analog-effects
     rill-sampler
     rill-lang
+    rill-fft
     rill-adrift
 )
 

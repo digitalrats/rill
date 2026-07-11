@@ -4,53 +4,22 @@
 //! for use in signal graphs.
 
 use rill_core::traits::Algorithm;
-use rill_core::{
-    Node, NodeCategory, NodeId, NodeMetadata, NodeState, ParamValue, ParameterId, Port,
-    ProcessError, ProcessResult, Processor, Transcendental,
-};
+use rill_core::Transcendental;
 use rill_core_dsp::algorithm::ParameterizedAlgorithm;
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 /// Biquad processor with configurable filter type and parameters.
 pub struct BiquadProcessor<T: Transcendental, const BUF_SIZE: usize> {
-    /// Node identifier
-    id: NodeId,
-    /// Node metadata
-    metadata: NodeMetadata,
-    /// Input ports
-    inputs: Vec<Port<T, BUF_SIZE>>,
-    /// Output ports
-    outputs: Vec<Port<T, BUF_SIZE>>,
-    /// Control ports
-    controls: Vec<Port<T, BUF_SIZE>>,
-    /// Node state
-    state: NodeState<T, BUF_SIZE>,
-    /// Cutoff frequency (Hz)
     pub cutoff: f32,
-    /// Q factor
     pub q: f32,
-    /// Gain in dB (for peak/shelving filters)
     pub gain_db: f32,
-    /// Current filter type
     pub filter_type: FilterType,
-    /// Inner biquad algorithm
     pub algorithm: Biquad<T>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
     /// Creates a new Biquad processor with default parameters.
     pub fn new(sample_rate: f32) -> Self {
-        let mut metadata = NodeMetadata::new("BiquadProcessor", NodeCategory::Processor);
-        metadata.signal_inputs = 1;
-        metadata.signal_outputs = 1;
-
-        let mut inputs = Vec::new();
-        let mut outputs = Vec::new();
-
-        // Create one audio input and one audio output
-        inputs.push(Port::input(NodeId(0), 0, "signal_in"));
-        outputs.push(Port::output(NodeId(0), 0, "signal_out"));
-
         let params = FilterParams {
             filter_type: FilterType::LowPass,
             cutoff: 1000.0,
@@ -62,12 +31,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
         algorithm.init(sample_rate);
 
         Self {
-            id: NodeId(0),
-            metadata,
-            inputs,
-            outputs,
-            controls: Vec::new(),
-            state: NodeState::new(sample_rate),
             cutoff: 1000.0,
             q: 0.707,
             gain_db: 0.0,
@@ -161,152 +124,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> BiquadProcessor<T, BUF_SIZE> {
             gain_db: self.gain_db,
         };
         self.algorithm.set_params(params);
-        // Re‑initialize if sample rate has changed (should be done via `init`)
-        if self.state.sample_rate > 0.0 {
-            self.algorithm.init(self.state.sample_rate);
-        }
     }
 }
-
-impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for BiquadProcessor<T, BUF_SIZE> {
-    fn node_type_id(&self) -> rill_core::NodeTypeId
-    where
-        Self: 'static + Sized,
-    {
-        rill_core::NodeTypeId::of::<Self>()
-    }
-
-    fn id(&self) -> NodeId {
-        self.id
-    }
-
-    fn set_id(&mut self, id: NodeId) {
-        self.id = id;
-        // Update port IDs? Ports store node ID, but they are created with NodeId(0).
-        // For simplicity, we ignore for now.
-    }
-
-    fn metadata(&self) -> NodeMetadata {
-        self.metadata.clone()
-    }
-
-    fn init(&mut self, sample_rate: f32) {
-        self.state.sample_rate = sample_rate;
-        self.algorithm.init(sample_rate);
-    }
-
-    fn reset(&mut self) {
-        self.state.sample_pos = 0;
-        self.state.blocks_processed = 0;
-        self.algorithm.reset();
-    }
-
-    fn get_parameter(&self, id: &ParameterId) -> Option<ParamValue> {
-        let name = id.as_str();
-        match name {
-            "cutoff" => Some(ParamValue::Float(self.cutoff)),
-            "q" => Some(ParamValue::Float(self.q)),
-            "gain_db" => Some(ParamValue::Float(self.gain_db)),
-            _ => None,
-        }
-    }
-
-    fn set_parameter(&mut self, id: &ParameterId, value: ParamValue) -> ProcessResult<()> {
-        let name = id.as_str();
-        if let Some(v) = value.as_f32() {
-            match name {
-                "cutoff" => {
-                    self.set_cutoff(v);
-                    Ok(())
-                }
-                "q" => {
-                    self.set_q(v);
-                    Ok(())
-                }
-                "gain_db" => {
-                    self.set_gain_db(v);
-                    Ok(())
-                }
-                _ => Err(ProcessError::parameter(format!(
-                    "Unknown parameter: {}",
-                    name
-                ))),
-            }
-        } else {
-            Err(ProcessError::parameter("Expected float value"))
-        }
-    }
-
-    fn input_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        self.inputs.get(index)
-    }
-
-    fn input_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        self.inputs.get_mut(index)
-    }
-
-    fn output_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        self.outputs.get(index)
-    }
-
-    fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        self.outputs.get_mut(index)
-    }
-    fn num_signal_outputs(&self) -> usize {
-        self.outputs.len()
-    }
-    fn num_signal_inputs(&self) -> usize {
-        self.inputs.len()
-    }
-
-    fn control_port(&self, index: usize) -> Option<&Port<T, BUF_SIZE>> {
-        self.controls.get(index)
-    }
-
-    fn control_port_mut(&mut self, index: usize) -> Option<&mut Port<T, BUF_SIZE>> {
-        self.controls.get_mut(index)
-    }
-
-    fn num_inputs(&self) -> usize {
-        self.inputs.len()
-    }
-
-    fn num_outputs(&self) -> usize {
-        self.outputs.len()
-    }
-
-    fn state(&self) -> &NodeState<T, BUF_SIZE> {
-        &self.state
-    }
-
-    fn state_mut(&mut self) -> &mut NodeState<T, BUF_SIZE> {
-        &mut self.state
-    }
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
-    for BiquadProcessor<T, BUF_SIZE>
-{
-    fn process(
-        &mut self,
-        _ctx: &rill_core::RenderContext,
-        _signal_inputs: &[&[T; BUF_SIZE]],
-        _control_inputs: &[T],
-        _clock_inputs: &[rill_core::RenderContext],
-        _feedback_inputs: &[&[T; BUF_SIZE]],
-    ) -> ProcessResult<()> {
-        let inp = self.inputs[0].read();
-        let out = self.outputs[0].write();
-        self.algorithm.process(Some(&inp[..]), &mut out[..])?;
-        self.state.advance();
-        Ok(())
-    }
-
-    fn latency(&self) -> usize {
-        0
-    }
-}
-
 /// Re-export of the generic Biquad filter from rill-core-dsp for advanced use.
 pub use rill_core_dsp::filters::Biquad as BiquadFilterGeneric;
 

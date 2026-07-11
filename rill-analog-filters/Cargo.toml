@@ -1,6 +1,6 @@
 [package]
 name = "rill-analog-filters"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Analog-modeled filters using Wave Digital Filter elements"
 license.workspace = true
@@ -11,6 +11,8 @@ documentation = "https://docs.rs/rill-analog-filters"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-model = { workspace = true }
+rill-graph = { workspace = true, optional = true }
 
 [features]
 default = []
+graph = ["rill-graph"]

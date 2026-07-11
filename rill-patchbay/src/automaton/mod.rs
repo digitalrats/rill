@@ -1,4 +1,4 @@
-//! Automata — generative control-signal sources.
+//! Automatons — generative control-signal sources.
 //!
 //! This module provides various automaton types for generating real-time
 //! control signals. An automaton is an algorithm with internal state:
@@ -96,7 +96,7 @@ impl AutomatonComparison {
          │ Sequencer       │ Patterns, steps              │ Rhythmic        │\n\
          │ RandomWalk      │ Random walks                 │ Generative      │\n\
          │ Chaos           │ Deterministic chaos          │ Unpredictable   │\n\
-         │ Cellular        │ Cellular automata            │ Organic         │\n\
+         │ Cellular        │ Cellular automata             │ Organic         │\n\
          └─────────────────┴─────────────────────────────┴─────────────────┘"
     }
 

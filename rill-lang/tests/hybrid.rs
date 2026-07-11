@@ -28,47 +28,46 @@ fn assert_equiv(src: &str) {
 
 #[test]
 fn equiv_feedforward() {
-    assert_equiv("process = _ * 0.5;");
-    assert_equiv("process = abs(_) : _ * 2.0;");
-    assert_equiv("process = _ + 1.0 : sin;");
-    assert_equiv("process = _ <: (_ , _ * 0.5) :> +;");
+    assert_equiv("main = _ * 0.5");
+    assert_equiv("main = abs _ : _ * 2.0");
+    assert_equiv("main = _ + 1.0 : sin");
+    assert_equiv("main = _ <: (_ , _ * 0.5) :> +");
 }
 
 #[test]
 fn equiv_feedback() {
-    assert_equiv("process = + ~ _;");
-    assert_equiv("process = + ~ (_ * 0.5);");
-    assert_equiv("process = + ~ (_ * 0.9) : _ * 0.1;");
+    assert_equiv("main = + ~ _");
+    assert_equiv("main = + ~ (_ * 0.5)");
+    assert_equiv("main = + ~ (_ * 0.9) : _ * 0.1");
 }
 
 #[test]
 fn equiv_delay_and_mixed() {
-    assert_equiv("process = _ @ 1;");
-    assert_equiv("process = _ @ 5;");
-    assert_equiv("process = (_ * 0.5) : (+ ~ (_ @ 2));");
-    assert_equiv("process = (_ @ 3) : (+ ~ _);");
+    assert_equiv("main = _ @ 1");
+    assert_equiv("main = _ @ 5");
+    assert_equiv("main = (_ * 0.5) : (+ ~ (_ @ 2))");
+    assert_equiv("main = (_ @ 3) : (+ ~ _)");
 }
 
 #[test]
 fn exact_values_hold() {
     assert_eq!(
-        hybrid("process = _ * 0.5;", &[1.0, 2.0, 4.0, 8.0]),
+        hybrid("main = _ * 0.5", &[1.0, 2.0, 4.0, 8.0]),
         vec![0.5, 1.0, 2.0, 4.0]
     );
     assert_eq!(
-        hybrid("process = + ~ _;", &[1.0, 1.0, 1.0, 1.0]),
+        hybrid("main = + ~ _", &[1.0, 1.0, 1.0, 1.0]),
         vec![1.0, 2.0, 3.0, 4.0]
     );
     assert_eq!(
-        hybrid("process = _ @ 1;", &[5.0, 7.0, 9.0]),
+        hybrid("main = _ @ 1", &[5.0, 7.0, 9.0]),
         vec![0.0, 5.0, 7.0]
     );
 }
 
 #[test]
 fn multi_block_state_persists() {
-    // Two consecutive calls: the integrator state must carry across blocks.
-    let mut prog = compile::<f32>("process = + ~ _;").unwrap();
+    let mut prog = compile::<f32>("main = + ~ _").unwrap();
     let mut o1 = [0.0f32; 3];
     let mut o2 = [0.0f32; 3];
     prog.process(Some(&[1.0, 1.0, 1.0]), &mut o1).unwrap();
@@ -79,8 +78,7 @@ fn multi_block_state_persists() {
 
 #[test]
 fn varying_block_length_reuses_store() {
-    // Larger then smaller blocks must both work (store grows once, then reused).
-    let mut prog = compile::<f32>("process = _ * 2;").unwrap();
+    let mut prog = compile::<f32>("main = _ * 2").unwrap();
     let mut big = vec![0.0f32; 100];
     prog.process(Some(&vec![1.0f32; 100]), &mut big).unwrap();
     assert!(big.iter().all(|&v| v == 2.0));

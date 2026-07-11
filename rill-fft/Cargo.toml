@@ -1,0 +1,48 @@
+[package]
+name = "rill-fft"
+version = "0.6.0-M1"
+edition = "2021"
+description = "FFT and frequency-domain signal processing for Rill"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/rill-fft"
+
+[dependencies]
+rill-core = { workspace = true }
+rill-core-dsp = { workspace = true }
+rill-graph = { workspace = true, optional = true }
+rill-lang = { workspace = true, optional = true }
+num-traits = "0.2"
+num-complex = "0.4"
+
+[dev-dependencies]
+float-cmp = "0.9"
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "fft_complex_bench"
+harness = false
+path = "benches/fft_complex_bench.rs"
+
+[[bench]]
+name = "fft_real_bench"
+harness = false
+path = "benches/fft_real_bench.rs"
+
+[[bench]]
+name = "convolver_bench"
+harness = false
+path = "benches/convolver_bench.rs"
+
+[[bench]]
+name = "rt_timing_bench"
+harness = false
+path = "benches/rt_timing_bench.rs"
+
+[features]
+default = []
+simd = ["rill-core/simd"]
+f64 = []
+graph = ["rill-graph"]
+lang = ["rill-lang"]

@@ -47,8 +47,24 @@ pub enum Tok {
     Eq,
     /// `;`
     Semi,
+    /// `main` keyword — entry point.
+    KwMain,
+    /// `where` keyword — optional definition block.
+    KwWhere,
+    /// `let` keyword — expression-level mutually-recursive bindings.
+    KwLet,
+    /// `in` keyword — separator in `let defs in expr`.
+    KwIn,
+    /// `{`
+    LBrace,
+    /// `}`
+    RBrace,
+    /// `?`
+    Question,
     /// End of input.
     Eof,
+    /// Imaginary literal, e.g. `3i`, `2.5i`.
+    Imag(f64),
 }
 
 /// A token plus its source span.
@@ -115,7 +131,18 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             }
             let text = &src[start..i];
             let span = Span::new(start, i);
-            if is_float {
+            if i < bytes.len() && bytes[i] == b'i' {
+                i += 1;
+                let span = Span::new(start, i);
+                let v: f64 = text.parse().map_err(|_| CompileError::Lex {
+                    msg: format!("invalid imaginary literal `{text}i`"),
+                    span,
+                })?;
+                out.push(Token {
+                    tok: Tok::Imag(v),
+                    span,
+                });
+            } else if is_float {
                 let v: f64 = text.parse().map_err(|_| CompileError::Lex {
                     msg: format!("invalid float literal `{text}`"),
                     span,
@@ -142,10 +169,22 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             }
             let text = &src[start..i];
             let span = Span::new(start, i);
-            let tok = if text == "_" {
-                Tok::Wire
-            } else {
-                Tok::Ident(text.to_string())
+
+            // peek past whitespace to see if `(` follows — if so,
+            // `param(`, `keep(`, `inline(` are function calls, not keywords
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let followed_by_paren = j < bytes.len() && bytes[j] == b'(';
+
+            let tok = match text {
+                "_" => Tok::Wire,
+                "main" if !followed_by_paren => Tok::KwMain,
+                "where" if !followed_by_paren => Tok::KwWhere,
+                "let" if !followed_by_paren => Tok::KwLet,
+                "in" if !followed_by_paren => Tok::KwIn,
+                _ => Tok::Ident(text.to_string()),
             };
             out.push(Token { tok, span });
             continue;
@@ -180,8 +219,11 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             b'/' => Tok::Slash,
             b'%' => Tok::Percent,
             b'!' => Tok::Cut,
+            b'?' => Tok::Question,
             b'(' => Tok::LParen,
             b')' => Tok::RParen,
+            b'{' => Tok::LBrace,
+            b'}' => Tok::RBrace,
             b'=' => Tok::Eq,
             b';' => Tok::Semi,
             other => {
@@ -215,7 +257,7 @@ mod tests {
     #[test]
     fn lexes_combinators_and_ops() {
         assert_eq!(
-            kinds("_ : + <: :> ~ @ , * / % ! ( ) = ;"),
+            kinds("_ : + <: :> ~ @ , * / % ! ? ( ) { } = ;"),
             vec![
                 Tok::Wire,
                 Tok::Colon,
@@ -229,8 +271,11 @@ mod tests {
                 Tok::Slash,
                 Tok::Percent,
                 Tok::Cut,
+                Tok::Question,
                 Tok::LParen,
                 Tok::RParen,
+                Tok::LBrace,
+                Tok::RBrace,
                 Tok::Eq,
                 Tok::Semi,
                 Tok::Eof,
@@ -280,5 +325,66 @@ mod tests {
     #[test]
     fn rejects_unterminated_string() {
         assert!(tokenize(r#""abc"#).is_err());
+    }
+
+    #[test]
+    fn lexes_main_keyword() {
+        assert_eq!(
+            kinds("main foo bar"),
+            vec![
+                Tok::KwMain,
+                Tok::Ident("foo".into()),
+                Tok::Ident("bar".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn main_is_not_keyword_when_followed_by_paren() {
+        assert_eq!(
+            kinds(r#"main("freq", 440)"#),
+            vec![
+                Tok::Ident("main".into()),
+                Tok::LParen,
+                Tok::Str("freq".into()),
+                Tok::Comma,
+                Tok::Int(440),
+                Tok::RParen,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_let_and_in_keywords() {
+        assert_eq!(
+            kinds("let x = 1 in x"),
+            vec![
+                Tok::KwLet,
+                Tok::Ident("x".into()),
+                Tok::Eq,
+                Tok::Int(1),
+                Tok::KwIn,
+                Tok::Ident("x".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn let_is_not_keyword_when_followed_by_paren() {
+        assert_eq!(
+            kinds("let(x, y)"),
+            vec![
+                Tok::Ident("let".into()),
+                Tok::LParen,
+                Tok::Ident("x".into()),
+                Tok::Comma,
+                Tok::Ident("y".into()),
+                Tok::RParen,
+                Tok::Eof,
+            ]
+        );
     }
 }

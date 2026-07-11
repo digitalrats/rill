@@ -1,13 +1,14 @@
 # Rill
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
-[![tests|68](https://img.shields.io/badge/tests-604-green)](https://github.com/DigitalRats/rill)
-[![version|130](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/DigitalRats/rill)
-[![license](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE)
+[![tests|68](https://img.shields.io/badge/tests-706-green)](https://github.com/DigitalRats/rill)
+[![version|130](https://img.shields.io/badge/version-0.6.0-M1-blue)](https://github.com/DigitalRats/rill)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Modular signal-processing ecosystem for Rust. 19 crates, from lock-free
-queues and generic vector math to real-time audio I/O and analog circuit
-modelling.
+Modular signal-processing ecosystem for Rust. 20 workspace members —
+19 library crates plus the `rill-analyzer` CLI debugger. Lock-free
+queues and generic vector math to real-time FFT, convolution, frequency‑domain
+effects, and analog circuit modelling.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -17,13 +18,18 @@ modelling.
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                       │
 │  rill-core-model  │  rill-analog-filters  │  rill-analog     │
-│  -effects  │  rill-lang  │                                   │
+│  -effects  │  rill-lang  │  rill-fft                          │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-io (ALSA / CPAL / PipeWire / JACK)                    │
+│  rill-io (PortAudio / ALSA / PipeWire / JACK)                  │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)     │
 │  rill-core-actor  (ActorRef, ActorCell, ActorSystem)        │
+│  rill-telemetry  (probes, collectors, debug IPC)           │
 └─────────────────────────────────────────────────────────────┘
+
+CLI tools: `rill-analyzer` — interactive gdb-style debugger. Connects to
+running processes via shared memory, inspects signal probes, traces
+parameter changes, and controls execution.
 ```
 
 Most crates are **domain-agnostic** — only `rill-io` and `rill-osc` are
@@ -72,6 +78,21 @@ lock-free queues, and SIMD-optimised block processing. Benchmarks on
 | Cubic read | 1.06 µs | 4.16 ns |
 | Resampler 44.1→48k | 1.11 µs | 4.32 ns |
 
+### FFT and convolution
+
+| Operation | Size | Time | Throughput |
+|---|---|---|---|
+| ComplexFFT forward | 1024 | 6.7 µs | 153 Melem/s |
+| ComplexFFT forward | 16384 | 177 µs | 92 Melem/s |
+| RealFFT forward | 1024 | 6.2 µs | 165 Melem/s |
+| OverlapAdd convolver | IR 2048, BUF 128 | 61 µs/block | ~2100 blocks/s |
+| Partitioned convolver | IR 65536, BUF 128 | 104 µs/block | ~9600 blocks/s |
+| DirectConvolver | 64 taps, BUF 128 | 10 µs/block | 12.7 Melem/s |
+
+All FFT operations are allocation‑free in the RT path, verified by
+panic‑on‑alloc tests. At 44.1 kHz (BUF 128), budget is 2.9 ms — the
+partitioned convolver uses only ~3.6 % of that budget.
+
 †Theoretical maximum single-core voice count. Full block bench results and
 hardware SIMD comparison in
 [docs/superpowers/specs/2026-05-10-simd-benchmark-results.md](docs/superpowers/specs/2026-05-10-simd-benchmark-results.md).
@@ -115,32 +136,87 @@ Run from the workspace root (`rill/`). All examples are in `rill-adrift/examples
 cargo run -p rill-adrift --example play_wav --features "portaudio,sampler" -- [backend] [wav_path]
 ```
 
-Plays a WAV file through a biquad low-pass filter (600 Hz). Defaults to built-in demo sample.
+Plays a WAV file through a biquad low-pass filter (600 Hz). Defaults to built-in demo sample.
+
+### Convolution reverb
+
+```bash
+cargo run -p rill-adrift --example convolver --features fft [-- --ir path/to/ir.wav]
+```
+
+Demonstrates `PartitionedConvolver` and `ConvolverNode` — applies an impulse
+response (reverb cabinet, room) to a signal. If no IR file is provided, a
+synthetic exponential-decay IR is generated.
+
+### Spectral effects
+
+```bash
+cargo run -p rill-adrift --example spectral_effects --features fft
+```
+
+Frequency‑domain noise gate and shimmer delay via `SpectralGate` and
+`SpectralDelay`. Shows standalone DSP usage, passthrough, and gate‑delay chaining.
+
+### Complex numbers in the DSL
+
+```bash
+cargo run -p rill-adrift --example complex_dsl --features lang
+```
+
+Six demonstrations of complex arithmetic builtins: generator, conjugate,
+magnitude, phase, multiplication, and chained operations.
+
+### Spectral effects in the DSL
+
+```bash
+cargo run -p rill-adrift --example dsl_spectral --features "lang,fft"
+```
+
+`spectralgate` and `spectraldelay` builtins in the rill‑lang DSL, combined
+with complex arithmetic and chained gate‑delay processing.
 
 ### Load graph from JSON + config TOML
 
 ```bash
-cargo run -p rill-adrift --example player --features "cpal,sampler,serialization" -- [backend] [wav]
+cargo run -p rill-adrift --example player --features "portaudio,sampler,serialization" -- [backend] [wav]
 ```
 
 ### Runtime parameter control via actor mailbox
 
 ```bash
-cargo run -p rill-adrift --example advanced_player --features "cpal,sampler,serialization" -- [backend] [wav]
+cargo run -p rill-adrift --example advanced_player --features "portaudio,sampler,serialization" -- [backend] [wav]
 ```
 
 Same as `player` but sends `SetParameter` commands through the graph's actor
 mailbox before starting playback — demonstrates filter cutoff control and WAV
 path override at runtime.
 
-### AY-3-8910 chiptune_stc (Popcorn)
+### AY-3-8910 chiptune (Popcorn) — rill-lang DSL
 
 ```bash
-cargo run -p rill-adrift --example chiptune_stc --features "lofi,portaudio" -- [backend]
+cargo run -p rill-adrift --example lang_chiptune --features "lofi,portaudio,lang" -- [backend]
 ```
 
-Plays the Popcorn melody on an emulated AY-3-8910 sound chip. The sequencer
-runs externally and sends register writes via the actor mailbox.
+The same AY-3-8910 melody through rill‑lang's declarative DSL — cleaner
+graph definition with the same chip emulation backend.
+
+### Interactive debugging
+
+```bash
+# Build the debugger
+cargo build --release -p rill-analyzer
+
+# Launch an example under the debugger
+rill-analyzer launch -- cargo run --example chiptune_stc --features "lofi,pipewire,io,serialization,debug" -- --file music.stc --no-wait pipewire
+
+# Attach to a running process
+rill-analyzer attach <pid>
+```
+
+`rill-analyzer` provides signal probes, command tracing, breakpoints,
+step/continue execution control, and Lua scripting. See the
+[debugging guide](docs/src/guides/debugging.md) and
+[rill-analyzer guide](docs/src/guides/rill-analyzer.md).
 
 ### Microphone recording
 
@@ -161,6 +237,7 @@ topology definition.
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
 | **rill-core-model** | WDF elements, adapters, physical modeling (string, plate, modal, cavity) |
 | **rill-lang** | Faust-style signal DSL — compiles to `Algorithm<T>` |
+| **rill-fft** | FFT, frequency‑domain convolution, spectrum analysis, spectral effects |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
 | **rill-oscillators** | Sine, saw, noise, LFO, envelope graph nodes |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
@@ -168,8 +245,9 @@ topology definition.
 | **rill-router** | EQ + mixer + routing |
 | **rill-patchbay** | Automation: LFO, envelopes, sequencer, sensors, servos |
 | **rill-lofi** | Lo-fi emulation (NES, AY-3-8910, Akai S900) |
-| **rill-io** | Audio I/O: ALSA, CPAL, PipeWire, JACK |
-| **rill-telemetry** | Real-time probes and collectors |
+| **rill-io** | Audio I/O: PortAudio, ALSA, PipeWire, JACK |
+| **rill-telemetry** | Real-time probes, collectors, debug IPC |
+| **rill-analyzer** | **[CLI]** Interactive gdb-style debugger for signal graph inspection |
 | **rill-analog-filters** | WDF-based analog filters (MoogLadder) |
 | **rill-analog-effects** | Op-amp, tape deck, preamp models |
 | **rill-osc** | OSC server and networking |
@@ -185,13 +263,16 @@ topology definition.
 | `telemetry` | `rill-telemetry` | yes |
 | `osc` | `rill-osc` (tokio) | yes |
 | `sampler` | `rill-sampler` | yes |
+| `fft` | `rill-fft` (FFT, convolution, spectral effects) | yes |
+| `lang` | `rill-lang` (signal DSL, complex builtins) | no |
+| `debug` | Diagnostic & debug infrastructure (probes, command log, rill-analyzer IPC) | no |
 | `analog` | WDF + analog filters + effects | no |
 | `serialization` | Graph/patchbay JSON/CBOR | no |
 | `alsa` / `portaudio` / `jack` / `pipewire` | I/O backends (implies `io`) | no |
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
 `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,
-`rill-router`, `rill-patchbay`, `rill-lang`.
+`rill-router`, `rill-patchbay`.
 
 ## Dependencies
 
@@ -204,6 +285,7 @@ graph TD
     CORE_DSP --> FILTERS[rill-digital-filters]
     CORE_DSP --> EFFECTS[rill-digital-effects]
     CORE_DSP --> ROUTER[rill-router]
+    CORE_DSP --> FFT[rill-fft]
     CORE --> PATCHBAY[rill-patchbay]
     CORE --> IO[rill-io]
     CORE --> LOFI[rill-lofi]
@@ -222,18 +304,20 @@ graph TD
 - **API docs** — [docs.rs/rill-adrift](https://docs.rs/rill-adrift)
 - **Architecture** — `docs/src/architecture/` (core, graph, overview)
 - **Changelog** — [CHANGELOG.md](CHANGELOG.md)
+- **Debugging** — [Debugging Guide](docs/src/guides/debugging.md), [rill-analyzer Guide](docs/src/guides/rill-analyzer.md)
 
 ## Testing
 
 ```bash
-cargo test --workspace    # 604 tests, all passing
+cargo test --workspace    # 706 tests, all passing
 cargo clippy --workspace  # lint
 cargo fmt                 # format (max_width=100)
 ```
 
 ## Publications
 
-All 19 crates publish to [crates.io](https://crates.io) in dependency order.
+19 library crates publish to [crates.io](https://crates.io) in dependency order.
+`rill-analyzer` is a CLI tool and is **not** published to crates.io.
 Use the publish script:
 
 ```bash

@@ -1,6 +1,6 @@
 [package]
 name = "rill-graph"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Real-time signal graph with block processing"
 license.workspace = true
@@ -11,6 +11,8 @@ documentation = "https://docs.rs/rill-graph"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-actor = { workspace = true }
+rill-lang = { version = "0.6.0-M1", path = "../rill-lang" }
+indexmap = "2"
 
 log = "0.4"
 
@@ -22,5 +24,5 @@ serde_cbor = { version = "0.11", optional = true }
 
 [features]
 default = []
+debug = ["rill-lang/debug"]
 serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "rill-core/serde"]
-

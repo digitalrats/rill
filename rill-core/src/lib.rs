@@ -32,105 +32,9 @@
 //! - **CommandQueue**: Real-time safe parameter automation
 //! - **ClockTick**: Sample-accurate timing for synchronization
 //!
-//! ## Example
+//! ## Getting Started
 //!
-//! ```rust
-//! use rill_core::prelude::*;
-//! use rill_core::Port;
-//! use rill_core::traits::node;
-//!
-//! // Create a simple sine source
-//! struct MySine<T: Transcendental, const BUF_SIZE: usize> {
-//!     frequency: T,
-//!     amplitude: T,
-//!     phase: T,
-//!     sample_rate: T,
-//! }
-//!
-//! impl<T: Transcendental, const BUF_SIZE: usize> Node<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
-//!     fn metadata(&self) -> NodeMetadata {
-//!         NodeMetadata {
-//!             name: "Sine".to_string(),
-//!             type_name: None,
-//!             category: NodeCategory::Source,
-//!             description: "Sine wave oscillator".to_string(),
-//!             author: "Rill".to_string(),
-//!             version: env!("CARGO_PKG_VERSION").to_string(),
-//!             signal_inputs: 0,
-//!             signal_outputs: 1,
-//!             control_inputs: 0,
-//!             control_outputs: 0,
-//!             clock_inputs: 1,
-//!             clock_outputs: 0,
-//!             feedback_ports: 0,
-//!             parameters: vec![],
-//!         }
-//!     }
-//!     
-//!     fn init(&mut self, sample_rate: f32) {
-//!         self.sample_rate = T::from_f32(sample_rate);
-//!     }
-//!     
-//!     fn reset(&mut self) {
-//!         self.phase = T::ZERO;
-//!     }
-//!     
-//!     fn get_parameter(&self, _id: &ParameterId) -> Option<ParamValue> {
-//!         None
-//!     }
-//!     
-//!     fn set_parameter(&mut self, _id: &ParameterId, _value: ParamValue) -> ProcessResult<()> {
-//!         Ok(())
-//!     }
-//!     
-//!     fn id(&self) -> NodeId { NodeId(0) }
-//!     fn set_id(&mut self, _id: NodeId) {}
-//!     
-//!     fn input_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-//!     fn input_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-//!     fn output_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-//!     fn output_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-//!     fn control_port(&self, _index: usize) -> Option<&Port<T, BUF_SIZE>> { None }
-//!     fn control_port_mut(&mut self, _index: usize) -> Option<&mut Port<T, BUF_SIZE>> { None }
-//!     
-//!     fn state(&self) -> &node::NodeState<T,BUF_SIZE> {
-//!         unimplemented!()
-//!     }
-//!     
-//!     fn state_mut(&mut self) -> &mut node::NodeState<T,BUF_SIZE> {
-//!         unimplemented!()
-//!     }
-//! }
-//!
-//! impl<T: Transcendental, const BUF_SIZE: usize> Source<T, BUF_SIZE> for MySine<T, BUF_SIZE> {
-//!     fn generate(
-//!         &mut self,
-//!         ctx: &RenderContext,
-//!         _control_inputs: &[T],
-//!         _clock_inputs: &[RenderContext],
-//!         _tick: &ClockTick,
-//!     ) -> ProcessResult<()> {
-//!         let two_pi = T::from_f32(2.0 * std::f32::consts::PI);
-//!         let phase_inc = self.frequency / T::from_f32(ctx.sample_rate);
-//!         let amp = self.amplitude;
-//!         
-//!         let mut temp = [T::ZERO; BUF_SIZE];
-//!         for i in 0..BUF_SIZE {
-//!             let phase_rad = self.phase * two_pi;
-//!             temp[i] = phase_rad.sin() * amp;
-//!             self.phase = self.phase + phase_inc;
-//!             if self.phase >= T::from_f32(1.0) {
-//!                 self.phase = self.phase - T::from_f32(1.0);
-//!             }
-//!         }
-//!         *self.output_port_mut(0).unwrap().write() = temp;
-//!         Ok(())
-//!     }
-//!     
-//!     fn num_signal_outputs(&self) -> usize { 1 }
-//!     fn num_control_inputs(&self) -> usize { 0 }
-//!     fn num_clock_inputs(&self) -> usize { 1 }
-//! }
+//! See crate-level documentation and module docs for usage examples.
 //! ```
 
 #![warn(missing_docs)]
@@ -138,7 +42,6 @@
 #![deny(unsafe_code)]
 #![cfg_attr(not(test), deny(unused))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(deprecated)]
 
 // ============================================================================
 // Core Modules
@@ -175,6 +78,9 @@ pub mod interpolate;
 /// Generic multi-channel signal I/O abstraction
 pub mod io;
 
+/// Built-in function registry for signal processing DSLs
+pub mod builtin;
+
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -189,14 +95,15 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    ClockError, ClockResult, ConnectionError, ConnectionResult, Eurorack, Node, NodeCategory,
-    NodeId, NodeMetadata, NodeState, NodeTypeId, ParamMetadata, ParamRange, ParamType, ParamValue,
-    ParameterError, ParameterId, Params, Port, PortDirection, PortError, PortId, PortResult,
-    PortType, ProcessError, ProcessResult, Processor, Sink, Source,
+    ParamMetadata, ParamRange, ParamType, ParamValue, ParameterError, ParameterId, Params,
+    PortError, PortResult, ProcessError, ProcessResult,
 };
 
 // Re-export math abstractions
 pub use math::{Scalar, Transcendental};
+
+/// Re-export `glam` for real-valued matrix and vector operations.
+pub use glam;
 
 // Re-export buffer types with AtomicCell safety
 pub use buffer::{

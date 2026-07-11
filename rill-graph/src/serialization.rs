@@ -15,20 +15,15 @@
 use std::collections::{HashMap, HashSet};
 
 use rill_core::math::Transcendental;
-use rill_core::traits::{Node, NodeId, NodeVariant, ParamValue, Params};
-use rill_core::ParameterId;
+use rill_core::traits::{ParamValue, Params};
 
-#[cfg(test)]
-use crate::factory::NodeFactory;
-use crate::factory::RegistryError;
 use crate::graph::GraphBuilder;
 
-// Re-export serde unconditionally — the whole module is feature-gated.
 use serde::de;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
-// PatchbayDef structure
+// GraphDef structure
 // ============================================================================
 
 /// A named resource (e.g. a tape loop) shared between graph nodes.
@@ -67,7 +62,7 @@ pub struct GraphDef {
     /// Connection wiring.
     pub connections: Vec<ConnectionDef>,
 
-    /// Optional human-readable description (attribution, preset notes, …).
+    /// Optional human-readable description (attribution, preset notes, ...).
     /// Not interpreted by the engine; preserved through serialisation round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -294,14 +289,6 @@ pub enum SerializationError {
     DuplicateNodeId(u32),
     /// A required field is missing or malformed.
     InvalidFormat(String),
-    /// The inner registry error.
-    Registry(RegistryError),
-}
-
-impl From<RegistryError> for SerializationError {
-    fn from(e: RegistryError) -> Self {
-        Self::Registry(e)
-    }
 }
 
 impl std::fmt::Display for SerializationError {
@@ -310,7 +297,6 @@ impl std::fmt::Display for SerializationError {
             Self::UnknownType(t) => write!(f, "unknown node type: {t}"),
             Self::DuplicateNodeId(id) => write!(f, "duplicate NodeId: {id}"),
             Self::InvalidFormat(d) => write!(f, "invalid format: {d}"),
-            Self::Registry(e) => write!(f, "{e}"),
         }
     }
 }
@@ -369,167 +355,22 @@ impl GraphDef {
 }
 
 // ============================================================================
-// Export (Graph → GraphDef)
-// ============================================================================
-
-impl GraphDef {
-    /// Build a document from an in-memory graph.
-    ///
-    /// Iterates every node, reads its metadata and current parameters,
-    /// and reconstructs all connections from port routing state.
-    pub fn from_graph<T: Transcendental, const B: usize>(graph: &super::Graph<T, B>) -> Self {
-        let nodes_slice = graph.nodes();
-        let sample_rate = graph.sample_rate();
-
-        let nodes: Vec<NodeDef> = nodes_slice.iter().map(node_to_def).collect();
-        let connections = extract_connections(nodes_slice);
-
-        let resources = graph
-            .resources()
-            .iter()
-            .map(|r| ResourceDef {
-                name: r.name.clone(),
-                kind: r.kind.clone(),
-                capacity: r.capacity,
-            })
-            .collect();
-
-        Self {
-            format_version: "rill/1".to_string(),
-            sample_rate,
-            block_size: B,
-            resources,
-            nodes,
-            connections,
-            description: None,
-        }
-    }
-}
-
-fn node_to_def<T: Transcendental, const B: usize>(variant: &NodeVariant<T, B>) -> NodeDef {
-    let meta = variant.metadata();
-    let type_name = meta.type_name.clone().unwrap_or_else(|| meta.name.clone());
-    let id = variant.id().inner();
-    let name = meta.name.clone();
-
-    let mut parameters = HashMap::new();
-    for pm in &meta.parameters {
-        let pid = match ParameterId::new(&pm.name) {
-            Ok(id) => id,
-            Err(_) => continue,
-        };
-        if let Some(val) = variant.get_parameter(&pid) {
-            parameters.insert(pm.name.clone(), val);
-        }
-    }
-
-    match variant {
-        NodeVariant::Source(_) => NodeDef::Source(SourceDef {
-            id,
-            type_name,
-            name,
-            backend: None,
-            parameters,
-        }),
-        NodeVariant::Processor(_) => NodeDef::Processor(ProcessorDef {
-            id,
-            type_name,
-            name,
-            parameters,
-        }),
-        NodeVariant::Router(router) => {
-            let routing_matrix = router
-                .routing_matrix()
-                .into_iter()
-                .enumerate()
-                .flat_map(|(to, entries)| {
-                    entries.into_iter().map(move |(from, gain)| RoutingEntry {
-                        from,
-                        to,
-                        gain: gain.to_f32(),
-                    })
-                })
-                .collect();
-            NodeDef::Router(RouterDef {
-                id,
-                type_name,
-                name,
-                parameters,
-                routing_matrix,
-            })
-        }
-        NodeVariant::Sink(_) => NodeDef::Sink(SinkDef {
-            id,
-            type_name,
-            name,
-            backend: None,
-            parameters,
-        }),
-    }
-}
-
-fn extract_connections<T: Transcendental, const B: usize>(
-    nodes: &[NodeVariant<T, B>],
-) -> Vec<ConnectionDef> {
-    let mut conns = Vec::new();
-
-    for (from_idx, variant) in nodes.iter().enumerate() {
-        let _ = from_idx;
-        let from_id = variant.id().inner();
-        let signal_outs = variant.metadata().signal_outputs;
-
-        for from_port in 0..signal_outs {
-            if let Some(port) = variant.output_port(from_port) {
-                for &(to_idx, to_port) in port.downstream() {
-                    let to_id = nodes[to_idx].id().inner();
-                    conns.push(ConnectionDef {
-                        kind: SignalKind::Signal,
-                        from_node: from_id,
-                        from_port,
-                        to_node: to_id,
-                        to_port,
-                    });
-                }
-                for &(to_idx, to_port) in port.feedback_downstream() {
-                    let to_id = nodes[to_idx].id().inner();
-                    conns.push(ConnectionDef {
-                        kind: SignalKind::Feedback,
-                        from_node: from_id,
-                        from_port,
-                        to_node: to_id,
-                        to_port,
-                    });
-                }
-            }
-        }
-    }
-
-    conns
-}
-
-// ============================================================================
 // Import (GraphDef → GraphBuilder)
 // ============================================================================
 
 impl GraphDef {
-    /// Reconstitute a mutable graph builder from this document.
-    ///
-    /// Validates that all node types are registered and no [`NodeId`] is
-    /// duplicated, then constructs every node and wires every connection.
     /// Populate an existing [`GraphBuilder`] from this definition.
     ///
     /// The builder must already have node types registered in its
-    /// [`NodeFactory`](crate::NodeFactory) before calling this method.
+    /// registry before calling this method.
     /// Validates IDs, resources, and connections, then adds nodes
-    /// and edges to the builder using its internal registry.
+    /// and edges to the builder.
     pub fn populate<T: Transcendental, const B: usize>(
         &self,
         builder: &mut GraphBuilder<T, B>,
     ) -> Result<(), SerializationError> {
-        // ── set sample rate ──
         builder.set_sample_rate(self.sample_rate);
 
-        // ── validate IDs ──
         let mut seen = HashSet::new();
         for nd in &self.nodes {
             if !seen.insert(nd.id()) {
@@ -537,7 +378,6 @@ impl GraphDef {
             }
         }
 
-        // ── validate sample rate / block size ──
         if self.block_size != B {
             return Err(SerializationError::InvalidFormat(format!(
                 "expected block_size={B}, document has block_size={}",
@@ -545,7 +385,6 @@ impl GraphDef {
             )));
         }
 
-        // ── register resources ──
         for rd in &self.resources {
             builder.add_resource(crate::graph::GraphResource {
                 name: rd.name.clone(),
@@ -554,15 +393,13 @@ impl GraphDef {
             });
         }
 
-        // ── construct nodes ──
         for nd in &self.nodes {
             let mut p = Params::new(self.sample_rate);
             for (k, v) in nd.parameters() {
                 p = p.with(k.clone(), v.clone());
             }
-            let idx = builder.add_node_with_id(nd.type_name(), &p, NodeId(nd.id()));
+            let idx = builder.add_node_with_id(nd.type_name(), &p, nd.id());
 
-            // Apply pre-configured routing matrix (Router only)
             if let NodeDef::Router(ref r) = nd {
                 for entry in &r.routing_matrix {
                     builder.add_routing_entry(idx, entry.from, entry.to, entry.gain);
@@ -570,7 +407,6 @@ impl GraphDef {
             }
         }
 
-        // ── build NodeId → index map ──
         let id_to_idx: HashMap<u32, usize> = self
             .nodes
             .iter()
@@ -578,7 +414,6 @@ impl GraphDef {
             .map(|(i, n)| (n.id(), i))
             .collect();
 
-        // ── wire connections ──
         for conn in &self.connections {
             let from = *id_to_idx.get(&conn.from_node).ok_or_else(|| {
                 SerializationError::InvalidFormat(format!(
@@ -713,547 +548,12 @@ fn param_value_to_json(v: &ParamValue) -> serde_json::Value {
 // Convenience functions
 // ============================================================================
 
-/// Serialise a graph to pretty-printed JSON.
-pub fn to_json<T: Transcendental, const B: usize>(
-    graph: &super::Graph<T, B>,
-) -> Result<String, SerializationError> {
-    let doc = GraphDef::from_graph(graph);
-    serde_json::to_string_pretty(&doc).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
-}
-
 /// Deserialise a graph from JSON.
 pub fn from_json(json: &str) -> Result<GraphDef, SerializationError> {
     serde_json::from_str(json).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
 }
 
-/// Serialise a graph to CBOR binary.
-pub fn to_cbor<T: Transcendental, const B: usize>(
-    graph: &super::Graph<T, B>,
-) -> Result<Vec<u8>, SerializationError> {
-    let doc = GraphDef::from_graph(graph);
-    serde_cbor::to_vec(&doc).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
-}
-
 /// Deserialise a graph from CBOR binary.
 pub fn from_cbor(bytes: &[u8]) -> Result<GraphDef, SerializationError> {
     serde_cbor::from_slice(bytes).map_err(|e| SerializationError::InvalidFormat(e.to_string()))
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::factory::NodeConstructor;
-    use crate::graph::Graph;
-    use rill_core::math::Transcendental;
-    use rill_core::time::{ClockTick, RenderContext};
-    use rill_core::traits::node::NodeState;
-    use rill_core::traits::port::Port;
-    use rill_core::traits::{
-        NodeCategory, NodeMetadata, ParamType, ParamValue as PV, ParameterId, ProcessResult,
-        Processor, Source,
-    };
-    use rill_core::ParamMetadata as PM;
-    use rill_core_actor::ActorSystem;
-    use std::sync::Arc;
-
-    fn test_system() -> ActorSystem {
-        ActorSystem::new()
-    }
-
-    // ==================================================================
-    // Test node — configurable metadata, parameters, feedback ports
-    // ==================================================================
-
-    struct TestNode<T: Transcendental, const B: usize> {
-        id: NodeId,
-        state: NodeState<T, B>,
-        output: Port<T, B>,
-        type_name: Option<String>,
-        cat: NodeCategory,
-        param_defs: Vec<PM>,
-        params: HashMap<String, f32>,
-        has_feedback: bool,
-    }
-
-    impl<T: Transcendental, const B: usize> TestNode<T, B> {
-        fn new_raw(cat: NodeCategory) -> Self {
-            Self {
-                id: NodeId(0),
-                state: NodeState::new(44100.0),
-                output: Port::output(NodeId(0), 0, "out"),
-                type_name: None,
-                cat,
-                param_defs: vec![],
-                params: HashMap::new(),
-                has_feedback: false,
-            }
-        }
-
-        fn source() -> Self {
-            Self::new_raw(NodeCategory::Source)
-        }
-
-        fn processor() -> Self {
-            let mut s = Self::new_raw(NodeCategory::Processor);
-            s.has_feedback = true;
-            s
-        }
-
-        fn with_type_name(mut self, tn: &str) -> Self {
-            self.type_name = Some(tn.to_string());
-            self
-        }
-
-        fn with_param(mut self, name: &str, default: f32) -> Self {
-            self.param_defs
-                .push(PM::new(name, ParamType::Float, PV::Float(default)));
-            self.params.insert(name.to_string(), default);
-            self
-        }
-    }
-
-    impl<T: Transcendental, const B: usize> Node<T, B> for TestNode<T, B> {
-        fn metadata(&self) -> rill_core::traits::NodeMetadata {
-            NodeMetadata {
-                name: "TestNode".to_string(),
-                type_name: self.type_name.clone(),
-                category: self.cat,
-                description: String::new(),
-                author: String::new(),
-                version: String::new(),
-                signal_inputs: if self.cat == NodeCategory::Source {
-                    0
-                } else {
-                    1
-                },
-                signal_outputs: 1,
-                control_inputs: 0,
-                control_outputs: 0,
-                clock_inputs: 0,
-                clock_outputs: 0,
-                feedback_ports: if self.has_feedback { 1 } else { 0 },
-                parameters: self.param_defs.clone(),
-            }
-        }
-        fn init(&mut self, _: f32) {}
-        fn reset(&mut self) {}
-        fn get_parameter(&self, id: &ParameterId) -> Option<PV> {
-            self.params.get(id.as_str()).map(|&v| PV::Float(v))
-        }
-        fn set_parameter(&mut self, id: &ParameterId, value: PV) -> ProcessResult<()> {
-            if let Some(f) = value.as_f32() {
-                self.params.insert(id.as_str().to_string(), f);
-                Ok(())
-            } else {
-                Err(rill_core::ProcessError::parameter("type mismatch"))
-            }
-        }
-        fn id(&self) -> NodeId {
-            self.id
-        }
-        fn set_id(&mut self, id: NodeId) {
-            self.id = id;
-        }
-        fn input_port(&self, _: usize) -> Option<&Port<T, B>> {
-            None
-        }
-        fn input_port_mut(&mut self, _: usize) -> Option<&mut Port<T, B>> {
-            None
-        }
-        fn output_port(&self, index: usize) -> Option<&Port<T, B>> {
-            if index == 0 {
-                Some(&self.output)
-            } else {
-                None
-            }
-        }
-        fn output_port_mut(&mut self, index: usize) -> Option<&mut Port<T, B>> {
-            if index == 0 {
-                Some(&mut self.output)
-            } else {
-                None
-            }
-        }
-        fn control_port(&self, _: usize) -> Option<&Port<T, B>> {
-            None
-        }
-        fn control_port_mut(&mut self, _: usize) -> Option<&mut Port<T, B>> {
-            None
-        }
-        fn state(&self) -> &NodeState<T, B> {
-            &self.state
-        }
-        fn state_mut(&mut self) -> &mut NodeState<T, B> {
-            &mut self.state
-        }
-    }
-
-    impl<T: Transcendental, const B: usize> Source<T, B> for TestNode<T, B> {
-        fn generate(
-            &mut self,
-            _: &RenderContext,
-            _: &[T],
-            _: &[RenderContext],
-            _: &ClockTick,
-        ) -> ProcessResult<()> {
-            Ok(())
-        }
-    }
-    impl<T: Transcendental, const B: usize> Processor<T, B> for TestNode<T, B> {
-        fn process(
-            &mut self,
-            _: &RenderContext,
-            _: &[&[T; B]],
-            _: &[T],
-            _: &[RenderContext],
-            _: &[&[T; B]],
-        ) -> ProcessResult<()> {
-            Ok(())
-        }
-        fn latency(&self) -> usize {
-            0
-        }
-    }
-
-    struct TestCtor;
-    impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for TestCtor {
-        fn type_name(&self) -> &'static str {
-            "rill/test"
-        }
-        fn construct(&self, id: NodeId, params: &Params) -> NodeVariant<T, B> {
-            let mut node = TestNode::<T, B>::source().with_type_name("rill/test");
-            node.set_id(id);
-            node.init(params.sample_rate);
-            NodeVariant::Source(Box::new(node))
-        }
-        fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
-            Box::new(Self)
-        }
-    }
-
-    struct ParamCtor;
-    impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for ParamCtor {
-        fn type_name(&self) -> &'static str {
-            "rill/param"
-        }
-        fn construct(&self, id: NodeId, params: &Params) -> NodeVariant<T, B> {
-            let mut node = TestNode::<T, B>::processor()
-                .with_type_name("rill/param")
-                .with_param("frequency", 440.0)
-                .with_param("amplitude", 0.5);
-            if let Some(f) = params.get("frequency").and_then(|v| v.as_f32()) {
-                node.params.insert("frequency".into(), f);
-            }
-            if let Some(a) = params.get("amplitude").and_then(|v| v.as_f32()) {
-                node.params.insert("amplitude".into(), a);
-            }
-            node.set_id(id);
-            node.init(params.sample_rate);
-            NodeVariant::Processor(Box::new(node))
-        }
-        fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
-            Box::new(Self)
-        }
-    }
-
-    // ── Helpers ────────────────────────────────────────────────────
-
-    fn empty_factory() -> Arc<NodeFactory<f32, 64>> {
-        let mut r = NodeFactory::<f32, 64>::new();
-        r.register(TestCtor);
-        r.register(ParamCtor);
-        Arc::new(r)
-    }
-
-    fn build_small_graph(factory: &NodeFactory<f32, 64>) -> Graph<f32, 64> {
-        let mut b = GraphBuilder::new(Arc::new(factory.clone()));
-        let src = b.add_node("rill/test", &Params::new(44100.0));
-        let proc = b.add_node("rill/test", &Params::new(44100.0));
-        b.connect_signal(src, 0, proc, 0);
-        b.build(&test_system()).expect("build")
-    }
-
-    // ==================================================================
-    // Roundtrip
-    // ==================================================================
-
-    #[test]
-    fn test_json_roundtrip() {
-        let reg = empty_factory();
-        let graph = build_small_graph(&reg);
-
-        let json = to_json(&graph).expect("to_json");
-        assert!(json.contains("rill/test"));
-        assert!(json.contains("format_version"));
-        assert!(json.contains("connections"));
-
-        let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone());
-        def.populate(&mut restored).expect("populate");
-        assert_eq!(restored.node_count(), 2);
-
-        // Must rebuild without errors
-        restored.build(&test_system()).expect("rebuild");
-    }
-
-    #[test]
-    fn test_cbor_roundtrip() {
-        let reg = empty_factory();
-        let graph = build_small_graph(&reg);
-
-        let cbor = to_cbor(&graph).expect("to_cbor");
-        assert!(!cbor.is_empty());
-
-        let def = from_cbor(&cbor).expect("from_cbor");
-        let mut restored = GraphBuilder::new(reg.clone());
-        def.populate(&mut restored).expect("populate");
-        assert_eq!(restored.node_count(), 2);
-    }
-
-    #[test]
-    fn test_empty_graph_roundtrip() {
-        let reg = empty_factory();
-        let graph = GraphBuilder::new(empty_factory())
-            .build(&test_system())
-            .expect("graph build");
-
-        let json = to_json(&graph).expect("to_json");
-        assert!(json.contains(r#""nodes": []"#));
-        assert!(json.contains(r#""connections": []"#));
-
-        let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone());
-        def.populate(&mut restored).expect("populate");
-        assert_eq!(restored.node_count(), 0);
-    }
-
-    // ==================================================================
-    // Parameter export
-    // ==================================================================
-
-    #[test]
-    fn test_export_parameters() {
-        let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone());
-        b.add_node(
-            "rill/param",
-            &Params::new(44100.0)
-                .with("frequency", PV::Float(220.0))
-                .with("amplitude", PV::Float(0.8)),
-        );
-        let graph = b.build(&test_system()).expect("build");
-
-        let doc = GraphDef::from_graph(&graph);
-        assert_eq!(doc.nodes.len(), 1);
-
-        let nd = &doc.nodes[0];
-        assert_eq!(nd.type_name(), "rill/param");
-        assert_eq!(nd.parameters().get("frequency"), Some(&PV::Float(220.0)));
-        assert_eq!(nd.parameters().get("amplitude"), Some(&PV::Float(0.8)));
-    }
-
-    #[test]
-    fn test_roundtrip_parameters() {
-        let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone());
-        b.add_node(
-            "rill/param",
-            &Params::new(48000.0)
-                .with("frequency", PV::Float(55.0))
-                .with("amplitude", PV::Float(0.25)),
-        );
-        let graph = b.build(&test_system()).expect("build");
-
-        let json = to_json(&graph).expect("to_json");
-        let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone());
-        def.populate(&mut restored).expect("populate");
-        assert_eq!(restored.node_count(), 1);
-        restored.build(&test_system()).expect("rebuild");
-    }
-
-    // ==================================================================
-    // Feedback export
-    // ==================================================================
-
-    #[test]
-    fn test_export_feedback_connection() {
-        let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone());
-        let src = b.add_node("rill/test", &Params::new(44100.0));
-        let proc = b.add_node("rill/test", &Params::new(44100.0));
-        b.connect_signal(src, 0, proc, 0);
-        b.connect_feedback(proc, 0, src, 0);
-        let graph = b.build(&test_system()).expect("build");
-
-        let doc = GraphDef::from_graph(&graph);
-        let sigs: Vec<SignalKind> = doc.connections.iter().map(|c| c.kind).collect();
-        assert!(sigs.contains(&SignalKind::Signal));
-        assert!(sigs.contains(&SignalKind::Feedback));
-        assert_eq!(doc.connections.len(), 2);
-    }
-
-    // ==================================================================
-    // Type name
-    // ==================================================================
-
-    #[test]
-    fn test_export_type_name_explicit() {
-        // ParamCtor declares type_name = Some("rill/param")
-        let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone());
-        b.add_node("rill/param", &Params::new(44100.0));
-        let graph = b.build(&test_system()).expect("build");
-
-        let doc = GraphDef::from_graph(&graph);
-        assert_eq!(doc.nodes[0].type_name(), "rill/param");
-    }
-
-    #[test]
-    fn test_export_type_name_fallback_to_name() {
-        // Node with type_name: None → doc uses metadata().name
-        let mut reg = NodeFactory::<f32, 64>::new();
-        struct FallbackCtor;
-        impl<T: Transcendental, const B: usize> NodeConstructor<T, B> for FallbackCtor {
-            fn type_name(&self) -> &'static str {
-                "rill/fallback"
-            }
-            fn construct(&self, id: NodeId, params: &Params) -> NodeVariant<T, B> {
-                let mut node = TestNode::<T, B>::source();
-                node.set_id(id);
-                node.init(params.sample_rate);
-                NodeVariant::Source(Box::new(node))
-            }
-            fn clone_box(&self) -> Box<dyn NodeConstructor<T, B>> {
-                Box::new(Self)
-            }
-        }
-        reg.register(FallbackCtor);
-        let reg = Arc::new(reg);
-        let mut b = GraphBuilder::new(reg.clone());
-
-        b.add_node("rill/fallback", &Params::new(44100.0));
-        let graph = b.build(&test_system()).expect("build");
-
-        let doc = GraphDef::from_graph(&graph);
-        assert_eq!(doc.nodes[0].type_name(), "TestNode");
-    }
-
-    // ==================================================================
-    // Node IDs
-    // ==================================================================
-
-    #[test]
-    fn test_roundtrip_preserves_node_ids() {
-        let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone());
-        // Explicit IDs via add_node_with_id
-        b.add_node_with_id("rill/test", &Params::new(44100.0), NodeId(100));
-        b.add_node_with_id("rill/param", &Params::new(44100.0), NodeId(200));
-        b.connect_signal(0, 0, 1, 0);
-        let graph = b.build(&test_system()).expect("build");
-
-        let json = to_json(&graph).expect("to_json");
-        assert!(json.contains(r#""id": 100"#));
-        assert!(json.contains(r#""id": 200"#));
-
-        let def = from_json(&json).expect("from_json");
-        let mut rebuilt = GraphBuilder::new(reg.clone());
-        def.populate(&mut rebuilt).expect("populate");
-        assert_eq!(rebuilt.node_count(), 2);
-    }
-
-    // ==================================================================
-    // Complex topology
-    // ==================================================================
-
-    #[test]
-    fn test_roundtrip_complex_topology() {
-        let reg = empty_factory();
-        let mut b = GraphBuilder::new(reg.clone());
-        let s0 = b.add_node("rill/test", &Params::new(44100.0));
-        let p1 = b.add_node("rill/param", &Params::new(44100.0));
-        let p2 = b.add_node("rill/param", &Params::new(44100.0));
-        b.connect_signal(s0, 0, p1, 0);
-        b.connect_signal(p1, 0, p2, 0);
-
-        let graph = b.build(&test_system()).expect("build");
-
-        let json = to_json(&graph).expect("to_json");
-        let def = from_json(&json).expect("from_json");
-        let mut restored = GraphBuilder::new(reg.clone());
-        def.populate(&mut restored).expect("populate");
-        assert_eq!(restored.node_count(), 3);
-
-        // Verify connections
-        let rebuilt = restored.build(&test_system()).expect("rebuild");
-
-        // Topological order: source must be first
-        assert_eq!(rebuilt.topo_order().len(), 3);
-    }
-
-    // ==================================================================
-    // Error cases
-    // ==================================================================
-
-    #[test]
-    fn test_unknown_type_error() {
-        let reg = empty_factory();
-        let doc = GraphDef {
-            format_version: "rill/1".to_string(),
-            sample_rate: 44100.0,
-            block_size: 64,
-            resources: vec![],
-            nodes: vec![
-                NodeDef::Processor(ProcessorDef {
-                    id: 0,
-                    type_name: "rill/nonexistent".to_string(),
-                    name: "x".to_string(),
-                    parameters: HashMap::new(),
-                }),
-                NodeDef::Processor(ProcessorDef {
-                    id: 0,
-                    type_name: "rill/test".to_string(),
-                    name: "b".to_string(),
-                    parameters: HashMap::new(),
-                }),
-            ],
-            connections: vec![],
-            description: None,
-        };
-        let mut b = GraphBuilder::new(reg.clone());
-        match doc.populate(&mut b) {
-            Err(SerializationError::DuplicateNodeId(id)) => assert_eq!(id, 0),
-            _ => panic!("expected DuplicateNodeId"),
-        }
-    }
-
-    #[test]
-    fn test_block_size_mismatch() {
-        let doc = GraphDef {
-            format_version: "rill/1".to_string(),
-            sample_rate: 44100.0,
-            block_size: 128,
-            resources: vec![],
-            nodes: vec![],
-            connections: vec![],
-            description: None,
-        };
-        let r = Arc::new(NodeFactory::<f32, 256>::new());
-        let mut b = GraphBuilder::new(r.clone());
-        match doc.populate(&mut b) {
-            Err(SerializationError::InvalidFormat(_)) => {}
-            _ => panic!("expected InvalidFormat"),
-        }
-    }
-
-    #[test]
-    fn test_invalid_json() {
-        let _reg = empty_factory();
-        assert!(from_json("not json").is_err());
-    }
 }

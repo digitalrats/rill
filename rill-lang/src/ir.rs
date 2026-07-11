@@ -16,6 +16,10 @@ pub type Reg = usize;
 /// A slot index into the persistent state vector.
 pub type StateSlot = usize;
 
+/// A unique identifier for a probe point in the IR.
+#[cfg(feature = "debug")]
+pub type ProbeId = u32;
+
 /// A single unary math primitive.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnOp {
@@ -139,12 +143,12 @@ pub enum Instr {
         /// Index into [`Ir::builtins`].
         instance: usize,
     },
-    /// Call a whole-buffer built-in (1→1): `src` → `dst`, instance index.
+    /// Call a whole-buffer built-in: `srcs` inputs → `dst`, instance index.
     CallBlock {
-        /// Destination register.
+        /// Destination register (first output).
         dst: Reg,
-        /// Source register.
-        src: Reg,
+        /// Source registers.
+        srcs: Vec<Reg>,
         /// Index into [`Ir::builtins`].
         instance: usize,
     },
@@ -155,6 +159,25 @@ pub enum Instr {
         /// Index into [`Ir::params`].
         idx: usize,
     },
+    /// Read an actor parameter slot (?name syntax). Semantically same as ReadParam
+    /// but carries distinct semantics for higher layers (actor param naming).
+    ReadActorParam {
+        /// Destination register.
+        dst: Reg,
+        /// Index into [`Ir::params`].
+        param_idx: usize,
+    },
+    /// A debug probe point that passes a signal through unchanged.
+    /// The runtime debug engine can latch this value for inspection.
+    #[cfg(feature = "debug")]
+    ProbePoint {
+        /// Unique probe identifier.
+        id: ProbeId,
+        /// Source register to copy from.
+        src: Reg,
+        /// Destination register to write to.
+        dst: Reg,
+    },
 }
 
 /// Layout describing pre-allocated persistent storage.
@@ -164,6 +187,8 @@ pub struct StateLayout {
     pub state_slots: usize,
     /// Length (in samples) of each delay line.
     pub delay_lens: Vec<usize>,
+    /// Number of program outputs.
+    pub num_outputs: usize,
 }
 
 /// A resolved built-in call site: its name, folded constant params, and kind.
@@ -176,6 +201,10 @@ pub struct BuiltinInstance {
     pub params: Vec<f64>,
     /// Sample vs block.
     pub kind: BuiltinKind,
+    /// Number of signal input channels.
+    pub signal_ins: usize,
+    /// Number of signal output channels.
+    pub signal_outs: usize,
     /// (arg_position, param_idx) dynamic param drivers.
     pub param_bindings: Vec<(usize, usize)>,
 }
@@ -204,6 +233,8 @@ pub struct Ir {
     pub output_reg: Reg,
     /// Number of program inputs (0 or 1 for MVP).
     pub num_inputs: usize,
+    /// Number of program outputs.
+    pub num_outputs: usize,
     /// Persistent state layout.
     pub state: StateLayout,
     /// Built-in call-site descriptors, indexed by the `instance` field of

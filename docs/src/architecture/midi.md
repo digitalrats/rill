@@ -359,7 +359,7 @@ let def = ModularSystemDef {
                 auto_start: true,
             }),
         ],
-        automata: vec![],
+        automatons: vec![],
         mappings: vec![],
         description: None,
     }],

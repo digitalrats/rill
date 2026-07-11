@@ -14,11 +14,14 @@ independently.
 │  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                     │
 │  rill-core-model  │  rill-analog-filters  │  rill-analog      │
-│  -effects                                                  │
+│  -effects  │  rill-lang  │  rill-fft                         │
 ├─────────────────────────────────────────────────────────────┤
-│  rill-io (PortAudio / ALSA / PipeWire / JACK)                    │
+│  rill-io (PortAudio / ALSA / PipeWire / JACK)               │
+├─────────────────────────────────────────────────────────────┤
+│  rill-telemetry                                            │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)   │
+│  rill-core-actor  (ActorRef, ActorCell, ActorSystem)       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,7 +47,7 @@ a source node and cascades through the DAG.
   no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay` with
   automatons (LFO, envelopes, sequencers). Communicates with the signal
-  thread via lock‑free `MpscQueue` (the graph actor mailbox, `ActorRef<CommandEnum>`).
+  thread via the graph actor mailbox (`ActorRef<CommandEnum>`).
 
 See [Signal graph (rill-graph)](../architecture/graph.md) for details.
 

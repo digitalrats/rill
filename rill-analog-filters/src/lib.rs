@@ -8,3 +8,5 @@
 mod nodes;
 
 pub use nodes::WdfMoogLadderProcessor;
+
+pub mod register;

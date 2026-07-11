@@ -6,38 +6,23 @@
 //!
 //! ## What's included
 //!
-//! - Core traits (`Node`, `Source`, `Processor`, `Sink`)
-//! - Node identification (`NodeId`, `NodeMetadata`, `NodeCategory`)
+//! - Node identification (`NodeId`)
 //! - Parameter handling (`ParameterId`, `ParamValue`, `ParamType`)
-//! - Ports (`PortId`, `PortType`, `PortDirection`)
 //! - Time and clock (`ClockTick`, `ClockSource`, `SystemClock`)
 //! - Error types (`ProcessResult`, `ProcessError`, etc.)
 //! - Buffer types (`PipeBuffer`, `FanOutBuffer`, `DelayLine`, `RingBuffer`)
 //! - Atomic types (`AtomicCell`, `AtomicStats`)
-//! - Math abstractions (`Scalar`, `Transcendental`)
+//! - Math abstractions (`Transcendental`)
 //! - Constants (`DEFAULT_BLOCK_SIZE`, `MAX_SAMPLE_RATE`, etc.)
 //!
-//! ## Example
-//!
-// In rill-core/src/lib.rs - line 151 (prelude example)
-
 //! ## Example
 //!
 //! ```rust
 //! use rill_core::prelude::*;
 //!
-//! fn process_block<T: Transcendental, const BUF_SIZE: usize>(
-//!     source: &mut dyn Source<T, BUF_SIZE>,
-//!     processor: &mut dyn Processor<T, BUF_SIZE>,
-//!     sink: &mut dyn Sink<T, BUF_SIZE>,
-//!     ctx: &RenderContext,
-//!     tick: &ClockTick,
-//! ) -> ProcessResult<()> {
-//!     source.generate(ctx, &[], &[], tick)?;
-//!     processor.process(ctx, &[], &[], &[], &[])?;
-//!     sink.consume(ctx, &[], &[], &[], &[], tick)?;
-//!     Ok(())
-//! }
+//! let param = ParameterId::new("gain").unwrap();
+//! let ctx = RenderContext::new(0, 64, 44100.0);
+//! let tick = ClockTick::new(0, 64, 44100.0, "main".to_string());
 //! ```
 
 // ============================================================================
@@ -56,18 +41,7 @@ pub use crate::traits::{
     ConnectionResult,
     // Parameter conversion
     IntoParamValue,
-
-    // Core node traits
-    Node,
-    NodeCategory,
-    // Node identification
-    NodeId,
-    NodeMetadata,
-    NodeState,
-
-    NodeTypeId,
     ParamMetadata,
-
     ParamRange,
     ParamType,
     ParamValue,
@@ -76,21 +50,12 @@ pub use crate::traits::{
     ParameterId,
     ParameterResult,
     Params,
-    Port,
-
-    PortDirection,
     PortError,
     // Ports
-    PortId,
     PortResult,
-    PortType,
     ProcessError,
     // Error handling
     ProcessResult,
-    Processor,
-    Sink,
-
-    Source,
 };
 
 // ============================================================================
@@ -111,12 +76,14 @@ pub use crate::math::Transcendental;
 // Vector Types (SIMD abstractions)
 // ============================================================================
 
+pub use crate::math::vector::complex::{ComplexSoa, ComplexVector};
 pub use crate::math::vector::math::{
     abs_slice, clamp_slice, cos_slice, exp_slice, ln_slice, max_slice, min_slice, sin_slice,
     sqrt_slice, tan_slice,
 };
 pub use crate::math::vector::ops::{
-    add_scalar_slice, add_slices, div_slices, mul_scalar_slice, mul_slices, sub_slices,
+    add_scalar_slice, add_slices, div_slices, mul_scalar_slice, mul_slices, sub_slices, SliceMut,
+    SlicePair,
 };
 pub use crate::math::vector::scalar::{ScalarVector1, ScalarVector2, ScalarVector4, ScalarVector8};
 #[cfg(feature = "simd")]
@@ -124,6 +91,12 @@ pub use crate::math::vector::simd::*;
 pub use crate::math::vector::traits::{
     Vector, VectorMask, VectorReduce, VectorScalarOps, VectorTranscendental,
 };
+
+// ============================================================================
+// Matrix & Vector (glam)
+// ============================================================================
+
+pub use glam::{mat2, mat3, mat4, vec2, vec3, vec4, Mat2, Mat3, Mat4, Vec2, Vec3, Vec4};
 
 // ============================================================================
 // Buffer Types
@@ -243,9 +216,6 @@ pub mod f32_prelude {
     /// System clock for f32 (same as default)
     pub type SystemClockF32 = crate::time::SystemClock;
 
-    // Re-export traits
-    pub use crate::traits::{Processor as ProcessorF32, Sink as SinkF32, Source as SourceF32};
-
     pub use crate::math::Transcendental;
 }
 
@@ -272,9 +242,6 @@ pub mod f64_prelude {
 
     /// System clock for f64 (same as default)
     pub type SystemClockF64 = crate::time::SystemClock;
-
-    // Re-export traits
-    pub use crate::traits::{Processor as ProcessorF64, Sink as SinkF64, Source as SourceF64};
 
     pub use crate::math::Transcendental;
 }
@@ -309,15 +276,11 @@ pub mod param_prelude {
 
 /// Prelude for working with ports
 pub mod port_prelude {
-    pub use crate::traits::{PortDirection, PortError, PortId, PortResult, PortType};
+    pub use crate::traits::{PortError, PortResult};
 }
 
 /// Prelude for working with nodes
-pub mod node_prelude {
-    pub use crate::traits::{
-        Node, NodeCategory, NodeId, NodeMetadata, NodeTypeId, Processor, Sink, Source,
-    };
-}
+pub mod node_prelude {}
 
 // ============================================================================
 // Re-export of commonly used items from other crates
@@ -388,9 +351,6 @@ mod tests {
 
     #[test]
     fn test_prelude_imports() {
-        // Verify that all expected types are accessible
-        let _node_id = NodeId(0);
-        let _port_id = PortId::signal_in(_node_id, 0);
         let _param_id = ParameterId::new("test").unwrap();
         let _clock = SystemClock::with_sample_rate(44100.0);
         let _tick = ClockTick::new(0, 64, 44100.0, "test".to_string());
@@ -466,10 +426,7 @@ mod tests {
     #[test]
     fn test_port_prelude() {
         use port_prelude::*;
-
-        let port = PortId::signal_in(NodeId(0), 0);
-        assert!(port.is_signal());
-        assert!(port.is_input());
+        let _err = PortError::not_found("test");
     }
 
     #[test]

@@ -103,7 +103,7 @@ pub struct LaunchConfig {
     /// Signal graph topology (nodes, connections, resources).
     pub graph_def: GraphDef,
 
-    /// Control rack configuration (automata, mappings, MIDI).
+    /// Control rack configuration (automatons, mappings, MIDI).
     /// `None` = no control rack, signal passthrough only.
     pub rack_def: Option<PatchbayDef>,
 }

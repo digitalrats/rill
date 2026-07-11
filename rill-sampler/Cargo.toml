@@ -1,6 +1,6 @@
 [package]
 name = "rill-sampler"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Sample playback node for Rill signal graph"
 license.workspace = true
@@ -11,9 +11,13 @@ documentation = "https://docs.rs/rill-sampler"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-dsp = { workspace = true }
+rill-graph = { workspace = true, optional = true }
+rill-lang = { workspace = true, optional = true }
 
 hound = { version = "3.5", optional = true }
 
 [features]
 default = ["wav"]
 wav = ["dep:hound"]
+graph = ["rill-graph"]
+lang = ["rill-lang"]

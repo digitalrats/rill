@@ -42,7 +42,7 @@ See `strategy.rs`.
   buttons), MIDI, OSC (UDP-based address/argument sensors).
 - **Event mapping** — MIDI CC → parameter, OSC address → parameter,
   with transforms.
-- **`Engine`** — centralised API for adding automata, servos, and
+- **`Engine`** — centralised API for adding automatons, servos, and
   mappings (fka `PatchbayControl`).
 
 ## Usage
@@ -77,6 +77,17 @@ engine.update(1.0 / 60.0);
 | `serialization` | `json` + `cbor` |
 | `midi` | MIDI input via `rill-io` backends |
 | `osc` | OSC input via `rill-osc` |
+| `debug` | Control-path inspection (PatchbayInspector, automaton/sensor snapshots) |
+
+### Debug infrastructure (`debug` feature)
+
+- **`PatchbayInspector`** — collects automaton and sensor snapshots for control-path
+  debugging. Automata report enabled/disabled state, current output value, and
+  internal state (time, phase). Sensors report connection status and event count.
+- **`Servo::inspector()`** — returns an `AutomatonInspector` that snapshots the
+  servo's internal state via `Arc<Mutex<ServoState<A>>>`
+- **`OscSensor::inspect()` / `MidiHub::inspect()`** — capture sensor status
+  (connected, tracker active) for the debugger
 
 ## Dependencies
 

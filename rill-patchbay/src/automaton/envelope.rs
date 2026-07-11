@@ -1,4 +1,4 @@
-//! Envelope automata for amplitude, filter, and parameter modulation over time.
+//! Envelope automatons for amplitude, filter, and parameter modulation over time.
 //!
 //! Supports ADSR, AR, ASR, and AHDSR envelope types.
 

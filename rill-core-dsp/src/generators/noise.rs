@@ -126,7 +126,7 @@ impl<T: Transcendental> NoiseGenerator<T> {
             let w3 = self.xorshift();
 
             let v = ScalarVector4::load(&[w0, w1, w2, w3]);
-            v.mul(&amp).store(&mut out[offset..offset + 4]);
+            (v * amp).store(&mut out[offset..offset + 4]);
         }
 
         // Scalar remainder
@@ -196,8 +196,7 @@ impl<T: Transcendental> NoiseGenerator<T> {
     fn generate_brown_scalar(&mut self) -> ScalarVector1<T> {
         let white = self.xorshift();
         // Integrator with clipping
-        self.brown_state =
-            self.brown_state + ScalarVector1::splat(white) * ScalarVector1::splat(T::from_f32(0.1));
+        self.brown_state += ScalarVector1::splat(white) * ScalarVector1::splat(T::from_f32(0.1));
         let one_vec = ScalarVector1::splat(T::ONE);
         let neg_one_vec = ScalarVector1::splat(-T::ONE);
         self.brown_state = self.brown_state.clamp(&neg_one_vec, &one_vec);
@@ -219,9 +218,8 @@ impl<T: Transcendental> NoiseGenerator<T> {
 
             let white_v = ScalarVector4::load(&[w0, w1, w2, w3]);
             let shifted_v = ScalarVector4::load(&[last, w0, w1, w2]);
-            let diff = white_v.sub(&shifted_v);
-            diff.mul(&ScalarVector4::splat(amp))
-                .store(&mut out[offset..offset + 4]);
+            let diff = white_v - shifted_v;
+            (diff * ScalarVector4::splat(amp)).store(&mut out[offset..offset + 4]);
             last = w3;
         }
 
@@ -250,16 +248,14 @@ impl<T: Transcendental> NoiseGenerator<T> {
             // First differentiator: diff1_v = [w0-l1, w1-w0, w2-w1, w3-w2]
             let white_v = ScalarVector4::load(&[w0, w1, w2, w3]);
             let s1_v = ScalarVector4::load(&[l1, w0, w1, w2]);
-            let diff1 = white_v.sub(&s1_v);
+            let diff1 = white_v - s1_v;
 
             // Second differentiator: diff2_v = [d1_0-l2, d1_1-d1_0, d1_2-d1_1, d1_3-d1_2]
             let s2_v =
                 ScalarVector4::load(&[l2, diff1.extract(0), diff1.extract(1), diff1.extract(2)]);
-            let diff2 = diff1.sub(&s2_v);
+            let diff2 = diff1 - s2_v;
 
-            diff2
-                .mul(&ScalarVector4::splat(amp))
-                .store(&mut out[offset..offset + 4]);
+            (diff2 * ScalarVector4::splat(amp)).store(&mut out[offset..offset + 4]);
             l1 = w3;
             l2 = diff1.extract(3);
         }

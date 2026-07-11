@@ -9,24 +9,41 @@
 pub mod ast;
 pub mod backend;
 pub mod builtin;
+/// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
+pub mod builtins;
 pub mod error;
+pub mod graph_engine;
+pub mod graph_ir;
+pub mod graph_lower;
+pub mod graph_optimize;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
 pub mod parser;
 pub mod prelude;
 pub mod program;
+pub mod program_runner;
+pub mod reduce;
+pub mod regalloc;
+pub mod register;
 pub mod schedule;
 pub mod serde_def;
 pub mod types;
+
+#[cfg(feature = "debug")]
+pub mod debug;
 
 pub use error::{CompileError, Span};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
+pub use builtin::{
+    BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry, SampleBuiltin,
+};
 
 use rill_core::math::Transcendental;
+use rill_core_actor::Mailbox;
+use std::sync::Arc;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
@@ -34,16 +51,18 @@ use rill_core::math::Transcendental;
 /// use rill_lang::compile;
 /// use rill_core::traits::Algorithm;
 ///
-/// let mut prog = compile::<f32>("process = _ * 0.5;").unwrap();
+/// let mut prog = compile::<f32>("main = _ * 0.5").unwrap();
 /// let mut out = [0.0f32; 2];
 /// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
 /// assert_eq!(out, [1.0, 2.0]);
 /// ```
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens)?;
-    let typed = types::infer::infer_program(&program)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program(&program)?;
+    typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower(&typed)?;
+    // regalloc::allocate(&mut ir);
     Ok(RillProgram::<T>::new(ir))
 }
 
@@ -54,11 +73,68 @@ pub fn compile_with<T: Transcendental>(
     sample_rate: f32,
 ) -> Result<RillProgram<T>, CompileError> {
     let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens)?;
-    let typed = types::infer::infer_program_with(&program, registry)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program_with(&program, registry)?;
+    typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    // regalloc::allocate(&mut ir);
     validate_block_builtins(&ir)?;
     RillProgram::<T>::new_with(ir, registry, sample_rate)
+}
+
+/// Compile rill-lang source into an engine that supports [`SetParameter`]
+/// commands via mailbox for runtime parameter updates.
+///
+/// Main parameters are addressed by name directly. Where-block anchor
+/// parameters use the format `"anchor.param"` (dot-separated).
+///
+/// [`SetParameter`]: rill_core::queues::CommandEnum::SetParameter
+pub fn compile_graph<T: Transcendental>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+) -> Result<graph_engine::RillGraphEngine<T>, CompileError> {
+    use crate::graph_lower::{ScheduledGraph, Step};
+
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program_with(&program, registry)?;
+
+    typed.program = reduce::reduce(&typed.program);
+    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    // regalloc::allocate(&mut ir);
+    validate_block_builtins(&ir)?;
+    let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
+
+    let n_params = prog.params_meta().len();
+
+    let mut step_input = Vec::new();
+    if prog.ir.num_inputs > 0 {
+        step_input.push(0u32 as usize); // buffer 0 = graph input
+    }
+
+    let schedule = ScheduledGraph {
+        inputs: prog.ir.num_inputs,
+        outputs: prog.ir.num_outputs,
+        steps: vec![Step::InlineProgram {
+            node_idx: 0,
+            input_bufs: step_input,
+            output_bufs: vec![0],
+            param_indices: (0..n_params).collect(),
+        }],
+        buffers: 1,
+        output_mapping: vec![0],
+        program_names: vec!["main".to_string()],
+    };
+
+    let mailbox = Arc::new(Mailbox::new(64));
+
+    Ok(graph_engine::RillGraphEngine::new(
+        schedule,
+        vec![prog],
+        mailbox,
+        512,
+    ))
 }
 
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {

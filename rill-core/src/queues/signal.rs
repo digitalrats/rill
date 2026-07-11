@@ -14,21 +14,13 @@
 //!
 //! ## Example
 //!
-//! ```no_run
-//! use rill_core::queues::*;
-//! use rill_core::traits::*;
 //!
-//! let node = NodeId(1);
-//! let port = PortId::control_in(node, 0);
-//! let param = ParameterId::new("gain").unwrap();
-//! let cmd = SetParameter::new(port, param, ParamValue::Float(0.5), SignalOrigin::Automaton("lfo".into()));
-//! // Send via ActorRef<SetParameter> or MpscQueue<SetParameter>
-//! ```
+//! See crate-level documentation for usage examples.
 
 use super::command::Command;
 use super::control_event::ControlEvent;
 use crate::time::ClockTick;
-use crate::traits::{ParamValue, ParameterId, PortId};
+use crate::traits::{ParamValue, ParameterId};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -101,7 +93,9 @@ impl fmt::Display for SignalOrigin {
 #[derive(Debug, Clone)]
 pub struct SetParameter {
     /// Target port.
-    pub port: PortId,
+    pub port: String,
+    /// Node anchor name in the graph IR (for lang-based graphs).
+    pub anchor: String,
     /// Target parameter identifier.
     pub parameter: ParameterId,
     /// New parameter value.
@@ -124,13 +118,14 @@ pub struct SetParameter {
 impl SetParameter {
     /// Create a new parameter-change command with the current timestamp.
     pub fn new(
-        port: PortId,
+        port: String,
         parameter: ParameterId,
         value: ParamValue,
         source: SignalOrigin,
     ) -> Self {
         Self {
             port,
+            anchor: String::new(),
             parameter,
             value,
             source,
@@ -141,7 +136,7 @@ impl SetParameter {
 
     /// Create a new parameter-change command with an explicit timestamp.
     pub fn with_timestamp(
-        port: PortId,
+        port: String,
         parameter: ParameterId,
         value: ParamValue,
         source: SignalOrigin,
@@ -149,6 +144,7 @@ impl SetParameter {
     ) -> Self {
         Self {
             port,
+            anchor: String::new(),
             parameter,
             value,
             source,
@@ -175,6 +171,7 @@ impl SetParameter {
 impl PartialEq for SetParameter {
     fn eq(&self, other: &Self) -> bool {
         self.port == other.port
+            && self.anchor == other.anchor
             && self.parameter == other.parameter
             && self.value == other.value
             && self.source == other.source
@@ -196,7 +193,7 @@ impl Command for SetParameter {}
 
 // ===== AutomatonCommand =====
 
-/// Commands for controlling automata (LFOs, envelopes, sequencers).
+/// Commands for controlling automatons (LFOs, envelopes, sequencers).
 #[derive(Debug, Clone)]
 pub enum AutomatonCommand {
     /// Enable or disable an automaton by ID.
@@ -229,7 +226,7 @@ pub enum AutomatonCommand {
         /// Connection gain.
         gain: f32,
     },
-    /// Disconnect two automata.
+    /// Disconnect two automatons.
     Disconnect {
         /// Source automaton identifier.
         from: String,
@@ -477,7 +474,7 @@ pub enum ServoCommand {
         /// Servo identifier.
         servo_id: String,
         /// Target port.
-        port: PortId,
+        port: String,
         /// Target parameter.
         parameter: ParameterId,
     },
@@ -643,12 +640,6 @@ impl CommandEnum {
     }
 
     /// If this is a `SetParameter` command, return the target `NodeId`.
-    pub fn target_node_id(&self) -> Option<crate::traits::NodeId> {
-        match self {
-            CommandEnum::SetParameter(cmd) => Some(cmd.port.node_id()),
-            _ => None,
-        }
-    }
 
     /// Return the timestamp if the command carries one.
     pub fn timestamp(&self) -> Option<u64> {

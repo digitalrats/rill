@@ -2,6 +2,9 @@
 
 use super::FilterParams;
 use crate::algorithm::ParameterizedAlgorithm;
+use crate::complex_mat::{
+    bilinear_transform, conjugate_pair_to_coeffs, prewarp_frequency, single_pole_to_coeffs,
+};
 use crate::vector::{ScalarVector1, Vector};
 use num_complex::Complex64;
 use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
@@ -213,7 +216,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
 
         let analog_poles = chebyshev_type_i_poles(n, ripple);
 
-        let warp_cutoff = 2.0 * (PI64 * cutoff / sample_rate_f64).tan();
+        let warp_cutoff = prewarp_frequency(cutoff, sample_rate_f64);
 
         self.num_sections = n.div_ceil(2);
         self.gain = ScalarVector1::splat(T::from_f32(1.0)); // Simplified; gain should be computed in practice
@@ -229,21 +232,19 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevI<T, MAX_SECTIONS> {
                 let sp1 = p1 * warp_cutoff;
                 let sp2 = p2 * warp_cutoff;
 
-                let zp1 = (Complex64::new(2.0, 0.0) + sp1) / (Complex64::new(2.0, 0.0) - sp1);
-                let zp2 = (Complex64::new(2.0, 0.0) + sp2) / (Complex64::new(2.0, 0.0) - sp2);
+                let zp1 = bilinear_transform(sp1);
+                let zp2 = bilinear_transform(sp2);
 
-                let a1 = -(zp1 + zp2).re;
-                let a2 = (zp1 * zp2).re;
+                let (a1, a2) = conjugate_pair_to_coeffs(zp1, zp2);
 
                 self.sections[i].set_coeffs(1.0, 2.0, 1.0, a1, a2);
             } else {
                 let p = analog_poles[idx1];
 
                 let sp = p * warp_cutoff;
-                let zp = (Complex64::new(2.0, 0.0) + sp) / (Complex64::new(2.0, 0.0) - sp);
+                let zp = bilinear_transform(sp);
 
-                let a1 = -zp.re;
-                let a2 = 0.0;
+                let (a1, a2) = single_pole_to_coeffs(zp);
 
                 self.sections[i].set_coeffs(1.0, 2.0, 1.0, a1, a2);
             }
@@ -352,7 +353,7 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> 
 
         let (analog_poles, analog_zeros) = chebyshev_type_ii_poles_zeros(n, ripple);
 
-        let warp_cutoff = 2.0 * (PI64 * cutoff / sample_rate_f64).tan();
+        let warp_cutoff = prewarp_frequency(cutoff, sample_rate_f64);
 
         self.num_sections = n.div_ceil(2);
         self.gain = ScalarVector1::splat(T::from_f32(1.0));
@@ -379,21 +380,19 @@ impl<T: Transcendental, const MAX_SECTIONS: usize> ChebyshevII<T, MAX_SECTIONS> 
                 let sp1 = p1 * warp_cutoff;
                 let sp2 = p2 * warp_cutoff;
 
-                let zp1 = (Complex64::new(2.0, 0.0) + sp1) / (Complex64::new(2.0, 0.0) - sp1);
-                let zp2 = (Complex64::new(2.0, 0.0) + sp2) / (Complex64::new(2.0, 0.0) - sp2);
+                let zp1 = bilinear_transform(sp1);
+                let zp2 = bilinear_transform(sp2);
 
                 let sz1 = z1 * warp_cutoff;
                 let sz2 = z2 * warp_cutoff;
 
-                let zz1 = (Complex64::new(2.0, 0.0) + sz1) / (Complex64::new(2.0, 0.0) - sz1);
-                let zz2 = (Complex64::new(2.0, 0.0) + sz2) / (Complex64::new(2.0, 0.0) - sz2);
+                let zz1 = bilinear_transform(sz1);
+                let zz2 = bilinear_transform(sz2);
 
+                let (b1, b2) = conjugate_pair_to_coeffs(zz1, zz2);
                 let b0 = 1.0;
-                let b1 = -(zz1 + zz2).re;
-                let b2 = (zz1 * zz2).re;
 
-                let a1 = -(zp1 + zp2).re;
-                let a2 = (zp1 * zp2).re;
+                let (a1, a2) = conjugate_pair_to_coeffs(zp1, zp2);
 
                 self.sections[i].set_coeffs(b0, b1, b2, a1, a2);
             }

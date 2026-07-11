@@ -31,3 +31,9 @@ pub mod prelude;
 pub use rill_core;
 /// Re-export of the `rill_core_dsp` crate.
 pub use rill_core_dsp;
+
+pub mod register;
+
+/// rill-lang builtins for sampler types.
+#[cfg(feature = "lang")]
+mod lang;

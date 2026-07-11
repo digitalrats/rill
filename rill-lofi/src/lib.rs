@@ -9,19 +9,18 @@ pub mod dsp;
 /// Hardware emulators (NES, AY-3-8910, Akai S900).
 pub mod emulators;
 mod error;
-mod lofi_chip_source;
-mod lofi_processor;
 
 // Re-export core types
 pub use chip_emulator::ChipEmulator;
 pub use config::{ClassicSystem, HardwareEmulation, LofiConfig};
 pub use emulators::{AkaiS900Emulator, Ay38910Chip, NesChip};
 pub use error::{LofiError, LofiResult};
-pub use lofi_chip_source::LofiChipSource;
-pub use lofi_processor::LofiProcessor;
 
 // Re-export for convenience
-pub use rill_core::traits::Node;
+
+pub mod register;
+
+mod lang_helpers;
 
 #[cfg(test)]
 mod tests {

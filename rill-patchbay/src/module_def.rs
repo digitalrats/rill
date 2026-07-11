@@ -131,13 +131,19 @@ pub struct ServoDef {
     #[cfg_attr(feature = "serde", serde(default))]
     pub conflict_strategy: Option<ConflictStrategy>,
 
-    /// Optional value table for index-based automata.
+    /// Optional value table for index-based automatons.
     /// When set, the servo looks up `table[automaton_output]`.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub table: Option<Vec<ParamValue>>,
+
+    /// String anchor name for rill-lang graph nodes.
+    /// When set, the servo sends `SetParameter` to the
+    /// RillGraphEngine using this anchor instead of a `PortId`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub target_anchor: Option<String>,
 }
 
 // ============================================================================
@@ -184,7 +190,7 @@ impl MappingDef {
         crate::engine::Mapping::new(
             self.event_pattern.clone(),
             Target {
-                node_id: rill_core::traits::NodeId(self.target_node),
+                node_id: self.target_node,
                 param_name: self.target_param.clone(),
                 min: self.min as f32,
                 max: self.max as f32,

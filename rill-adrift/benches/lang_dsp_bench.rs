@@ -9,6 +9,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rill_adrift::lang_builtins::full_registry;
 use rill_core::traits::Algorithm;
+use rill_core::traits::ParamValue;
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 use rill_lang::compile_with;
 
@@ -23,22 +24,23 @@ fn bench_builtins(c: &mut Criterion) {
     let reg = full_registry::<f32>();
     let input = make_input();
     let programs = [
-        ("lowpass_block", "process = _ : lowpass(1000.0, 0.7);"),
-        ("moog_sample", "process = _ : moog(800.0, 0.6);"),
-        ("onepole_sample", "process = _ : onepole(1200.0, 0.5);"),
-        (
-            "dynamic_cutoff",
-            "process = _ : lowpass(param(\"cutoff\", 1000.0), 0.7);",
-        ),
+        ("lowpass_block", "main = _ : lowpass 1000.0 0.7;"),
+        ("moog_sample", "main = _ : moog 800.0 0.6;"),
+        ("onepole_sample", "main = _ : onepole 1200.0 0.5;"),
+        ("dynamic_cutoff", "main cutoff = _ : lowpass cutoff 0.7;"),
         (
             "filter_chain",
-            "process = _ : lowpass(2000.0, 0.7) : moog(500.0, 0.6);",
+            "main = _ : lowpass 2000.0 0.7 : moog 500.0 0.6;",
         ),
     ];
     let mut group = c.benchmark_group("builtins");
     group.throughput(criterion::Throughput::Elements(BLOCK as u64));
     for (name, src) in programs {
         let mut prog = compile_with::<f32>(src, &reg, SR).expect("compiles");
+        // Set default for parameterized programs
+        if let Some(idx) = prog.param_index("cutoff") {
+            prog.set_param(idx, ParamValue::Float(1000.0));
+        }
         let mut out = vec![0.0f32; BLOCK];
         group.bench_function(name, |b| {
             b.iter(|| {
@@ -58,7 +60,7 @@ fn bench_dsl_vs_raw(c: &mut Criterion) {
     let mut group = c.benchmark_group("biquad_dsl_vs_raw");
     group.throughput(criterion::Throughput::Elements(BLOCK as u64));
 
-    let mut dsl = compile_with::<f32>("process = _ : lowpass(1000.0, 0.7);", &reg, SR).unwrap();
+    let mut dsl = compile_with::<f32>("main = _ : lowpass 1000.0 0.7;", &reg, SR).unwrap();
     let mut out = vec![0.0f32; BLOCK];
     group.bench_function("dsl", |b| {
         b.iter(|| {

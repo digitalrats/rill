@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 18 active crates:
+Cargo workspace — 20 active crates:
 
 | Crate | Status |
 |---|---|
@@ -23,6 +23,8 @@ Cargo workspace — 18 active crates:
 | `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
 | `rill-osc` | Active — OSC server and networking |
 | `rill-sampler` | Active — sample playback, time-series reader, WAV loading |
+| `rill-fft` | Active — FFT, frequency-domain convolution, spectrum analysis, spectral effects |
+| `rill-lang` | Active — Faust-style functional DSL for signal processing, compiles to `Algorithm<T>` |
 | `rill-adrift` | Active — umbrella crate for signal processing applications |
 
 Dependency tree:
@@ -33,12 +35,14 @@ Dependency tree:
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
-  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`
+  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-fft`
 - **`rill-core-model`** — WDF + physical modeling, depends on `rill-core`
 - **`rill-analog-filters`** — depends on `rill-core` + `rill-core-model`
 - **`rill-analog-effects`** — depends on `rill-core` + `rill-core-model`
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
-- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`
+- **`rill-lang`** — signal processing DSL, depends on `rill-core` only
+- **`rill-fft`** — FFT and frequency-domain processing, depends on `rill-core` + `rill-core-dsp`
+- **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`, `fft`, `lang`
 
 ## History
 
@@ -70,7 +74,7 @@ cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
 
 # publish order (leaf to root):
-./scripts/publish.sh              # all 18 crates to crates.io
+./scripts/publish.sh              # all 20 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
 ## crates.io publication rules
@@ -93,16 +97,32 @@ mdbook serve docs/                # dev server at localhost:3000
 ## Code conventions
 
 - **Safety & Unsafe Policy:**
-    - `#![deny(unsafe_code)]` set in 7 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`.
+    - `#![deny(unsafe_code)]` set in 9 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`, `rill-lang`, `rill-fft`.
     - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.
+
+- **SIMD & auto-vectorization:**
+    - **Prefer simple scalar code.** LLVM aggressively auto-vectorises loops with
+      predictable contiguous memory access. The scalar ComplexFft `butterfly()`
+      is auto-vectorised to SSE (`mulps`, `shufps`) in release builds —
+      interleaved `Complex<f32>` maps directly to XMM registers.
+    - **Do NOT manually SIMD‑ify** radix‑2 FFT butterflies or similar data‑parallel
+      kernels — manual `ScalarVector4` / `F32x4` breaks LLVM's ability to see
+      the full loop pattern. Verified: 3 failed SIMD attempts (−36 %, −34 %, −120 %).
+    - **When manual SIMD helps:** irregular access patterns, fused multiply‑add
+      intrinsics, gather/scatter, horizontal reductions.
+    - **If a bottleneck is suspected:** profile with `perf` / `objdump` first.
+      Check whether LLVM is already generating SIMD instructions before writing
+      manual vector code.
 
 - **Documentation language:**
     - All crate-level docs (`README.md`, module doc comments, API docs) must be in **English**.
     - Code comments (inline `//`) should also be in English.
     - The only exception is `docs/src/guides/world-of-automatons.md` — a full-fledged published article intentionally written in Russian as a deliberate stylistic choice.
     - The term **Automaton** is canonical in the codebase (`Automaton` trait, `AutomatonDef`, etc.). Do not use "Automata" in code identifiers, documentation, or commit messages. In prose, prefer "automaton" (singular) / "automatons" (plural).
+
+    **Why this matters:** Automaton is not an abstract mathematical machine — it is a concrete rill mechanism. Code identifiers (`ListAutomatons`, `AutomatonState`, `automaton.step()`), log messages (`"registered automaton '{}'"`), CLI output, and commit messages form a **naming contract** tied to specific entities. Mixing "Automata" breaks this contract and creates inconsistency between the object model and its surface area. Always ask: "am I naming a rill entity or describing an abstraction?" If it's a rill entity, use the canonical form.
     - Rationale: English is the lingua franca of open-source. One Russian-language article is an exception, not a precedent — do not add more without explicit discussion.
 
 - **Zero-copy data flow:**
@@ -120,6 +140,20 @@ mdbook serve docs/                # dev server at localhost:3000
 - **Dependencies:** 
     - Do not add new external crates to `Cargo.toml` without explicit confirmation.
     - Prefer internal workspace tools over bringing in new third-party dependencies.
+
+- **Debugging priority:** When investigating a bug, follow this order:
+    1. **Use existing infrastructure first** — lifecycle logs (`RUST_LOG=info`), `rill-analyzer` (attach/launch), `rill-telemetry` (command log, probe output). These are always-on when compiled with `--features debug`.
+    2. **Add log calls to the code under investigation** — only if the existing infrastructure doesn't provide enough information. Use the `log` crate (`log::info!`, `log::warn!`), never `eprintln!`.
+    3. **Modify examples** — only as a last resort, and only to add diagnostic flags (e.g. `--no-wait`). Never add `eprintln!` to examples — use `log::info!`.
+
+    Rationale: `eprintln!` bypasses the debug infrastructure, cannot be filtered by level, is invisible to `rill-analyzer`, and is invariably removed after debugging — wasting effort. Structured logging and telemetry persist and help future developers.
+
+- **Warnings policy:**
+    - **Every warning MUST be fixed before merging a feature branch.** Run `cargo check --all-features --workspace` and `cargo clippy --all-features --workspace`. Zero warnings in the workspaces's code after `cargo clippy --fix` has been applied.
+    - **Never suppress warnings with blanket `#[allow(...)]`.** Specifically: `#![allow(missing_docs)]` is forbidden. If a type, function, or module lacks documentation, add a doc comment (`/// `).
+    - **Use `cargo clippy --fix` first** — it auto-generates doc stubs and fixes many warnings mechanically. Review the changes, fill in actual descriptions where `clippy` leaves placeholders.
+    - **`#[allow(clippy::too_many_arguments)]` and `#[allow(clippy::type_complexity)]`** are acceptable for specific functions where refactoring would be invasive — but never at crate level.
+
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
 - **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
@@ -153,11 +187,21 @@ Rill is a **universal signal processing platform**, not exclusively audio. The t
 | `automata` (plural) | `automatons` | All crates — code identifiers, field names, variable names, docs |
 | `Automata` (type/generic) | `Automaton` | Trait names, type parameters, enum variants |
 
+> **Exception:** «cellular automata» is a well-established mathematical term (Conway, Wolfram).
+> The compound phrase `cellular automata` (both words together) is exempt from the rule above.
+> Standalone uses of `automata` as a generic plural are still forbidden.
+
 **Concrete type names** (`AudioInput`, `AudioOutput`, `AudioConfig` in `rill-io`, `PortAudio`) are **exempt** — they are code identifiers, not prose. Renaming them requires a separate API-breaking change.
 
 **«Hearing» / acoustic sensors** — the `hearing` module name and «acoustic» are domain-level concepts. Doc comments describing signal analysis algorithms should use «signal» (not «audio») for the generic processing path.
 
-**«Automaton» vs «automata»** — the singular "automaton" and plural **"automatons"** are the only acceptable forms. The incorrect plural "automata" exists in legacy public API (`RackDef.automata`, `PatchbayDef.automata`) and is a known issue pending an API-breaking rename. All **new** code identifiers, variable names, and documentation MUST use `automatons`.
+**«Automaton» vs «automata»** — the singular "automaton" and plural **"automatons"** are the only acceptable forms. The legacy plural "automata" has been removed from both public API and documentation. All code identifiers, variable names, and docs use `automatons`.
+
+**Scope of this rule:** applies to enum variants (`ListAutomatons`, not `ListAutomata`), response types (`AutomatonsList`, not `AutomataList`), method names, log messages, CLI output, commit messages, and doc comments. The only permitted form outside code identifiers is the compound phrase «cellular automata» (see exception below).
+
+> **Exception:** «cellular automata» is a well-established mathematical term (Conway, Wolfram).
+> The compound phrase `cellular automata` (both words together) is exempt.
+> Standalone `automata` as a generic plural is still forbidden.
 
 ## Real-time safety
 
@@ -184,6 +228,18 @@ Any code reached from the process callback — `generate()`, `process()`,
 | **No file I/O, no socket I/O in RT path** | Any syscall (open, read, write, send, recv) can block unpredictably. |
 | **`downstream_nodes` is pre‑filled** | `Port::downstream_nodes` is populated once by `GraphBuilder::build()` and iterated at runtime without deduplication or allocation. |
 | **Fixed‑size stack buffers** | Backend callbacks must use `[f32; MAX_BLOCK_SAMPLES]` (512) instead of `vec![]`. |
+
+**Forbidden in the RT path — logging and output:**
+
+Any code reachable from the signal callback must NOT call:
+- `log::info!`, `log::warn!`, `log::error!`, `log::debug!`
+- `println!`, `eprintln!`, `format!`
+- `write!` / `writeln!` to any I/O stream (stdout, stderr, file, socket)
+- `std::io::stdout().write()` or equivalent
+
+**Rationale:** These macros internally allocate (`format!` arguments), acquire locks (stderr/stdout mutex), and may block (write syscall if buffer is full). Even with `log` crate, the logger implementation may allocate or lock.
+
+**The only permitted path for RT diagnostics:** push data through lock-free SPSC queues (`rill_core::queues::SpscQueue`), `AtomicU64`, or `AtomicBool`. A non-RT collector thread drains the queue and formats output. This is exactly how `rill-telemetry` works.
 
 **Allowed exceptions:**
 - `MpscQueue::pop()` — lock‑free atomic, OK on RT.

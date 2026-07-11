@@ -53,14 +53,20 @@ let d = a * b;   // element-wise multiplication
 Slice operations:
 
 ```rust
-use rill_core::math::vector::ops::add_slices;
+use rill_core::math::vector::ops::SlicePair;
 use rill_core::math::vector::math::sin_slice;
 
 let input = [0.0f32, 0.5, 1.0, 1.5, 2.0];
 let mut output = [0.0f32; 5];
 
-// Works with any Scalar
-add_slices::<f32, 4, ScalarVector4<f32>>(&input, &input, &mut output);
+// Element-wise a + b → out via SIMD
+SlicePair::new(&input, &input).add_into::<4, ScalarVector4<f32>>(&mut output);
+
+// Accumulate: out += input
+use rill_core::math::vector::ops::SliceMut;
+let mut out = SliceMut::new(&mut output);
+out += &input as &[f32];
+out *= 2.0f32;
 
 // Transcendental operations require Transcendental
 sin_slice::<f32, 4, ScalarVector4<f32>>(&input, &mut output);

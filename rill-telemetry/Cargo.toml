@@ -1,6 +1,6 @@
 [package]
 name = "rill-telemetry"
-version = "0.5.0"
+version = "0.6.0-M1"
 edition = "2021"
 description = "Real-time telemetry probe and collector for Rill signal graph"
 license.workspace = true
@@ -10,7 +10,17 @@ documentation = "https://docs.rs/rill-telemetry"
 
 [dependencies]
 rill-core = { workspace = true }
+rill-lang = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_cbor = "0.11"
+colored = "3"
+dashmap = "6"
 thiserror = { workspace = true }
+
+[features]
+debug = ["rill-lang/debug"]
 
 [dev-dependencies]
 float-cmp = "0.9"
