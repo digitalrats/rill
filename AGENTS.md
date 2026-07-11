@@ -140,6 +140,14 @@ mdbook serve docs/                # dev server at localhost:3000
 - **Dependencies:** 
     - Do not add new external crates to `Cargo.toml` without explicit confirmation.
     - Prefer internal workspace tools over bringing in new third-party dependencies.
+
+- **Debugging priority:** When investigating a bug, follow this order:
+    1. **Use existing infrastructure first** — lifecycle logs (`RUST_LOG=info`), `rill-analyzer` (attach/launch), `rill-telemetry` (command log, probe output). These are always-on when compiled with `--features debug`.
+    2. **Add log calls to the code under investigation** — only if the existing infrastructure doesn't provide enough information. Use the `log` crate (`log::info!`, `log::warn!`), never `eprintln!`.
+    3. **Modify examples** — only as a last resort, and only to add diagnostic flags (e.g. `--no-wait`). Never add `eprintln!` to examples — use `log::info!`.
+
+    Rationale: `eprintln!` bypasses the debug infrastructure, cannot be filtered by level, is invisible to `rill-analyzer`, and is invariably removed after debugging — wasting effort. Structured logging and telemetry persist and help future developers.
+
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
 - **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
