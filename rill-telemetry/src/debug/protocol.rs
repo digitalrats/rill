@@ -47,6 +47,16 @@ pub enum AnalyzerCommand {
     },
     /// Pause the engine.
     Pause,
+    /// List all registered automata.
+    ListAutomata,
+    /// Get the state of a specific automaton.
+    GetAutomatonState { name: String },
+    /// List all sensors.
+    ListSensors,
+    /// Get the status of a specific sensor.
+    GetSensorStatus { name: String },
+    /// List all queues.
+    ListQueues,
     /// Shut down the collector thread.
     Quit,
 }
@@ -73,6 +83,16 @@ pub enum AnalyzerResponse {
     CommandLog(Vec<CommandLogEntry>),
     /// An error occurred.
     Error(String),
+    /// List of automaton names.
+    AutomataList(Vec<String>),
+    /// State of a single automaton.
+    AutomatonState(String),
+    /// List of sensor names.
+    SensorList(Vec<String>),
+    /// Status of a single sensor.
+    SensorStatus(String),
+    /// List of queue statistics.
+    QueueList(Vec<QueueStats>),
     /// Engine is now paused.
     Paused,
 }
@@ -145,4 +165,17 @@ pub enum OutputMode {
     Text,
     /// JSON Lines format.
     Json,
+}
+
+/// Statistics about a named queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueStats {
+    /// Queue name.
+    pub name: String,
+    /// Maximum capacity of the queue.
+    pub capacity: usize,
+    /// Current number of items in the queue.
+    pub len: usize,
+    /// Whether the queue is at capacity.
+    pub is_full: bool,
 }

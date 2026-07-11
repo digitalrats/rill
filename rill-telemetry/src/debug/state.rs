@@ -160,6 +160,21 @@ impl ProbeStateManager {
                 }
             }
             AnalyzerCommand::Quit => AnalyzerResponse::Ok,
+            AnalyzerCommand::ListAutomata => {
+                AnalyzerResponse::Error("ListAutomata not yet implemented".to_string())
+            }
+            AnalyzerCommand::GetAutomatonState { .. } => {
+                AnalyzerResponse::Error("GetAutomatonState not yet implemented".to_string())
+            }
+            AnalyzerCommand::ListSensors => {
+                AnalyzerResponse::Error("ListSensors not yet implemented".to_string())
+            }
+            AnalyzerCommand::GetSensorStatus { .. } => {
+                AnalyzerResponse::Error("GetSensorStatus not yet implemented".to_string())
+            }
+            AnalyzerCommand::ListQueues => {
+                AnalyzerResponse::Error("ListQueues not yet implemented".to_string())
+            }
         }
     }
 }
