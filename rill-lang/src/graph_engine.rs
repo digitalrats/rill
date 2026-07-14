@@ -28,6 +28,7 @@ struct PendingParam {
     node_idx: usize,
     param_idx: usize,
     value: ParamValue,
+    sample_pos: Option<u64>,
 }
 
 /// Graph execution engine running a [`CompiledGraph`].
@@ -155,6 +156,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> CompiledGraphEngine<T, BUF_SIZE> 
                                 node_idx,
                                 param_idx: idx,
                                 value: sp.value.clone(),
+                                sample_pos: sp.sample_pos,
                             });
                             #[cfg(feature = "debug")]
                             {
@@ -169,6 +171,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> CompiledGraphEngine<T, BUF_SIZE> 
                                 node_idx,
                                 param_idx: idx,
                                 value: sp.value.clone(),
+                                sample_pos: sp.sample_pos,
                             });
                             #[cfg(feature = "debug")]
                             {
@@ -192,8 +195,34 @@ impl<T: Transcendental, const BUF_SIZE: usize> CompiledGraphEngine<T, BUF_SIZE> 
         }
     }
 
+    /// Apply pending parameter updates that are due by `chunk_end`.
+    /// Preserves sample-accurate scheduling: params with `sample_pos >= chunk_end`
+    /// are deferred to the next tick.
+    pub fn apply_due_params(&mut self, chunk_end: u64) {
+        if self.pending.is_empty() {
+            return;
+        }
+        self.pending.sort_by_key(|p| p.sample_pos.unwrap_or(0));
+        let split = self
+            .pending
+            .partition_point(|p| p.sample_pos.is_none_or(|sp| sp < chunk_end));
+        if split == 0 {
+            return;
+        }
+        for p in self.pending.drain(0..split) {
+            if p.node_idx < self.graph.nodes.len() {
+                self.graph.nodes[p.node_idx].set_param(p.param_idx, &p.value);
+            }
+        }
+    }
+
     /// Main processing tick — applies pending params, copies inputs, runs nodes, copies outputs.
-    pub fn process_tick(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+    pub fn process_tick(
+        &mut self,
+        inputs: &[&[T]],
+        outputs: &mut [&mut [T]],
+        chunk_end: u64,
+    ) -> ProcessResult<()> {
         #[cfg(feature = "debug")]
         {
             self.debug_control
@@ -214,11 +243,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> CompiledGraphEngine<T, BUF_SIZE> 
                 .store(false, Ordering::Release);
         }
 
-        for p in self.pending.drain(..) {
-            if p.node_idx < self.graph.nodes.len() {
-                self.graph.nodes[p.node_idx].set_param(p.param_idx, &p.value);
-            }
-        }
+        self.apply_due_params(chunk_end);
 
         for (i, input) in inputs.iter().enumerate() {
             if i < self.graph.inputs && i < self.graph.buffers.len() {
@@ -281,7 +306,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultichannelAlgorithm<T>
     }
 
     fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
-        self.process_tick(inputs, outputs)
+        self.process_tick(inputs, outputs, u64::MAX)
     }
 
     fn reset(&mut self) {

@@ -32,7 +32,7 @@ fn run_with_param(
     let mut output = vec![0.0f32; buf_size];
     let input_slices: Vec<&[f32]> = input.to_vec();
     engine
-        .process_tick(&input_slices, &mut [&mut output[..]])
+        .process_tick(&input_slices, &mut [&mut output[..]], 0)
         .unwrap();
 
     output
@@ -75,7 +75,7 @@ fn actor_param_default_applies() {
     let signal = [2.0f32; 256];
     let mut output = vec![0.0f32; 256];
     engine
-        .process_tick(&[&signal[..]], &mut [&mut output[..]])
+        .process_tick(&[&signal[..]], &mut [&mut output[..]], 0)
         .unwrap();
 
     for &v in &output {
@@ -117,7 +117,7 @@ fn actor_param_no_default_applies() {
     let signal = [1.0f32; 64];
     let mut output = vec![0.0f32; 64];
     engine
-        .process_tick(&[&signal[..]], &mut [&mut output[..]])
+        .process_tick(&[&signal[..]], &mut [&mut output[..]], 0)
         .unwrap();
 
     for &v in &output {
@@ -150,7 +150,7 @@ fn actor_param_persists_across_ticks() {
     let signal = [1.0f32; 64];
     let mut out1 = vec![0.0f32; 64];
     engine
-        .process_tick(&[&signal[..]], &mut [&mut out1[..]])
+        .process_tick(&[&signal[..]], &mut [&mut out1[..]], 0)
         .unwrap();
     for &v in &out1 {
         assert!((v - 3.0).abs() < 1e-6, "tick 1: expected 3.0, got {v}");
@@ -159,7 +159,7 @@ fn actor_param_persists_across_ticks() {
     // Tick 2: gain should persist (no new SetParameter)
     let mut out2 = vec![0.0f32; 64];
     engine
-        .process_tick(&[&signal[..]], &mut [&mut out2[..]])
+        .process_tick(&[&signal[..]], &mut [&mut out2[..]], 0)
         .unwrap();
     for &v in &out2 {
         assert!((v - 3.0).abs() < 1e-6, "tick 2: expected 3.0, got {v}");
@@ -167,33 +167,57 @@ fn actor_param_persists_across_ticks() {
 }
 
 // ---------------------------------------------------------------------------
-// Named parameter in Apply (?name syntax for builtin calls)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Signal pass-through (verify engine produces output, not silence)
+// Source node (no signal input) — verify output & param routing
 // ---------------------------------------------------------------------------
 
 #[test]
-fn signal_passthrough_produces_output() {
-    // Verify the engine processes signal and produces non-silent output.
+fn source_node_produces_output() {
+    // A source node with no signal inputs should produce audio.
+    // Use a simple DSL that generates a constant tone.
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32>("main = _ * 0.5", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32>("main = 0.5", &reg, 44100.0).unwrap();
 
-    let signal: Vec<f32> = (0..128).map(|i| (i as f32 * 0.3).sin()).collect();
-    let mut output = vec![0.0f32; 128];
-    engine
-        .process_tick(&[&signal[..]], &mut [&mut output[..]])
-        .unwrap();
+    let mut output = vec![0.0f32; 64];
+    engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
 
-    let out_energy: f32 = output.iter().map(|x| x * x).sum();
-    assert!(out_energy > 0.0, "output should not be silent");
+    for &v in &output {
+        assert!((v - 0.5).abs() < 1e-6, "source node: expected 0.5, got {v}");
+    }
+}
 
-    for (i, (&o, &s)) in output.iter().zip(signal.iter()).enumerate() {
-        let expected = s * 0.5;
+#[test]
+fn source_node_with_param_routing() {
+    // Source with actor param: SetParameter should affect output.
+    let signal = [0.0f32; 64]; // ignored for source
+    let out = run_with_param(
+        "main = ?value=0.5",
+        "value",
+        ParamValue::Float(2.0),
+        &[],
+        64,
+    );
+
+    for &v in &out {
         assert!(
-            (o - expected).abs() < 1e-6,
-            "sample {i}: expected {expected}, got {o}"
+            (v - 2.0).abs() < 1e-6,
+            "source with param: expected 2.0, got {v}"
+        );
+    }
+}
+
+#[test]
+fn source_node_without_param_produces_default() {
+    // Source with actor param default: no SetParameter, should use default.
+    let reg = full_registry::<f32>();
+    let mut engine = compile_graph::<f32>("main = ?value=0.75", &reg, 44100.0).unwrap();
+
+    let mut output = vec![0.0f32; 64];
+    engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
+
+    for &v in &output {
+        assert!(
+            (v - 0.75).abs() < 1e-6,
+            "source with default param: expected 0.75, got {v}"
         );
     }
 }

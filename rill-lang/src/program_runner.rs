@@ -95,9 +95,10 @@ impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
             None
         };
         let inputs: &[&[f32]] = if let Some(inp) = input { &[inp] } else { &[] };
-        let _ = self
-            .engine
-            .process_tick(inputs, &mut [&mut self.output_buf[..block_size]]);
+        let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
+        let _ =
+            self.engine
+                .process_tick(inputs, &mut [&mut self.output_buf[..block_size]], chunk_end);
 
         for ch in 0..num_outputs {
             if let Some(ref pb) = self.playback {
