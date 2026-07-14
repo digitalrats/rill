@@ -10,6 +10,9 @@ pub use rill_graph;
 pub use rill_patchbay;
 pub use rill_router;
 
+/// Shared STC player (Sound Tracker Compiled format).
+pub mod stc_player;
+
 #[cfg(feature = "io")]
 pub use rill_io as io;
 

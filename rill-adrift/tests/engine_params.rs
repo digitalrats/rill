@@ -288,3 +288,24 @@ fn graph_builder_param_routing_works() {
         "register_write should be in param_map"
     );
 }
+
+// ---------------------------------------------------------------------------
+// lang_chiptune IR verification
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lang_chiptune_ir_produces_output() {
+    let reg = rill_adrift::lang_builtins::full_registry_f32();
+    let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
+
+    let mut engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap();
+    let pm = engine.param_map();
+    assert!(pm.contains_key("regs"), "param_map should contain regs");
+
+    let mut output = vec![0.0f32; 256];
+    engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
+
+    for &v in &output {
+        assert!(v.is_finite(), "output should be finite");
+    }
+}

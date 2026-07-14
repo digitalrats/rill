@@ -153,3 +153,50 @@ fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod ir_tests {
+    use super::*;
+
+    #[test]
+    fn lang_chiptune_ir_structure() {
+        use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
+
+        let mut registry = Registry::<f32>::new();
+        registry.register_block(
+            BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),
+            |_, _| panic!("not instantiated"),
+        );
+        // lofi: 1 signal in (from pipeline :), 1 out, 7 params
+        registry.register_block(
+            BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block),
+            |_, _| panic!("not instantiated"),
+        );
+
+        let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
+        let tokens = lexer::tokenize(src).unwrap();
+        let program = parser::parse(&tokens, src.as_bytes()).unwrap();
+        let mut typed = types::infer::infer_program_with(&program, &registry).unwrap();
+        typed.program = reduce::reduce(&typed.program);
+        let ir = lower::lower_with(&typed, &registry, 44100.0).unwrap();
+
+        eprintln!("=== DSL Ir for lang_chiptune ===");
+        eprintln!("num_inputs: {}", ir.num_inputs);
+        eprintln!("num_outputs: {}", ir.num_outputs);
+        eprintln!("num_regs: {}", ir.num_regs);
+        eprintln!("output_reg: {:?}", ir.output_reg);
+        for (i, bi) in ir.builtins.iter().enumerate() {
+            eprintln!(
+                "builtin[{i}]: name={}, kind={:?}, si={}, so={}, params={:?}, bindings={:?}",
+                bi.name, bi.kind, bi.signal_ins, bi.signal_outs, bi.params, bi.param_bindings
+            );
+        }
+        eprintln!(
+            "params: {:?}",
+            ir.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+        for (i, instr) in ir.instrs.iter().enumerate() {
+            eprintln!("instr[{i}]: {:?}", instr);
+        }
+    }
+}
