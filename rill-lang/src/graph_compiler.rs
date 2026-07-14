@@ -178,17 +178,18 @@ pub fn compile<T: Transcendental, const BUF_SIZE: usize>(
         let n_out = output_bufs.len();
 
         let algo = if node.ir.builtins.is_empty() {
-            node_param_names_sets.push(Vec::new());
+            let param_names: Vec<String> = node.ir.params.iter().map(|p| p.name.clone()).collect();
+            node_param_names_sets.push(param_names);
             let prog =
                 crate::program::RillProgram::<T>::new_with(node.ir.clone(), registry, sample_rate)
                     .map_err(|e| format!("program creation: {e}"))?;
             AlgorithmVariant::Siso(Box::new(prog))
         } else {
             let bi = &node.ir.builtins[0];
-            let sig = registry
+            let _sig = registry
                 .builtin_sig(&bi.name)
                 .ok_or_else(|| format!("unknown builtin: {}", bi.name))?;
-            let param_names: Vec<String> = sig.param_names.iter().map(|s| s.to_string()).collect();
+            let param_names: Vec<String> = node.ir.params.iter().map(|p| p.name.clone()).collect();
             node_param_names_sets.push(param_names);
 
             let entry = registry.get(&bi.name).unwrap();
