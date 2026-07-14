@@ -1,11 +1,14 @@
 /// rill-lang builtins for rill-router.
 use std::marker::PhantomData;
 
-use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
+use rill_core::builtin::{
+    BlockBuiltin, BuiltinKind, BuiltinSig, MultichannelBlockBuiltin, ParamType, Registry,
+};
 use rill_core::math::Transcendental;
-use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
+use rill_core::traits::{Algorithm, MultichannelAlgorithm, ParamValue, ProcessResult};
 
 use crate::eq::{FilterFactory, GraphicEq};
+use crate::pan::{MonoToStereo, PanLaw};
 use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 /// Default factory that creates `Biquad<f32>` filters.
@@ -74,6 +77,43 @@ impl<T: Transcendental> BlockBuiltin<T> for GraphicEqBuiltin<T> {
     }
 }
 
+struct MonoToStereoBuiltin<T: Transcendental> {
+    inner: MonoToStereo<T>,
+}
+
+impl<T: Transcendental> MultichannelAlgorithm<T> for MonoToStereoBuiltin<T> {
+    fn num_inputs(&self) -> usize {
+        self.inner.num_inputs()
+    }
+    fn num_outputs(&self) -> usize {
+        self.inner.num_outputs()
+    }
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        self.inner.process(inputs, outputs)
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+}
+
+impl<T: Transcendental> MultichannelBlockBuiltin<T> for MonoToStereoBuiltin<T> {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        match index {
+            0 => {
+                if let Some(v) = value.as_f32() {
+                    self.inner.set_pan(v);
+                }
+            }
+            1 => {
+                if let Some(v) = value.as_f32() {
+                    self.inner.set_smoothing(v);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
         BuiltinSig::simple("graphic_eq", 1, 1, 1, BuiltinKind::Block),
@@ -87,6 +127,21 @@ pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
                 scratch_in: vec![0.0f32; 64],
                 scratch_out: vec![0.0f32; 64],
                 _phantom: PhantomData,
+            })
+        },
+    );
+
+    reg.register_multichannel_block(
+        BuiltinSig {
+            name: "mono_to_stereo",
+            params: vec![ParamType::Signal, ParamType::Float, ParamType::Float],
+            signal_outs: 2,
+            kind: BuiltinKind::Block,
+            param_names: vec!["pan", "smoothing"],
+        },
+        |params, _sr| {
+            Box::new(MonoToStereoBuiltin::<T> {
+                inner: MonoToStereo::new(PanLaw::ConstantPower, params[0] as f32, params[1] as f32),
             })
         },
     );

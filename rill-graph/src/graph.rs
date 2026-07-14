@@ -252,6 +252,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                         "rill/dry_wet_mix" => "dry_wet",
                         "rill/parametric_eq" => "eq_parametric",
                         "rill/graphic_eq" => "graphic_eq",
+                        "rill/mono_to_stereo" => "mono_to_stereo",
                         "rill/moog_ladder" => "moog",
                         "rill/write_head" => "write_head",
                         "rill/read_head" => "read_head",
