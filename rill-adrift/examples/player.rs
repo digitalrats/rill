@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let reg = rill_adrift::lang_builtins::full_registry::<f32>();
         let src = "main = _";
         let engine =
-            rill_lang::compile_graph::<f32>(src, &reg, cfg.sample_rate).expect("compile DSL");
+            rill_lang::compile_graph::<f32, 512>(src, &reg, cfg.sample_rate).expect("compile DSL");
         let mut runner = ProgramRunner::new(engine, None, cfg.block_size);
         runner.wire_backends(None, Some(playback));
         runner.run_with_driver(driver, t_run).ok();

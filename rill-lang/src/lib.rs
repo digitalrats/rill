@@ -83,11 +83,11 @@ pub fn compile_with<T: Transcendental>(
 }
 
 /// Compile rill-lang source into a graph engine that supports SetParameter.
-pub fn compile_graph<T: Transcendental>(
+pub fn compile_graph<T: Transcendental, const BUF_SIZE: usize>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<graph_engine::CompiledGraphEngine<T, 512>, CompileError> {
+) -> Result<graph_engine::CompiledGraphEngine<T, BUF_SIZE>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
@@ -118,7 +118,7 @@ pub fn compile_graph<T: Transcendental>(
         topo_order: vec!["main".to_string()],
     };
 
-    let compiled = graph_compiler::compile::<T, 512>(&graph_ir, registry, sample_rate)
+    let compiled = graph_compiler::compile::<T, BUF_SIZE>(&graph_ir, registry, sample_rate)
         .map_err(CompileError::Unsupported)?;
 
     let mailbox = Arc::new(Mailbox::new(64));

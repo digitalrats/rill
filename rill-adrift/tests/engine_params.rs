@@ -17,7 +17,7 @@ fn run_with_param(
     buf_size: usize,
 ) -> Vec<f32> {
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32>(src, &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 512>(src, &reg, 44100.0).unwrap();
 
     let sp = SetParameter::new(
         String::new(),
@@ -70,7 +70,7 @@ fn actor_param_default_applies() {
     // main = _ * ?gain=0.25
     // No SetParameter — default 0.25 should apply
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32>("main = _ * ?gain=0.25", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 512>("main = _ * ?gain=0.25", &reg, 44100.0).unwrap();
 
     let signal = [2.0f32; 256];
     let mut output = vec![0.0f32; 256];
@@ -112,7 +112,7 @@ fn actor_param_no_default_applies() {
     // main = _ * ?gain
     // No default — should be 0.0, so output = 0.0
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32>("main = _ * ?gain", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 512>("main = _ * ?gain", &reg, 44100.0).unwrap();
 
     let signal = [1.0f32; 64];
     let mut output = vec![0.0f32; 64];
@@ -134,7 +134,7 @@ fn actor_param_persists_across_ticks() {
     // SetParameter("gain", 3.0) → tick 1
     // No SetParameter → tick 2 — gain should still be 3.0
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32>("main = _ * ?gain=1.0", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 512>("main = _ * ?gain=1.0", &reg, 44100.0).unwrap();
 
     // Tick 1: set gain to 3.0
     let sp = SetParameter::new(
@@ -175,7 +175,7 @@ fn source_node_produces_output() {
     // A source node with no signal inputs should produce audio.
     // Use a simple DSL that generates a constant tone.
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32>("main = 0.5", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 512>("main = 0.5", &reg, 44100.0).unwrap();
 
     let mut output = vec![0.0f32; 64];
     engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
@@ -209,7 +209,7 @@ fn source_node_with_param_routing() {
 fn source_node_without_param_produces_default() {
     // Source with actor param default: no SetParameter, should use default.
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32>("main = ?value=0.75", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 512>("main = ?value=0.75", &reg, 44100.0).unwrap();
 
     let mut output = vec![0.0f32; 64];
     engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
@@ -220,4 +220,71 @@ fn source_node_without_param_produces_default() {
             "source with default param: expected 0.75, got {v}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Graph-based param routing (chiptune_stc path via GraphBuilder)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn graph_builder_param_routing_works() {
+    use rill_core::traits::Params;
+    use rill_graph::GraphBuilder;
+    use std::sync::Arc;
+
+    let reg = rill_adrift::lang_builtins::full_registry_f32();
+    let mut builder = GraphBuilder::<f32, 256>::new();
+
+    // Mimic chiptune_stc: two params — clock (param_0) and register write
+    let mut params = Params::new(44100.0);
+    params.insert("param_0", ParamValue::Float(1_750_000.0));
+    params.insert("register_write", ParamValue::Float(0.0));
+    builder.add_node("rill/lofi_chip", &params);
+
+    let ir = builder.build_ir(&reg).unwrap();
+    let compiled = rill_lang::graph_compiler::compile::<f32, 256>(&ir, &reg, 44100.0).unwrap();
+
+    // Verify which index "register_write" maps to
+    let rw_idx = compiled
+        .node_param_names
+        .first()
+        .and_then(|names| names.iter().position(|n| n == "register_write"));
+    println!(
+        "register_write param index: {:?}, names: {:?}",
+        rw_idx,
+        compiled.node_param_names.first()
+    );
+
+    let mailbox = Arc::new(rill_core_actor::Mailbox::new(64));
+    let mut engine = rill_lang::graph_engine::CompiledGraphEngine::new(compiled, mailbox);
+
+    let sp = SetParameter::new(
+        String::new(),
+        ParameterId::new("register_write").unwrap(),
+        ParamValue::Float(1.0),
+        rill_core::queues::SignalOrigin::Manual,
+    );
+    engine
+        .handle()
+        .send(rill_core::queues::CommandEnum::SetParameter(sp));
+
+    let mut output = vec![0.0f32; 64];
+    let result = engine.process_tick(&[], &mut [&mut output[..]], 0);
+    assert!(
+        result.is_ok(),
+        "process_tick should not error: {:?}",
+        result.err()
+    );
+
+    // Verify SetParameter reached the right place
+    let param_map = engine.param_map();
+    let mapped_idx = param_map.get("register_write");
+    println!(
+        "register_write in param_map: {:?}, full map: {:?}",
+        mapped_idx, param_map
+    );
+    assert!(
+        mapped_idx.is_some(),
+        "register_write should be in param_map"
+    );
 }
