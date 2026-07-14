@@ -152,9 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             });
 
-            let engine = system
-                .build_engine(&graph_def, cfg.block_size)
-                .expect("build_engine");
+            let engine = system.build_engine(&graph_def).expect("build_engine");
 
             let mut runner = ProgramRunner::new(engine, None, cfg.block_size);
 

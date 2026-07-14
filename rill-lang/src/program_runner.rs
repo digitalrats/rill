@@ -16,14 +16,13 @@ use std::sync::Arc;
 use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::queues::CommandEnum;
 use rill_core::time::ClockTick;
-use rill_core::traits::Algorithm;
 use rill_core_actor::ActorRef;
 
-use crate::graph_engine::RillGraphEngine;
+use crate::graph_engine::CompiledGraphEngine;
 
 /// Thin wrapper that runs a flat rill-lang program inside an I/O callback.
-pub struct ProgramRunner {
-    engine: RillGraphEngine<f32>,
+pub struct ProgramRunner<const BUF_SIZE: usize> {
+    engine: CompiledGraphEngine<f32, BUF_SIZE>,
     parent_ref: Option<ActorRef<CommandEnum>>,
     capture: Option<Arc<dyn IoCapture>>,
     playback: Option<Arc<dyn IoPlayback>>,
@@ -33,11 +32,11 @@ pub struct ProgramRunner {
     _not_send_sync: PhantomData<*const ()>,
 }
 
-impl ProgramRunner {
+impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
     /// Create a new runner wrapping a compiled graph engine.
     #[allow(missing_docs)]
     pub fn new(
-        engine: RillGraphEngine<f32>,
+        engine: CompiledGraphEngine<f32, BUF_SIZE>,
         parent_ref: Option<ActorRef<CommandEnum>>,
         max_block_size: usize,
     ) -> Self {
@@ -71,7 +70,7 @@ impl ProgramRunner {
     }
 
     /// Reference to the underlying compiled engine.
-    pub fn engine(&self) -> &RillGraphEngine<f32> {
+    pub fn engine(&self) -> &CompiledGraphEngine<f32, BUF_SIZE> {
         &self.engine
     }
 
@@ -89,19 +88,16 @@ impl ProgramRunner {
             .map(|p| p.num_output_channels())
             .unwrap_or(1);
 
-        let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
-        self.engine.apply_due_params(chunk_end);
-
-        // Single engine.process() call per tick
         let input = if let Some(ref cap) = self.capture {
             cap.read_input(0, &mut self.input_buf[..block_size]);
             Some(&self.input_buf[..block_size] as &[f32])
         } else {
             None
         };
+        let inputs: &[&[f32]] = if let Some(inp) = input { &[inp] } else { &[] };
         let _ = self
             .engine
-            .process(input, &mut self.output_buf[..block_size]);
+            .process_tick(inputs, &mut [&mut self.output_buf[..block_size]]);
 
         for ch in 0..num_outputs {
             if let Some(ref pb) = self.playback {

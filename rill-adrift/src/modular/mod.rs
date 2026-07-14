@@ -120,12 +120,12 @@ impl<const BUF: usize> ModularSystem<BUF> {
         GraphBuilder::new()
     }
 
-    /// Build a `RillGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
+    /// Build a `CompiledGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
     pub fn build_engine(
         &self,
         def: &GraphDef,
-        buf_size: usize,
-    ) -> Result<rill_lang::graph_engine::RillGraphEngine<f32>, Box<dyn std::error::Error>> {
+    ) -> Result<rill_lang::graph_engine::CompiledGraphEngine<f32, BUF>, Box<dyn std::error::Error>>
+    {
         let mut builder = self.create_builder();
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))?;
@@ -138,22 +138,14 @@ impl<const BUF: usize> ModularSystem<BUF> {
             .build_ir(&registry)
             .map_err(|e| format!("build_ir: {e}"))?;
 
-        let scheduled = rill_lang::graph_lower::lower(&ir);
-
-        let programs: Vec<rill_lang::RillProgram<f32>> = ir
-            .topo_order
-            .iter()
-            .filter_map(|name| ir.nodes.get(name))
-            .map(|node| {
-                rill_lang::RillProgram::<f32>::new_with(node.ir.clone(), &registry, def.sample_rate)
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("program creation: {e}"))?;
+        let compiled =
+            rill_lang::graph_compiler::compile::<f32, BUF>(&ir, &registry, def.sample_rate)
+                .map_err(|e| format!("compile: {e}"))?;
 
         let mailbox = Arc::new(Mailbox::new(64));
 
-        Ok(rill_lang::graph_engine::RillGraphEngine::new(
-            scheduled, programs, mailbox, buf_size,
+        Ok(rill_lang::graph_engine::CompiledGraphEngine::new(
+            compiled, mailbox,
         ))
     }
 
@@ -231,28 +223,25 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             return;
                         }
                     };
-                    let _scheduled = rill_lang::graph_lower::lower(&ir);
-                    let scheduled = rill_lang::graph_lower::lower(&ir);
-                    let programs: Vec<rill_lang::RillProgram<f32>> = ir
-                        .topo_order
-                        .iter()
-                        .filter_map(|name| ir.nodes.get(name))
-                        .map(|node| {
-                            rill_lang::RillProgram::<f32>::new_with(node.ir.clone(), &registry, sr)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                        .expect("program creation failed");
+                    let compiled =
+                        match rill_lang::graph_compiler::compile::<f32, BUF>(&ir, &registry, sr) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log::error!("graph compile: {e}");
+                                return;
+                            }
+                        };
                     log::info!(
-                        "rill-adrift: rack '{}' engine built — {} programs",
+                        "rill-adrift: rack '{}' engine built — {} nodes",
                         rack_name,
-                        programs.len()
+                        compiled.nodes.len()
                     );
                     let mailbox = Arc::new(Mailbox::new(64));
                     #[cfg(feature = "debug")]
-                    let node_names = scheduled.program_names.clone();
-                    let mut engine = rill_lang::graph_engine::RillGraphEngine::new(
-                        scheduled, programs, mailbox, buf_size,
-                    );
+                    let node_names = compiled.node_names.clone();
+                    #[cfg_attr(not(feature = "debug"), allow(unused_mut))]
+                    let mut engine =
+                        rill_lang::graph_engine::CompiledGraphEngine::new(compiled, mailbox);
 
                     #[cfg(feature = "debug")]
                     engine.allocate_probe_slots(ir.nodes.len());

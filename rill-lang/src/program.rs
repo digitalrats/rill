@@ -309,3 +309,9 @@ impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
         Algorithm::reset(self);
     }
 }
+
+impl<T: Transcendental> BlockBuiltin<T> for RillProgram<T> {
+    fn set_param(&mut self, index: usize, value: &ParamValue) {
+        self.set_param(index, value.clone());
+    }
+}

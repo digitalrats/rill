@@ -12,9 +12,9 @@ pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
 pub mod error;
+pub mod graph_compiler;
 pub mod graph_engine;
 pub mod graph_ir;
-pub mod graph_lower;
 pub mod graph_optimize;
 pub mod ir;
 pub mod lexer;
@@ -82,59 +82,47 @@ pub fn compile_with<T: Transcendental>(
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
 
-/// Compile rill-lang source into an engine that supports [`SetParameter`]
-/// commands via mailbox for runtime parameter updates.
-///
-/// Main parameters are addressed by name directly. Where-block anchor
-/// parameters use the format `"anchor.param"` (dot-separated).
-///
-/// [`SetParameter`]: rill_core::queues::CommandEnum::SetParameter
+/// Compile rill-lang source into a graph engine that supports SetParameter.
 pub fn compile_graph<T: Transcendental>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<graph_engine::RillGraphEngine<T>, CompileError> {
-    use crate::graph_lower::{ScheduledGraph, Step};
-
+) -> Result<graph_engine::CompiledGraphEngine<T, 512>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
-
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
-    // regalloc::allocate(&mut ir);
     validate_block_builtins(&ir)?;
-    let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
 
-    let n_params = prog.params_meta().len();
-
-    let mut step_input = Vec::new();
-    if prog.ir.num_inputs > 0 {
-        step_input.push(0u32 as usize); // buffer 0 = graph input
-    }
-
-    let schedule = ScheduledGraph {
-        inputs: prog.ir.num_inputs,
-        outputs: prog.ir.num_outputs,
-        steps: vec![Step::InlineProgram {
-            node_idx: 0,
-            input_bufs: step_input,
-            output_bufs: vec![0],
-            param_indices: (0..n_params).collect(),
-        }],
-        buffers: 1,
-        output_mapping: vec![0],
-        program_names: vec!["main".to_string()],
+    use crate::graph_ir::{GraphIr, GraphNode};
+    let mut nodes: indexmap::IndexMap<String, GraphNode> = indexmap::IndexMap::new();
+    nodes.insert(
+        "main".to_string(),
+        GraphNode {
+            arity: (ir.num_inputs, ir.num_outputs),
+            ir,
+            params: vec![],
+            keep: false,
+            inline: false,
+            is_bridge: false,
+            feedback_read: vec![],
+            feedback_write: vec![],
+        },
+    );
+    let graph_ir = GraphIr {
+        inputs: 1,
+        outputs: 1,
+        nodes,
+        edges: vec![],
+        topo_order: vec!["main".to_string()],
     };
 
-    let mailbox = Arc::new(Mailbox::new(64));
+    let compiled = graph_compiler::compile::<T, 512>(&graph_ir, registry, sample_rate)
+        .map_err(|e| CompileError::Unsupported(e))?;
 
-    Ok(graph_engine::RillGraphEngine::new(
-        schedule,
-        vec![prog],
-        mailbox,
-        512,
-    ))
+    let mailbox = Arc::new(Mailbox::new(64));
+    Ok(graph_engine::CompiledGraphEngine::new(compiled, mailbox))
 }
 
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
