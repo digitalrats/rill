@@ -135,8 +135,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            let graph_path = crate_dir
-                .join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
+            let graph_path =
+                crate_dir.join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
             let json = std::fs::read_to_string(&graph_path).expect("read graph.json");
             let graph_def = registration::load_graph_json(&json).expect("load_graph_json");
 

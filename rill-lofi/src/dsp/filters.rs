@@ -119,7 +119,8 @@ impl<T: Transcendental> Algorithm<T> for DcBlocker<T> {
         AlgorithmMetadata {
             name: "DC Blocker",
             category: AlgorithmCategory::Filter,
-            description: "Passive one-pole DC-blocking filter — digital model of an AC coupling capacitor",
+            description:
+                "Passive one-pole DC-blocking filter — digital model of an AC coupling capacitor",
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
         }
@@ -195,8 +196,7 @@ mod tests {
     fn test_dc_blocker_algorithm_process() {
         let mut dc = DcBlocker::<f32>::new(44100.0, 10.0);
         let mut output = [0.0f32; 4];
-        Algorithm::process(&mut dc, Some(&[0.5, 0.5, 0.5, 0.5]), &mut output)
-            .unwrap();
+        Algorithm::process(&mut dc, Some(&[0.5, 0.5, 0.5, 0.5]), &mut output).unwrap();
         // First sample: y = 0.5 - 0.0 + r * 0.0 = 0.5
         // Subsequent: x_prev = x = 0.5, so y = 0.5 - 0.5 + r * y_prev = r * y_prev → decay
         // Some output should be non-zero (not silent)

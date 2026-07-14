@@ -17,9 +17,7 @@ use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
-use rill_adrift::rill_graph::serialization::{
-    GraphDef, NodeDef, SourceDef,
-};
+use rill_adrift::rill_graph::serialization::{GraphDef, NodeDef, SourceDef};
 use rill_adrift::rill_patchbay::module_factory::Drain;
 
 const BUF: usize = 256;

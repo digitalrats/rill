@@ -398,12 +398,8 @@ impl GraphDef {
             for (k, v) in nd.parameters() {
                 p = p.with(k.clone(), v.clone());
             }
-            let idx = builder.add_node_with_name(
-                nd.type_name(),
-                &p,
-                nd.id(),
-                nd.name().to_string(),
-            );
+            let idx =
+                builder.add_node_with_name(nd.type_name(), &p, nd.id(), nd.name().to_string());
 
             if let NodeDef::Router(ref r) = nd {
                 for entry in &r.routing_matrix {

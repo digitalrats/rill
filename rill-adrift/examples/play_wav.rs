@@ -63,8 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("create_output: {e}"))?;
 
     // ── 2. Load WAV on control thread ─────────────────────────────────
-    let slab: SignalSlab = rill_adrift::sampler::wav::load_slab(&wav_path)
-        .map_err(|e| format!("load_slab: {e}"))?;
+    let slab: SignalSlab =
+        rill_adrift::sampler::wav::load_slab(&wav_path).map_err(|e| format!("load_slab: {e}"))?;
     eprintln!("Loaded {wav_path}");
 
     let buffer: Vec<f32> = slab
@@ -109,9 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         handle.unpark();
     });
 
-    println!(
-        "▶ Playing {wav_display} through {be_display} backend. Press Enter to stop."
-    );
+    println!("▶ Playing {wav_display} through {be_display} backend. Press Enter to stop.");
     input_thread.join().ok();
     signal_thread.join().ok();
     println!("⏹ Stopped.");

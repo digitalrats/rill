@@ -29,19 +29,8 @@
 // ============================================================================
 
 pub use crate::traits::{
-    Algorithm,
-    AlgorithmCategory,
-    AlgorithmMetadata,
-    IntoParamValue,
-    ParamMetadata,
-    ParamRange,
-    ParamType,
-    ParamValue,
-    ParameterError,
-    ParameterId,
-    ParameterResult,
-    Params,
-    ProcessError,
+    Algorithm, AlgorithmCategory, AlgorithmMetadata, IntoParamValue, ParamMetadata, ParamRange,
+    ParamType, ParamValue, ParameterError, ParameterId, ParameterResult, Params, ProcessError,
     ProcessResult,
 };
 

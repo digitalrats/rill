@@ -43,10 +43,7 @@ impl<T: Transcendental> BlockBuiltin<T> for SamplerBuiltin<T> {
             4 => {
                 if let ParamValue::SignalSlab(ref slab) = value {
                     if let Some(first_ch) = slab.channels.first() {
-                        let buffer: Vec<T> = first_ch
-                            .iter()
-                            .map(|&s| T::from_f32(s))
-                            .collect();
+                        let buffer: Vec<T> = first_ch.iter().map(|&s| T::from_f32(s)).collect();
                         self.inner.set_buffer(buffer);
                     }
                 }
