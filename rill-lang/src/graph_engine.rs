@@ -162,6 +162,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> CompiledGraphEngine<T, BUF_SIZE> 
                             }
                         }
                     }
+                } else {
+                    for (node_idx, map) in self.param_maps.iter().enumerate() {
+                        if let Some(&idx) = map.get(param_name) {
+                            self.pending.push(PendingParam {
+                                node_idx,
+                                param_idx: idx,
+                                value: sp.value.clone(),
+                            });
+                            #[cfg(feature = "debug")]
+                            {
+                                applied = true;
+                            }
+                            break;
+                        }
+                    }
                 }
                 #[cfg(feature = "debug")]
                 if applied {
