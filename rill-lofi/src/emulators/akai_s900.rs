@@ -1,8 +1,6 @@
 use rill_core::traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata};
 use rill_core::traits::ProcessResult;
 
-use crate::config::LofiConfig;
-
 /// Emulates the Akai S900 hardware sampler — 12-bit sample playback
 /// with linear interpolation, pitch shifting and loop support.
 pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
@@ -12,7 +10,6 @@ pub struct AkaiS900Emulator<const BUF_SIZE: usize> {
     loop_enabled: bool,
     loop_start: usize,
     loop_end: usize,
-    config: LofiConfig,
 }
 
 impl<const BUF_SIZE: usize> Default for AkaiS900Emulator<BUF_SIZE> {
@@ -22,8 +19,8 @@ impl<const BUF_SIZE: usize> Default for AkaiS900Emulator<BUF_SIZE> {
 }
 
 impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
+    /// Creates a new Akai S900 emulator with default settings.
     pub fn new() -> Self {
-        let config = LofiConfig::for_system(crate::config::ClassicSystem::AkaiS900);
         Self {
             buffer: Vec::new(),
             position: 0.0,
@@ -31,19 +28,21 @@ impl<const BUF_SIZE: usize> AkaiS900Emulator<BUF_SIZE> {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
-            config,
         }
     }
 
+    /// Loads a sample buffer into the emulator.
     pub fn load_sample(&mut self, samples: &[f32]) {
         self.buffer = samples.to_vec();
         self.loop_end = samples.len();
     }
 
+    /// Sets playback pitch (0.1–4.0, where 1.0 = original speed).
     pub fn set_pitch(&mut self, pitch: f32) {
         self.pitch = pitch.clamp(0.1, 4.0);
     }
 
+    /// Enables or disables sample looping with start/end points.
     pub fn set_loop(&mut self, enabled: bool, start: usize, end: usize) {
         self.loop_enabled = enabled;
         self.loop_start = start;

@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! rill-core/
-//! ├── traits/           # Core traits (Node, Source, Processor, Sink, etc.)
+//! ├── traits/           # Core traits (Algorithm, Parameter, ProcessError)
 //! ├── math/             # Mathematical abstractions (Scalar, Transcendental, Vector)
 //! │   └── vector/       # Vector types, SIMD abstractions, slice operations
 //! ├── buffer/           # Lock-free signal buffers with AtomicCell safety
@@ -24,10 +24,7 @@
 //! - **Scalar**: Base numeric trait for any type (floats and integers)
 //! - **Transcendental**: Float numeric abstraction with sin/cos/sqrt
 //! - **AtomicCell**: Safe atomic wrapper for lock-free data structures
-//! - **Node**: Base trait for all nodes in the signal graph
-//! - **Source**: Active generators (oscillators, file readers)
-//! - **Processor**: Passive processors (filters, effects)
-//! - **Sink**: Active outputs (I/O devices, file writers)
+//! - **Algorithm**: Core processing trait for signal nodes
 //! - **PipeBuffer**: Zero-copy connections between nodes
 //! - **CommandQueue**: Real-time safe parameter automation
 //! - **ClockTick**: Sample-accurate timing for synchronization
@@ -96,7 +93,7 @@ pub use error::*;
 // Re-export core traits
 pub use traits::{
     ParamMetadata, ParamRange, ParamType, ParamValue, ParameterError, ParameterId, Params,
-    PortError, PortResult, ProcessError, ProcessResult,
+    ProcessError, ProcessResult,
 };
 
 // Re-export math abstractions

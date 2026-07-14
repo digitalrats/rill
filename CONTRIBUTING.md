@@ -45,7 +45,7 @@ git flow feature finish my-feature
 ## Code conventions
 
 ### Safety & unsafe policy
-- `#![deny(unsafe_code)]` is set in 7 crates — **always ask permission** before
+- `#![deny(unsafe_code)]` is set in 9 crates — **always ask permission** before
   suggesting `unsafe` in those crates
 - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer
   manipulation
@@ -75,6 +75,16 @@ Non-default features should be verified:
 cargo build --no-default-features  # minimal
 cargo build --all-features         # everything
 ```
+
+Key feature flags across the workspace:
+
+| Crate | Non-default features |
+|---|---|
+| `rill-core` | `serde`, `simd` |
+| `rill-core-dsp` | `simd`, `f64`, `fast_math` |
+| `rill-digital-effects` | `graph` |
+| `rill-io` | `alsa`, `pipewire`, `jack`, `midir`, `all-backends` |
+| `rill-adrift` | `analog`, `midi`, `alsa`, `jack`, `pipewire` (backends) |
 
 ## Pull request process
 

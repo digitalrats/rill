@@ -11,7 +11,7 @@ independently.
 │  rill-osc  │  rill-graph  │  rill-patchbay  │  rill-sampler │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)  │
-│  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
+│  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                     │
 │  rill-core-model  │  rill-analog-filters  │  rill-analog      │
 │  -effects  │  rill-lang  │  rill-fft                         │
@@ -21,7 +21,7 @@ independently.
 │  rill-telemetry                                            │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)   │
-│  rill-core-actor  (ActorRef, ActorCell, ActorSystem)       │
+│  rill-core-actor  (ActorRef, ActorSystem)       │
 └─────────────────────────────────────────────────────────────┘
 ```
 

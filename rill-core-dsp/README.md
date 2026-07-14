@@ -13,7 +13,7 @@ Core DSP infrastructure — vector abstractions, algorithms, and macros for sign
 
 ## Dependencies
 
-- `rill-core` — `AudioNum`, math abstractions
+- `rill-core` — `Transcendental`, math abstractions
 
 ## Links
 

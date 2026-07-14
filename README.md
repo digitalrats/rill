@@ -6,7 +6,7 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Modular signal-processing ecosystem for Rust. 20 workspace members —
-19 library crates plus the `rill-analyzer` CLI debugger. Lock-free
+18 library crates plus the `rill-analyzer` CLI debugger. Lock-free
 queues and generic vector math to real-time FFT, convolution, frequency‑domain
 effects, and analog circuit modelling.
 
@@ -15,7 +15,7 @@ effects, and analog circuit modelling.
 │  rill-osc  │  rill-graph  │  rill-patchbay  │  rill-sampler │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)   │
-│  rill-oscillators  │  rill-digital-filters  │  rill-digital  │
+│  rill-digital-filters  │  rill-digital  │
 │  -effects  │  rill-router  │  rill-lofi                       │
 │  rill-core-model  │  rill-analog-filters  │  rill-analog     │
 │  -effects  │  rill-lang  │  rill-fft                          │
@@ -23,7 +23,7 @@ effects, and analog circuit modelling.
 │  rill-io (PortAudio / ALSA / PipeWire / JACK)                  │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core (traits, math, buffers, queues, time, macros)     │
-│  rill-core-actor  (ActorRef, ActorCell, ActorSystem)        │
+│  rill-core-actor  (ActorRef, Actor, ActorSystem)        │
 │  rill-telemetry  (probes, collectors, debug IPC)           │
 └─────────────────────────────────────────────────────────────┘
 
@@ -107,14 +107,14 @@ Key performance drivers:
 
 ```toml
 [dependencies]
-rill-adrift = "0.5.0"
+rill-adrift = "0.6.0-M1"
 ```
 
 Enable optional features as needed (see table below).
 
 ```rust,no_run
 use rill_adrift::rill_graph::GraphBuilder;
-use rill_adrift::rill_oscillators::signal::SineOsc;
+use rill_adrift::rill_core_dsp::signal::SineOsc;
 
 const BUF_SIZE: usize = 256;
 
@@ -233,13 +233,12 @@ topology definition.
 | Crate | Description |
 |-------|-------------|
 | **rill-core** | Foundation: traits, math, buffers, queues, time, macros |
-| **rill-core-actor** | Actor model: ActorRef, ActorCell, ActorSystem for lock-free message passing |
+| **rill-core-actor** | Actor model: ActorRef, Actor, ActorSystem for lock-free message passing |
 | **rill-core-dsp** | Algorithm trait, generators, filters, delay, vector ops |
 | **rill-core-model** | WDF elements, adapters, physical modeling (string, plate, modal, cavity) |
 | **rill-lang** | Faust-style signal DSL — compiles to `Algorithm<T>` |
 | **rill-fft** | FFT, frequency‑domain convolution, spectrum analysis, spectral effects |
 | **rill-graph** | Static DAG signal graph with Port::propagate |
-| **rill-oscillators** | Sine, saw, noise, LFO, envelope graph nodes |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
 | **rill-digital-effects** | Delay, Distortion, Limiter nodes |
 | **rill-router** | EQ + mixer + routing |
@@ -271,7 +270,7 @@ topology definition.
 | `alsa` / `portaudio` / `jack` / `pipewire` | I/O backends (implies `io`) | no |
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
-`rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`,
+`rill-digital-filters`, `rill-digital-effects`,
 `rill-router`, `rill-patchbay`.
 
 ## Dependencies
@@ -281,7 +280,6 @@ graph TD
     CORE[rill-core] --> CORE_DSP[rill-core-dsp]
     CORE --> CORE_ACTOR[rill-core-actor]
     CORE --> GRAPH[rill-graph]
-    CORE_DSP --> OSC[rill-oscillators]
     CORE_DSP --> FILTERS[rill-digital-filters]
     CORE_DSP --> EFFECTS[rill-digital-effects]
     CORE_DSP --> ROUTER[rill-router]
@@ -316,7 +314,7 @@ cargo fmt                 # format (max_width=100)
 
 ## Publications
 
-19 library crates publish to [crates.io](https://crates.io) in dependency order.
+18 library crates publish to [crates.io](https://crates.io) in dependency order.
 `rill-analyzer` is a CLI tool and is **not** published to crates.io.
 Use the publish script:
 

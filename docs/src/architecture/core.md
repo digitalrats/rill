@@ -171,16 +171,25 @@ pub enum ParamValue {
 Non-blocking SPSC queue for dual-thread communication:
 
 ```rust
-use rill_core::queues::{MpscQueue, SetParameter};
+use std::sync::Arc;
+use rill_core::queues::{MpscQueue, SetParameter, SignalOrigin};
+use rill_core::traits::{ParamValue, ParameterId};
 
 let cmd_queue = Arc::new(MpscQueue::<SetParameter>::with_capacity(64));
 
 // Control thread
-cmd_queue.push(SetParameter::new(port, param, value, SignalOrigin::Manual));
+cmd_queue.push(SetParameter::new(
+    "osc_freq".to_string(),
+    ParameterId::new("frequency").unwrap(),
+    ParamValue::Float(440.0),
+    SignalOrigin::Manual,
+));
 
-// Audio thread (in tick closure)
+// Signal thread (in tick closure)
 while let Some(cmd) = cmd_queue.pop() {
-    nodes[cmd.target].set_parameter(&cmd.parameter, cmd.value);
+    if let Some(node) = nodes.get_mut(&cmd.port) {
+        node.set_parameter(&cmd.parameter, cmd.value);
+    }
 }
 ```
 
@@ -216,13 +225,13 @@ and is set to the full callback size by chunking backends (PipeWire, JACK).
 
 ```rust
 pub struct SetParameter {
-    pub port: PortId,
-    pub anchor: String,         // node anchor name for lang-based graphs
+    pub port: String,              // target port name
+    pub anchor: String,            // node anchor name for lang-based graphs
     pub parameter: ParameterId,
     pub value: ParamValue,
     pub source: SignalOrigin,
-    pub timestamp: u64,         // wall-clock, for ordering/telemetry
-    pub sample_pos: Option<u64>, // absolute sample to apply at; None = ASAP
+    pub timestamp: u64,            // wall-clock, for ordering/telemetry
+    pub sample_pos: Option<u64>,   // absolute sample to apply at; None = ASAP
 }
 ```
 

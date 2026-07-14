@@ -100,7 +100,7 @@ The REPL uses prefix-matching — `b` for `break`, `c` for `continue`, `p` for `
 
 | Command | Description |
 |---------|-------------|
-| `info automata` | List all registered automatons (servos) |
+| `info automatons` | List all registered automatons (servos) |
 | `info sensors` | List all registered sensors (MIDI, OSC) |
 | `info queues` | Show queue statistics (capacity, fill level) |
 

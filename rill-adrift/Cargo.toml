@@ -65,6 +65,10 @@ required-features = ["io", "sampler"]
 
 
 [[example]]
+name = "advanced_player"
+required-features = ["io", "sampler", "serialization"]
+
+[[example]]
 name = "complex_dsl"
 
 [[example]]

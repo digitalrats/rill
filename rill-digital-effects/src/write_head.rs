@@ -10,37 +10,41 @@ unsafe impl<T: Transcendental, const B: usize> Send for WriteHead<T, B> {}
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Sync for WriteHead<T, B> {}
 
+/// Tape write head for delay-based tape effects with feedback control.
 pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
     tape: Option<TapeWriter<T>>,
-    resource_name: String,
     delay_time: f32,
     feedback: f32,
     sample_rate: f32,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
+    /// Creates a new write head with default settings.
     pub fn new(sample_rate: f32) -> Self {
         Self::with_resource(sample_rate, "tape_0")
     }
 
-    pub fn with_resource(sample_rate: f32, resource_name: &str) -> Self {
+    /// Creates a new write head with a named tape resource.
+    pub fn with_resource(sample_rate: f32, _resource_name: &str) -> Self {
         Self {
             tape: None,
-            resource_name: resource_name.to_string(),
             delay_time: 0.5,
             feedback: 0.3,
             sample_rate,
         }
     }
 
+    /// Sets the write delay time in seconds (clamped to 0.01–2.0).
     pub fn set_delay_time(&mut self, time: f32) {
         self.delay_time = time.clamp(0.01, 2.0);
     }
 
+    /// Sets feedback amount (clamped to 0.0–0.99).
     pub fn set_feedback(&mut self, fb: f32) {
         self.feedback = fb.clamp(0.0, 0.99);
     }
 
+    /// Sets the tape writer to write to.
     pub fn set_writer(&mut self, writer: TapeWriter<T>) {
         self.tape = Some(writer);
     }

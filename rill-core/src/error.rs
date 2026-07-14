@@ -33,8 +33,6 @@ pub enum ErrorCategory {
     Core,
     /// DSP errors (filters, effects, generators).
     Dsp,
-    /// Graph errors (connections, topology).
-    Graph,
     /// I/O errors (ALSA, JACK, PipeWire).
     Io,
     /// Control errors (OSC, automation).
@@ -53,7 +51,6 @@ impl ErrorCategory {
         match self {
             ErrorCategory::Core => "core",
             ErrorCategory::Dsp => "dsp",
-            ErrorCategory::Graph => "graph",
             ErrorCategory::Io => "io",
             ErrorCategory::Control => "control",
             ErrorCategory::Config => "config",
@@ -107,20 +104,6 @@ pub enum ErrorCode {
     QueueClosed = 122,
     /// Queue index is out of bounds.
     InvalidQueueIndex = 123,
-
-    // ── Graph errors (200-299) ──────────────────────────────────
-    /// Referenced node does not exist in the graph.
-    NodeNotFound = 200,
-    /// Referenced port does not exist on the node.
-    PortNotFound = 201,
-    /// The requested connection is invalid.
-    InvalidConnection = 202,
-    /// A cycle was detected in the graph (forbidden in a DAG).
-    CycleDetected = 203,
-    /// Node with the same ID already exists.
-    NodeAlreadyExists = 204,
-    /// Port is already connected.
-    PortAlreadyConnected = 205,
 
     // ── I/O errors (300-399) ────────────────────────────────────
     /// I/O device not found.
@@ -185,13 +168,6 @@ impl ErrorCode {
             | ErrorCode::QueueClosed
             | ErrorCode::InvalidQueueIndex => ErrorCategory::Core,
 
-            ErrorCode::NodeNotFound
-            | ErrorCode::PortNotFound
-            | ErrorCode::InvalidConnection
-            | ErrorCode::CycleDetected
-            | ErrorCode::NodeAlreadyExists
-            | ErrorCode::PortAlreadyConnected => ErrorCategory::Graph,
-
             ErrorCode::DeviceNotFound
             | ErrorCode::DeviceBusy
             | ErrorCode::AlsaError
@@ -235,13 +211,6 @@ impl ErrorCode {
             ErrorCode::QueueEmpty => "Queue is empty",
             ErrorCode::QueueClosed => "Queue is closed",
             ErrorCode::InvalidQueueIndex => "Invalid queue index",
-
-            ErrorCode::NodeNotFound => "Node not found",
-            ErrorCode::PortNotFound => "Port not found",
-            ErrorCode::InvalidConnection => "Invalid connection",
-            ErrorCode::CycleDetected => "Cycle detected in graph",
-            ErrorCode::NodeAlreadyExists => "Node already exists",
-            ErrorCode::PortAlreadyConnected => "Port already connected",
 
             ErrorCode::DeviceNotFound => "Device not found",
             ErrorCode::DeviceBusy => "Device is busy",
@@ -423,40 +392,6 @@ macro_rules! error {
     };
 }
 
-/// Create an error with source location attached.
-#[macro_export]
-macro_rules! error_at {
-    ($code:expr, $msg:expr) => {
-        $crate::error::Error::new($code, $msg).at(file!(), line!(), column!())
-    };
-    ($code:expr, $fmt:expr, $($arg:tt)*) => {
-        $crate::error::Error::new($code, format!($fmt, $($arg)*))
-            .at(file!(), line!(), column!())
-    };
-}
-
-/// Return early with an error (convenience for `return Err(...)`).
-#[macro_export]
-macro_rules! bail {
-    ($code:expr, $msg:expr) => {
-        return Err($crate::error::Error::new($code, $msg))
-    };
-    ($code:expr, $fmt:expr, $($arg:tt)*) => {
-        return Err($crate::error::Error::new($code, format!($fmt, $($arg)*)))
-    };
-}
-
-/// Transform a `Result` by mapping the error with additional context.
-#[macro_export]
-macro_rules! context {
-    ($expr:expr, $code:expr, $msg:expr) => {
-        $expr.map_err(|e| $crate::error::Error::new($code, $msg).with_cause(e))
-    };
-    ($expr:expr, $code:expr, $fmt:expr, $($arg:tt)*) => {
-        $expr.map_err(|e| $crate::error::Error::new($code, format!($fmt, $($arg)*)).with_cause(e))
-    };
-}
-
 // =============================================================================
 // Specialized error types for different components
 // =============================================================================
@@ -626,7 +561,6 @@ mod tests {
     #[test]
     fn test_error_category() {
         assert_eq!(ErrorCode::BufferFull.category(), ErrorCategory::Core);
-        assert_eq!(ErrorCode::NodeNotFound.category(), ErrorCategory::Graph);
         assert_eq!(ErrorCode::AlsaError.category(), ErrorCategory::Io);
         assert_eq!(ErrorCode::OscError.category(), ErrorCategory::Control);
         assert_eq!(ErrorCode::ConfigNotFound.category(), ErrorCategory::Config);

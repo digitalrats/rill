@@ -2,8 +2,6 @@
 //!
 //! This module defines the fundamental traits that form the backbone
 //! of the Rill ecosystem.
-/// Action trait and types for node‑level commands.
-pub mod action;
 /// Algorithm trait and action contexts.
 pub mod algorithm;
 /// Bridge backend trait for duplex execution boundary.
@@ -13,8 +11,6 @@ pub mod buffer_view;
 mod error;
 /// MultichannelAlgorithm trait for multi-IO processing (N inputs, M outputs).
 pub mod multichannel_algorithm;
-/// NodeId type for identifying nodes.
-pub mod node;
 /// Parameter types and IDs (`ParameterId`, `ParamValue`, `ParamType`, etc.).
 pub mod param;
 /// ParameterWrite trait — polymorphic control interface for DSP engines.
@@ -22,12 +18,10 @@ pub mod parameter_write;
 /// Rack archetype — modular processing unit (Eurorack case).
 pub mod rack;
 // Re-export all public items
-pub use action::*;
 pub use algorithm::*;
 pub use buffer_view::*;
 pub use error::*;
 pub use multichannel_algorithm::*;
-pub use node::*;
 pub use param::*;
 pub use parameter_write::*;
 pub use rack::*;

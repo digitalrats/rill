@@ -32,6 +32,7 @@ pub use rill_core;
 /// Re-export of the `rill_core_dsp` crate.
 pub use rill_core_dsp;
 
+/// Register graph nodes and lang builtins for sampler.
 pub mod register;
 
 /// rill-lang builtins for sampler types.

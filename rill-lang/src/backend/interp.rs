@@ -285,7 +285,19 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
         let n_out = bi.signal_outs;
 
         if n_in <= 1 && n_out == 1 {
-            // Fast path: single-channel or generator, no heap allocation
+            // Fast path: single-channel or generator, no heap allocation.
+            //
+            // Safety: taking the output register must not invalidate the input
+            // register slice.  Builders (DSL lowerer, graph build_ir) guarantee
+            // that input and output use separate registers; the assertion here
+            // catches any violation at the IR level.
+            assert!(
+                n_in == 0 || first_dst != srcs[0],
+                "ForeignBlock register aliasing: input reg {} == output reg {}. \
+                 The program IR must use separate registers for input and output.",
+                srcs[0],
+                first_dst,
+            );
             let mut out = std::mem::take(&mut prog.block_regs[first_dst]);
             let maybe_in = if n_in == 0 {
                 None

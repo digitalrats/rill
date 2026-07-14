@@ -121,6 +121,8 @@ pub mod prelude {
     pub use crate::spectrum::FftSpectrumAnalyzer;
 }
 
+/// Register graph nodes and lang builtins for FFT.
 pub mod register;
 
+/// FFT lang builtins (spectral gate, spectral delay, convolver).
 pub mod lang;

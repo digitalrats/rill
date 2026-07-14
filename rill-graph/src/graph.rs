@@ -41,6 +41,7 @@ impl std::fmt::Display for BuildError {
 struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
     id: u32,
+    name: String,
     params: Params,
     routing_entries: Vec<(usize, usize, f32)>,
     _phantom: std::marker::PhantomData<(T, [(); BUF_SIZE])>,
@@ -104,10 +105,24 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
     /// Add a node with an explicit [`NodeId`].
     pub fn add_node_with_id(&mut self, type_name: &str, params: &Params, id: u32) -> usize {
+        self.add_node_with_name(type_name, params, id, String::new())
+    }
+
+    /// Add a node with an explicit [`NodeId`] and a human-readable name
+    /// (typically sourced from the JSON `name` field). The name becomes the
+    /// program/anchor name in the compiled graph, used by `SetParameter` routing.
+    pub fn add_node_with_name(
+        &mut self,
+        type_name: &str,
+        params: &Params,
+        id: u32,
+        name: String,
+    ) -> usize {
         let idx = self.recipes.len();
         self.recipes.push(NodeRecipe {
             type_name: type_name.to_string(),
             id,
+            name,
             params: params.clone(),
             routing_entries: Vec::new(),
             _phantom: std::marker::PhantomData,
@@ -204,7 +219,14 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .recipes
             .iter()
             .enumerate()
-            .map(|(idx, recipe)| (idx, format!("node_{}", recipe.id)))
+            .map(|(idx, recipe)| {
+                let name = if recipe.name.is_empty() {
+                    format!("node_{}", recipe.id)
+                } else {
+                    recipe.name.clone()
+                };
+                (idx, name)
+            })
             .collect();
 
         // 2. Create GraphNodes from recipes
@@ -246,27 +268,60 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
             let arity = (sig.signal_ins(), sig.signal_outs);
 
-            // Convert recipe parameters to ParamDef (name → Ir.params)
-            // and to f64 constants for the builtin constructor
+            // Convert all recipe parameters to ParamDef.
+            // Include non-f32 values (SignalSlab placeholders) so that
+            // SetParameter can target them by name via param_maps.
             let param_defs: Vec<rill_lang::ir::ParamDef> = recipe
                 .params
                 .parameters
                 .iter()
-                .filter_map(|(k, v)| {
-                    v.as_f32().map(|f| rill_lang::ir::ParamDef {
+                .map(|(k, v)| {
+                    let default = v.as_f32().unwrap_or(0.0) as f64;
+                    rill_lang::ir::ParamDef {
                         name: k.clone(),
-                        default: f as f64,
+                        default,
                         min: f64::NEG_INFINITY,
                         max: f64::INFINITY,
-                    })
+                    }
                 })
                 .collect();
-            let param_values: Vec<f64> = recipe
-                .params
-                .parameters
-                .values()
-                .filter_map(|v| v.as_f32().map(|f| f as f64))
+
+            // Name → recipe-index lookup for building param_bindings.
+            let name_to_recipe_idx: HashMap<String, usize> = param_defs
+                .iter()
+                .enumerate()
+                .map(|(i, pd)| (pd.name.clone(), i))
                 .collect();
+
+            let param_values: Vec<f64>;
+            let param_bindings: Vec<(usize, usize)>;
+
+            if sig.param_names.is_empty() {
+                // Backward compat: no names → positional identity (HashMap order).
+                param_values = recipe
+                    .params
+                    .parameters
+                    .values()
+                    .filter_map(|v| v.as_f32().map(|f| f as f64))
+                    .collect();
+                param_bindings = (0..param_defs.len()).map(|i| (i, i)).collect();
+            } else {
+                // Named params: match recipe param names to builtin arg positions.
+                // param_values[i] = value for builtin arg i, in correct positional order.
+                // param_bindings[(arg_pos, recipe_param_idx)] — used by push_builtin_params
+                // to route SetParameter changes to the right builtin set_param(arg_pos, _) call.
+                let num_args = sig.param_names.len();
+                let mut values = vec![0.0; num_args];
+                let mut bindings = Vec::with_capacity(num_args);
+                for (arg_pos, builtin_name) in sig.param_names.iter().enumerate() {
+                    if let Some(&recipe_idx) = name_to_recipe_idx.get(*builtin_name) {
+                        values[arg_pos] = param_defs[recipe_idx].default;
+                        bindings.push((arg_pos, recipe_idx));
+                    }
+                }
+                param_values = values;
+                param_bindings = bindings;
+            }
 
             // Build BuiltinInstance: one builtin wrapping the recipe's type
             let builtin_name = sig.name.to_string();
@@ -276,40 +331,45 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 kind: sig.kind,
                 signal_ins: arity.0,
                 signal_outs: arity.1,
-                // Map compile-time param slots to Ir param indices for
-                // run-time SetParameter routing. All recipe params are
-                // dynamic: arg position i → Ir param index i.
-                param_bindings: (0..param_defs.len()).map(|i| (i, i)).collect(),
+                param_bindings,
             };
 
-            // Build instructions: CallBlock for the builtin
+            // Build instructions: one LoadInput (if the builtin has signal inputs)
+            // followed by CallBlock. Use separate registers for input/output when
+            // both exist — avoids register aliasing in exec_foreign_block where
+            // taking the output register would clobber the input.
             let mut instrs = Vec::new();
+            let mut output_reg = 0usize;
+            let mut num_regs = 1usize;
             if arity.1 > 0 {
-                // Load input from input slot 0 if the builtin has signal inputs
                 if arity.0 > 0 {
                     instrs.push(rill_lang::ir::Instr::LoadInput { dst: 0, index: 0 });
+                    num_regs = 2;
+                    output_reg = 1;
                 }
+                #[cfg(feature = "debug")]
+                {
+                    // ProbePoint needs an extra register: output_reg + 1
+                    num_regs += 1;
+                }
+                let srcs = if arity.0 > 0 { vec![0] } else { vec![] };
                 instrs.push(rill_lang::ir::Instr::CallBlock {
-                    dst: 0,
-                    srcs: if arity.0 > 0 { vec![0] } else { vec![] },
+                    dst: output_reg,
+                    srcs,
                     instance: 0,
                 });
-                // Probe the output — one probe per graph node at its output register
                 #[cfg(feature = "debug")]
                 instrs.push(rill_lang::ir::Instr::ProbePoint {
                     id: idx as u32,
-                    src: 0,
-                    dst: 1,
+                    src: output_reg,
+                    dst: output_reg.wrapping_add(1),
                 });
             }
 
             let ir = rill_lang::ir::Ir {
                 instrs,
-                #[cfg(feature = "debug")]
-                num_regs: 2, // need extra reg for ProbePoint dst
-                #[cfg(not(feature = "debug"))]
-                num_regs: 1,
-                output_reg: 0,
+                num_regs,
+                output_reg,
                 num_inputs: arity.0,
                 num_outputs: arity.1,
                 state: rill_lang::ir::StateLayout {

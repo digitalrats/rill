@@ -6,7 +6,6 @@
 //!
 //! ## What's included
 //!
-//! - Node identification (`NodeId`)
 //! - Parameter handling (`ParameterId`, `ParamValue`, `ParamType`)
 //! - Time and clock (`ClockTick`, `ClockSource`, `SystemClock`)
 //! - Error types (`ProcessResult`, `ProcessError`, etc.)
@@ -30,31 +29,8 @@
 // ============================================================================
 
 pub use crate::traits::{
-    Action,
-    ActionContext,
-
-    // Algorithm / Action
-    Algorithm,
-    AlgorithmCategory,
-    AlgorithmMetadata,
-    ConnectionError,
-    ConnectionResult,
-    // Parameter conversion
-    IntoParamValue,
-    ParamMetadata,
-    ParamRange,
-    ParamType,
-    ParamValue,
-    ParameterError,
-    // Parameter handling
-    ParameterId,
-    ParameterResult,
-    Params,
-    PortError,
-    // Ports
-    PortResult,
-    ProcessError,
-    // Error handling
+    Algorithm, AlgorithmCategory, AlgorithmMetadata, IntoParamValue, ParamMetadata, ParamRange,
+    ParamType, ParamValue, ParameterError, ParameterId, ParameterResult, Params, ProcessError,
     ProcessResult,
 };
 
@@ -274,14 +250,6 @@ pub mod param_prelude {
     };
 }
 
-/// Prelude for working with ports
-pub mod port_prelude {
-    pub use crate::traits::{PortError, PortResult};
-}
-
-/// Prelude for working with nodes
-pub mod node_prelude {}
-
 // ============================================================================
 // Re-export of commonly used items from other crates
 // ============================================================================
@@ -290,55 +258,6 @@ pub mod node_prelude {}
 pub mod external {
     pub use std::f32::consts::PI;
     pub use std::f64::consts::PI as PI_F64;
-}
-
-// ============================================================================
-// Helper macros for common operations
-// ============================================================================
-
-/// Macro for creating a mono block from a slice
-///
-/// # Example
-/// ```
-/// use rill_core::mono_block;
-///
-/// let data = vec![1.0, 2.0, 3.0];
-/// let block = mono_block!(data, 64);
-/// ```
-#[macro_export]
-macro_rules! mono_block {
-    ($data:expr, $size:expr) => {{
-        let mut block = [0.0; $size];
-        let len = $data.len().min($size);
-        block[..len].copy_from_slice(&$data[..len]);
-        block
-    }};
-}
-
-/// Macro for creating a stereo block from slices
-///
-/// # Example
-/// ```
-/// use rill_core::stereo_block;
-///
-/// let left = vec![1.0; 64];
-/// let right = vec![2.0; 64];
-/// let block = stereo_block!(left, right, 64);
-/// ```
-#[macro_export]
-macro_rules! stereo_block {
-    ($left:expr, $right:expr, $size:expr) => {{
-        let mut left_block = [0.0; $size];
-        let mut right_block = [0.0; $size];
-
-        let left_len = $left.len().min($size);
-        left_block[..left_len].copy_from_slice(&$left[..left_len]);
-
-        let right_len = $right.len().min($size);
-        right_block[..right_len].copy_from_slice(&$right[..right_len]);
-
-        [left_block, right_block]
-    }};
 }
 
 // ============================================================================
@@ -424,30 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn test_port_prelude() {
-        use port_prelude::*;
-        let _err = PortError::not_found("test");
-    }
-
-    #[test]
     fn test_constants() {
         assert_eq!(DEFAULT_BLOCK_SIZE, 64);
         assert_eq!(MAX_SAMPLE_RATE, 384_000.0);
         assert_eq!(MIN_SAMPLE_RATE, 8_000.0);
         assert_eq!(CACHE_LINE_SIZE, 64);
-    }
-
-    #[test]
-    fn test_macros() {
-        let data = [1.0, 2.0, 3.0];
-        let block = mono_block!(data, 4);
-        assert_eq!(block, [1.0, 2.0, 3.0, 0.0]);
-
-        let left = [1.0; 4];
-        let right = [2.0; 4];
-        let stereo = stereo_block!(left, right, 4);
-        assert_eq!(stereo[0], [1.0; 4]);
-        assert_eq!(stereo[1], [2.0; 4]);
     }
 
     #[test]
