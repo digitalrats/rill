@@ -6,7 +6,7 @@ use rill_core::buffer::{Buffer, FixedBuffer};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, MultichannelAlgorithm, ProcessResult};
 
-use crate::builtin::{Registry, SignatureSource};
+use crate::builtin::Registry;
 use crate::graph_ir::{EdgeKind, GraphIr};
 
 /// Owned algorithm variants — SISO or MIMO.
@@ -177,34 +177,33 @@ pub fn compile<T: Transcendental, const BUF_SIZE: usize>(
         let n_in = input_bufs.len();
         let n_out = output_bufs.len();
 
-        let algo = if node.ir.builtins.is_empty() {
-            let param_names: Vec<String> = node.ir.params.iter().map(|p| p.name.clone()).collect();
-            node_param_names_sets.push(param_names);
+        let param_names: Vec<String> = node.ir.params.iter().map(|p| p.name.clone()).collect();
+        node_param_names_sets.push(param_names);
+
+        let algo = if n_in <= 1 && n_out == 1 {
             let prog =
                 crate::program::RillProgram::<T>::new_with(node.ir.clone(), registry, sample_rate)
                     .map_err(|e| format!("program creation: {e}"))?;
             AlgorithmVariant::Siso(Box::new(prog))
         } else {
-            let bi = &node.ir.builtins[0];
-            let _sig = registry
-                .builtin_sig(&bi.name)
+            let bi = node
+                .ir
+                .builtins
+                .first()
+                .ok_or_else(|| format!("MIMO node '{}' has no builtins", name))?;
+            let entry = registry
+                .get(&bi.name)
                 .ok_or_else(|| format!("unknown builtin: {}", bi.name))?;
-            let param_names: Vec<String> = node.ir.params.iter().map(|p| p.name.clone()).collect();
-            node_param_names_sets.push(param_names);
 
-            let entry = registry.get(&bi.name).unwrap();
-
-            if n_in <= 1 && n_out == 1 {
-                let block = entry
-                    .build_block(&bi.params, sample_rate)
-                    .ok_or_else(|| format!("failed to build block: {}", bi.name))?;
-                AlgorithmVariant::Siso(block)
-            } else {
-                let mimo = entry
-                    .build_multichannel_block(&bi.params, sample_rate)
-                    .ok_or_else(|| format!("failed to build multichannel block: {}", bi.name))?;
-                AlgorithmVariant::Mimo(mimo)
-            }
+            let mimo = entry
+                .build_multichannel_block(&bi.params, sample_rate)
+                .ok_or_else(|| {
+                    format!(
+                        "failed to build multichannel block: {}. Is it registered via register_multichannel_block?",
+                        bi.name
+                    )
+                })?;
+            AlgorithmVariant::Mimo(mimo)
         };
 
         nodes.push(NodeClosure {
