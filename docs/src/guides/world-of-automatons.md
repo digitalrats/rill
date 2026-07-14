@@ -155,7 +155,7 @@ use rill_patchbay::prelude::*;
 use rill_core::queues::MpscQueue;
 use std::sync::Arc;
 
-let cmd_queue = Arc::new(MpscQueue::new(1024));
+let cmd_queue = Arc::new(MpscQueue::with_capacity(1024));
 let mut control = Engine::new(cmd_queue);
 
 control.add_lfo(
@@ -171,7 +171,7 @@ control.update(1.0 / 60.0);
 ```rust
 let mut manager = Manager::new(
     Config::default(),
-    Arc::new(MpscQueue::new(1024)),
+    Arc::new(MpscQueue::with_capacity(1024)),
 );
 
 manager.add_lfo_servo(

@@ -7,7 +7,6 @@
 //! - Human-readable with detailed context
 //! - Real-time safe (no allocations in error paths)
 
-use std::fmt;
 use thiserror::Error;
 
 // ============================================================================
@@ -28,25 +27,9 @@ pub enum ProcessError {
     #[error("Parameter error: {0}")]
     Parameter(String),
 
-    /// Invalid port access
-    #[error("Invalid port: {0}")]
-    InvalidPort(String),
-
     /// Buffer operation failed
     #[error("Buffer error: {0}")]
     Buffer(String),
-
-    /// Node not found
-    #[error("Node {0} not found")]
-    NodeNotFound(u32),
-
-    /// Port not found
-    #[error("Port {0} not found")]
-    PortNotFound(String),
-
-    /// Connection error
-    #[error("Connection error: {0}")]
-    Connection(String),
 
     /// Type mismatch (e.g., trying to connect signal to control)
     #[error("Type mismatch: expected {expected}, got {got}")]
@@ -110,29 +93,9 @@ impl ProcessError {
         Self::Parameter(msg.into())
     }
 
-    /// Create a new invalid port error
-    pub fn invalid_port(port: impl fmt::Display) -> Self {
-        Self::InvalidPort(format!("Invalid port: {}", port))
-    }
-
     /// Create a new buffer error
     pub fn buffer(msg: impl Into<String>) -> Self {
         Self::Buffer(msg.into())
-    }
-
-    /// Create a new node not found error
-    pub fn node_not_found(id: u32) -> Self {
-        Self::NodeNotFound(id)
-    }
-
-    /// Create a new port not found error
-    pub fn port_not_found(port: impl fmt::Display) -> Self {
-        Self::PortNotFound(format!("{}", port))
-    }
-
-    /// Create a new connection error
-    pub fn connection(msg: impl Into<String>) -> Self {
-        Self::Connection(msg.into())
     }
 
     /// Create a new type mismatch error
@@ -168,11 +131,7 @@ impl ProcessError {
         match self {
             Self::Processing(_) => true,
             Self::Parameter(_) => true,
-            Self::InvalidPort(_) => false,
             Self::Buffer(_) => true,
-            Self::NodeNotFound(_) => false,
-            Self::PortNotFound(_) => false,
-            Self::Connection(_) => false,
             Self::TypeMismatch { .. } => false,
             Self::SampleRateMismatch { .. } => false,
             Self::Config(_) => false,
@@ -190,11 +149,7 @@ impl ProcessError {
         match self {
             Self::Processing(_) => "ERR_PROCESSING",
             Self::Parameter(_) => "ERR_PARAMETER",
-            Self::InvalidPort(_) => "ERR_INVALID_PORT",
             Self::Buffer(_) => "ERR_BUFFER",
-            Self::NodeNotFound(_) => "ERR_NODE_NOT_FOUND",
-            Self::PortNotFound(_) => "ERR_PORT_NOT_FOUND",
-            Self::Connection(_) => "ERR_CONNECTION",
             Self::TypeMismatch { .. } => "ERR_TYPE_MISMATCH",
             Self::SampleRateMismatch { .. } => "ERR_SAMPLE_RATE",
             Self::Config(_) => "ERR_CONFIG",
@@ -310,73 +265,6 @@ impl ParameterError {
 }
 
 // ============================================================================
-// Port Error
-// ============================================================================
-
-/// Errors that can occur during port operations
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum PortError {
-    /// Port not found
-    #[error("Port {0} not found")]
-    NotFound(String),
-
-    /// Port direction mismatch (e.g., trying to connect output to output)
-    #[error("Port direction mismatch: expected {expected}, got {got}")]
-    DirectionMismatch {
-        /// Expected direction
-        expected: &'static str,
-        /// Actual direction
-        got: &'static str,
-    },
-
-    /// Port type mismatch (e.g., trying to connect signal to control)
-    #[error("Port type mismatch: expected {expected:?}, got {got:?}")]
-    TypeMismatch {
-        /// Expected port type
-        expected: &'static str,
-        /// Actual port type
-        got: &'static str,
-    },
-
-    /// Port already connected
-    #[error("Port {0} is already connected")]
-    AlreadyConnected(String),
-
-    /// Maximum connections reached
-    #[error("Maximum connections reached for port {0}")]
-    MaxConnectionsReached(String),
-
-    /// Invalid port index
-    #[error("Invalid port index: {0}")]
-    InvalidIndex(usize),
-}
-
-/// Result type for port operations
-pub type PortResult<T> = Result<T, PortError>;
-
-impl PortError {
-    /// Create a new not found error
-    pub fn not_found(port: impl fmt::Display) -> Self {
-        Self::NotFound(format!("{}", port))
-    }
-
-    /// Create a new direction mismatch error
-    pub fn direction_mismatch(expected: &'static str, got: &'static str) -> Self {
-        Self::DirectionMismatch { expected, got }
-    }
-
-    /// Create a new type mismatch error
-    pub fn type_mismatch(expected: &'static str, got: &'static str) -> Self {
-        Self::TypeMismatch { expected, got }
-    }
-
-    /// Create a new already connected error
-    pub fn already_connected(port: impl fmt::Display) -> Self {
-        Self::AlreadyConnected(format!("{}", port))
-    }
-}
-
-// ============================================================================
 // Clock Error
 // ============================================================================
 
@@ -412,139 +300,6 @@ pub enum ClockError {
 pub type ClockResult<T> = Result<T, ClockError>;
 
 // ============================================================================
-// Connection Error
-// ============================================================================
-
-/// Errors that can occur during graph connections
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum ConnectionError {
-    /// Cannot connect node to itself
-    #[error("Cannot connect node to itself")]
-    SelfConnection,
-
-    /// Cycle detected in graph
-    #[error("Cycle detected in graph")]
-    CycleDetected,
-
-    /// Connection would create a cycle
-    #[error("Connection would create a cycle")]
-    WouldCreateCycle,
-
-    /// Invalid connection
-    #[error("Invalid connection: {0}")]
-    Invalid(String),
-}
-
-/// Result type for connection operations
-pub type ConnectionResult<T> = Result<T, ConnectionError>;
-
-// ============================================================================
-// Error Context (for adding extra information)
-// ============================================================================
-
-/// Additional context for errors
-///
-/// This can be attached to errors to provide more information
-/// about where and why they occurred.
-#[derive(Debug, Clone)]
-pub struct ErrorContext {
-    /// Source location (file:line)
-    pub location: Option<String>,
-
-    /// Timestamp when error occurred
-    pub timestamp: std::time::SystemTime,
-
-    /// Node ID (if applicable)
-    pub node_id: Option<u32>,
-
-    /// Port ID (if applicable)
-    pub port_id: Option<String>,
-
-    /// Parameter ID (if applicable)
-    pub parameter_id: Option<String>,
-
-    /// Additional key-value pairs
-    pub extras: Vec<(String, String)>,
-}
-
-impl Default for ErrorContext {
-    fn default() -> Self {
-        Self {
-            location: None,
-            timestamp: std::time::SystemTime::now(),
-            node_id: None,
-            port_id: None,
-            parameter_id: None,
-            extras: Vec::new(),
-        }
-    }
-}
-
-impl ErrorContext {
-    /// Create new error context
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add source location
-    pub fn with_location(mut self, file: &str, line: u32) -> Self {
-        self.location = Some(format!("{}:{}", file, line));
-        self
-    }
-
-    /// Add node ID
-    pub fn with_node(mut self, node_id: u32) -> Self {
-        self.node_id = Some(node_id);
-        self
-    }
-
-    /// Add port ID
-    pub fn with_port(mut self, port_id: impl fmt::Display) -> Self {
-        self.port_id = Some(format!("{}", port_id));
-        self
-    }
-
-    /// Add parameter ID
-    pub fn with_parameter(mut self, param_id: impl AsRef<str>) -> Self {
-        self.parameter_id = Some(param_id.as_ref().to_string());
-        self
-    }
-
-    /// Add extra key-value pair
-    pub fn with_extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.extras.push((key.into(), value.into()));
-        self
-    }
-
-    /// Format error with context
-    pub fn format(&self, error: &impl std::error::Error) -> String {
-        let mut msg = format!("{}", error);
-
-        if let Some(loc) = &self.location {
-            msg.push_str(&format!("\n  at {}", loc));
-        }
-
-        if let Some(node) = self.node_id {
-            msg.push_str(&format!("\n  node: {}", node));
-        }
-
-        if let Some(port) = &self.port_id {
-            msg.push_str(&format!("\n  port: {}", port));
-        }
-
-        if let Some(param) = &self.parameter_id {
-            msg.push_str(&format!("\n  parameter: {}", param));
-        }
-
-        for (key, value) in &self.extras {
-            msg.push_str(&format!("\n  {}: {}", key, value));
-        }
-
-        msg
-    }
-}
-
-// ============================================================================
 // Conversion Implementations
 // ============================================================================
 
@@ -574,25 +329,6 @@ impl From<ParameterError> for ProcessError {
     }
 }
 
-impl From<PortError> for ProcessError {
-    fn from(err: PortError) -> Self {
-        match err {
-            PortError::NotFound(port) => Self::port_not_found(port),
-            PortError::DirectionMismatch { expected, got } => Self::type_mismatch(expected, got),
-            PortError::TypeMismatch { expected, got } => Self::type_mismatch(expected, got),
-            PortError::AlreadyConnected(port) => {
-                Self::connection(format!("Port already connected: {}", port))
-            }
-            PortError::MaxConnectionsReached(port) => {
-                Self::connection(format!("Max connections reached for port: {}", port))
-            }
-            PortError::InvalidIndex(idx) => {
-                Self::invalid_port(format!("Invalid port index: {}", idx))
-            }
-        }
-    }
-}
-
 impl From<ClockError> for ProcessError {
     fn from(err: ClockError) -> Self {
         match err {
@@ -604,19 +340,6 @@ impl From<ClockError> for ProcessError {
             ClockError::AlreadyStarted => Self::processing("Clock already started"),
             ClockError::Underflow => Self::buffer("Clock underflow"),
             ClockError::Overflow => Self::buffer("Clock overflow"),
-        }
-    }
-}
-
-impl From<ConnectionError> for ProcessError {
-    fn from(err: ConnectionError) -> Self {
-        match err {
-            ConnectionError::SelfConnection => Self::connection("Cannot connect node to itself"),
-            ConnectionError::CycleDetected => Self::connection("Cycle detected in graph"),
-            ConnectionError::WouldCreateCycle => {
-                Self::connection("Connection would create a cycle")
-            }
-            ConnectionError::Invalid(msg) => Self::connection(msg),
         }
     }
 }
@@ -647,11 +370,6 @@ mod tests {
         assert!(matches!(err, ProcessError::Processing(_)));
         assert_eq!(err.code(), "ERR_PROCESSING");
         assert!(err.is_recoverable());
-
-        let err = ProcessError::node_not_found(42);
-        assert!(matches!(err, ProcessError::NodeNotFound(42)));
-        assert_eq!(err.code(), "ERR_NODE_NOT_FOUND");
-        assert!(!err.is_recoverable());
     }
 
     #[test]
@@ -664,23 +382,10 @@ mod tests {
     }
 
     #[test]
-    fn test_port_error_creation() {
-        let err = PortError::direction_mismatch("input", "output");
-        assert!(matches!(err, PortError::DirectionMismatch { .. }));
-
-        let err = PortError::type_mismatch("signal", "control");
-        assert!(matches!(err, PortError::TypeMismatch { .. }));
-    }
-
-    #[test]
     fn test_error_conversions() {
         let param_err = ParameterError::not_found("test");
         let proc_err: ProcessError = param_err.into();
         assert!(matches!(proc_err, ProcessError::Parameter(_)));
-
-        let port_err = PortError::not_found("port");
-        let proc_err: ProcessError = port_err.into();
-        assert!(matches!(proc_err, ProcessError::PortNotFound(_)));
 
         let clock_err = ClockError::Underflow;
         let proc_err: ProcessError = clock_err.into();
@@ -688,33 +393,15 @@ mod tests {
     }
 
     #[test]
-    fn test_error_context() {
-        let ctx = ErrorContext::new()
-            .with_location("test.rs", 42)
-            .with_node(1u32)
-            .with_extra("sample_rate", "44100");
-
-        let err = ProcessError::processing("test");
-        let formatted = ctx.format(&err);
-
-        assert!(formatted.contains("test.rs:42"));
-        assert!(formatted.contains("node: 1"));
-        assert!(formatted.contains("sample_rate: 44100"));
-    }
-
-    #[test]
     fn test_recoverable_flags() {
         assert!(ProcessError::processing("test").is_recoverable());
         assert!(ProcessError::parameter("test").is_recoverable());
         assert!(ProcessError::buffer("test").is_recoverable());
-        assert!(!ProcessError::node_not_found(42).is_recoverable());
-        assert!(!ProcessError::port_not_found("port").is_recoverable());
     }
 
     #[test]
     fn test_error_codes() {
         assert_eq!(ProcessError::processing("").code(), "ERR_PROCESSING");
-        assert_eq!(ProcessError::node_not_found(0).code(), "ERR_NODE_NOT_FOUND");
     }
 
     #[test]

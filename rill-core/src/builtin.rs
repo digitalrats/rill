@@ -93,6 +93,11 @@ pub struct BuiltinSig {
     pub signal_outs: usize,
     /// Sample vs block.
     pub kind: BuiltinKind,
+    /// Names of compile-time parameters in `params` order (after signal inputs).
+    /// When non-empty, graph-level `build_ir()` uses these names to match recipe
+    /// params to builtin arg positions — eliminating ordering fragility from
+    /// `HashMap`-based param bags. Left empty for backward-compatible registrations.
+    pub param_names: Vec<&'static str>,
 }
 
 impl BuiltinSig {
@@ -117,7 +122,19 @@ impl BuiltinSig {
             params,
             signal_outs,
             kind,
+            param_names: Vec::new(),
         }
+    }
+
+    /// Attach human-readable names to compile-time parameters.
+    ///
+    /// `names.len()` must equal the number of non-signal params in `self.params`.
+    /// When set, graph-level `build_ir()` in `rill-graph` uses these names to
+    /// match recipe param keys to builtin arg positions, fixing the ordering
+    /// fragility of `HashMap`-based param bags.
+    pub fn with_names(mut self, names: Vec<&'static str>) -> Self {
+        self.param_names = names;
+        self
     }
 
     /// Number of signal inputs = count of Signal params (non-variadic).

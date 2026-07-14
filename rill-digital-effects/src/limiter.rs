@@ -36,6 +36,7 @@ pub struct Limiter<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
+    /// Creates a new lookahead limiter with the given parameters.
     pub fn new(
         sample_rate: f32,
         threshold_db: f32,
@@ -80,6 +81,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
         }
     }
 
+    /// Processes a single sample through the limiter.
     pub fn process_sample(&mut self, input: T) -> T {
         self.position += 1;
 
@@ -137,35 +139,42 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
         output.clamp(T::from_f32(-2.0), T::from_f32(2.0))
     }
 
+    /// Processes a block of samples through the limiter.
     pub fn process_block(&mut self, input: &[T], output: &mut [T]) {
         for i in 0..input.len().min(output.len()) {
             output[i] = self.process_sample(input[i]);
         }
     }
 
+    /// Returns the current gain reduction being applied.
     pub fn current_gain(&self) -> f32 {
         self.current_gain
     }
 
+    /// Returns the number of lookahead samples.
     pub fn lookahead_samples(&self) -> usize {
         self.lookahead_samples
     }
 
+    /// Sets the threshold in dB (clamped to -60.0–0.0).
     pub fn set_threshold(&mut self, db: f32) {
         self.threshold_db = db.clamp(-60.0, 0.0);
         self.threshold_linear = T::from_f32(10.0_f32.powf(self.threshold_db / 20.0));
     }
 
+    /// Sets attack time in seconds (clamped to 0.001–0.1).
     pub fn set_attack(&mut self, attack: f32) {
         self.attack = attack.clamp(0.001, 0.1);
         self.attack_coeff = (-1.0 / (self.attack * self.sample_rate)).exp();
     }
 
+    /// Sets release time in seconds (clamped to 0.01–1.0).
     pub fn set_release(&mut self, release: f32) {
         self.release = release.clamp(0.01, 1.0);
         self.release_coeff = (-1.0 / (self.release * self.sample_rate)).exp();
     }
 
+    /// Sets lookahead time in seconds (clamped to 0.0–0.01).
     pub fn set_lookahead(&mut self, lookahead: f32) {
         self.lookahead = lookahead.clamp(0.0, 0.01);
         self.lookahead_samples = (self.lookahead * self.sample_rate) as usize;
@@ -178,6 +187,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
         self.warming_up = false;
     }
 
+    /// Resets the limiter to its initial state.
     pub fn reset(&mut self) {
         self.current_gain = 1.0;
         self.position = 0;
@@ -188,6 +198,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Limiter<T, BUF_SIZE> {
         self.analysis_buffer.clear();
     }
 
+    /// Forces the limiter to skip warm-up and become immediately ready.
     pub fn force_ready(&mut self) {
         if self.initializing || self.warming_up {
             for _ in 0..self.lookahead_samples * 2 {

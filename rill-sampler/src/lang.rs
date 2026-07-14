@@ -40,6 +40,17 @@ impl<T: Transcendental> BlockBuiltin<T> for SamplerBuiltin<T> {
             3 => {
                 self.inner.set_cubic(v > 0.0);
             }
+            4 => {
+                if let ParamValue::SignalSlab(ref slab) = value {
+                    if let Some(first_ch) = slab.channels.first() {
+                        let buffer: Vec<T> = first_ch
+                            .iter()
+                            .map(|&s| T::from_f32(s))
+                            .collect();
+                        self.inner.set_buffer(buffer);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -47,7 +58,8 @@ impl<T: Transcendental> BlockBuiltin<T> for SamplerBuiltin<T> {
 
 pub fn register_sampler_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("sampler", 0, 1, 4, BuiltinKind::Block),
+        BuiltinSig::simple("sampler", 0, 1, 5, BuiltinKind::Block)
+            .with_names(vec!["gate", "rate", "amp", "cubic", "source"]),
         |p, _sr| {
             let mut player = SamplePlayer::new(Vec::new());
             player.set_gate(p[0] > 0.0);

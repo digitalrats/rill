@@ -5,9 +5,9 @@ use rill_core::{
     traits::ProcessResult,
 };
 
+/// Tape read head for delay-based tape effects with gliding delay interpolation.
 pub struct ReadHead<T: Transcendental, const BUF_SIZE: usize> {
     tape: Option<TapeReader<T>>,
-    resource_name: String,
     delay: f32,
     sample_rate: f32,
     current_delay_samples: f64,
@@ -32,14 +32,15 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for ReadHead<T, BUF_SIZE>
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
+    /// Creates a new read head with default settings.
     pub fn new() -> Self {
         Self::with_resource("tape_0")
     }
 
-    pub fn with_resource(resource_name: &str) -> Self {
+    /// Creates a new read head with a named tape resource.
+    pub fn with_resource(_resource_name: &str) -> Self {
         Self {
             tape: None,
-            resource_name: resource_name.to_string(),
             delay: 0.5,
             sample_rate: 44100.0,
             current_delay_samples: 0.5 * 44100.0,
@@ -47,10 +48,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
         }
     }
 
+    /// Sets the read delay in seconds (clamped to 0.01–2.0).
     pub fn set_delay(&mut self, delay: f32) {
         self.delay = delay.clamp(0.01, 2.0);
     }
 
+    /// Sets the tape reader to read from.
     pub fn set_reader(&mut self, reader: TapeReader<T>) {
         self.tape = Some(reader);
     }

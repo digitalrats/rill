@@ -12,20 +12,25 @@ Four types, two of which are optional:
 | Type | Purpose | Required? |
 |---|---|---|
 | `ActorRef<M>` | Thread-safe handle for sending messages | yes |
-| `ActorCell` | Trait: "I can receive and process messages" | yes |
-| `MessageDispatcher<M>` | ActorRef + dead letters | no |
-| `ActorSystem<M>` | Named mailbox registry with routing | no |
+| `Actor<M>` | Handler + mailbox — drained inline | yes |
+| `Mailbox<M>` | Lock-free SPSC queue backing an actor | no |
+| `ActorSystem` | Named actor registry with routing, dead letters, spawn | no |
 
 Everything else lives upstream (rill-patchbay, Runtime with its lifecycle).
 
 ## Usage
 
 ```rust
-use rill_core_actor::ActorRef;
+use rill_core_actor::{ActorRef, ActorSystem};
 
-let (ar, mailbox) = ActorRef::<String>::new_pair();
-ar.send("hello".into());
-assert_eq!(mailbox.pop(), Some("hello".into()));
+let system = ActorSystem::new();
+let mut actor = system.spawn("hello", |msg: String| {
+    println!("received: {}", msg);
+});
+
+let ref_a = actor.actor_ref();
+ref_a.send("hello world".into());
+actor.drain();
 ```
 
 ## RT-safe?

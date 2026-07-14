@@ -2,21 +2,26 @@
 
 use std::sync::{Arc, Mutex};
 
+/// Recording sink that captures signal samples into a shared buffer.
 pub struct RecordingSink<const B: usize> {
+    /// Shared buffer where recorded samples are stored.
     pub recorded: Arc<Mutex<Vec<f32>>>,
 }
 
 impl<const B: usize> RecordingSink<B> {
+    /// Creates a new recording sink writing to the given buffer.
     pub fn new(recorded: Arc<Mutex<Vec<f32>>>) -> Self {
         Self { recorded }
     }
 
+    /// Records a slice of samples into the shared buffer.
     pub fn record(&self, samples: &[f32]) {
         if let Ok(mut buf) = self.recorded.lock() {
             buf.extend_from_slice(samples);
         }
     }
 
+    /// Writes recorded samples to a WAV file.
     #[cfg(feature = "wav")]
     pub fn write_wav(
         path: &str,

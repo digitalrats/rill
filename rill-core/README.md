@@ -13,16 +13,19 @@ IoT, robotics, embedded systems, signal processing, and audio.
 
 ## Key components
 
-- **traits** — `Node`, `ParameterId`, `PortId`, `Clock`, `Source`/`Processor`/`Sink`
+- **traits** — `Node`, `ParameterId`, `PortId`, `Clock`, `Source`/`Processor`/`Sink`, `Algorithm`, `ParameterWrite`, `MultichannelAlgorithm`, `BridgeAlgorithm`
 - **math** — `Scalar`, `Transcendental` traits; `lerp`, `db_to_linear`, `seconds_to_samples`; **vector** submodule
 - **vector** — `Vector<T: Scalar, N>` trait and implementations:
   `ScalarVector1/2/4/8<T>`, SIMD types (`F32x4`, `F64x4`, etc.), slice operations
 - **buffer** — `PipeBuffer`, `FanOutBuffer`, `FanInBuffer`, `RingBuffer`, `DelayLine`, `AtomicCell`
 - **queues** — lock-free `SpscQueue` and `RingQueue` (no_std, no external deps);
-  `MpscQueue` (alloc); `CommandQueue` (std, crossbeam-channel)
-- **time** — `ClockTick`, `SystemClock`, tempo and beat tracking
+  `MpscQueue` (alloc); signal/command types (`SetParameter`, `CommandEnum`, etc.)
+- **time** — `ClockTick`, `SystemClock`, `RenderContext`, tempo and beat tracking
 - **macros** — `processor_node!`, `source_node!`, `sink_node!`, `with_parameters!`
-- **error** — typed error system
+- **io** — `IoDriver`, `IoCapture`, `IoPlayback` traits for backend abstraction
+- **builtin** — `Registry<T>`, `BuiltinSig`, `BlockBuiltin<T>`, `SampleBuiltin<T>`
+- **interpolate** — fractional-index interpolation trait
+- **prelude** — convenience re-exports for common imports
 
 ## Domain-agnostic primitives
 

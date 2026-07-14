@@ -178,7 +178,7 @@ Beyond signal probes, the debug infrastructure can inspect control-path state:
 
 ```rust
 // Automaton state (via rill-analyzer)
-(rla) info automata
+(rla) info automatons
 
 // Sensor status (MIDI, OSC)
 (rla) info sensors

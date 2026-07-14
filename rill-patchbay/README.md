@@ -1,6 +1,6 @@
 # rill-patchbay
 
-Automation and control system — LFOs, envelopes, sequencers, sensors, servos, and event mapping for the Rill audio graph.
+Automation and control system — LFOs, envelopes, sequencers, sensors, servos, and event mapping for the Rill signal graph.
 
 ## Architecture
 
@@ -42,29 +42,41 @@ See `strategy.rs`.
   buttons), MIDI, OSC (UDP-based address/argument sensors).
 - **Event mapping** — MIDI CC → parameter, OSC address → parameter,
   with transforms.
-- **`Engine`** — centralised API for adding automatons, servos, and
-  mappings (fka `PatchbayControl`).
+- **`Servo`** — centralised API for bridging automatons to graph
+  parameters, adding mappings, and handling sensor events (fka
+  `PatchbayControl`).
 
 ## Usage
 
 ```rust
-use rill_core_actor::ActorRef;
+use std::sync::Arc;
+use rill_core::queues::CommandEnum;
+use rill_core_actor::{ActorRef, ActorSystem};
 use rill_patchbay::prelude::*;
 
-let (actor_ref, _mailbox) = ActorRef::new_pair();
-let mut engine = Engine::new(actor_ref);
+let system = Arc::new(ActorSystem::new());
+let (graph_ref, mut graph_actor) = {
+    let mut actor = system.spawn("graph", |_cmd: CommandEnum| {});
+    (actor.actor_ref(), actor)
+};
 
-engine.add_lfo(
-    "vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine,
-    osc_node_id, "frequency", 400.0, 480.0,
+let lfo = LfoAutomaton::new("vibrato", 5.0, 0.5, 0.0, LfoWaveform::Sine);
+let servo = Servo::new(
+    "vibrato", lfo, osc_node_id, "frequency",
+    ParameterMapping::Linear, 400.0, 480.0,
+    system.clone(), graph_ref.clone(),
 );
+let _lfo_ref = servo.spawn(&system);
 
-engine.add_envelope(
-    "amp", 0.01, 0.1, 0.7, 0.2,
-    vca_node_id, "gain", 0.0, 1.0,
+let env = EnvelopeAutomaton::adsr("amp_env", 0.01, 0.1, 0.7, 0.2);
+let servo_env = Servo::new(
+    "amp_env", env, vca_node_id, "gain",
+    ParameterMapping::Linear, 0.0, 1.0,
+    system.clone(), graph_ref.clone(),
 );
+let _env_ref = servo_env.spawn(&system);
 
-engine.update(1.0 / 60.0);
+graph_actor.drain();
 ```
 
 ## Feature flags
@@ -92,7 +104,8 @@ engine.update(1.0 / 60.0);
 ## Dependencies
 
 - `rill-core` — node traits, queues, types
-- `crossbeam-channel`, `parking_lot`, `tokio` — green thread infrastructure
+- `rill-core-actor` — actor model for lock-free message passing
+- `tokio` — green thread infrastructure
 
 ## Links
 

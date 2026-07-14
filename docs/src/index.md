@@ -11,7 +11,7 @@ rill-adrift = "0.6.0-M1"
 
 ```rust
 use rill_adrift::prelude::*;
-use rill_adrift::rill_oscillators::signal::SineOsc;
+use rill_adrift::rill_core_dsp::generators::SineOscillator;
 ```
 
 ## What is Rill?
@@ -24,7 +24,7 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 | **Actor** | `rill-core-actor` — lock-free actor model (ActorRef, ActorSystem) |
 | **DSP** | `rill-core-dsp` — algorithms, filters, generators, delay, vector ops |
 | **Graph** | `rill-graph` — static DAG signal graph, `Port::propagate` |
-| **Effects** | `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router` |
+| **Effects** | `rill-digital-filters`, `rill-digital-effects`, `rill-router` |
 | **FFT** | `rill-fft` — radix-2 FFT, frequency-domain convolution, spectral effects |
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
 | **Language** | `rill-lang` — Faust-style functional signal DSL, compiles to `Algorithm<T>` or `MultichannelAlgorithm<T>`, or to `RillGraphEngine` for whole-graph compilation |

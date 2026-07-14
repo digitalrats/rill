@@ -1,14 +1,15 @@
 //! Load graph from JSON and config from TOML, build and play.
 //!
 //! Demonstrates runtime parameter control via the actor mailbox:
-//! the graph is built as-is from `graph.json`, then parameter
-//! changes are sent through `Graph::handle()` before the signal
-//! thread starts.
+//! the graph is built from `graph.json` via the serialisation layer,
+//! then parameter changes (WAV slab for the sampler, cutoff for the
+//! biquad filter) are sent through the actor mailbox before the
+//! signal thread starts.
 //!
 //! Usage:
-//!   cargo run --example advanced_player --features "portaudio,sampler,serialization"
-//!   cargo run --example advanced_player --features "portaudio,sampler,serialization" -- [backend] [wav]
-//!   cargo run --example advanced_player --features "portaudio,sampler,serialization" -- [wav]
+//!   cargo run --example advanced_player --features "io,portaudio,sampler,serialization"
+//!   cargo run --example advanced_player --features "io,portaudio,sampler,serialization" -- [backend] [wav]
+//!   cargo run --example advanced_player --features "io,portaudio,sampler,serialization" -- [wav]
 //!
 //! Positional arguments (optional):
 //!   backend   I/O backend name (e.g. portaudio, alsa, null). Default from config.toml.
@@ -23,10 +24,10 @@ use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::registration;
 use rill_adrift::rill_core::{
     queues::{CommandEnum, SetParameter, SignalOrigin},
-    traits::SignalSlab,
-    NodeId, ParamValue, ParameterId, PortId,
+    traits::{ParamValue, ParameterId, SignalSlab},
 };
 use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
+use rill_lang::program_runner::ProgramRunner;
 use serde::Deserialize;
 
 const BUF: usize = 256;
@@ -69,42 +70,12 @@ fn resolve_wav_path(wav_path: &str, crate_dir: &std::path::Path) -> String {
     }
 }
 
-fn build_graph(
-    cfg: &AppConfig,
-    crate_dir: &std::path::Path,
-    backend_name: &str,
-) -> Result<rill_adrift::rill_graph::Graph<f32, BUF>, Box<dyn std::error::Error>> {
-    let graph_path = crate_dir.join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
-    let json = std::fs::read_to_string(&graph_path)?;
-    let def = registration::load_graph_json(&json).map_err(|e| format!("load_graph_json: {e}"))?;
-
-    let system = ModularSystem::<BUF>::new(ModularConfig {
-        sample_rate: cfg.sample_rate,
-        block_size: cfg.block_size,
-        backend_name: Some(backend_name.to_string()),
-        backend_params: cfg
-            .backend
-            .as_ref()
-            .map(|b| b.params.clone())
-            .unwrap_or_default(),
-        ..Default::default()
-    });
-
-    let graph = system
-        .build_graph(&def)
-        .map_err(|e| format!("build: {e}"))?;
-    Ok(graph)
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = load_config()?;
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let args: Vec<String> = std::env::args().collect();
 
-    // Parse optional positional arguments:
-    //   positional[0] = backend name OR wav file
-    //   positional[1] = wav file (when positional[0] is a backend name)
     let positional: Vec<&String> = args
         .iter()
         .skip(1)
@@ -133,14 +104,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let running = Arc::new(AtomicBool::new(true));
 
-    let audio_thread = {
+    let signal_thread = {
         let cfg = cfg.clone();
         let running = running.clone();
         let crate_dir = crate_dir.to_path_buf();
         let backend_name = backend_name.clone();
         let wav_path = wav_path.clone();
         std::thread::spawn(move || {
-            // ── 1. Create backend before graph construction ──
             let mut bf = BackendFactory::new();
             registration::register_backends(&mut bf);
             let mut be_params = HashMap::new();
@@ -165,51 +135,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            let graph = build_graph(&cfg, &crate_dir, &backend_name).expect("build_graph");
+            let graph_path = crate_dir
+                .join(cfg.graph_path.as_deref().unwrap_or("examples/graph.json"));
+            let json = std::fs::read_to_string(&graph_path).expect("read graph.json");
+            let graph_def = registration::load_graph_json(&json).expect("load_graph_json");
 
-            // Send parameter changes via the actor mailbox
-            let handle = graph.handle();
+            let system = ModularSystem::<BUF>::new(ModularConfig {
+                sample_rate: cfg.sample_rate,
+                block_size: cfg.block_size,
+                backend_name: Some(backend_name.clone()),
+                backend_params: cfg
+                    .backend
+                    .as_ref()
+                    .map(|b| b.params.clone())
+                    .unwrap_or_default(),
+                ..Default::default()
+            });
+
+            let engine = system
+                .build_engine(&graph_def, cfg.block_size)
+                .expect("build_engine");
+
+            let mut runner = ProgramRunner::new(engine, None, cfg.block_size);
+
+            let handle = runner.handle();
+            // Send WAV slab to the sampler via SetParameter.
             if let Some(ref s) = slab {
-                handle.send(CommandEnum::SetParameter(SetParameter::new(
-                    PortId::signal_out(NodeId(0), 0),
+                let mut sp = SetParameter::new(
+                    "".into(),
                     ParameterId::new("source").unwrap(),
                     ParamValue::SignalSlab(s.clone()),
                     SignalOrigin::Manual,
-                )));
+                );
+                sp.anchor = "player".into();
+                handle.send(CommandEnum::SetParameter(sp));
             }
-            // Drop local Arc reference so try_unwrap succeeds in the sampler.
             drop(slab);
 
-            // Example: set filter cutoff
-            handle.send(CommandEnum::SetParameter(SetParameter::new(
-                PortId::signal_in(NodeId(1), 0),
+            // Set biquad filter cutoff to 800 Hz.
+            let mut sp = SetParameter::new(
+                "".into(),
                 ParameterId::new("cutoff").unwrap(),
                 ParamValue::Float(800.0),
                 SignalOrigin::Manual,
-            )));
+            );
+            sp.anchor = "filter".into();
+            handle.send(CommandEnum::SetParameter(sp));
 
-            let mut state = graph.into_processing_state();
-            state.wire_backends(None, Some(playback));
-            if let Err(e) = state.run_with_driver(driver, running) {
+            runner.wire_backends(None, Some(playback));
+            if let Err(e) = runner.run_with_driver(driver, running) {
                 eprintln!("Backend error: {e}");
             }
         })
     };
 
-    let signal_thread = {
+    let signalled = {
         let running = running.clone();
-        let audio_handle = audio_thread.thread().clone();
+        let signal_handle = signal_thread.thread().clone();
         std::thread::spawn(move || {
             let mut input = String::new();
             let _ = std::io::stdin().read_line(&mut input);
             running.store(false, Ordering::Release);
-            audio_handle.unpark();
+            signal_handle.unpark();
         })
     };
 
-    println!("▶ Playing graph through {backend_name} backend. Press Enter to stop.");
+    println!("\u{25B6} Playing graph from graph.json through {backend_name} backend. Press Enter to stop.");
+    signalled.join().ok();
     signal_thread.join().ok();
-    audio_thread.join().ok();
-    println!("⏹ Stopped.");
+    println!("\u{23F9} Stopped.");
     Ok(())
 }

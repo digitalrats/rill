@@ -18,7 +18,7 @@ use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
 use rill_adrift::rill_graph::serialization::{
-    ConnectionDef, GraphDef, NodeDef, SignalKind, SinkDef, SourceDef,
+    GraphDef, NodeDef, SourceDef,
 };
 use rill_adrift::rill_patchbay::module_factory::Drain;
 
@@ -411,7 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let normalize = args.iter().any(|a| a == "--normalize");
+    let _normalize = args.iter().any(|a| a == "--normalize");
     let no_wait = args.iter().any(|a| a == "--no-wait");
 
     // Backend name: first positional argument that is not a known flag value

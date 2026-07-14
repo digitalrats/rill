@@ -3,6 +3,7 @@ use rill_core::traits::parameter_write::ParameterWrite;
 use rill_core::traits::{ParamValue, ProcessError, ProcessResult};
 
 use crate::chip_emulator::ChipEmulator;
+use crate::dsp::DcBlocker;
 
 #[derive(Clone)]
 struct AyChannel {
@@ -49,6 +50,8 @@ pub struct Ay38910Chip {
     pub(crate) registers: [u8; 16],
     pub(crate) registers_dirty: bool,
     sample_rate: f32,
+    /// AC-coupling simulation — removes DC offset from the unipolar [0, 1] chip output.
+    dc_blocker: DcBlocker<f32>,
 }
 
 impl Ay38910Chip {
@@ -97,6 +100,7 @@ impl Ay38910Chip {
             registers: [0; 16],
             registers_dirty: true,
             sample_rate: 44100.0,
+            dc_blocker: DcBlocker::new(44100.0, 10.0),
         }
     }
 
@@ -164,7 +168,8 @@ impl Ay38910Chip {
         }
         self.update_noise(sample_rate);
         self.update_envelope(sample_rate);
-        (channel_samples[0] + channel_samples[1] + channel_samples[2]) / 3.0
+        let raw = (channel_samples[0] + channel_samples[1] + channel_samples[2]) / 3.0;
+        self.dc_blocker.process_sample(raw)
     }
 
     /// Reset chip registers and internal state to power-on defaults.
@@ -276,6 +281,7 @@ impl Algorithm<f32> for Ay38910Chip {
 
     fn init(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
+        self.dc_blocker = DcBlocker::new(sample_rate, 10.0);
     }
 
     fn reset(&mut self) {
@@ -303,6 +309,7 @@ impl Algorithm<f32> for Ay38910Chip {
         self.mixer.channel_modes = [0; 3];
         self.mixer.io_a_enabled = false;
         self.mixer.io_b_enabled = false;
+        self.dc_blocker.reset();
     }
 }
 
@@ -354,7 +361,7 @@ mod tests {
         chip.write_register(8, 10);
         chip.write_register(7, 0b11_11_11_10);
         let s = chip.generate_sample(SR);
-        assert!(s > 0.0, "tone should produce output, got {}", s);
+        assert!(s.abs() > 0.0, "tone should produce output, got {}", s);
     }
 
     #[test]

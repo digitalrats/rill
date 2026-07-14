@@ -10,10 +10,15 @@ use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
 
 /// Biquad processor with configurable filter type and parameters.
 pub struct BiquadProcessor<T: Transcendental, const BUF_SIZE: usize> {
+    /// Filter cutoff frequency in Hz.
     pub cutoff: f32,
+    /// Filter Q factor (resonance).
     pub q: f32,
+    /// Gain in dB for peak/shelving filters.
     pub gain_db: f32,
+    /// Filter type (low-pass, high-pass, etc.).
     pub filter_type: FilterType,
+    /// The underlying biquad algorithm.
     pub algorithm: Biquad<T>,
 }
 

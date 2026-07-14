@@ -65,7 +65,8 @@ fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("biquad", 1, 1, 4, BuiltinKind::Block),
+        BuiltinSig::simple("biquad", 1, 1, 4, BuiltinKind::Block)
+            .with_names(vec!["type", "cutoff", "q", "gain_db"]),
         |p, sr| {
             let ft = match p[0] as u8 {
                 0 => FilterType::LowPass,

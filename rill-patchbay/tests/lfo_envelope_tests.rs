@@ -1,4 +1,3 @@
-use rill_core::traits::NodeId;
 use rill_core_actor::ActorSystem;
 use rill_patchbay::{LfoWaveform, Servo};
 use std::sync::Arc;

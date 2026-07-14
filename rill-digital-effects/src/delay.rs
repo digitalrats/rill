@@ -29,6 +29,7 @@ pub struct Delay<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
+    /// Creates a new delay effect with default parameters.
     pub fn new(sample_rate: f32) -> Self {
         let delay_time = 0.5;
         let delay_samples = (delay_time * sample_rate) as usize;
@@ -45,6 +46,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
         }
     }
 
+    /// Creates a delay effect with custom parameters.
     pub fn with_params(sample_rate: f32, delay_time: f32, feedback: f32, mix: f32) -> Self {
         let mut instance = Self::new(sample_rate);
         instance.set_delay_time(delay_time);
@@ -53,15 +55,18 @@ impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
         instance
     }
 
+    /// Sets delay time in seconds (clamped to 0.01–0.5).
     pub fn set_delay_time(&mut self, time: f32) {
         self.delay_time = time.clamp(0.01, MAX_DELAY_SECONDS);
         self.update_delay_samples();
     }
 
+    /// Sets feedback amount (clamped to 0.0–0.99).
     pub fn set_feedback(&mut self, fb: f32) {
         self.feedback = fb.clamp(0.0, 0.99);
     }
 
+    /// Sets dry/wet mix (clamped to 0.0–1.0).
     pub fn set_mix(&mut self, mix: f32) {
         self.mix = mix.clamp(0.0, 1.0);
     }
@@ -74,6 +79,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Delay<T, BUF_SIZE> {
         self.delay_line.set_delay_samples(self.delay_samples);
     }
 
+    /// Processes a single sample through the delay effect.
     pub fn process_sample(&mut self, input: T) -> T {
         let delayed = self.delay_line.read_delayed(self.delay_samples);
         let dry = input;
