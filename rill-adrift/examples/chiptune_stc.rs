@@ -23,7 +23,9 @@ use rill_adrift::rill_patchbay::module_factory::Drain;
 const BUF: usize = 256;
 const RATE: f32 = 44100.0;
 
-use rill_adrift::stc_player::StcPlayer;
+#[path = "stc_player.rs"]
+mod stc_player;
+use stc_player::StcPlayer;
 
 // ============================================================================
 // Main

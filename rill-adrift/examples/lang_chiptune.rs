@@ -15,8 +15,10 @@ use std::sync::Arc;
 
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
-use rill_adrift::stc_player::StcPlayer;
+#[path = "stc_player.rs"]
+mod stc_player;
 use rill_lang::program_runner::ProgramRunner;
+use stc_player::StcPlayer;
 
 // ============================================================================
 // Main
