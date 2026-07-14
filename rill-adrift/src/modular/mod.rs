@@ -168,7 +168,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 rd.graph.nodes.len(),
                 rd.modules.len()
             );
-            let buf_size = def.block_size.max(64);
             let sys = self.actor_system.clone();
             let gd = rd.graph.clone();
 
@@ -265,11 +264,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         let _ = graph_tx.send(engine.handle());
                     }
 
-                    let mut runner = rill_lang::program_runner::ProgramRunner::new(
-                        engine,
-                        Some(parent_ref),
-                        buf_size,
-                    );
+                    let mut runner =
+                        rill_lang::program_runner::ProgramRunner::new(engine, Some(parent_ref));
 
                     if let Some((ref name, ref params)) = backend_name {
                         let mut bf: rill_graph::backend_factory::BackendFactory =

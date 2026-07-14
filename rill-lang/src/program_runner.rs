@@ -26,28 +26,24 @@ pub struct ProgramRunner<const BUF_SIZE: usize> {
     parent_ref: Option<ActorRef<CommandEnum>>,
     capture: Option<Arc<dyn IoCapture>>,
     playback: Option<Arc<dyn IoPlayback>>,
-    input_buf: Vec<f32>,
-    output_buf: Vec<f32>,
-    max_block_size: usize,
+    input_buf: [f32; BUF_SIZE],
+    output_buf: [f32; BUF_SIZE],
     _not_send_sync: PhantomData<*const ()>,
 }
 
 impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
     /// Create a new runner wrapping a compiled graph engine.
-    #[allow(missing_docs)]
     pub fn new(
         engine: CompiledGraphEngine<f32, BUF_SIZE>,
         parent_ref: Option<ActorRef<CommandEnum>>,
-        max_block_size: usize,
     ) -> Self {
         Self {
             engine,
             parent_ref,
             capture: None,
             playback: None,
-            input_buf: vec![0.0f32; max_block_size],
-            output_buf: vec![0.0f32; max_block_size],
-            max_block_size,
+            input_buf: [0.0f32; BUF_SIZE],
+            output_buf: [0.0f32; BUF_SIZE],
             _not_send_sync: PhantomData,
         }
     }
@@ -77,9 +73,8 @@ impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
     fn process_tick(&mut self, tick: &ClockTick) {
         let block_size = tick.samples_since_last as usize;
         assert!(
-            block_size <= self.max_block_size,
-            "block size {block_size} exceeds max {}",
-            self.max_block_size
+            block_size <= BUF_SIZE,
+            "block size {block_size} exceeds BUF_SIZE {BUF_SIZE}"
         );
 
         let num_outputs = self
@@ -145,8 +140,8 @@ mod tests {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
-        let engine = compile_graph::<f32, 512>("main = _", &Registry::new(), 44100.0).unwrap();
-        let mut runner = ProgramRunner::new(engine, None, 128);
+        let engine = compile_graph::<f32, 128>("main = _", &Registry::new(), 44100.0).unwrap();
+        let mut runner = ProgramRunner::new(engine, None);
 
         let tick = ClockTick {
             sample_pos: 0,
@@ -168,9 +163,8 @@ mod tests {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
-        let engine =
-            compile_graph::<f32, 512>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
-        let mut runner = ProgramRunner::new(engine, None, 64);
+        let engine = compile_graph::<f32, 64>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
+        let mut runner = ProgramRunner::new(engine, None);
 
         let tick = ClockTick {
             sample_pos: 0,

@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let src = "main = _";
         let engine =
             rill_lang::compile_graph::<f32, 256>(src, &reg, cfg.sample_rate).expect("compile DSL");
-        let mut runner = ProgramRunner::new(engine, None, cfg.block_size);
+        let mut runner = ProgramRunner::new(engine, None);
         runner.wire_backends(None, Some(playback));
         runner.run_with_driver(driver, t_run).ok();
     });

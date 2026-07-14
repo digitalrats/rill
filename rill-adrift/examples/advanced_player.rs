@@ -154,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let engine = system.build_engine(&graph_def).expect("build_engine");
 
-            let mut runner = ProgramRunner::new(engine, None, cfg.block_size);
+            let mut runner = ProgramRunner::new(engine, None);
 
             let handle = runner.handle();
             // Send WAV slab to the sampler via SetParameter.

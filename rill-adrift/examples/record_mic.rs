@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_run = running.clone();
 
     let signal_thread = std::thread::spawn(move || {
-        let mut runner = ProgramRunner::new(engine, None, BUF);
+        let mut runner = ProgramRunner::new(engine, None);
         runner.wire_backends(Some(capture), None);
         runner.run_with_driver(driver, t_run).ok();
     });

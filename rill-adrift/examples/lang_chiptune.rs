@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 main regs = ay38910 1750000.0 regs
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0)?;
+    let engine = rill_lang::compile_graph::<f32, 512>(src, &reg, 44100.0)?;
 
     // ── Backend ────────────────────────────────────────────────────────────
     let backend_name = args
@@ -63,7 +63,7 @@ main regs = ay38910 1750000.0 regs
 
     let mut be_params: HashMap<String, ParamValue> = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(44100.0));
-    be_params.insert("block_size".into(), ParamValue::Int(256));
+    be_params.insert("block_size".into(), ParamValue::Int(2048));
     be_params.insert("channels".into(), ParamValue::Int(1));
 
     let output = be
@@ -113,7 +113,7 @@ main regs = ay38910 1750000.0 regs
     let driver = output.driver.clone();
     let playback = output.playback.clone();
     let signal_thread = std::thread::spawn(move || {
-        let mut runner = ProgramRunner::new(engine, Some(stc_ref), 256);
+        let mut runner = ProgramRunner::new(engine, Some(stc_ref));
         runner.wire_backends(None, Some(playback));
         runner.run_with_driver(driver, runner_running).ok();
     });
