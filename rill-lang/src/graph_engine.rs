@@ -56,7 +56,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> CompiledGraphEngine<T, BUF_SIZE> 
             .enumerate()
             .map(|(i, name)| (name.clone(), i))
             .collect();
-        let param_maps = vec![HashMap::new(); graph.nodes.len()];
+        let param_maps: Vec<HashMap<String, usize>> = graph
+            .node_param_names
+            .iter()
+            .map(|names| {
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (n.clone(), i))
+                    .collect()
+            })
+            .collect();
 
         Self {
             graph,
@@ -204,7 +214,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> CompiledGraphEngine<T, BUF_SIZE> 
         }
 
         for node in &mut self.graph.nodes {
-            node.execute(&mut self.graph.buffers);
+            node.execute(&mut self.graph.buffers)?;
         }
 
         for (i, output) in outputs.iter_mut().enumerate() {

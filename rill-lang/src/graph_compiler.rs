@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use rill_core::buffer::{Buffer, FixedBuffer};
 use rill_core::math::Transcendental;
-use rill_core::traits::{Algorithm, MultichannelAlgorithm};
+use rill_core::traits::{Algorithm, MultichannelAlgorithm, ProcessResult};
 
 use crate::builtin::{Registry, SignatureSource};
 use crate::graph_ir::{EdgeKind, GraphIr};
@@ -30,7 +30,7 @@ pub struct NodeClosure<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> NodeClosure<T, BUF_SIZE> {
     /// Execute this node's algorithm, reading from and writing to the buffer pool.
     #[allow(unsafe_code)]
-    pub fn execute(&mut self, buffers: &mut [FixedBuffer<T, BUF_SIZE>]) {
+    pub fn execute(&mut self, buffers: &mut [FixedBuffer<T, BUF_SIZE>]) -> ProcessResult<()> {
         match &mut self.algo {
             AlgorithmVariant::Siso(algo) => {
                 let bufs_ptr = buffers.as_mut_ptr();
@@ -41,7 +41,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeClosure<T, BUF_SIZE> {
                     Some(in_buf.as_slice())
                 };
                 let out_buf = unsafe { &mut *bufs_ptr.add(self.output_indices[0]) };
-                Algorithm::process(algo.as_mut(), input, out_buf.as_mut_slice()).ok();
+                Algorithm::process(algo.as_mut(), input, out_buf.as_mut_slice())?;
             }
             AlgorithmVariant::Mimo(algo) => {
                 let bufs_ptr = buffers.as_mut_ptr();
@@ -62,10 +62,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> NodeClosure<T, BUF_SIZE> {
                     algo.as_mut(),
                     &self.input_slices,
                     &mut self.output_slices,
-                )
-                .ok();
+                )?;
             }
         }
+        Ok(())
     }
 
     /// Set a parameter by index on the owned algorithm.
@@ -99,6 +99,8 @@ pub struct CompiledGraph<T: Transcendental, const BUF_SIZE: usize> {
     pub output_mapping: Vec<usize>,
     /// Node names in topological order (for anchor-based param routing).
     pub node_names: Vec<String>,
+    /// Per-node parameter name → index mappings.
+    pub node_param_names: Vec<Vec<String>>,
 }
 
 /// Compile a GraphIr into a CompiledGraph.
@@ -142,6 +144,7 @@ pub fn compile<T: Transcendental, const BUF_SIZE: usize>(
     // 2. Build NodeClosures
     let mut nodes: Vec<NodeClosure<T, BUF_SIZE>> = Vec::new();
     let mut node_names: Vec<String> = Vec::new();
+    let mut node_param_names_sets: Vec<Vec<String>> = Vec::new();
 
     for (idx, name) in ir.topo_order.iter().enumerate() {
         let node = ir.nodes.get(name).unwrap();
@@ -175,15 +178,18 @@ pub fn compile<T: Transcendental, const BUF_SIZE: usize>(
         let n_out = output_bufs.len();
 
         let algo = if node.ir.builtins.is_empty() {
+            node_param_names_sets.push(Vec::new());
             let prog =
                 crate::program::RillProgram::<T>::new_with(node.ir.clone(), registry, sample_rate)
                     .map_err(|e| format!("program creation: {e}"))?;
             AlgorithmVariant::Siso(Box::new(prog))
         } else {
             let bi = &node.ir.builtins[0];
-            let _sig = registry
+            let sig = registry
                 .builtin_sig(&bi.name)
                 .ok_or_else(|| format!("unknown builtin: {}", bi.name))?;
+            let param_names: Vec<String> = sig.param_names.iter().map(|s| s.to_string()).collect();
+            node_param_names_sets.push(param_names);
 
             let entry = registry.get(&bi.name).unwrap();
 
@@ -234,5 +240,6 @@ pub fn compile<T: Transcendental, const BUF_SIZE: usize>(
         outputs: ir.outputs,
         output_mapping,
         node_names,
+        node_param_names: node_param_names_sets,
     })
 }
