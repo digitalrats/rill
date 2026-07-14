@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
-#[path = "stc_player.rs"]
-mod stc_player;
 use rill_lang::program_runner::ProgramRunner;
+#[path = "stc/mod.rs"]
+mod stc_player;
 use stc_player::StcPlayer;
 
 // ============================================================================
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 main regs = ay38910 1750000.0 regs
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let engine = rill_lang::compile_graph::<f32, 512>(src, &reg, 44100.0)?;
+    let engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0)?;
 
     // ── Backend ────────────────────────────────────────────────────────────
     let backend_name = args
@@ -113,7 +113,7 @@ main regs = ay38910 1750000.0 regs
     let driver = output.driver.clone();
     let playback = output.playback.clone();
     let signal_thread = std::thread::spawn(move || {
-        let mut runner = ProgramRunner::new(engine, Some(stc_ref), 512);
+        let mut runner = ProgramRunner::new(engine, Some(stc_ref), 256);
         runner.wire_backends(None, Some(playback));
         runner.run_with_driver(driver, runner_running).ok();
     });
