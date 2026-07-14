@@ -35,6 +35,7 @@ pub(crate) fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) 
             match &mut prog.builtins[instance] {
                 crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, &v),
                 crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),
+                crate::program::BuiltinInst::MultichannelBlock(b) => b.set_param(arg_pos, &v),
             }
         }
     }

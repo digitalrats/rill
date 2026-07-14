@@ -2,6 +2,7 @@
 //! [`rill_core::Algorithm`]. Owns its IR, schedule, and pre-allocated state;
 //! `process()` performs no heap allocation after warm-up.
 
+use rill_core::builtin::MultichannelBlockBuiltin;
 use rill_core::math::Transcendental;
 #[cfg(feature = "router")]
 use rill_core::traits::MultichannelAlgorithm;
@@ -18,6 +19,9 @@ pub(crate) enum BuiltinInst<T: Transcendental> {
     Sample(Box<dyn SampleBuiltin<T>>),
     /// An opaque whole-buffer built-in.
     Block(Box<dyn BlockBuiltin<T>>),
+    /// A whole-buffer multi-channel built-in.
+    #[allow(dead_code)]
+    MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
 }
 
 /// A compiled program ready to run inside the rill graph.
@@ -231,6 +235,7 @@ impl<T: Transcendental> RillProgram<T> {
             match b {
                 BuiltinInst::Sample(inst) => inst.init(sample_rate),
                 BuiltinInst::Block(inst) => Algorithm::init(inst.as_mut(), sample_rate),
+                BuiltinInst::MultichannelBlock(_) => {}
             }
         }
     }
@@ -259,6 +264,7 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
             match b {
                 BuiltinInst::Sample(inst) => inst.reset(),
                 BuiltinInst::Block(inst) => Algorithm::reset(inst.as_mut()),
+                BuiltinInst::MultichannelBlock(_) => {}
             }
         }
     }

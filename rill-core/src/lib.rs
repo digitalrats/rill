@@ -92,9 +92,11 @@ pub use error::*;
 
 // Re-export core traits
 pub use traits::{
-    ParamMetadata, ParamRange, ParamType, ParamValue, ParameterError, ParameterId, Params,
-    ProcessError, ProcessResult,
+    Algorithm, AsAny, IntoParamValue, MultichannelAlgorithm, ParamMetadata, ParamRange, ParamType,
+    ParamValue, ParameterError, ParameterId, Params, ProcessError, ProcessResult, SisoAdapter,
 };
+
+pub use builtin::MultichannelBlockBuiltin;
 
 // Re-export math abstractions
 pub use math::{Scalar, Transcendental};
