@@ -171,7 +171,7 @@ impl<T: Transcendental> BlockBuiltin<T> for ComplexGenBuiltin<T> {}
 
 #[cfg(feature = "router")]
 struct MixerAlgorithmWrapper<T: Transcendental> {
-    state: crate::builtins::mixer::MixerState<T>,
+    state: crate::builtins::mixer::MixerState<T, 512>,
     cfg: crate::builtins::mixer::MixerConfig,
 }
 
@@ -179,7 +179,7 @@ struct MixerAlgorithmWrapper<T: Transcendental> {
 impl<T: Transcendental> MixerAlgorithmWrapper<T> {
     fn new(config: crate::builtins::mixer::MixerConfig) -> Self {
         Self {
-            state: crate::builtins::mixer::MixerState::<T>::new(config.clone(), 512),
+            state: crate::builtins::mixer::MixerState::<T, 512>::new(config.clone()),
             cfg: config,
         }
     }
@@ -197,7 +197,7 @@ impl<T: Transcendental> Algorithm<T> for MixerAlgorithmWrapper<T> {
     }
 
     fn reset(&mut self) {
-        self.state = crate::builtins::mixer::MixerState::<T>::new(self.cfg.clone(), 512);
+        self.state = crate::builtins::mixer::MixerState::<T, 512>::new(self.cfg.clone());
     }
 }
 

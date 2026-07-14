@@ -119,7 +119,7 @@ pub fn compile_graph<T: Transcendental>(
     };
 
     let compiled = graph_compiler::compile::<T, 512>(&graph_ir, registry, sample_rate)
-        .map_err(|e| CompileError::Unsupported(e))?;
+        .map_err(CompileError::Unsupported)?;
 
     let mailbox = Arc::new(Mailbox::new(64));
     Ok(graph_engine::CompiledGraphEngine::new(compiled, mailbox))
