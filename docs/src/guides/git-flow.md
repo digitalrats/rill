@@ -34,10 +34,10 @@ git flow feature finish my-awesome-effect
 ### Preparing a release
 
 ```bash
-git flow release start 0.3.0
+git flow release start 0.7.0
 # update versions in Cargo.toml
 cargo test --workspace
-git flow release finish 0.3.0
+git flow release finish 0.7.0
 git push --all origin
 git push --tags origin
 ```
@@ -45,9 +45,9 @@ git push --tags origin
 ### Hotfix
 
 ```bash
-git flow hotfix start 0.2.1
+git flow hotfix start 0.6.1
 # fix, commit, test
-git flow hotfix finish 0.2.1
+git flow hotfix finish 0.6.1
 git push --all origin
 git push --tags origin
 ```

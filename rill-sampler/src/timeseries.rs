@@ -6,20 +6,27 @@ use rill_core::Transcendental;
 /// Interpolation strategy for reading between samples.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InterpMode {
+    /// Nearest-neighbor interpolation.
     Nearest,
+    /// Linear interpolation between samples.
     Linear,
+    /// Cubic interpolation between samples.
     Cubic,
 }
 
 /// One channel of an unevenly-sampled time series.
 #[derive(Debug, Clone)]
 pub struct TimeSeriesChannel<T> {
+    /// Channel name.
     pub name: String,
+    /// Sample timestamps in seconds.
     pub timestamps: Vec<f64>,
+    /// Sample values.
     pub values: Vec<T>,
 }
 
 impl<T> TimeSeriesChannel<T> {
+    /// Creates a new time series channel with the given name.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -28,6 +35,7 @@ impl<T> TimeSeriesChannel<T> {
         }
     }
 
+    /// Returns the total duration in seconds.
     pub fn duration(&self) -> f64 {
         if self.timestamps.len() < 2 {
             0.0
@@ -36,13 +44,16 @@ impl<T> TimeSeriesChannel<T> {
         }
     }
 
+    /// Returns the number of samples.
     pub fn len(&self) -> usize {
         self.timestamps.len()
     }
+    /// Returns true if the channel has no samples.
     pub fn is_empty(&self) -> bool {
         self.timestamps.is_empty()
     }
 
+    /// Adds a sample at the given timestamp.
     pub fn push(&mut self, t: f64, value: T) {
         self.timestamps.push(t);
         self.values.push(value);
@@ -59,6 +70,7 @@ pub struct TimeSeriesReader<T> {
 }
 
 impl<T: Transcendental + Copy> TimeSeriesReader<T> {
+    /// Creates a new time series reader.
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
@@ -68,31 +80,39 @@ impl<T: Transcendental + Copy> TimeSeriesReader<T> {
         }
     }
 
+    /// Sets the interpolation mode (builder pattern).
     pub fn with_interp(mut self, mode: InterpMode) -> Self {
         self.interp = mode;
         self
     }
+    /// Sets the interpolation mode.
     pub fn set_interp(&mut self, mode: InterpMode) {
         self.interp = mode;
     }
+    /// Returns the current interpolation mode.
     pub fn interp_mode(&self) -> InterpMode {
         self.interp
     }
 
+    /// Adds a time series channel to the reader.
     pub fn add_channel(&mut self, channel: TimeSeriesChannel<T>) {
         self.channels.push(channel);
     }
+    /// Returns the number of channels.
     pub fn num_channels(&self) -> usize {
         self.channels.len()
     }
 
+    /// Returns a reference to a channel by index.
     pub fn channel(&self, index: usize) -> Option<&TimeSeriesChannel<T>> {
         self.channels.get(index)
     }
+    /// Returns a mutable reference to a channel by index.
     pub fn channel_mut(&mut self, index: usize) -> Option<&mut TimeSeriesChannel<T>> {
         self.channels.get_mut(index)
     }
 
+    /// Returns the maximum duration across all channels.
     pub fn duration(&self) -> f64 {
         self.channels
             .iter()
@@ -100,6 +120,7 @@ impl<T: Transcendental + Copy> TimeSeriesReader<T> {
             .fold(0.0, f64::max)
     }
 
+    /// Reads a sample from a channel at the given time using interpolation.
     pub fn at_time(&self, channel: usize, t: f64) -> T {
         let Some(ch) = self.channels.get(channel) else {
             return T::ZERO;
@@ -135,6 +156,7 @@ impl<T: Transcendental + Copy> TimeSeriesReader<T> {
         }
     }
 
+    /// Returns a slice of all channels.
     pub fn channels(&self) -> &[TimeSeriesChannel<T>] {
         &self.channels
     }

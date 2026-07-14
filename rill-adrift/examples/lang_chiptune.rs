@@ -395,13 +395,16 @@ main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1
     use rill_adrift::rill_graph::backend_factory::BackendFactory;
     let mut be: BackendFactory = Default::default();
     rill_adrift::registration::register_backends(&mut be);
+
     let mut be_params: HashMap<String, ParamValue> = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(44100.0));
     be_params.insert("block_size".into(), ParamValue::Int(256));
     be_params.insert("channels".into(), ParamValue::Int(1));
+
     let output = be
         .create_output(&backend_name, &be_params)
         .map_err(|e| format!("backend: {e}"))?;
+
     // ── STC module (ClockTick-driven via ProgramRunner parent_ref) ─────────
     let playing = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));

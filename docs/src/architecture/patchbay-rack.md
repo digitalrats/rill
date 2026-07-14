@@ -40,7 +40,7 @@ and configured through a single document (`PatchbayDef`):
 
 | Module | Role | Configured via |
 |--------|------|---------------|
-| **Automatons** | Modulation generators (LFO, envelope) | `automata` + `servos` |
+| **Automatons** | Modulation generators (LFO, envelope) | `automatons` + `servos` |
 | **MidiInput** | External MIDI event source | `SensorDef::Midi` |
 | **OscSensor** | External OSC event source (UDP) | `SensorDef::Osc` |
 | **Sequencer** | Step sequencer driven by signal clock | `attach_sequencer()` |
@@ -120,16 +120,16 @@ pub struct MidiInputDef {
 }
 ```
 
-**Behaviour:** `apply_to_async()` creates the `MidiBackend`, starts the
+**Behaviour:** `apply_to_async()` creates the `MidiInput`, starts the
 `MidiHub`, and stores the handle. `stop_all()` stops it.
 
 ```rust
 #[cfg(feature = "midi")]
 pub fn apply_to_async(&self, control: &mut Patchbay, registry: &FunctionRegistry) -> Result<(), String> {
-    // ... existing automata/servos/mappings setup ...
+    // ... existing automatons/servos/mappings setup ...
 
     if let Some(ref midi_def) = self.midi {
-        let backend: Box<dyn MidiBackend> = match midi_def.backend.as_str() {
+        let backend: Box<dyn MidiInput> = match midi_def.backend.as_str() {
             "midir" => Box::new(MidirBackend::new(&midi_def.port_name)?),
             "alsa_seq" => Box::new(AlsaSeqBackend::new(&midi_def.port_name)?),
             _ => return Err(format!("unknown midi backend: {}", midi_def.backend)),

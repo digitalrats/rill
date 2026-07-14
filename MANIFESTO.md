@@ -14,7 +14,7 @@ Rill was not born as an architecture. It grew from a simple desire: to build a s
 
 - **Hard real-time world (Graph)** — fast, deterministic, bounded. Here live sensors (sound, CAN bus, temperature) and actuators (speakers, motors, relays). No allocations, no locks, no doubts. Pure data flow.
 
-- **Control world (Patchbay)** — slow, complex, unbounded. Here live automata (LFOs, envelopes, logic), here they communicate with the user (GUI, MIDI, OSC), here they store history and make decisions. Here you can think.
+- **Control world (Patchbay)** — slow, complex, unbounded. Here live automatons (LFOs, envelopes, logic), here they communicate with the user (GUI, MIDI, OSC), here they store history and make decisions. Here you can think.
 
 - **Protocol between them** — asynchronous, fault-tolerant, scalable. Command queues (Soft RT → Hard RT) and telemetry (Hard RT → Soft RT). This is the nervous system connecting reflexes with intelligence.
 
@@ -31,7 +31,7 @@ This gives:
 
 Graph and Patchbay do not have to live in the same process — or even on the same node.
 
-Locally — `crossbeam_channel` (fast). Globally — TCP, UDP, WebSocket, LoRa (reliable, far, cheap).
+Locally — lock-free actor mailboxes (fast). Globally — TCP, UDP, WebSocket, LoRa (reliable, far, cheap).
 
 By designing the protocol, we design the future. Internal Internet-Drafts today — potential RFCs tomorrow.
 

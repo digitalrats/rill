@@ -223,26 +223,27 @@ Coverage includes:
 
 ## Automatic node registration (rill-adrift)
 
-The umbrella crate `rill-adrift` provides [`register_all_nodes`] which
-pre-registers every built-in node type from all rill crates:
+In 0.6.0-M1, the `register_all_nodes()` function was removed. Registration now happens via
+per-crate `register` modules that populate a `rill_core::builtin::Registry`:
 
 ```rust
-use rill_adrift::registration::register_all_nodes;
+use rill_core::builtin::Registry;
 
-let mut factory = rill_graph::NodeFactory::<f32, 256>::new();
-register_all_nodes(&mut factory);
-factory.register_fn("app/custom_node", |id, params| { /* … */ });
+let mut reg = Registry::<f32>::new();
+rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
+rill_router::register::register_lang_builtins(&mut reg);
+rill_digital_effects::register::register_lang_builtins(&mut reg);
 ```
 
-To build a factory shared across multiple graphs, wrap it in an `Arc`:
+For the full ecosystem, `rill-adrift` provides `lang_builtins::full_registry()` as a convenience
+that aggregates all available per-crate registries:
 
 ```rust
-use std::sync::Arc;
-let shared_factory = Arc::new(factory);
-let mut builder = rill_graph::GraphBuilder::new(shared_factory);
+let registry = rill_adrift::lang_builtins::full_registry::<f32>();
 ```
 
-[`register_all_nodes`]: https://docs.rs/rill-adrift/latest/rill_adrift/registration/fn.register_all_nodes.html
+When building rill-lang graphs, use `compile_with()` or `compile_graph()` with the registry.
+For `GraphBuilder`-based workflows, use per-crate `register_lang_builtins()` functions.
 
 ### Convenience deserialisation helper
 
@@ -416,8 +417,8 @@ use rill_graph::NodeFactory;
 
 let mut factory = NodeFactory::<f32, 64>::new();
 
-// Built-in rill nodes
-rill_adrift::registration::register_all_nodes(&mut factory);
+// Per-crate registration (rill-core-dsp, rill-digital-filters, rill-router, etc.)
+rill_core_dsp::lang::register::register_lang_builtins_for_factory(&mut factory);
 
 // Custom app nodes
 factory.register_fn("app/gain", |id, params| {
@@ -478,7 +479,8 @@ use rill_graph::NodeFactory;
 
 fn build_app_factory() -> NodeFactory<f32, 64> {
     let mut factory = NodeFactory::new();
-    rill_adrift::registration::register_all_nodes(&mut factory);
+    // Per-crate registration from individual crates
+    rill_core_dsp::lang::register::register_lang_builtins_for_factory(&mut factory);
     factory.register_fn("app/tremolo", |id, params| { /* … */ });
     factory
 }

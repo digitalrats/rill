@@ -24,17 +24,18 @@ use rill_adrift::prelude::*;
 use rill_adrift::rill_core::traits::*;
 use rill_adrift::rill_core::time::ClockTick;
 use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
-use rill_adrift::rill_oscillators::SineOscNode;
+use rill_adrift::rill_core_dsp::generators::SineOscillator;
 use std::sync::Arc;
 
 const BUF_SIZE: usize = 256;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let factory = Arc::new(NodeFactory::<f32, BUF_SIZE>::new());
-    rill_adrift::registration::register_all_nodes(&mut Arc::get_mut(&mut factory.clone()).unwrap());
+    // Registration happens via per-crate `register` modules (e.g. `rill_core_dsp::lang::register::register_lang_builtins`)
+    // or via `rill_adrift::lang_builtins::full_registry()`. NodeFactory-based registration was removed in 0.6.0-M1.
     let mut builder = GraphBuilder::<f32, BUF_SIZE>::new(factory);
     let osc = builder.add_source(Box::new(
-        SineOscNode::<f32, BUF_SIZE>::new().with_frequency(440.0)
+        SineOscillator::<f32, BUF_SIZE>::new().with_frequency(440.0)
     ));
     let sink = builder.add_sink(Box::new(MySink::new()));
     builder.connect_signal(osc, 0, sink, 0)?;

@@ -5,6 +5,7 @@ use rill_core::Transcendental;
 use rill_core_dsp::generators::{LoopMode, SamplePlayer};
 use std::marker::PhantomData;
 
+/// Sample playback node with stereo support, looping, and playback rate control.
 pub struct SamplePlayerNode<T: Transcendental, const BUF_SIZE: usize> {
     left: SamplePlayer<T>,
     right: Option<SamplePlayer<T>>,
@@ -19,6 +20,7 @@ pub struct SamplePlayerNode<T: Transcendental, const BUF_SIZE: usize> {
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
+    /// Creates a new sample player node.
     pub fn new() -> Self {
         Self {
             left: SamplePlayer::new(Vec::new()),
@@ -33,6 +35,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
             _phantom: PhantomData,
         }
     }
+    /// Loads a sample buffer for playback.
     pub fn load(&mut self, sample: SampleBuffer<T>) {
         let len = sample.len() as f64;
         self.loop_end = len;
@@ -55,6 +58,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
             self.right = None;
         }
     }
+    /// Starts playback (opens the gate).
     pub fn play(&mut self) {
         self.gate = true;
         self.left.set_gate(true);
@@ -62,6 +66,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
             r.set_gate(true);
         }
     }
+    /// Stops playback (closes the gate).
     pub fn stop(&mut self) {
         self.gate = false;
         self.left.set_gate(false);
@@ -69,6 +74,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> SamplePlayerNode<T, BUF_SIZE> {
             r.set_gate(false);
         }
     }
+    /// Sets output amplitude (clamped to 0.0–1.0).
     pub fn set_amplitude(&mut self, amp: T) {
         self.amplitude = amp.clamp(T::ZERO, T::from_f32(1.0));
     }

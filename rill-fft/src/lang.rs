@@ -1,3 +1,4 @@
+//! FFT language builtins — spectral gate, spectral delay, and convolver.
 #![cfg(feature = "lang")]
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
@@ -103,6 +104,7 @@ impl<T: Transcendental> BlockBuiltin<T> for ConvolverBuiltin<T> {
     }
 }
 
+/// Register FFT processing builtins in the rill-lang registry.
 pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
         BuiltinSig::simple("spectralgate", 1, 1, 2, BuiltinKind::Block),

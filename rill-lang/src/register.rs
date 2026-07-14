@@ -342,6 +342,7 @@ fn register_mixer<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         ],
         signal_outs: 2,
         kind: BuiltinKind::Block,
+        param_names: Vec::new(),
     };
 
     reg.register_block(
@@ -398,6 +399,7 @@ fn register_eq<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         ],
         signal_outs: 1,
         kind: BuiltinKind::Block,
+        param_names: Vec::new(),
     };
 
     reg.register_block(
@@ -425,6 +427,7 @@ fn register_dry_wet<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         ],
         signal_outs: 2,
         kind: BuiltinKind::Block,
+        param_names: Vec::new(),
     };
 
     reg.register_block(

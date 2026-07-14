@@ -18,6 +18,7 @@ pub use error::{LofiError, LofiResult};
 
 // Re-export for convenience
 
+/// Register graph nodes and lang builtins for lo-fi emulation.
 pub mod register;
 
 mod lang_helpers;

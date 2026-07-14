@@ -1,4 +1,5 @@
 #![allow(deprecated)]
+//! Register rill-lang builtins for core model components.
 /// Registration functions for rill-graph and rill-lang built-ins.
 #[cfg(feature = "lang")]
 mod lang_helpers {
@@ -60,6 +61,7 @@ mod lang_helpers {
 }
 
 #[cfg(feature = "lang")]
+/// Register core model language builtins (e.g., analog Moog filter).
 pub fn register_lang_builtins<T: rill_core::math::Transcendental>(
     reg: &mut rill_lang::builtin::Registry<T>,
 ) {

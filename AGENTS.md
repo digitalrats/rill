@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 20 active crates:
+Cargo workspace — 19 active crates:
 
 | Crate | Status |
 |---|---|
@@ -10,7 +10,6 @@ Cargo workspace — 20 active crates:
 | `rill-core-actor` | Active — actor model (ActorRef, Actor, ActorSystem) for lock-free message passing |
 | `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops, sample player |
 | `rill-graph` | Active — signal graph (DAG) with topological sort |
-| `rill-oscillators` | Active — oscillators, LFO, envelopes, wavetable oscillator node |
 | `rill-digital-filters` | Active — Biquad, SVF, comb, MoogLadder filters |
 | `rill-digital-effects` | Active — Delay, Distortion, Limiter |
 | `rill-router` | Active — EQ + mixer + routing |
@@ -26,6 +25,7 @@ Cargo workspace — 20 active crates:
 | `rill-fft` | Active — FFT, frequency-domain convolution, spectrum analysis, spectral effects |
 | `rill-lang` | Active — Faust-style functional DSL for signal processing, compiles to `Algorithm<T>` |
 | `rill-adrift` | Active — umbrella crate for signal processing applications |
+| `rill-analyzer` | Active — CLI debugger for signal graph inspection |
 
 Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
@@ -35,7 +35,7 @@ Dependency tree:
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
-  `rill-oscillators`, `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-fft`
+  `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-fft`, `rill-sampler`
 - **`rill-core-model`** — WDF + physical modeling, depends on `rill-core`
 - **`rill-analog-filters`** — depends on `rill-core` + `rill-core-model`
 - **`rill-analog-effects`** — depends on `rill-core` + `rill-core-model`
@@ -43,6 +43,40 @@ Dependency tree:
 - **`rill-lang`** — signal processing DSL, depends on `rill-core` only
 - **`rill-fft`** — FFT and frequency-domain processing, depends on `rill-core` + `rill-core-dsp`
 - **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`, `fft`, `lang`
+
+## Crate purpose guide — where to put new `Algorithm<T>` implementations
+
+Each crate in the workspace has a distinct **domain** that determines which kind of
+modeling belongs there. When adding a new `Algorithm<T>` implementation, match the
+crate to the **nature of the thing being modeled**, not to its interface shape.
+
+| Crate | Domain | What goes here | Examples |
+|---|---|---|---|
+| **`rill-core`** | Foundation | **Traits only.** No `Algorithm<T>` implementations. `Scalar`, `Transcendental`, `Algorithm`, `Node`, `IoBackend`, queue types, buffer types, time abstractions. | `Transcendental`, `Algorithm<T>`, `DelayLine<T>` |
+| **`rill-core-model`** | Physical element models | Models of **real physical elements** using precise modeling techniques (WDF, modal analysis, physical acoustics). A circuit-level component, a string, a plate, an acoustic cavity. | WDF resistor/capacitor/diode, `StringModel`, `PlateModel`, `ModalCavity` |
+| **`rill-lofi`** | Vintage hardware emulation | **Concrete analog circuits and hardware devices** — sound chips (AY-3-8910, SID, NES APU), samplers (Akai S900, Fairlight CMI), passive circuit elements (AC-coupling capacitor as DC blocker). «Ancient circuit design» with nostalgic value. Models the **artefact**, not the pure math. | `Ay38910Chip`, `NesChip`, `DcBlocker`, `AkaiS900Emulator` |
+| **`rill-core-dsp`** | Pure mathematical algorithms | **Abstract DSP algorithms** without hardware provenance — filters defined by transfer functions, generators defined by waveforms, effects defined by math. NOT a physical element model. Consider this crate **last** when modeling a real circuit element. | `Biquad`, `OnePole`, `Butterworth`, `ChebyshevI`, `CombFilter`, `SineOscillator` |
+| **`rill-analog-*`** | Analog circuit models via WDF | Analog filters and effects built on `rill-core-model` primitives. Uses WDF methodology for circuit-level accuracy. | `WdfMoogLadder`, `OpAmpModel`, `TapeDeckModel` |
+
+### Decision flow
+
+```
+Is it a physical element (capacitor, diode, string, plate)?
+├─ Yes → Does it model vintage/retro hardware?
+│         ├─ Yes → rill-lofi
+│         └─ No  → rill-core-model
+└─ No  → Is it a pure mathematical DSP algorithm?
+          ├─ Yes → rill-core-dsp
+          └─ No  → rill-core (if it's a trait/abstraction, not impl)
+```
+
+### Key principle
+
+> **Model the *what*, not the *how*.** A DC blocker implemented as a one-pole highpass
+> is not a «filter algorithm» — it is a **model of an AC coupling capacitor**, a real
+> passive circuit element found in virtually every pre-1990s audio device. It belongs
+> in `rill-lofi`. Conversely, a `OnePole<T>` with `FilterType::HighPass` is a pure
+> transfer-function filter with no hardware story — it belongs in `rill-core-dsp`.
 
 ## History
 
@@ -53,7 +87,6 @@ Dependency tree:
 > |---|---|
 > | `kama-core` | `rill-core` |
 > | `kama-graph` | `rill-graph` |
-> | `kama-oscillators` | `rill-oscillators` |
 > | `kama-digital-filters` | `rill-digital-filters` |
 > | `kama-digital-effects` | `rill-digital-effects` |
 > | `kama-eq` | merged into `rill-router::eq` |
@@ -74,7 +107,7 @@ cargo clippy --workspace         # lint
 cargo fmt                        # format (max_width=100, tab_spaces=4)
 
 # publish order (leaf to root):
-./scripts/publish.sh              # all 20 crates to crates.io
+./scripts/publish.sh              # all 19 crates to crates.io
 ./scripts/publish.sh --check      # dry-run
 
 ## crates.io publication rules
@@ -157,7 +190,7 @@ mdbook serve docs/                # dev server at localhost:3000
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
 - **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
-- **Versioning:** crates version synchronously (all at 0.5.0-beta.4). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
+- **Versioning:** crates version synchronously (all at 0.6.0-M1). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
@@ -259,7 +292,6 @@ under `pw‑loopback` or similar virtual device to detect xruns.
 ## Feature flags (non-default)
 
 - `rill-core-dsp`: `simd`, `f64`, `fast_math`
-- `rill-digital-effects`: `modulation` (enables `rill-oscillators`)
 - `rill-core`: `serde`, `simd` (enables `wide` crate)
 - `rill-core-model`: (no non-default features)
 - `rill-io`: `portaudio` (default), `midir` (default), `alsa`, `pipewire`, `jack`, `all-backends` (includes `midir`)

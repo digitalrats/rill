@@ -27,5 +27,7 @@ pub use limiter::Limiter;
 pub use read_head::ReadHead;
 pub use write_head::WriteHead;
 
+/// rill-lang builtin registration for digital effects.
 pub mod lang;
+/// Register graph nodes and lang builtins for digital effects.
 pub mod register;

@@ -10,17 +10,23 @@ use std::marker::PhantomData;
 /// Distortion type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DistortionType {
+    /// Hard clipping distortion.
     HardClip,
+    /// Soft clipping distortion using tanh.
     SoftClip,
+    /// Tube-style saturation.
     Tube,
+    /// Fuzz distortion with asymmetric clipping.
     Fuzz,
 }
 
 impl DistortionType {
+    /// Returns a list of distortion type names.
     pub fn names() -> Vec<&'static str> {
         vec!["hard_clip", "soft_clip", "tube", "fuzz"]
     }
 
+    /// Parses a distortion type from a string name.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -32,6 +38,7 @@ impl DistortionType {
         }
     }
 
+    /// Returns the string name of this distortion type.
     pub fn as_str(&self) -> &'static str {
         match self {
             DistortionType::HardClip => "hard_clip",
@@ -49,8 +56,11 @@ impl DistortionType {
 /// - type: distortion type
 /// - output_gain: output level (0.0 - 2.0)
 pub struct Distortion<T: Transcendental, const BUF_SIZE: usize> {
+    /// The distortion algorithm type.
     pub distortion_type: DistortionType,
+    /// Input drive gain (1.0–100.0).
     pub drive: f32,
+    /// Output gain after distortion (0.0–2.0).
     pub output_gain: f32,
     _phantom: PhantomData<(T, [T; BUF_SIZE])>,
 }
@@ -62,6 +72,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for Distortion<T, BUF_SIZ
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
+    /// Creates a new distortion effect with default soft-clip settings.
     pub fn new() -> Self {
         Self {
             distortion_type: DistortionType::SoftClip,
@@ -71,6 +82,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
         }
     }
 
+    /// Creates a distortion effect with custom parameters.
     pub fn with_params(distortion_type: DistortionType, drive: f32, output_gain: f32) -> Self {
         let mut instance = Self::new();
         instance.set_type(distortion_type);
@@ -79,18 +91,22 @@ impl<T: Transcendental, const BUF_SIZE: usize> Distortion<T, BUF_SIZE> {
         instance
     }
 
+    /// Sets the distortion type.
     pub fn set_type(&mut self, distortion_type: DistortionType) {
         self.distortion_type = distortion_type;
     }
 
+    /// Sets drive amount (clamped to 1.0–100.0).
     pub fn set_drive(&mut self, drive: f32) {
         self.drive = drive.clamp(1.0, 100.0);
     }
 
+    /// Sets output gain (clamped to 0.0–2.0).
     pub fn set_output_gain(&mut self, gain: f32) {
         self.output_gain = gain.clamp(0.0, 2.0);
     }
 
+    /// Processes a single sample through the distortion effect.
     pub fn process_sample(&self, input: T) -> T {
         let driven = input.mul(T::from_f32(self.drive));
 
