@@ -188,7 +188,6 @@ fn source_node_produces_output() {
 #[test]
 fn source_node_with_param_routing() {
     // Source with actor param: SetParameter should affect output.
-    let signal = [0.0f32; 64]; // ignored for source
     let out = run_with_param(
         "main = ?value=0.5",
         "value",

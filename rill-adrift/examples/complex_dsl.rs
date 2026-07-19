@@ -20,7 +20,7 @@ fn main() {
     // 1. Complex generator + norm (magnitude)
     // ========================================================================
     println!("=== complex 3.0 4.0 : norm ===");
-    let src = "complex 3.0 4.0 : norm";
+    let src = "main = complex 3.0 4.0 : norm";
     let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
     let mut out = [0.0f32; 1];
     prog.process(None, &mut out).unwrap();
@@ -30,13 +30,13 @@ fn main() {
     // 2. Conjugate
     // ========================================================================
     println!("\n=== complex 3.0 4.0 : conj : re / im ===");
-    let src = "complex 3.0 4.0 : conj : re";
+    let src = "main = complex 3.0 4.0 : conj : re";
     let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
     let mut out = [0.0f32; 1];
     prog.process(None, &mut out).unwrap();
     println!("  re(conj(3+4i)) = {:.4}  (expected 3.0)", out[0]);
 
-    let src = "complex 3.0 4.0 : conj : im";
+    let src = "main = complex 3.0 4.0 : conj : im";
     let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
     let mut out = [0.0f32; 1];
     prog.process(None, &mut out).unwrap();
@@ -53,11 +53,11 @@ fn main() {
             std::f32::consts::PI / 2.0,
             "pure imaginary",
         ),
-        ("complex -1.0 0.0", std::f32::consts::PI, "real negative"),
+        ("complex (-1.0) 0.0", std::f32::consts::PI, "real negative"),
         ("complex 1.0 1.0", std::f32::consts::PI / 4.0, "45°"),
     ];
     for (gen, expected, desc) in &tests {
-        let src = format!("{gen} : arg");
+        let src = format!("main = {gen} : arg");
         let mut prog = compile_with::<f32>(&src, &reg, SR).expect("compile");
         let mut out = [0.0f32; 1];
         prog.process(None, &mut out).unwrap();
@@ -75,15 +75,15 @@ fn main() {
             "i×i = -1",
             (0, 1, 0, 1),
         ),
-        ("complex 2.0 3.0 , complex 1.0 -1.0", "5+1i", (2, 3, 1, -1)),
+        ("complex 2.0 3.0 , complex 1.0 (-1.0)", "5+1i", (2, 3, 1, -1)),
     ];
     for (args, desc, _) in &tests {
-        let src = format!("{args} : cmul : re");
+        let src = format!("main = {args} : cmul : re");
         let mut prog = compile_with::<f32>(&src, &reg, SR).expect("compile");
         let mut out = [0.0f32; 1];
         prog.process(None, &mut out).unwrap();
 
-        let src_im = format!("{args} : cmul : im");
+        let src_im = format!("main = {args} : cmul : im");
         let mut prog_im = compile_with::<f32>(&src_im, &reg, SR).expect("compile");
         let mut out_im = [0.0f32; 1];
         prog_im.process(None, &mut out_im).unwrap();
@@ -96,15 +96,15 @@ fn main() {
     println!("\n=== cadd — complex addition ===");
     let tests = [
         ("complex 1.0 2.0 , complex 3.0 4.0", "4+6i", (1, 2, 3, 4)),
-        ("complex -1.0 0.0 , complex 2.0 5.0", "1+5i", (-1, 0, 2, 5)),
+        ("complex (-1.0) 0.0 , complex 2.0 5.0", "1+5i", (-1, 0, 2, 5)),
     ];
     for (args, desc, _) in &tests {
-        let src = format!("{args} : cadd : re");
+        let src = format!("main = {args} : cadd : re");
         let mut prog = compile_with::<f32>(&src, &reg, SR).expect("compile");
         let mut out = [0.0f32; 1];
         prog.process(None, &mut out).unwrap();
 
-        let src_im = format!("{args} : cadd : im");
+        let src_im = format!("main = {args} : cadd : im");
         let mut prog_im = compile_with::<f32>(&src_im, &reg, SR).expect("compile");
         let mut out_im = [0.0f32; 1];
         prog_im.process(None, &mut out_im).unwrap();
@@ -115,7 +115,7 @@ fn main() {
     // 6. Chain: multiply two complex numbers, then get magnitude
     // ========================================================================
     println!("\n=== Chained: cmul → norm ===");
-    let src = "complex 3.0 4.0 , complex 2.0 0.0 : cmul : norm";
+    let src = "main = complex 3.0 4.0 , complex 2.0 0.0 : cmul : norm";
     let mut prog = compile_with::<f32>(src, &reg, SR).expect("compile");
     let mut out = [0.0f32; 1];
     prog.process(None, &mut out).unwrap();

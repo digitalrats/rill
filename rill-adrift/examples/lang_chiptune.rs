@@ -37,10 +37,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Compile rill-lang DSL ──────────────────────────────────────────────
     let src = r#"
-main regs = ay38910 1750000.0 regs
+main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let engine = rill_lang::compile_graph::<f32, 512>(src, &reg, 44100.0)?;
+    let engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0)?;
 
     // ── Backend ────────────────────────────────────────────────────────────
     let backend_name = args
