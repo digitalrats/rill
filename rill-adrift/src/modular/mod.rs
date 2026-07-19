@@ -23,8 +23,6 @@ use rill_core::queues::CommandEnum;
 #[cfg(feature = "serialization")]
 use rill_core_actor::ActorRef;
 
-use rill_core_actor::Mailbox;
-
 #[cfg(feature = "debug")]
 use dashmap::DashMap;
 #[cfg(feature = "debug")]
@@ -134,19 +132,10 @@ impl<const BUF: usize> ModularSystem<BUF> {
         let registry = crate::lang_builtins::full_registry::<f32>();
         #[cfg(feature = "lofi")]
         let registry = crate::lang_builtins::full_registry_f32();
-        let ir = builder
-            .build_ir(&registry)
-            .map_err(|e| format!("build_ir: {e}"))?;
 
-        let compiled =
-            rill_lang::graph_compiler::compile::<f32, BUF>(&ir, &registry, def.sample_rate)
-                .map_err(|e| format!("compile: {e}"))?;
-
-        let mailbox = Arc::new(Mailbox::new(64));
-
-        Ok(rill_lang::graph_engine::CompiledGraphEngine::new(
-            compiled, mailbox,
-        ))
+        builder
+            .compile_def::<BUF>(&registry, def.sample_rate)
+            .map_err(|e| e.to_string().into())
     }
 
     /// Access the module factory for registering custom rack module types before launch.
@@ -215,35 +204,16 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         log::error!("graph populate: {e}");
                         return;
                     }
-                    let ir = match builder.build_ir(&registry) {
-                        Ok(ir) => ir,
+                    let engine = match builder.compile_def::<BUF>(&registry, sr) {
+                        Ok(eng) => eng,
                         Err(e) => {
-                            log::error!("build_ir: {e:?}");
+                            log::error!("graph compile: {e}");
                             return;
                         }
                     };
-                    let compiled =
-                        match rill_lang::graph_compiler::compile::<f32, BUF>(&ir, &registry, sr) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                log::error!("graph compile: {e}");
-                                return;
-                            }
-                        };
-                    log::info!(
-                        "rill-adrift: rack '{}' engine built — {} nodes",
-                        rack_name,
-                        compiled.nodes.len()
-                    );
-                    let mailbox = Arc::new(Mailbox::new(64));
+                    log::info!("rill-adrift: rack '{}' engine built", rack_name,);
                     #[cfg(feature = "debug")]
-                    let node_names = compiled.node_names.clone();
-                    #[cfg_attr(not(feature = "debug"), allow(unused_mut))]
-                    let mut engine =
-                        rill_lang::graph_engine::CompiledGraphEngine::new(compiled, mailbox);
-
-                    #[cfg(feature = "debug")]
-                    engine.allocate_probe_slots(ir.nodes.len());
+                    engine.allocate_probe_slots(1);
 
                     #[cfg(feature = "debug")]
                     let debug_state = {
@@ -252,7 +222,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             probe_slots: slots,
                             debug_control: ctrl,
                             command_queue: queue,
-                            node_names,
+                            node_names: vec!["main".to_string()],
                         })
                     };
                     #[cfg(feature = "debug")]
@@ -264,7 +234,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         let _ = graph_tx.send(engine.handle());
                     }
 
-                    let mut runner =
+                    let runner =
                         rill_lang::program_runner::ProgramRunner::new(engine, Some(parent_ref));
 
                     if let Some((ref name, ref params)) = backend_name {
@@ -273,8 +243,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         crate::registration::register_backends(&mut bf);
                         match bf.create_any(name, params) {
                             Ok((driver, capture, playback)) => {
-                                runner.wire_backends(capture, playback);
-                                let _ = runner.run_with_driver(driver, running);
+                                let _ = rill_lang::runtime::Runtime::launch::<BUF>(
+                                    driver, capture, playback, runner, running,
+                                );
                                 log::info!(
                                     "rill-adrift: rack '{}' backend '{}' started",
                                     rack_name,
@@ -335,6 +306,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                     ),
                 }
             }
+
             #[cfg(feature = "debug")]
             if let Some(ds) = debug_state {
                 let shmem =

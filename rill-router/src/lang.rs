@@ -116,7 +116,7 @@ impl<T: Transcendental> MultichannelBlockBuiltin<T> for MonoToStereoBuiltin<T> {
 
 pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("graphic_eq", 1, 1, 1, BuiltinKind::Block),
+        BuiltinSig::simple("graphic_eq", 1, 1, 1, BuiltinKind::Block).with_names(vec!["gain"]),
         |p, sr| {
             let factory = BiquadFactory;
             let mut eq = GraphicEq::new_third_octave(factory, sr);

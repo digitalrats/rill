@@ -37,7 +37,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> BlockBuiltin<T> for DistortionBui
 
 pub fn register_distortion_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("distortion", 1, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("distortion", 1, 1, 2, BuiltinKind::Block)
+            .with_names(vec!["drive", "gain"]),
         |p, sr| {
             let mut d =
                 crate::Distortion::<T, 64>::with_params(DistortionType::SoftClip, p[0] as f32, 1.0);

@@ -25,7 +25,7 @@ mod graph_pipewire_it {
         assert!(backend.num_input_channels() > 0 || backend.num_output_channels() > 0);
 
         let tick = ClockTick::new(0, 64, 48000.0, "test".into());
-        backend.set_process_callback(Box::new(move |_: &ClockTick| {}));
+        backend.set_callback(Box::new(move |_: &ClockTick| {}));
         let _ = backend.stop();
         drop(backend);
         drop(tick);

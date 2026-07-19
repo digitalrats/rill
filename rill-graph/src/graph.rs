@@ -21,6 +21,10 @@ pub enum BuildError {
     Backend(String),
     /// A node type is not registered in the built-in registry.
     UnknownNodeType(String),
+    /// The graph topology is not supported for conversion to a flat chain.
+    UnsupportedTopology(String),
+    /// AST compilation failed.
+    CompilationFailed(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -29,6 +33,8 @@ impl std::fmt::Display for BuildError {
             Self::CycleDetected => write!(f, "graph cycle detected"),
             Self::Backend(msg) => write!(f, "backend error: {msg}"),
             Self::UnknownNodeType(msg) => write!(f, "unknown node type: {msg}"),
+            Self::UnsupportedTopology(msg) => write!(f, "unsupported topology: {msg}"),
+            Self::CompilationFailed(msg) => write!(f, "compilation failed: {msg}"),
         }
     }
 }
@@ -484,5 +490,246 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             edges,
             topo_order,
         })
+    }
+
+    /// Convert the graph to an rill-lang AST [`Program`].
+    ///
+    /// Each graph node becomes an [`Expr::Apply`] with parameters ordered
+    /// according to the builtin's [`BuiltinSig::param_names`]. Nodes are
+    /// chained via [`BinOp::Seq`] according to their signal connections.
+    ///
+    /// Only simple chain topologies are supported (fan-out/fan-in will
+    /// return [`BuildError::UnsupportedTopology`]).
+    pub fn ast_from_def(
+        &self,
+        registry: &rill_lang::builtin::Registry<T>,
+    ) -> Result<rill_lang::ast::Program, BuildError> {
+        use rill_lang::ast::{BinOp, Def, Expr, Param, Program};
+        use rill_lang::error::Span;
+
+        let dummy = Span::new(0, 0);
+
+        // Build id-to-index mapping
+        let mut id_to_idx: HashMap<u32, usize> = HashMap::new();
+        for (i, r) in self.recipes.iter().enumerate() {
+            id_to_idx.insert(r.id, i);
+        }
+
+        // Resolve builtin names and parameter order for each recipe
+        struct NodeMeta {
+            builtin_name: String,
+            param_values: Vec<f64>,
+            param_names: Vec<String>,
+        }
+
+        let mut node_metas: Vec<NodeMeta> = Vec::with_capacity(self.recipes.len());
+
+        for recipe in &self.recipes {
+            let builtin_name = Self::resolve_builtin_name(&recipe.type_name, registry)
+                .ok_or_else(|| BuildError::UnknownNodeType(recipe.type_name.clone()))?;
+
+            let sig = registry.builtin_sig(&builtin_name).unwrap();
+
+            // Build parameter values in builtin param_names order
+            let param_names: Vec<String> = sig.param_names.iter().map(|n| n.to_string()).collect();
+            let mut param_values = Vec::with_capacity(param_names.len());
+
+            // Build a lookup from recipe param name to f64 value
+            let recipe_defaults: HashMap<&str, f64> = recipe
+                .params
+                .parameters
+                .iter()
+                .filter_map(|(k, v)| v.as_f32().map(|f| (k.as_str(), f as f64)))
+                .collect();
+
+            for name in &param_names {
+                let val = recipe_defaults.get(name.as_str()).copied().unwrap_or(0.0);
+                param_values.push(val);
+            }
+
+            node_metas.push(NodeMeta {
+                builtin_name,
+                param_values,
+                param_names,
+            });
+        }
+
+        // Topological sort
+        let mut in_degree: Vec<usize> = vec![0; self.recipes.len()];
+        let mut adj: Vec<Vec<usize>> = vec![vec![]; self.recipes.len()];
+
+        for (from_idx, _from_port, to_idx, _to_port) in &self.signal_edges {
+            if *from_idx < self.recipes.len() && *to_idx < self.recipes.len() {
+                adj[*from_idx].push(*to_idx);
+                in_degree[*to_idx] += 1;
+            }
+        }
+
+        let mut queue: Vec<usize> = (0..self.recipes.len())
+            .filter(|i| in_degree[*i] == 0)
+            .collect();
+        let mut order: Vec<usize> = Vec::new();
+
+        while let Some(u) = queue.pop() {
+            order.push(u);
+            for &v in &adj[u] {
+                in_degree[v] -= 1;
+                if in_degree[v] == 0 {
+                    queue.push(v);
+                }
+            }
+        }
+
+        if order.len() != self.recipes.len() {
+            return Err(BuildError::CycleDetected);
+        }
+
+        // Check for unsupported topologies
+        for i in 0..self.recipes.len() {
+            if adj[i].len() > 1 {
+                return Err(BuildError::UnsupportedTopology(format!(
+                    "node {} fans out to {} destinations (split not yet supported)",
+                    i,
+                    adj[i].len()
+                )));
+            }
+            let in_count = self
+                .signal_edges
+                .iter()
+                .filter(|(_, _, to, _)| *to == i)
+                .count();
+            if in_count > 1 {
+                return Err(BuildError::UnsupportedTopology(format!(
+                    "node {} receives {} signal inputs (merge not yet supported)",
+                    i, in_count
+                )));
+            }
+        }
+
+        // Build AST expressions for each node in topo order
+        // Map recipe index → AST expression
+        let mut node_exprs: Vec<Option<Expr>> = vec![None; self.recipes.len()];
+
+        // Collect all parameter names for the main definition
+        let mut all_param_names: Vec<String> = Vec::new();
+
+        for &idx in &order {
+            let meta = &node_metas[idx];
+
+            // Find upstream signal connection
+            let upstream_expr: Option<Expr> = self
+                .signal_edges
+                .iter()
+                .find(|(_, _, to, _)| *to == idx)
+                .and_then(|(from, _from_port, _to, _to_port)| node_exprs[*from].clone());
+
+            // Build args: Float for static (first) params, Ref for dynamic (last) param.
+            // Only expose the last (dynamic) param as a main definition parameter.
+            //
+            // Convention: the last param in builtin param_names is the SetParameter target.
+            let mut args: Vec<Expr> = Vec::new();
+            let n = meta.param_names.len();
+            for (i, (&val, name)) in meta
+                .param_values
+                .iter()
+                .zip(meta.param_names.iter())
+                .enumerate()
+            {
+                if i < n - 1 {
+                    // Static param: put Float constant, no main parameter
+                    args.push(Expr::Float(val, dummy));
+                } else {
+                    // Dynamic param: use Ref + register on main definition
+                    all_param_names.push(name.clone());
+                    args.push(Expr::Ref(name.clone(), dummy));
+                }
+            }
+
+            let apply = Expr::Apply {
+                name: meta.builtin_name.clone(),
+                args,
+                span: dummy,
+            };
+
+            let expr = match upstream_expr {
+                Some(up) => Expr::Bin {
+                    op: BinOp::Seq,
+                    lhs: Box::new(up),
+                    rhs: Box::new(apply),
+                    span: dummy,
+                },
+                None => apply,
+            };
+
+            node_exprs[idx] = Some(expr);
+        }
+
+        // Find the last node (sink/leaf) — the one with no downstream edges
+        let leaf: usize = order
+            .iter()
+            .rfind(|&&i| adj[i].is_empty())
+            .copied()
+            .unwrap_or(0);
+
+        let body = node_exprs[leaf]
+            .clone()
+            .unwrap_or_else(|| Expr::Wire(dummy));
+
+        let params: Vec<Param> = all_param_names
+            .into_iter()
+            .map(|name| Param { name, span: dummy })
+            .collect();
+
+        Ok(Program {
+            defs: vec![Def::Anchor {
+                name: "main".to_string(),
+                params,
+                body,
+                span: dummy,
+                where_defs: vec![],
+            }],
+        })
+    }
+
+    /// Compile directly from the graph definition to a [`CompiledGraphEngine`].
+    ///
+    /// Calls [`ast_from_def`](Self::ast_from_def) followed by rill-lang compilation.
+    pub fn compile_def<const BUF: usize>(
+        &self,
+        registry: &rill_lang::builtin::Registry<T>,
+        sample_rate: f32,
+    ) -> Result<rill_lang::graph_engine::CompiledGraphEngine<T, BUF>, BuildError> {
+        let program = self.ast_from_def(registry)?;
+        rill_lang::compile_program::<T, BUF>(&program, registry, sample_rate)
+            .map_err(|e| BuildError::CompilationFailed(format!("{e}")))
+    }
+
+    fn resolve_builtin_name(
+        type_name: &str,
+        registry: &rill_lang::builtin::Registry<T>,
+    ) -> Option<String> {
+        if registry.builtin_sig(type_name).is_some() {
+            return Some(type_name.to_string());
+        }
+        if let Some(rest) = type_name.strip_prefix("rill/") {
+            if registry.builtin_sig(rest).is_some() {
+                return Some(rest.to_string());
+            }
+        }
+        let mapped = match type_name {
+            "rill/dry_wet_mix" => "dry_wet",
+            "rill/parametric_eq" => "eq_parametric",
+            "rill/graphic_eq" => "graphic_eq",
+            "rill/mono_to_stereo" => "mono_to_stereo",
+            "rill/moog_ladder" => "moog",
+            "rill/write_head" => "write_head",
+            "rill/read_head" => "read_head",
+            "rill/lofi_chip" => "ay38910",
+            _ => "",
+        };
+        if !mapped.is_empty() && registry.builtin_sig(mapped).is_some() {
+            return Some(mapped.to_string());
+        }
+        None
     }
 }

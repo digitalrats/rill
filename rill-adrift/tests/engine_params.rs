@@ -229,37 +229,26 @@ fn source_node_without_param_produces_default() {
 fn graph_builder_param_routing_works() {
     use rill_core::traits::Params;
     use rill_graph::GraphBuilder;
-    use std::sync::Arc;
 
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let mut builder = GraphBuilder::<f32, 256>::new();
 
-    // Mimic chiptune_stc: two params — clock (param_0) and register write
+    // Mimic chiptune_stc: two params — clock and regs
     let mut params = Params::new(44100.0);
-    params.insert("param_0", ParamValue::Float(1_750_000.0));
-    params.insert("register_write", ParamValue::Float(0.0));
+    params.insert("clock", ParamValue::Float(1_750_000.0));
+    params.insert("regs", ParamValue::Float(0.0));
     builder.add_node("rill/lofi_chip", &params);
 
-    let ir = builder.build_ir(&reg).unwrap();
-    let compiled = rill_lang::graph_compiler::compile::<f32, 256>(&ir, &reg, 44100.0).unwrap();
+    let mut engine = builder.compile_def::<256>(&reg, 44100.0).unwrap();
 
-    // Verify which index "register_write" maps to
-    let rw_idx = compiled
-        .node_param_names
-        .first()
-        .and_then(|names| names.iter().position(|n| n == "register_write"));
-    println!(
-        "register_write param index: {:?}, names: {:?}",
-        rw_idx,
-        compiled.node_param_names.first()
-    );
-
-    let mailbox = Arc::new(rill_core_actor::Mailbox::new(64));
-    let mut engine = rill_lang::graph_engine::CompiledGraphEngine::new(compiled, mailbox);
+    // Verify which index "regs" maps to
+    let param_map = engine.param_map();
+    let rw_idx = param_map.get("regs");
+    println!("regs param index: {:?}, full map: {:?}", rw_idx, param_map);
 
     let sp = SetParameter::new(
         String::new(),
-        ParameterId::new("register_write").unwrap(),
+        ParameterId::new("regs").unwrap(),
         ParamValue::Float(1.0),
         rill_core::queues::SignalOrigin::Manual,
     );
@@ -275,11 +264,42 @@ fn graph_builder_param_routing_works() {
         result.err()
     );
 
+    // With ay38910, register writes produce non-zero output (silence register
+    // at reg[7] controls mixer; without a SetParameter(Bytes) write to regs,
+    // the chip stays silent — but the output should still be finite).
+    let has_signal = output.iter().any(|&v| v.abs() > 1e-6);
+    println!(
+        "after SetParameter(Float(1.0)): output[..8]={:?}, has_signal={}",
+        &output[..8],
+        has_signal
+    );
+
+    // Now send actual Bytes register data to enable tone channels
+    let sp = SetParameter::new(
+        String::new(),
+        ParameterId::new("regs").unwrap(),
+        ParamValue::Bytes(vec![
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]),
+        rill_core::queues::SignalOrigin::Manual,
+    );
+    engine
+        .handle()
+        .send(rill_core::queues::CommandEnum::SetParameter(sp));
+
+    engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
+    let has_signal = output.iter().any(|&v| v.abs() > 1e-6);
+    println!(
+        "after SetParameter(Bytes): output[..8]={:?}, has_signal={}",
+        &output[..8],
+        has_signal
+    );
+
     // Verify SetParameter reached the right place
     let param_map = engine.param_map();
-    let mapped_idx = param_map.get("register_write");
+    let mapped_idx = param_map.get("regs");
     println!(
-        "register_write in param_map: {:?}, full map: {:?}",
+        "regs in param_map: {:?}, full map: {:?}",
         mapped_idx, param_map
     );
     assert!(

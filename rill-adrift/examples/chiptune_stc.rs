@@ -17,7 +17,9 @@ use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 use rill_adrift::modular::{ModularConfig, ModularSystem};
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
-use rill_adrift::rill_graph::serialization::{GraphDef, NodeDef, SourceDef};
+use rill_adrift::rill_graph::serialization::{
+    ConnectionDef, GraphDef, NodeDef, ProcessorDef, SignalKind, SourceDef,
+};
 use rill_adrift::rill_patchbay::module_factory::Drain;
 
 const BUF: usize = 256;
@@ -116,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let CommandEnum::ClockTick(tick) = msg {
                     let ms = tick.samples_since_last as f64 * 1000.0 / tick.sample_rate as f64;
                     if let Some(regs) = player.borrow_mut().step_ms(ms) {
-                        let pid = ParameterId::new("register_write").unwrap();
+                        let pid = ParameterId::new("regs").unwrap();
                         // Schedule the register write sample-accurately. The graph
                         // applies it during the block whose sample range contains
                         // this position. We look ahead by one I/O quantum because
@@ -145,8 +147,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut source_params = HashMap::new();
-    source_params.insert("param_0".into(), ParamValue::Float(1_750_000.0)); // clock
-    source_params.insert("register_write".into(), ParamValue::Float(0.0)); // regs
+    source_params.insert("clock".into(), ParamValue::Float(1_750_000.0));
+    source_params.insert("regs".into(), ParamValue::Float(0.0));
+
+    let mut lofi_params = HashMap::new();
+    lofi_params.insert("bit_depth".into(), ParamValue::Float(8.0));
+    lofi_params.insert("sample_rate".into(), ParamValue::Float(44100.0));
+    lofi_params.insert("dry_wet".into(), ParamValue::Float(0.75));
+    lofi_params.insert("gain".into(), ParamValue::Float(1.0));
+    lofi_params.insert("bitcrush".into(), ParamValue::Float(1.0));
+    lofi_params.insert("sr_reduction".into(), ParamValue::Float(0.0));
+    lofi_params.insert("noise".into(), ParamValue::Float(1.0));
 
     let def = ModularSystemDef {
         format_version: "rill/1".into(),
@@ -159,14 +170,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sample_rate: RATE,
                 block_size: BUF,
                 resources: vec![],
-                nodes: vec![NodeDef::Source(SourceDef {
-                    id: 0,
-                    type_name: "rill/lofi_chip".into(),
-                    name: "ay_chip".into(),
-                    backend: None,
-                    parameters: source_params,
-                })],
-                connections: vec![],
+                nodes: vec![
+                    NodeDef::Source(SourceDef {
+                        id: 0,
+                        type_name: "rill/lofi_chip".into(),
+                        name: "ay_chip".into(),
+                        backend: None,
+                        parameters: source_params,
+                    }),
+                    NodeDef::Processor(ProcessorDef {
+                        id: 1,
+                        type_name: "rill/lofi".into(),
+                        name: "lofi".into(),
+                        parameters: lofi_params,
+                    }),
+                ],
+                connections: vec![ConnectionDef {
+                    from_node: 0,
+                    from_port: 0,
+                    to_node: 1,
+                    to_port: 0,
+                    kind: SignalKind::Signal,
+                }],
                 description: Some("AY-3-8910 Chiptune — Popcorn (STC)".into()),
             },
             automatons: vec![],

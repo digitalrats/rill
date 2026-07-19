@@ -1,8 +1,7 @@
-//! ProgramRunner — signal-thread executor for flat RillProgram graphs.
+//! ProgramRunner — pure signal transform for DSL-compiled programs.
 //!
-//! Replaces `ProcessingState` for DSL-compiled programs. Instead of a DAG
-//! graph with recursive `Port::propagate()`, it runs a flat `RillProgram`
-//! per output channel inside the I/O backend callback.
+//! Thin wrapper around a compiled graph engine. It has no I/O knowledge —
+//! the caller feeds input buffers and receives output buffers.
 //!
 //! # Safety
 //!
@@ -10,24 +9,21 @@
 //! callback thread.
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
-use rill_core::io::{IoCapture, IoDriver, IoPlayback};
 use rill_core::queues::CommandEnum;
 use rill_core::time::ClockTick;
 use rill_core_actor::ActorRef;
 
 use crate::graph_engine::CompiledGraphEngine;
 
-/// Thin wrapper that runs a flat rill-lang program inside an I/O callback.
+/// Pure signal transform: `&[&[f32]]` → `&mut [&mut [f32]]`.
+///
+/// The caller is responsible for wiring I/O backends and managing the
+/// driver lifecycle. Use [`apply`](ProgramRunner::apply) inside the
+/// process callback set on the driver.
 pub struct ProgramRunner<const BUF_SIZE: usize> {
     engine: CompiledGraphEngine<f32, BUF_SIZE>,
     parent_ref: Option<ActorRef<CommandEnum>>,
-    capture: Option<Arc<dyn IoCapture>>,
-    playback: Option<Arc<dyn IoPlayback>>,
-    input_buf: [f32; BUF_SIZE],
-    output_buf: [f32; BUF_SIZE],
     _not_send_sync: PhantomData<*const ()>,
 }
 
@@ -40,24 +36,8 @@ impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
         Self {
             engine,
             parent_ref,
-            capture: None,
-            playback: None,
-            input_buf: [0.0f32; BUF_SIZE],
-            output_buf: [0.0f32; BUF_SIZE],
             _not_send_sync: PhantomData,
         }
-    }
-
-    /// Wire I/O capture and playback backends into the runner.
-    ///
-    /// Must be called before `run_with_driver()`.
-    pub fn wire_backends(
-        &mut self,
-        capture: Option<Arc<dyn IoCapture>>,
-        playback: Option<Arc<dyn IoPlayback>>,
-    ) {
-        self.capture = capture;
-        self.playback = playback;
     }
 
     /// Handle for sending `SetParameter` commands from control threads.
@@ -70,37 +50,15 @@ impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
         &self.engine
     }
 
-    fn process_tick(&mut self, tick: &ClockTick) {
-        let block_size = tick.samples_since_last as usize;
-        assert!(
-            block_size <= BUF_SIZE,
-            "block size {block_size} exceeds BUF_SIZE {BUF_SIZE}"
-        );
-
-        let num_outputs = self
-            .playback
-            .as_ref()
-            .map(|p| p.num_output_channels())
-            .unwrap_or(1);
-
-        let input = if let Some(ref cap) = self.capture {
-            cap.read_input(0, &mut self.input_buf[..block_size]);
-            Some(&self.input_buf[..block_size] as &[f32])
-        } else {
-            None
-        };
-        let inputs: &[&[f32]] = if let Some(inp) = input { &[inp] } else { &[] };
+    /// Process one tick: transform `inputs` into `outputs`.
+    ///
+    /// Called from the driver's process callback. The caller provides
+    /// the input data (from `IoCapture`) and receives the output
+    /// (destined for `IoPlayback`). Clock events are forwarded to the
+    /// engine's mailbox and the optional parent actor.
+    pub fn apply(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]], tick: &ClockTick) {
         let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
-        let _ =
-            self.engine
-                .process_tick(inputs, &mut [&mut self.output_buf[..block_size]], chunk_end);
-
-        for ch in 0..num_outputs {
-            if let Some(ref pb) = self.playback {
-                pb.write_output(ch, &self.output_buf[..block_size]);
-            }
-        }
-
+        let _ = self.engine.process_tick(inputs, outputs, chunk_end);
         if tick.is_final {
             self.engine
                 .handle()
@@ -110,56 +68,15 @@ impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
             }
         }
     }
-
-    /// Enter the I/O lifecycle.
-    ///
-    /// Registers a process callback on the driver and runs the driver loop.
-    pub fn run_with_driver(
-        mut self,
-        driver: Arc<dyn IoDriver>,
-        running: Arc<AtomicBool>,
-    ) -> Result<(), String> {
-        driver.set_process_callback(Box::new(move |tick: &ClockTick| {
-            self.process_tick(tick);
-        }));
-        driver.run(running.clone())?;
-        while running.load(Ordering::Acquire) {
-            std::thread::park();
-        }
-        let _ = driver.stop();
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rill_core::time::ClockTick;
 
     #[test]
-    fn empty_runner_ticks_without_crash() {
-        use crate::builtin::Registry;
-        use crate::compile_graph;
-
-        let engine = compile_graph::<f32, 128>("main = _", &Registry::new(), 44100.0).unwrap();
-        let mut runner = ProgramRunner::new(engine, None);
-
-        let tick = ClockTick {
-            sample_pos: 0,
-            samples_since_last: 64,
-            sample_rate: 44100.0,
-            speed_ratio: 1.0,
-            io_quantum: 64,
-            source: "test".into(),
-            is_new_block: true,
-            is_final: false,
-            tempo: None,
-        };
-
-        runner.process_tick(&tick);
-    }
-
-    #[test]
-    fn process_tick_gain_produces_finite_output() {
+    fn apply_produces_finite_output() {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
@@ -178,9 +95,11 @@ mod tests {
             tempo: None,
         };
 
-        runner.process_tick(&tick);
+        let input = [0.5f32; 4];
+        let mut output = [0.0f32; 4];
+        runner.apply(&[&input[..]], &mut [&mut output[..]], &tick);
 
-        for v in &runner.output_buf[..4] {
+        for v in &output {
             assert!(v.is_finite());
         }
     }

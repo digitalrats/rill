@@ -26,6 +26,8 @@ pub mod program_runner;
 pub mod reduce;
 pub mod regalloc;
 pub mod register;
+pub mod render;
+pub mod runtime;
 pub mod schedule;
 pub mod serde_def;
 pub mod types;
@@ -80,6 +82,48 @@ pub fn compile_with<T: Transcendental>(
     // regalloc::allocate(&mut ir);
     validate_block_builtins(&ir)?;
     RillProgram::<T>::new_with(ir, registry, sample_rate)
+}
+
+/// Compile an already-parsed AST [`Program`] into a graph engine that supports SetParameter.
+pub fn compile_program<T: Transcendental, const BUF_SIZE: usize>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+) -> Result<graph_engine::CompiledGraphEngine<T, BUF_SIZE>, CompileError> {
+    let mut typed = types::infer::infer_program_with(program, registry)?;
+    typed.program = reduce::reduce(&typed.program);
+    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    validate_block_builtins(&ir)?;
+
+    use crate::graph_ir::{GraphIr, GraphNode};
+    let mut nodes: indexmap::IndexMap<String, GraphNode> = indexmap::IndexMap::new();
+    let params = ir.params.clone();
+    nodes.insert(
+        "main".to_string(),
+        GraphNode {
+            arity: (ir.num_inputs, ir.num_outputs),
+            ir,
+            params,
+            keep: false,
+            inline: false,
+            is_bridge: false,
+            feedback_read: vec![],
+            feedback_write: vec![],
+        },
+    );
+    let graph_ir = GraphIr {
+        inputs: 1,
+        outputs: 1,
+        nodes,
+        edges: vec![],
+        topo_order: vec!["main".to_string()],
+    };
+
+    let compiled = graph_compiler::compile::<T, BUF_SIZE>(&graph_ir, registry, sample_rate)
+        .map_err(CompileError::Unsupported)?;
+
+    let mailbox = Arc::new(Mailbox::new(64));
+    Ok(graph_engine::CompiledGraphEngine::new(compiled, mailbox))
 }
 
 /// Compile rill-lang source into a graph engine that supports SetParameter.

@@ -64,7 +64,7 @@ impl NullBackend {
 }
 
 impl IoDriver for NullBackend {
-    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+    fn set_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.cb.set(cb);
         }

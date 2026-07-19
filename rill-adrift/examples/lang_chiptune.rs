@@ -16,6 +16,7 @@ use std::sync::Arc;
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
 use rill_lang::program_runner::ProgramRunner;
+use rill_lang::runtime::Runtime;
 #[path = "stc/mod.rs"]
 mod stc_player;
 use stc_player::StcPlayer;
@@ -113,9 +114,8 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
     let driver = output.driver.clone();
     let playback = output.playback.clone();
     let signal_thread = std::thread::spawn(move || {
-        let mut runner = ProgramRunner::new(engine, Some(stc_ref));
-        runner.wire_backends(None, Some(playback));
-        runner.run_with_driver(driver, runner_running).ok();
+        let runner = ProgramRunner::new(engine, Some(stc_ref));
+        Runtime::launch::<256>(driver, None, Some(playback), runner, runner_running).ok();
     });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");

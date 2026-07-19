@@ -24,9 +24,9 @@ fn test_deserialize_input_biquad_output() {
                     "type_name": "rill/biquad",
                     "name": "filter",
                     "parameters": {
+                        "type": 1.0,
                         "cutoff": 600.0,
-                        "q": 1.5,
-                        "filter": 1.0
+                        "q": 1.5
                     }
                 }
             },
@@ -63,7 +63,7 @@ fn test_sine_graph_deserialization() {
         "block_size": 256,
         "resources": [],
         "nodes": [
-            {"Source": {"id": 0, "type_name": "rill/sine", "name": "osc", "parameters": {"freq": 440.0, "amp": 0.5}}},
+            {"Source": {"id": 0, "type_name": "rill/sine", "name": "osc", "parameters": {"freq": 440.0, "amp": 0.5, "phase": 0.0}}},
             {"Sink": {"id": 1, "type_name": "rill/output", "name": "out", "parameters": {}}}
         ],
         "connections": [

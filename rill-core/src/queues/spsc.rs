@@ -78,7 +78,10 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
         if self.full.load(Ordering::Acquire) {
             match self.overflow_policy {
                 OverflowPolicy::OverwriteOldest => {
-                    let _ = self.tail.fetch_add(1, Ordering::Release) & self.mask;
+                    self.tail.store(
+                        (self.tail.load(Ordering::Relaxed) + 1) & self.mask,
+                        Ordering::Release,
+                    );
                     self.full.store(false, Ordering::Release);
                 }
 
@@ -113,7 +116,7 @@ impl<T: Copy + Default, const CAP: usize> SpscQueue<T, CAP> {
             return self.default_value;
         }
 
-        let tail = self.tail.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Relaxed) & self.mask;
         let value = self.buffer[tail].load();
 
         let next_tail = (tail + 1) & self.mask;

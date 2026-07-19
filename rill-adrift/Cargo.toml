@@ -97,6 +97,7 @@ fft = ["dep:rill-fft", "rill-fft/graph", "rill-fft/lang"]
 serialization = [
     "rill-graph/serialization",
     "rill-patchbay/serialization",
+    "rill-lang/serde",
     "dep:serde",
     "dep:serde_json",
     "dep:toml",

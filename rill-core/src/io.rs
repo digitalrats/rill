@@ -1,8 +1,10 @@
 //! # Signal I/O — generic multi-channel real-time I/O abstraction
 
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::queues::{SpscQueue, TelemetryBlock};
 use crate::time::ClockTick;
 
 /// Result alias for signal I/O operations.
@@ -32,24 +34,13 @@ pub trait IoDriver: Send + Sync {
     ///
     /// The callback receives a [`ClockTick`] with timing metadata
     /// (sample position, rate, speed_ratio, etc.).
-    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>);
+    fn set_callback(&self, cb: Box<dyn FnMut(&ClockTick)>);
 
-    /// Register an optional input-stream callback for split-chain backends
-    /// (e.g. PipeWire full-duplex).
+    /// Enter the I/O lifecycle.
     ///
-    /// When both input and output streams exist, the recording chain
-    /// (Source → WriteHead) is driven from this callback, while the
-    /// playback chain (ReadHeads → Sink) is driven from
-    /// [`set_process_callback`]. Default no-op for single-stream backends.
-    fn set_input_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
-
-    /// Enter the I/O lifecycle. Called on the pre-created signal thread.
-    ///
-    /// For poll-driven backends (ALSA, PipeWire) this blocks inside the
-    /// I/O loop and returns only after `running` becomes false.
-    /// For callback-driven backends (JACK, PortAudio) it sets up the
-    /// stream and returns immediately — the process callback fires on
-    /// the I/O API's own thread.
+    /// Blocks until the driver is stopped (via [`stop`](IoDriver::stop) or
+    /// the `running` flag becomes `false`). The process callback set via
+    /// [`set_callback`](IoDriver::set_callback) fires inside this call.
     fn run(&self, running: Arc<AtomicBool>) -> IoResult<()>;
 
     /// Signal the driver to shut down. Called from the control thread.
@@ -106,6 +97,100 @@ pub trait IoPlayback: Send + Sync {
     fn num_output_channels(&self) -> usize;
 }
 
+/// A passive I/O backend that writes to nowhere and reads zeros.
+///
+/// Implements both [`IoCapture`] and [`IoPlayback`] as no-ops.
+/// Useful as a placeholder for the unused direction in input-only
+/// or output-only scenarios.
+pub struct NullBackend {
+    channels: usize,
+}
+
+impl NullBackend {
+    /// Create a null backend with the given number of channels.
+    pub fn new(channels: usize) -> Self {
+        Self { channels }
+    }
+}
+
+impl IoCapture for NullBackend {
+    fn read_input(&self, _channel: usize, dst: &mut [f32]) -> usize {
+        dst.fill(0.0);
+        dst.len()
+    }
+
+    fn num_input_channels(&self) -> usize {
+        self.channels
+    }
+}
+
+impl IoPlayback for NullBackend {
+    fn write_output(&self, _channel: usize, _src: &[f32]) -> usize {
+        _src.len()
+    }
+
+    fn num_output_channels(&self) -> usize {
+        self.channels
+    }
+}
+
+/// An `IoPlayback` that pushes signal blocks into a lock-free SPSC queue.
+///
+/// Each `write_output` call wraps the signal data into a [`TelemetryBlock`]
+/// and pushes it into a [`SpscQueue`]. No allocations, no locks — safe to
+/// call from the RT signal path. A non-RT collector drains the queue.
+pub struct SpmcPlayback<T: crate::math::Transcendental, const BUF: usize, const CAP: usize> {
+    queue: Arc<SpscQueue<TelemetryBlock<T, BUF>, CAP>>,
+    channels: usize,
+    sample_rate: f32,
+    sample_pos: AtomicU64,
+}
+
+impl<T: crate::math::Transcendental, const BUF: usize, const CAP: usize> SpmcPlayback<T, BUF, CAP> {
+    /// Create an SPSC-based playback that writes to `queue`.
+    pub fn new(
+        queue: Arc<SpscQueue<TelemetryBlock<T, BUF>, CAP>>,
+        channels: usize,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            queue,
+            channels,
+            sample_rate,
+            sample_pos: AtomicU64::new(0),
+        }
+    }
+
+    /// Return the shared queue for draining on the non-RT side.
+    pub fn queue(&self) -> &Arc<SpscQueue<TelemetryBlock<T, BUF>, CAP>> {
+        &self.queue
+    }
+}
+
+impl IoPlayback for SpmcPlayback<f32, 256, 64> {
+    fn write_output(&self, channel: usize, src: &[f32]) -> usize {
+        let n = src.len();
+        if n == 0 {
+            return 0;
+        }
+        let pos = self.sample_pos.fetch_add(n as u64, Ordering::Relaxed);
+        let mut block = TelemetryBlock::default();
+        let limit = n.min(256);
+        block.data[..limit].copy_from_slice(&src[..limit]);
+        block.channel = channel as u32;
+        block.sample_rate = self.sample_rate;
+        block.block_index = pos;
+        block.timestamp = pos;
+        block.compute_metrics();
+        let _ = self.queue.push(block);
+        limit
+    }
+
+    fn num_output_channels(&self) -> usize {
+        self.channels
+    }
+}
+
 // ============================================================================
 // Backward-compatible alias
 // ============================================================================
@@ -125,7 +210,7 @@ mod tests {
     }
 
     impl IoDriver for TestBackend {
-        fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
+        fn set_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
 
         fn run(&self, _: Arc<AtomicBool>) -> IoResult<()> {
             Ok(())
@@ -163,7 +248,7 @@ mod tests {
     fn test_iocontrol_default_returns_none() {
         struct NoControl;
         impl IoDriver for NoControl {
-            fn set_process_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
+            fn set_callback(&self, _cb: Box<dyn FnMut(&ClockTick)>) {}
             fn run(&self, _: Arc<AtomicBool>) -> IoResult<()> {
                 Ok(())
             }

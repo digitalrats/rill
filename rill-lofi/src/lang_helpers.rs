@@ -191,7 +191,15 @@ pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
     use crate::ClassicSystem;
 
     reg.register_block(
-        BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block),
+        BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block).with_names(vec![
+            "bit_depth",
+            "sample_rate",
+            "dry_wet",
+            "gain",
+            "bitcrush",
+            "sr_reduction",
+            "noise",
+        ]),
         |p, sr| {
             let config = crate::LofiConfig {
                 system: ClassicSystem::Custom {
@@ -251,7 +259,8 @@ impl BlockBuiltin<f32> for Ay38910Builtin {
 pub fn register_chip_builtins(reg: &mut Registry<f32>) {
     use rill_core::traits::Algorithm;
     reg.register_block(
-        BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block)
+            .with_names(vec!["clock", "regs"]),
         |p, sr| {
             let clock = p[0] as f32;
             let mut chip = crate::Ay38910Chip::new(clock);

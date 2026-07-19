@@ -281,7 +281,7 @@ pub fn register_core_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
 /// Register complex number built-ins (dsl: complex, conj, re, im, norm, arg, cmul, cadd).
 fn register_complex<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("complex", 0, 2, 2, BuiltinKind::Block),
+        BuiltinSig::simple("complex", 0, 2, 2, BuiltinKind::Block).with_names(vec!["re", "im"]),
         |p, _sr| {
             let re = T::from_f64(p[0]);
             let im = T::from_f64(p[1]);
