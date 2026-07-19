@@ -75,7 +75,11 @@ fn main() {
             "i×i = -1",
             (0, 1, 0, 1),
         ),
-        ("complex 2.0 3.0 , complex 1.0 (-1.0)", "5+1i", (2, 3, 1, -1)),
+        (
+            "complex 2.0 3.0 , complex 1.0 (-1.0)",
+            "5+1i",
+            (2, 3, 1, -1),
+        ),
     ];
     for (args, desc, _) in &tests {
         let src = format!("main = {args} : cmul : re");
@@ -96,7 +100,11 @@ fn main() {
     println!("\n=== cadd — complex addition ===");
     let tests = [
         ("complex 1.0 2.0 , complex 3.0 4.0", "4+6i", (1, 2, 3, 4)),
-        ("complex (-1.0) 0.0 , complex 2.0 5.0", "1+5i", (-1, 0, 2, 5)),
+        (
+            "complex (-1.0) 0.0 , complex 2.0 5.0",
+            "1+5i",
+            (-1, 0, 2, 5),
+        ),
     ];
     for (args, desc, _) in &tests {
         let src = format!("main = {args} : cadd : re");
