@@ -18,7 +18,9 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev liblua5.4-dev pkg-config
       - run: cargo fmt --check
       - run: cargo clippy --workspace
       - run: cargo test --workspace
@@ -38,7 +40,9 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev liblua5.4-dev pkg-config
       - name: Check version matches tag
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
