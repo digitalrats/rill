@@ -36,10 +36,10 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
             write!(buf, " = ").ok();
             render_expr(body, buf, 3);
             if !where_defs.is_empty() {
-                write!(buf, " where {{\n").ok();
+                writeln!(buf, " where {{").ok();
                 for wd in where_defs {
                     render_def(wd, buf, indent + 4);
-                    write!(buf, ";\n").ok();
+                    writeln!(buf, ";").ok();
                 }
                 write!(buf, "{pad}}}").ok();
             }

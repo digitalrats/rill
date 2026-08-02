@@ -45,7 +45,7 @@ impl MidirBackend {
         let ports = mi.ports();
         for (i, p) in ports.iter().enumerate() {
             let name = mi.port_name(p).unwrap_or_else(|_| "?".into());
-            eprintln!("  MIDI port #{i}: {name}");
+            log::info!("  MIDI port #{}: {}", i, name);
         }
         eprintln!("  ({} ports total)", ports.len());
         Ok(())

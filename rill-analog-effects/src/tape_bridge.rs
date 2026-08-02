@@ -53,11 +53,10 @@ impl<T: Transcendental> BridgeAlgorithm<T> for TapeBridgeAlgorithm<T> {
     }
 
     fn process_left(&mut self, inputs: &[&[T]]) -> ProcessResult<()> {
-        let n_samples = inputs[0].len();
         let write_gain = self.heads[0].gain;
         let write_capacity = self.capacity;
 
-        for sample in 0..n_samples {
+        for (sample, _) in inputs[0].iter().enumerate() {
             let mut signal = inputs[0][sample];
 
             let n_decos = self.heads[0].decorators.len();
@@ -80,7 +79,7 @@ impl<T: Transcendental> BridgeAlgorithm<T> for TapeBridgeAlgorithm<T> {
         let capacity = self.capacity;
         let write_pos = self.write_pos;
 
-        for sample in 0..n_samples {
+        for (sample, _) in (0..n_samples).enumerate() {
             for head_idx in 0..n_read_heads {
                 let read_head_idx = head_idx + 1;
                 let pos = self.heads[read_head_idx]

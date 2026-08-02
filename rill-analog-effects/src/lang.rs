@@ -60,7 +60,7 @@ pub fn register_analog_builtins<T: Transcendental>(reg: &mut Registry<T>) {
             deck.playback_head_mut().wow_flutter = p[3].max(0.0);
             Box::new(CassetteDeckBuiltin {
                 inner: deck,
-                sample_rate: sr as f32,
+                sample_rate: sr,
                 _phantom: PhantomData,
             })
         },
