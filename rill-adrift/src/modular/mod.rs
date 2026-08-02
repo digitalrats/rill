@@ -204,7 +204,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         log::error!("graph populate: {e}");
                         return;
                     }
-                    let engine = match builder.compile_def::<BUF>(&registry, sr) {
+                    let mut engine = match builder.compile_def::<BUF>(&registry, sr) {
                         Ok(eng) => eng,
                         Err(e) => {
                             log::error!("graph compile: {e}");

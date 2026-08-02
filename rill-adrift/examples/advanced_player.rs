@@ -171,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             drop(slab);
 
             // Set biquad filter cutoff to 800 Hz.
-            let mut sp = SetParameter::new(
+            let sp = SetParameter::new(
                 "".into(),
                 ParameterId::new("cutoff").unwrap(),
                 ParamValue::Float(800.0),
