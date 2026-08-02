@@ -640,7 +640,7 @@ impl CommandEnum {
     }
 
     /// If this is a `SetParameter` command, return the target `NodeId`.
-
+    ///
     /// Return the timestamp if the command carries one.
     pub fn timestamp(&self) -> Option<u64> {
         match self {

@@ -223,24 +223,7 @@ mod ir_tests {
         let mut typed = types::infer::infer_program_with(&program, &registry).unwrap();
         typed.program = reduce::reduce(&typed.program);
         let ir = lower::lower_with(&typed, &registry, 44100.0).unwrap();
-
-        eprintln!("=== DSL Ir for lang_chiptune ===");
-        eprintln!("num_inputs: {}", ir.num_inputs);
-        eprintln!("num_outputs: {}", ir.num_outputs);
-        eprintln!("num_regs: {}", ir.num_regs);
-        eprintln!("output_reg: {:?}", ir.output_reg);
-        for (i, bi) in ir.builtins.iter().enumerate() {
-            eprintln!(
-                "builtin[{i}]: name={}, kind={:?}, si={}, so={}, params={:?}, bindings={:?}",
-                bi.name, bi.kind, bi.signal_ins, bi.signal_outs, bi.params, bi.param_bindings
-            );
-        }
-        eprintln!(
-            "params: {:?}",
-            ir.params.iter().map(|p| &p.name).collect::<Vec<_>>()
-        );
-        for (i, instr) in ir.instrs.iter().enumerate() {
-            eprintln!("instr[{i}]: {:?}", instr);
-        }
+        assert!(ir.num_inputs > 0);
+        assert!(ir.num_outputs > 0);
     }
 }

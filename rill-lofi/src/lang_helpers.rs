@@ -220,7 +220,6 @@ pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
                 dc_offset: 0.0,
                 output_ceiling: 1.0,
                 dry_wet: p[2].clamp(0.0, 1.0) as f32,
-                ..Default::default()
             };
             let mut inner = LofiProcessor::new(config);
             Algorithm::init(&mut inner, sr);
