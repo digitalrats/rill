@@ -10,22 +10,22 @@
 # Dependency order (leaf → root):
 #   1  rill-core
 #   2  rill-core-actor
-#   3  rill-core-dsp
-#   4  rill-core-model
-#   5  rill-graph
-#   6  rill-telemetry
-#   7  rill-lofi
-#   8  rill-osc
-#   9  rill-io
-#  10  rill-digital-filters
-#  11  rill-digital-effects
-#  12  rill-router
-#  13  rill-patchbay
-#  14  rill-analog-filters
-#  15  rill-analog-effects
-#  16  rill-sampler
-#  17  rill-lang
-#  18  rill-fft
+#   3  rill-osc
+#   4  rill-core-dsp
+#   5  rill-core-model
+#   6  rill-lang
+#   7  rill-graph
+#   8  rill-telemetry
+#   9  rill-lofi
+#  10  rill-io
+#  11  rill-digital-filters
+#  12  rill-digital-effects
+#  13  rill-router
+#  14  rill-fft
+#  15  rill-analog-filters
+#  16  rill-analog-effects
+#  17  rill-sampler
+#  18  rill-patchbay
 #  19  rill-adrift
 
 set -euo pipefail
@@ -34,22 +34,22 @@ cd "$(git rev-parse --show-toplevel)"
 CRATES=(
     rill-core
     rill-core-actor
+    rill-osc
     rill-core-dsp
     rill-core-model
+    rill-lang
     rill-graph
     rill-telemetry
     rill-lofi
-    rill-osc
     rill-io
     rill-digital-filters
     rill-digital-effects
     rill-router
-    rill-patchbay
+    rill-fft
     rill-analog-filters
     rill-analog-effects
     rill-sampler
-    rill-lang
-    rill-fft
+    rill-patchbay
     rill-adrift
 )
 
@@ -105,7 +105,7 @@ for i in "${!CRATES[@]}"; do
     if [ "$DRY_RUN" = true ]; then
         # Leaf crates (no internal deps) — full package verification
         if [ "$crate" = "rill-core" ] || [ "$crate" = "rill-osc" ]; then
-            if cargo publish -p "$crate" --dry-run --allow-dirty 2>&1; then
+            if cargo publish -p "$crate" --dry-run --allow-dirty --registry crates-io 2>&1; then
                 echo "  ✓ $crate publish dry-run passed"
             else
                 echo "  ✗ $crate dry-run FAILED"
@@ -122,13 +122,13 @@ for i in "${!CRATES[@]}"; do
         fi
     else
         echo "  Publishing $crate..."
-        output=$(cargo publish -p "$crate" 2>&1) || true
+        output=$(cargo publish -p "$crate" --registry crates-io 2>&1) || true
         if echo "$output" | grep -q "429 Too Many Requests"; then
             echo "  Rate limited (429). Waiting 10 minutes before retry..."
             sleep "$BURST_WAIT"
             PUBLISH_COUNT=0  # reset burst counter after forced pause
             echo "  Retrying $crate..."
-            cargo publish -p "$crate" 2>&1
+            cargo publish -p "$crate" --registry crates-io 2>&1
             echo "  ✓ published $crate"
         else
             echo "$output"
