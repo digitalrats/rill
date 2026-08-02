@@ -14,7 +14,7 @@
 //! Eurorack is a modular synthesizer format standardised by Doepfer
 //! in 1996.  Modules are mounted in cases (rows) that provide power
 //! and a backplane for patching.  Multiple cases are patched together
-//! via a [`ModularSystem`](super::super::ModularSystem) to form
+//! via a `ModularSystem` to form
 //! a complete instrument.
 //!
 //! ## Hierarchy
@@ -30,8 +30,8 @@
 /// provides the backplane (sample rate, clock, command routing).
 ///
 /// This is the archetype for any Eurorack-compatible processing unit.
-/// Concrete implementations ([`RackCase`]) are managed by a
-/// [`ModularSystem`] which acts as an actor system for inter-case
+/// Concrete implementations (`RackCase`) are managed by a
+/// `ModularSystem` which acts as an actor system for inter-case
 /// communication.
 ///
 /// # Example
@@ -51,7 +51,7 @@
 /// }
 /// ```
 pub trait Eurorack {
-    /// Case identifier (unique within a [`ModularSystem`]).
+    /// Case identifier (unique within a `ModularSystem`).
     fn name(&self) -> &str;
 
     /// Sample rate in Hz.

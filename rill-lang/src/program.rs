@@ -109,7 +109,7 @@ impl<T: Transcendental> RillProgram<T> {
     }
 
     /// Create a program from a compiled [`Ir`], instantiating all built-ins
-    /// via the provided [`Registry`]. Also sets the initial `sample_rate`.
+    /// via the provided `Registry`. Also sets the initial `sample_rate`.
     ///
     /// Parses `builtins` from the IR, allocates registers, state, and delays,
     /// and builds the execution schedule. The resulting program implements

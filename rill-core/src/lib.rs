@@ -32,7 +32,7 @@
 //! ## Getting Started
 //!
 //! See crate-level documentation and module docs for usage examples.
-//! ```
+//! ```text
 
 #![warn(missing_docs)]
 #![allow(clippy::doc_lazy_continuation)]

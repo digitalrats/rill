@@ -49,7 +49,7 @@ impl<T: Transcendental> Resampler<T> {
     /// Create a new resampler from a sample buffer and its source sample rate.
     ///
     /// The resampler starts with `target_rate = source_rate` (passthrough).
-    /// Call [`Algorithm::init`] or [`set_target_rate`] to convert to a
+    /// Call [`Algorithm::init`] or [`Self::set_target_rate`] to convert to a
     /// different rate.
     pub fn new(buffer: Vec<T>, source_rate: f64) -> Self {
         let mut reader = InterpolatedReader::new(buffer);

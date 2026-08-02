@@ -1,4 +1,4 @@
-//! Shared memory IPC via /dev/shm/rill-debug-<pid>.
+//! Shared memory IPC via /dev/shm/rill-debug-&lt;pid&gt;.
 //!
 //! Uses mmap to map a 64KB region containing atomic control flags and
 //! two lock-free SPSC ring buffers for command/response serialization.

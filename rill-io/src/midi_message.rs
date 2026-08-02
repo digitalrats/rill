@@ -4,9 +4,9 @@
 /// Stop: `0xFC`, Continue: `0xFB`) pad data bytes with `0`.
 /// Two-byte messages (Program Change: `0xC0–0xCF`) pad data2 with `0`.
 ///
-/// Backends produce this type via [`MidiInput::poll`].
+/// Backends produce this type via `MidiInput::poll`.
 /// The interpretation (NoteOn, CC, Clock, Transport) happens downstream
-/// in the [`MidiHub`].
+/// in the `MidiHub`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiMessage(pub [u8; 3]);
 
