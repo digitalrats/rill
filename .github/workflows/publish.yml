@@ -47,10 +47,10 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           VER=$(grep '^version' rill-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          if [ "$TAG" != "$VER" ]; then
-            echo "ERROR: tag '$TAG' does not match rill-core version '$VER'"
-            exit 1
-          fi
+          case "$TAG" in
+            "$VER"|"$VER".*) ;;
+            *) echo "ERROR: tag '$TAG' does not match rill-core version '$VER'"; exit 1 ;;
+          esac
           echo "Publishing rill $VER"
       - name: Publish to crates.io
         env:
