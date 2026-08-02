@@ -1,8 +1,8 @@
-# Rill Architecture (version 0.6.0-M1)
+# Rill Architecture (version 0.6.0-M2)
 
 ## General Concept
 
-Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.6.0-M1, all crates use a unified `rill-core`.
+Rill is a **modular ecosystem** built around a minimal core with traits. Each crate has a clear responsibility and can be used independently. After the major refactoring of 0.6.0-M2, all crates use a unified `rill-core`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -234,7 +234,7 @@ actor.drain(); // processes "hello"
 ## Infrastructure crates
 
 
-### `rill-graph` (0.6.0-M1)
+### `rill-graph` (0.6.0-M2)
 Audio graph with topological sort.
 
 ```rust
@@ -269,7 +269,7 @@ The Rill graph is built on a rigorous mathematical foundation — **category the
 
 **Block processing:** data is transferred in fixed-size blocks, improving performance through cache locality and enabling SIMD optimizations.
 
-### `rill-patchbay` (0.6.0-M1, ✅ active)
+### `rill-patchbay` (0.6.0-M2, ✅ active)
 Graph parameter automation — unification of `rill-automation` and `rill-control` crates. A central framework of automatons (LFO, envelopes, random walks, sequencers), sensors (acoustic, physical), and servos connected via non-blocking command and telemetry queues. See the "World of Automatons" section for details.
 
 ```rust
@@ -325,7 +325,7 @@ manager.start()?;  // Automatons begin their own life
 
 ## DSP infrastructure
 
-### `rill-core-dsp` (0.6.0-M1)
+### `rill-core-dsp` (0.6.0-M2)
 Unified DSP infrastructure with vector operations, algorithms, and macros. Includes:
 
 - **Vector abstractions** (`ScalarVector1`, `ScalarVector2`, `ScalarVector4`) — generic numeric types for portable SIMD operations
@@ -364,13 +364,13 @@ osc.process_block(&[], &mut input);
 filter.process_block(&input, &mut output);
 ```
 
-### `rill-digital-filters` (0.6.0-M1, ✅ active)
+### `rill-digital-filters` (0.6.0-M2, ✅ active)
 Graph nodes for digital filters: biquad, one-pole, SVF, Butterworth, Chebyshev, comb. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp::filters`.
 
-### `rill-digital-effects` (0.6.0-M1, ✅ active)
+### `rill-digital-effects` (0.6.0-M2, ✅ active)
 Graph nodes for digital effects: Delay, Distortion, Limiter. Implements the `Processor` trait from `rill-core`, using delay algorithms from `rill-core-dsp::delay`.
 
-### `rill-fft` (0.6.0-M1, ✅ active)
+### `rill-fft` (0.6.0-M2, ✅ active)
 Radix-2 FFT, frequency-domain convolution, spectrum analysis, and spectral effects. Provides `ComplexFft`, `RealFft`, convolution engine, and spectral gates/delays. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp`.
 
 ```rust
@@ -381,7 +381,7 @@ let mut spectrum = vec![Complex::new(0.0, 0.0); 1024];
 fft.forward(&input_buffer, &mut spectrum);
 ```
 
-### `rill-router` (0.6.0-M1)
+### `rill-router` (0.6.0-M2)
 Signal router combining equalizer and mixer functionality with matrix routing capabilities. Includes `eq` (graphic and parametric equalizers) and `mixer` (mixer with channels, sends, master) modules. A `matrix` module is planned for flexible signal routing.
 
 ```rust
@@ -398,7 +398,7 @@ mixer.set_channel_volume(1, 0.8)?;
 
 ## Specialized crates
 
-### `rill-lofi` (0.6.0-M1, ✅ active)
+### `rill-lofi` (0.6.0-M2, ✅ active)
 Lo-Fi emulation of classic systems (NES, AY-3-8910, Akai S900). Implements graph nodes (`Node`) based on `rill-core`, using internal DSP algorithms to emulate bit depth, sample rate, and characteristic noise of retro systems.
 
 ```rust
@@ -410,7 +410,7 @@ let akai_config = LofiConfig::for_system(ClassicSystem::AkaiS900);
 let mut akai = LofiProcessor::new(akai_config);
 ```
 
-### `rill-sampler` (0.6.0-M1, ✅ active)
+### `rill-sampler` (0.6.0-M2, ✅ active)
 Sample playback, time-series reader, and WAV loading. Provides graph nodes for playing back audio samples from memory or streaming from disk. Depends on `rill-core` and `rill-core-dsp`. The `wav` feature (enabled by default) adds WAV file loading via `hound`.
 
 ```rust
@@ -420,7 +420,7 @@ let mut player = SamplePlayer::new(sample_rate, sample_data);
 player.trigger(NoteEvent::NoteOn { key: 60, velocity: 1.0 });
 ```
 
-### `rill-telemetry` (0.6.0-M1, ✅ active)
+### `rill-telemetry` (0.6.0-M2, ✅ active)
 
 Probes and data collectors for monitoring signal flow and control. Provides mechanisms for collecting performance statistics, tracking real-time safety violations, and providing feedback for external systems.
 
@@ -430,7 +430,7 @@ Probes and data collectors for monitoring signal flow and control. Provides mech
 - **Pause/resume:** `DebugControl` atomics (`global_pause`, `global_resume`) allow the debugger to halt the engine between processing blocks without syscalls.
 - **IPC via shared memory:** `/dev/shm/rill-debug-<pid>` — `ShmemRegion` with two lock-free ring buffers for command/response serialization via `serde_cbor`. Supports `rill-analyzer attach <pid>` and `rill-analyzer launch <target>`.
 
-### `rill-analyzer` (0.6.0-M1, ✅ active)
+### `rill-analyzer` (0.6.0-M2, ✅ active)
 
 Interactive gdb-style debugger for Rill signal processing applications. Three operating modes:
 - **Local:** `rill-analyzer run graph.json` — embedded debugger in the same process
@@ -439,7 +439,7 @@ Interactive gdb-style debugger for Rill signal processing applications. Three op
 
 Supports REPL commands (break, continue, step, print, watch), Lua scripting via `mlua`, JSON output for automation, and control-path inspection (automaton state, sensor status). See the [rill-analyzer guide](src/guides/rill-analyzer.md) for full documentation.
 
-### `rill-core-model` (0.6.0-M1, ✅ active)
+### `rill-core-model` (0.6.0-M2, ✅ active)
 WDF core + physical modeling — elements (Resistor, Capacitor, Inductor, Diode, OpAmp), adapters (SeriesAdapter, ParallelAdapter), analysis functions (frequency response, distortion), WDF filters (MoogLadder, DiodeClipper), tape models (RecordHead, PlaybackHead), and resonant physical models (StringModel — 1D waveguide, PlateModel — 2D FDTD mesh, ModalModel — parallel filter bank, HelmholtzCavity + CavityArray). Generic over `rill_core::Transcendental` — supports `f32` and `f64`.
 
 ```rust
@@ -457,7 +457,7 @@ ladder.set_resonance(0.7.into());
 let y = ladder.process_sample(0.5.into());
 ```
 
-### `rill-analog-filters` (0.6.0-M1, ✅ active)
+### `rill-analog-filters` (0.6.0-M2, ✅ active)
 WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::wdf::MoogLadder<f64>`. Provides graph nodes for the processor.
 
 ```rust
@@ -467,7 +467,7 @@ let mut processor = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
 processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(5000.0));
 ```
 
-### `rill-analog-effects` (0.6.0-M1, ✅ active)
+### `rill-analog-effects` (0.6.0-M2, ✅ active)
 Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-model`.
 
 ```rust
@@ -478,7 +478,7 @@ opamp.set_slew_rate(0.5);
 let output = opamp.process(0.3);
 ```
 
-### `rill-io` (0.6.0-M1, active)
+### `rill-io` (0.6.0-M2, active)
 Audio input/output. Pure I/O backends — no engine, no processors.
 
 Single trait:
@@ -521,7 +521,7 @@ The driver is wired separately via `ProcessingState::run_with_driver()`.
 
 The graph is `!Send + !Sync` — it stays on the I/O callback thread.
 
-### `rill-lang` (0.6.0-M1)
+### `rill-lang` (0.6.0-M2)
 
 A Faust-style functional signal processing DSL that compiles to `Algorithm<T>`,
 `MultichannelAlgorithm<T>`, or a full `RillGraphEngine`. The language uses
@@ -631,7 +631,7 @@ for O(1) lookup into the correct `RillProgram`.
 5. **Performance** — zero-cost abstractions, real-time safety
 6. **Testability** — all components are tested in isolation
 
-## Crate dependencies (version 0.6.0-M1)
+## Crate dependencies (version 0.6.0-M2)
 
 Dependency diagram between crates (solid arrows — mandatory dependencies, dashed — optional):
 

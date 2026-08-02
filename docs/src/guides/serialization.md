@@ -223,7 +223,7 @@ Coverage includes:
 
 ## Automatic node registration (rill-adrift)
 
-In 0.6.0-M1, the `register_all_nodes()` function was removed. Registration now happens via
+In 0.6.0-M2, the `register_all_nodes()` function was removed. Registration now happens via
 per-crate `register` modules that populate a `rill_core::builtin::Registry`:
 
 ```rust

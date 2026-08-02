@@ -27,6 +27,14 @@ pub trait BlockBuiltin<T: Transcendental>: crate::traits::Algorithm<T> {
     fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
 }
 
+/// A whole-buffer multi-channel built-in with settable params.
+pub trait MultichannelBlockBuiltin<T: Transcendental>:
+    crate::traits::MultichannelAlgorithm<T> + Send + Sync
+{
+    /// Set a parameter by index.
+    fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
+}
+
 /// Whether a built-in is per-sample or whole-buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinKind {
@@ -179,10 +187,13 @@ impl BuiltinSig {
 /// A boxed factory building an instance from folded params + a sample rate.
 type SampleFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn SampleBuiltin<T>> + Send + Sync>;
 type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
+type MultichannelBlockFactory<T> =
+    Box<dyn Fn(&[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
 
 enum Factory<T: Transcendental> {
     Sample(SampleFactory<T>),
     Block(BlockFactory<T>),
+    MultichannelBlock(MultichannelBlockFactory<T>),
 }
 
 /// A registry entry.
@@ -202,7 +213,7 @@ impl<T: Transcendental> Entry<T> {
     ) -> Option<Box<dyn SampleBuiltin<T>>> {
         match &self.factory {
             Factory::Sample(f) => Some(f(params, sample_rate)),
-            Factory::Block(_) => None,
+            Factory::Block(_) | Factory::MultichannelBlock(_) => None,
         }
     }
     /// Build a block instance.
@@ -213,7 +224,18 @@ impl<T: Transcendental> Entry<T> {
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match &self.factory {
             Factory::Block(f) => Some(f(params, sample_rate)),
-            Factory::Sample(_) => None,
+            Factory::Sample(_) | Factory::MultichannelBlock(_) => None,
+        }
+    }
+    /// Build a multichannel block instance.
+    pub fn build_multichannel_block(
+        &self,
+        params: &[f64],
+        sample_rate: f32,
+    ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
+        match &self.factory {
+            Factory::MultichannelBlock(f) => Some(f(params, sample_rate)),
+            _ => None,
         }
     }
 }
@@ -265,6 +287,22 @@ impl<T: Transcendental> Registry<T> {
             Entry {
                 sig,
                 factory: Factory::Block(Box::new(factory)),
+            },
+        );
+    }
+
+    /// Register a whole-buffer multi-channel built-in.
+    pub fn register_multichannel_block(
+        &mut self,
+        sig: BuiltinSig,
+        factory: impl Fn(&[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync + 'static,
+    ) {
+        debug_assert_eq!(sig.kind, BuiltinKind::Block);
+        self.entries.insert(
+            sig.name.to_string(),
+            Entry {
+                sig,
+                factory: Factory::MultichannelBlock(Box::new(factory)),
             },
         );
     }

@@ -53,7 +53,7 @@ pub trait MultichannelAlgorithm<T: Transcendental>: Send {
 }
 ```
 
-Implemented by `RillGraphEngine<T>` (with `router` feature) and by `SisoAdapter<A, T>`
+Implemented by `CompiledGraphEngine<T, BUF>` (with `router` feature) and by `SisoAdapter<A, T>`
 (wraps any `Algorithm<T>` as a 1-in/1-out `MultichannelAlgorithm`).
 
 File: `rill-core/src/traits/multichannel_algorithm.rs`.

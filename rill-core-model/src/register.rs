@@ -44,7 +44,8 @@ mod lang_helpers {
 
     pub fn register_model_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         reg.register_block(
-            BuiltinSig::simple("analog_moog", 1, 1, 2, BuiltinKind::Block),
+            BuiltinSig::simple("analog_moog", 1, 1, 2, BuiltinKind::Block)
+                .with_names(vec!["cutoff", "resonance"]),
             |p, _sr| {
                 let pole = crate::wdf::RcPole::new(T::ZERO);
                 let mut f = crate::wdf::MoogLadder::<T>::new(

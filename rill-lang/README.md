@@ -29,7 +29,7 @@ Three entry points:
 - **`compile_with(src, &registry, sample_rate)`** — with a built-in registry for
   stateful DSP (filters, oscillators, effects).
 - **`compile_graph(src, &registry, sample_rate)`** — compiles into a
-  `RillGraphEngine` with actor mailbox support for `SetParameter` commands.
+  `CompiledGraphEngine` with actor mailbox support for `SetParameter` commands.
 
 ## The language in one screen
 
@@ -157,9 +157,10 @@ rill-lang supports calling stateful DSP/model built-ins from
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
 | Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassette_deck`, `tape_bridge` (block) | `analog` |
+| Analog | `analog_moog`, `cassettedeck`, `tape_bridge` (block) | `analog` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
+| Sampler | `sampler` (block) | `sampler` |
 | Lofi | `lofi`, `ay38910` (block) | `lofi` |
 
 Built-ins use **unified argument syntax**: signals are first-class arguments
@@ -243,11 +244,14 @@ let prog = compile_def::<f32>(&def).unwrap();
 ## Graph integration
 
 The `rill-adrift` umbrella crate exposes `rill-lang` behind its `lang` feature.
-Two paths to runtime:
+Three paths to runtime:
 
-1. **`compile_graph()`** — compiles source into a `RillGraphEngine` with actor
+1. **`compile_graph()`** — compiles source into a `CompiledGraphEngine` with actor
    mailbox support, ready to wire into a graph's processing pipeline.
-2. **`rill/lang` factory node** — serialized graph nodes of type `rill/lang`
+2. **`GraphBuilder::build_ir()`** (from `rill-graph`) — builds a multi-node
+   `GraphIr` from a programmatic topology, then calls the same
+   `graph_compiler::compile()` to produce a `CompiledGraphEngine`.
+3. **`rill/lang` factory node** — serialized graph nodes of type `rill/lang`
    embed their source as a `source` parameter:
 
 ```json

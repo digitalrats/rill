@@ -28,6 +28,7 @@ use rill_adrift::rill_core::{
 };
 use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
 use rill_lang::program_runner::ProgramRunner;
+use rill_lang::runtime::Runtime;
 use serde::Deserialize;
 
 const BUF: usize = 256;
@@ -152,38 +153,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             });
 
-            let engine = system
-                .build_engine(&graph_def, cfg.block_size)
-                .expect("build_engine");
+            let engine = system.build_engine(&graph_def).expect("build_engine");
 
-            let mut runner = ProgramRunner::new(engine, None, cfg.block_size);
+            let runner = ProgramRunner::new(engine, None);
 
             let handle = runner.handle();
             // Send WAV slab to the sampler via SetParameter.
             if let Some(ref s) = slab {
-                let mut sp = SetParameter::new(
+                let sp = SetParameter::new(
                     "".into(),
                     ParameterId::new("source").unwrap(),
                     ParamValue::SignalSlab(s.clone()),
                     SignalOrigin::Manual,
                 );
-                sp.anchor = "player".into();
                 handle.send(CommandEnum::SetParameter(sp));
             }
             drop(slab);
 
             // Set biquad filter cutoff to 800 Hz.
-            let mut sp = SetParameter::new(
+            let sp = SetParameter::new(
                 "".into(),
                 ParameterId::new("cutoff").unwrap(),
                 ParamValue::Float(800.0),
                 SignalOrigin::Manual,
             );
-            sp.anchor = "filter".into();
             handle.send(CommandEnum::SetParameter(sp));
 
-            runner.wire_backends(None, Some(playback));
-            if let Err(e) = runner.run_with_driver(driver, running) {
+            if let Err(e) = Runtime::launch::<BUF>(driver, None, Some(playback), runner, running) {
                 eprintln!("Backend error: {e}");
             }
         })

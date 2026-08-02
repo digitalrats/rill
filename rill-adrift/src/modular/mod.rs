@@ -23,8 +23,6 @@ use rill_core::queues::CommandEnum;
 #[cfg(feature = "serialization")]
 use rill_core_actor::ActorRef;
 
-use rill_core_actor::Mailbox;
-
 #[cfg(feature = "debug")]
 use dashmap::DashMap;
 #[cfg(feature = "debug")]
@@ -120,12 +118,12 @@ impl<const BUF: usize> ModularSystem<BUF> {
         GraphBuilder::new()
     }
 
-    /// Build a `RillGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
+    /// Build a `CompiledGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
     pub fn build_engine(
         &self,
         def: &GraphDef,
-        buf_size: usize,
-    ) -> Result<rill_lang::graph_engine::RillGraphEngine<f32>, Box<dyn std::error::Error>> {
+    ) -> Result<rill_lang::graph_engine::CompiledGraphEngine<f32, BUF>, Box<dyn std::error::Error>>
+    {
         let mut builder = self.create_builder();
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))?;
@@ -134,27 +132,10 @@ impl<const BUF: usize> ModularSystem<BUF> {
         let registry = crate::lang_builtins::full_registry::<f32>();
         #[cfg(feature = "lofi")]
         let registry = crate::lang_builtins::full_registry_f32();
-        let ir = builder
-            .build_ir(&registry)
-            .map_err(|e| format!("build_ir: {e}"))?;
 
-        let scheduled = rill_lang::graph_lower::lower(&ir);
-
-        let programs: Vec<rill_lang::RillProgram<f32>> = ir
-            .topo_order
-            .iter()
-            .filter_map(|name| ir.nodes.get(name))
-            .map(|node| {
-                rill_lang::RillProgram::<f32>::new_with(node.ir.clone(), &registry, def.sample_rate)
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("program creation: {e}"))?;
-
-        let mailbox = Arc::new(Mailbox::new(64));
-
-        Ok(rill_lang::graph_engine::RillGraphEngine::new(
-            scheduled, programs, mailbox, buf_size,
-        ))
+        builder
+            .compile_def::<BUF>(&registry, def.sample_rate)
+            .map_err(|e| e.to_string().into())
     }
 
     /// Access the module factory for registering custom rack module types before launch.
@@ -176,7 +157,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 rd.graph.nodes.len(),
                 rd.modules.len()
             );
-            let buf_size = def.block_size.max(64);
             let sys = self.actor_system.clone();
             let gd = rd.graph.clone();
 
@@ -224,38 +204,16 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         log::error!("graph populate: {e}");
                         return;
                     }
-                    let ir = match builder.build_ir(&registry) {
-                        Ok(ir) => ir,
+                    let mut engine = match builder.compile_def::<BUF>(&registry, sr) {
+                        Ok(eng) => eng,
                         Err(e) => {
-                            log::error!("build_ir: {e:?}");
+                            log::error!("graph compile: {e}");
                             return;
                         }
                     };
-                    let _scheduled = rill_lang::graph_lower::lower(&ir);
-                    let scheduled = rill_lang::graph_lower::lower(&ir);
-                    let programs: Vec<rill_lang::RillProgram<f32>> = ir
-                        .topo_order
-                        .iter()
-                        .filter_map(|name| ir.nodes.get(name))
-                        .map(|node| {
-                            rill_lang::RillProgram::<f32>::new_with(node.ir.clone(), &registry, sr)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                        .expect("program creation failed");
-                    log::info!(
-                        "rill-adrift: rack '{}' engine built — {} programs",
-                        rack_name,
-                        programs.len()
-                    );
-                    let mailbox = Arc::new(Mailbox::new(64));
+                    log::info!("rill-adrift: rack '{}' engine built", rack_name,);
                     #[cfg(feature = "debug")]
-                    let node_names = scheduled.program_names.clone();
-                    let mut engine = rill_lang::graph_engine::RillGraphEngine::new(
-                        scheduled, programs, mailbox, buf_size,
-                    );
-
-                    #[cfg(feature = "debug")]
-                    engine.allocate_probe_slots(ir.nodes.len());
+                    engine.allocate_probe_slots(1);
 
                     #[cfg(feature = "debug")]
                     let debug_state = {
@@ -264,7 +222,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             probe_slots: slots,
                             debug_control: ctrl,
                             command_queue: queue,
-                            node_names,
+                            node_names: vec!["main".to_string()],
                         })
                     };
                     #[cfg(feature = "debug")]
@@ -276,11 +234,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         let _ = graph_tx.send(engine.handle());
                     }
 
-                    let mut runner = rill_lang::program_runner::ProgramRunner::new(
-                        engine,
-                        Some(parent_ref),
-                        buf_size,
-                    );
+                    let runner =
+                        rill_lang::program_runner::ProgramRunner::new(engine, Some(parent_ref));
 
                     if let Some((ref name, ref params)) = backend_name {
                         let mut bf: rill_graph::backend_factory::BackendFactory =
@@ -288,8 +243,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         crate::registration::register_backends(&mut bf);
                         match bf.create_any(name, params) {
                             Ok((driver, capture, playback)) => {
-                                runner.wire_backends(capture, playback);
-                                let _ = runner.run_with_driver(driver, running);
+                                let _ = rill_lang::runtime::Runtime::launch::<BUF>(
+                                    driver, capture, playback, runner, running,
+                                );
                                 log::info!(
                                     "rill-adrift: rack '{}' backend '{}' started",
                                     rack_name,
@@ -350,6 +306,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                     ),
                 }
             }
+
             #[cfg(feature = "debug")]
             if let Some(ds) = debug_state {
                 let shmem =

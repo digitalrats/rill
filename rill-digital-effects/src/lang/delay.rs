@@ -37,7 +37,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> BlockBuiltin<T> for DelayBuiltin<
 
 pub fn register_delay_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("delay", 1, 1, 3, BuiltinKind::Block),
+        BuiltinSig::simple("delay", 1, 1, 3, BuiltinKind::Block)
+            .with_names(vec!["time", "feedback", "dry_wet"]),
         |p, sr| {
             let mut d =
                 crate::Delay::<T, 64>::with_params(sr, p[0] as f32, p[1] as f32, p[2] as f32);

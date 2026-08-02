@@ -383,9 +383,9 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rill-adrift = { version = "0.6.0-M1", features = ["fft"] }
+rill-adrift = { version = "0.6.0-M2", features = ["fft"] }
 # Or directly:
-rill-fft = "0.6.0-M1"
+rill-fft = "0.6.0-M2"
 ```
 
 The `simd` feature forwards to `rill-core/simd`, enabling `wide`‑based

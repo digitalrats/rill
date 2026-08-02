@@ -254,6 +254,11 @@ impl<'a> Parser<'a> {
                 let re = match &lhs {
                     Expr::Float(v, _) => Some(*v),
                     Expr::Int(v, _) => Some(*v as f64),
+                    Expr::Neg(inner, _) => match inner.as_ref() {
+                        Expr::Float(v, _) => Some(-*v),
+                        Expr::Int(v, _) => Some(-(*v as f64)),
+                        _ => None,
+                    },
                     _ => None,
                 };
                 let im = match &rhs {
@@ -772,5 +777,29 @@ mod tests {
             }
             other => panic!("expected Apply, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_complex_literal() {
+        fn is_complex(e: &Expr, re: f64, im: f64) {
+            if let Expr::Apply { name, args, .. } = e {
+                assert_eq!(name, "complex");
+                match (&args[0], &args[1]) {
+                    (Expr::Float(a, _), Expr::Float(b, _)) => {
+                        assert!((a - re).abs() < 1e-9, "re={a}, expected {re}");
+                        assert!((b - im).abs() < 1e-9, "im={b}, expected {im}");
+                    }
+                    o => panic!("expected Float args, got {o:?}"),
+                }
+            } else {
+                panic!("expected Apply(complex), got {e:?}");
+            }
+        }
+        is_complex(&body("main = 3.0 + 4.0i"), 3.0, 4.0);
+        is_complex(&body("main = 1.0 - 2.0i"), 1.0, -2.0);
+        is_complex(&body("main = 0.5 + 1.5e1i"), 0.5, 15.0);
+        is_complex(&body("main = -3.0 + 4.0i"), -3.0, 4.0);
+        is_complex(&body("main = -1.0 - 2.0i"), -1.0, -2.0);
+        is_complex(&body("main = -5 + 7i"), -5.0, 7.0);
     }
 }

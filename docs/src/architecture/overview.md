@@ -31,20 +31,23 @@ independently.
 
 Rill's processing model is a **static directed acyclic graph (DAG)**:
 
-- **Nodes** — processing units: `Source` (generates), `Processor` (transforms),
-  `Sink` (consumes)
-- **Ports** — typed connection points: `Signal`, `Control`, `Clock`, `Feedback`
-- **Edges** — zero-copy routes between output and input ports
+- **Nodes** — processing units added by type name (a flat `add_node` API, no
+  separate source/processor/sink distinction at builder level)
+- **Edge kinds** — `Signal` (forward flow, topologically sorted), `Control`
+  (modulation), `Clock` (timing), `Feedback` (excluded from sort)
+- **Connections** — wired as `(from_node, from_port, to_node, to_port)` tuples
 
-Graph topology is fixed at construction time via `GraphBuilder`. Processing
-is driven by `Port::propagate()` — a recursive traversal that starts at
-a source node and cascades through the DAG.
+Graph topology is fixed at construction time via `GraphBuilder::build_ir()`.
+This produces a `GraphIr` (rill-lang's multi-node intermediate representation),
+which `rill_lang::graph_compiler::compile()` transforms into a
+`CompiledGraphEngine`. Processing is driven by `CompiledGraphEngine` — a flat vector of compiled
+closures over a `FixedBuffer` pool, executed in topological order with
+zero heap allocation on the signal path.
 
 ### Two-thread architecture
 
 - **Signal thread** (hard or soft RT) — runs the process callback:
-  `generate()` → `propagate()` → `consume()`. No heap allocs, no locks,
-  no syscalls.
+  `CompiledGraphEngine::process()`. Zero heap allocs, no locks, no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay` with
   automatons (LFO, envelopes, sequencers). Communicates with the signal
   thread via the graph actor mailbox (`ActorRef<CommandEnum>`).
@@ -55,21 +58,20 @@ See [Signal graph (rill-graph)](../architecture/graph.md) for details.
 
 | Direction | Active side | Node type |
 |-----------|------------|-----------|
-| **Output** | Playback | Sink writes to `IoPlayback` |
-| **Input** | Capture | Source reads from `IoCapture` |
+| **Output** | Playback | Engine writes output buffers from `MultichannelAlgorithm::process()` |
+| **Input** | Capture | Engine reads input buffers into `CompiledGraphEngine::process()` |
 
-### Port-based propagation
+### Execution model
 
-The signal graph has no external engine loop. Each `Port` owns its buffer,
-downstream connections, and feedback state. Processing is driven by
-`ProcessingState::process_block()`:
+The signal graph has no external engine loop. `CompiledGraphEngine::process_tick()`
+drives execution:
 
 1. Drain the actor mailbox — apply queued `SetParameter` commands
-2. `Source::generate()` fills output buffers (reads from `IoCapture` for Input nodes)
-3. `Port::propagate()` copies data to downstream input ports (zero-copy for 1:1 fan-out)
-4. Each downstream node runs `Processor::process()` or `Sink::consume()`
-5. Recursion continues through the DAG until all sinks are reached
-6. `send_clock_tick()` dispatches timing to the control rack
+2. Execute nodes in topological order via `NodeClosure::execute()`
+3. Each node reads from its input buffers in the pool, runs its algorithm,
+   writes to its output buffers
+4. `CompiledGraphEngine` implements both `Algorithm<T>` (SISO) and
+   `MultichannelAlgorithm<T>` (MIMO)
 
 ### Automation (The World of Automatons)
 
@@ -85,7 +87,7 @@ See [The World of Automatons](../guides/world-of-automatons.md) for details.
 ## Design principles
 
 1. **Domain-agnostic core** — `Scalar`, `Vector`, lock-free queues work
-   outside audio (embedded, IoT, robotics)
+   in any signal domain (embedded, IoT, robotics)
 2. **Minimal dependencies** — each crate depends only on what it uses
 3. **Zero-cost abstractions** — static dispatch, const generics, SIMD-ready vectors
 4. **Real-time safety** — no allocation, no locks, no syscalls on the signal path

@@ -42,7 +42,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> BlockBuiltin<T> for LimiterBuilti
 
 pub fn register_limiter_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("limiter", 1, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("limiter", 1, 1, 2, BuiltinKind::Block)
+            .with_names(vec!["threshold", "ratio"]),
         |p, sr| {
             let mut l = crate::Limiter::<T, 64>::new(sr, p[0] as f32, 1.0, p[1] as f32, 0.0);
             Algorithm::init(&mut l, sr);

@@ -4,61 +4,50 @@ Add `rill-adrift` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rill-adrift = "0.6.0-M1"
+rill-adrift = "0.6.0-M2"
 ```
 
 For individual crates (if you don't need the full ecosystem):
 
 ```toml
 [dependencies]
-rill-core-dsp = "0.6.0-M1"
+rill-core-dsp = "0.6.0-M2"
 ```
 
 ## Example: Signal graph with sine oscillator
 
-This example builds a signal graph with a sine oscillator and runs it
-through the pull model (Sink drives processing):
+This example builds a signal graph with a sine oscillator using the
+`GraphBuilder` API and the built-in registry:
 
 ```rust,no_run
-use rill_adrift::prelude::*;
-use rill_adrift::rill_core::traits::*;
-use rill_adrift::rill_core::time::ClockTick;
-use rill_adrift::rill_graph::{GraphBuilder, NodeFactory};
-use rill_adrift::rill_core_dsp::generators::SineOscillator;
-use std::sync::Arc;
+use rill_graph::GraphBuilder;
+use rill_core::builtin::Registry;
 
 const BUF_SIZE: usize = 256;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let factory = Arc::new(NodeFactory::<f32, BUF_SIZE>::new());
-    // Registration happens via per-crate `register` modules (e.g. `rill_core_dsp::lang::register::register_lang_builtins`)
-    // or via `rill_adrift::lang_builtins::full_registry()`. NodeFactory-based registration was removed in 0.6.0-M1.
-    let mut builder = GraphBuilder::<f32, BUF_SIZE>::new(factory);
-    let osc = builder.add_source(Box::new(
-        SineOscillator::<f32, BUF_SIZE>::new().with_frequency(440.0)
-    ));
-    let sink = builder.add_sink(Box::new(MySink::new()));
-    builder.connect_signal(osc, 0, sink, 0)?;
-    let graph = builder.build()?;
+    let mut reg = Registry::<f32>::new();
+    rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
+    rill_lang::register::register_core_builtins(&mut reg);
 
-    let mut state = graph.into_processing_state();
-    let tick = ClockTick::new_block(0, BUF_SIZE as u32, 44100.0);
-    state.process_block(&tick)?;
+    let mut builder = GraphBuilder::<f32, BUF_SIZE>::new();
+    let osc = builder.add_node("rill/sinosc", &[("freq", 440.0)].into());
+    let out = builder.add_node("rill/output", &[].into());
+    builder.connect_signal(osc, 0, out, 0);
+
+    // build_ir() produces a GraphIr, then internally calls
+    // rill_lang::graph_compiler::compile() to produce a CompiledGraphEngine:
+    let engine = builder.build_ir(&reg, 44100.0)?;
+    let mut buf = [0.0f32; BUF_SIZE];
+    engine.process(Some(&[0.0f32; BUF_SIZE]), &mut buf)?;
 
     Ok(())
 }
 ```
 
-> ⚠️ **Deprecated**: The `GraphBuilder::build()` → `ProcessingState` path shown here is the legacy API,
-> kept for backward compatibility. For new development, use the `lang` feature:
-> `GraphBuilder::build_ir(&registry)` → `RillGraphEngine`.
-> 
-> See the [rill-lang guide](rill-lang.md) for details.
-
 > **Note:** For real I/O, use `Output` / `Input` from `rill-io` (feature-gated
-> behind `io`). The `Output` node (Sink) writes to `IoPlayback`, `Input` (Source)
-> reads from `IoCapture`. The orchestrator creates the backend, extracts
-> `ProcessingState`, and registers the process callback.
+> behind `io`). The orchestration layer creates the backend and drives the
+> `CompiledGraphEngine` via `process()`.
 
 ## Using rill-lang instead of programmatic graphs
 
@@ -68,6 +57,7 @@ Use it to define algorithms declaratively instead of wiring Rust node types:
 ```rust
 use rill_lang::{compile, compile_with, compile_graph};
 use rill_core::builtin::Registry;
+use rill_core::traits::ParamValue;
 
 // Simple compilation to an Algorithm<T>
 let mut prog = compile::<f32>("main = _ * 0.5").unwrap();
@@ -77,20 +67,33 @@ prog.process(Some(&[1.0f32; 64]), &mut out).unwrap();
 // Compile with a built-in registry (for DSP primitives)
 let registry = rill_adrift::lang_builtins::full_registry::<f32>();
 let mut prog2 = compile_with::<f32>(
-    "main = sine(freq) * env",
-    &registry,
-    44100.0,
-).unwrap();
-prog2.set_param("freq", 440.0);
-prog2.set_param("env", 0.5);
-
-// Whole-graph compilation with runtime ?name parameters
-let engine = compile_graph::<f32>(
     "main = sine(?freq) * ?gain",
     &registry,
     44100.0,
 ).unwrap();
-engine.mailbox_set_param("freq", &rill_core::queues::ParamValue::F32(440.0)).unwrap();
+let freq_idx = prog2.param_index("freq").unwrap();
+prog2.set_param(freq_idx, ParamValue::Float(440.0));
+let gain_idx = prog2.param_index("gain").unwrap();
+prog2.set_param(gain_idx, ParamValue::Float(0.5));
+
+// Whole-graph compilation with runtime ?name parameters
+const BUF_SIZE: usize = 256;
+let mut engine = compile_graph::<f32, BUF_SIZE>(
+    "main = sine ?freq=440.0 * ?gain=0.5",
+    &registry,
+    44100.0,
+).unwrap();
+engine.handle().send(rill_core::queues::CommandEnum::SetParameter(
+    rill_core::queues::SetParameter {
+        anchor: "main".into(),
+        parameter: "freq".into(),
+        value: ParamValue::Float(440.0),
+        port: String::new(),
+        source: rill_core::queues::SignalOrigin::Manual,
+        timestamp: 0,
+        sample_pos: None,
+    }
+)).unwrap();
 ```
 
 ## Per-crate registration without rill-adrift
@@ -123,7 +126,7 @@ For algorithm-level processing without the graph infrastructure:
 ```rust
 use rill_core_dsp::generators::basic::SineOsc;
 use rill_core_dsp::delay::Delay;
-use rill_core_dsp::algorithm::Algorithm;
+use rill_core::traits::Algorithm;
 
 let sample_rate = 44100.0;
 let mut osc = SineOsc::<f32>::new(440.0, sample_rate);
@@ -132,10 +135,10 @@ osc.set_amplitude(0.5);
 let mut delay = Delay::<f32>::new(0.3, sample_rate);
 delay.set_feedback(0.4);
 
-let mut input = vec![0.0f32; 64];
-let mut output = vec![0.0f32; 64];
-osc.process_block(&[], &mut input)?;
-delay.process_block(&input, &mut output)?;
+# let mut input = [0.0f32; 64];
+# let mut output = [0.0f32; 64];
+Algorithm::process(&mut osc, None, &mut input)?;
+Algorithm::process(&mut delay, Some(&input), &mut output)?;
 ```
 
 ## Signal I/O
@@ -143,35 +146,23 @@ delay.process_block(&input, &mut output)?;
 Enable the `io` feature on `rill-adrift` (default):
 
 ```toml
-rill-adrift = { version = "0.6.0-M1", features = ["io", "alsa"] }
+rill-adrift = { version = "0.6.0-M2", features = ["io", "alsa"] }
 ```
 
 Available backends: `portaudio` (default/minimal), `alsa` (Linux), `pipewire` (Linux), `jack` (Linux).
 
 The `Input` node (push model) drives the graph from the source side.
 `Output` (pull model) drives the graph from the sink side.
-The orchestrator creates the backend, extracts `ProcessingState` from the graph,
-and registers the process callback.
-
-```rust,no_run
-use rill_io::{BackendFactory, BackendParams};
-use std::sync::{Arc, atomic::AtomicBool};
-
-let factory = BackendFactory::new();
-let output = factory.create_output("portaudio", &BackendParams::default())?;
-let mut state = graph.into_processing_state();
-state.wire_backends(None, Some(output.playback));
-state.run_with_driver(output.driver, Arc::new(AtomicBool::new(true)))?;
-```
+The orchestrator creates the backend and drives the `CompiledGraphEngine`
+from the I/O callback.
 
 ## Two-Thread Architecture
 
-- **Signal thread** (hard or soft RT) — runs the process callback:
-  drain `MpscQueue`, `generate()`, `propagate()`, `consume()`.
+- **Signal thread** (hard or soft RT) — runs `CompiledGraphEngine::process()`.
   No heap allocs, no locks, no syscalls.
 - **Control thread** (tokio green threads) — runs `Patchbay`
   with automatons (LFO, envelopes, sequencers). Communicates via
-  lock‑free `MpscQueue` (via the graph actor mailbox, `ActorRef<CommandEnum>`).
+  the actor mailbox (`ActorRef<CommandEnum>`) returned by `engine.handle()`.
 
 ## Next steps
 

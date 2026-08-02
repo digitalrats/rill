@@ -18,7 +18,7 @@ pub fn register_lang_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
 
 fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     reg.register_sample(
-        BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Sample),
+        BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Sample).with_names(vec!["cutoff", "q"]),
         |p, sr| {
             let mut inner = OnePole::<T>::new(FilterParams {
                 filter_type: FilterType::LowPass,
@@ -31,7 +31,8 @@ fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_sample(
-        BuiltinSig::simple("moog", 1, 1, 2, BuiltinKind::Sample),
+        BuiltinSig::simple("moog", 1, 1, 2, BuiltinKind::Sample)
+            .with_names(vec!["cutoff", "resonance"]),
         |p, sr| {
             let mut inner = MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
             Algorithm::init(&mut inner, sr);
@@ -39,7 +40,7 @@ fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("lowpass", 1, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("lowpass", 1, 1, 2, BuiltinKind::Block).with_names(vec!["cutoff", "q"]),
         |p, sr| {
             let mut b = Biquad::<T>::new(FilterParams {
                 filter_type: FilterType::LowPass,
@@ -52,7 +53,7 @@ fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("highpass", 1, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("highpass", 1, 1, 2, BuiltinKind::Block).with_names(vec!["cutoff", "q"]),
         |p, sr| {
             let mut b = Biquad::<T>::new(FilterParams {
                 filter_type: FilterType::HighPass,
@@ -92,7 +93,8 @@ fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
 
 fn register_oscillators<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block),
+        BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block)
+            .with_names(vec!["freq", "amp", "phase"]),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -103,7 +105,8 @@ fn register_oscillators<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("saw", 0, 1, 3, BuiltinKind::Block),
+        BuiltinSig::simple("saw", 0, 1, 3, BuiltinKind::Block)
+            .with_names(vec!["freq", "amp", "phase"]),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -114,7 +117,8 @@ fn register_oscillators<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("square", 0, 1, 3, BuiltinKind::Block),
+        BuiltinSig::simple("square", 0, 1, 3, BuiltinKind::Block)
+            .with_names(vec!["freq", "amp", "phase"]),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -125,7 +129,8 @@ fn register_oscillators<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("triangle", 0, 1, 3, BuiltinKind::Block),
+        BuiltinSig::simple("triangle", 0, 1, 3, BuiltinKind::Block)
+            .with_names(vec!["freq", "amp", "phase"]),
         |p, sr| {
             let freq = p[0] as f32;
             let amp = T::from_f64(p[1]);
@@ -136,7 +141,7 @@ fn register_oscillators<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("noise", 0, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("noise", 0, 1, 2, BuiltinKind::Block).with_names(vec!["type", "amp"]),
         |p, _sr| {
             let amp = T::from_f64(p[1]);
             let gen = NoiseGenerator::<T>::new(

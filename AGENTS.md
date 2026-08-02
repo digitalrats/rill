@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 19 active crates:
+Cargo workspace — 20 active crates:
 
 | Crate | Status |
 |---|---|
@@ -19,7 +19,7 @@ Cargo workspace — 19 active crates:
 | `rill-telemetry` | Active — probes, collectors |
 | `rill-core-model` | Active — WDF elements, adapters, analysis, physical modeling (string, plate, modal, cavity) |
 | `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
-| `rill-analog-effects` | Active — op-amp, tape deck, preamp models |
+| `rill-analog-effects` | Active — cassette deck, tape bridge/delay models |
 | `rill-osc` | Active — OSC server and networking |
 | `rill-sampler` | Active — sample playback, time-series reader, WAV loading |
 | `rill-fft` | Active — FFT, frequency-domain convolution, spectrum analysis, spectral effects |
@@ -30,8 +30,8 @@ Cargo workspace — 19 active crates:
 Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
 - **`rill-core-dsp`** — DSP algorithms (depends on `rill-core`)
-- **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `Graph`, `GraphBuilder`, `Port::propagate` — no external engine loop.
-- **`rill-io`** — I/O backends only (`IoBackend` trait + PortAudio/ALSA/PipeWire/JACK). No engine, no processors. `rill-graph::Port::propagate` drives the graph in the I/O callback.
+- **`rill-graph`** — signal graph (DAG), depends on `rill-core` only (no DSP dependency). Contains `GraphBuilder` and `GraphIr` — converted to `CompiledGraphEngine` by `rill-lang`.
+- **`rill-io`** — I/O backends only (`IoBackend` trait + PortAudio/ALSA/PipeWire/JACK). No engine, no processors. `rill-lang::CompiledGraphEngine` drives the graph in the I/O callback.
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
@@ -190,7 +190,7 @@ mdbook serve docs/                # dev server at localhost:3000
 - **Module Structure:** 
     - All public APIs must be re-exported via the `crate::prelude` module in each crate.
 - **Doc tests:** use `no_run` (not `ignore`) on code blocks that illustrate API usage but are not self-contained runnable examples. `no_run` ensures the example compiles against the current API; `ignore` skips compilation entirely and lets examples rot.
-- **Versioning:** crates version synchronously (all at 0.6.0-M1). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
+- **Versioning:** crates version synchronously (all at 0.6.0-M2). Use `./scripts/publish.sh` to publish — it respects dependency order and handles crates.io rate-limiting.
 - **Formatting & Quality:** 
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
@@ -353,7 +353,8 @@ chmod +x .git/hooks/pre-commit
 
 ### I/O callback — where the signal graph runs
 
-The orchestrator creates a backend, extracts `ProcessingState` from the graph,
+The orchestrator creates a backend, builds a `CompiledGraphEngine` via
+`GraphBuilder::build_ir()` → `graph_compiler::compile()`,
 and drives processing through the process callback. The lifecycle is defined by the `IoBackend` trait
 (`rill_core/src/io.rs:26`):
 
@@ -372,22 +373,19 @@ The nature of the callback thread depends on the backend:
 | **Hardware callback** | PipeWire, JACK, PortAudio | Hard RT — the audio system calls the process callback on its own real‑time thread (SCHED_FIFO). No syscalls, no allocation, no locks. |
 | **Own audio thread** | ALSA | Soft RT — the backend runs its own audio thread that waits on the device FDs with `snd_pcm_wait` (event‑driven, never `thread::sleep()`) and fires the capture then playback callbacks per period. |
 
-Inside the I/O callback tick (`rill-graph/src/graph.rs:556-602`):
+Inside the I/O callback tick (`rill-lang/src/graph_engine.rs:220`):
 
 1. `actor.drain()` — applies queued `CommandEnum::SetParameter` commands from the actor mailbox
-2. Builds a `RenderContext` with sample clock, transport state (BPM, playing flag, time signature), and hardware clock correction (`speed_ratio`)
-3. `Source::generate()` / `Processor::process()` / `Sink::consume()` via `process_block(&ctx)`
-4. `Port::propagate()` — recursive DAG traversal through direct port pointers (no context needed — port-level `Algorithm::process()` is buffer-only)
-5. Sends `CommandEnum::ClockTick` to the parent Patchbay actor
+2. `NodeClosure::execute()` for each node in topological order — reads from input buffers, runs algorithm, writes to output buffers
+3. Sends `CommandEnum::ClockTick` to the parent Patchbay actor
 
-All `rill-core::buffer` types (`DelayLine`, `TapeLoop`, `PipeBuffer`,
-`RingBuffer`, `FanOutBuffer`, `FanInBuffer`) are used **exclusively** inside
-this path. No atomics, no locks — the graph is a single-threaded static DAG.
+All `rill-core::buffer` types and the `FixedBuffer` pool are used **exclusively** inside
+this path. No atomics, no locks — the engine runs on a single thread.
 
 > **Backward compat:** `AudioIo` (`rill-io/src/audio_io.rs`) is a type alias
 > for `dyn IoBackend`, kept for legacy code. `AudioInput`/`AudioOutput`
 > are aliases for `Input`/`Output`. The orchestrator drives the graph via
-> `ProcessingState::process_block()`.
+> `CompiledGraphEngine::process()`.
 
 ### Control path (soft RT)
 
@@ -450,7 +448,7 @@ joins the polling thread and releases the backend.
 
 If data crosses threads, send `CommandEnum` variants through `ActorRef<CommandEnum>`.
 Everything else is single-threaded within the signal graph running inside the
-I/O callback. No external engine loop — `Port::propagate` traverses the DAG
+I/O callback. No external engine loop — `CompiledGraphEngine::process_tick()` runs
 recursively through direct port pointers.
 
 ## Known pitfalls
@@ -459,8 +457,8 @@ recursively through direct port pointers.
 - No CI workflows exist.
 - Integration tests live in per-crate `tests/` directories, not a dedicated `rill-tests` crate.
 - `rill-adrift` is the recommended entry point for external apps. Use `rill-adrift::rill_core` etc. to access individual crates through it.
-- **Two-thread architecture**: the I/O callback runs the graph via `ProcessingState::process_block()`,
-  driving `generate()` / `process()` / `consume()` / `propagate()`. The control thread
+- **Two-thread architecture**: the I/O callback runs the graph via `CompiledGraphEngine::process()`,
+  driving node execution in topological order over a `FixedBuffer` pool. The control thread
   (soft RT) runs `rill-patchbay` actors (Servos, Sensors). Communication via
   `ActorRef<CommandEnum>`.
 - `automaton_task.rs` originally referenced `PortCombiner` which was removed
