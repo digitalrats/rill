@@ -34,10 +34,9 @@ cd "$(git rev-parse --show-toplevel)"
 CRATES=(
     rill-core
     rill-core-actor
-    rill-osc
     rill-core-dsp
-    rill-core-model
     rill-lang
+    rill-core-model
     rill-graph
     rill-telemetry
     rill-lofi
@@ -50,6 +49,7 @@ CRATES=(
     rill-analog-effects
     rill-sampler
     rill-patchbay
+    rill-osc
     rill-adrift
 )
 
