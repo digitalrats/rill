@@ -150,7 +150,7 @@ fn alsa_io_loop(
                         period_frames = period as usize;
                     }
                     Err(e) => {
-                        eprintln!("ALSA configure playback: {}", e);
+                        log::error!("ALSA configure playback: {}", e);
                         return;
                     }
                 }
@@ -161,7 +161,7 @@ fn alsa_io_loop(
                 Some(pcm)
             }
             Err(e) => {
-                eprintln!("ALSA open {}: {}", out_dev, e);
+                log::error!("ALSA open {}: {}", out_dev, e);
                 return;
             }
         }
@@ -209,12 +209,9 @@ fn alsa_io_loop(
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(e) => {
-                    if let Err(r) = pcm_playback.as_ref().unwrap().try_recover(e, true) {
-                        eprintln!("ALSA wait recover: {r}");
-                        xruns.fetch_add(1, Ordering::Relaxed);
-                        break;
-                    }
-                    continue;
+                    let _ = pcm_playback.as_ref().unwrap().try_recover(e, true);
+                    xruns.fetch_add(1, Ordering::Relaxed);
+                    break;
                 }
             }
         } else if has_capture {
@@ -222,12 +219,9 @@ fn alsa_io_loop(
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(e) => {
-                    if let Err(r) = pcm_capture.as_ref().unwrap().try_recover(e, true) {
-                        eprintln!("ALSA capture wait recover: {r}");
-                        xruns.fetch_add(1, Ordering::Relaxed);
-                        break;
-                    }
-                    continue;
+                    let _ = pcm_capture.as_ref().unwrap().try_recover(e, true);
+                    xruns.fetch_add(1, Ordering::Relaxed);
+                    break;
                 }
             }
         }
@@ -240,21 +234,14 @@ fn alsa_io_loop(
         let mut cap_frames = 0usize;
         if has_capture {
             let pcm = pcm_capture.as_ref().unwrap();
-            match pcm.io_i16() {
-                Ok(io) => match io.readi(&mut cb_i16[..in_sz]) {
-                    Ok(n_read) => {
-                        let n = (n_read * in_ch).min(in_sz);
-                        cap_f32[..n].fill(0.0);
-                        i16_to_f32_chunk(&cb_i16[..n], &mut cap_f32[..n]);
-                        cap_frames = n_read;
-                    }
-                    Err(e) => {
-                        eprintln!("ALSA capture read: {e}");
-                        xruns.fetch_add(1, Ordering::Relaxed);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("ALSA capture io_i16: {e}");
+            if let Ok(io) = pcm.io_i16() {
+                if let Ok(n_read) = io.readi(&mut cb_i16[..in_sz]) {
+                    let n = (n_read * in_ch).min(in_sz);
+                    cap_f32[..n].fill(0.0);
+                    i16_to_f32_chunk(&cb_i16[..n], &mut cap_f32[..n]);
+                    cap_frames = n_read;
+                } else {
+                    xruns.fetch_add(1, Ordering::Relaxed);
                 }
             }
             unsafe {
@@ -297,26 +284,18 @@ fn alsa_io_loop(
             f32_to_i16_chunk(&play_f32[..total_samps], &mut i16_buf[..total_samps]);
 
             let mut retries = 3usize;
-            loop {
-                match pcm.io_i16() {
-                    Ok(io) => match io.writei(&i16_buf[..total_samps]) {
-                        Ok(_) => break,
-                        Err(e) => {
-                            eprintln!("ALSA write: {e}");
-                            xruns.fetch_add(1, Ordering::Relaxed);
-                            if retries == 0 {
-                                break;
-                            }
-                            retries -= 1;
-                            if let Err(r) = pcm.try_recover(e, true) {
-                                eprintln!("ALSA recover: {r}");
-                                break;
-                            }
-                        }
-                    },
+            while let Ok(io) = pcm.io_i16() {
+                match io.writei(&i16_buf[..total_samps]) {
+                    Ok(_) => break,
                     Err(e) => {
-                        eprintln!("ALSA io_i16: {e}");
-                        break;
+                        xruns.fetch_add(1, Ordering::Relaxed);
+                        if retries == 0 {
+                            break;
+                        }
+                        retries -= 1;
+                        if pcm.try_recover(e, true).is_err() {
+                            break;
+                        }
                     }
                 }
             }

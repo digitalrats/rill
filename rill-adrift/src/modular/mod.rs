@@ -204,13 +204,15 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         log::error!("graph populate: {e}");
                         return;
                     }
-                    let mut engine = match builder.compile_def::<BUF>(&registry, sr) {
+                    let engine = match builder.compile_def::<BUF>(&registry, sr) {
                         Ok(eng) => eng,
                         Err(e) => {
                             log::error!("graph compile: {e}");
                             return;
                         }
                     };
+                    #[cfg(feature = "debug")]
+                    let mut engine = engine;
                     log::info!("rill-adrift: rack '{}' engine built", rack_name,);
                     #[cfg(feature = "debug")]
                     engine.allocate_probe_slots(1);

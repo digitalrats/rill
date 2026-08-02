@@ -585,12 +585,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
 
         // Check for unsupported topologies
-        for i in 0..self.recipes.len() {
-            if adj[i].len() > 1 {
+        for (i, targets) in adj.iter().enumerate() {
+            if targets.len() > 1 {
                 return Err(BuildError::UnsupportedTopology(format!(
                     "node {} fans out to {} destinations (split not yet supported)",
                     i,
-                    adj[i].len()
+                    targets.len()
                 )));
             }
             let in_count = self
@@ -671,9 +671,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .copied()
             .unwrap_or(0);
 
-        let body = node_exprs[leaf]
-            .clone()
-            .unwrap_or_else(|| Expr::Wire(dummy));
+        let body = node_exprs[leaf].clone().unwrap_or(Expr::Wire(dummy));
 
         let params: Vec<Param> = all_param_names
             .into_iter()

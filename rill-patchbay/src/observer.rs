@@ -144,10 +144,6 @@ impl MicroControlObserver {
             actual_ns,
             value,
         ));
-        println!(
-            "⚠️ Violation in {}: {}ns (expected {}ns)",
-            component, actual_ns, expected_ns
-        );
     }
 
     /// Get statistics for a specific component.

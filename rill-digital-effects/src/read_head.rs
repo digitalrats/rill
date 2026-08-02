@@ -79,9 +79,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for ReadHead<T, BUF_
         let glide = self.delay_smoothing;
         let mut current = self.current_delay_samples;
         let n = output.len();
-        for i in 0..n {
+        for (i, out) in output.iter_mut().enumerate() {
             let d = current + (n - 1 - i) as f64;
-            output[i] = tape.read_interpolated(d.max(0.0));
+            *out = tape.read_interpolated(d.max(0.0));
             current += (target - current) * glide;
         }
         self.current_delay_samples = current;
