@@ -1,4 +1,4 @@
-//! Recording sink — captures signal into a Vec<f32> for offline analysis.
+//! Recording sink — captures signal into a `Vec<f32>` for offline analysis.
 
 use std::sync::{Arc, Mutex};
 

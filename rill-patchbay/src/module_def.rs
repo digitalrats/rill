@@ -50,7 +50,7 @@ pub enum AutomatonDef {
         function_name: String,
         params: HashMap<String, f64>,
     },
-    /// Custom automaton — dispatched via [`AutomatonFactory`].
+    /// Custom automaton — dispatched via `AutomatonFactory`.
     Custom {
         id: String,
         type_name: String,

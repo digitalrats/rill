@@ -1,7 +1,7 @@
 //! # Hearing — signal analysis for acoustic sensors
 //!
 //! Algorithms that analyse signal buffers and produce scalar features
-//! (pitch, envelope, zero-crossing rate). Used by [`AcousticSensor`]
+//! (pitch, envelope, zero-crossing rate). Used by `AcousticSensor`
 //! to turn signal data into control parameters.
 //!
 //! Future: wire these into graph telemetry so `AcousticSensor` receives

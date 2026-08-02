@@ -109,12 +109,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.add_node_with_id(type_name, params, id)
     }
 
-    /// Add a node with an explicit [`NodeId`].
+    /// Add a node with an explicit `NodeId`.
     pub fn add_node_with_id(&mut self, type_name: &str, params: &Params, id: u32) -> usize {
         self.add_node_with_name(type_name, params, id, String::new())
     }
 
-    /// Add a node with an explicit [`NodeId`] and a human-readable name
+    /// Add a node with an explicit `NodeId` and a human-readable name
     /// (typically sourced from the JSON `name` field). The name becomes the
     /// program/anchor name in the compiled graph, used by `SetParameter` routing.
     pub fn add_node_with_name(
@@ -211,7 +211,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Build a [`rill_lang::graph_ir::GraphIr`] using the built-in [`Registry`].
+    /// Build a [`rill_lang::graph_ir::GraphIr`] using the built-in `Registry`.
     ///
     /// This is the new execution path. It looks up each node type in the registry,
     /// constructs placeholder IRs, and performs topological sort. Actual compilation
@@ -492,11 +492,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         })
     }
 
-    /// Convert the graph to an rill-lang AST [`Program`].
+    /// Convert the graph to an rill-lang AST `Program`.
     ///
-    /// Each graph node becomes an [`Expr::Apply`] with parameters ordered
-    /// according to the builtin's [`BuiltinSig::param_names`]. Nodes are
-    /// chained via [`BinOp::Seq`] according to their signal connections.
+    /// Each graph node becomes an [`Expr::Apply`](rill_lang::ast::Expr::Apply) with parameters ordered
+    /// according to the builtin's `BuiltinSig::param_names`. Nodes are
+    /// chained via [`BinOp::Seq`](rill_lang::ast::BinOp::Seq) according to their signal connections.
     ///
     /// Only simple chain topologies are supported (fan-out/fan-in will
     /// return [`BuildError::UnsupportedTopology`]).
@@ -691,7 +691,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         })
     }
 
-    /// Compile directly from the graph definition to a [`CompiledGraphEngine`].
+    /// Compile directly from the graph definition to a `CompiledGraphEngine`.
     ///
     /// Calls [`ast_from_def`](Self::ast_from_def) followed by rill-lang compilation.
     pub fn compile_def<const BUF: usize>(

@@ -11,7 +11,7 @@
 //! 1. Split IR into partitions of size `BUF_SIZE`
 //! 2. Each partition is zero-padded to FFT size, then FFT'd → spectrum
 //! 3. Input blocks are FFT'd and stored in a circular buffer
-//! 4. Output = IFFT(Σ input_fft_circ[k] · ir_spectrum[k])
+//! 4. Output = IFFT(Σ input_fft_circ\[k\] · ir_spectrum\[k\])
 //! 5. Overlap-add to produce the output block
 
 use num_complex::Complex;

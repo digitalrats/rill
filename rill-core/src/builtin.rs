@@ -1,6 +1,6 @@
 //! Foreign-function registry: DSP/model built-ins callable from rill-lang.
 //!
-//! Two kinds: [`SampleBuiltin`] (per-sample, feedback-legal) and block built-ins
+//! Two kinds: `SampleBuiltin` (per-sample, feedback-legal) and block built-ins
 //! (`rill_core::Algorithm`, opaque whole-buffer). Concrete bindings live outside
 //! this crate (e.g. `rill-adrift`); core stays `rill-core`-only.
 

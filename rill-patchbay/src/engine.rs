@@ -46,7 +46,7 @@ pub type OscSurface = Vec<OscSurfaceEntry>;
 // 3. Value transforms
 // =============================================================================
 
-/// Transfer function applied to a normalized [0,1] value before scaling to parameter range.
+/// Transfer function applied to a normalized `[0,1]` value before scaling to parameter range.
 #[derive(Clone)]
 pub enum Transform {
     /// Identity: value passes through unchanged.
@@ -264,7 +264,7 @@ pub trait Automaton: Send + Sync + Debug {
 // 6. Parameter mapping
 // =============================================================================
 
-/// Transfer function for mapping raw automaton output [0,1] to parameter space.
+/// Transfer function for mapping raw automaton output `[0,1]` to parameter space.
 #[derive(Clone)]
 pub enum ParameterMapping {
     /// Identity: output equals input.
@@ -820,7 +820,7 @@ impl<A: Automaton + 'static> Servo<A> {
 
     /// Set the control strategy — how the automaton affects the parameter value.
     ///
-    /// - `Absolute` (default): automaton output [0,1] maps to [min,max].
+    /// - `Absolute` (default): automaton output `[0,1]` maps to `[min,max]`.
     /// - `Modulation { depth }`: automaton output [-1,1] modulates around `base`.
     pub fn with_control(mut self, strategy: ControlStrategy) -> Self {
         self.control = strategy;

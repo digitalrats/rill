@@ -5,7 +5,7 @@
 //! and `f64`. SIMD-accelerated batch processing is available via
 //! `process_incident_vector` methods on [`Resistor`], [`Capacitor`],
 //! [`Inductor`], and [`Diode`], plus the free function
-//! [`elements::process_batch_simd`].
+//! `elements::process_batch_simd`.
 //!
 //! ## Modules
 //! - `macros` — WDF eDSL macros for defining elements and filters
