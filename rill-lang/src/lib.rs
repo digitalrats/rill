@@ -12,9 +12,9 @@ pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
 pub mod error;
+pub mod graph_compiler;
 pub mod graph_engine;
 pub mod graph_ir;
-pub mod graph_lower;
 pub mod graph_optimize;
 pub mod ir;
 pub mod lexer;
@@ -26,6 +26,8 @@ pub mod program_runner;
 pub mod reduce;
 pub mod regalloc;
 pub mod register;
+pub mod render;
+pub mod runtime;
 pub mod schedule;
 pub mod serde_def;
 pub mod types;
@@ -82,59 +84,89 @@ pub fn compile_with<T: Transcendental>(
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
 
-/// Compile rill-lang source into an engine that supports [`SetParameter`]
-/// commands via mailbox for runtime parameter updates.
-///
-/// Main parameters are addressed by name directly. Where-block anchor
-/// parameters use the format `"anchor.param"` (dot-separated).
-///
-/// [`SetParameter`]: rill_core::queues::CommandEnum::SetParameter
-pub fn compile_graph<T: Transcendental>(
+/// Compile an already-parsed AST [`Program`] into a graph engine that supports SetParameter.
+pub fn compile_program<T: Transcendental, const BUF_SIZE: usize>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+) -> Result<graph_engine::CompiledGraphEngine<T, BUF_SIZE>, CompileError> {
+    let mut typed = types::infer::infer_program_with(program, registry)?;
+    typed.program = reduce::reduce(&typed.program);
+    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    validate_block_builtins(&ir)?;
+
+    use crate::graph_ir::{GraphIr, GraphNode};
+    let mut nodes: indexmap::IndexMap<String, GraphNode> = indexmap::IndexMap::new();
+    let params = ir.params.clone();
+    nodes.insert(
+        "main".to_string(),
+        GraphNode {
+            arity: (ir.num_inputs, ir.num_outputs),
+            ir,
+            params,
+            keep: false,
+            inline: false,
+            is_bridge: false,
+            feedback_read: vec![],
+            feedback_write: vec![],
+        },
+    );
+    let graph_ir = GraphIr {
+        inputs: 1,
+        outputs: 1,
+        nodes,
+        edges: vec![],
+        topo_order: vec!["main".to_string()],
+    };
+
+    let compiled = graph_compiler::compile::<T, BUF_SIZE>(&graph_ir, registry, sample_rate)
+        .map_err(CompileError::Unsupported)?;
+
+    let mailbox = Arc::new(Mailbox::new(64));
+    Ok(graph_engine::CompiledGraphEngine::new(compiled, mailbox))
+}
+
+/// Compile rill-lang source into a graph engine that supports SetParameter.
+pub fn compile_graph<T: Transcendental, const BUF_SIZE: usize>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<graph_engine::RillGraphEngine<T>, CompileError> {
-    use crate::graph_lower::{ScheduledGraph, Step};
-
+) -> Result<graph_engine::CompiledGraphEngine<T, BUF_SIZE>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
-
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
-    // regalloc::allocate(&mut ir);
     validate_block_builtins(&ir)?;
-    let prog = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
 
-    let n_params = prog.params_meta().len();
-
-    let mut step_input = Vec::new();
-    if prog.ir.num_inputs > 0 {
-        step_input.push(0u32 as usize); // buffer 0 = graph input
-    }
-
-    let schedule = ScheduledGraph {
-        inputs: prog.ir.num_inputs,
-        outputs: prog.ir.num_outputs,
-        steps: vec![Step::InlineProgram {
-            node_idx: 0,
-            input_bufs: step_input,
-            output_bufs: vec![0],
-            param_indices: (0..n_params).collect(),
-        }],
-        buffers: 1,
-        output_mapping: vec![0],
-        program_names: vec!["main".to_string()],
+    use crate::graph_ir::{GraphIr, GraphNode};
+    let mut nodes: indexmap::IndexMap<String, GraphNode> = indexmap::IndexMap::new();
+    nodes.insert(
+        "main".to_string(),
+        GraphNode {
+            arity: (ir.num_inputs, ir.num_outputs),
+            ir,
+            params: vec![],
+            keep: false,
+            inline: false,
+            is_bridge: false,
+            feedback_read: vec![],
+            feedback_write: vec![],
+        },
+    );
+    let graph_ir = GraphIr {
+        inputs: 1,
+        outputs: 1,
+        nodes,
+        edges: vec![],
+        topo_order: vec!["main".to_string()],
     };
 
-    let mailbox = Arc::new(Mailbox::new(64));
+    let compiled = graph_compiler::compile::<T, BUF_SIZE>(&graph_ir, registry, sample_rate)
+        .map_err(CompileError::Unsupported)?;
 
-    Ok(graph_engine::RillGraphEngine::new(
-        schedule,
-        vec![prog],
-        mailbox,
-        512,
-    ))
+    let mailbox = Arc::new(Mailbox::new(64));
+    Ok(graph_engine::CompiledGraphEngine::new(compiled, mailbox))
 }
 
 fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
@@ -164,4 +196,51 @@ fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ir_tests {
+    use super::*;
+
+    #[test]
+    fn lang_chiptune_ir_structure() {
+        use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
+
+        let mut registry = Registry::<f32>::new();
+        registry.register_block(
+            BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),
+            |_, _| panic!("not instantiated"),
+        );
+        // lofi: 1 signal in (from pipeline :), 1 out, 7 params
+        registry.register_block(
+            BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block),
+            |_, _| panic!("not instantiated"),
+        );
+
+        let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
+        let tokens = lexer::tokenize(src).unwrap();
+        let program = parser::parse(&tokens, src.as_bytes()).unwrap();
+        let mut typed = types::infer::infer_program_with(&program, &registry).unwrap();
+        typed.program = reduce::reduce(&typed.program);
+        let ir = lower::lower_with(&typed, &registry, 44100.0).unwrap();
+
+        eprintln!("=== DSL Ir for lang_chiptune ===");
+        eprintln!("num_inputs: {}", ir.num_inputs);
+        eprintln!("num_outputs: {}", ir.num_outputs);
+        eprintln!("num_regs: {}", ir.num_regs);
+        eprintln!("output_reg: {:?}", ir.output_reg);
+        for (i, bi) in ir.builtins.iter().enumerate() {
+            eprintln!(
+                "builtin[{i}]: name={}, kind={:?}, si={}, so={}, params={:?}, bindings={:?}",
+                bi.name, bi.kind, bi.signal_ins, bi.signal_outs, bi.params, bi.param_bindings
+            );
+        }
+        eprintln!(
+            "params: {:?}",
+            ir.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+        for (i, instr) in ir.instrs.iter().enumerate() {
+            eprintln!("instr[{i}]: {:?}", instr);
+        }
+    }
 }

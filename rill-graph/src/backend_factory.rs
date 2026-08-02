@@ -32,16 +32,6 @@ pub struct InputBundle {
     pub capture: Arc<dyn IoCapture>,
 }
 
-/// Full-duplex backend bundle.
-pub struct DuplexBundle {
-    /// The clock driver.
-    pub driver: Arc<dyn IoDriver>,
-    /// The capture (input) backend.
-    pub capture: Arc<dyn IoCapture>,
-    /// The playback (output) backend.
-    pub playback: Arc<dyn IoPlayback>,
-}
-
 /// Registry of named backend constructors with caching.
 #[derive(Clone)]
 pub struct BackendFactory {
@@ -115,21 +105,6 @@ impl BackendFactory {
         Ok(InputBundle {
             driver,
             capture: capture.ok_or_else(|| format!("backend '{name}' does not support input"))?,
-        })
-    }
-
-    /// Create a full-duplex backend.
-    pub fn create_duplex(
-        &mut self,
-        name: &str,
-        params: &HashMap<String, ParamValue>,
-    ) -> Result<DuplexBundle, String> {
-        let (driver, capture, playback) = self.get_or_create(name, params)?;
-        Ok(DuplexBundle {
-            driver,
-            capture: capture.ok_or_else(|| format!("backend '{name}' does not support input"))?,
-            playback: playback
-                .ok_or_else(|| format!("backend '{name}' does not support output"))?,
         })
     }
 

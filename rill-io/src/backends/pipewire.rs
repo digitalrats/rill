@@ -114,7 +114,6 @@ unsafe impl Sync for OutputWindowSlot {}
 pub struct PipewireBackend {
     config: AudioConfig,
     process_cb: CbSlot,
-    input_cb: CbSlot,
     xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     sample_pos: Arc<AtomicU64>,
@@ -148,7 +147,6 @@ impl PipewireBackend {
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
-            input_cb: CbSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             sample_pos: Arc::new(AtomicU64::new(0)),
@@ -177,21 +175,14 @@ impl PipewireBackend {
 // ============================================================================
 
 impl IoDriver for PipewireBackend {
-    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+    fn set_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.process_cb.set(cb);
         }
     }
 
-    fn set_input_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
-        unsafe {
-            self.input_cb.set(cb);
-        }
-    }
-
     fn run(&self, running: Arc<AtomicBool>) -> IoResult<()> {
         let process_cb = self.process_cb;
-        let input_cb = self.input_cb;
         let xruns = self.xruns.clone();
         let sample_rate = self.config.sample_rate;
         let out_channels = self.config.output_channels;
@@ -630,7 +621,6 @@ impl IoDriver for PipewireBackend {
                                     actual_channels,
                                     block_size,
                                 );
-                                input_cb.call(&tick);
                             }
                             offset += block_size;
                         }
@@ -741,7 +731,6 @@ impl Drop for PipewireBackend {
         self.running.store(false, Ordering::Release);
         unsafe {
             self.process_cb.drop_box();
-            self.input_cb.drop_box();
         }
     }
 }

@@ -8,12 +8,14 @@
 
 pub mod eq;
 pub mod mixer;
+pub mod pan;
 
 pub use rill_core::traits::ParamValue;
 pub use rill_core_dsp::filters::{Filter, FilterType};
 
 pub use eq::{log_spaced_frequencies, BandType, EqBand, FilterFactory, GraphicEq};
 pub use mixer::{ChannelConfig, ChannelMode, ChannelState, SendType};
+pub use pan::{MonoToStereo, PanLaw};
 
 /// Register graph nodes and lang builtins for router (EQ, mixer).
 pub mod register;

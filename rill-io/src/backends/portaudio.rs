@@ -95,7 +95,7 @@ impl PortAudioBackend {
 // ============================================================================
 
 impl IoDriver for PortAudioBackend {
-    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+    fn set_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.process_cb.set(cb);
         }

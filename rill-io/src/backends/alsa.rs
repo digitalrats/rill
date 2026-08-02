@@ -2,11 +2,7 @@
 //!
 //! `run()` drives the graph on the audio thread: it waits on the device with
 //! `snd_pcm_wait` (event-driven — no `thread::sleep`), and once a period is
-//! ready fires the rill process callbacks in order — the capture chain
-//! (`set_input_process_callback`) then the playback chain
-//! (`set_process_callback`) — mirroring the split-chain model of the other
-//! callback-driven backends (PipeWire/JACK). For output-only or input-only
-//! graphs only the single relevant callback is registered.
+//! ready fires the process callback to drive the signal graph.
 //!
 //! Zero-copy: playback writes directly into the period buffer through
 //! `OutputWindow`; capture exposes the just-read period to `read_input` through
@@ -96,7 +92,6 @@ unsafe impl Sync for InputWindowSlot {}
 pub struct AlsaBackend {
     config: AudioConfig,
     process_cb: CbSlot,
-    input_cb: CbSlot,
     output_slot: OutputSlot,
     input_window: InputWindowSlot,
     xruns: Arc<AtomicU32>,
@@ -119,7 +114,6 @@ impl AlsaBackend {
         Ok(Self {
             config,
             process_cb: CbSlot::new(),
-            input_cb: CbSlot::new(),
             output_slot: OutputSlot::new(),
             input_window: InputWindowSlot::new(),
             xruns: Arc::new(AtomicU32::new(0)),
@@ -136,7 +130,6 @@ impl AlsaBackend {
 #[allow(clippy::too_many_arguments)]
 fn alsa_io_loop(
     process_cb: CbSlot,
-    input_cb: CbSlot,
     output_slot: OutputSlot,
     input_window: &InputWindowSlot,
     xruns: Arc<AtomicU32>,
@@ -292,7 +285,6 @@ fn alsa_io_loop(
         // only `process_cb` is registered and runs the whole graph. Calling both
         // is correct either way — an unset callback is a no-op.
         unsafe {
-            input_cb.call(&tick);
             process_cb.call(&tick);
             output_slot.clear();
             input_window.clear();
@@ -377,15 +369,9 @@ fn configure_pcm(pcm: &PCM, channels: u32, config: &AudioConfig) -> IoResult<(u3
 // ============================================================================
 
 impl IoDriver for AlsaBackend {
-    fn set_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
+    fn set_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
         unsafe {
             self.process_cb.set(cb);
-        }
-    }
-
-    fn set_input_process_callback(&self, cb: Box<dyn FnMut(&ClockTick)>) {
-        unsafe {
-            self.input_cb.set(cb);
         }
     }
 
@@ -393,7 +379,6 @@ impl IoDriver for AlsaBackend {
         self.running.store(true, Ordering::Release);
         alsa_io_loop(
             self.process_cb,
-            self.input_cb,
             self.output_slot.clone(),
             &self.input_window,
             self.xruns.clone(),
@@ -462,7 +447,6 @@ impl Drop for AlsaBackend {
         self.running.store(false, Ordering::Release);
         unsafe {
             self.process_cb.take_box();
-            self.input_cb.take_box();
         }
     }
 }

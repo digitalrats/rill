@@ -107,7 +107,8 @@ impl<T: Transcendental> BlockBuiltin<T> for ConvolverBuiltin<T> {
 /// Register FFT processing builtins in the rill-lang registry.
 pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("spectralgate", 1, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("spectralgate", 1, 1, 2, BuiltinKind::Block)
+            .with_names(vec!["threshold", "ratio"]),
         |p, _sr| {
             let mut gate = crate::effects::spectral_gate::SpectralGate::<T, 64>::new();
             gate.set_threshold(T::from_f64(p[0]));
@@ -116,7 +117,8 @@ pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("spectraldelay", 1, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("spectraldelay", 1, 1, 2, BuiltinKind::Block)
+            .with_names(vec!["mix", "feedback"]),
         |p, _sr| {
             let mut delay = crate::effects::spectral_delay::SpectralDelay::<T, 64, 16>::new();
             delay.set_mix(p[0] as f32);
@@ -125,7 +127,8 @@ pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         },
     );
     reg.register_block(
-        BuiltinSig::simple("convolver", 1, 1, 2, BuiltinKind::Block),
+        BuiltinSig::simple("convolver", 1, 1, 2, BuiltinKind::Block)
+            .with_names(vec!["ir_gain", "mix"]),
         |p, _sr| {
             let ir_gain = p[0] as f32;
             let mix = p[1] as f32;

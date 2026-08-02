@@ -1,3 +1,4 @@
+use rill_core::buffer::FixedBuffer;
 use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
 
@@ -39,17 +40,17 @@ impl MixerConfig {
 }
 
 /// Runtime state for the mixer.
-pub struct MixerState<T: Transcendental> {
+pub struct MixerState<T: Transcendental, const BUF_SIZE: usize> {
     config: MixerConfig,
     current_vols: Vec<T>,
     current_pans: Vec<T>,
     current_master_vol: T,
-    bus_buffers: Vec<Vec<T>>,
+    bus_buffers: Vec<FixedBuffer<T, BUF_SIZE>>,
 }
 
-impl<T: Transcendental> MixerState<T> {
-    /// Create mixer state from config, pre-allocating bus buffers of `buf_size`.
-    pub fn new(config: MixerConfig, buf_size: usize) -> Self {
+impl<T: Transcendental, const BUF_SIZE: usize> MixerState<T, BUF_SIZE> {
+    /// Create mixer state from config.
+    pub fn new(config: MixerConfig) -> Self {
         let n_bus = config.num_buses;
         Self {
             current_vols: config
@@ -63,7 +64,7 @@ impl<T: Transcendental> MixerState<T> {
                 .map(|&v| T::from_f64(v))
                 .collect(),
             current_master_vol: T::from_f64(config.master_vol),
-            bus_buffers: vec![vec![T::ZERO; buf_size]; n_bus],
+            bus_buffers: vec![FixedBuffer::new(); n_bus],
             config,
         }
     }
@@ -144,7 +145,7 @@ impl<T: Transcendental> MixerState<T> {
         }
 
         for bus in 0..n_bus {
-            outputs[2 + bus].copy_from_slice(&self.bus_buffers[bus]);
+            outputs[2 + bus].copy_from_slice(self.bus_buffers[bus].as_slice());
         }
 
         Ok(())
@@ -158,7 +159,7 @@ mod tests {
     #[test]
     fn mixer_silence_produces_silence() {
         let config = MixerConfig::new(2, 1);
-        let mut state = MixerState::<f32>::new(config, 4);
+        let mut state = MixerState::<f32, 4>::new(config);
         let inputs: &[&[f32]] = &[&[0.0; 4], &[0.0; 4]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];
@@ -175,7 +176,7 @@ mod tests {
         let mut config = MixerConfig::new(1, 0);
         config.channel_vols = vec![1.0];
         config.smoothing = 0.0;
-        let mut state = MixerState::<f32>::new(config, 4);
+        let mut state = MixerState::<f32, 4>::new(config);
         let inputs: &[&[f32]] = &[&[2.0; 4]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];
@@ -189,7 +190,7 @@ mod tests {
     fn mixer_mute_silences_channel() {
         let mut config = MixerConfig::new(1, 0);
         config.channel_mutes = vec![true];
-        let mut state = MixerState::<f32>::new(config, 4);
+        let mut state = MixerState::<f32, 4>::new(config);
         let inputs: &[&[f32]] = &[&[1.0; 4]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];
@@ -203,7 +204,7 @@ mod tests {
         let mut config = MixerConfig::new(1, 1);
         config.sends = vec![vec![(0, 0.5, true)]];
         config.smoothing = 0.0;
-        let mut state = MixerState::<f32>::new(config, 4);
+        let mut state = MixerState::<f32, 4>::new(config);
         let inputs: &[&[f32]] = &[&[2.0; 4]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];
@@ -219,7 +220,7 @@ mod tests {
         config.channel_vols = vec![1.0];
         config.channel_pans = vec![-1.0];
         config.smoothing = 0.0;
-        let mut state = MixerState::<f32>::new(config, 4);
+        let mut state = MixerState::<f32, 4>::new(config);
         let inputs: &[&[f32]] = &[&[1.0; 4]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];

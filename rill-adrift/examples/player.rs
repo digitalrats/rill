@@ -1,4 +1,4 @@
-//! Load config from TOML, compile a signal graph via rill-lang DSL, and play.
+//! Load config from TOML, compile a signal graph via rill-lang DSL, and play a WAV.
 //!
 //! Usage:
 //!   cargo run --example player --features "io,lang,sampler,serialization" [backend] [wav]
@@ -9,9 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rill_adrift::registration;
-use rill_adrift::rill_core::traits::ParamValue;
+use rill_adrift::rill_core::{
+    queues::{CommandEnum, SetParameter, SignalOrigin},
+    traits::{ParamValue, ParameterId, SignalSlab},
+};
 use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
 use rill_lang::program_runner::ProgramRunner;
+use rill_lang::runtime::Runtime;
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone)]
@@ -44,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|a| !a.starts_with("--"))
         .collect();
 
-    let (backend_arg, _wav_arg): (Option<&str>, Option<&str>) = match positional.len() {
+    let (backend_arg, wav_arg): (Option<&str>, Option<&str>) = match positional.len() {
         0 => (None, None),
         1 => {
             let v = positional[0].as_str();
@@ -63,10 +67,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let running = Arc::new(AtomicBool::new(true));
 
     let audio_backend = backend_name.clone();
+    let wav_path = wav_arg.map(ToString::to_string);
+
     let t_run = running.clone();
 
     let signal_thread = std::thread::spawn(move || {
-        // Create I/O backend
         let mut bf = BackendFactory::new();
         registration::register_backends(&mut bf);
         let mut be_params = HashMap::new();
@@ -77,14 +82,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .create_output(&audio_backend, &be_params)
             .expect("create output backend");
 
-        // Compile rill-lang DSL: pass-through identity.
-        let reg = rill_adrift::lang_builtins::full_registry::<f32>();
-        let src = "main = _";
+        let slab: Option<Arc<SignalSlab>> =
+            wav_path
+                .as_ref()
+                .and_then(|path| match rill_adrift::sampler::wav::load_slab(path) {
+                    Ok(s) => {
+                        eprintln!("SamplePlayer: loaded {path}");
+                        Some(Arc::new(s))
+                    }
+                    Err(e) => {
+                        eprintln!("SamplePlayer: could not load {path}: {e}");
+                        None
+                    }
+                });
+
+        let reg = rill_adrift::lang_builtins::full_registry_f32();
+        let src = "main = sampler 1.0 1.0 1.0 0.0 ?source";
         let engine =
-            rill_lang::compile_graph::<f32>(src, &reg, cfg.sample_rate).expect("compile DSL");
-        let mut runner = ProgramRunner::new(engine, None, cfg.block_size);
-        runner.wire_backends(None, Some(playback));
-        runner.run_with_driver(driver, t_run).ok();
+            rill_lang::compile_graph::<f32, 256>(src, &reg, cfg.sample_rate).expect("compile DSL");
+        let runner = ProgramRunner::new(engine, None);
+        let handle = runner.handle();
+
+        if let Some(ref s) = slab {
+            let sp = SetParameter::new(
+                "".into(),
+                ParameterId::new("source").unwrap(),
+                ParamValue::SignalSlab(s.clone()),
+                SignalOrigin::Manual,
+            );
+            handle.send(CommandEnum::SetParameter(sp));
+        }
+        drop(slab);
+
+        Runtime::launch::<256>(driver, None, Some(playback), runner, t_run).ok();
     });
 
     let signal_input = std::thread::spawn({
@@ -98,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    println!("Playing graph through {backend_name} backend. Press Enter to stop.");
+    println!("Playing WAV through {backend_name} backend. Press Enter to stop.");
     signal_input.join().ok();
     signal_thread.join().ok();
     println!("Stopped.");

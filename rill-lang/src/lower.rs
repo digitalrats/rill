@@ -174,6 +174,29 @@ impl<'a> Lowerer<'a> {
                                         continue;
                                     }
                                 }
+                                if let Expr::ActorParam {
+                                    name,
+                                    default,
+                                    span,
+                                } = &call_args[param_pos]
+                                {
+                                    let default_val = if let Some(d) = default {
+                                        const_f64(d).unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let idx = self.intern_param(
+                                        name.clone(),
+                                        default_val,
+                                        f64::NEG_INFINITY,
+                                        f64::INFINITY,
+                                        *span,
+                                    )?;
+                                    param_values.push(0.0);
+                                    param_bindings.push((param_values.len() - 1, idx));
+                                    param_pos += 1;
+                                    continue;
+                                }
                                 let v = const_f64(&call_args[param_pos]).ok_or_else(|| {
                                     CompileError::Type {
                                         msg: format!(

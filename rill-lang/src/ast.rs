@@ -2,8 +2,12 @@
 
 use crate::error::Span;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 /// Binary block-diagram combinators and arithmetic operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum BinOp {
     /// `:` sequential composition.
     Seq,
@@ -31,6 +35,7 @@ pub enum BinOp {
 
 /// A rill-lang expression node.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Expr {
     /// Integer literal.
     Int(i64, Span),
@@ -113,6 +118,7 @@ impl Expr {
 
 /// A parameter declaration.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Param {
     /// Parameter name.
     pub name: String,
@@ -122,6 +128,7 @@ pub struct Param {
 
 /// A definition — top-level, `where`-block, or `let`-block.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Def {
     /// `name p1 p2 = body` — an anchor with parameters.
     Anchor {
@@ -186,6 +193,7 @@ impl Def {
 /// A whole program: a list of mutually-recursive definitions.
 /// Exactly one must be named `main`.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Program {
     /// Top-level definitions.
     pub defs: Vec<Def>,

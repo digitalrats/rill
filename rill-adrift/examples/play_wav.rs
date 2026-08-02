@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal_thread = std::thread::spawn(move || {
         let player = RefCell::new(player);
         let block_buf = RefCell::new(vec![0.0f32; 512]);
-        driver.set_process_callback(Box::new(move |tick: &ClockTick| {
+        driver.set_callback(Box::new(move |tick: &ClockTick| {
             let n = tick.samples_since_last as usize;
             let mut buf = block_buf.borrow_mut();
             let buf_slice = &mut buf[..n];
