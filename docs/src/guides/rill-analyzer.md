@@ -24,7 +24,7 @@ The binary supports three operating modes:
 rill-analyzer run graph.json
 ```
 
-Loads a serialized graph, creates a `RillGraphEngine`, and opens an interactive REPL. The debugger runs in the same process — signals, commands, and probe data all flow through inter-thread channels.
+Loads a serialized graph, creates a `CompiledGraphEngine`, and opens an interactive REPL. The debugger runs in the same process — signals, commands, and probe data all flow through inter-thread channels.
 
 Options:
 - `--no-repl` — only log telemetry, no interactive prompt

@@ -145,7 +145,7 @@ these ways:
 
 - **Tone frequency:** Formula correct (`f_clock / (16 × TP)`), phase accumulator preserves
   fractional remainder → no long-term drift. Frequency accuracy ≈ 0.05% at 44100 Hz.
-- **Envelope timing:** Formula correct (`f_clock / (256 × EP)`, fixed in 0.6.0-M1).
+- **Envelope timing:** Formula correct (`f_clock / (256 × EP)`, fixed in 0.6.0-M2).
   Envelope steps are discrete (16 per cycle), exact transition times depend on sample rate.
 - **Noise timing:** Formula correct (`f_clock / (16 × NP)`). Output bit sampled at audio rate
   without bandlimiting → aliasing folds high-frequency noise into audible range.

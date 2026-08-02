@@ -1,52 +1,56 @@
 # rill-graph
 
-Static DAG signal graph — topology and port connections only.
-Processing is driven by `Port::propagate` (not an external engine).
+Static DAG signal graph builder and serializable graph format.
+Processing is driven by `rill-lang`'s `CompiledGraphEngine` — this crate
+provides topology description only, not an execution engine.
 
 ## Key components
 
-- **`Graph`** — immutable DAG container, topology is fixed at build time
-- **`GraphBuilder`** — the only way to build a graph (`Source` → `Processor` → `Sink`),
-  fills `downstream_input_ptrs`, `parent`, `upstream_buffer` for zero-copy routing
-- **Kahn's algorithm** — topological sort with cycle detection
-- **`Port::propagate`** — recursive signal propagation:
-  1. Copy data to downstream input ports (skipped for zero-copy `upstream_buffer` ports)
-  2. Run port algorithm (`run_action`)
-  3. Call `pre_process` (feedback mix)
-  4. Call the downstream node's `process_block` (`generate`/`process`/`consume`)
-  5. `snapshot_feedback` on output ports
-  6. Recurse through output ports' `downstream_input_ptrs`
-- **Zero-copy routing** — 1:1 and fan-out connections read directly from upstream
-  output buffer via `upstream_buffer`. Copy only for fan-in and feedback.
-- **Hard-RT safe** — no heap allocations, no locks, no syscalls in the
-  signal path. All `Port::propagate` data structures are pre-allocated at
-  graph construction time (`downstream_nodes`, `downstream_input_ptrs`).
-  Communication with the control thread is exclusively through the graph
-  actor mailbox (`ActorRef<CommandEnum>`, lock-free `MpscQueue`).
-- **SIMD-friendly** — fixed buffer position in memory for the graph's lifetime
-- **Port routing** — connections and feedback buffers live on ports
-- **Feedback support** — `port.pre_process` / `port.snapshot_feedback`
-- **Port types** — `Signal`, `Control`, `Clock`, `Feedback`, `Param`
+- **`GraphBuilder<T, BUF_SIZE>`** — mutable builder: `add_node()`, `connect_signal/control/clock/feedback()`, `add_resource()`, `build_ir()`
+- **`GraphResource`** — named shared resource (tape loop, buffer) referenced by node parameters
+- **`BuildError`** — error type for graph construction (cycle detection, unknown node types)
+- **`GraphDef` / `NodeDef`** — serializable graph topology (JSON/CBOR, behind `serialization` feature)
+- **`build_ir(registry)`** — produces `rill_lang::graph_ir::GraphIr`, compiled by `graph_compiler::compile()` into `CompiledGraphEngine`
 
-## Top-level processing entry point
+## Public API
 
-`ProcessingState::process_block(&tick)` drains the graph actor mailbox
-(applying `SetParameter` writes — sample-accurate ones, carrying `sample_pos`,
-are applied during the 256-sample block that contains their target position),
-calls `Source::generate`, then `Port::propagate` to cascade through the DAG.
-The graph runs entirely inside the backend process callback and adopts the
-sample rate carried by each `ClockTick`.
+```rust
+use rill_graph::GraphBuilder;
 
-## Dependencies
+const BUF_SIZE: usize = 256;
+let mut builder: GraphBuilder<f32, BUF_SIZE> = GraphBuilder::new();
 
-- `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`
+// Add nodes by type name
+let osc = builder.add_node("rill/sinosc", &[("freq", 440.0)].into());
+let lpf = builder.add_node_with_name("rill/lpf", &[("cutoff", 800.0)].into(), 1, "filter");
+let out = builder.add_node("rill/output", &[].into());
 
-### Debug infrastructure (`debug` feature)
+// Wire connections
+builder.connect_signal(osc, 0, lpf, 0);
+builder.connect_signal(lpf, 0, out, 0);
+
+// Compile via rill-lang
+let engine = builder.build_ir(&registry, 44100.0)?;
+```
+
+## Hard-RT safe
+
+`rill-graph` itself performs no heap allocation or syscalls — it's a pure
+builder and topology description. The runtime execution (shared `FixedBuffer`
+pool, flat `NodeClosure` vector) runs in `rill-lang`'s `CompiledGraphEngine`
+with zero allocation on the signal path.
+
+## Debug infrastructure (`debug` feature)
 
 - `build_ir()` automatically inserts `ProbePoint` IR instructions at each node's
   output, enabling signal-level inspection via `rill-analyzer`
 - Compiles graph nodes to complete `rill_lang::Ir` with builtins, params, and
   instructions — mirrors the rill-lang DSL compilation path
+
+## Dependencies
+
+- `rill-core` — `Registry`, `BuiltinSig`, `Params`
+- `rill-lang` — `GraphIr`, `graph_compiler::compile()`, `CompiledGraphEngine`
 
 ## Links
 

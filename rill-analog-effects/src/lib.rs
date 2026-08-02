@@ -1,4 +1,4 @@
-//! Analog circuit models — tape decks, preamps.
+//! Analog circuit models — cassette deck, tape bridge/delay.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]

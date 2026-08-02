@@ -2,7 +2,9 @@
 //!
 //! This crate provides an immutable signal graph with static topology.
 //! Build once with `GraphBuilder`. The graph is a pure topology description
-//! — processing is driven by `rill-lang`'s scheduled graph engine.
+//! — `build_ir()` produces a [`rill_lang::graph_ir::GraphIr`], which
+//! `rill-lang`'s [`rill_lang::graph_compiler::compile`] transforms into a
+//! [`rill_lang::graph_engine::CompiledGraphEngine`] for execution.
 //!
 //! ## Key Features
 //!
