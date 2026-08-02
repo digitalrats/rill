@@ -1,209 +1,219 @@
 # Signal graph (rill-graph)
 
-Static DAG signal graph — topology and port connections only.
-Processing is driven by `Port::propagate`.
-
-> ⚠️ **Deprecated**: `ProcessingState` and `Port::propagate` are the legacy execution engine.
-> The recommended path is `GraphBuilder::build_ir()` → `GraphIr` → `RillGraphEngine`
-> via the `lang` feature in `rill-graph`. See the [execution unification spec](../../docs/execution-unification.md) for details.
+`rill-graph` provides a static DAG signal graph builder and a serializable graph format.
+Processing is handled by `rill-lang`'s `CompiledGraphEngine` — `rill-graph` itself is a pure
+topology description, not an execution engine.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      GraphBuilder                        │
-│  add_source() → idx  add_processor() → idx              │
-│  add_sink() → idx    connect_signal(from, to)           │
-│  connect_feedback(from, to)                              │
-│                                                          │
-│  build()       → Graph → ProcessingState  (old path)    │
-│  build_ir(r)   → GraphIr → RillGraphEngine  (new path)  │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      GraphBuilder<T, BUF_SIZE>               │
+│  add_node(type, params) → idx                               │
+│  add_node_with_name(type, params, id, name) → idx            │
+│  connect_signal(from_n, from_p, to_n, to_p)                  │
+│  connect_control(from_n, from_p, to_n, to_p)                 │
+│  connect_feedback(from_n, from_p, to_n, to_p)                │
+│  add_resource(GraphResource)                                 │
+│  add_routing_entry(idx, from, to, gain)                      │
+│                                                              │
+│  build_ir(registry) → GraphIr                                │
+│      │                                                       │
+│      ▼                                                       │
+│  graph_compiler::compile() → CompiledGraph                   │
+│      │                                                       │
+│      ▼                                                       │
+│  CompiledGraphEngine<T, BUF_SIZE>  (in rill-lang)            │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### Two build paths
+### Nodes
 
-`GraphBuilder` supports two execution paths, controlled by the `lang` feature:
+All nodes are added through a unified `add_node` API — there are no separate
+`add_source`/`add_processor`/`add_sink` methods. The `type_name` string
+determines the node kind (matched against the built-in registry at `build_ir` time).
 
-**Old path** (`build()`, gated behind `not(lang)`): Constructs nodes from
-`NodeFactory`, wires port pointer connections, performs Kahn topological sort,
-and produces an immutable `Graph` container. The runtime `ProcessingState` is
-extracted via `into_processing_state()` and driven by the I/O callback with
-`process_block()`.
+```rust
+use rill_graph::GraphBuilder;
 
-**New path** (`build_ir(registry)`, gated behind `lang`): Looks up each node
-type in the `Registry`, produces a `GraphIr` (language-agnostic typed IR — see
-`rill-lang/src/graph_ir.rs`). The IR is then optimized (`inline_graph` —
-dead-code elimination, inlining, merge), lowered to a `ScheduledGraph`
-(register-allocation-style buffer assignment), and executed by `RillGraphEngine`
-with a pre-allocated buffer pool. This path bypasses `NodeFactory`, `ProcessingState`,
-and `Port::propagate` entirely.
+const BUF_SIZE: usize = 256;
+let mut builder = GraphBuilder::<f32, BUF_SIZE>::new();
+
+// Add nodes by their registry type name
+let osc = builder.add_node("rill/sinosc", &[("freq", 440.0)].into());
+let lpf = builder.add_node_with_name("rill/lpf", &[("cutoff", 800.0)].into(), 1, "filter");
+let out = builder.add_node("rill/output", &[].into());
+```
+
+### Connections
+
+Edges connect `(node_idx, port_idx)` pairs. Four edge kinds are supported:
+
+| Kind | Purpose |
+|------|---------|
+| `connect_signal` | Forward signal flow — included in topological sort |
+| `connect_control` | Modulation values (e.g. LFO → filter cutoff) |
+| `connect_clock` | Timing signals (MIDI clock, transport) |
+| `connect_feedback` | Feedback loops — excluded from topological sort, implicit 1-sample delay |
+
+```rust
+builder.connect_signal(osc, 0, lpf, 0);    // osc output → lpf input
+builder.connect_signal(lpf, 0, out, 0);    // lpf output → output
+```
+
+### Resources
+
+Named resources (tape loops, shared buffers) can be registered and referenced
+by node parameters:
+
+```rust
+builder.add_resource(GraphResource {
+    name: "tape_0".into(),
+    kind: "tape".into(),
+    capacity: 48000,
+});
+```
+
+### Compilation pipeline
+
+`build_ir(registry)` converts the builder's internal representation into a `GraphIr`
+(rill-lang's multi-node intermediate representation):
+
+1. **Node lookup** — each recipe's `type_name` is resolved in the `Registry`
+2. **Topological sort** — Kahn's algorithm on signal edges; cycles are rejected
+3. **Built-in compilation** — each node's built-in is compiled to an `Ir` (single-node program)
+4. **Optimization** — dead-edge elimination, constant inlining, parallel node merging
+   (`rill-lang/src/graph_optimize.rs`)
+5. **Compiler** — `graph_compiler::compile()` flattens `GraphIr` into a `CompiledGraph`
+   with a fixed-size `FixedBuffer` pool and ordered `NodeClosure` vector
+
+The resulting `CompiledGraphEngine` implements both `Algorithm<T>` (SISO) and
+`MultichannelAlgorithm<T>` (MIMO). It runs nodes in topological order with zero
+heap allocation on the signal path.
 
 ### Per-crate registration
 
 Each DSP crate provides a `register_lang_builtins<T>(&mut Registry<T>)`
-function that self-sufficiently registers all its built-in functions.
-`rill-adrift::lang_builtins::full_registry()` aggregates them into
-a single registry — it is a thin aggregator with no built-in logic
-of its own.
+function that registers all its built-in node types:
 
 ```rust
 use rill_core::builtin::Registry;
 use rill_adrift::lang_builtins::full_registry;
 
-let reg: Registry<f32> = full_registry();
+let mut reg: Registry<f32> = full_registry();
 // reg now contains all DSP, router, effects, FFT, analog, sampler builtins
 ```
 
 Node types are registered by their type-name string (e.g. `"rill/lpf"`, `"rill/gain"`)
-with per-sample or whole-buffer kind, typed parameter signatures (`ParamType::Signal`,
-`ParamType::Float`, `ParamType::Record(RecordSchema)`, etc.), and factory closures.
+with typed parameter signatures and factory closures.
 
-### Backend ownership
+### Actor interface
 
-Backends are created **externally** by the orchestrator, not inside
-graph nodes.  The `GraphBuilder` no longer holds a `BackendFactory`.
+`CompiledGraphEngine::handle()` returns an `ActorRef<CommandEnum>`. Control-side
+code sends `CommandEnum::SetParameter` through this handle:
 
-1. The orchestrator creates a backend via `BackendFactory::create_output()` /
-   `create_input()` / `create_duplex()`, obtaining `IoDriver`, `IoCapture`,
-   `IoPlayback` capability objects
-2. `ProcessingState` is extracted from the `Graph` via `into_processing_state()`
-3. `state.wire_backends(capture, playback)` injects backends into Source / Sink nodes
-4. The orchestrator runs the graph through the driver:
+```rust
+use rill_core::queues::CommandEnum;
+use rill_core::traits::ParamValue;
 
-```rust,ignore
-let OutputBundle { driver, playback } = bf.create_output(name, &params)?;
-let mut state = graph.into_processing_state();
-state.wire_backends(None, Some(playback));
-state.run_with_driver(driver, running)?;
+engine.handle().send(CommandEnum::SetParameter(SetParameter {
+    anchor: "filter".into(),
+    parameter: "cutoff".into(),
+    value: ParamValue::Float(2000.0),
+    port: String::new(),
+    source: SignalOrigin::Manual,
+    timestamp: 0,
+    sample_pos: None,
+})).unwrap();
 ```
 
-`run_with_driver()` internally calls `set_process_callback` + `run` + parks until stopped.
-
-### Processing flow (old path)
-
-`ProcessingState::process_block(&tick)`:
-1. Adopt `tick.sample_rate` — re-`init` all nodes if it differs from the rate
-   they were built with (the graph has no clock of its own; it runs at whatever
-   rate the backend's `ClockTick` carries — e.g. JACK at 48 kHz)
-2. `actor.drain()` — queues/applies `SetParameter` commands
-3. Apply sample-accurate parameter changes due for this 256-sample block
-   (writes carrying `sample_pos`; writes without one are applied immediately)
-4. Creates `RenderContext` from the tick
-5. `source.process_block(&ctx, &tick)` — fills output ports
-6. `Port::propagate()` — recursive DAG traversal
-
-### Processing flow (new path — `RillGraphEngine`)
-
-`RillGraphEngine::process_tick()` executes a `ScheduledGraph` — a linear
-schedule of `Step` variants — over a pre-allocated buffer pool:
-
-| Step | Purpose |
-|------|---------|
-| `InlineProgram { node_idx, input_bufs, output_bufs }` | Execute a compiled `RillProgram` (implements both `Algorithm<T>` and `MultichannelAlgorithm<T>`) |
-| `BufferCopy { from, to, gain, add }` | Copy or accumulate between buffer slots (fan-out / fan-in) |
-| `ReadDelay { slot, target }` | Read previous tick's feedback value |
-| `WriteDelay { source, slot }` | Save current buffer for next tick's feedback |
-| `ReadFeedback { name, target_buf }` | Mix named feedback buffer into sub-engine buffer (duplex only) |
-| `WriteFeedback { name, source_buf }` | Capture sub-engine output into feedback buffer (duplex only) |
-
-Parameter routing uses `SetParameter.anchor` (the schedule's `program_names`
-entry) for O(1) lookup into the correct program's param map.
-
-`send_clock_tick(&tick)` forwards the `ClockTick` to the rack actor (gated by
-`tick.is_final`). Chunking backends (PipeWire, JACK) leave `is_final = true` on
-every `block_size` chunk, so control modules receive **one tick per block**;
-sample-accurate placement of their resulting parameter writes is handled by
-`SetParameter.sample_pos` + `ClockTick.io_quantum`, not by coalescing ticks.
+The engine drains its mailbox at the start of each `process()` call, applying
+parameter changes before processing the current block.
 
 ## Serialized graphs (GraphDef)
 
+Graph topology can be serialized to JSON or CBOR via the `serialization` feature:
+
 ```rust
+use rill_graph::serialization::{GraphDef, NodeDef, SourceDef, ConnectionDef, SignalKind};
+
 let def = GraphDef {
+    format_version: "rill/1".into(),
+    sample_rate: 44100.0,
+    block_size: 256,
+    resources: vec![],
+    description: None,
     nodes: vec![
-        NodeDef {
+        NodeDef::Source(SourceDef {
             id: 0,
-            type_name: "rill/lofi_input",
-            backend: Some("ay38910".into()),
-            parameters: [("bit_depth", ParamValue::Int(8))].into(),
-        },
-        NodeDef {
+            name: Some("osc".into()),
+            type_name: "rill/sinosc".into(),
+            parameters: [("freq", ParamValue::Float(440.0))].into(),
+        }),
+        NodeDef::Processor(ProcessorDef {
             id: 1,
-            type_name: "rill/output",
-            backend: None,  // nodes can optionally reference backends by name
-            parameters: [("channels", ParamValue::Float(1.0))].into(),
-        },
+            name: Some("filter".into()),
+            type_name: "rill/lpf".into(),
+            parameters: [("cutoff", ParamValue::Float(800.0))].into(),
+        }),
+        NodeDef::Sink(SinkDef {
+            id: 2,
+            name: Some("out".into()),
+            type_name: "rill/output".into(),
+            parameters: [].into(),
+        }),
     ],
     connections: vec![
-        ConnectionDef { kind: Signal, from_node: 0, from_port: 0, to_node: 1, to_port: 0 },
+        ConnectionDef {
+            from_node: 0, from_port: 0,
+            to_node: 1, to_port: 0,
+            kind: SignalKind::Signal,
+        },
+        ConnectionDef {
+            from_node: 1, from_port: 0,
+            to_node: 2, to_port: 0,
+            kind: SignalKind::Signal,
+        },
     ],
 };
 def.populate(&mut builder)?;
-let graph = builder.build()?;
+let engine = builder.build_ir(&reg, sample_rate)?;
 ```
 
-## Actor interface
-
-The graph spawns an inline actor (`Actor<CommandEnum>`) whose handler applies
-parameter changes to nodes. Control-side code sends `CommandEnum::SetParameter`
-through `ActorRef<CommandEnum>` obtained from `graph.handle()`:
-
-```rust
-// Simplified graph actor handler (rill-graph/src/graph.rs)
-system.spawn("graph", move |msg: CommandEnum| {
-    if let CommandEnum::SetParameter(param) = msg {
-        if param.sample_pos.is_some() {
-            pending.borrow_mut().push(param);      // sample-accurate: defer
-        } else {
-            let idx = param.port.node_id().inner() as usize;
-            nodes[idx].set_parameter(&param.parameter, param.value); // ASAP
-        }
-    }
-});
-```
-
-The mailbox is drained from the process callback via
-`ProcessingState::process_block()`, which then applies any deferred
-sample-accurate writes due for the current block.
-
-## Key components
-
-| Component | Purpose |
-|-----------|---------|
-| `GraphBuilder` | Mutable builder: nodes and connections; `build()` (old path) or `build_ir(registry)` (new path) |
-| `Graph` | Immutable DAG container (old path); `into_processing_state()` extracts runtime state |
-| `ProcessingState` | Runtime processor (old path): `process_block()`, `send_clock_tick()` |
-| `GraphDef` | Serializable graph topology (nodes + connections) |
-| `NodeDef` | Node in a serialized graph: type, params, optional backend name |
-| `Port` | Owns buffer, downstream routes, and feedback state (old path) |
-| `GraphIr` | Language-agnostic typed IR for multi-node graphs (new path — `rill-lang/src/graph_ir.rs`) |
-| `ScheduledGraph` | Linear execution schedule with buffer pool (new path — `rill-lang/src/graph_lower.rs`) |
-| `RillGraphEngine` | Buffer pool executor running `ScheduledGraph` steps; implements `Algorithm<T>` and `MultichannelAlgorithm<T>` (new path) |
-| `DuplexSchedule` | Split schedule for bridge graphs: left/right `ScheduledGraph` + feedback names (new path) |
+`NodeDef` is an enum with four variants: `Source(SourceDef)`, `Processor(ProcessorDef)`,
+`Router(RouterDef)`, `Sink(SinkDef)`.
 
 ## Bridge and feedback
 
-Graph nodes carry `is_bridge`, `feedback_read`, and `feedback_write` annotations
-on `GraphNode`. A bridge node splits the graph into left (recording) and right
-(playback) sub-graphs. `lower_duplex()` produces a `DuplexSchedule` with embedded
-`ReadFeedback`/`WriteFeedback` steps.
-
-`RillGraphEngine::process_tick()` runs a **5-phase tick** for duplex graphs:
-1. ReadFeedback — copy named feedback buffers into sub-engine buffer inputs
-2. process_left — execute left sub-graph, then `bridge.process_left(inputs)`
-3. process_right — `bridge.process_right(outputs)`, then execute right sub-graph
-4. WriteFeedback — capture sub-engine outputs into named feedback buffers
-5. Shadow copy — swap read/write feedback buffers
+Graph nodes carry optional bridge and feedback annotations (`is_bridge`,
+`feedback_read`, `feedback_write` on `GraphNode`). A bridge node splits the
+graph into left (recording) and right (playback) sub-graphs, connected through
+named feedback buffers.
 
 Feedback edges in `GraphIr` (marked `EdgeKind::Feedback`) are excluded from
-topological sort and lowered to `ReadDelay`/`WriteDelay` steps with implicit
-1-sample delay.
+topological sort and carry implicit 1-sample delay — they connect the current
+tick's output back as the next tick's input.
+
+## Key components
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `GraphBuilder<T, BUF_SIZE>` | `rill-graph` | Mutable builder: adds nodes, connections, resources; `build_ir()` produces `GraphIr` |
+| `GraphResource` | `rill-graph` | Named shared resource (tape loop, buffer) |
+| `BuildError` | `rill-graph` | Error type for graph construction |
+| `GraphDef` | `rill-graph::serialization` | Serializable graph topology (format_version, nodes, connections) |
+| `NodeDef` | `rill-graph::serialization` | Enum: Source(SourceDef), Processor(ProcessorDef), Router(RouterDef), Sink(SinkDef) |
+| `ConnectionDef` | `rill-graph::serialization` | Serializable connection: from_node/port → to_node/port + SignalKind |
+| `GraphIr` | `rill-lang::graph_ir` | Multi-node IR — bridges GraphBuilder to rill-lang compilation |
+| `GraphNode` | `rill-lang::graph_ir` | One graph node: arity, IR, params, bridge/feedback annotations |
+| `GraphEdge` | `rill-lang::graph_ir` | Directed edge: node names + ports + EdgeKind |
+| `EdgeKind` | `rill-lang::graph_ir` | Signal, Control, Clock, or Feedback |
+| `CompiledGraphEngine<T, BUF_SIZE>` | `rill-lang::graph_engine` | Execution engine: flat NodeClosure vector + FixedBuffer pool; implements `Algorithm<T>` and `MultichannelAlgorithm<T>` |
 
 ## Integration
 
-- `rill-core` — `Node`, `Source`/`Processor`/`Sink` traits, `ClockTick`, `BuiltinSig`, `Registry`, `MultichannelAlgorithm`, `BridgeAlgorithm`
-- `rill-core-actor` — `Actor<CommandEnum>` / `ActorRef<CommandEnum>` (mailbox infrastructure)
-- `rill-io` — `Input`/`Output` nodes, `IoBackend` trait
-- `rill-patchbay` — automation via parameter commands through the actor mailbox
-- `rill-fft` — `ConvolverNode` graph node (IR convolution)
-- `rill-lang` — `GraphIr`, `RillGraphEngine`, `compile_graph()`, `ScheduledGraph`, `DuplexSchedule` (new execution path)
+- `rill-core` — `BuiltinSig`, `Registry`, `Algorithm`, `MultichannelAlgorithm`, `ParamValue`
+- `rill-core-actor` — `ActorRef<CommandEnum>` / `Mailbox` (parameter control)
+- `rill-lang` — `GraphIr`, `GraphNode`, `GraphEdge`, `CompiledGraphEngine`, `graph_compiler::compile()`, `graph_optimize::optimize()`
+- `rill-patchbay` — automation via `CommandEnum::SetParameter` through `engine.handle()`
+- `rill-io` — input/output backends connect to graph through compiled engine

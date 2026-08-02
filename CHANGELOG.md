@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## [0.6.0-M2] — 2026-08-02
+
+### 🐛 Bug fixes
+
+- Fixed missing `register_analog_builtins` function in `rill-analog-effects/src/lang.rs`
+  — the function was called from `register.rs` but did not exist, causing a compilation
+  error. Added the function with `CassetteDeckBuiltin` block registration.
+- Fixed `rill-adrift/src/modular/mod.rs` — `engine` variable needed `mut` for
+  `allocate_probe_slots(1)` call under the `debug` feature.
+
+### 📚 Documentation
+
+- Updated `docs/src/index.md`: removed "audio" from the umbrella description
+  (now "signal processing framework"), added missing crates to the layer table
+  (`rill-adrift`, `rill-sampler`, `rill-analyzer`), fixed `rill-lofi` description
+  (replaced "console emulation" with "vintage DAC, tape effects, chip emulation"),
+  fixed `rill-lang` type reference (`RillGraphEngine` → `CompiledGraphEngine`).
+- Updated `docs/src/reference/crates.md`: fixed `rill-analog-effects` description
+  (replaced "op-amp, tape deck, preamps" with "cassette deck, tape bridge/delay"),
+  fixed `rill-lang` type reference (`RillGraphEngine` → `CompiledGraphEngine`),
+  corrected all feature flag rows for `rill-core-model`, `rill-fft`, `rill-graph`,
+  `rill-lang`, `rill-patchbay`, `rill-io`, `rill-sampler`, and `rill-adrift`.
+- Updated `docs/src/architecture/overview.md`: "outside audio" → "in any signal domain".
+- Fixed `rill-analog-effects/src/lib.rs` and `register.rs` crate doc comments.
+- Updated `AGENTS.md`: crate count (19 → 20), `rill-analog-effects` description.
+- Updated `README.md`: library crate count (18 → 19), `rill-analog-effects` description,
+  test count badge.
+
+### 🧹 Housekeeping
+
+- All 20 crates bumped to `0.6.0-M2` (synchronous versioning).
+
 ## [0.6.0-M1] — 2026-07-11
 
 ### 🐛 New crate: `rill-analyzer` — interactive gdb-style debugger

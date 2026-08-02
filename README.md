@@ -2,11 +2,11 @@
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/DigitalRats/rill)
 [![tests|68](https://img.shields.io/badge/tests-706-green)](https://github.com/DigitalRats/rill)
-[![version|130](https://img.shields.io/badge/version-0.6.0-M1-blue)](https://github.com/DigitalRats/rill)
+[![version|130](https://img.shields.io/badge/version-0.6.0-M2-blue)](https://github.com/DigitalRats/rill)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Modular signal-processing ecosystem for Rust. 20 workspace members —
-18 library crates plus the `rill-analyzer` CLI debugger. Lock-free
+19 library crates plus the `rill-analyzer` CLI debugger. Lock-free
 queues and generic vector math to real-time FFT, convolution, frequency‑domain
 effects, and analog circuit modelling.
 
@@ -107,23 +107,20 @@ Key performance drivers:
 
 ```toml
 [dependencies]
-rill-adrift = "0.6.0-M1"
+rill-adrift = "0.6.0-M2"
 ```
 
 Enable optional features as needed (see table below).
 
 ```rust,no_run
 use rill_adrift::rill_graph::GraphBuilder;
-use rill_adrift::rill_core_dsp::signal::SineOsc;
 
 const BUF_SIZE: usize = 256;
 
 let mut builder = GraphBuilder::<f32, BUF_SIZE>::new();
-let osc = builder.add_source(
-    Box::new(SineOsc::<f32, BUF_SIZE>::new().with_frequency(440.0))
-);
+let osc = builder.add_node("rill/sinosc", &[("freq", 440.0)].into());
 // Add processors, sinks, connections via builder...
-// Then call builder.build() to obtain the immutable Graph.
+// Then call builder.build_ir(registry, sample_rate) to obtain the engine.
 ```
 
 ## Examples
@@ -238,7 +235,7 @@ topology definition.
 | **rill-core-model** | WDF elements, adapters, physical modeling (string, plate, modal, cavity) |
 | **rill-lang** | Faust-style signal DSL — compiles to `Algorithm<T>` |
 | **rill-fft** | FFT, frequency‑domain convolution, spectrum analysis, spectral effects |
-| **rill-graph** | Static DAG signal graph with Port::propagate |
+| **rill-graph** | Static DAG signal graph with GraphBuilder |
 | **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
 | **rill-digital-effects** | Delay, Distortion, Limiter nodes |
 | **rill-router** | EQ + mixer + routing |
@@ -248,7 +245,7 @@ topology definition.
 | **rill-telemetry** | Real-time probes, collectors, debug IPC |
 | **rill-analyzer** | **[CLI]** Interactive gdb-style debugger for signal graph inspection |
 | **rill-analog-filters** | WDF-based analog filters (MoogLadder) |
-| **rill-analog-effects** | Op-amp, tape deck, preamp models |
+| **rill-analog-effects** | Cassette deck, tape bridge/delay models |
 | **rill-osc** | OSC server and networking |
 | **rill-sampler** | Sample playback, time-series reader, WAV loading |
 | **rill-adrift** | Umbrella crate (re-exports all) |
@@ -314,7 +311,7 @@ cargo fmt                 # format (max_width=100)
 
 ## Publications
 
-18 library crates publish to [crates.io](https://crates.io) in dependency order.
+19 library crates publish to [crates.io](https://crates.io) in dependency order.
 `rill-analyzer` is a CLI tool and is **not** published to crates.io.
 Use the publish script:
 
