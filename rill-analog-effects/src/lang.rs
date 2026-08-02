@@ -46,8 +46,12 @@ impl<T: Transcendental> BlockBuiltin<T> for CassetteDeckBuiltin<T> {
 /// Register analog effects builtins (cassette deck).
 pub fn register_analog_builtins<T: Transcendental>(reg: &mut Registry<T>) {
     reg.register_block(
-        BuiltinSig::simple("cassettedeck", 1, 1, 4, BuiltinKind::Block)
-            .with_names(vec!["tape_speed", "bias_level", "noise_floor", "wow_flutter"]),
+        BuiltinSig::simple("cassettedeck", 1, 1, 4, BuiltinKind::Block).with_names(vec![
+            "tape_speed",
+            "bias_level",
+            "noise_floor",
+            "wow_flutter",
+        ]),
         |p, sr| {
             let mut deck = CassetteDeck::new(sr as f64);
             deck.set_tape_speed(p[0]);
