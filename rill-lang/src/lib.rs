@@ -84,7 +84,7 @@ pub fn compile_with<T: Transcendental>(
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
 
-/// Compile an already-parsed AST [`Program`] into a graph engine that supports SetParameter.
+/// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
 pub fn compile_program<T: Transcendental, const BUF_SIZE: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,

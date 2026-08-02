@@ -1,5 +1,5 @@
 //! MIDI sensor — receives raw MIDI messages from a backend,
-//! parses them into [`ControlEvent`]s, and sends them via [`ActorRef`].
+//! parses them into `ControlEvent`s, and sends them via `ActorRef`.
 //!
 //! Two implementations:
 //! - [`MidiHub`] — standalone sensor with its own `ActorRef<ControlEvent>` (legacy)
@@ -22,7 +22,7 @@ use crate::midi_clock::MidiClockTracker;
 use crate::sensor::Sensor;
 
 /// MIDI sensor — polls a [`MidiInput`] on a dedicated OS thread,
-/// parses raw bytes into [`ControlEvent`]s, and dispatches via [`ActorRef`].
+/// parses raw bytes into `ControlEvent`s, and dispatches via `ActorRef`.
 ///
 /// Optionally integrates a [`MidiClockTracker`] for MIDI clock sync:
 /// when present, each raw status byte is fed to the tracker before
@@ -170,7 +170,7 @@ impl MidiHub {
 /// Spawns a MIDI sensor that integrates with the actor model.
 ///
 /// The polling loop runs in a dedicated OS thread. Raw MIDI bytes are
-/// decoded into [`ControlEvent`]s and sent to the **servo** via
+/// decoded into `ControlEvent`s and sent to the **servo** via
 /// `CommandEnum::Control`. The servo applies mappings and sends
 /// `SetParameter` to the graph — the sensor never maps or writes
 /// parameters directly.
@@ -235,7 +235,7 @@ pub fn spawn_midi_sensor(
     actor_ref
 }
 
-/// Parse a raw [`MidiMessage`] into a [`ControlEvent`].
+/// Parse a raw `MidiMessage` into a `ControlEvent`.
 pub fn parse_midi(msg: &MidiMessage) -> Option<ControlEvent> {
     let status = msg.status();
     match msg.message_type() {
@@ -321,7 +321,7 @@ fn unsupported(_msg: &MidiMessage) -> Option<ControlEvent> {
     None
 }
 
-/// Serialize a [`ControlEvent`] back to a raw [`MidiMessage`].
+/// Serialize a `ControlEvent` back to a raw `MidiMessage`.
 ///
 /// This is the reverse of [`parse_midi`]. Only Clock, Transport,
 /// and Note events are supported. Other events return `None`.

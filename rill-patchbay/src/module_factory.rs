@@ -2,8 +2,8 @@
 //!
 //! `ModuleFactory` is the single creation point for all rack modules:
 //! Servo, Sensor, Graph, and Custom. Each archetype registers a
-//! [`ModuleConstructor`] that receives a [`ModuleDef`] descriptor
-//! and returns an [`ActorRef<CommandEnum>`] for the rack actor fan-out.
+//! `ModuleConstructor` that receives a `ModuleDef` descriptor
+//! and returns an `ActorRef<CommandEnum>` for the rack actor fan-out.
 
 use std::collections::HashMap;
 use std::fmt;

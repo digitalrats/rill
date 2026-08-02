@@ -15,10 +15,10 @@ use std::collections::HashMap;
 // Module registration — custom rack modules (MIDI, OSC, etc.)
 // ============================================================================
 
-/// Register all built-in module constructors into a [`ModuleFactory`].
+/// Register all built-in module constructors into a `ModuleFactory`.
 ///
 /// Called once at application startup. Modules are constructed on-demand
-/// when a [`RackDef`] or [`PatchbayDef`] is processed.
+/// when a `RackDef` or `PatchbayDef` is processed.
 pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
     factory.register(rill_patchbay::servo_constructor::ServoConstructor);
     #[cfg(feature = "midi")]
@@ -396,7 +396,7 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
 /// Deserialise a JSON graph string into a
 /// [rill_graph::serialization::GraphDef].
 ///
-/// Use [`ModularSystem::create_builder`](crate::modular::ModularSystem::create_builder)
+/// Use `ModularSystem::create_builder`
 /// to build a graph from the definition.
 #[cfg(feature = "serialization")]
 pub fn load_graph_json(

@@ -285,7 +285,7 @@ pub enum SignalKind {
 pub enum SerializationError {
     /// A node type in the document is not registered in the factory.
     UnknownType(String),
-    /// Two nodes in the document share the same [`NodeId`].
+    /// Two nodes in the document share the same `NodeId`.
     DuplicateNodeId(u32),
     /// A required field is missing or malformed.
     InvalidFormat(String),

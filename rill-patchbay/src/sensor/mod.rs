@@ -1,18 +1,18 @@
 //! # Sensor — external input bridge
 //!
 //! A `Sensor` converts external data (MIDI, OSC, hardware knobs, signal analysis)
-//! into [`ControlEvent`](crate::sensor::ControlEvent)s that can be mapped through
-//! [`ParameterMapping`](crate::sensor::ParameterMapping) to graph parameters.
+//! into `ControlEvent`s that can be mapped through
+//! `ParameterMapping` to graph parameters.
 //!
 //! ## Available sensor types
 //!
-//! - [`midi`] — MIDI controller and note sensors ([`MidiHub`], [`spawn_midi_sensor`])
+//! - `midi` — MIDI controller and note sensors (`MidiHub`, `spawn_midi_sensor`)
 //! - [`osc`] — OSC address-based sensors ([`OscSensor`], [`spawn_osc_sensor`])
-//! - [`hearing`] — signal analysis algorithms (pitch, envelope, zero-crossing)
+//! - `hearing` — signal analysis algorithms (pitch, envelope, zero-crossing)
 //!   for acoustic sensors that react to graph signal output.
 //!
 //! Multiple sensors can run independently — all events share a single
-//! mailbox drained by [`Patchbay::drain_events`].
+//! mailbox drained by `Patchbay::drain_events`.
 
 pub mod hearing;
 

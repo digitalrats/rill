@@ -1,4 +1,4 @@
-//! ServoConstructor — creates Servo actors from [`ModuleDef::Servo`] descriptors.
+//! ServoConstructor — creates Servo actors from `ModuleDef::Servo` descriptors.
 
 use std::sync::Arc;
 

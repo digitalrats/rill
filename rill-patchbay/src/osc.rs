@@ -1,5 +1,5 @@
 //! OSC sensor — receives OSC messages over UDP,
-//! parses them into [`ControlEvent`]s, and sends them via [`ActorRef`].
+//! parses them into `ControlEvent`s, and sends them via `ActorRef`.
 //!
 //! Two implementations:
 //! - [`OscSensor`] — standalone sensor with its own `ActorRef<ControlEvent>` (legacy)
@@ -21,7 +21,7 @@ use crate::sensor::Sensor;
 
 /// OSC sensor — polls a UDP socket on a dedicated OS thread,
 /// decodes incoming packets into [`ControlEvent::Osc`] events,
-/// and dispatches via [`ActorRef`].
+/// and dispatches via `ActorRef`.
 pub struct OscSensor {
     id: String,
     pub(crate) thread: Option<JoinHandle<()>>,
@@ -147,7 +147,7 @@ impl OscSensor {
 /// Spawns an OSC sensor that integrates with the actor model.
 ///
 /// The polling loop runs in a dedicated OS thread. Raw OSC messages are
-/// decoded into [`ControlEvent`]s and sent to the **servo** via
+/// decoded into `ControlEvent`s and sent to the **servo** via
 /// `CommandEnum::Control`. The servo applies mappings and sends
 /// `SetParameter` to the graph — the sensor never maps or writes
 /// parameters directly.
@@ -229,7 +229,7 @@ pub fn spawn_osc_sensor(
 // Parsing — OSC message → ControlEvent
 // =============================================================================
 
-/// Convert an OSC packet into a `Vec` of [`ControlEvent`]s,
+/// Convert an OSC packet into a `Vec` of `ControlEvent`s,
 /// recursively unwrapping bundles.
 fn osc_packet_to_events(packet: &OscPacket) -> Vec<ControlEvent> {
     let mut events = Vec::new();
@@ -264,7 +264,7 @@ fn osc_message_to_event(msg: &OscMessage) -> ControlEvent {
     }
 }
 
-/// Parse an OSC message into a [`ControlEvent`].
+/// Parse an OSC message into a `ControlEvent`.
 ///
 /// Converts the message address and numeric arguments into
 /// a [`ControlEvent::Osc`] variant. Non-numeric arguments

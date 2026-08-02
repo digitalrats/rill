@@ -1,6 +1,6 @@
 //! Mono-to-stereo panning with configurable pan law and exponential smoothing.
 //!
-//! Provides [`MonoToStereo`] — a [`MultichannelAlgorithm`](rill_core::traits::MultichannelAlgorithm)
+//! Provides [`MonoToStereo`] — a [`MultichannelAlgorithm`]
 //! that converts a mono signal to stereo with per-sample gain control.
 
 use rill_core::math::Transcendental;
