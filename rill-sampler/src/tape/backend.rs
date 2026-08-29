@@ -78,10 +78,13 @@ impl<T: Transcendental> TapeBackend<T> {
         Self { write, reads }
     }
 
-    /// Write one block (the recording pass's record signal).
-    pub fn write_block(&mut self, block: &[T]) {
-        let mut out = vec![T::ZERO; block.len()];
-        let _ = Algorithm::process(&mut self.write, Some(block), &mut out);
+    /// Write one block (the recording pass's record signal) as
+    /// `dry + write.feedback·fb` straight to the tape.
+    ///
+    /// RT-safe: no per-call allocation — the mix is written directly to the
+    /// tape through the write head.
+    pub fn write_block(&mut self, dry: &[T], fb: &[T]) {
+        self.write.write_block(dry, fb);
     }
 
     /// Read one block per read head (the playback pass's tap inputs).

@@ -268,9 +268,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 param_values.push(val);
             }
 
-            // Resource-backed built-ins were removed — the tape is a passive
-            // backend (rill-sampler), not a compile-time resource, so no node
-            // carries a symbolic resource reference.
+            // Task 5 placeholder: resource-backed built-ins were removed — the
+            // tape is a passive backend (rill-sampler), not a compile-time
+            // resource, so no node carries a symbolic resource reference. This
+            // `ast_from_def` reconstruction is removed entirely in Task 5.
             let has_resource = false;
 
             node_metas.push(NodeMeta {
@@ -510,7 +511,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .map(|name| Param { name, span: dummy })
             .collect();
 
-        // Emit top-level tape resource declarations before `main`.
+        // Task 5 placeholder: emit top-level tape resource declarations before
+        // `main`. Dormant (no graph registers tape resources) — the tape is a
+        // backend, not a resource; `ast_from_def` is removed in Task 5.
         let mut defs: Vec<Def> = self
             .resources
             .iter()

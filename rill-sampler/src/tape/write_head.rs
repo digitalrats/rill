@@ -45,6 +45,23 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     pub fn set_writer(&mut self, writer: TapeWriter<T>) {
         self.tape = Some(writer);
     }
+
+    /// Write a mixed `dry + feedback·fb` block directly to the tape.
+    ///
+    /// RT-safe: each mixed sample is written straight through the writer handle
+    /// with no scratch buffer or allocation.
+    pub fn write_block(&mut self, dry: &[T], fb: &[T]) {
+        let g = T::from_f32(self.feedback);
+        let Some(tape) = self.tape.as_mut() else {
+            return;
+        };
+        let n = dry.len().max(fb.len());
+        for i in 0..n {
+            let d = dry.get(i).copied().unwrap_or(T::ZERO);
+            let f = fb.get(i).copied().unwrap_or(T::ZERO);
+            tape.write(d + f * g);
+        }
+    }
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for WriteHead<T, BUF_SIZE> {
