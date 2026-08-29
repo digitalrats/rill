@@ -240,6 +240,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             builtin_name: String,
             param_values: Vec<f64>,
             param_names: Vec<String>,
+            has_resource: bool,
         }
 
         let mut node_metas: Vec<NodeMeta> = Vec::with_capacity(self.recipes.len());
@@ -267,10 +268,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 param_values.push(val);
             }
 
+            let has_resource = sig
+                .params
+                .iter()
+                .any(|p| matches!(p, rill_lang::builtin::ParamType::Resource));
+
             node_metas.push(NodeMeta {
                 builtin_name,
                 param_values,
                 param_names,
+                has_resource,
             });
         }
 
@@ -306,10 +313,21 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
         // Build the block expression for each node (Apply with folded params).
         // The last param (convention) is exposed as a dynamic main parameter.
+        // Resource-backed nodes get a symbolic `Ref` to the default tape loop.
+        let default_tape = self
+            .resources
+            .iter()
+            .find(|r| r.kind == "tape")
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| "tape_0".to_string());
+
         let mut all_param_names: Vec<String> = Vec::new();
         let mut blocks: Vec<Expr> = Vec::with_capacity(self.recipes.len());
         for meta in &node_metas {
             let mut args: Vec<Expr> = Vec::new();
+            if meta.has_resource {
+                args.push(Expr::Ref(default_tape.clone(), dummy));
+            }
             let n = meta.param_names.len();
             for (i, (&val, name)) in meta
                 .param_values
@@ -425,15 +443,31 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .map(|name| Param { name, span: dummy })
             .collect();
 
-        Ok(Program {
-            defs: vec![Def::Anchor {
-                name: "main".to_string(),
-                params,
-                body,
-                span: dummy,
+        // Emit top-level tape resource declarations before `main`.
+        let mut defs: Vec<Def> = self
+            .resources
+            .iter()
+            .filter(|r| r.kind == "tape")
+            .map(|r| Def::Local {
+                name: r.name.clone(),
+                body: Expr::Apply {
+                    name: "TapeLoop".to_string(),
+                    args: vec![Expr::Int(r.capacity as i64, dummy)],
+                    span: dummy,
+                },
                 where_defs: vec![],
-            }],
-        })
+                span: dummy,
+            })
+            .collect();
+        defs.push(Def::Anchor {
+            name: "main".to_string(),
+            params,
+            body,
+            span: dummy,
+            where_defs: vec![],
+        });
+
+        Ok(Program { defs })
     }
 
     /// Compile directly from the graph definition to a [`ProgramEngine`](rill_lang::program_engine::ProgramEngine).

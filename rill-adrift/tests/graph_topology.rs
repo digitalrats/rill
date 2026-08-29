@@ -42,3 +42,26 @@ fn fan_in_reconstructs_to_merge() {
         "fan-in graph should reconstruct to a Merge combinator"
     );
 }
+
+#[test]
+fn graph_read_head_with_tape_resource_compiles() {
+    use rill_core::traits::MultichannelAlgorithm;
+    let reg = full_registry_f32();
+    let mut b: GraphBuilder<f32, 256> = GraphBuilder::new();
+
+    b.add_resource(rill_graph::GraphResource {
+        name: "tape_0".to_string(),
+        kind: "tape".to_string(),
+        capacity: 96000,
+    });
+
+    let mut rh = Params::new(44100.0);
+    rh.insert("delay", ParamValue::Float(0.1));
+    b.add_node("rill/read_head", &rh);
+
+    let mut engine = b.compile_def(&reg, 44100.0).unwrap();
+    let mut out = vec![0.0f32; 64];
+    let mut outs: [&mut [f32]; 1] = [&mut out];
+    MultichannelAlgorithm::process(&mut engine, &[], &mut outs).unwrap();
+    assert!(out.iter().all(|v| v.is_finite()));
+}
