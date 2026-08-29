@@ -90,8 +90,12 @@ pub fn compile_program<T: Transcendental>(
 /// Compile an AST program against a pre-built resource registry.
 ///
 /// The registry is shared (e.g. one tape across recording + playback engines);
-/// the caller owns it and must keep it alive while both engines run. When a
-/// resource is absent from `resources`, the program fails with `Unsupported`.
+/// the caller owns it and must keep it alive while both engines run. The DSL's
+/// `TapeLoop <capacity>` declaration is only a declaration: when an external
+/// registry is supplied, its tape capacity is used. Every resource referenced
+/// by the program must exist in `resources`, otherwise the program fails with
+/// `Unsupported` rather than compiling to a silently dead engine (a write head
+/// without a writer, a read head without a reader).
 pub fn compile_program_with_resources<T: Transcendental>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
@@ -126,7 +130,19 @@ fn compile_program_inner<T: Transcendental>(
 
     let mut owned = rill_core::buffer::ResourceRegistry::<T>::new();
     let res: &mut rill_core::buffer::ResourceRegistry<T> = match resources {
-        Some(r) => r,
+        Some(r) => {
+            for bi in &ir.builtins {
+                if let Some(name) = &bi.resource {
+                    if r.reader(name).is_none() {
+                        return Err(CompileError::Unsupported(format!(
+                            "resource '{}' not found in the provided registry",
+                            name
+                        )));
+                    }
+                }
+            }
+            r
+        }
         None => {
             for decl in &resource_decls {
                 let tape =

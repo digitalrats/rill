@@ -58,3 +58,16 @@ fn shared_registry_wires_write_and_read_heads_to_one_tape() {
         "read head must see the write head's samples through the shared tape"
     );
 }
+
+#[test]
+fn missing_resource_in_external_registry_is_compile_error() {
+    let write_src = "tape_0 = TapeLoop 1024\nmain = (_, _) :> write_head tape_0 0.5 0.3";
+    let write_prog = parse(write_src);
+
+    let mut empty = ResourceRegistry::<f32>::new();
+    let res = rill_lang::compile_program_with_resources(&write_prog, &reg(), 44100.0, &mut empty);
+    assert!(
+        res.is_err(),
+        "a resource absent from the provided registry must be a compile error, not a silent dead engine"
+    );
+}
