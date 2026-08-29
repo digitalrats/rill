@@ -60,7 +60,7 @@ pub fn register_tape_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
 mod tests {
     use super::*;
     use rill_core::buffer::{ResourceRegistry, TapeLoop};
-    use rill_core::traits::{MultichannelAlgorithm, ProcessResult};
+    use rill_core::traits::MultichannelAlgorithm;
 
     #[test]
     fn tape_heads_share_a_tape_via_registry() {

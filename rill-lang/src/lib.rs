@@ -36,9 +36,7 @@ pub use error::{CompileError, Span};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{
-    BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry, SampleBuiltin,
-};
+pub use builtin::{BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry};
 
 use rill_core::math::Transcendental;
 use rill_core_actor::Mailbox;
@@ -77,7 +75,6 @@ pub fn compile_with<T: Transcendental>(
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
     // regalloc::allocate(&mut ir);
-    validate_block_builtins(&ir)?;
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
 
@@ -92,7 +89,6 @@ pub fn compile_program<T: Transcendental>(
     let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
-    validate_block_builtins(&ir)?;
 
     for bi in &ir.builtins {
         if let Some(res) = &bi.resource {
@@ -127,35 +123,6 @@ pub fn compile_graph<T: Transcendental>(
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     compile_program::<T>(&program, registry, sample_rate)
-}
-
-fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
-    use crate::ir::Instr;
-    use crate::schedule::{build_schedule, Step};
-    for instr in &ir.instrs {
-        if let Instr::CallSample { srcs, .. } = instr {
-            if srcs.len() > backend::interp::MAX_SAMPLE_BUILTIN_INS {
-                return Err(CompileError::Unsupported(format!(
-                    "sample built-in has {} signal inputs; the maximum is {}",
-                    srcs.len(),
-                    backend::interp::MAX_SAMPLE_BUILTIN_INS,
-                )));
-            }
-        }
-    }
-    let sched = build_schedule(ir);
-    for step in &sched.steps {
-        if let Step::Sample(instrs) = step {
-            for &idx in instrs {
-                if matches!(ir.instrs[idx], Instr::CallBlock { .. }) {
-                    return Err(CompileError::Unsupported(
-                        "block built-in cannot be used inside a feedback loop (`~`)".to_string(),
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// A named resource declaration (e.g. a tape loop) from the DSL.

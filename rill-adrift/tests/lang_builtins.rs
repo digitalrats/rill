@@ -11,7 +11,7 @@ fn run(src: &str, input: &[f32], sr: f32) -> Vec<f32> {
 }
 
 #[test]
-fn onepole_sample_builtin_smooths() {
+fn onepole_builtin_smooths() {
     let input: Vec<f32> = (0..64)
         .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
         .collect();
@@ -43,16 +43,15 @@ fn lowpass_block_matches_direct_biquad() {
 }
 
 #[test]
-fn sample_builtin_composes_in_feedback() {
+fn builtin_composes_in_feedback() {
     let reg = full_registry::<f32>();
     assert!(compile_with::<f32>("main = + ~ onepole 500.0 0.5", &reg, 48_000.0).is_ok());
 }
 
 #[test]
-fn block_builtin_in_feedback_is_rejected() {
+fn block_builtin_in_feedback_compiles() {
     let reg = full_registry::<f32>();
-    let err = compile_with::<f32>("main = + ~ lowpass 500.0 0.7", &reg, 48_000.0);
-    assert!(err.is_err());
+    assert!(compile_with::<f32>("main = + ~ lowpass 500.0 0.7", &reg, 48_000.0).is_ok());
 }
 
 #[cfg(feature = "analog")]

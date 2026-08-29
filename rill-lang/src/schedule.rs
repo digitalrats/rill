@@ -1,22 +1,19 @@
-//! Compile-time partitioning of the linear IR into a hybrid execution schedule.
+//! Compile-time partitioning of the linear IR into a block-only execution schedule.
 //!
-//! Feedforward instructions become whole-buffer [`Step::Block`] ops; recurrences
-//! (feedback loops, and the read/write of each state slot or delay line) become
-//! per-sample [`Step::Sample`] regions. See the block-processing design doc.
+//! Every instruction is a whole-buffer operation: `CallBlock` becomes
+//! [`Step::ForeignBlock`], all other instructions (combinational, block-state
+//! read/write, delay read/write) become [`Step::Block`]. The engine is purely
+//! block-level — per-sample state lives inside `BlockBuiltin` implementations.
 
 use crate::ir::{Instr, Ir};
 
 /// One scheduled unit of work, in execution order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    /// A single combinational instruction, executed over the whole buffer.
+    /// A single whole-buffer instruction.
     Block(usize),
-    /// An opaque whole-buffer built-in (1→1).
+    /// An opaque whole-buffer built-in.
     ForeignBlock(usize),
-    /// A recurrent region, executed per sample. Instruction indices are in
-    /// original IR order (which preserves intra-sample data + read-before-write
-    /// ordering established by lowering).
-    Sample(Vec<usize>),
 }
 
 /// The full execution plan for an [`Ir`].
@@ -31,16 +28,15 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
     match *instr {
         Instr::Const { dst, .. }
         | Instr::LoadInput { dst, .. }
-        | Instr::ReadState { dst, .. }
+        | Instr::ReadBlockState { dst, .. }
         | Instr::ReadDelay { dst, .. }
         | Instr::Un { dst, .. }
         | Instr::Bin { dst, .. }
         | Instr::Move { dst, .. }
-        | Instr::CallSample { dst, .. }
         | Instr::CallBlock { dst, .. }
         | Instr::ReadParam { dst, .. }
         | Instr::ReadActorParam { dst, .. } => Some(dst),
-        Instr::WriteState { .. } | Instr::WriteDelay { .. } => None,
+        Instr::WriteBlockState { .. } | Instr::WriteDelay { .. } => None,
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, .. } => Some(dst),
     }
@@ -51,8 +47,7 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
     match *instr {
         Instr::Un { src, .. } | Instr::Move { src, .. } => vec![src],
         Instr::Bin { a, b, .. } => vec![a, b],
-        Instr::WriteState { src, .. } | Instr::WriteDelay { src, .. } => vec![src],
-        Instr::CallSample { ref srcs, .. } => srcs.clone(),
+        Instr::WriteBlockState { src, .. } | Instr::WriteDelay { src, .. } => vec![src],
         Instr::CallBlock { ref srcs, .. } => srcs.clone(),
         #[cfg(feature = "debug")]
         Instr::ProbePoint { src, .. } => vec![src],
@@ -60,20 +55,7 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
     }
 }
 
-/// True for instructions that touch persistent state and therefore must run in
-/// a sample region (never as a standalone block op).
-fn is_stateful(instr: &Instr) -> bool {
-    matches!(
-        instr,
-        Instr::ReadState { .. }
-            | Instr::WriteState { .. }
-            | Instr::ReadDelay { .. }
-            | Instr::WriteDelay { .. }
-            | Instr::CallSample { .. }
-    )
-}
-
-/// Build the hybrid schedule for an IR.
+/// Build the block-only schedule for an IR.
 pub fn build_schedule(ir: &Ir) -> Schedule {
     let n = ir.instrs.len();
 
@@ -95,34 +77,6 @@ pub fn build_schedule(ir: &Ir) -> Schedule {
         }
     }
 
-    // Recurrence edges (bidirectional) for each state slot and delay line, so
-    // the read/write ends share an SCC and feedback loops close.
-    let mut read_state: Vec<Option<usize>> = vec![None; ir.state.state_slots];
-    let mut write_state: Vec<Option<usize>> = vec![None; ir.state.state_slots];
-    let mut read_delay: Vec<Option<usize>> = vec![None; ir.state.delay_lens.len()];
-    let mut write_delay: Vec<Option<usize>> = vec![None; ir.state.delay_lens.len()];
-    for (i, instr) in ir.instrs.iter().enumerate() {
-        match *instr {
-            Instr::ReadState { slot, .. } => read_state[slot] = Some(i),
-            Instr::WriteState { slot, .. } => write_state[slot] = Some(i),
-            Instr::ReadDelay { line, .. } => read_delay[line] = Some(i),
-            Instr::WriteDelay { line, .. } => write_delay[line] = Some(i),
-            _ => {}
-        }
-    }
-    let add_pair = |a: Option<usize>, b: Option<usize>, adj: &mut Vec<Vec<usize>>| {
-        if let (Some(a), Some(b)) = (a, b) {
-            adj[a].push(b);
-            adj[b].push(a);
-        }
-    };
-    for s in 0..ir.state.state_slots {
-        add_pair(read_state[s], write_state[s], &mut adj);
-    }
-    for l in 0..ir.state.delay_lens.len() {
-        add_pair(read_delay[l], write_delay[l], &mut adj);
-    }
-
     // Tarjan SCC. Emission order is reverse-finish = execution order
     // (dependencies first) because edges point consumer -> producer.
     let sccs = tarjan_scc(n, &adj);
@@ -130,16 +84,20 @@ pub fn build_schedule(ir: &Ir) -> Schedule {
     // Classify each SCC into a Step.
     let mut steps = Vec::with_capacity(sccs.len());
     for scc in sccs {
-        if scc.len() == 1 && matches!(ir.instrs[scc[0]], Instr::CallBlock { .. }) {
-            steps.push(Step::ForeignBlock(scc[0]));
-        } else {
-            let recurrent = scc.len() > 1 || scc.iter().any(|&i| is_stateful(&ir.instrs[i]));
-            if recurrent {
-                let mut instrs = scc;
-                instrs.sort_unstable();
-                steps.push(Step::Sample(instrs));
+        if scc.len() == 1 {
+            let i = scc[0];
+            if matches!(ir.instrs[i], Instr::CallBlock { .. }) {
+                steps.push(Step::ForeignBlock(i));
             } else {
-                steps.push(Step::Block(scc[0]));
+                steps.push(Step::Block(i));
+            }
+        } else {
+            // A cycle should not occur in block-level IR (feedback is 1-tick via
+            // a double buffer); emit sorted as a best-effort fallback.
+            let mut instrs = scc;
+            instrs.sort_unstable();
+            for i in instrs {
+                steps.push(Step::Block(i));
             }
         }
     }
@@ -231,7 +189,7 @@ mod tests {
                     1,
                     1,
                     2,
-                    BuiltinKind::Sample,
+                    BuiltinKind::Block,
                 )))),
                 _ => None,
             }
@@ -253,12 +211,6 @@ mod tests {
         (ir, sched)
     }
 
-    fn n_sample(s: &Schedule) -> usize {
-        s.steps
-            .iter()
-            .filter(|st| matches!(st, Step::Sample(_)))
-            .count()
-    }
     fn n_block(s: &Schedule) -> usize {
         s.steps
             .iter()
@@ -269,76 +221,30 @@ mod tests {
     #[test]
     fn combinational_program_is_all_block() {
         let s = schedule_of("main = _ * 0.5");
-        assert_eq!(n_sample(&s), 0);
         assert!(n_block(&s) >= 1);
     }
 
     #[test]
-    fn feedback_program_has_one_sample_region() {
+    fn feedback_uses_block_state() {
         let s = schedule_of("main = + ~ _");
-        assert_eq!(n_sample(&s), 1);
+        assert!(!s.steps.is_empty());
     }
 
     #[test]
-    fn const_feeding_feedback_stays_block() {
-        // `+ ~ (_ * 0.5)`: the 0.5 constant is combinational (Block); the
-        // ReadState/Add/Mul/WriteState cycle is one Sample region.
-        let s = schedule_of("main = + ~ (_ * 0.5)");
-        assert_eq!(n_sample(&s), 1);
-        assert!(n_block(&s) >= 1); // at least the Const 0.5 and the LoadInput
-    }
-
-    #[test]
-    fn feedforward_delay_is_isolated_sample_region() {
-        // `_ @ 3`: delay read/write form a sample region; no feedback.
+    fn delay_uses_block_steps() {
         let s = schedule_of("main = _ @ 3");
-        assert_eq!(n_sample(&s), 1);
-    }
-
-    #[test]
-    fn feedback_through_delay_is_one_region() {
-        let s = schedule_of("main = + ~ (_ @ 2)");
-        assert_eq!(n_sample(&s), 1);
-    }
-
-    #[test]
-    fn gain_then_integrator_splits_block_and_sample() {
-        let s = schedule_of("main = (_ * 0.5) : (+ ~ _)");
-        assert_eq!(n_sample(&s), 1);
-        assert!(n_block(&s) >= 1);
+        assert!(!s.steps.is_empty());
     }
 
     #[test]
     fn steps_are_in_dependency_order() {
-        // Every Block step's producer appears before any step that consumes it:
-        // here we only assert the schedule is non-empty and ends producing output.
         let s = schedule_of("main = abs _ : _ * 2.0");
         assert!(!s.steps.is_empty());
-        assert_eq!(n_sample(&s), 0);
-    }
-
-    #[test]
-    fn sample_builtin_schedules_as_sample_region() {
-        let (_, s) = schedule_of_with("main = _ : onepole 200.0 0.5");
-        assert_eq!(n_sample(&s), 1);
     }
 
     #[test]
     fn block_builtin_schedules_as_foreign_block() {
         let (_, s) = schedule_of_with("main = _ : lowpass 1000.0 0.7");
         assert!(s.steps.iter().any(|st| matches!(st, Step::ForeignBlock(_))));
-        assert!(n_block(&s) >= 1); // LoadInput
-        assert_eq!(n_sample(&s), 0);
-    }
-
-    #[test]
-    fn block_builtin_in_feedback_lands_in_sample_region() {
-        let (ir, s) = schedule_of_with("main = + ~ lowpass 500.0 0.7");
-        // CallBlock inside feedback SCC → Sample region (illegal; caught by
-        // validate_block_builtins at compile time).
-        assert!(s.steps.iter().any(|st| {
-            matches!(st, Step::Sample(ref instrs)
-                if instrs.iter().any(|&i| matches!(ir.instrs[i], Instr::CallBlock { .. })))
-        }));
     }
 }

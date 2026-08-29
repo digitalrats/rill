@@ -79,8 +79,8 @@ pub enum Instr {
         /// Program input index.
         index: usize,
     },
-    /// Read a persistent state slot (its value from the *previous* sample).
-    ReadState {
+    /// Read a persistent block-state slot (its whole block from the previous tick).
+    ReadBlockState {
         /// Destination register.
         dst: Reg,
         /// State slot to read.
@@ -120,28 +120,19 @@ pub enum Instr {
         /// Source register.
         src: Reg,
     },
-    /// Schedule a write of `src` into state slot at end of the sample.
-    WriteState {
+    /// Schedule a write of `src` into a block-state slot (applied at tick end).
+    WriteBlockState {
         /// State slot to write.
         slot: StateSlot,
         /// Source register.
         src: Reg,
     },
-    /// Schedule a push of `src` into a delay line at end of the sample.
+    /// Schedule a push of `src` into a delay line (whole block).
     WriteDelay {
         /// Delay line index.
         line: usize,
         /// Source register.
         src: Reg,
-    },
-    /// Call a per-sample built-in: `srcs` inputs → `dst`, instance index.
-    CallSample {
-        /// Destination register.
-        dst: Reg,
-        /// Source registers.
-        srcs: Vec<Reg>,
-        /// Index into [`Ir::builtins`].
-        instance: usize,
     },
     /// Call a whole-buffer built-in: `srcs` inputs → `dst`, instance index.
     CallBlock {
@@ -183,8 +174,8 @@ pub enum Instr {
 /// Layout describing pre-allocated persistent storage.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StateLayout {
-    /// Number of scalar feedback state slots.
-    pub state_slots: usize,
+    /// Number of block-level feedback state slots.
+    pub block_state_slots: usize,
     /// Length (in samples) of each delay line.
     pub delay_lens: Vec<usize>,
     /// Number of program outputs.

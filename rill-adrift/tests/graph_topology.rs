@@ -66,10 +66,10 @@ fn graph_read_head_with_tape_resource_compiles() {
     assert!(out.iter().all(|v| v.is_finite()));
 }
 
-fn has_feedback_tap(e: &Expr) -> bool {
+fn has_feedback(e: &Expr) -> bool {
     match e {
         Expr::Bin { op, lhs, rhs, .. } => {
-            matches!(op, BinOp::FeedbackTap) || has_feedback_tap(lhs) || has_feedback_tap(rhs)
+            matches!(op, BinOp::Feedback) || has_feedback(lhs) || has_feedback(rhs)
         }
         _ => false,
     }
@@ -102,7 +102,7 @@ fn feedback_edge_reconstructs_to_feedback_tap() {
     let ast = b.ast_from_def(&reg).unwrap();
     let body = ast.main_def().unwrap().body();
     assert!(
-        has_feedback_tap(body),
-        "feedback edge should reconstruct to a FeedbackTap combinator"
+        has_feedback(body),
+        "feedback edge should reconstruct to a Feedback combinator"
     );
 }

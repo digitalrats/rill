@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, Def, Expr, Program};
-use crate::builtin::{BuiltinKind, ParamType, SignatureSource};
+use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
 use crate::types::infer::TypedProgram;
@@ -13,7 +13,7 @@ struct Lowerer<'a> {
     sigs: &'a dyn SignatureSource,
     instrs: Vec<Instr>,
     next_reg: usize,
-    state_slots: usize,
+    block_state_slots: usize,
     delay_lens: Vec<usize>,
     locals: Vec<HashMap<String, Vec<usize>>>,
     builtins: Vec<BuiltinInstance>,
@@ -111,10 +111,10 @@ impl<'a> Lowerer<'a> {
                         let tau = ms / 1000.0;
                         1.0 - (-1.0 / (tau * sr)).exp()
                     };
-                    let slot = self.state_slots;
-                    self.state_slots += 1;
+                    let slot = self.block_state_slots;
+                    self.block_state_slots += 1;
                     let prev = self.fresh_reg();
-                    self.emit(Instr::ReadState { dst: prev, slot });
+                    self.emit(Instr::ReadBlockState { dst: prev, slot });
                     let diff = self.fresh_reg();
                     self.emit(Instr::Bin {
                         dst: diff,
@@ -141,7 +141,7 @@ impl<'a> Lowerer<'a> {
                         a: prev,
                         b: scaled,
                     });
-                    self.emit(Instr::WriteState { slot, src: y });
+                    self.emit(Instr::WriteBlockState { slot, src: y });
                     return Ok(vec![y]);
                 }
                 if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
@@ -308,29 +308,16 @@ impl<'a> Lowerer<'a> {
                         signal_outs: sig.signal_outs,
                         param_bindings,
                     });
-                    match sig.kind {
-                        BuiltinKind::Sample => {
-                            let dst = self.fresh_reg();
-                            self.emit(Instr::CallSample {
-                                dst,
-                                srcs: signal_srcs,
-                                instance,
-                            });
-                            return Ok(vec![dst]);
-                        }
-                        BuiltinKind::Block => {
-                            let fst = self.fresh_reg();
-                            for _ in 1..sig.signal_outs {
-                                self.fresh_reg();
-                            }
-                            self.emit(Instr::CallBlock {
-                                dst: fst,
-                                srcs: signal_srcs,
-                                instance,
-                            });
-                            return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                        }
+                    let fst = self.fresh_reg();
+                    for _ in 1..sig.signal_outs {
+                        self.fresh_reg();
                     }
+                    self.emit(Instr::CallBlock {
+                        dst: fst,
+                        srcs: signal_srcs,
+                        instance,
+                    });
+                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
                 let mut arg_regs = Vec::new();
                 for a in call_args {
@@ -455,31 +442,17 @@ impl<'a> Lowerer<'a> {
                     signal_outs: sig.signal_outs,
                     param_bindings: Vec::new(),
                 });
-                match sig.kind {
-                    BuiltinKind::Sample => {
-                        let dst = self.fresh_reg();
-                        let srcs = args.to_vec();
-                        self.emit(Instr::CallSample {
-                            dst,
-                            srcs,
-                            instance,
-                        });
-                        return Ok(vec![dst]);
-                    }
-                    BuiltinKind::Block => {
-                        let fst = self.fresh_reg();
-                        for _ in 1..sig.signal_outs {
-                            self.fresh_reg();
-                        }
-                        let srcs = args.to_vec();
-                        self.emit(Instr::CallBlock {
-                            dst: fst,
-                            srcs,
-                            instance,
-                        });
-                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                    }
+                let fst = self.fresh_reg();
+                for _ in 1..sig.signal_outs {
+                    self.fresh_reg();
                 }
+                let srcs = args.to_vec();
+                self.emit(Instr::CallBlock {
+                    dst: fst,
+                    srcs,
+                    instance,
+                });
+                return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
             }
         }
         let bin = match name {
@@ -612,7 +585,6 @@ impl<'a> Lowerer<'a> {
                 self.lower(rhs, &merged)
             }
             BinOp::Feedback => self.lower_feedback(lhs, rhs, args, span),
-            BinOp::FeedbackTap => self.lower_feedback_tap(lhs, rhs, args, span),
             BinOp::Delay => self.lower_delay(lhs, rhs, args, span),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                 if matches!(op, BinOp::Add | BinOp::Sub) {
@@ -674,6 +646,9 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// `A ~ B` — B's output feeds A's feedback input (1-tick delay), while B is
+    /// evaluated independently (it does not consume A's output). This models a
+    /// unidirectional feedback edge.
     fn lower_feedback(
         &mut self,
         lhs: &Expr,
@@ -685,47 +660,11 @@ impl<'a> Lowerer<'a> {
         let mut fb_regs = Vec::with_capacity(bo);
         let mut slots = Vec::with_capacity(bo);
         for _ in 0..bo {
-            let slot = self.state_slots;
-            self.state_slots += 1;
+            let slot = self.block_state_slots;
+            self.block_state_slots += 1;
             slots.push(slot);
             let dst = self.fresh_reg();
-            self.emit(Instr::ReadState { dst, slot });
-            fb_regs.push(dst);
-        }
-        let mut a_in = fb_regs.clone();
-        a_in.extend_from_slice(args);
-        let a_out = self.lower(lhs, &a_in)?;
-        let bi = arity_in(rhs, self.sigs)?;
-        let b_in: Vec<usize> = a_out.iter().copied().take(bi).collect();
-        let b_out = self.lower(rhs, &b_in)?;
-        for (k, slot) in slots.iter().enumerate() {
-            self.emit(Instr::WriteState {
-                slot: *slot,
-                src: b_out[k],
-            });
-        }
-        Ok(a_out)
-    }
-
-    /// `A <~ B` — B's output feeds A's feedback input (1-sample delay), while B
-    /// is evaluated independently (it does not consume A's output). This models
-    /// a unidirectional feedback edge.
-    fn lower_feedback_tap(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-        _span: Span,
-    ) -> Result<Vec<usize>, CompileError> {
-        let bo = arity_out(rhs, self.sigs)?;
-        let mut fb_regs = Vec::with_capacity(bo);
-        let mut slots = Vec::with_capacity(bo);
-        for _ in 0..bo {
-            let slot = self.state_slots;
-            self.state_slots += 1;
-            slots.push(slot);
-            let dst = self.fresh_reg();
-            self.emit(Instr::ReadState { dst, slot });
+            self.emit(Instr::ReadBlockState { dst, slot });
             fb_regs.push(dst);
         }
         let mut a_in = args.to_vec();
@@ -733,7 +672,7 @@ impl<'a> Lowerer<'a> {
         let a_out = self.lower(lhs, &a_in)?;
         let b_out = self.lower(rhs, args)?;
         for (k, slot) in slots.iter().enumerate() {
-            self.emit(Instr::WriteState {
+            self.emit(Instr::WriteBlockState {
                 slot: *slot,
                 src: b_out[k],
             });
@@ -819,7 +758,6 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
                 BinOp::Split => (ai, bo),
                 BinOp::Merge => (ai, bo),
                 BinOp::Feedback => (ai - bo, ao),
-                BinOp::FeedbackTap => (ai - bo, ao),
                 BinOp::Delay => (ai, ao),
                 _ => (ai + bi, 1),
             }
@@ -900,7 +838,7 @@ pub fn lower_with(
         sigs,
         instrs: Vec::new(),
         next_reg: 0,
-        state_slots: 0,
+        block_state_slots: 0,
         delay_lens: Vec::new(),
         locals: Vec::new(),
         builtins: Vec::new(),
@@ -939,7 +877,7 @@ pub fn lower_with(
         num_inputs,
         num_outputs,
         state: StateLayout {
-            state_slots: lw.state_slots,
+            block_state_slots: lw.block_state_slots,
             delay_lens: lw.delay_lens,
             num_outputs,
         },
@@ -951,6 +889,7 @@ pub fn lower_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtin::BuiltinKind;
     use crate::lexer::tokenize;
     use crate::parser::parse;
     use crate::types::infer::{infer_program, infer_program_with};
@@ -978,7 +917,7 @@ mod tests {
                     1,
                     1,
                     2,
-                    BuiltinKind::Sample,
+                    BuiltinKind::Block,
                 )))),
                 _ => None,
             }
@@ -1011,15 +950,15 @@ mod tests {
     #[test]
     fn integrator_allocates_one_state_slot() {
         let ir = ir_of("main = + ~ _");
-        assert_eq!(ir.state.state_slots, 1);
+        assert_eq!(ir.state.block_state_slots, 1);
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::ReadState { .. })));
+            .any(|i| matches!(i, Instr::ReadBlockState { .. })));
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::WriteState { .. })));
+            .any(|i| matches!(i, Instr::WriteBlockState { .. })));
     }
 
     #[test]
@@ -1029,17 +968,17 @@ mod tests {
     }
 
     #[test]
-    fn sample_builtin_lowers_to_callsample() {
+    fn onepole_lowers_to_callblock() {
         let ir = ir_with("main = _ : onepole 200.0 0.5");
         assert!(
             ir.instrs
                 .iter()
-                .any(|i| matches!(i, Instr::CallSample { .. })),
-            "expected a CallSample instruction"
+                .any(|i| matches!(i, Instr::CallBlock { .. })),
+            "expected a CallBlock instruction"
         );
         assert_eq!(ir.builtins.len(), 1);
         let bi = &ir.builtins[0];
-        assert_eq!(bi.kind, BuiltinKind::Sample);
+        assert_eq!(bi.kind, BuiltinKind::Block);
         assert_eq!(bi.params, vec![200.0, 0.5]);
     }
 
@@ -1061,14 +1000,14 @@ mod tests {
     #[test]
     fn smooth_allocates_state() {
         let ir = ir_of("main = smooth _ 10.0");
-        assert_eq!(ir.state.state_slots, 1);
+        assert_eq!(ir.state.block_state_slots, 1);
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::ReadState { .. })));
+            .any(|i| matches!(i, Instr::ReadBlockState { .. })));
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::WriteState { .. })));
+            .any(|i| matches!(i, Instr::WriteBlockState { .. })));
     }
 }

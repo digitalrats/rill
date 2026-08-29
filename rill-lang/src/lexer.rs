@@ -25,8 +25,6 @@ pub enum Tok {
     Merge,
     /// `~`
     Tilde,
-    /// `<~`
-    FeedbackTap,
     /// `@`
     At,
     /// `,`
@@ -114,14 +112,6 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             i += 2;
             out.push(Token {
                 tok: Tok::Merge,
-                span: Span::new(start, i),
-            });
-            continue;
-        }
-        if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'~' {
-            i += 2;
-            out.push(Token {
-                tok: Tok::FeedbackTap,
                 span: Span::new(start, i),
             });
             continue;

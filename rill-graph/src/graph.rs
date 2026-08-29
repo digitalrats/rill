@@ -454,7 +454,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             // Wrap with feedback taps for each feedback source targeting `idx`.
             for &fb_src in &feedback_by_target[idx] {
                 expr = Expr::Bin {
-                    op: BinOp::FeedbackTap,
+                    op: BinOp::Feedback,
                     lhs: Box::new(expr),
                     rhs: Box::new(build(
                         fb_src,

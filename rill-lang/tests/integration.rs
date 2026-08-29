@@ -1,4 +1,3 @@
-use float_cmp::approx_eq;
 use rill_core::traits::Algorithm;
 use rill_lang::compile;
 
@@ -15,12 +14,14 @@ fn dc_offset() {
 }
 
 #[test]
-fn one_pole_lowpass_smoothing() {
-    let out = run("main = + ~ (_ * 0.5)", &[1.0, 1.0, 1.0, 1.0]);
-    assert!(approx_eq!(f32, out[0], 1.0, epsilon = 1e-6));
-    assert!(approx_eq!(f32, out[1], 1.5, epsilon = 1e-6));
-    assert!(approx_eq!(f32, out[2], 1.75, epsilon = 1e-6));
-    assert!(approx_eq!(f32, out[3], 1.875, epsilon = 1e-6));
+fn feedback_tap_uses_previous_tick() {
+    // `+ ~ _`: out[i] = x[i] + fb[i], where fb is the previous tick's input.
+    let mut prog = compile::<f32>("main = + ~ _").unwrap();
+    let mut out = vec![0.0f32; 4];
+    prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
+    prog.process(Some(&[5.0, 6.0, 7.0, 8.0]), &mut out).unwrap();
+    assert_eq!(out, vec![6.0, 8.0, 10.0, 12.0]);
 }
 
 #[test]

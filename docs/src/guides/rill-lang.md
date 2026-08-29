@@ -35,9 +35,9 @@ Four properties define the language:
   (`where`, `let`, top-level) have mutual visibility.
 - **β-reduction.** User-defined function calls are fully inlined before lowering.
   The final IR is flat — only Wire, constants, built-ins, and combinators remain.
-- **Hybrid block/sample execution.** The compiler analyses the data-dependency
-  graph and runs feedforward regions **whole-buffer** (SIMD) while only true
-  recurrences (feedback, delay) run sample-by-sample.
+- **Block-only execution.** The engine runs every instruction whole-buffer
+  (SIMD-friendly); per-sample state (filters, integrators, delay lines) lives
+  exclusively inside whole-block `BlockBuiltin` implementations.
 - **RT-safe control.** Named parameters and smoothing give control-rate
   automation without recompilation or locks.
 
@@ -234,14 +234,16 @@ The block-diagram algebra composes diagrams. For `A : (aᵢ, aₒ)` and
 | `A , B` | parallel | — | `(aᵢ + bᵢ, aₒ + bₒ)` |
 | `A <: B` | split (fan-out) | `bᵢ` is a multiple of `aₒ` | `(aᵢ, bₒ)` |
 | `A :> B` | merge (fan-in, sums) | `aₒ` is a multiple of `bᵢ` | `(aᵢ, bₒ)` |
-| `A ~ B` | feedback | `bᵢ ≤ aₒ` and `bₒ ≤ aᵢ` | `(aᵢ − bₒ, aₒ)` |
+| `A ~ B` | feedback tap | `bₒ ≤ aᵢ` | `(aᵢ − bₒ, aₒ)` |
 | `A @ n` | integer delay | `A` is `_ → 1`, `n` a constant int | same as `A` |
 
-Feedback (`~`) routes `B`'s outputs back into `A`'s leading inputs through a
-one-sample delay — this is how stateful filters and recursive structures are
-built. The delay operator `@` requires a compile-time constant integer length
-(constant-folded from integer literals and arithmetic on them); variable delays
-are not part of the MVP.
+Feedback (`~`) routes `B`'s outputs back into `A`'s trailing inputs through a
+one-tick (block) delay — this models a unidirectional feedback edge; `B` is
+evaluated independently and does not consume `A`'s output. Stateful filters and
+recursive structures are whole-block built-ins (per-sample state lives inside
+their `Algorithm` implementation). The delay operator `@` requires a compile-time
+constant integer length (constant-folded from integer literals and arithmetic on
+them); variable delays are not part of the MVP.
 
 ### Operator precedence
 
@@ -256,11 +258,11 @@ So `+ ~ _` parses as `(+) ~ (_)`, and `_ * 2 , _` as `(_ * 2) , _`.
 ### Idioms
 
 ```faust
-main = + ~ _;             // integrator:        y[n] = x[n] + y[n-1]
-main = + ~ (_ * 0.5);     // leaky integrator:  y[n] = x[n] + 0.5·y[n-1]
-main = _ @ 1;             // one-sample delay
-main = _ <: (_ , _) :> +; // fan out, then sum  = 2·x
-main = abs _;              // full-wave rectifier
+main = integrator;             // running sum: y[n] = x[n] + y[n-1]
+main = leaky_integrator 0.5;   // leaky integrator: y[n] = x[n] + 0.5·y[n-1]
+main = _ @ 1;                  // one-sample delay
+main = _ <: (_ , _) :> +;      // fan out, then sum  = 2·x
+main = abs _;                  // full-wave rectifier
 ```
 
 ## Type checking
@@ -299,7 +301,8 @@ only on `rill-core`.
 
 | Category | Builtins | Feature |
 |---|---|---|
-| Filters | `onepole`, `moog` (sample), `lowpass`, `highpass`, `biquad` (block) | always |
+| Filters | `onepole`, `moog`, `lowpass`, `highpass`, `biquad` (block) | always |
+| Integrators | `integrator`, `leaky_integrator` (block) | always |
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
 | Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
@@ -325,18 +328,15 @@ with arithmetic) or a `param(...)` reference. Constants are folded to `f64`
 during lowering. The signal port count per built-in is defined by its signature
 (see individual crate registrations).
 
-### Sample built-ins vs block built-ins
+### Block built-ins
 
-| Kind | Names | Behaviour | Inside `~` |
-|---|---|---|---|
-| **Sample** | `onepole`, `moog` | Per-sample state; the built-in's `process_sample` runs inside the sample-level recurrence loop. | Allowed |
-| **Block** | `lowpass`, `highpass`, `biquad`, `delay`, `distortion`, `limiter`, `sine`, `saw`, `square`, `triangle`, `noise`, `analog_moog`, `cassette_deck`, `spectralgate`, `spectraldelay`, `convolver`, `lofi`, `ay38910` | Opaque whole-buffer step; the built-in implements `Algorithm<T>` and processes all samples at once. | Compile error |
-
-Sample built-ins are composed from the feedback combinator just like hand-rolled
-recurrences:
+All built-ins are whole-buffer `BlockBuiltin`s: the built-in implements
+`Algorithm<T>` and processes all samples of a block at once. Per-sample state
+(filters, oscillators, integrators) lives inside the `Algorithm` implementation;
+the engine itself is purely block-level, which keeps every step SIMD-friendly.
 
 ```faust
-main = + ~ moog 500.0 0.5;   // feedback-legal per-sample filter
+main = _ : moog 500.0 0.5;   // recursive filter (state inside the built-in)
 ```
 
 Block built-ins cannot appear inside `~` — the compiler rejects them with an
@@ -677,33 +677,27 @@ single expression.
 ### Scheduling
 
 The interpreter compiles the linear IR into an **execution schedule** via SCC
-(strongly-connected component) analysis of the data-dependency graph. Each step
-in the schedule is classified as either a whole-buffer block op or a per-sample
-recurrent region:
+(strongly-connected component) analysis of the data-dependency graph. Every step
+is a whole-buffer operation:
 
-- **Feedforward regions** — all combinational instructions (arithmetic, math
-  builtins, fan-out/fan-in) — are `Step::Block` and run **whole-buffer** through
-  the `rill_core::math::vector` SIMD eDSL (`ScalarVector4`). The block path
-  computes directly in `T` (the runtime scalar, e.g. `f32`), letting LLVM
-  auto-vectorize the hot loop.
-- **Recurrent regions** — anything containing `~` (feedback) or `@` (delay)
-  operators that introduce a cross-sample dependency — are `Step::Sample` and
-  run as a tight per-sample loop over the instructions in their original IR
-  order. Only the recurrence itself goes sample-by-sample; all upstream
-  feedforward math stays block-wise.
+- **Block steps** — all instructions (arithmetic, math builtins, fan-out/fan-in,
+  block-state read/write, delay read/write) run **whole-buffer** through the
+  `rill_core::math::vector` SIMD eDSL (`ScalarVector4`). The block path computes
+  directly in `T` (the runtime scalar, e.g. `f32`), letting LLVM auto-vectorize
+  the hot loop.
+- **Foreign-block steps** — `BlockBuiltin` calls are opaque whole-buffer
+  `Algorithm::process` invocations. A built-in's internal per-sample recurrence
+  (e.g. a filter's state) is invisible to the engine.
 
 The whole-buffer register store is a flat `Vec<Vec<T>>` grown once to the block
 length and reused across calls. The hot `process()` path performs no heap
 allocation, no locks, and no syscalls, honoring rill's real-time rules.
 
-A fully-combinational program (e.g. `_ * 0.5`) compiles to all block steps. A
-pure feedback program (e.g. `+ ~ _`) degenerates to a single per-sample region.
-Mixed programs (e.g. `(_ * 0.5) : (+ ~ _)`) schedule the feedforward block
-steps first, then the recurrent sample region.
-
-The per-sample interpreter is retained as `RillProgram::process_reference` — a
-numerical oracle used by tests to validate the hybrid path. A Cranelift JIT
-backend is still planned and will reuse the same IR.
+Feedback (`~`) and delay (`@`) are block-level: feedback uses a double-buffered
+block state with a one-tick shadow copy (swapped at tick end), and delay uses a
+block-level ring buffer. No instruction runs sample-by-sample, so the whole
+engine is SIMD-friendly. A Cranelift JIT backend is still planned and will reuse
+the same IR.
 
 ## Benchmarks
 
@@ -733,30 +727,15 @@ control thread when its `source` parameter changes.
 
 ### Runtime — one 256-sample block
 
-| Program | Time | Kind |
-|---|---|---|
-| `_ * 0.5` | ~63 ns | feedforward (block) |
-| `_ * 0.5 : abs : (_ * 2.0)` | ~111 ns | feedforward (block) |
-| `_ <: (_ , _ * 0.5) :> +` | ~88 ns | feedforward (block) |
-| `_ * param("g", 0.5)` | ~61 ns | feedforward (block) |
-| `_ @ 4` | ~1.6 µs | recurrent (sample) |
-| `+ ~ (_ * 0.5)` | ~3.4 µs | recurrent (sample) |
-| `_ * smooth(param("g", 0.5), 10.0)` | ~4.5 µs | recurrent (sample) |
-
-### Hybrid vs. the per-sample reference — the block-processing win
-
-Comparing `process` (the hybrid block/sample executor) with
-`process_reference` (the per-sample oracle) on the same program:
-
-| Program | Hybrid | Reference | Speedup |
-|---|---|---|---|
-| feedforward chain | ~165 ns | ~5.5 µs | **~33×** |
-| feedback | ~3.4 µs | ~4.2 µs | ~1.2× |
-
-Feedforward programs run whole-buffer through the SIMD eDSL and are an order of
-magnitude faster than sample-by-sample evaluation. Feedback programs are near
-parity, because the recurrence forces both paths to go sample-by-sample — which
-is exactly why the scheduler isolates recurrences and blocks everything else.
+| Program | Time |
+|---|---|
+| `_ * 0.5` | ~63 ns |
+| `_ * 0.5 : abs : (_ * 2.0)` | ~111 ns |
+| `_ <: (_ , _ * 0.5) :> +` | ~88 ns |
+| `_ * param("g", 0.5)` | ~61 ns |
+| `_ @ 4` | ~1.6 µs |
+| `+ ~ (_ * 0.5)` | ~3.4 µs |
+| `_ * smooth(param("g", 0.5), 10.0)` | ~4.5 µs |
 
 ### Built-ins (via `rill-adrift`)
 
@@ -764,8 +743,8 @@ is exactly why the scheduler isolates recurrences and blocks everything else.
 |---|---|
 | `_ : lowpass 1000.0 0.7` (block Biquad) | ~275 ns |
 | `_ : lowpass param("cutoff", 1000.0) 0.7` (dynamic) | ~306 ns |
-| `_ : onepole 1200.0 0.5` (sample) | ~3.5 µs |
-| `_ : moog 800.0 0.6` (sample) | ~4.0 µs |
+| `_ : onepole 1200.0 0.5` (block) | ~3.5 µs |
+| `_ : moog 800.0 0.6` (block) | ~4.0 µs |
 | DSL-wrapped biquad vs. raw `Biquad` | ~264 ns vs. ~234 ns (~13% overhead) |
 
 Wrapping a `rill-core-dsp` filter in the DSL costs about 13% over calling the raw
