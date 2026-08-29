@@ -612,6 +612,7 @@ impl<'a> Lowerer<'a> {
                 self.lower(rhs, &merged)
             }
             BinOp::Feedback => self.lower_feedback(lhs, rhs, args, span),
+            BinOp::FeedbackTap => self.lower_feedback_tap(lhs, rhs, args, span),
             BinOp::Delay => self.lower_delay(lhs, rhs, args, span),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                 if matches!(op, BinOp::Add | BinOp::Sub) {
@@ -706,6 +707,40 @@ impl<'a> Lowerer<'a> {
         Ok(a_out)
     }
 
+    /// `A <~ B` — B's output feeds A's feedback input (1-sample delay), while B
+    /// is evaluated independently (it does not consume A's output). This models
+    /// a unidirectional feedback edge.
+    fn lower_feedback_tap(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+        _span: Span,
+    ) -> Result<Vec<usize>, CompileError> {
+        let bo = arity_out(rhs, self.sigs)?;
+        let mut fb_regs = Vec::with_capacity(bo);
+        let mut slots = Vec::with_capacity(bo);
+        for _ in 0..bo {
+            let slot = self.state_slots;
+            self.state_slots += 1;
+            slots.push(slot);
+            let dst = self.fresh_reg();
+            self.emit(Instr::ReadState { dst, slot });
+            fb_regs.push(dst);
+        }
+        let mut a_in = args.to_vec();
+        a_in.extend(fb_regs);
+        let a_out = self.lower(lhs, &a_in)?;
+        let b_out = self.lower(rhs, args)?;
+        for (k, slot) in slots.iter().enumerate() {
+            self.emit(Instr::WriteState {
+                slot: *slot,
+                src: b_out[k],
+            });
+        }
+        Ok(a_out)
+    }
+
     fn lower_delay(
         &mut self,
         lhs: &Expr,
@@ -784,6 +819,7 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
                 BinOp::Split => (ai, bo),
                 BinOp::Merge => (ai, bo),
                 BinOp::Feedback => (ai - bo, ao),
+                BinOp::FeedbackTap => (ai - bo, ao),
                 BinOp::Delay => (ai, ao),
                 _ => (ai + bi, 1),
             }

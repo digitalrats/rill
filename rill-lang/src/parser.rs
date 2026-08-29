@@ -14,6 +14,7 @@ struct Parser<'a> {
 fn infix_binding_power(t: &Tok) -> Option<(BinOp, u8, u8)> {
     Some(match t {
         Tok::Tilde => (BinOp::Feedback, 1, 2),
+        Tok::FeedbackTap => (BinOp::FeedbackTap, 1, 2),
         Tok::Colon => (BinOp::Seq, 3, 4),
         Tok::Merge => (BinOp::Merge, 5, 6),
         Tok::Split => (BinOp::Split, 7, 8),

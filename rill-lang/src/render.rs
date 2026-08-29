@@ -152,6 +152,7 @@ fn bin_info(op: &BinOp) -> (u8, u8, u8, &'static str) {
         BinOp::Rem => (13, 13, 14, "%"),
         BinOp::Delay => (15, 15, 16, "@"),
         BinOp::Feedback => (1, 1, 2, "~"),
+        BinOp::FeedbackTap => (1, 1, 2, "<~"),
     }
 }
 

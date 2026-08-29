@@ -19,6 +19,9 @@ pub enum BinOp {
     Merge,
     /// `~` feedback (implicit 1-sample delay).
     Feedback,
+    /// `<~` feedback tap — RHS output feeds LHS feedback input (1-sample delay),
+    /// RHS is evaluated independently (does not consume LHS output).
+    FeedbackTap,
     /// `@` integer delay.
     Delay,
     /// `+`

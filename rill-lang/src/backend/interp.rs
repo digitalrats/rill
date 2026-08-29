@@ -604,6 +604,15 @@ mod tests {
     }
 
     #[test]
+    fn feedback_tap_delays_source() {
+        // `+ <~ _`: out[n] = input[n] + input[n-1] (feedback tap of the wire)
+        let mut prog = build("main = + <~ _");
+        let mut out = [0.0f32; 3];
+        prog.process(Some(&[5.0, 7.0, 9.0]), &mut out).unwrap();
+        assert_eq!(out, [5.0, 12.0, 16.0]);
+    }
+
+    #[test]
     fn hybrid_one_sample_delay() {
         let mut prog = build("main = _ @ 1");
         let mut out = [0.0f32; 3];

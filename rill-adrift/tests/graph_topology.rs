@@ -65,3 +65,44 @@ fn graph_read_head_with_tape_resource_compiles() {
     MultichannelAlgorithm::process(&mut engine, &[], &mut outs).unwrap();
     assert!(out.iter().all(|v| v.is_finite()));
 }
+
+fn has_feedback_tap(e: &Expr) -> bool {
+    match e {
+        Expr::Bin { op, lhs, rhs, .. } => {
+            matches!(op, BinOp::FeedbackTap) || has_feedback_tap(lhs) || has_feedback_tap(rhs)
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn feedback_edge_reconstructs_to_feedback_tap() {
+    let reg = full_registry_f32();
+    let mut b: GraphBuilder<f32, 256> = GraphBuilder::new();
+
+    b.add_resource(rill_graph::GraphResource {
+        name: "tape_0".to_string(),
+        kind: "tape".to_string(),
+        capacity: 96000,
+    });
+
+    // write_head (2 in: dry + feedback), read_head (0 in)
+    let mut wh = Params::new(44100.0);
+    wh.insert("delay_time", ParamValue::Float(0.5));
+    wh.insert("feedback", ParamValue::Float(0.35));
+    b.add_node("rill/write_head", &wh);
+
+    let mut rh = Params::new(44100.0);
+    rh.insert("delay", ParamValue::Float(0.33));
+    b.add_node("rill/read_head", &rh);
+
+    // feedback edge: read_head -> write_head (feedback input, port 1)
+    b.connect_feedback(1, 0, 0, 1);
+
+    let ast = b.ast_from_def(&reg).unwrap();
+    let body = ast.main_def().unwrap().body();
+    assert!(
+        has_feedback_tap(body),
+        "feedback edge should reconstruct to a FeedbackTap combinator"
+    );
+}

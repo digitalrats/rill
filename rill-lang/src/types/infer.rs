@@ -591,6 +591,7 @@ fn infer_bin(
         BinOp::Split => split(ctx, a, b, span),
         BinOp::Merge => merge(ctx, a, b, span),
         BinOp::Feedback => feedback(ctx, a, b, span),
+        BinOp::FeedbackTap => feedback(ctx, a, b, span),
         BinOp::Delay => delay(ctx, a, b, span),
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => arith(ctx, a, b, span),
     }

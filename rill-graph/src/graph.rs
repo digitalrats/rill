@@ -366,16 +366,29 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             e.sort_by_key(|&(_, fp, _)| fp);
         }
 
+        // Feedback edges: `feedback_by_target[to]` lists source nodes feeding
+        // `to`'s feedback input; `feedback_sources[from]` lists targets.
+        let mut feedback_by_target: Vec<Vec<usize>> = vec![vec![]; n];
+        let mut feedback_sources: Vec<Vec<usize>> = vec![vec![]; n];
+        for (from, _fp, to, _tp) in &self.feedback_edges {
+            if *from < n && *to < n {
+                feedback_by_target[*to].push(*from);
+                feedback_sources[*from].push(*to);
+            }
+        }
+
         // Reconstruct the graph into a single expression tree using the DSL
         // combinators. Fan-in uses `Par` + `:>` (merge); fan-out duplicates the
         // (stateless) source expression via memoization — stateful fan-out is a
-        // known limitation and requires `<:` (Split) support.
+        // known limitation and requires `<:` (Split) support. Feedback edges are
+        // reconstructed as `A <~ B` (feedback tap).
         let mut memo: Vec<Option<Expr>> = vec![None; n];
 
         fn build(
             idx: usize,
             blocks: &[Expr],
             in_edges: &[Vec<(usize, usize, usize)>],
+            feedback_by_target: &[Vec<usize>],
             memo: &mut Vec<Option<Expr>>,
             dummy: Span,
         ) -> Expr {
@@ -383,7 +396,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 return e.clone();
             }
             let block = blocks[idx].clone();
-            let expr = if in_edges[idx].is_empty() {
+            let mut expr = if in_edges[idx].is_empty() {
                 block
             } else {
                 let mut producers: Vec<usize> = Vec::new();
@@ -395,17 +408,38 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 if producers.len() == 1 {
                     Expr::Bin {
                         op: BinOp::Seq,
-                        lhs: Box::new(build(producers[0], blocks, in_edges, memo, dummy)),
+                        lhs: Box::new(build(
+                            producers[0],
+                            blocks,
+                            in_edges,
+                            feedback_by_target,
+                            memo,
+                            dummy,
+                        )),
                         rhs: Box::new(block),
                         span: dummy,
                     }
                 } else {
-                    let mut par = build(producers[0], blocks, in_edges, memo, dummy);
+                    let mut par = build(
+                        producers[0],
+                        blocks,
+                        in_edges,
+                        feedback_by_target,
+                        memo,
+                        dummy,
+                    );
                     for &p in &producers[1..] {
                         par = Expr::Bin {
                             op: BinOp::Par,
                             lhs: Box::new(par),
-                            rhs: Box::new(build(p, blocks, in_edges, memo, dummy)),
+                            rhs: Box::new(build(
+                                p,
+                                blocks,
+                                in_edges,
+                                feedback_by_target,
+                                memo,
+                                dummy,
+                            )),
                             span: dummy,
                         };
                     }
@@ -417,21 +451,54 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                     }
                 }
             };
+            // Wrap with feedback taps for each feedback source targeting `idx`.
+            for &fb_src in &feedback_by_target[idx] {
+                expr = Expr::Bin {
+                    op: BinOp::FeedbackTap,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(build(
+                        fb_src,
+                        blocks,
+                        in_edges,
+                        feedback_by_target,
+                        memo,
+                        dummy,
+                    )),
+                    span: dummy,
+                };
+            }
             memo[idx] = Some(expr.clone());
             expr
         }
 
-        // The graph output is the parallel composition of all sink nodes.
-        let sinks: Vec<usize> = (0..n).filter(|&i| out_edges[i].is_empty()).collect();
+        // The graph output is the parallel composition of all sink nodes
+        // (excluding feedback-only leaves).
+        let sinks: Vec<usize> = (0..n)
+            .filter(|&i| out_edges[i].is_empty() && feedback_sources[i].is_empty())
+            .collect();
         let body = if sinks.is_empty() {
             Expr::Wire(dummy)
         } else {
-            let mut body = build(sinks[0], &blocks, &in_edges, &mut memo, dummy);
+            let mut body = build(
+                sinks[0],
+                &blocks,
+                &in_edges,
+                &feedback_by_target,
+                &mut memo,
+                dummy,
+            );
             for &s in &sinks[1..] {
                 body = Expr::Bin {
                     op: BinOp::Par,
                     lhs: Box::new(body),
-                    rhs: Box::new(build(s, &blocks, &in_edges, &mut memo, dummy)),
+                    rhs: Box::new(build(
+                        s,
+                        &blocks,
+                        &in_edges,
+                        &feedback_by_target,
+                        &mut memo,
+                        dummy,
+                    )),
                     span: dummy,
                 };
             }
