@@ -17,6 +17,9 @@ pub mod player;
 
 /// Recording sink node — captures signal for offline analysis and WAV export.
 pub mod recorder;
+
+/// The tape as a passive in-memory delay backend (ring buffer + heads).
+pub mod tape;
 /// Unevenly-sampled time series reader and source node.
 pub mod timeseries;
 

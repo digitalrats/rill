@@ -14,7 +14,9 @@
 //! | [`FanInBuffer`] | Multiple producers, one consumer | Mix multiple signals |
 //! | [`DelayLine`] | Circular buffer with delay | Effects like echo, reverb |
 //! | [`RingBuffer`] | Multi-producer, multi-consumer | Generic queue for any scenario |
-//! | [`TapeLoop`](crate::buffer::TapeLoop) | Heap-allocated circular buffer | Tape delay with large capacity |
+//!
+//! > The tape loop (`TapeLoop`/`TapeWriter`/`TapeReader`) moved to
+//! > `rill_sampler::tape` — it is a passive tape backend, not a core buffer.
 //!
 //! ## Features
 //!
@@ -40,7 +42,6 @@ mod pipe;
 mod registry;
 mod ring;
 mod storage;
-mod tape;
 
 // ============================================================================
 // Re-exports
@@ -53,7 +54,6 @@ pub use pipe::PipeBuffer;
 pub use registry::ResourceRegistry;
 pub use ring::RingBuffer;
 pub use storage::{AtomicCell, AtomicCellError};
-pub use tape::{tape_handles, TapeLoop, TapeReader, TapeWriter};
 
 // ============================================================================
 // Constants

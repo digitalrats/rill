@@ -1,14 +1,16 @@
-use crate::buffer::Buffer;
-use crate::math::Transcendental;
+//! The tape loop ring buffer and its shared capability handles.
+
+use rill_core::buffer::Buffer;
+use rill_core::math::Transcendental;
 use std::cell::UnsafeCell;
 use std::rc::Rc;
 
 /// Heap-allocated ring buffer for tape delay — single-threaded.
 ///
-/// Unlike [`DelayLine`](super::DelayLine), `TapeLoop` does NOT use const generics
-/// for its capacity — the buffer is allocated on the heap at runtime.
-/// This allows arbitrarily large delay lines (millions of samples) without
-/// stack overflow.
+/// Unlike [`DelayLine`](rill_core::buffer::DelayLine), `TapeLoop` does NOT use
+/// const generics for its capacity — the buffer is allocated on the heap at
+/// runtime. This allows arbitrarily large delay lines (millions of samples)
+/// without stack overflow.
 ///
 /// # Thread safety
 ///
@@ -18,7 +20,7 @@ use std::rc::Rc;
 /// # Example
 ///
 /// ```rust
-/// use rill_core::buffer::TapeLoop;
+/// use rill_sampler::tape::tape_loop::TapeLoop;
 ///
 /// let mut tape = TapeLoop::<f32>::new(96000).unwrap();
 /// tape.write(0.5);
@@ -192,7 +194,7 @@ impl<T> TapeCell<T> {
 /// Unique write capability over a shared [`TapeLoop`].
 ///
 /// Not `Clone` — at most one `TapeWriter` exists per tape (enforced by the
-/// resource registry). Held by the single write head.
+/// tape backend). Held by the single write head.
 pub struct TapeWriter<T> {
     cell: TapeCell<T>,
 }
@@ -223,10 +225,9 @@ pub fn tape_handles<T>(tape: TapeLoop<T>) -> (TapeWriter<T>, TapeReader<T>) {
 }
 
 impl<T: Transcendental> TapeWriter<T> {
-    /// SAFETY: the graph is single-threaded; at most one `TapeWriter` exists
-    /// per cell (the registry hands the writer out once) and the writer is
-    /// never active at the same instant as any reader — nodes are processed
-    /// sequentially in topological order.
+    /// SAFETY: the signal graph is single-threaded; at most one `TapeWriter`
+    /// exists per cell and the writer is never active at the same instant as
+    /// any reader — nodes are processed sequentially in topological order.
     #[allow(unsafe_code)]
     #[inline(always)]
     fn tape_mut(&mut self) -> &mut TapeLoop<T> {
@@ -266,8 +267,8 @@ impl<T: Transcendental> TapeWriter<T> {
 }
 
 impl<T: Transcendental> TapeReader<T> {
-    /// SAFETY: the graph is single-threaded; no `&mut` to the tape is live
-    /// while a reader is active — nodes are processed sequentially in
+    /// SAFETY: the signal graph is single-threaded; no `&mut` to the tape is
+    /// live while a reader is active — nodes are processed sequentially in
     /// topological order and readers hold shared refs only.
     #[allow(unsafe_code)]
     #[inline(always)]

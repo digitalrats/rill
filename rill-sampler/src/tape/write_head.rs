@@ -1,5 +1,7 @@
+//! Tape write head with feedback control.
+
+use crate::tape::tape_loop::TapeWriter;
 use rill_core::{
-    buffer::TapeWriter,
     math::Transcendental,
     traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata},
     traits::{MultichannelAlgorithm, ProcessResult},
@@ -21,11 +23,6 @@ pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
 impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     /// Creates a new write head with default settings.
     pub fn new(sample_rate: f32) -> Self {
-        Self::with_resource(sample_rate, "tape_0")
-    }
-
-    /// Creates a new write head with a named tape resource.
-    pub fn with_resource(sample_rate: f32, _resource_name: &str) -> Self {
         Self {
             tape: None,
             delay_time: 0.5,
@@ -85,19 +82,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for WriteHead<T, BUF
     }
 }
 
-impl<T: Transcendental, const BUF_SIZE: usize> rill_core::builtin::BlockBuiltin<T>
-    for WriteHead<T, BUF_SIZE>
-{
-    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
-        let v = value.as_f32().unwrap_or(0.0);
-        match index {
-            0 => self.set_delay_time(v),
-            1 => self.set_feedback(v),
-            _ => {}
-        }
-    }
-}
-
 impl<T: Transcendental, const BUF_SIZE: usize> MultichannelAlgorithm<T> for WriteHead<T, BUF_SIZE> {
     fn num_inputs(&self) -> usize {
         2
@@ -129,19 +113,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultichannelAlgorithm<T> for Writ
     }
 
     fn reset(&mut self) {}
-}
-
-impl<T: Transcendental, const BUF_SIZE: usize> rill_core::builtin::MultichannelBlockBuiltin<T>
-    for WriteHead<T, BUF_SIZE>
-{
-    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
-        let v = value.as_f32().unwrap_or(0.0);
-        match index {
-            0 => self.set_delay_time(v),
-            1 => self.set_feedback(v),
-            _ => {}
-        }
-    }
 }
 
 #[cfg(test)]
