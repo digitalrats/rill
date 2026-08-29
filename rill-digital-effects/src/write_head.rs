@@ -2,7 +2,7 @@ use rill_core::{
     buffer::TapeWriter,
     math::Transcendental,
     traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata},
-    traits::ProcessResult,
+    traits::{MultichannelAlgorithm, ProcessResult},
 };
 
 #[allow(unsafe_code)]
@@ -86,6 +86,52 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for WriteHead<T, BUF
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> rill_core::builtin::BlockBuiltin<T>
+    for WriteHead<T, BUF_SIZE>
+{
+    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+        let v = value.as_f32().unwrap_or(0.0);
+        match index {
+            0 => self.set_delay_time(v),
+            1 => self.set_feedback(v),
+            _ => {}
+        }
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> MultichannelAlgorithm<T> for WriteHead<T, BUF_SIZE> {
+    fn num_inputs(&self) -> usize {
+        2
+    }
+
+    fn num_outputs(&self) -> usize {
+        1
+    }
+
+    /// Inputs are `[dry, feedback]`; the mixed signal `dry + feedback * feedback`
+    /// is written to the tape and passed through to the output.
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        let dry = inputs.first().copied().unwrap_or(&[]);
+        let fb = inputs.get(1).copied().unwrap_or(&[]);
+        let g = T::from_f32(self.feedback);
+        if let Some(out) = outputs.first_mut() {
+            let n = out.len();
+            for i in 0..n {
+                let d = dry.get(i).copied().unwrap_or(T::ZERO);
+                let f = fb.get(i).copied().unwrap_or(T::ZERO);
+                let mixed = d + f * g;
+                out[i] = mixed;
+                if let Some(tape) = self.tape.as_mut() {
+                    tape.write(mixed);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {}
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> rill_core::builtin::MultichannelBlockBuiltin<T>
     for WriteHead<T, BUF_SIZE>
 {
     fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {

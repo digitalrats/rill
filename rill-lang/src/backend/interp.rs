@@ -3,6 +3,7 @@
 
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
+use rill_core::traits::MultichannelAlgorithm;
 
 use crate::ir::{BinArith, Instr, UnOp};
 use crate::program::RillProgram;
@@ -314,27 +315,38 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
             }
             prog.block_regs[first_dst] = out;
         } else {
-            // Multi-channel: interleave inputs, process, deinterleave outputs
-            let inp: Vec<T> = (0..n_in)
-                .flat_map(|ch| {
-                    let reg_idx = srcs[ch];
-                    prog.block_regs[reg_idx][..n].iter().copied()
-                })
-                .collect();
-
-            let mut out_buf = vec![T::ZERO; n_out * n];
-
+            // Multi-channel: dispatch to MultichannelAlgorithm when available,
+            // otherwise interleave inputs and process through Algorithm.
             match &mut prog.builtins[instance] {
+                crate::program::BuiltinInst::MultichannelBlock(mb) => {
+                    let inputs: Vec<&[T]> = (0..n_in)
+                        .map(|ch| &prog.block_regs[srcs[ch]][..n])
+                        .collect();
+                    let mut out_bufs: Vec<Vec<T>> = (0..n_out).map(|_| vec![T::ZERO; n]).collect();
+                    let mut out_slices: Vec<&mut [T]> =
+                        out_bufs.iter_mut().map(|v| v.as_mut_slice()).collect();
+                    let _ = MultichannelAlgorithm::process(mb.as_mut(), &inputs, &mut out_slices);
+                    for (ch, out_buf) in out_bufs.iter().enumerate() {
+                        let reg_idx = first_dst + ch;
+                        prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[..n]);
+                    }
+                }
                 crate::program::BuiltinInst::Block(b) => {
+                    let inp: Vec<T> = (0..n_in)
+                        .flat_map(|ch| {
+                            let reg_idx = srcs[ch];
+                            prog.block_regs[reg_idx][..n].iter().copied()
+                        })
+                        .collect();
+                    let mut out_buf = vec![T::ZERO; n_out * n];
                     let _ = b.process(Some(&inp), &mut out_buf);
+                    for ch in 0..n_out {
+                        let reg_idx = first_dst + ch;
+                        let start = ch * n;
+                        prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[start..start + n]);
+                    }
                 }
                 _ => unreachable!("ForeignBlock step with non-block builtin"),
-            }
-
-            for ch in 0..n_out {
-                let reg_idx = first_dst + ch;
-                let start = ch * n;
-                prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[start..start + n]);
             }
         }
     }

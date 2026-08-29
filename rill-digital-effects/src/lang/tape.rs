@@ -11,10 +11,11 @@ use rill_core::traits::Algorithm;
 /// Signal inputs are wired via the enclosing combinator; the symbolic resource
 /// reference is a positional `ParamType::Resource` argument.
 pub fn register_tape_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    reg.register_resource_block(
+    reg.register_resource_multichannel_block(
         BuiltinSig {
             name: "write_head",
             params: vec![
+                ParamType::Signal,
                 ParamType::Signal,
                 ParamType::Resource,
                 ParamType::Float,
@@ -59,7 +60,7 @@ pub fn register_tape_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
 mod tests {
     use super::*;
     use rill_core::buffer::{ResourceRegistry, TapeLoop};
-    use rill_core::traits::ProcessResult;
+    use rill_core::traits::{MultichannelAlgorithm, ProcessResult};
 
     #[test]
     fn tape_heads_share_a_tape_via_registry() {
@@ -72,7 +73,7 @@ mod tests {
         let mut wh = reg
             .get("write_head")
             .unwrap()
-            .build_resource_block(&[0.5, 0.3], 44100.0, &mut resources, "tape_0")
+            .build_resource_multichannel_block(&[0.5, 0.3], 44100.0, &mut resources, "tape_0")
             .expect("write_head resource block");
         let mut rh = reg
             .get("read_head")
@@ -82,7 +83,9 @@ mod tests {
 
         let input = [1.0f32, 2.0, 3.0, 4.0];
         let mut pass = [0.0f32; 4];
-        Algorithm::process(wh.as_mut(), Some(&input), &mut pass).expect("write");
+        let ins: [&[f32]; 2] = [&input, &input];
+        let mut outs: [&mut [f32]; 1] = [&mut pass];
+        MultichannelAlgorithm::process(wh.as_mut(), &ins, &mut outs).expect("write");
 
         let mut out = [0.0f32; 4];
         Algorithm::process(rh.as_mut(), None, &mut out).expect("read");
