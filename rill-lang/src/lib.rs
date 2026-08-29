@@ -84,6 +84,29 @@ pub fn compile_program<T: Transcendental>(
     registry: &Registry<T>,
     sample_rate: f32,
 ) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    compile_program_inner(program, registry, sample_rate, None)
+}
+
+/// Compile an AST program against a pre-built resource registry.
+///
+/// The registry is shared (e.g. one tape across recording + playback engines);
+/// the caller owns it and must keep it alive while both engines run. When a
+/// resource is absent from `resources`, the program fails with `Unsupported`.
+pub fn compile_program_with_resources<T: Transcendental>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    resources: &mut rill_core::buffer::ResourceRegistry<T>,
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    compile_program_inner(program, registry, sample_rate, Some(resources))
+}
+
+fn compile_program_inner<T: Transcendental>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
     let (program, resource_decls) = extract_resources(program);
 
     let mut typed = types::infer::infer_program_with(&program, registry)?;
@@ -101,15 +124,22 @@ pub fn compile_program<T: Transcendental>(
         }
     }
 
-    let mut resources = rill_core::buffer::ResourceRegistry::<T>::new();
-    for decl in &resource_decls {
-        let tape = rill_core::buffer::TapeLoop::<T>::new(decl.capacity).ok_or_else(|| {
-            CompileError::Unsupported(format!("tape '{}' has zero capacity", decl.name))
-        })?;
-        resources.register_tape(decl.name.clone(), tape);
-    }
+    let mut owned = rill_core::buffer::ResourceRegistry::<T>::new();
+    let res: &mut rill_core::buffer::ResourceRegistry<T> = match resources {
+        Some(r) => r,
+        None => {
+            for decl in &resource_decls {
+                let tape =
+                    rill_core::buffer::TapeLoop::<T>::new(decl.capacity).ok_or_else(|| {
+                        CompileError::Unsupported(format!("tape '{}' has zero capacity", decl.name))
+                    })?;
+                owned.register_tape(decl.name.clone(), tape);
+            }
+            &mut owned
+        }
+    };
 
-    let rp = RillProgram::<T>::new_with_resources(ir, registry, sample_rate, &mut resources)?;
+    let rp = RillProgram::<T>::new_with_resources(ir, registry, sample_rate, res)?;
     let mailbox = Arc::new(Mailbox::new(64));
     Ok(program_engine::ProgramEngine::new(rp, mailbox))
 }
