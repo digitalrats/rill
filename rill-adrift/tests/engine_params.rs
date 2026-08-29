@@ -237,7 +237,7 @@ fn graph_builder_param_routing_works() {
     let mut params = Params::new(44100.0);
     params.insert("clock", ParamValue::Float(1_750_000.0));
     params.insert("regs", ParamValue::Float(0.0));
-    builder.add_node("rill/lofi_chip", &params);
+    builder.add_node("ay38910", &params);
 
     let mut engine = builder.compile_def(&reg, 44100.0).unwrap();
 
