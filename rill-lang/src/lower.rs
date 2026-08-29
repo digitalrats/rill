@@ -253,11 +253,26 @@ impl<'a> Lowerer<'a> {
                                 }
                                 param_pos += 1;
                             }
-                            ParamType::Record(_schema) => {
+                            ParamType::Record(schema) => {
                                 if param_pos >= call_args.len() {
                                     break;
                                 }
                                 if let Expr::Record(fields, field_span) = &call_args[param_pos] {
+                                    let mut field_values: HashMap<&str, f64> = HashMap::new();
+                                    for (field_name, field_expr) in fields {
+                                        if let Some(val) = const_f64(field_expr) {
+                                            field_values.insert(field_name.as_str(), val);
+                                        }
+                                    }
+                                    // Push schema field values in schema order so the
+                                    // built-in factory can read its configuration.
+                                    for field in &schema.fields {
+                                        let val = field_values
+                                            .get(field.name)
+                                            .copied()
+                                            .unwrap_or(field.default.unwrap_or(0.0));
+                                        param_values.push(val);
+                                    }
                                     for (field_name, field_expr) in fields {
                                         if let Some(val) = const_f64(field_expr) {
                                             self.intern_param(
@@ -555,7 +570,11 @@ impl<'a> Lowerer<'a> {
             }
             BinOp::Split => {
                 let a_out = self.lower(lhs, args)?;
-                let bi = arity_in(rhs, self.sigs)?;
+                let bi = if self.rhs_variadic(rhs) {
+                    a_out.len()
+                } else {
+                    arity_in(rhs, self.sigs)?
+                };
                 let reps = bi / a_out.len().max(1);
                 let mut fanned = Vec::with_capacity(bi);
                 for _ in 0..reps {
@@ -565,7 +584,11 @@ impl<'a> Lowerer<'a> {
             }
             BinOp::Merge => {
                 let a_out = self.lower(lhs, args)?;
-                let bi = arity_in(rhs, self.sigs)?;
+                let bi = if self.rhs_variadic(rhs) {
+                    a_out.len()
+                } else {
+                    arity_in(rhs, self.sigs)?
+                };
                 let groups = a_out.len() / bi.max(1);
                 let mut merged = Vec::with_capacity(bi);
                 for k in 0..bi {
@@ -678,6 +701,18 @@ impl<'a> Lowerer<'a> {
             });
         }
         Ok(a_out)
+    }
+
+    /// Whether `rhs` is a built-in that takes variadic signal inputs.
+    fn rhs_variadic(&self, rhs: &Expr) -> bool {
+        match rhs {
+            Expr::Apply { name, .. } | Expr::Ref(name, _) => self
+                .sigs
+                .builtin_sig(name)
+                .map(|s| s.has_variadic_signal())
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     fn lower_delay(

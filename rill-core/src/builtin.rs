@@ -142,6 +142,13 @@ impl BuiltinSig {
             .count()
     }
 
+    /// Whether the built-in takes variadic signal inputs (e.g. a mixer).
+    pub fn has_variadic_signal(&self) -> bool {
+        self.params.iter().any(
+            |p| matches!(p, ParamType::Variadic(inner) if matches!(**inner, ParamType::Signal)),
+        )
+    }
+
     /// Minimum number of Apply arguments (excludes Signal params).
     pub fn min_args(&self) -> usize {
         let mut count = 0;
@@ -176,16 +183,22 @@ impl BuiltinSig {
 /// A boxed factory building an instance from folded params + a sample rate.
 type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
 type MultichannelBlockFactory<T> =
-    Box<dyn Fn(&[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
+    Box<dyn Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
 /// A block factory that also receives the resource registry and the resource
 /// name to resolve named resources (e.g. tape loops) for resource-backed built-ins.
 type ResourceBlockFactory<T> = Box<
     dyn Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
 >;
-/// A multi-channel block factory that also receives the resource registry and
-/// the resource name.
+/// A multi-channel block factory that also receives the signal input count, the
+/// resource registry, and the resource name.
 type ResourceMultichannelBlockFactory<T> = Box<
-    dyn Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn MultichannelBlockBuiltin<T>>
+    dyn Fn(
+            usize,
+            &[f64],
+            f32,
+            &mut ResourceRegistry<T>,
+            &str,
+        ) -> Box<dyn MultichannelBlockBuiltin<T>>
         + Send
         + Sync,
 >;
@@ -221,11 +234,12 @@ impl<T: Transcendental> Entry<T> {
     /// Build a multichannel block instance.
     pub fn build_multichannel_block(
         &self,
+        signal_ins: usize,
         params: &[f64],
         sample_rate: f32,
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match &self.factory {
-            Factory::MultichannelBlock(f) => Some(f(params, sample_rate)),
+            Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate)),
             _ => None,
         }
     }
@@ -247,6 +261,7 @@ impl<T: Transcendental> Entry<T> {
     /// Build a resource-backed multi-channel block instance.
     pub fn build_resource_multichannel_block(
         &self,
+        signal_ins: usize,
         params: &[f64],
         sample_rate: f32,
         registry: &mut ResourceRegistry<T>,
@@ -254,7 +269,7 @@ impl<T: Transcendental> Entry<T> {
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match &self.factory {
             Factory::ResourceMultichannelBlock(f) => {
-                Some(f(params, sample_rate, registry, resource_name))
+                Some(f(signal_ins, params, sample_rate, registry, resource_name))
             }
             _ => None,
         }
@@ -300,7 +315,10 @@ impl<T: Transcendental> Registry<T> {
     pub fn register_multichannel_block(
         &mut self,
         sig: BuiltinSig,
-        factory: impl Fn(&[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync + 'static,
+        factory: impl Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
     ) {
         debug_assert_eq!(sig.kind, BuiltinKind::Block);
         self.entries.insert(
@@ -336,7 +354,13 @@ impl<T: Transcendental> Registry<T> {
     pub fn register_resource_multichannel_block(
         &mut self,
         sig: BuiltinSig,
-        factory: impl Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn MultichannelBlockBuiltin<T>>
+        factory: impl Fn(
+                usize,
+                &[f64],
+                f32,
+                &mut ResourceRegistry<T>,
+                &str,
+            ) -> Box<dyn MultichannelBlockBuiltin<T>>
             + Send
             + Sync
             + 'static,

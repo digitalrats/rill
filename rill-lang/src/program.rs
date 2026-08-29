@@ -157,7 +157,13 @@ impl<T: Transcendental> RillProgram<T> {
                         ))
                     })?;
                     entry
-                        .build_resource_multichannel_block(&bi.params, sample_rate, reg, res)
+                        .build_resource_multichannel_block(
+                            bi.signal_ins,
+                            &bi.params,
+                            sample_rate,
+                            reg,
+                            res,
+                        )
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
                                 "resource built-in '{}' is not registered as resource-backed",
@@ -166,7 +172,7 @@ impl<T: Transcendental> RillProgram<T> {
                         })?
                 } else {
                     entry
-                        .build_multichannel_block(&bi.params, sample_rate)
+                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
                         .expect("registry build_multichannel_block failed")
                 };
                 MultichannelAlgorithm::reset(b.as_mut());

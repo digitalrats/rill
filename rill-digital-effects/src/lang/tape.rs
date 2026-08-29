@@ -25,7 +25,7 @@ pub fn register_tape_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
             kind: BuiltinKind::Block,
             param_names: vec!["delay_time", "feedback"],
         },
-        |p, sr, registry, resource| {
+        |_signal_ins, p, sr, registry, resource| {
             let mut wh = crate::WriteHead::<T, 64>::new(sr);
             wh.set_delay_time(p[0] as f32);
             wh.set_feedback(p[1] as f32);
@@ -73,7 +73,7 @@ mod tests {
         let mut wh = reg
             .get("write_head")
             .unwrap()
-            .build_resource_multichannel_block(&[0.5, 0.3], 44100.0, &mut resources, "tape_0")
+            .build_resource_multichannel_block(2, &[0.5, 0.3], 44100.0, &mut resources, "tape_0")
             .expect("write_head resource block");
         let mut rh = reg
             .get("read_head")

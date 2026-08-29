@@ -1,5 +1,6 @@
 use rill_adrift::lang_builtins::full_registry;
 use rill_core::traits::Algorithm;
+use rill_lang::compile_graph;
 use rill_lang::compile_with;
 
 fn run(src: &str, input: &[f32], sr: f32) -> Vec<f32> {
@@ -77,4 +78,36 @@ fn analog_moog_smoke() {
     let reg = full_registry::<f32>();
     assert!(reg.get("analog_moog").is_some());
     assert!(compile_with::<f32>("main = _ : analog_moog 800.0 0.5", &reg, 48_000.0).is_ok());
+}
+
+#[test]
+fn dry_wet_blends() {
+    use rill_core::traits::MultichannelAlgorithm;
+    let reg = full_registry::<f32>();
+    let mut engine =
+        compile_graph::<f32>("main = (_, _) :> dry_wet { mix: 1.0 }", &reg, 48_000.0).unwrap();
+    let dry = [1.0f32; 4];
+    let wet = [3.0f32; 4];
+    let mut l = [0.0f32; 4];
+    let mut r = [0.0f32; 4];
+    let inputs: [&[f32]; 2] = [&dry, &wet];
+    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
+    MultichannelAlgorithm::process(&mut engine, &inputs, &mut outputs).unwrap();
+    assert_eq!(l, [3.0f32; 4], "mix=1.0 should pass wet through");
+}
+
+#[test]
+fn mixer_sums_stereo() {
+    use rill_core::traits::MultichannelAlgorithm;
+    let reg = full_registry::<f32>();
+    let mut engine =
+        compile_graph::<f32>("main = (_, _) :> mixer { master_vol: 1.0 }", &reg, 48_000.0).unwrap();
+    let ch0 = [1.0f32; 4];
+    let ch1 = [2.0f32; 4];
+    let mut l = [0.0f32; 4];
+    let mut r = [0.0f32; 4];
+    let inputs: [&[f32]; 2] = [&ch0, &ch1];
+    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
+    MultichannelAlgorithm::process(&mut engine, &inputs, &mut outputs).unwrap();
+    assert!((l[0] - 2.4).abs() < 1e-5, "l[0]={} expected ~2.4", l[0]);
 }

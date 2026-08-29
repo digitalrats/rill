@@ -258,7 +258,8 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
         Expr::Bin { op, lhs, rhs, span } => {
             let a = infer_expr(ctx, lhs)?;
             let b = infer_expr(ctx, rhs)?;
-            infer_bin(ctx, *op, &a, &b, *span)
+            let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
+            infer_bin(ctx, *op, &a, &b, *span, rhs_variadic)
         }
         Expr::Let {
             defs,
@@ -578,18 +579,31 @@ fn infer_param(args: &[Expr], span: Span) -> Result<Type, CompileError> {
     Ok(Type::uniform(0, 1, Scalar::Float))
 }
 
+fn expr_has_variadic_signal(ctx: &Ctx<'_>, e: &Expr) -> bool {
+    let name = match e {
+        Expr::Apply { name, .. } => name,
+        Expr::Ref(name, _) => name,
+        _ => return false,
+    };
+    ctx.sigs
+        .builtin_sig(name)
+        .map(|s| s.has_variadic_signal())
+        .unwrap_or(false)
+}
+
 fn infer_bin(
     ctx: &mut Ctx<'_>,
     op: BinOp,
     a: &Type,
     b: &Type,
     span: Span,
+    rhs_variadic: bool,
 ) -> Result<Type, CompileError> {
     match op {
         BinOp::Seq => seq(ctx, a, b, span),
         BinOp::Par => Ok(par(a, b)),
-        BinOp::Split => split(ctx, a, b, span),
-        BinOp::Merge => merge(ctx, a, b, span),
+        BinOp::Split => split(ctx, a, b, span, rhs_variadic),
+        BinOp::Merge => merge(ctx, a, b, span, rhs_variadic),
         BinOp::Feedback => feedback(ctx, a, b, span),
         BinOp::Delay => delay(ctx, a, b, span),
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => arith(ctx, a, b, span),
@@ -624,8 +638,15 @@ fn seq(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, Compil
     })
 }
 
-fn split(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
-    let (ao, bi) = (a.arity_out(), b.arity_in());
+fn split(
+    ctx: &mut Ctx<'_>,
+    a: &Type,
+    b: &Type,
+    span: Span,
+    rhs_variadic: bool,
+) -> Result<Type, CompileError> {
+    let ao = a.arity_out();
+    let bi = if rhs_variadic { ao } else { b.arity_in() };
     if ao == 0 || bi % ao != 0 {
         return Err(CompileError::Type {
             msg: format!(
@@ -635,9 +656,11 @@ fn split(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, Comp
         });
     }
     let reps = bi / ao;
-    for r in 0..reps {
-        for k in 0..ao {
-            unify_scalar(&a.outs[k], &b.ins[r * ao + k], &mut ctx.subst, span)?;
+    if !rhs_variadic {
+        for r in 0..reps {
+            for k in 0..ao {
+                unify_scalar(&a.outs[k], &b.ins[r * ao + k], &mut ctx.subst, span)?;
+            }
         }
     }
     Ok(Type {
@@ -646,9 +669,16 @@ fn split(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, Comp
     })
 }
 
-fn merge(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
-    let (ao, bi) = (a.arity_out(), b.arity_in());
-    if bi == 0 || ao % bi != 0 {
+fn merge(
+    ctx: &mut Ctx<'_>,
+    a: &Type,
+    b: &Type,
+    span: Span,
+    rhs_variadic: bool,
+) -> Result<Type, CompileError> {
+    let ao = a.arity_out();
+    let bi = if rhs_variadic { ao } else { b.arity_in() };
+    if bi == 0 || !ao.is_multiple_of(bi) {
         return Err(CompileError::Type {
             msg: format!(
                 "merge `:>` requires lhs outputs ({ao}) be a multiple of rhs inputs ({bi})"
@@ -657,9 +687,11 @@ fn merge(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, Comp
         });
     }
     let groups = ao / bi;
-    for g in 0..groups {
-        for k in 0..bi {
-            unify_scalar(&a.outs[g * bi + k], &b.ins[k], &mut ctx.subst, span)?;
+    if !rhs_variadic {
+        for g in 0..groups {
+            for k in 0..bi {
+                unify_scalar(&a.outs[g * bi + k], &b.ins[k], &mut ctx.subst, span)?;
+            }
         }
     }
     Ok(Type {
