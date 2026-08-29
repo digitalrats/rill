@@ -268,10 +268,10 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 param_values.push(val);
             }
 
-            let has_resource = sig
-                .params
-                .iter()
-                .any(|p| matches!(p, rill_lang::builtin::ParamType::Resource));
+            // Resource-backed built-ins were removed — the tape is a passive
+            // backend (rill-sampler), not a compile-time resource, so no node
+            // carries a symbolic resource reference.
+            let has_resource = false;
 
             node_metas.push(NodeMeta {
                 builtin_name,

@@ -463,23 +463,6 @@ fn infer_apply(
                     }
                     pos += 1;
                 }
-                ParamType::Resource => {
-                    if pos >= args.len() {
-                        break;
-                    }
-                    match &args[pos] {
-                        Expr::Ref(_, _) => {}
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "resource argument {pos} of `{name}` must be a symbolic reference"
-                                ),
-                                span: args[pos].span(),
-                            });
-                        }
-                    }
-                    pos += 1;
-                }
                 ParamType::Record(_schema) => {
                     if pos >= args.len() {
                         break;

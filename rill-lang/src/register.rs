@@ -4,7 +4,9 @@ use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 #[cfg(feature = "router")]
 use rill_core::builtin::{MultichannelBlockBuiltin, ParamType, RecordField, RecordSchema};
 use rill_core::math::Transcendental;
-use rill_core::traits::{Algorithm, MultichannelAlgorithm, ProcessResult};
+#[cfg(feature = "router")]
+use rill_core::traits::MultichannelAlgorithm;
+use rill_core::traits::{Algorithm, ProcessResult};
 
 // ============================================================================
 // Complex number built-in structs

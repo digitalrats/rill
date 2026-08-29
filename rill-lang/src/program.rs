@@ -122,25 +122,13 @@ impl<T: Transcendental> RillProgram<T> {
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
     ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, None)
-    }
-
-    /// Create a program with a resource registry, resolving resource-backed
-    /// built-ins (e.g. tape heads) from the named resources.
-    pub fn new_with_resources(
-        ir: Ir,
-        registry: &crate::builtin::Registry<T>,
-        sample_rate: f32,
-        resources: &mut rill_core::buffer::ResourceRegistry<T>,
-    ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, Some(resources))
+        Self::build(ir, registry, sample_rate)
     }
 
     fn build(
         ir: Ir,
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
-        mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
     ) -> Result<Self, CompileError> {
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
@@ -149,55 +137,15 @@ impl<T: Transcendental> RillProgram<T> {
             })?;
             let is_multi = bi.signal_ins > 1 || bi.signal_outs > 1;
             if is_multi {
-                let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(res) = &bi.resource {
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_multichannel_block(
-                            bi.signal_ins,
-                            &bi.params,
-                            sample_rate,
-                            reg,
-                            res,
-                        )
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
-                                bi.name
-                            ))
-                        })?
-                } else {
-                    entry
-                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
-                        .expect("registry build_multichannel_block failed")
-                };
+                let mut b: Box<dyn MultichannelBlockBuiltin<T>> = entry
+                    .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
+                    .expect("registry build_multichannel_block failed");
                 MultichannelAlgorithm::reset(b.as_mut());
                 builtins.push(BuiltinInst::MultichannelBlock(b));
             } else {
-                let mut b: Box<dyn BlockBuiltin<T>> = if let Some(res) = &bi.resource {
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_block(&bi.params, sample_rate, reg, res)
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
-                                bi.name
-                            ))
-                        })?
-                } else {
-                    entry
-                        .build_block(&bi.params, sample_rate)
-                        .expect("registry build_block failed for block builtin")
-                };
+                let mut b: Box<dyn BlockBuiltin<T>> = entry
+                    .build_block(&bi.params, sample_rate)
+                    .expect("registry build_block failed for block builtin");
                 Algorithm::init(b.as_mut(), sample_rate);
                 builtins.push(BuiltinInst::Block(b));
             }

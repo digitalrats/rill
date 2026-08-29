@@ -56,7 +56,6 @@ impl<'a> Lowerer<'a> {
                     self.builtins.push(BuiltinInstance {
                         name,
                         params: vec![0.0, *v],
-                        resource: None,
                         kind: sig.kind,
                         signal_ins: sig.signal_ins(),
                         signal_outs: sig.signal_outs,
@@ -150,7 +149,6 @@ impl<'a> Lowerer<'a> {
                     let mut signal_srcs = Vec::new();
                     let mut signal_pos = 0;
                     let mut param_pos = 0;
-                    let mut resource: Option<String> = None;
 
                     for ptype in &sig.params {
                         match ptype {
@@ -163,25 +161,6 @@ impl<'a> Lowerer<'a> {
                                 }
                                 signal_srcs.push(args[signal_pos]);
                                 signal_pos += 1;
-                            }
-                            ParamType::Resource => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                match &call_args[param_pos] {
-                                    Expr::Ref(res_name, _) => {
-                                        resource = Some(res_name.clone());
-                                    }
-                                    other => {
-                                        return Err(CompileError::Type {
-                                            msg: format!(
-                                                "resource argument of `{name}` must be a symbolic reference",
-                                            ),
-                                            span: other.span(),
-                                        });
-                                    }
-                                }
-                                param_pos += 1;
                             }
                             ParamType::Float | ParamType::Int => {
                                 if param_pos >= call_args.len() {
@@ -317,7 +296,6 @@ impl<'a> Lowerer<'a> {
                     self.builtins.push(BuiltinInstance {
                         name: name.clone(),
                         params: param_values,
-                        resource,
                         kind: sig.kind,
                         signal_ins: signal_srcs.len(),
                         signal_outs: sig.signal_outs,
@@ -451,7 +429,6 @@ impl<'a> Lowerer<'a> {
                 self.builtins.push(BuiltinInstance {
                     name: name.to_string(),
                     params: Vec::new(),
-                    resource: None,
                     kind: sig.kind,
                     signal_ins: sig.signal_ins(),
                     signal_outs: sig.signal_outs,
@@ -628,7 +605,6 @@ impl<'a> Lowerer<'a> {
                             self.builtins.push(BuiltinInstance {
                                 name,
                                 params: vec![re, im],
-                                resource: None,
                                 kind: sig.kind,
                                 signal_ins: sig.signal_ins(),
                                 signal_outs: sig.signal_outs,

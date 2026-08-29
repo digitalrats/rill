@@ -190,8 +190,6 @@ pub struct BuiltinInstance {
     pub name: String,
     /// Folded constant params.
     pub params: Vec<f64>,
-    /// Optional named resource (e.g. a tape loop) this built-in binds to.
-    pub resource: Option<String>,
     /// Sample vs block.
     pub kind: BuiltinKind,
     /// Number of signal input channels.

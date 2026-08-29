@@ -39,7 +39,6 @@ mod buffer_trait;
 mod delay;
 mod fan;
 mod pipe;
-mod registry;
 mod ring;
 mod storage;
 
@@ -51,7 +50,6 @@ pub use buffer_trait::{Buffer, FixedBuffer, HeapBuffer};
 pub use delay::DelayLine;
 pub use fan::{FanInBuffer, FanOutBuffer};
 pub use pipe::PipeBuffer;
-pub use registry::ResourceRegistry;
 pub use ring::RingBuffer;
 pub use storage::{AtomicCell, AtomicCellError};
 

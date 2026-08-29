@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 pub struct ResourceDef {
     /// Unique name referenced by node parameters (e.g. `"tape_0"`).
     pub name: String,
-    /// Resource kind: `"tape"` for a [`TapeLoop`](rill_core::buffer::TapeLoop).
+    /// Resource kind: `"tape"` for a tape loop (see `rill_sampler::tape`).
     pub kind: String,
     /// Capacity in samples (for `"tape"` kind).
     pub capacity: usize,

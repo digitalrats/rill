@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 
-use crate::buffer::ResourceRegistry;
 use crate::math::Transcendental;
 use crate::traits::ParamValue;
 
@@ -48,8 +47,6 @@ pub enum ParamType {
     Record(RecordSchema),
     /// A compile-time enum value with allowed variants.
     Enum(&'static [&'static str]),
-    /// A compile-time symbolic reference to a named resource (e.g. a tape loop).
-    Resource,
     /// Zero or more arguments of the inner type.
     Variadic(Box<ParamType>),
 }
@@ -155,6 +152,12 @@ impl BuiltinSig {
         for p in &self.params {
             match p {
                 ParamType::Signal | ParamType::Variadic(_) => {}
+                ParamType::Record(schema) => {
+                    // A record whose fields all have defaults is optional.
+                    if !schema.fields.iter().all(|f| f.default.is_some()) {
+                        count += 1;
+                    }
+                }
                 _ => count += 1,
             }
         }
@@ -184,30 +187,10 @@ impl BuiltinSig {
 type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
 type MultichannelBlockFactory<T> =
     Box<dyn Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
-/// A block factory that also receives the resource registry and the resource
-/// name to resolve named resources (e.g. tape loops) for resource-backed built-ins.
-type ResourceBlockFactory<T> = Box<
-    dyn Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
->;
-/// A multi-channel block factory that also receives the signal input count, the
-/// resource registry, and the resource name.
-type ResourceMultichannelBlockFactory<T> = Box<
-    dyn Fn(
-            usize,
-            &[f64],
-            f32,
-            &mut ResourceRegistry<T>,
-            &str,
-        ) -> Box<dyn MultichannelBlockBuiltin<T>>
-        + Send
-        + Sync,
->;
 
 enum Factory<T: Transcendental> {
     Block(BlockFactory<T>),
     MultichannelBlock(MultichannelBlockFactory<T>),
-    ResourceBlock(ResourceBlockFactory<T>),
-    ResourceMultichannelBlock(ResourceMultichannelBlockFactory<T>),
 }
 
 /// A registry entry.
@@ -226,9 +209,7 @@ impl<T: Transcendental> Entry<T> {
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match &self.factory {
             Factory::Block(f) => Some(f(params, sample_rate)),
-            Factory::MultichannelBlock(_)
-            | Factory::ResourceBlock(_)
-            | Factory::ResourceMultichannelBlock(_) => None,
+            Factory::MultichannelBlock(_) => None,
         }
     }
     /// Build a multichannel block instance.
@@ -240,37 +221,6 @@ impl<T: Transcendental> Entry<T> {
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match &self.factory {
             Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate)),
-            _ => None,
-        }
-    }
-    /// Build a resource-backed block instance, resolving named resources (e.g.
-    /// tape loops) via the provided registry.
-    pub fn build_resource_block(
-        &self,
-        params: &[f64],
-        sample_rate: f32,
-        registry: &mut ResourceRegistry<T>,
-        resource_name: &str,
-    ) -> Option<Box<dyn BlockBuiltin<T>>> {
-        match &self.factory {
-            Factory::ResourceBlock(f) => Some(f(params, sample_rate, registry, resource_name)),
-            _ => None,
-        }
-    }
-
-    /// Build a resource-backed multi-channel block instance.
-    pub fn build_resource_multichannel_block(
-        &self,
-        signal_ins: usize,
-        params: &[f64],
-        sample_rate: f32,
-        registry: &mut ResourceRegistry<T>,
-        resource_name: &str,
-    ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
-        match &self.factory {
-            Factory::ResourceMultichannelBlock(f) => {
-                Some(f(signal_ins, params, sample_rate, registry, resource_name))
-            }
             _ => None,
         }
     }
@@ -326,51 +276,6 @@ impl<T: Transcendental> Registry<T> {
             Entry {
                 sig,
                 factory: Factory::MultichannelBlock(Box::new(factory)),
-            },
-        );
-    }
-
-    /// Register a resource-backed whole-buffer built-in. The factory receives
-    /// the resource registry to resolve named resources (e.g. tape loops).
-    pub fn register_resource_block(
-        &mut self,
-        sig: BuiltinSig,
-        factory: impl Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>>
-            + Send
-            + Sync
-            + 'static,
-    ) {
-        debug_assert_eq!(sig.kind, BuiltinKind::Block);
-        self.entries.insert(
-            sig.name.to_string(),
-            Entry {
-                sig,
-                factory: Factory::ResourceBlock(Box::new(factory)),
-            },
-        );
-    }
-
-    /// Register a resource-backed multi-channel whole-buffer built-in.
-    pub fn register_resource_multichannel_block(
-        &mut self,
-        sig: BuiltinSig,
-        factory: impl Fn(
-                usize,
-                &[f64],
-                f32,
-                &mut ResourceRegistry<T>,
-                &str,
-            ) -> Box<dyn MultichannelBlockBuiltin<T>>
-            + Send
-            + Sync
-            + 'static,
-    ) {
-        debug_assert_eq!(sig.kind, BuiltinKind::Block);
-        self.entries.insert(
-            sig.name.to_string(),
-            Entry {
-                sig,
-                factory: Factory::ResourceMultichannelBlock(Box::new(factory)),
             },
         );
     }
