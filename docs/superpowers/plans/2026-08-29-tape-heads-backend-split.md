@@ -24,27 +24,9 @@
 
 Committed (`e4af3d9`). Do not redo.
 
-## Task 2: Restore the resource machinery
+## Task 2 (DONE): Generic resource machinery (not tape-specific)
 
-**Files:**
-- Modify: `rill/rill-core/src/buffer/{mod.rs,tape.rs,registry.rs}` (restore)
-- Modify: `rill/rill-core/src/builtin.rs` (`ParamType::Resource`, `register_resource_block`/`register_resource_multichannel_block`, resource factories) — preserve the user's `min_args` Record arm
-- Modify: `rill/rill-lang/src/lib.rs` (`compile_program_with_resources`, `compile_program_inner`, `extract_resources`)
-- Modify: `rill/rill-lang/src/program.rs` (`new_with_resources`)
-- Modify: `rill/rill-lang/src/lower.rs`, `types/infer.rs`, `ir.rs` (restore `Resource` handling — fixes the missing match arms)
-- Test: `rill/rill-lang/tests/shared_resources.rs` (restore)
-
-- [ ] **Step 1:** Restore `TapeLoop`/`TapeWriter`/`TapeReader`/`tape_handles` in `rill-core/src/buffer/tape.rs` (git history `b6ca787~1` has the pre-move version — use `git show b6ca787~1:rill-core/src/buffer/tape.rs`), `ResourceRegistry` in `registry.rs`, and their `mod`/`pub use` in `buffer/mod.rs`.
-- [ ] **Step 2:** Restore `ParamType::Resource` and the resource factory machinery in `rill-core/src/builtin.rs` (from `git show b6a834c~1:rill-core/src/builtin.rs`), keeping the user's `min_args` Record arm.
-- [ ] **Step 3:** Restore `compile_program_with_resources`/`compile_program_inner`/`extract_resources`/`ResourceDecl` in `rill-lang/src/lib.rs` (from `git show b6a834c~1:rill-lang/src/lib.rs`).
-- [ ] **Step 4:** Restore `new_with_resources` + the resource handling in `RillProgram::build` in `rill-lang/src/program.rs`.
-- [ ] **Step 5:** Restore the `Resource` arms in `lower.rs`, `types/infer.rs`, `ir.rs`.
-- [ ] **Step 6:** Restore `rill/rill-lang/tests/shared_resources.rs` (the shared-registry test). Run `cargo test -p rill-lang 2>&1 | tail -10` (all pass) and `cargo check --workspace 2>&1 | tail -15`.
-- [ ] **Step 7:** Commit.
-```bash
-git add rill/rill-core/src/buffer/ rill/rill-core/src/builtin.rs rill/rill-lang/src/lib.rs rill/rill-lang/src/program.rs rill/rill-lang/src/lower.rs rill/rill-lang/src/types/infer.rs rill/rill-lang/src/ir.rs rill/rill-lang/tests/shared_resources.rs
-git commit -m 'revert(rill-lang): restore tape resource machinery (heads are resource-backed builtins)'
-```
+Committed (`ebb0489`). `TapeLoop` is a plain shared buffer, not a special resource. `rill-core` now has generic `Reader<T>`/`Writer<T>`/`DelayBuffer<T>` traits, `SharedReader`/`SharedWriter` capability wrappers (single-threaded `Rc<UnsafeCell>` — no `Send`/`Sync`, no unsafe on the buffer), and a generic `ResourceRegistry<T>` over `Box<dyn DelayBuffer<T>>`. `compile_program_with_resources`/`new_with_resources` compile against it. The heads (`SharedWriter`/`SharedReader`) keep their existing `unsafe impl Send/Sync` (single-threaded duplex, documented).
 
 ## Task 3: Heads as resource-backed builtins in rill-sampler
 
