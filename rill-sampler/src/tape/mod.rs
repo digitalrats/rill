@@ -7,5 +7,6 @@
 //! [`SharedReader`](rill_core::buffer::SharedReader) capability wrappers.
 
 pub mod backend;
+pub mod lang;
 pub mod read_head;
 pub mod write_head;

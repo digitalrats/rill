@@ -20,6 +20,8 @@ pub mod recorder;
 
 /// The tape as a passive in-memory delay backend (ring buffer + heads).
 pub mod tape;
+/// Re-export of the tape head resource-backed builtins registration.
+pub use tape::lang::register_tape_builtins;
 /// Unevenly-sampled time series reader and source node.
 pub mod timeseries;
 
