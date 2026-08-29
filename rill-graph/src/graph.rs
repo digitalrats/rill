@@ -3,9 +3,6 @@ use rill_core::queues::CommandEnum;
 use rill_core::traits::Params;
 use rill_core_actor::ActorRef;
 
-use rill_lang::builtin::SignatureSource;
-use std::collections::HashMap;
-
 // ============================================================================
 // Build Errors
 // ============================================================================
@@ -220,365 +217,104 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     ///
     /// Only simple chain topologies are supported (fan-out/fan-in will
     /// return [`BuildError::UnsupportedTopology`]).
-    pub fn ast_from_def(
-        &self,
-        registry: &rill_lang::builtin::Registry<T>,
-    ) -> Result<rill_lang::ast::Program, BuildError> {
-        use rill_lang::ast::{BinOp, Def, Expr, Param, Program};
-        use rill_lang::error::Span;
-
-        let dummy = Span::new(0, 0);
-
-        // Build id-to-index mapping
-        let mut id_to_idx: HashMap<u32, usize> = HashMap::new();
-        for (i, r) in self.recipes.iter().enumerate() {
-            id_to_idx.insert(r.id, i);
-        }
-
-        // Resolve builtin names and parameter order for each recipe
-        struct NodeMeta {
-            builtin_name: String,
-            param_values: Vec<f64>,
-            param_names: Vec<String>,
-            has_resource: bool,
-        }
-
-        let mut node_metas: Vec<NodeMeta> = Vec::with_capacity(self.recipes.len());
-
-        for recipe in &self.recipes {
-            let builtin_name = Self::resolve_builtin_name(&recipe.type_name, registry)
-                .ok_or_else(|| BuildError::UnknownNodeType(recipe.type_name.clone()))?;
-
-            let sig = registry.builtin_sig(&builtin_name).unwrap();
-
-            // Build parameter values in builtin param_names order
-            let param_names: Vec<String> = sig.param_names.iter().map(|n| n.to_string()).collect();
-            let mut param_values = Vec::with_capacity(param_names.len());
-
-            // Build a lookup from recipe param name to f64 value
-            let recipe_defaults: HashMap<&str, f64> = recipe
-                .params
-                .parameters
-                .iter()
-                .filter_map(|(k, v)| v.as_f32().map(|f| (k.as_str(), f as f64)))
-                .collect();
-
-            for name in &param_names {
-                let val = recipe_defaults.get(name.as_str()).copied().unwrap_or(0.0);
-                param_values.push(val);
-            }
-
-            // Task 5 placeholder: resource-backed built-ins were removed — the
-            // tape is a passive backend (rill-sampler), not a compile-time
-            // resource, so no node carries a symbolic resource reference. This
-            // `ast_from_def` reconstruction is removed entirely in Task 5.
-            let has_resource = false;
-
-            node_metas.push(NodeMeta {
-                builtin_name,
-                param_values,
-                param_names,
-                has_resource,
-            });
-        }
-
-        // Topological sort
-        let mut in_degree: Vec<usize> = vec![0; self.recipes.len()];
-        let mut adj: Vec<Vec<usize>> = vec![vec![]; self.recipes.len()];
-
-        for (from_idx, _from_port, to_idx, _to_port) in &self.signal_edges {
-            if *from_idx < self.recipes.len() && *to_idx < self.recipes.len() {
-                adj[*from_idx].push(*to_idx);
-                in_degree[*to_idx] += 1;
-            }
-        }
-
-        let mut queue: Vec<usize> = (0..self.recipes.len())
-            .filter(|i| in_degree[*i] == 0)
-            .collect();
-        let mut order: Vec<usize> = Vec::new();
-
-        while let Some(u) = queue.pop() {
-            order.push(u);
-            for &v in &adj[u] {
-                in_degree[v] -= 1;
-                if in_degree[v] == 0 {
-                    queue.push(v);
-                }
-            }
-        }
-
-        if order.len() != self.recipes.len() {
-            return Err(BuildError::CycleDetected);
-        }
-
-        // Build the block expression for each node (Apply with folded params).
-        // The last param (convention) is exposed as a dynamic main parameter.
-        // Resource-backed nodes get a symbolic `Ref` to the default tape loop.
-        let default_tape = self
-            .resources
-            .iter()
-            .find(|r| r.kind == "tape")
-            .map(|r| r.name.clone())
-            .unwrap_or_else(|| "tape_0".to_string());
-
-        let mut all_param_names: Vec<String> = Vec::new();
-        let mut blocks: Vec<Expr> = Vec::with_capacity(self.recipes.len());
-        for meta in &node_metas {
-            let mut args: Vec<Expr> = Vec::new();
-            if meta.has_resource {
-                args.push(Expr::Ref(default_tape.clone(), dummy));
-            }
-            let n = meta.param_names.len();
-            for (i, (&val, name)) in meta
-                .param_values
-                .iter()
-                .zip(meta.param_names.iter())
-                .enumerate()
-            {
-                if i < n.saturating_sub(1) {
-                    args.push(Expr::Float(val, dummy));
-                } else {
-                    all_param_names.push(name.clone());
-                    args.push(Expr::Ref(name.clone(), dummy));
-                }
-            }
-            blocks.push(Expr::Apply {
-                name: meta.builtin_name.clone(),
-                args,
-                span: dummy,
-            });
-        }
-
-        // Build per-node input/output edge lists.
-        let n = self.recipes.len();
-        let mut in_edges: Vec<Vec<(usize, usize, usize)>> = vec![vec![]; n];
-        let mut out_edges: Vec<Vec<(usize, usize, usize)>> = vec![vec![]; n];
-        for (from, from_port, to, to_port) in &self.signal_edges {
-            if *from < n && *to < n {
-                in_edges[*to].push((*from, *from_port, *to_port));
-                out_edges[*from].push((*to, *from_port, *to_port));
-            }
-        }
-        for e in &mut in_edges {
-            e.sort_by_key(|&(_, _, tp)| tp);
-        }
-        for e in &mut out_edges {
-            e.sort_by_key(|&(_, fp, _)| fp);
-        }
-
-        // Feedback edges: `feedback_by_target[to]` lists source nodes feeding
-        // `to`'s feedback input; `feedback_sources[from]` lists targets.
-        let mut feedback_by_target: Vec<Vec<usize>> = vec![vec![]; n];
-        let mut feedback_sources: Vec<Vec<usize>> = vec![vec![]; n];
-        for (from, _fp, to, _tp) in &self.feedback_edges {
-            if *from < n && *to < n {
-                feedback_by_target[*to].push(*from);
-                feedback_sources[*from].push(*to);
-            }
-        }
-
-        // Reconstruct the graph into a single expression tree using the DSL
-        // combinators. Fan-in uses `Par` + `:>` (merge); fan-out duplicates the
-        // (stateless) source expression via memoization — stateful fan-out is a
-        // known limitation and requires `<:` (Split) support. Feedback edges are
-        // reconstructed as `A <~ B` (feedback tap).
-        let mut memo: Vec<Option<Expr>> = vec![None; n];
-
-        fn build(
-            idx: usize,
-            blocks: &[Expr],
-            in_edges: &[Vec<(usize, usize, usize)>],
-            feedback_by_target: &[Vec<usize>],
-            memo: &mut Vec<Option<Expr>>,
-            dummy: Span,
-        ) -> Expr {
-            if let Some(e) = &memo[idx] {
-                return e.clone();
-            }
-            let block = blocks[idx].clone();
-            let mut expr = if in_edges[idx].is_empty() {
-                block
-            } else {
-                let mut producers: Vec<usize> = Vec::new();
-                for &(from, _, _) in &in_edges[idx] {
-                    if !producers.contains(&from) {
-                        producers.push(from);
-                    }
-                }
-                if producers.len() == 1 {
-                    Expr::Bin {
-                        op: BinOp::Seq,
-                        lhs: Box::new(build(
-                            producers[0],
-                            blocks,
-                            in_edges,
-                            feedback_by_target,
-                            memo,
-                            dummy,
-                        )),
-                        rhs: Box::new(block),
-                        span: dummy,
-                    }
-                } else {
-                    let mut par = build(
-                        producers[0],
-                        blocks,
-                        in_edges,
-                        feedback_by_target,
-                        memo,
-                        dummy,
-                    );
-                    for &p in &producers[1..] {
-                        par = Expr::Bin {
-                            op: BinOp::Par,
-                            lhs: Box::new(par),
-                            rhs: Box::new(build(
-                                p,
-                                blocks,
-                                in_edges,
-                                feedback_by_target,
-                                memo,
-                                dummy,
-                            )),
-                            span: dummy,
-                        };
-                    }
-                    Expr::Bin {
-                        op: BinOp::Merge,
-                        lhs: Box::new(par),
-                        rhs: Box::new(block),
-                        span: dummy,
-                    }
-                }
-            };
-            // Wrap with feedback taps for each feedback source targeting `idx`.
-            for &fb_src in &feedback_by_target[idx] {
-                expr = Expr::Bin {
-                    op: BinOp::Feedback,
-                    lhs: Box::new(expr),
-                    rhs: Box::new(build(
-                        fb_src,
-                        blocks,
-                        in_edges,
-                        feedback_by_target,
-                        memo,
-                        dummy,
-                    )),
-                    span: dummy,
-                };
-            }
-            memo[idx] = Some(expr.clone());
-            expr
-        }
-
-        // The graph output is the parallel composition of all sink nodes
-        // (excluding feedback-only leaves).
-        let sinks: Vec<usize> = (0..n)
-            .filter(|&i| out_edges[i].is_empty() && feedback_sources[i].is_empty())
-            .collect();
-        let body = if sinks.is_empty() {
-            Expr::Wire(dummy)
-        } else {
-            let mut body = build(
-                sinks[0],
-                &blocks,
-                &in_edges,
-                &feedback_by_target,
-                &mut memo,
-                dummy,
-            );
-            for &s in &sinks[1..] {
-                body = Expr::Bin {
-                    op: BinOp::Par,
-                    lhs: Box::new(body),
-                    rhs: Box::new(build(
-                        s,
-                        &blocks,
-                        &in_edges,
-                        &feedback_by_target,
-                        &mut memo,
-                        dummy,
-                    )),
-                    span: dummy,
-                };
-            }
-            body
+    /// Serialize this builder into rill-lang's plain [`GraphSpec`] (frontend only —
+    /// no IR formation lives here). `type_name` is emitted verbatim: it must be a
+    /// rill-lang builtin name directly (no `rill/` prefix, no aliases).
+    ///
+    /// Passive nodes (software generators and tape heads) are classified
+    /// [`NodeBackendKind::Passive`]; active rill-io attachment points are
+    /// populated by the caller via `spec.backends`.
+    pub fn to_graph_spec(&self) -> rill_lang::graph::spec::GraphSpec {
+        use rill_lang::graph::spec::{
+            GraphEdgeKind, GraphResourceSpec, GraphSpec, GraphSpecEdge, GraphSpecNode,
+            NodeBackendKind,
         };
-
-        let params: Vec<Param> = all_param_names
-            .into_iter()
-            .map(|name| Param { name, span: dummy })
-            .collect();
-
-        // Task 5 placeholder: emit top-level tape resource declarations before
-        // `main`. Dormant (no graph registers tape resources) — the tape is a
-        // backend, not a resource; `ast_from_def` is removed in Task 5.
-        let mut defs: Vec<Def> = self
-            .resources
-            .iter()
-            .filter(|r| r.kind == "tape")
-            .map(|r| Def::Local {
-                name: r.name.clone(),
-                body: Expr::Apply {
-                    name: "TapeLoop".to_string(),
-                    args: vec![Expr::Int(r.capacity as i64, dummy)],
-                    span: dummy,
-                },
-                where_defs: vec![],
-                span: dummy,
-            })
-            .collect();
-        defs.push(Def::Anchor {
-            name: "main".to_string(),
-            params,
-            body,
-            span: dummy,
-            where_defs: vec![],
-        });
-
-        Ok(Program { defs })
+        let is_passive = |t: &str| {
+            matches!(
+                t,
+                "write_head"
+                    | "read_head"
+                    | "sine"
+                    | "saw"
+                    | "square"
+                    | "triangle"
+                    | "noise"
+                    | "sampler"
+            )
+        };
+        GraphSpec {
+            nodes: self
+                .recipes
+                .iter()
+                .map(|r| GraphSpecNode {
+                    type_name: r.type_name.clone(),
+                    params: r
+                        .params
+                        .parameters
+                        .iter()
+                        .filter_map(|(k, v)| v.as_f32().map(|f| (k.clone(), f as f64)))
+                        .collect(),
+                    backend: if is_passive(&r.type_name) {
+                        Some(NodeBackendKind::Passive)
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
+            edges: self
+                .signal_edges
+                .iter()
+                .map(|&(f, fp, t, tp)| GraphSpecEdge {
+                    from: f,
+                    from_port: fp,
+                    to: t,
+                    to_port: tp,
+                    kind: GraphEdgeKind::Signal,
+                })
+                .chain(
+                    self.feedback_edges
+                        .iter()
+                        .map(|&(f, fp, t, tp)| GraphSpecEdge {
+                            from: f,
+                            from_port: fp,
+                            to: t,
+                            to_port: tp,
+                            kind: GraphEdgeKind::Feedback,
+                        }),
+                )
+                .collect(),
+            resources: self
+                .resources
+                .iter()
+                .map(|r| GraphResourceSpec {
+                    name: r.name.clone(),
+                    kind: r.kind.clone(),
+                    capacity: r.capacity,
+                })
+                .collect(),
+            sample_rate: self.sample_rate.unwrap_or(44100.0),
+            backends: Vec::new(),
+            boundary_out: Vec::new(),
+        }
     }
 
-    /// Compile directly from the graph definition to a [`ProgramEngine`](rill_lang::program_engine::ProgramEngine).
+    /// Compile this graph via rill-lang's IR formation.
     ///
-    /// Calls [`ast_from_def`](Self::ast_from_def) followed by rill-lang compilation.
+    /// Returns the single-program engine for a plain graph. Tape-echo graphs
+    /// partition into a duplex stream — use [`to_graph_spec`](Self::to_graph_spec)
+    /// + [`rill_lang::graph::compile`] directly for those.
     pub fn compile_def(
         &self,
         registry: &rill_lang::builtin::Registry<T>,
         sample_rate: f32,
     ) -> Result<rill_lang::program_engine::ProgramEngine<T>, BuildError> {
-        let program = self.ast_from_def(registry)?;
-        rill_lang::compile_program::<T>(&program, registry, sample_rate)
-            .map_err(|e| BuildError::CompilationFailed(format!("{e}")))
-    }
-
-    fn resolve_builtin_name(
-        type_name: &str,
-        registry: &rill_lang::builtin::Registry<T>,
-    ) -> Option<String> {
-        if registry.builtin_sig(type_name).is_some() {
-            return Some(type_name.to_string());
+        let spec = self.to_graph_spec();
+        match rill_lang::graph::compile(&spec, registry, sample_rate) {
+            Ok(rill_lang::graph::CompiledStream::Single(engine)) => Ok(engine),
+            Ok(_) => Err(BuildError::CompilationFailed(
+                "graph is a tape echo; use rill_lang::graph::compile for the duplex stream".into(),
+            )),
+            Err(e) => Err(BuildError::CompilationFailed(format!("{e}"))),
         }
-        if let Some(rest) = type_name.strip_prefix("rill/") {
-            if registry.builtin_sig(rest).is_some() {
-                return Some(rest.to_string());
-            }
-        }
-        let mapped = match type_name {
-            "rill/dry_wet_mix" => "dry_wet",
-            "rill/parametric_eq" => "eq_parametric",
-            "rill/graphic_eq" => "graphic_eq",
-            "rill/mono_to_stereo" => "mono_to_stereo",
-            "rill/moog_ladder" => "moog",
-            "rill/write_head" => "write_head",
-            "rill/read_head" => "read_head",
-            "rill/lofi_chip" => "ay38910",
-            _ => "",
-        };
-        if !mapped.is_empty() && registry.builtin_sig(mapped).is_some() {
-            return Some(mapped.to_string());
-        }
-        None
     }
 }
