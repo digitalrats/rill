@@ -118,12 +118,11 @@ impl<const BUF: usize> ModularSystem<BUF> {
         GraphBuilder::new()
     }
 
-    /// Build a `CompiledGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
+    /// Build a `ProgramEngine` from a `GraphDef` using the rill-lang compilation pipeline.
     pub fn build_engine(
         &self,
         def: &GraphDef,
-    ) -> Result<rill_lang::graph_engine::CompiledGraphEngine<f32, BUF>, Box<dyn std::error::Error>>
-    {
+    ) -> Result<rill_lang::program_engine::ProgramEngine<f32>, Box<dyn std::error::Error>> {
         let mut builder = self.create_builder();
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))?;
@@ -134,7 +133,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         let registry = crate::lang_builtins::full_registry_f32();
 
         builder
-            .compile_def::<BUF>(&registry, def.sample_rate)
+            .compile_def(&registry, def.sample_rate)
             .map_err(|e| e.to_string().into())
     }
 
@@ -204,7 +203,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         log::error!("graph populate: {e}");
                         return;
                     }
-                    let engine = match builder.compile_def::<BUF>(&registry, sr) {
+                    let engine = match builder.compile_def(&registry, sr) {
                         Ok(eng) => eng,
                         Err(e) => {
                             log::error!("graph compile: {e}");

@@ -2,16 +2,14 @@
 //!
 //! This crate provides an immutable signal graph with static topology.
 //! Build once with `GraphBuilder`. The graph is a pure topology description
-//! — `build_ir()` produces a [`rill_lang::graph_ir::GraphIr`], which
-//! `rill-lang`'s [`rill_lang::graph_compiler::compile`] transforms into a
-//! [`rill_lang::graph_engine::CompiledGraphEngine`] for execution.
+//! — `ast_from_def()` produces a rill-lang AST, which `rill-lang` compiles
+//! into a single [`rill_lang::program_engine::ProgramEngine`] for execution.
 //!
 //! ## Key Features
 //!
 //! - **Static DAG topology** — connections are fixed after build
 //! - **Kahn's algorithm** — automatic topological sort with cycle detection
 //! - **Auto FanOut/FanIn** — connections classified by topology (user never chooses)
-//! - **GraphIr** — intermediate representation for rill-lang compilation
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]

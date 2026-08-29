@@ -25,7 +25,7 @@ impl Runtime {
         driver: Arc<dyn IoDriver>,
         capture: Option<Arc<dyn IoCapture>>,
         playback: Option<Arc<dyn IoPlayback>>,
-        mut program: ProgramRunner<BUF>,
+        mut program: ProgramRunner,
         running: Arc<AtomicBool>,
     ) -> Result<(), String> {
         let (cap, pb) = (capture.clone(), playback.clone());

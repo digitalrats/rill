@@ -40,7 +40,7 @@ fn application_in_fanout_lowers_correctly() {
 
 #[test]
 fn type_error_is_reported() {
-    assert!(compile::<f32>("main = _ , _").is_err());
+    assert!(compile::<f32>("main = !").is_err());
 }
 
 #[test]

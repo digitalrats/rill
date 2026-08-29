@@ -4,6 +4,7 @@ pub mod delay;
 pub mod distortion;
 pub mod limiter;
 pub mod register;
+pub mod tape;
 
 pub(crate) fn pv_f32(value: &rill_core::traits::ParamValue) -> f32 {
     match value {

@@ -303,7 +303,7 @@ only on `rill-core`.
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
 | Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassettedeck`, `tape_bridge` (block) | `analog` |
+| Analog | `analog_moog`, `cassettedeck` (block) | `analog` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
 | Sampler | `sampler` (block) | `sampler` |
@@ -330,7 +330,7 @@ during lowering. The signal port count per built-in is defined by its signature
 | Kind | Names | Behaviour | Inside `~` |
 |---|---|---|---|
 | **Sample** | `onepole`, `moog` | Per-sample state; the built-in's `process_sample` runs inside the sample-level recurrence loop. | Allowed |
-| **Block** | `lowpass`, `highpass`, `biquad`, `delay`, `distortion`, `limiter`, `sine`, `saw`, `square`, `triangle`, `noise`, `analog_moog`, `cassette_deck`, `tape_bridge`, `spectralgate`, `spectraldelay`, `convolver`, `lofi`, `ay38910` | Opaque whole-buffer step; the built-in implements `Algorithm<T>` and processes all samples at once. | Compile error |
+| **Block** | `lowpass`, `highpass`, `biquad`, `delay`, `distortion`, `limiter`, `sine`, `saw`, `square`, `triangle`, `noise`, `analog_moog`, `cassette_deck`, `spectralgate`, `spectraldelay`, `convolver`, `lofi`, `ay38910` | Opaque whole-buffer step; the built-in implements `Algorithm<T>` and processes all samples at once. | Compile error |
 
 Sample built-ins are composed from the feedback combinator just like hand-rolled
 recurrences:

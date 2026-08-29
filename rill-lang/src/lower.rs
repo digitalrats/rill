@@ -56,6 +56,7 @@ impl<'a> Lowerer<'a> {
                     self.builtins.push(BuiltinInstance {
                         name,
                         params: vec![0.0, *v],
+                        resource: None,
                         kind: sig.kind,
                         signal_ins: sig.signal_ins(),
                         signal_outs: sig.signal_outs,
@@ -149,6 +150,7 @@ impl<'a> Lowerer<'a> {
                     let mut signal_srcs = Vec::new();
                     let mut signal_pos = 0;
                     let mut param_pos = 0;
+                    let mut resource: Option<String> = None;
 
                     for ptype in &sig.params {
                         match ptype {
@@ -161,6 +163,25 @@ impl<'a> Lowerer<'a> {
                                 }
                                 signal_srcs.push(args[signal_pos]);
                                 signal_pos += 1;
+                            }
+                            ParamType::Resource => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                match &call_args[param_pos] {
+                                    Expr::Ref(res_name, _) => {
+                                        resource = Some(res_name.clone());
+                                    }
+                                    other => {
+                                        return Err(CompileError::Type {
+                                            msg: format!(
+                                                "resource argument of `{name}` must be a symbolic reference",
+                                            ),
+                                            span: other.span(),
+                                        });
+                                    }
+                                }
+                                param_pos += 1;
                             }
                             ParamType::Float | ParamType::Int => {
                                 if param_pos >= call_args.len() {
@@ -281,6 +302,7 @@ impl<'a> Lowerer<'a> {
                     self.builtins.push(BuiltinInstance {
                         name: name.clone(),
                         params: param_values,
+                        resource,
                         kind: sig.kind,
                         signal_ins: signal_srcs.len(),
                         signal_outs: sig.signal_outs,
@@ -427,6 +449,7 @@ impl<'a> Lowerer<'a> {
                 self.builtins.push(BuiltinInstance {
                     name: name.to_string(),
                     params: Vec::new(),
+                    resource: None,
                     kind: sig.kind,
                     signal_ins: sig.signal_ins(),
                     signal_outs: sig.signal_outs,
@@ -609,6 +632,7 @@ impl<'a> Lowerer<'a> {
                             self.builtins.push(BuiltinInstance {
                                 name,
                                 params: vec![re, im],
+                                resource: None,
                                 kind: sig.kind,
                                 signal_ins: sig.signal_ins(),
                                 signal_outs: sig.signal_outs,
@@ -866,22 +890,22 @@ pub fn lower_with(
         main_args.push(dst);
     }
     let outs = lw.lower(main.body(), &main_args)?;
-    if outs.len() != 1 {
-        return Err(CompileError::Unsupported(format!(
-            "body lowered to {} outputs, expected 1",
-            outs.len()
-        )));
+    if outs.is_empty() {
+        return Err(CompileError::Unsupported(
+            "body lowered to 0 outputs, expected at least 1".into(),
+        ));
     }
+    let num_outputs = outs.len();
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
-        output_reg: outs[0],
+        output_regs: outs,
         num_inputs,
-        num_outputs: 1,
+        num_outputs,
         state: StateLayout {
             state_slots: lw.state_slots,
             delay_lens: lw.delay_lens,
-            num_outputs: 1,
+            num_outputs,
         },
         builtins: lw.builtins,
         params: lw.params,

@@ -4,7 +4,6 @@
 
 use rill_core::builtin::MultichannelBlockBuiltin;
 use rill_core::math::Transcendental;
-#[cfg(feature = "router")]
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 
@@ -119,6 +118,26 @@ impl<T: Transcendental> RillProgram<T> {
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
     ) -> Result<Self, CompileError> {
+        Self::build(ir, registry, sample_rate, None)
+    }
+
+    /// Create a program with a resource registry, resolving resource-backed
+    /// built-ins (e.g. tape heads) from the named resources.
+    pub fn new_with_resources(
+        ir: Ir,
+        registry: &crate::builtin::Registry<T>,
+        sample_rate: f32,
+        resources: &mut rill_core::buffer::ResourceRegistry<T>,
+    ) -> Result<Self, CompileError> {
+        Self::build(ir, registry, sample_rate, Some(resources))
+    }
+
+    fn build(
+        ir: Ir,
+        registry: &crate::builtin::Registry<T>,
+        sample_rate: f32,
+        mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+    ) -> Result<Self, CompileError> {
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
             let entry = registry.get(&bi.name).ok_or_else(|| {
@@ -133,9 +152,26 @@ impl<T: Transcendental> RillProgram<T> {
                     builtins.push(BuiltinInst::Sample(b));
                 }
                 crate::builtin::BuiltinKind::Block => {
-                    let mut b = entry
-                        .build_block(&bi.params, sample_rate)
-                        .expect("registry build_block failed for block builtin");
+                    let mut b: Box<dyn BlockBuiltin<T>> = if let Some(res) = &bi.resource {
+                        let reg = resources.as_deref_mut().ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "built-in '{}' requires a resource registry",
+                                bi.name
+                            ))
+                        })?;
+                        entry
+                            .build_resource_block(&bi.params, sample_rate, reg, res)
+                            .ok_or_else(|| {
+                                CompileError::Unsupported(format!(
+                                    "resource built-in '{}' is not registered as resource-backed",
+                                    bi.name
+                                ))
+                            })?
+                    } else {
+                        entry
+                            .build_block(&bi.params, sample_rate)
+                            .expect("registry build_block failed for block builtin")
+                    };
                     Algorithm::init(b.as_mut(), sample_rate);
                     builtins.push(BuiltinInst::Block(b));
                 }
@@ -243,7 +279,9 @@ impl<T: Transcendental> RillProgram<T> {
 
 impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        crate::backend::interp::run_block_hybrid(self, input, output);
+        let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
+        let mut outs: [&mut [T]; 1] = [output];
+        crate::backend::interp::run_block_mimo(self, inputs, &mut outs);
         Ok(())
     }
 
@@ -270,7 +308,6 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
     }
 }
 
-#[cfg(feature = "router")]
 impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
     fn num_inputs(&self) -> usize {
         self.ir.num_inputs
@@ -281,27 +318,7 @@ impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
     }
 
     fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
-        let n_in = inputs.len();
-        let n_out = outputs.len();
-        let buf_size = if n_out > 0 { outputs[0].len() } else { 0 };
-
-        if n_in <= 1 && n_out == 1 {
-            let input = if n_in == 0 { None } else { Some(inputs[0]) };
-            return Algorithm::process(self, input, outputs[0]);
-        }
-
-        crate::backend::interp::push_builtin_params(self);
-        for sample_idx in 0..buf_size {
-            let in_sample = if n_in > 0 {
-                inputs[0][sample_idx].to_f64()
-            } else {
-                0.0
-            };
-            let y = crate::backend::interp::eval_sample_scalar(self, in_sample);
-            if n_out > 0 {
-                outputs[0][sample_idx] = T::from_f64(y);
-            }
-        }
+        crate::backend::interp::run_block_mimo(self, inputs, outputs);
         Ok(())
     }
 

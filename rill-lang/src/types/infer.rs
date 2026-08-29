@@ -103,10 +103,10 @@ pub fn infer_program_with(
     let signal_arity_in = main_scheme.ty.arity_in() - main_scheme.lam_count;
     let signal_arity_out = main_scheme.ty.arity_out();
 
-    if signal_arity_out != 1 || signal_arity_in > 1 {
+    if signal_arity_out == 0 {
         return Err(CompileError::Type {
             msg: format!(
-                "signal arity must be (0|1)->1, found ({signal_arity_in}->{signal_arity_out})"
+                "program must produce at least one signal output, found ({signal_arity_in}->{signal_arity_out})"
             ),
             span: Span::new(0, 0),
         });
@@ -462,6 +462,23 @@ fn infer_apply(
                     }
                     pos += 1;
                 }
+                ParamType::Resource => {
+                    if pos >= args.len() {
+                        break;
+                    }
+                    match &args[pos] {
+                        Expr::Ref(_, _) => {}
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "resource argument {pos} of `{name}` must be a symbolic reference"
+                                ),
+                                span: args[pos].span(),
+                            });
+                        }
+                    }
+                    pos += 1;
+                }
                 ParamType::Record(_schema) => {
                     if pos >= args.len() {
                         break;
@@ -750,8 +767,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_process_arity() {
-        assert!(ty_of("main = _ , _").is_err());
+    fn rejects_zero_output_process() {
+        assert!(ty_of("main = !").is_err());
+    }
+
+    #[test]
+    fn multi_output_process_allowed() {
+        let t = ty_of("main = _ , _").unwrap();
+        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (2, 2));
     }
 
     #[test]

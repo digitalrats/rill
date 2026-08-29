@@ -57,14 +57,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for WriteHead<T, BUF
 
     fn reset(&mut self) {}
 
-    fn process(&mut self, input: Option<&[T]>, _output: &mut [T]) -> ProcessResult<()> {
-        let Some(tape) = self.tape.as_mut() else {
-            return Ok(());
-        };
-        if let Some(inp) = input {
-            for &sample in inp.iter() {
-                tape.write(sample);
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        match input {
+            Some(inp) => {
+                let n = inp.len().min(output.len());
+                output[..n].copy_from_slice(&inp[..n]);
+                output[n..].fill(T::ZERO);
+                if let Some(tape) = self.tape.as_mut() {
+                    for &sample in inp.iter() {
+                        tape.write(sample);
+                    }
+                }
             }
+            None => output.fill(T::ZERO),
         }
         Ok(())
     }
@@ -76,6 +81,19 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for WriteHead<T, BUF
             description: "Tape write head for tape loop effects",
             author: "Rill",
             version: env!("CARGO_PKG_VERSION"),
+        }
+    }
+}
+
+impl<T: Transcendental, const BUF_SIZE: usize> rill_core::builtin::BlockBuiltin<T>
+    for WriteHead<T, BUF_SIZE>
+{
+    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+        let v = value.as_f32().unwrap_or(0.0);
+        match index {
+            0 => self.set_delay_time(v),
+            1 => self.set_feedback(v),
+            _ => {}
         }
     }
 }

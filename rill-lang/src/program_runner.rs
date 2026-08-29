@@ -14,25 +14,22 @@ use rill_core::queues::CommandEnum;
 use rill_core::time::ClockTick;
 use rill_core_actor::ActorRef;
 
-use crate::graph_engine::CompiledGraphEngine;
+use crate::program_engine::ProgramEngine;
 
 /// Pure signal transform: `&[&[f32]]` → `&mut [&mut [f32]]`.
 ///
 /// The caller is responsible for wiring I/O backends and managing the
 /// driver lifecycle. Use [`apply`](ProgramRunner::apply) inside the
 /// process callback set on the driver.
-pub struct ProgramRunner<const BUF_SIZE: usize> {
-    engine: CompiledGraphEngine<f32, BUF_SIZE>,
+pub struct ProgramRunner {
+    engine: ProgramEngine<f32>,
     parent_ref: Option<ActorRef<CommandEnum>>,
     _not_send_sync: PhantomData<*const ()>,
 }
 
-impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
-    /// Create a new runner wrapping a compiled graph engine.
-    pub fn new(
-        engine: CompiledGraphEngine<f32, BUF_SIZE>,
-        parent_ref: Option<ActorRef<CommandEnum>>,
-    ) -> Self {
+impl ProgramRunner {
+    /// Create a new runner wrapping a compiled program engine.
+    pub fn new(engine: ProgramEngine<f32>, parent_ref: Option<ActorRef<CommandEnum>>) -> Self {
         Self {
             engine,
             parent_ref,
@@ -45,8 +42,8 @@ impl<const BUF_SIZE: usize> ProgramRunner<BUF_SIZE> {
         self.engine.handle()
     }
 
-    /// Reference to the underlying compiled engine.
-    pub fn engine(&self) -> &CompiledGraphEngine<f32, BUF_SIZE> {
+    /// Reference to the underlying program engine.
+    pub fn engine(&self) -> &ProgramEngine<f32> {
         &self.engine
     }
 
@@ -80,7 +77,7 @@ mod tests {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
-        let engine = compile_graph::<f32, 64>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
+        let engine = compile_graph::<f32>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
         let mut runner = ProgramRunner::new(engine, None);
 
         let tick = ClockTick {

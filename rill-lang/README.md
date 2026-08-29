@@ -157,7 +157,7 @@ rill-lang supports calling stateful DSP/model built-ins from
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
 | Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassettedeck`, `tape_bridge` (block) | `analog` |
+| Analog | `analog_moog`, `cassettedeck` (block) | `analog` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
 | Sampler | `sampler` (block) | `sampler` |

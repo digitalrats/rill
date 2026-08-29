@@ -3,9 +3,7 @@ use rill_core::queues::CommandEnum;
 use rill_core::traits::Params;
 use rill_core_actor::ActorRef;
 
-use indexmap::IndexMap;
 use rill_lang::builtin::SignatureSource;
-use rill_lang::graph_ir::{EdgeKind, GraphEdge, GraphIr, GraphNode};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -43,10 +41,13 @@ impl std::fmt::Display for BuildError {
 // Node Storage
 // ============================================================================
 
-/// A deferred node recipe — constructed at build_ir time.
+/// A deferred node recipe — constructed at `ast_from_def` time.
 struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
     id: u32,
+    // Node anchor name — consumed by `ast_from_def` (where-def anchors) once
+    // full topology lowering lands; kept in the recipe for that purpose.
+    #[allow(dead_code)]
     name: String,
     params: Params,
     routing_entries: Vec<(usize, usize, f32)>,
@@ -211,287 +212,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             .push((from_node, from_port, to_node, to_port));
     }
 
-    /// Build a [`rill_lang::graph_ir::GraphIr`] using the built-in `Registry`.
-    ///
-    /// This is the new execution path. It looks up each node type in the registry,
-    /// constructs placeholder IRs, and performs topological sort. Actual compilation
-    /// to executable programs happens in a future phase.
-    pub fn build_ir(
-        self,
-        registry: &rill_lang::builtin::Registry<T>,
-    ) -> Result<GraphIr, BuildError> {
-        // 1. Build index → name mapping
-        let idx_to_name: HashMap<usize, String> = self
-            .recipes
-            .iter()
-            .enumerate()
-            .map(|(idx, recipe)| {
-                let name = if recipe.name.is_empty() {
-                    format!("node_{}", recipe.id)
-                } else {
-                    recipe.name.clone()
-                };
-                (idx, name)
-            })
-            .collect();
-
-        // 2. Create GraphNodes from recipes
-        let mut nodes: IndexMap<String, GraphNode> = IndexMap::new();
-        let mut node_list: Vec<String> = Vec::new();
-
-        for (idx, recipe) in self.recipes.iter().enumerate() {
-            let name = idx_to_name[&idx].clone();
-            node_list.push(name.clone());
-
-            let sig = registry
-                .builtin_sig(&recipe.type_name)
-                .or_else(|| {
-                    // Strip "rill/" prefix for graph node → lang builtin mapping
-                    recipe
-                        .type_name
-                        .strip_prefix("rill/")
-                        .and_then(|n| registry.builtin_sig(n))
-                })
-                .or_else(|| {
-                    // Common suffix mappings
-                    let mapped = match recipe.type_name.as_str() {
-                        "rill/dry_wet_mix" => "dry_wet",
-                        "rill/parametric_eq" => "eq_parametric",
-                        "rill/graphic_eq" => "graphic_eq",
-                        "rill/mono_to_stereo" => "mono_to_stereo",
-                        "rill/moog_ladder" => "moog",
-                        "rill/write_head" => "write_head",
-                        "rill/read_head" => "read_head",
-                        "rill/lofi_chip" => "ay38910",
-                        _ => "",
-                    };
-                    if mapped.is_empty() {
-                        None
-                    } else {
-                        registry.builtin_sig(mapped)
-                    }
-                })
-                .ok_or_else(|| BuildError::UnknownNodeType(recipe.type_name.clone()))?;
-
-            let arity = (sig.signal_ins(), sig.signal_outs);
-
-            // Convert all recipe parameters to ParamDef.
-            // Include non-f32 values (SignalSlab placeholders) so that
-            // SetParameter can target them by name via param_maps.
-            let param_defs: Vec<rill_lang::ir::ParamDef> = recipe
-                .params
-                .parameters
-                .iter()
-                .map(|(k, v)| {
-                    let default = v.as_f32().unwrap_or(0.0) as f64;
-                    rill_lang::ir::ParamDef {
-                        name: k.clone(),
-                        default,
-                        min: f64::NEG_INFINITY,
-                        max: f64::INFINITY,
-                    }
-                })
-                .collect();
-
-            // Name → recipe-index lookup for building param_bindings.
-            let name_to_recipe_idx: HashMap<String, usize> = param_defs
-                .iter()
-                .enumerate()
-                .map(|(i, pd)| (pd.name.clone(), i))
-                .collect();
-
-            let param_values: Vec<f64>;
-            let param_bindings: Vec<(usize, usize)>;
-
-            if sig.param_names.is_empty() {
-                // Backward compat: no names → positional identity (HashMap order).
-                param_values = recipe
-                    .params
-                    .parameters
-                    .values()
-                    .filter_map(|v| v.as_f32().map(|f| f as f64))
-                    .collect();
-                param_bindings = (0..param_defs.len()).map(|i| (i, i)).collect();
-            } else {
-                // Named params: match recipe param names to builtin arg positions.
-                // param_values[i] = value for builtin arg i, in correct positional order.
-                // param_bindings[(arg_pos, recipe_param_idx)] — used by push_builtin_params
-                // to route SetParameter changes to the right builtin set_param(arg_pos, _) call.
-                let num_args = sig.param_names.len();
-                let mut values = vec![0.0; num_args];
-                let mut bindings = Vec::with_capacity(num_args);
-                for (arg_pos, builtin_name) in sig.param_names.iter().enumerate() {
-                    if let Some(&recipe_idx) = name_to_recipe_idx.get(*builtin_name) {
-                        values[arg_pos] = param_defs[recipe_idx].default;
-                        bindings.push((arg_pos, recipe_idx));
-                    }
-                }
-                param_values = values;
-                param_bindings = bindings;
-            }
-
-            // Build BuiltinInstance: one builtin wrapping the recipe's type
-            let builtin_name = sig.name.to_string();
-            let builtin_instance = rill_lang::ir::BuiltinInstance {
-                name: builtin_name,
-                params: param_values,
-                kind: sig.kind,
-                signal_ins: arity.0,
-                signal_outs: arity.1,
-                param_bindings,
-            };
-
-            // Build instructions: one LoadInput (if the builtin has signal inputs)
-            // followed by CallBlock. Use separate registers for input/output when
-            // both exist — avoids register aliasing in exec_foreign_block where
-            // taking the output register would clobber the input.
-            let mut instrs = Vec::new();
-            let mut output_reg = 0usize;
-            let mut num_regs = 1usize;
-            if arity.1 > 0 {
-                if arity.0 > 0 {
-                    instrs.push(rill_lang::ir::Instr::LoadInput { dst: 0, index: 0 });
-                    num_regs = 2;
-                    output_reg = 1;
-                }
-                #[cfg(feature = "debug")]
-                {
-                    // ProbePoint needs an extra register: output_reg + 1
-                    num_regs += 1;
-                }
-                let srcs = if arity.0 > 0 { vec![0] } else { vec![] };
-                instrs.push(rill_lang::ir::Instr::CallBlock {
-                    dst: output_reg,
-                    srcs,
-                    instance: 0,
-                });
-                #[cfg(feature = "debug")]
-                instrs.push(rill_lang::ir::Instr::ProbePoint {
-                    id: idx as u32,
-                    src: output_reg,
-                    dst: output_reg.wrapping_add(1),
-                });
-            }
-
-            let ir = rill_lang::ir::Ir {
-                instrs,
-                num_regs,
-                output_reg,
-                num_inputs: arity.0,
-                num_outputs: arity.1,
-                state: rill_lang::ir::StateLayout {
-                    state_slots: 0,
-                    delay_lens: vec![],
-                    num_outputs: arity.1,
-                },
-                builtins: vec![builtin_instance],
-                params: param_defs.clone(),
-            };
-
-            nodes.insert(
-                name.clone(),
-                GraphNode {
-                    arity,
-                    ir,
-                    params: param_defs,
-                    keep: false,
-                    inline: false,
-                    is_bridge: false,
-                    feedback_read: vec![],
-                    feedback_write: vec![],
-                },
-            );
-        }
-
-        // 3. Convert edges
-        let mut edges = Vec::new();
-        for (from_idx, from_port, to_idx, to_port) in &self.signal_edges {
-            edges.push(GraphEdge {
-                from_node: idx_to_name[from_idx].clone(),
-                from_port: *from_port,
-                to_node: idx_to_name[to_idx].clone(),
-                to_port: *to_port,
-                kind: EdgeKind::Signal,
-            });
-        }
-        for (from_idx, from_port, to_idx, to_port) in &self.feedback_edges {
-            edges.push(GraphEdge {
-                from_node: idx_to_name[from_idx].clone(),
-                from_port: *from_port,
-                to_node: idx_to_name[to_idx].clone(),
-                to_port: *to_port,
-                kind: EdgeKind::Feedback,
-            });
-        }
-
-        // 4. Compute topological order (Kahn's algorithm on signal edges only)
-        let mut in_degree: HashMap<String, usize> = HashMap::new();
-        for name in &node_list {
-            in_degree.insert(name.clone(), 0);
-        }
-        for edge in &edges {
-            if edge.kind == EdgeKind::Signal {
-                *in_degree.get_mut(&edge.to_node).unwrap() += 1;
-            }
-        }
-
-        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-        for name in &node_list {
-            adj.insert(name.clone(), vec![]);
-        }
-        for edge in &edges {
-            if edge.kind == EdgeKind::Signal {
-                adj.get_mut(&edge.from_node)
-                    .unwrap()
-                    .push(edge.to_node.clone());
-            }
-        }
-
-        let mut queue: Vec<String> = in_degree
-            .iter()
-            .filter(|(_, &d)| d == 0)
-            .map(|(n, _)| n.clone())
-            .collect();
-        let mut topo_order = Vec::new();
-
-        while let Some(node) = queue.pop() {
-            topo_order.push(node.clone());
-            if let Some(neighbors) = adj.get(&node) {
-                for neighbor in neighbors {
-                    let deg = in_degree.get_mut(neighbor).unwrap();
-                    *deg -= 1;
-                    if *deg == 0 {
-                        queue.push(neighbor.clone());
-                    }
-                }
-            }
-        }
-
-        if topo_order.len() != node_list.len() {
-            return Err(BuildError::CycleDetected);
-        }
-
-        // 5. Compute graph-level inputs/outputs from root/leaf nodes
-        let inputs = topo_order
-            .iter()
-            .filter(|n| in_degree.get(*n) == Some(&0))
-            .map(|n| nodes[n].arity.0)
-            .sum();
-        let outputs = topo_order
-            .iter()
-            .filter(|n| adj.get(*n).is_none_or(|v| v.is_empty()))
-            .map(|n| nodes[n].arity.1)
-            .sum();
-
-        Ok(GraphIr {
-            inputs,
-            outputs,
-            nodes,
-            edges,
-            topo_order,
-        })
-    }
-
     /// Convert the graph to an rill-lang AST `Program`.
     ///
     /// Each graph node becomes an [`Expr::Apply`](rill_lang::ast::Expr::Apply) with parameters ordered
@@ -584,49 +304,11 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             return Err(BuildError::CycleDetected);
         }
 
-        // Check for unsupported topologies
-        for (i, targets) in adj.iter().enumerate() {
-            if targets.len() > 1 {
-                return Err(BuildError::UnsupportedTopology(format!(
-                    "node {} fans out to {} destinations (split not yet supported)",
-                    i,
-                    targets.len()
-                )));
-            }
-            let in_count = self
-                .signal_edges
-                .iter()
-                .filter(|(_, _, to, _)| *to == i)
-                .count();
-            if in_count > 1 {
-                return Err(BuildError::UnsupportedTopology(format!(
-                    "node {} receives {} signal inputs (merge not yet supported)",
-                    i, in_count
-                )));
-            }
-        }
-
-        // Build AST expressions for each node in topo order
-        // Map recipe index → AST expression
-        let mut node_exprs: Vec<Option<Expr>> = vec![None; self.recipes.len()];
-
-        // Collect all parameter names for the main definition
+        // Build the block expression for each node (Apply with folded params).
+        // The last param (convention) is exposed as a dynamic main parameter.
         let mut all_param_names: Vec<String> = Vec::new();
-
-        for &idx in &order {
-            let meta = &node_metas[idx];
-
-            // Find upstream signal connection
-            let upstream_expr: Option<Expr> = self
-                .signal_edges
-                .iter()
-                .find(|(_, _, to, _)| *to == idx)
-                .and_then(|(from, _from_port, _to, _to_port)| node_exprs[*from].clone());
-
-            // Build args: Float for static (first) params, Ref for dynamic (last) param.
-            // Only expose the last (dynamic) param as a main definition parameter.
-            //
-            // Convention: the last param in builtin param_names is the SetParameter target.
+        let mut blocks: Vec<Expr> = Vec::with_capacity(self.recipes.len());
+        for meta in &node_metas {
             let mut args: Vec<Expr> = Vec::new();
             let n = meta.param_names.len();
             for (i, (&val, name)) in meta
@@ -635,43 +317,108 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
                 .zip(meta.param_names.iter())
                 .enumerate()
             {
-                if i < n - 1 {
-                    // Static param: put Float constant, no main parameter
+                if i < n.saturating_sub(1) {
                     args.push(Expr::Float(val, dummy));
                 } else {
-                    // Dynamic param: use Ref + register on main definition
                     all_param_names.push(name.clone());
                     args.push(Expr::Ref(name.clone(), dummy));
                 }
             }
-
-            let apply = Expr::Apply {
+            blocks.push(Expr::Apply {
                 name: meta.builtin_name.clone(),
                 args,
                 span: dummy,
-            };
-
-            let expr = match upstream_expr {
-                Some(up) => Expr::Bin {
-                    op: BinOp::Seq,
-                    lhs: Box::new(up),
-                    rhs: Box::new(apply),
-                    span: dummy,
-                },
-                None => apply,
-            };
-
-            node_exprs[idx] = Some(expr);
+            });
         }
 
-        // Find the last node (sink/leaf) — the one with no downstream edges
-        let leaf: usize = order
-            .iter()
-            .rfind(|&&i| adj[i].is_empty())
-            .copied()
-            .unwrap_or(0);
+        // Build per-node input/output edge lists.
+        let n = self.recipes.len();
+        let mut in_edges: Vec<Vec<(usize, usize, usize)>> = vec![vec![]; n];
+        let mut out_edges: Vec<Vec<(usize, usize, usize)>> = vec![vec![]; n];
+        for (from, from_port, to, to_port) in &self.signal_edges {
+            if *from < n && *to < n {
+                in_edges[*to].push((*from, *from_port, *to_port));
+                out_edges[*from].push((*to, *from_port, *to_port));
+            }
+        }
+        for e in &mut in_edges {
+            e.sort_by_key(|&(_, _, tp)| tp);
+        }
+        for e in &mut out_edges {
+            e.sort_by_key(|&(_, fp, _)| fp);
+        }
 
-        let body = node_exprs[leaf].clone().unwrap_or(Expr::Wire(dummy));
+        // Reconstruct the graph into a single expression tree using the DSL
+        // combinators. Fan-in uses `Par` + `:>` (merge); fan-out duplicates the
+        // (stateless) source expression via memoization — stateful fan-out is a
+        // known limitation and requires `<:` (Split) support.
+        let mut memo: Vec<Option<Expr>> = vec![None; n];
+
+        fn build(
+            idx: usize,
+            blocks: &[Expr],
+            in_edges: &[Vec<(usize, usize, usize)>],
+            memo: &mut Vec<Option<Expr>>,
+            dummy: Span,
+        ) -> Expr {
+            if let Some(e) = &memo[idx] {
+                return e.clone();
+            }
+            let block = blocks[idx].clone();
+            let expr = if in_edges[idx].is_empty() {
+                block
+            } else {
+                let mut producers: Vec<usize> = Vec::new();
+                for &(from, _, _) in &in_edges[idx] {
+                    if !producers.contains(&from) {
+                        producers.push(from);
+                    }
+                }
+                if producers.len() == 1 {
+                    Expr::Bin {
+                        op: BinOp::Seq,
+                        lhs: Box::new(build(producers[0], blocks, in_edges, memo, dummy)),
+                        rhs: Box::new(block),
+                        span: dummy,
+                    }
+                } else {
+                    let mut par = build(producers[0], blocks, in_edges, memo, dummy);
+                    for &p in &producers[1..] {
+                        par = Expr::Bin {
+                            op: BinOp::Par,
+                            lhs: Box::new(par),
+                            rhs: Box::new(build(p, blocks, in_edges, memo, dummy)),
+                            span: dummy,
+                        };
+                    }
+                    Expr::Bin {
+                        op: BinOp::Merge,
+                        lhs: Box::new(par),
+                        rhs: Box::new(block),
+                        span: dummy,
+                    }
+                }
+            };
+            memo[idx] = Some(expr.clone());
+            expr
+        }
+
+        // The graph output is the parallel composition of all sink nodes.
+        let sinks: Vec<usize> = (0..n).filter(|&i| out_edges[i].is_empty()).collect();
+        let body = if sinks.is_empty() {
+            Expr::Wire(dummy)
+        } else {
+            let mut body = build(sinks[0], &blocks, &in_edges, &mut memo, dummy);
+            for &s in &sinks[1..] {
+                body = Expr::Bin {
+                    op: BinOp::Par,
+                    lhs: Box::new(body),
+                    rhs: Box::new(build(s, &blocks, &in_edges, &mut memo, dummy)),
+                    span: dummy,
+                };
+            }
+            body
+        };
 
         let params: Vec<Param> = all_param_names
             .into_iter()
@@ -689,16 +436,16 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         })
     }
 
-    /// Compile directly from the graph definition to a `CompiledGraphEngine`.
+    /// Compile directly from the graph definition to a [`ProgramEngine`](rill_lang::program_engine::ProgramEngine).
     ///
     /// Calls [`ast_from_def`](Self::ast_from_def) followed by rill-lang compilation.
-    pub fn compile_def<const BUF: usize>(
+    pub fn compile_def(
         &self,
         registry: &rill_lang::builtin::Registry<T>,
         sample_rate: f32,
-    ) -> Result<rill_lang::graph_engine::CompiledGraphEngine<T, BUF>, BuildError> {
+    ) -> Result<rill_lang::program_engine::ProgramEngine<T>, BuildError> {
         let program = self.ast_from_def(registry)?;
-        rill_lang::compile_program::<T, BUF>(&program, registry, sample_rate)
+        rill_lang::compile_program::<T>(&program, registry, sample_rate)
             .map_err(|e| BuildError::CompilationFailed(format!("{e}")))
     }
 

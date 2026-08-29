@@ -99,6 +99,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for ReadHead<T, BUF_
     }
 }
 
+impl<T: Transcendental, const BUF_SIZE: usize> rill_core::builtin::BlockBuiltin<T>
+    for ReadHead<T, BUF_SIZE>
+{
+    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+        let v = value.as_f32().unwrap_or(0.0);
+        if index == 0 {
+            self.set_delay(v);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

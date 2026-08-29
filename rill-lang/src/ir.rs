@@ -199,6 +199,8 @@ pub struct BuiltinInstance {
     pub name: String,
     /// Folded constant params.
     pub params: Vec<f64>,
+    /// Optional named resource (e.g. a tape loop) this built-in binds to.
+    pub resource: Option<String>,
     /// Sample vs block.
     pub kind: BuiltinKind,
     /// Number of signal input channels.
@@ -229,8 +231,8 @@ pub struct Ir {
     pub instrs: Vec<Instr>,
     /// Number of scratch registers required.
     pub num_regs: usize,
-    /// The register holding the single program output at sample end.
-    pub output_reg: Reg,
+    /// The registers holding the program outputs at sample end, in output order.
+    pub output_regs: Vec<Reg>,
     /// Number of program inputs (0 or 1 for MVP).
     pub num_inputs: usize,
     /// Number of program outputs.

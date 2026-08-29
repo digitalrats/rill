@@ -132,7 +132,7 @@ pub(crate) fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, i
     for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
         *s = *nx;
     }
-    prog.regs_scalar[prog.ir.output_reg]
+    prog.regs_scalar[prog.ir.output_regs[0]]
 }
 
 fn apply_un_f64(op: UnOp, x: f64) -> f64 {
@@ -166,14 +166,14 @@ fn apply_bin_f64(op: BinArith, x: f64, y: f64) -> f64 {
 // ============================================================================
 
 /// Run one block via the schedule: block steps whole-buffer, sample regions
-/// per sample. All registers are computed in `T`.
-pub fn run_block_hybrid<T: Transcendental>(
+/// per sample. All registers are computed in `T`. Supports N inputs → M outputs.
+pub fn run_block_mimo<T: Transcendental>(
     prog: &mut RillProgram<T>,
-    input: Option<&[T]>,
-    output: &mut [T],
+    inputs: &[&[T]],
+    outputs: &mut [&mut [T]],
 ) {
     push_builtin_params(prog);
-    let n = output.len();
+    let n = outputs.first().map(|o| o.len()).unwrap_or(0);
     prog.ensure_block_len(n);
 
     // Move the step list out of `prog` so we can borrow `prog`'s registers
@@ -182,22 +182,26 @@ pub fn run_block_hybrid<T: Transcendental>(
     let steps = std::mem::take(&mut prog.schedule.steps);
     for step in &steps {
         match step {
-            Step::Block(idx) => exec_block_op(prog, *idx, input, n),
+            Step::Block(idx) => exec_block_op(prog, *idx, inputs, n),
             Step::ForeignBlock(idx) => exec_foreign_block(prog, *idx, n),
-            Step::Sample(instrs) => exec_sample_region(prog, instrs, input, n),
+            Step::Sample(instrs) => exec_sample_region(prog, instrs, inputs, n),
         }
     }
     prog.schedule.steps = steps;
 
-    let out_reg = prog.ir.output_reg;
-    output[..n].copy_from_slice(&prog.block_regs[out_reg][..n]);
+    for (i, out) in outputs.iter_mut().enumerate() {
+        if let Some(&reg) = prog.ir.output_regs.get(i) {
+            let m = out.len().min(n);
+            out[..m].copy_from_slice(&prog.block_regs[reg][..m]);
+        }
+    }
 }
 
 /// Execute a single combinational instruction over the whole `[..n]` buffer.
 fn exec_block_op<T: Transcendental>(
     prog: &mut RillProgram<T>,
     idx: usize,
-    input: Option<&[T]>,
+    inputs: &[&[T]],
     n: usize,
 ) {
     match prog.ir.instrs[idx].clone() {
@@ -207,21 +211,18 @@ fn exec_block_op<T: Transcendental>(
         }
         Instr::LoadInput { dst, index } => {
             let reg = &mut prog.block_regs[dst];
-            if index == 0 {
-                if let Some(buf) = input {
+            match inputs.get(index) {
+                Some(buf) => {
                     let m = buf.len().min(n);
                     reg[..m].copy_from_slice(&buf[..m]);
                     for v in &mut reg[m..n] {
                         *v = T::ZERO;
                     }
-                } else {
+                }
+                None => {
                     for v in &mut reg[..n] {
                         *v = T::ZERO;
                     }
-                }
-            } else {
-                for v in &mut reg[..n] {
-                    *v = T::ZERO;
                 }
             }
         }
@@ -344,7 +345,7 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
 fn exec_sample_region<T: Transcendental>(
     prog: &mut RillProgram<T>,
     instrs: &[usize],
-    input: Option<&[T]>,
+    inputs: &[&[T]],
     n: usize,
 ) {
     for i in 0..n {
@@ -352,13 +353,9 @@ fn exec_sample_region<T: Transcendental>(
             match prog.ir.instrs[idx].clone() {
                 Instr::Const { dst, value } => prog.block_regs[dst][i] = T::from_f64(value),
                 Instr::LoadInput { dst, index } => {
-                    let v = if index == 0 {
-                        match input {
-                            Some(buf) if i < buf.len() => buf[i],
-                            _ => T::ZERO,
-                        }
-                    } else {
-                        T::ZERO
+                    let v = match inputs.get(index) {
+                        Some(buf) if i < buf.len() => buf[i],
+                        _ => T::ZERO,
                     };
                     prog.block_regs[dst][i] = v;
                 }
@@ -608,6 +605,20 @@ mod tests {
         let mut out = [0.0f32; 2];
         prog.process(Some(&[1.0, 3.0]), &mut out).unwrap();
         assert_eq!(out, [2.0, 6.0]);
+    }
+
+    #[test]
+    fn mimo_split_produces_two_outputs() {
+        let mut prog = build("main = _ <: (_ , _)");
+        assert_eq!(prog.ir.num_inputs, 1);
+        assert_eq!(prog.ir.num_outputs, 2);
+        let mut o0 = [0.0f32; 2];
+        let mut o1 = [0.0f32; 2];
+        let inputs: [&[f32]; 1] = [&[1.0, 3.0]];
+        let mut outs: [&mut [f32]; 2] = [&mut o0, &mut o1];
+        rill_core::traits::MultichannelAlgorithm::process(&mut prog, &inputs, &mut outs).unwrap();
+        assert_eq!(o0, [1.0, 3.0]);
+        assert_eq!(o1, [1.0, 3.0]);
     }
 
     #[test]

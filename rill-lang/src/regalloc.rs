@@ -141,9 +141,8 @@ pub fn allocate(ir: &mut Ir) {
     }
 
     ir.instrs = new_instrs;
-    ir.output_reg = vir2phys
-        .get(&ir.output_reg)
-        .copied()
-        .unwrap_or(ir.output_reg);
+    for out in &mut ir.output_regs {
+        *out = vir2phys.get(out).copied().unwrap_or(*out);
+    }
     ir.num_regs = next_phys;
 }
