@@ -94,11 +94,12 @@ pub fn reconstruct<T: Transcendental + 'static>(
     }
 
     // --- Per-node block expression (Apply with ordered params) ---------------
-    // The last param of each node is exposed as an actor parameter
-    // `?name=default` (0-in, late-binding slot addressable by name from the
-    // control thread) — NOT a `main` λ-parameter, which would add a signal
-    // input. Resource-backed nodes (tape heads) get a symbolic `Ref` to the
-    // shared tape as their first arg.
+    // The last param of each node is exposed as a per-node actor parameter
+    // `?{node}_{name}={default}` (0-in, late-binding slot addressable by name
+    // from the control thread, unique per node so same-named params with
+    // different defaults do not conflict) — NOT a `main` λ-parameter, which
+    // would add a signal input. Resource-backed nodes (tape heads) get a
+    // symbolic `Ref` to the shared tape as their first arg.
     let default_tape = spec
         .resources
         .iter()
@@ -106,7 +107,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
         .map(|r| r.name.clone())
         .unwrap_or_else(|| "tape_0".to_string());
     let mut blocks: Vec<Expr> = Vec::with_capacity(n);
-    for meta in &metas {
+    for (idx, meta) in metas.iter().enumerate() {
         let mut args: Vec<Expr> = Vec::with_capacity(meta.param_names.len() + 1);
         if meta.has_resource {
             args.push(Expr::Ref(default_tape.clone(), dummy));
@@ -122,7 +123,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
                 args.push(Expr::Float(val, dummy));
             } else {
                 args.push(Expr::ActorParam {
-                    name: name.clone(),
+                    name: format!("{name}_{idx}"),
                     default: Some(Box::new(Expr::Float(val, dummy))),
                     span: dummy,
                 });
@@ -161,6 +162,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
     // --- Channel-aware build (memoized for fan-out) ---------------------------
     let mut memo: Vec<Option<Expr>> = vec![None; n];
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         idx: usize,
         blocks: &[Expr],

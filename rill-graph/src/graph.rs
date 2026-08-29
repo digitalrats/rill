@@ -300,6 +300,89 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         }
     }
 
+    /// Infer active rill-io backend attachments for a tape-echo graph (used
+    /// when the caller does not provide explicit attachments): the recording
+    /// source (a free-input node backward-reachable from the write head) is the
+    /// active input; the playback sinks (nodes with no outgoing edges reachable
+    /// from the read heads) are the active outputs.
+    pub fn infer_backends(
+        &self,
+        spec: &rill_lang::graph::spec::GraphSpec,
+    ) -> Vec<rill_lang::graph::spec::BackendAttachment> {
+        use rill_lang::graph::spec::{BackendAttachment, GraphEdgeKind};
+        let n = spec.nodes.len();
+        let wh = spec.nodes.iter().position(|x| x.type_name == "write_head");
+        let read_heads: Vec<usize> = (0..n)
+            .filter(|&i| spec.nodes[i].type_name == "read_head")
+            .collect();
+        if wh.is_none() || read_heads.is_empty() {
+            return Vec::new();
+        }
+        let wh = wh.unwrap();
+        let mut fwd = vec![Vec::<usize>::new(); n];
+        let mut bwd = vec![Vec::<usize>::new(); n];
+        for e in &spec.edges {
+            if e.kind == GraphEdgeKind::Signal {
+                fwd[e.from].push(e.to);
+                bwd[e.to].push(e.from);
+            }
+        }
+        let mut up = vec![false; n];
+        let mut stack = vec![wh];
+        up[wh] = true;
+        while let Some(u) = stack.pop() {
+            for &p in &bwd[u] {
+                if !up[p] {
+                    up[p] = true;
+                    stack.push(p);
+                }
+            }
+        }
+        let has_in = |u: usize| {
+            spec.edges
+                .iter()
+                .any(|e| e.kind == GraphEdgeKind::Signal && e.to == u)
+        };
+        let mut backends = Vec::new();
+        if let Some(src) = (0..n).find(|&i| i != wh && up[i] && !has_in(i)) {
+            backends.push(BackendAttachment {
+                input: true,
+                backend_name: "pipewire".to_string(),
+                node: src,
+                port: 0,
+            });
+        }
+        let mut down = vec![false; n];
+        let mut stack = read_heads;
+        for &s in &stack {
+            down[s] = true;
+        }
+        while let Some(u) = stack.pop() {
+            for &c in &fwd[u] {
+                if !down[c] {
+                    down[c] = true;
+                    stack.push(c);
+                }
+            }
+        }
+        let has_out = |u: usize| {
+            spec.edges
+                .iter()
+                .any(|e| e.kind == GraphEdgeKind::Signal && e.from == u)
+        };
+        for (i, &d) in down.iter().enumerate() {
+            if i != wh && d && !has_out(i) {
+                backends.push(BackendAttachment {
+                    input: false,
+                    backend_name: "pipewire".to_string(),
+                    node: i,
+                    port: 0,
+                });
+            }
+        }
+        backends
+    }
+
     /// Compile this graph via rill-lang's IR formation.
     ///
     /// Returns the single-program engine for a plain graph. Tape-echo graphs
