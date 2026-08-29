@@ -269,13 +269,13 @@ fn register_clock_module(factory: &mut rill_patchbay::module_factory::ModuleFact
 pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
     use std::sync::Arc;
 
-    factory.register("null", |p| {
+    factory.register("null", rill_core::io::BackendMeta::active(), |p| {
         let b = Arc::new(crate::io::backends::NullBackend::new(cfg_from_params(p)));
         Ok((b as Arc<dyn rill_core::io::IoDriver>, None, None))
     });
 
     #[cfg(feature = "alsa")]
-    factory.register("alsa", |p| {
+    factory.register("alsa", rill_core::io::BackendMeta::active(), |p| {
         let cfg = cfg_from_params(p);
         let in_ch = cfg.input_channels > 0;
         let out_ch = cfg.output_channels > 0;
@@ -297,7 +297,7 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     });
 
     #[cfg(feature = "pipewire")]
-    factory.register("pipewire", |p| {
+    factory.register("pipewire", rill_core::io::BackendMeta::active(), |p| {
         let cfg = cfg_from_params(p);
         let in_ch = cfg.input_channels > 0;
         let out_ch = cfg.output_channels > 0;
@@ -320,7 +320,7 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     });
 
     #[cfg(feature = "jack")]
-    factory.register("jack", |p| {
+    factory.register("jack", rill_core::io::BackendMeta::active(), |p| {
         let cfg = cfg_from_params(p);
         let out_ch = cfg.output_channels > 0;
         let b =
@@ -337,7 +337,7 @@ pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFacto
     });
 
     #[cfg(feature = "portaudio")]
-    factory.register("portaudio", |p| {
+    factory.register("portaudio", rill_core::io::BackendMeta::active(), |p| {
         let cfg = cfg_from_params(p);
         let out_ch = cfg.output_channels > 0;
         let b = Arc::new(

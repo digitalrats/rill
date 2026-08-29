@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rill_core::io::{IoCapture, IoDriver, IoPlayback};
+use rill_core::io::{BackendMeta, IoCapture, IoDriver, IoPlayback};
 use rill_core::traits::ParamValue;
 
 /// Raw backend construction result: `(driver, capture?, playback?)`.
@@ -32,10 +32,19 @@ pub struct InputBundle {
     pub capture: Arc<dyn IoCapture>,
 }
 
+/// A named backend constructor together with its static metadata.
+#[derive(Clone)]
+pub struct RegisteredBackend {
+    /// The backend constructor.
+    pub ctor: BackendCtor,
+    /// Static metadata (active/passive) for the backend.
+    pub meta: BackendMeta,
+}
+
 /// Registry of named backend constructors with caching.
 #[derive(Clone)]
 pub struct BackendFactory {
-    ctors: HashMap<&'static str, BackendCtor>,
+    ctors: HashMap<&'static str, RegisteredBackend>,
     cache: HashMap<String, BackendParts>,
 }
 
@@ -48,9 +57,14 @@ impl BackendFactory {
         }
     }
 
-    /// Register a named backend constructor.
-    pub fn register(&mut self, name: &'static str, ctor: BackendCtor) {
-        self.ctors.insert(name, ctor);
+    /// Register a named backend constructor with its metadata.
+    pub fn register(&mut self, name: &'static str, meta: BackendMeta, ctor: BackendCtor) {
+        self.ctors.insert(name, RegisteredBackend { ctor, meta });
+    }
+
+    /// Whether the named backend is active (creates a callback).
+    pub fn is_active(&self, name: &str) -> Option<bool> {
+        self.ctors.get(name).map(|r| r.meta.active)
     }
 
     /// Create or retrieve a cached backend by name.
@@ -66,7 +80,7 @@ impl BackendFactory {
             .ctors
             .get(name)
             .ok_or_else(|| format!("unknown backend: {name}"))?;
-        let result = ctor(params)?;
+        let result = (ctor.ctor)(params)?;
         self.cache.insert(name.to_string(), result.clone());
         Ok(result)
     }
