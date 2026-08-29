@@ -1,20 +1,26 @@
 //! Tape write head with feedback control.
 
-use crate::tape::tape_loop::TapeWriter;
+use rill_core::buffer::SharedWriter;
 use rill_core::{
     math::Transcendental,
     traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata},
     traits::{MultichannelAlgorithm, ProcessResult},
 };
 
+/// SAFETY: the tape buffer is single-threaded; the duplex stream never moves a
+/// head across threads while another thread touches the shared tape. `Send +
+/// Sync` is only required by the builtin registry's static bounds.
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Send for WriteHead<T, B> {}
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Sync for WriteHead<T, B> {}
 
 /// Tape write head for delay-based tape effects with feedback control.
+///
+/// Holds the unique write capability over a shared tape buffer
+/// ([`SharedWriter`]); the buffer itself stays single-threaded.
 pub struct WriteHead<T: Transcendental, const BUF_SIZE: usize> {
-    tape: Option<TapeWriter<T>>,
+    tape: Option<SharedWriter<T>>,
     delay_time: f32,
     feedback: f32,
     sample_rate: f32,
@@ -42,7 +48,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     }
 
     /// Sets the tape writer to write to.
-    pub fn set_writer(&mut self, writer: TapeWriter<T>) {
+    pub fn set_writer(&mut self, writer: SharedWriter<T>) {
         self.tape = Some(writer);
     }
 
@@ -51,6 +57,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> WriteHead<T, BUF_SIZE> {
     /// RT-safe: each mixed sample is written straight through the writer handle
     /// with no scratch buffer or allocation.
     pub fn write_block(&mut self, dry: &[T], fb: &[T]) {
+        use rill_core::buffer::Writer;
         let g = T::from_f32(self.feedback);
         let Some(tape) = self.tape.as_mut() else {
             return;
@@ -78,6 +85,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for WriteHead<T, BUF
                 output[..n].copy_from_slice(&inp[..n]);
                 output[n..].fill(T::ZERO);
                 if let Some(tape) = self.tape.as_mut() {
+                    use rill_core::buffer::Writer;
                     for &sample in inp.iter() {
                         tape.write(sample);
                     }
@@ -111,6 +119,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> MultichannelAlgorithm<T> for Writ
     /// Inputs are `[dry, feedback]`; the mixed signal `dry + feedback * feedback`
     /// is written to the tape and passed through to the output.
     fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        use rill_core::buffer::Writer;
         let dry = inputs.first().copied().unwrap_or(&[]);
         let fb = inputs.get(1).copied().unwrap_or(&[]);
         let g = T::from_f32(self.feedback);

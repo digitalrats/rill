@@ -2,8 +2,8 @@
 //! head and read by read heads. Declaratively described by [`TapeBackendSpec`].
 
 use crate::tape::read_head::ReadHead;
-use crate::tape::tape_loop::{tape_handles, TapeLoop};
 use crate::tape::write_head::WriteHead;
+use rill_core::buffer::{shared_handles, DelayBuffer, TapeLoop};
 use rill_core::math::Transcendental;
 use rill_core::traits::Algorithm;
 
@@ -48,8 +48,8 @@ pub struct TapeBackendSpec {
 
 /// Instantiated passive tape backend.
 ///
-/// The tape lives in a shared cell handed out as one unique [`TapeWriter`]
-/// (inside the write head) and a cloned [`TapeReader`] per read head, so every
+/// The tape lives in a shared cell handed out as one unique [`SharedWriter`]
+/// (inside the write head) and a cloned [`SharedReader`] per read head, so every
 /// head operates on the same single-threaded `TapeLoop`.
 pub struct TapeBackend<T: Transcendental> {
     write: WriteHead<T, 256>,
@@ -60,7 +60,7 @@ impl<T: Transcendental> TapeBackend<T> {
     /// Create from a spec at the given sample rate.
     pub fn new(spec: &TapeBackendSpec, sample_rate: f32) -> Self {
         let tape = TapeLoop::<T>::new(spec.capacity).expect("non-zero capacity");
-        let (writer, reader) = tape_handles(tape);
+        let (writer, reader) = shared_handles(Box::new(tape) as Box<dyn DelayBuffer<T>>);
         let mut write = WriteHead::<T, 256>::new(sample_rate);
         write.set_feedback(spec.write.feedback as f32);
         write.set_writer(writer);

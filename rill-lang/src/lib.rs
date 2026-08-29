@@ -86,10 +86,78 @@ pub fn compile_program<T: Transcendental>(
     registry: &Registry<T>,
     sample_rate: f32,
 ) -> Result<program_engine::ProgramEngine<T>, CompileError> {
-    let mut typed = types::infer::infer_program_with(program, registry)?;
+    compile_program_inner(program, registry, sample_rate, None)
+}
+
+/// Compile an AST program against a pre-built resource registry.
+///
+/// The registry is shared (e.g. one tape across recording + playback engines);
+/// the caller owns it and must keep it alive while both engines run. The DSL's
+/// `TapeLoop <capacity>` declaration is only a declaration: when an external
+/// registry is supplied, its tape capacity is used. Every resource referenced
+/// by the program must exist in `resources`, otherwise the program fails with
+/// `Unsupported` rather than compiling to a silently dead engine (a write head
+/// without a writer, a read head without a reader).
+pub fn compile_program_with_resources<T: Transcendental>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    resources: &mut rill_core::buffer::ResourceRegistry<T>,
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    compile_program_inner(program, registry, sample_rate, Some(resources))
+}
+
+fn compile_program_inner<T: Transcendental>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    let (program, resource_decls) = extract_resources(program);
+
+    let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
-    let rp = RillProgram::<T>::new_with(ir, registry, sample_rate)?;
+
+    for bi in &ir.builtins {
+        if let Some(res) = &bi.resource {
+            if !resource_decls.iter().any(|d| &d.name == res) {
+                return Err(CompileError::Unsupported(format!(
+                    "built-in '{}' references undeclared resource '{}'",
+                    bi.name, res
+                )));
+            }
+        }
+    }
+
+    let mut owned = rill_core::buffer::ResourceRegistry::<T>::new();
+    let res: &mut rill_core::buffer::ResourceRegistry<T> = match resources {
+        Some(r) => {
+            for bi in &ir.builtins {
+                if let Some(name) = &bi.resource {
+                    if r.reader(name).is_none() {
+                        return Err(CompileError::Unsupported(format!(
+                            "resource '{}' not found in the provided registry",
+                            name
+                        )));
+                    }
+                }
+            }
+            r
+        }
+        None => {
+            for decl in &resource_decls {
+                let tape =
+                    rill_core::buffer::TapeLoop::<T>::new(decl.capacity).ok_or_else(|| {
+                        CompileError::Unsupported(format!("tape '{}' has zero capacity", decl.name))
+                    })?;
+                owned.register_buffer(decl.name.clone(), Box::new(tape));
+            }
+            &mut owned
+        }
+    };
+
+    let rp = RillProgram::<T>::new_with_resources(ir, registry, sample_rate, res)?;
     let mailbox = Arc::new(Mailbox::new(64));
     Ok(program_engine::ProgramEngine::new(rp, mailbox))
 }
@@ -103,6 +171,51 @@ pub fn compile_graph<T: Transcendental>(
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     compile_program::<T>(&program, registry, sample_rate)
+}
+
+/// A named resource declaration (e.g. a tape loop) from the DSL.
+pub struct ResourceDecl {
+    /// Resource name.
+    pub name: String,
+    /// Capacity in samples (for tape loops).
+    pub capacity: usize,
+}
+
+/// Extract top-level `name = TapeLoop <capacity>` resource declarations,
+/// returning the remaining signal program plus the declarations.
+fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec<ResourceDecl>) {
+    use crate::ast::{Def, Expr};
+    let mut decls = Vec::new();
+    let mut defs = Vec::with_capacity(program.defs.len());
+    for def in &program.defs {
+        let mut is_resource = false;
+        if let Def::Local {
+            name,
+            body: Expr::Apply {
+                name: ctor, args, ..
+            },
+            ..
+        } = def
+        {
+            if ctor == "TapeLoop" {
+                if let Some(cap) = args.first().and_then(|a| match a {
+                    Expr::Int(v, _) => Some(*v as usize),
+                    Expr::Float(v, _) => Some(*v as usize),
+                    _ => None,
+                }) {
+                    decls.push(ResourceDecl {
+                        name: name.clone(),
+                        capacity: cap,
+                    });
+                    is_resource = true;
+                }
+            }
+        }
+        if !is_resource {
+            defs.push(def.clone());
+        }
+    }
+    (crate::ast::Program { defs }, decls)
 }
 
 #[cfg(test)]
