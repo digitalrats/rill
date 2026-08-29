@@ -12,6 +12,8 @@ pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
 pub mod error;
+/// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → [`CompiledStream`](graph::CompiledStream).
+pub mod graph;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
