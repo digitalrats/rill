@@ -140,8 +140,10 @@ Precedence, loosest → tightest: `~` < `:` < `:>` < `<:` < `,` < `+ -` < `* / %
 ### Idioms
 
 ```faust
-main = integrator;          // integrator:         y[n] = x[n] + y[n-1]
+main = integrator;           // integrator:         y[n] = x[n] + y[n-1]
 main = leaky_integrator 0.5; // leaky integrator:  y[n] = x[n] + 0.5·y[n-1]
+main = + ~ _;               // short form for `integrator`
+main = + ~ (_ * 0.5);       // short form for `leaky_integrator 0.5`
 main = _ @ 1;              // one-sample delay
 main = _ <: (_ , _) :> +;  // fan-out then sum = 2·x
 ```

@@ -21,6 +21,23 @@ fn onepole_builtin_smooths() {
 }
 
 #[test]
+fn integrator_short_form_runs_sum() {
+    // `+ ~ _` desugars to the `integrator` built-in.
+    let out = run("main = + ~ _", &[1.0, 1.0, 1.0, 1.0], 48_000.0);
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn leaky_integrator_short_form_smooths() {
+    // `+ ~ (_ * 0.5)` desugars to `leaky_integrator 0.5`.
+    let out = run("main = + ~ (_ * 0.5)", &[1.0, 1.0, 1.0, 1.0], 48_000.0);
+    assert!((out[0] - 1.0).abs() < 1e-6);
+    assert!((out[1] - 1.5).abs() < 1e-6);
+    assert!((out[2] - 1.75).abs() < 1e-6);
+    assert!((out[3] - 1.875).abs() < 1e-6);
+}
+
+#[test]
 fn lowpass_block_matches_direct_biquad() {
     use rill_core_dsp::filters::{Biquad, FilterParams, FilterType};
     let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.3).sin()).collect();

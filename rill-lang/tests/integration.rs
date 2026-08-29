@@ -14,17 +14,6 @@ fn dc_offset() {
 }
 
 #[test]
-fn feedback_tap_uses_previous_tick() {
-    // `+ ~ _`: out[i] = x[i] + fb[i], where fb is the previous tick's input.
-    let mut prog = compile::<f32>("main = + ~ _").unwrap();
-    let mut out = vec![0.0f32; 4];
-    prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
-    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
-    prog.process(Some(&[5.0, 6.0, 7.0, 8.0]), &mut out).unwrap();
-    assert_eq!(out, vec![6.0, 8.0, 10.0, 12.0]);
-}
-
-#[test]
 fn math_builtin_abs() {
     assert_eq!(run("main = abs _", &[-2.0, 3.0, -4.0]), vec![2.0, 3.0, 4.0]);
 }

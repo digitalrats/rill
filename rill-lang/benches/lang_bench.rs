@@ -20,10 +20,10 @@ fn bench_compile(c: &mut Criterion) {
     let programs = [
         ("gain", "main = _ * 0.5"),
         ("chain", "main = _ * 0.5 : abs : (_ * 2.0)"),
-        ("feedback", "main = + ~ (_ * 0.5)"),
+        ("feedback", "main = min ~ (_ * 0.5)"),
         (
             "mixed",
-            "main = (_ * 0.5) <: (_ , _ * 0.5) :> (+ ~ (_ * 0.7))",
+            "main = (_ * 0.5) <: (_ , _ * 0.5) :> (min ~ (_ * 0.7))",
         ),
     ];
     let mut group = c.benchmark_group("compile");
@@ -43,7 +43,7 @@ fn bench_runtime(c: &mut Criterion) {
     let programs = [
         ("feedforward_gain", "main = _ * 0.5"),
         ("feedforward_chain", "main = _ * 0.5 : abs : (_ * 2.0)"),
-        ("feedback_leaky", "main = + ~ (_ * 0.5)"),
+        ("feedback_leaky", "main = min ~ (_ * 0.5)"),
         ("delay", "main = _ @ 4"),
         ("split_merge", "main = _ <: (_ , _ * 0.5) :> +"),
         ("param", "main g = _ * g"),
